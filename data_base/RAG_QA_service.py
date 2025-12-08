@@ -1,0 +1,286 @@
+"""
+RAG Question Answering Service
+
+Provides multimodal RAG-based question answering functionality
+with enhanced reranking and query transformation.
+"""
+
+# Standard library
+import base64
+import logging
+import os
+from typing import List, Any, Set, Optional, Tuple
+
+# Third-party
+from fastapi.concurrency import run_in_threadpool
+from langchain.schema import Document
+from langchain_core.messages import HumanMessage
+
+# Local application
+from core.llm_factory import get_llm
+from data_base.vector_store_manager import get_user_retriever
+from data_base.reranker import rerank_documents, DocumentReranker
+from data_base.query_transformer import (
+    transform_query_with_hyde,
+    transform_query_multi,
+    reciprocal_rank_fusion,
+)
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Flag to track initialization
+_llm_initialized = False
+
+
+async def initialize_llm_service() -> None:
+    """
+    Initializes the LLM service.
+
+    This is now handled by the LLM factory with lazy initialization,
+    but we keep this function for backward compatibility with startup events.
+    """
+    global _llm_initialized
+
+    if not os.getenv("GOOGLE_API_KEY"):
+        logger.error("GOOGLE_API_KEY not set")
+        raise RuntimeError("GOOGLE_API_KEY not configured")
+
+    # Pre-warm the LLM instance
+    logger.info("Pre-warming RAG QA LLM...")
+    get_llm("rag_qa")
+    _llm_initialized = True
+    logger.info("RAG QA LLM ready")
+
+
+def _encode_image(image_path: str) -> Optional[str]:
+    """
+    Reads an image file and converts to Base64 string.
+
+    Args:
+        image_path: Path to the image file.
+
+    Returns:
+        Base64 encoded string, or None if reading fails.
+    """
+    image_path = os.path.normpath(image_path)
+
+    if not os.path.exists(image_path):
+        logger.warning(f"Image not found: {image_path}")
+        return None
+
+    try:
+        with open(image_path, "rb") as f:
+            return base64.b64encode(f.read()).decode("utf-8")
+    except IOError as e:
+        logger.error(f"Error reading image {image_path}: {e}")
+        return None
+
+
+async def rag_answer_question(
+    question: str,
+    user_id: str,
+    doc_ids: Optional[List[str]] = None,
+    enable_reranking: bool = True,
+    enable_hyde: bool = False,
+    enable_multi_query: bool = False,
+) -> Tuple[str, List[str]]:
+    """
+    Performs multimodal RAG question answering for a specific user.
+
+    Enhanced Pipeline:
+    1. Get user's retriever
+    2. (Optional) Query transformation (HyDE / Multi-Query)
+    3. Execute retrieval (with optional doc_id filtering)
+    4. (Optional) Rerank with Cross-Encoder
+    5. Separate text and image data
+    6. Build multimodal prompt
+    7. Call LLM
+
+    Args:
+        question: The question to answer.
+        user_id: The user's ID.
+        doc_ids: Optional list of document IDs to filter results.
+                 If None or empty, queries all documents.
+        enable_reranking: If True, use Cross-Encoder reranking.
+        enable_hyde: If True, use HyDE query transformation.
+        enable_multi_query: If True, use multi-query with RRF fusion.
+
+    Returns:
+        Tuple of (answer string, list of source doc_ids).
+    """
+    # Step 1: Get LLM instance
+    try:
+        llm = get_llm("rag_qa")
+    except Exception as e:
+        logger.error(f"Failed to get LLM: {e}")
+        return ("抱歉，AI 模型尚未初始化 (API Key 可能有誤)。", [])
+
+    # Step 2: Get retriever (increase k for reranking)
+    retrieval_k = 50 if enable_reranking else (18 if doc_ids else 6)
+    retriever = get_user_retriever(user_id, k=retrieval_k)
+    
+    if retriever is None:
+        return ("抱歉，您還沒有建立任何知識庫文件，請先上傳 PDF。", [])
+
+    # Step 3: Query transformation
+    search_queries = [question]
+    
+    if enable_hyde:
+        hyde_doc = await transform_query_with_hyde(question, enabled=True)
+        search_queries = [hyde_doc]
+        logger.debug(f"HyDE transformed query: {hyde_doc[:100]}...")
+    elif enable_multi_query:
+        search_queries = await transform_query_multi(question, enabled=True)
+        logger.debug(f"Multi-query generated {len(search_queries)} queries")
+
+    # Step 4: Execute retrieval
+    try:
+        if len(search_queries) == 1:
+            # Single query retrieval
+            docs = retriever.invoke(search_queries[0])
+        else:
+            # Multi-query retrieval with RRF fusion
+            all_results = []
+            for q in search_queries:
+                results = retriever.invoke(q)
+                all_results.append(results)
+            docs = reciprocal_rank_fusion(all_results)
+            logger.debug(f"RRF fused {len(docs)} documents")
+    except Exception as e:
+        logger.error(f"Retrieval error: {e}", exc_info=True)
+        return ("抱歉，檢索知識庫時發生錯誤。", [])
+
+    if not docs:
+        return ("抱歉，在知識庫中找不到相關資訊。", [])
+
+    # Step 4.5: Filter by doc_ids if specified (before reranking for efficiency)
+    if doc_ids:
+        doc_id_set = set(doc_ids)
+        filtered_docs = [
+            d for d in docs 
+            if d.metadata.get("doc_id") in doc_id_set or
+               d.metadata.get("original_doc_uid") in doc_id_set
+        ]
+        docs = filtered_docs
+        
+        if not docs:
+            return ("抱歉，在指定的文件中找不到相關資訊。", list(doc_ids))
+        
+        logger.debug(f"Filtered to {len(docs)} docs from specified doc_ids")
+
+    # Step 5: Rerank with Cross-Encoder
+    if enable_reranking and len(docs) > 6:
+        docs = await run_in_threadpool(
+            rerank_documents,
+            question,
+            docs,
+            top_k=6,
+            enabled=True,
+        )
+        logger.debug(f"Reranked to top {len(docs)} documents")
+    else:
+        docs = docs[:6]
+
+    # Step 6: Separate data and deduplicate
+    text_context: List[str] = []
+    image_paths: Set[str] = set()
+    source_doc_ids: Set[str] = set()
+
+    for doc in docs:
+        source = doc.metadata.get("source", "text")
+        
+        # Track source doc_ids
+        doc_id = doc.metadata.get("doc_id") or doc.metadata.get("original_doc_uid")
+        if doc_id:
+            source_doc_ids.add(doc_id)
+
+        if source == "image":
+            img_path = doc.metadata.get("image_path")
+            if img_path and os.path.exists(img_path):
+                image_paths.add(img_path)
+            # Also add image summary to text context as supplementary info
+            if doc.page_content:
+                text_context.append(f"[圖片摘要] {doc.page_content}")
+        else:
+            if doc.page_content:
+                text_context.append(doc.page_content)
+
+    # Step 7: Process images (limit count to avoid token explosion)
+    MAX_IMAGES = 3
+    image_list = list(image_paths)[:MAX_IMAGES]
+    encoded_images: List[str] = []
+
+    for img_path in image_list:
+        b64 = _encode_image(img_path)
+        if b64:
+            encoded_images.append(b64)
+
+    logger.debug(f"Text chunks: {len(text_context)}, Images: {len(encoded_images)}")
+
+    # Step 8: Build multimodal message
+    context_text = "\n\n---\n\n".join(text_context) if text_context else "(無文字背景資訊)"
+
+    prompt_text = f"""Role: 學術研究助手
+Task: 根據提供的[背景資訊]與[圖片]回答使用者的問題。
+
+[背景資訊]:
+{context_text}
+
+[使用者問題]:
+{question}
+
+Note: 
+1. 如果圖片與問題無關，請忽略圖片。
+2. 請用繁體中文回答。
+3. ⚠️ 重要：所有數學公式、變數、方程式，請務必使用 LaTeX 格式輸出 (例如 $\\frac{{a}}{{b}}$)，不要使用純文字格式。
+"""
+
+    # Build content list
+    message_content: List[Any] = [{"type": "text", "text": prompt_text}]
+
+    # Add images
+    for b64_img in encoded_images:
+        message_content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}
+        })
+
+    message = HumanMessage(content=message_content)
+
+    # Step 9: Call LLM
+    try:
+        response = await llm.ainvoke([message])
+        return (response.content, list(source_doc_ids))
+    except Exception as e:
+        logger.error(f"LLM error for user {user_id}: {e}", exc_info=True)
+        return ("抱歉，處理您的問題時發生錯誤。", list(source_doc_ids))
+
+
+# Backward compatible alias
+async def rag_answer_question_simple(
+    question: str,
+    user_id: str,
+    doc_ids: Optional[List[str]] = None,
+) -> Tuple[str, List[str]]:
+    """
+    Simple RAG QA without reranking or query transformation.
+    
+    Provided for backward compatibility and testing.
+    
+    Args:
+        question: The question to answer.
+        user_id: The user's ID.
+        doc_ids: Optional document ID filter.
+        
+    Returns:
+        Tuple of (answer, source_doc_ids).
+    """
+    return await rag_answer_question(
+        question=question,
+        user_id=user_id,
+        doc_ids=doc_ids,
+        enable_reranking=False,
+        enable_hyde=False,
+        enable_multi_query=False,
+    )
