@@ -13,7 +13,7 @@ from enum import Enum
 from typing import List, Optional
 
 # Third-party
-from langchain.schema import Document
+from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
@@ -139,7 +139,7 @@ class RAGEvaluator:
                 else:
                     return RetrievalGrade.NOT_RELEVANT
                     
-            except Exception as e:
+            except (RuntimeError, ValueError, KeyError) as e:
                 logger.warning(f"Retrieval evaluation failed: {e}")
                 return RetrievalGrade.RELEVANT  # Assume relevant on error
     
@@ -188,7 +188,7 @@ class RAGEvaluator:
                 else:
                     return FaithfulnessGrade.HALLUCINATED
                     
-            except Exception as e:
+            except (RuntimeError, ValueError, KeyError) as e:
                 logger.warning(f"Faithfulness evaluation failed: {e}")
                 return FaithfulnessGrade.GROUNDED  # Assume grounded on error
     

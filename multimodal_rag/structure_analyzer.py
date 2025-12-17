@@ -1,21 +1,23 @@
 """
-Structure Analyzer for Multimodal RAG
+Structure Analyzer for Multimodal RAG (Datalab API)
 
-Extracts text and visual elements from PDF documents using PP-StructureV3.
-Designed for RAG pipeline with CPU-only mode for stability.
+Extracts text and visual elements from PDF documents using Datalab Layout API.
+Designed for RAG pipeline with API-based processing.
+
+Datalab (USA) - Commercial API
 """
 
 # Standard library
 import logging
 import os
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from uuid import uuid4
 
 # Third-party
 import cv2
 import numpy as np
+import httpx
 from pdf2image import convert_from_path
-from paddleocr import PPStructureV3
 
 # Local application
 from .schemas import ExtractedDocument, TextChunk, VisualElement, VisualElementType
@@ -23,90 +25,198 @@ from .schemas import ExtractedDocument, TextChunk, VisualElement, VisualElementT
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Force CPU mode for multimodal RAG (GPU reserved for PDF translation service)
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
+# API Configuration
+DATALAB_API_URL = os.getenv("DATALAB_API_URL", "https://www.datalab.to/api/v1/marker")
+DATALAB_API_KEY = os.getenv("DATALAB_API_KEY", "")
+API_TIMEOUT = 300.0
 
 
 class StructureAnalyzer:
     """
-    Analyzes PDF structure and extracts text/visual elements.
+    Analyzes PDF structure and extracts text/visual elements via Datalab API.
     
-    Uses PP-StructureV3 in CPU mode for layout detection and OCR.
-    Visual elements are cropped and saved for later summarization by Gemini.
+    Falls back to local image processing for visual element cropping.
     """
 
+    # Label mapping for visual elements
+    VISUAL_LABELS = {'picture', 'figure', 'table', 'formula', 'chart', 'image'}
+    TEXT_LABELS = {'text', 'section-header', 'caption', 'list-item', 'footnote',
+                   'page-header', 'page-footer', 'title', 'paragraph'}
+
     def __init__(self) -> None:
-        """Initializes the PP-StructureV3 engine."""
-        logger.info("Initializing StructureAnalyzer (CPU mode)...")
+        """Initializes the StructureAnalyzer."""
+        if not DATALAB_API_KEY:
+            logger.warning("DATALAB_API_KEY not set! Layout analysis may fail.")
+        logger.info("StructureAnalyzer initialized (Datalab API mode)")
 
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        yaml_path = os.path.normpath(os.path.join(base_dir, "rag_config.yaml"))
-
-        if not os.path.exists(yaml_path):
-            logger.warning(f"Config file not found at {yaml_path}, using defaults")
-            yaml_path = None
-
-        self.engine = PPStructureV3(
-            paddlex_config=yaml_path,
-            text_recognition_model_name="PP-OCRv5_server_rec",
-            use_region_detection=True,
-            use_chart_recognition=False,
-            use_formula_recognition=False,
-            use_seal_recognition=False,
-            use_table_recognition=False,
-            device="cpu"
-        )
-
-        logger.info("StructureAnalyzer ready")
-
-    def _parse_v3_result(self, prediction: Any) -> List[Dict[str, Any]]:
+    def _call_datalab_layout_api(self, pdf_path: str) -> Dict[str, Any]:
         """
-        Parses PP-StructureV3 output into standardized format.
+        Calls Datalab API for layout detection and OCR.
 
         Args:
-            prediction: Raw prediction from PP-StructureV3.
+            pdf_path: Path to PDF file.
 
         Returns:
-            List of dicts with 'type', 'bbox', 'text' keys.
+            API response with layout information.
         """
-        parsed_regions: List[Dict[str, Any]] = []
+        if not DATALAB_API_KEY:
+            raise RuntimeError("DATALAB_API_KEY not configured")
 
-        # Extract JSON data from prediction
-        data = None
-        if hasattr(prediction, 'json'):
-            data = prediction.json
-        elif isinstance(prediction, dict):
-            data = prediction
+        with open(pdf_path, "rb") as f:
+            files = {"file": ("document.pdf", f, "application/pdf")}
+            headers = {"X-Api-Key": DATALAB_API_KEY}
+            data = {
+                "output_format": "json",
+                "extract_images": True,
+            }
+
+            try:
+                with httpx.Client(timeout=API_TIMEOUT) as client:
+                    response = client.post(
+                        DATALAB_API_URL,
+                        files=files,
+                        headers=headers,
+                        data=data
+                    )
+                    response.raise_for_status()
+                    return response.json()
+            except Exception as e:
+                logger.error(f"Datalab API error: {e}")
+                raise
+
+    def _extract_visual_elements_locally(
+        self,
+        pil_images: List,
+        api_result: Dict[str, Any],
+        visuals_dir: str
+    ) -> List[VisualElement]:
+        """
+        Extracts and crops visual elements from PDF images based on API layout info.
+
+        Args:
+            pil_images: List of PIL images from PDF.
+            api_result: Datalab API response with layout info.
+            visuals_dir: Directory to save cropped images.
+
+        Returns:
+            List of VisualElement objects.
+        """
+        visual_elements: List[VisualElement] = []
+        
+        pages = api_result.get("pages", [])
+        if not pages:
+            # Fallback: try to find elements in root
+            elements = api_result.get("elements", api_result.get("blocks", []))
+            if elements:
+                pages = [{"page_number": 1, "elements": elements}]
+        
+        for page_data in pages:
+            page_num = page_data.get("page_number", page_data.get("page", 1))
+            
+            if page_num > len(pil_images):
+                continue
+                
+            pil_image = pil_images[page_num - 1]
+            img_array = np.array(pil_image)
+            img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+            h, w = img_bgr.shape[:2]
+            
+            elements = page_data.get("elements", page_data.get("blocks", []))
+            
+            for element in elements:
+                label = element.get("label", element.get("type", "")).lower()
+                
+                if label in self.VISUAL_LABELS:
+                    bbox = element.get("bbox", element.get("polygon", element.get("box", [])))
+                    
+                    if not bbox or len(bbox) < 4:
+                        continue
+                    
+                    # Handle different bbox formats
+                    if isinstance(bbox[0], (list, tuple)):
+                        # Polygon format: [[x1,y1], [x2,y2], ...]
+                        x_coords = [p[0] for p in bbox]
+                        y_coords = [p[1] for p in bbox]
+                        x1, y1 = int(min(x_coords)), int(min(y_coords))
+                        x2, y2 = int(max(x_coords)), int(max(y_coords))
+                    else:
+                        # [x1, y1, x2, y2] or [x1, y1, w, h] format
+                        x1, y1 = int(bbox[0]), int(bbox[1])
+                        if len(bbox) == 4:
+                            x2, y2 = int(bbox[2]), int(bbox[3])
+                            # Check if width/height format
+                            if x2 < x1 or y2 < y1:
+                                x2, y2 = x1 + x2, y1 + y2
+                        else:
+                            continue
+                    
+                    # Bounds checking
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(w, x2), min(h, y2)
+                    
+                    if x2 <= x1 or y2 <= y1:
+                        continue
+                    
+                    cropped = img_bgr[y1:y2, x1:x2]
+                    
+                    if cropped.size > 0:
+                        vid = uuid4()
+                        img_path = os.path.join(visuals_dir, f"img_{vid}.jpg")
+                        cv2.imwrite(img_path, cropped)
+                        
+                        elem_type = VisualElementType.FIGURE
+                        if 'table' in label:
+                            elem_type = VisualElementType.TABLE
+                        elif 'formula' in label or 'equation' in label:
+                            elem_type = VisualElementType.FORMULA
+                        
+                        visual_elements.append(VisualElement(
+                            id=vid,
+                            type=elem_type,
+                            page_number=page_num,
+                            image_path=img_path,
+                            bbox=[x1, y1, x2, y2],
+                            original_text=element.get("text", "")
+                        ))
+        
+        return visual_elements
+
+    def _extract_text_chunks(self, api_result: Dict[str, Any]) -> List[TextChunk]:
+        """
+        Extracts text chunks from API response.
+
+        Args:
+            api_result: Datalab API response.
+
+        Returns:
+            List of TextChunk objects.
+        """
+        text_chunks: List[TextChunk] = []
+        
+        pages = api_result.get("pages", [])
+        
+        if pages:
+            for page_data in pages:
+                page_num = page_data.get("page_number", page_data.get("page", 1))
+                page_text = page_data.get("markdown", page_data.get("text", ""))
+                
+                if page_text:
+                    text_chunks.append(TextChunk(
+                        page_number=page_num,
+                        content=page_text,
+                        chunk_id=str(uuid4())
+                    ))
         else:
-            logger.warning(f"Unknown prediction type: {type(prediction)}")
-            return []
-
-        # Find regions in various possible locations
-        res_root = data.get('res', data)
-        raw_regions = res_root.get('parsing_res_list')
-
-        if not raw_regions and 'layout_det_res' in res_root:
-            logger.debug("parsing_res_list not found, using layout_det_res")
-            raw_regions = res_root['layout_det_res'].get('boxes', [])
-
-        if not raw_regions:
-            logger.debug("No regions found in OCR result")
-            return []
-
-        # Normalize field names
-        for region in raw_regions:
-            r_type = region.get('block_label') or region.get('label')
-            r_bbox = region.get('block_bbox') or region.get('coordinate')
-            r_text = region.get('block_content') or region.get('text') or ""
-
-            if r_type and r_bbox:
-                parsed_regions.append({
-                    "type": r_type,
-                    "bbox": r_bbox,
-                    "text": r_text
-                })
-
-        return parsed_regions
+            # Fallback: use full markdown
+            full_text = api_result.get("markdown", api_result.get("text", ""))
+            if full_text:
+                text_chunks.append(TextChunk(
+                    page_number=1,
+                    content=full_text,
+                    chunk_id=str(uuid4())
+                ))
+        
+        return text_chunks
 
     def extract_from_pdf(
         self,
@@ -133,98 +243,37 @@ class StructureAnalyzer:
         visuals_dir = os.path.normpath(os.path.join(output_base_dir, "visuals"))
         os.makedirs(visuals_dir, exist_ok=True)
 
-        # Convert PDF to images
+        # Convert PDF to images for visual element cropping
         try:
-            images = convert_from_path(pdf_path)
+            pil_images = convert_from_path(pdf_path)
         except Exception as e:
             logger.error(f"PDF conversion failed: {e}")
             raise ValueError(f"Failed to convert PDF: {str(e)}")
 
-        text_chunks: List[TextChunk] = []
-        visual_elements: List[VisualElement] = []
+        logger.info(f"Processing PDF with {len(pil_images)} pages via Datalab API")
 
-        for i, image in enumerate(images):
-            page_number = i + 1
-            logger.info(f"Processing page {page_number}/{len(images)}")
+        # Call Datalab API
+        try:
+            api_result = self._call_datalab_layout_api(pdf_path)
+        except Exception as e:
+            logger.error(f"Datalab API failed: {e}")
+            # Return empty result on API failure
+            return ExtractedDocument(
+                doc_id=doc_id,
+                user_id=user_id,
+                text_chunks=[],
+                visual_elements=[]
+            )
 
-            img_array = np.array(image)
-            img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        # Extract text chunks
+        text_chunks = self._extract_text_chunks(api_result)
+        
+        # Extract and crop visual elements
+        visual_elements = self._extract_visual_elements_locally(
+            pil_images, api_result, visuals_dir
+        )
 
-            try:
-                predictions = self.engine.predict(img_bgr)
-                prediction = predictions[0] if predictions else None
-
-                if prediction:
-                    regions = self._parse_v3_result(prediction)
-                else:
-                    regions = []
-
-            except Exception as e:
-                logger.error(f"OCR failed for page {page_number}: {e}")
-                regions = []
-
-            page_text_content: List[str] = []
-
-            for region in regions:
-                region_type = region['type'].lower()
-                bbox = region['bbox']
-                text_content = region['text']
-
-                logger.debug(f"Found region: {region_type} at {bbox}")
-
-                # Visual elements
-                if region_type in ['figure', 'table', 'equation', 'formula', 'image', 'chart']:
-                    elem_type = VisualElementType.FIGURE
-                    if region_type == 'table':
-                        elem_type = VisualElementType.TABLE
-                    elif region_type in ['equation', 'formula']:
-                        elem_type = VisualElementType.FORMULA
-
-                    # Crop image with bounds checking
-                    x1, y1, x2, y2 = [int(p) for p in bbox]
-                    h, w = img_bgr.shape[:2]
-                    x1, y1 = max(0, x1), max(0, y1)
-                    x2, y2 = min(w, x2), min(h, y2)
-
-                    cropped_img = img_bgr[y1:y2, x1:x2]
-
-                    if cropped_img.size > 0:
-                        visual_id = uuid4()
-                        img_filename = f"img_{visual_id}.jpg"
-                        img_path = os.path.normpath(os.path.join(visuals_dir, img_filename))
-
-                        cv2.imwrite(img_path, cropped_img)
-
-                        visual_elements.append(VisualElement(
-                            id=visual_id,
-                            type=elem_type,
-                            page_number=page_number,
-                            image_path=img_path,
-                            bbox=[x1, y1, x2, y2],
-                            original_text=text_content
-                        ))
-
-                # Text elements
-                elif region_type in ['text', 'title', 'list', 'header', 'footer', 'paragraph_title', 'doc_title']:
-                    if text_content:
-                        # Apply markdown formatting
-                        if region_type in ['title', 'doc_title']:
-                            text_content = f"# {text_content}"
-                        elif region_type == 'paragraph_title':
-                            text_content = f"## {text_content}"
-
-                        page_text_content.append(text_content)
-
-            # Consolidate page text
-            if page_text_content:
-                full_page_text = "\n\n".join(page_text_content)
-                text_chunks.append(TextChunk(
-                    page_number=page_number,
-                    content=full_page_text,
-                    chunk_id=str(uuid4())
-                ))
-
-        logger.info(f"Extraction complete: {len(text_chunks)} text chunks, {len(visual_elements)} visual elements")
+        logger.info(f"Extraction complete: {len(text_chunks)} chunks, {len(visual_elements)} visuals")
 
         return ExtractedDocument(
             doc_id=doc_id,
@@ -234,5 +283,5 @@ class StructureAnalyzer:
         )
 
 
-# Global instance (lazy loaded when module is imported)
+# Global instance (lazy loaded)
 analyzer = StructureAnalyzer()

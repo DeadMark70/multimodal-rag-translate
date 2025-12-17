@@ -13,7 +13,7 @@ import pickle
 from typing import Dict, List, Optional, Tuple
 
 # Third-party
-from langchain.schema import Document
+from langchain_core.documents import Document
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -200,7 +200,7 @@ def create_parent_child_chunks(
         - parent_dict maps parent_id to parent Document
         - child_list contains child Documents with parent_id metadata
     """
-    from langchain.text_splitter import RecursiveCharacterTextSplitter
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
     
     parents: Dict[str, Document] = {}
     children: List[Document] = []

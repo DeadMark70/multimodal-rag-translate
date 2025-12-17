@@ -13,12 +13,14 @@ from typing import Optional, List
 # Third-party
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from postgrest.exceptions import APIError as PostgrestAPIError
 
 # Local application
 from core.auth import get_current_user_id
 from supabase_client import supabase
 from data_base.RAG_QA_service import initialize_llm_service, rag_answer_question
 from data_base.vector_store_manager import initialize_embeddings
+from data_base.schemas import AskRequest, AskResponse
 from agents.planner import plan_research, SubTask
 from agents.synthesizer import synthesize_results, SubTaskResult
 
@@ -26,6 +28,10 @@ from agents.synthesizer import synthesize_results, SubTaskResult
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# --- Constants ---
+
+MAX_HISTORY_LENGTH = 10  # Maximum conversation history messages to accept
 
 
 # --- Pydantic Models ---
@@ -74,19 +80,19 @@ async def on_startup_rag_init() -> None:
     Initializes RAG components during application startup.
 
     Initializes:
-    - Embedding model (BAAI/bge-m3)
+    - Embedding model (Google Gemini Embedding API)
     - LLM service (Gemini)
     """
     logger.info("=== Initializing RAG components ===")
     try:
-        # 1. Initialize Embedding Model (GPU)
-        await initialize_embeddings(embedding_model_name="BAAI/bge-m3")
+        # 1. Initialize Embedding Model (Google API)
+        await initialize_embeddings()
 
         # 2. Initialize LLM (API Client)
         await initialize_llm_service()
 
         logger.info("=== RAG components ready ===")
-    except Exception as e:
+    except (RuntimeError, ImportError, OSError) as e:
         logger.error(f"RAG initialization failed: {e}", exc_info=True)
         raise
 
@@ -147,7 +153,7 @@ async def ask_question(
                 }
                 supabase.table("chat_logs").insert(log_data).execute()
                 logger.debug("Chat log saved to Supabase")
-            except Exception as e:
+            except PostgrestAPIError as e:
                 logger.warning(f"Failed to save chat log: {e}")
 
         return AnswerResponse(question=question, answer=answer, sources=sources)
@@ -155,6 +161,84 @@ async def ask_question(
     except Exception as e:
         logger.error(f"RAG answering failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to answer question: {str(e)}")
+
+
+@router.post("/ask", response_model=AskResponse)
+async def ask_question_with_context(
+    request: AskRequest,
+    user_id: str = Depends(get_current_user_id)
+) -> AskResponse:
+    """
+    Context-aware question answering with conversation history.
+
+    This enhanced endpoint supports:
+    - Conversation history for multi-turn dialogue
+    - Advanced retrieval options (HyDE, Multi-Query)
+    - Document filtering
+
+    Args:
+        request: AskRequest with question, history, and options.
+        user_id: Authenticated user ID (injected).
+
+    Returns:
+        AskResponse with question, answer, and source document IDs.
+
+    Raises:
+        HTTPException: 400 if history too long, 500 if answering fails.
+    """
+    t1 = time.perf_counter()
+
+    # Validate history length
+    if request.history and len(request.history) > MAX_HISTORY_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"對話歷史過長，最多允許 {MAX_HISTORY_LENGTH} 條訊息"
+        )
+
+    history_count = len(request.history) if request.history else 0
+    logger.info(
+        f"Context-aware RAG for user {user_id}: "
+        f"history={history_count}, hyde={request.enable_hyde}, "
+        f"multi_query={request.enable_multi_query}"
+    )
+
+    try:
+        answer, sources = await rag_answer_question(
+            question=request.question,
+            user_id=user_id,
+            doc_ids=request.doc_ids,
+            history=request.history,
+            enable_reranking=request.enable_reranking,
+            enable_hyde=request.enable_hyde,
+            enable_multi_query=request.enable_multi_query,
+        )
+
+        t2 = time.perf_counter()
+        logger.info(f"Context-aware answer in {t2 - t1:.2f}s, sources: {sources}")
+
+        # Log to Supabase (non-fatal if fails)
+        if supabase:
+            try:
+                log_data = {
+                    "user_id": user_id,
+                    "question": request.question,
+                    "answer": answer,
+                    "has_history": history_count > 0,
+                }
+                supabase.table("chat_logs").insert(log_data).execute()
+                logger.debug("Chat log saved to Supabase")
+            except PostgrestAPIError as e:
+                logger.warning(f"Failed to save chat log: {e}")
+
+        return AskResponse(
+            question=request.question,
+            answer=answer,
+            sources=sources
+        )
+
+    except (RuntimeError, ValueError) as e:
+        logger.error(f"Context-aware RAG failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"回答問題時發生錯誤: {str(e)}")
 
 
 @router.post("/research", response_model=ResearchResponse)
@@ -211,7 +295,7 @@ async def research_question(
                     sources=sources,
                     confidence=1.0,
                 ))
-            except Exception as e:
+            except (RuntimeError, ValueError) as e:
                 logger.warning(f"Sub-task {task.id} failed: {e}")
                 sub_results.append(SubTaskResult(
                     task_id=task.id,

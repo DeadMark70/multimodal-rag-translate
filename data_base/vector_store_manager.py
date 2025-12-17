@@ -3,21 +3,23 @@ Vector Store Manager
 
 Manages per-user FAISS vector stores for RAG indexing and retrieval.
 Supports both traditional and semantic chunking methods.
+
+Uses Google Gemini Embedding API for vector generation.
 """
 
 # Standard library
 import logging
 import os
-from typing import List, Optional, Literal
+import pickle
+from typing import List, Optional, Literal, Any
 
 # Third-party
-import torch
-from langchain.retrievers import EnsembleRetriever
-from langchain.schema import Document
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_classic.retrievers import EnsembleRetriever
 from langchain_community.retrievers import BM25Retriever
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 # Local application
 from data_base.word_chunk_strategy import split_markdown, split_markdown_semantic
@@ -26,8 +28,8 @@ from multimodal_rag.schemas import ExtractedDocument
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Embedding model (shared globally - large model, slow to load)
-global_embeddings_model: Optional[HuggingFaceEmbeddings] = None
+# Embedding model (shared globally - API based, no local model to load)
+global_embeddings_model: Optional[GoogleGenerativeAIEmbeddings] = None
 
 # User RAG files are stored here
 BASE_UPLOAD_FOLDER = "uploads"
@@ -49,17 +51,17 @@ def get_user_vector_store_path(user_id: str) -> str:
     return os.path.normpath(os.path.join(BASE_UPLOAD_FOLDER, user_id, "rag_index"))
 
 
-async def initialize_embeddings(embedding_model_name: str = "BAAI/bge-m3") -> None:
+async def initialize_embeddings(embedding_model_name: str = "models/gemini-embedding-001") -> None:
     """
-    Initializes the embedding model.
+    Initializes the Google Embedding model via API.
 
     This should be called once during application startup.
 
     Args:
-        embedding_model_name: HuggingFace model name.
+        embedding_model_name: Google Embedding model name.
 
     Raises:
-        RuntimeError: If model fails to load.
+        RuntimeError: If API key is not set or initialization fails.
     """
     global global_embeddings_model
 
@@ -67,28 +69,24 @@ async def initialize_embeddings(embedding_model_name: str = "BAAI/bge-m3") -> No
         logger.info("Embedding model already initialized")
         return
 
-    device_str = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Loading embedding model: {embedding_model_name} on {device_str}...")
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise RuntimeError("GOOGLE_API_KEY not set for embedding model")
 
-    if torch.cuda.is_available():
-        try:
-            logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
-        except RuntimeError as e:
-            logger.debug(f"Could not get GPU name: {e}")
+    logger.info(f"Initializing Google Embedding: {embedding_model_name}")
 
     try:
-        global_embeddings_model = HuggingFaceEmbeddings(
-            model_name=embedding_model_name,
-            model_kwargs={"device": device_str},
-            encode_kwargs={"device": device_str, "batch_size": 64},
+        global_embeddings_model = GoogleGenerativeAIEmbeddings(
+            model=embedding_model_name,
+            google_api_key=api_key
         )
-        logger.info(f"Embedding model loaded successfully on {device_str}")
-    except Exception as e:
-        logger.error(f"Failed to load embedding model: {e}", exc_info=True)
+        logger.info("Google Embedding model ready (API mode)")
+    except (RuntimeError, OSError, ValueError) as e:
+        logger.error(f"Failed to initialize embedding model: {e}", exc_info=True)
         raise RuntimeError(f"Embedding model initialization failed: {e}")
 
 
-def get_embeddings() -> Optional[HuggingFaceEmbeddings]:
+def get_embeddings() -> Optional[GoogleGenerativeAIEmbeddings]:
     """
     Returns the global embeddings model.
 
@@ -96,7 +94,7 @@ def get_embeddings() -> Optional[HuggingFaceEmbeddings]:
     without triggering circular imports.
 
     Returns:
-        The global HuggingFaceEmbeddings instance, or None if not initialized.
+        The global GoogleGenerativeAIEmbeddings instance, or None if not initialized.
     """
     return global_embeddings_model
 
@@ -194,7 +192,7 @@ def index_extracted_document(user_id: str, doc: ExtractedDocument) -> None:
         vector_db.save_local(user_index_path, index_name="index")
         logger.info(f"Successfully indexed {len(documents_to_add)} documents")
 
-    except Exception as e:
+    except (RuntimeError, OSError, pickle.PicklingError, ValueError) as e:
         logger.error(f"Indexing error: {e}", exc_info=True)
 
 
@@ -250,7 +248,7 @@ def get_user_retriever(user_id: str, k: int = 3):
         logger.debug(f"Loaded hybrid retriever for user {user_id}")
         return ensemble_retriever
 
-    except Exception as e:
+    except (RuntimeError, OSError, pickle.UnpicklingError) as e:
         logger.error(f"Error loading user {user_id} index: {e}", exc_info=True)
         return None
 
@@ -324,7 +322,7 @@ async def add_markdown_to_knowledge_base(
             logger.info(f"User {user_id}: Context enrichment completed")
         except ImportError:
             logger.warning("Context enricher not available, skipping enrichment")
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             logger.warning(f"Context enrichment failed (non-fatal): {e}")
 
     # 2. Prepare path
@@ -345,7 +343,7 @@ async def add_markdown_to_knowledge_base(
                 allow_dangerous_deserialization=True
             )
             vector_db.add_documents(chunks)
-        except Exception as e:
+        except (RuntimeError, OSError, pickle.UnpicklingError) as e:
             logger.warning(f"Error loading existing index: {e}, creating new one")
             vector_db = None
 
@@ -357,7 +355,7 @@ async def add_markdown_to_knowledge_base(
     try:
         vector_db.save_local(user_index_path, index_name="index")
         logger.info(f"Index saved to {user_index_path}")
-    except Exception as e:
+    except (OSError, IOError) as e:
         logger.warning(f"Could not save FAISS index: {e}")
 
     # 5. Return updated retriever
@@ -419,12 +417,12 @@ def delete_document_from_knowledge_base(user_id: str, doc_id: str) -> bool:
                 logger.info(f"Deleted {deleted_parents} parent documents")
         except ImportError:
             pass  # Parent store not available
-        except Exception as e:
+        except (IOError, KeyError, RuntimeError) as e:
             logger.warning(f"Parent store cleanup failed (non-fatal): {e}")
 
         return len(ids_to_delete) > 0
 
-    except Exception as e:
+    except (OSError, ValueError, RuntimeError) as e:
         logger.error(f"Delete error: {e}", exc_info=True)
         return False
 
@@ -600,7 +598,7 @@ async def add_markdown_with_hierarchical_indexing(
                 allow_dangerous_deserialization=True
             )
             vector_db.add_documents(children)
-        except Exception as e:
+        except (RuntimeError, OSError, pickle.UnpicklingError) as e:
             logger.warning(f"Error loading existing index: {e}")
             vector_db = None
 
@@ -610,7 +608,7 @@ async def add_markdown_with_hierarchical_indexing(
     try:
         vector_db.save_local(user_index_path, index_name="index")
         logger.info(f"Indexed {len(children)} child chunks with hierarchical structure")
-    except Exception as e:
+    except (OSError, IOError) as e:
         logger.warning(f"Could not save FAISS index: {e}")
 
     return len(children)

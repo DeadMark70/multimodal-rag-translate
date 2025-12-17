@@ -1,23 +1,49 @@
+# FastAPI & Server
 fastapi
 uvicorn
+python-multipart
+
+# Image Processing
 pillow
 pdf2image
-python-multipart
-httpx
-google-generativeai
-python-dotenv
-Pillow
-markdown-pdf
-markdown-it-py
 PyMuPDF
-marktex
-pdfkit
-markdown
+opencv-python-headless
+
+# OCR - DocTR (Image Translation)
+python-doctr[torch]
+
+# OCR - Local Marker (PDF to Markdown)
+marker-pdf
+
+# PDF Generation
+markdown-it-py
+
+# HTTP & API
+httpx
+python-dotenv
+
+# LLM & AI
+google-generativeai
+langchain>=0.3.0,<0.4.0
+langchain-core>=0.3.0,<1.0.0
+langchain-community>=0.3.0,<0.4.0
+langchain-google-genai>=2.0.0,<3.0.0
+
+# Vector Store & Embeddings
 sentence-transformers
-langchain-huggingface
-langchain
-langchain-google-genai
+faiss-cpu
+torch
 accelerate
+
+# Database
+supabase
+
+# Data Validation
+pydantic>=2.0
+
+# Scientific Computing
 numpy
+
+# Testing
 pytest
 pytest-asyncio

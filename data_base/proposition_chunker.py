@@ -12,7 +12,7 @@ import re
 from typing import List, Optional
 
 # Third-party
-from langchain.schema import Document
+from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 
 # Local application

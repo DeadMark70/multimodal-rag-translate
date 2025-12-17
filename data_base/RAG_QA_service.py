@@ -9,11 +9,15 @@ with enhanced reranking and query transformation.
 import base64
 import logging
 import os
-from typing import List, Any, Set, Optional, Tuple
+from typing import List, Any, Set, Optional, Tuple, TYPE_CHECKING
+
+# Type checking imports (avoid circular imports)
+if TYPE_CHECKING:
+    from data_base.schemas import ChatMessage
 
 # Third-party
 from fastapi.concurrency import run_in_threadpool
-from langchain.schema import Document
+from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 
 # Local application
@@ -77,10 +81,32 @@ def _encode_image(image_path: str) -> Optional[str]:
         return None
 
 
+def _format_history_for_prompt(history: Optional[List["ChatMessage"]]) -> str:
+    """
+    Formats conversation history into a prompt-readable text block.
+
+    Args:
+        history: List of ChatMessage objects from conversation history.
+
+    Returns:
+        Formatted history string, or empty string if no history.
+    """
+    if not history:
+        return ""
+
+    lines = ["## 對話歷史"]
+    for msg in history[-10:]:  # Limit to last 10 messages
+        role_label = "使用者" if msg.role.value == "user" else "助手"
+        lines.append(f"**{role_label}**: {msg.content}")
+
+    return "\n".join(lines)
+
+
 async def rag_answer_question(
     question: str,
     user_id: str,
     doc_ids: Optional[List[str]] = None,
+    history: Optional[List["ChatMessage"]] = None,
     enable_reranking: bool = True,
     enable_hyde: bool = False,
     enable_multi_query: bool = False,
@@ -94,7 +120,7 @@ async def rag_answer_question(
     3. Execute retrieval (with optional doc_id filtering)
     4. (Optional) Rerank with Cross-Encoder
     5. Separate text and image data
-    6. Build multimodal prompt
+    6. Build multimodal prompt (with optional conversation history)
     7. Call LLM
 
     Args:
@@ -102,6 +128,8 @@ async def rag_answer_question(
         user_id: The user's ID.
         doc_ids: Optional list of document IDs to filter results.
                  If None or empty, queries all documents.
+        history: Optional conversation history for context-aware responses.
+                 Limited to last 10 messages to control token usage.
         enable_reranking: If True, use Cross-Encoder reranking.
         enable_hyde: If True, use HyDE query transformation.
         enable_multi_query: If True, use multi-query with RRF fusion.
@@ -109,10 +137,11 @@ async def rag_answer_question(
     Returns:
         Tuple of (answer string, list of source doc_ids).
     """
+
     # Step 1: Get LLM instance
     try:
         llm = get_llm("rag_qa")
-    except Exception as e:
+    except (RuntimeError, KeyError, ValueError) as e:
         logger.error(f"Failed to get LLM: {e}")
         return ("抱歉，AI 模型尚未初始化 (API Key 可能有誤)。", [])
 
@@ -147,7 +176,7 @@ async def rag_answer_question(
                 all_results.append(results)
             docs = reciprocal_rank_fusion(all_results)
             logger.debug(f"RRF fused {len(docs)} documents")
-    except Exception as e:
+    except (RuntimeError, ValueError) as e:
         logger.error(f"Retrieval error: {e}", exc_info=True)
         return ("抱歉，檢索知識庫時發生錯誤。", [])
 
@@ -218,23 +247,35 @@ async def rag_answer_question(
 
     logger.debug(f"Text chunks: {len(text_context)}, Images: {len(encoded_images)}")
 
-    # Step 8: Build multimodal message
+    # Step 8: Build interleaved multimodal message
+    # Group text chunks with their associated images for clearer context
     context_text = "\n\n---\n\n".join(text_context) if text_context else "(無文字背景資訊)"
 
-    prompt_text = f"""Role: 學術研究助手
-Task: 根據提供的[背景資訊]與[圖片]回答使用者的問題。
+    # Format conversation history if provided
+    history_text = _format_history_for_prompt(history)
+    history_section = f"\n{history_text}\n" if history_text else ""
 
-[背景資訊]:
+    # Enhanced prompt with better multimodal guidance
+    prompt_text = f"""你是一位學術研究助手，擅長分析文本與圖表。
+
+## 參考資料
+以下是從知識庫檢索到的相關內容：
+
 {context_text}
-
-[使用者問題]:
+{history_section}
+## 使用者問題
 {question}
 
-Note: 
-1. 如果圖片與問題無關，請忽略圖片。
-2. 請用繁體中文回答。
-3. ⚠️ 重要：所有數學公式、變數、方程式，請務必使用 LaTeX 格式輸出 (例如 $\\frac{{a}}{{b}}$)，不要使用純文字格式。
-"""
+## 回答指引
+1. 仔細觀察圖表/圖片中的數據與趨勢（如有提供）
+2. 結合文字內容與圖片資訊進行推理
+3. 如有對話歷史，請延續先前的討論脈絡
+4. 引用具體來源時，說明資訊出處
+5. 數學公式請使用 LaTeX 格式 (例如 $\\frac{{a}}{{b}}$)
+6. 以繁體中文回答
+7. 如果圖片與問題無關，請忽略圖片
+
+請根據以上資料回答問題："""
 
     # Build content list
     message_content: List[Any] = [{"type": "text", "text": prompt_text}]
@@ -252,7 +293,7 @@ Note:
     try:
         response = await llm.ainvoke([message])
         return (response.content, list(source_doc_ids))
-    except Exception as e:
+    except (RuntimeError, ValueError, OSError) as e:
         logger.error(f"LLM error for user {user_id}: {e}", exc_info=True)
         return ("抱歉，處理您的問題時發生錯誤。", list(source_doc_ids))
 

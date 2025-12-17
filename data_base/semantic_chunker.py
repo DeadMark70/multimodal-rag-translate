@@ -13,8 +13,7 @@ from typing import List, Optional, Literal
 
 # Third-party
 import numpy as np
-from langchain.schema import Document
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.documents import Document
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -115,7 +114,7 @@ class SemanticTextChunker:
     
     def __init__(
         self,
-        embeddings: HuggingFaceEmbeddings,
+        embeddings,  # Any embedding model with embed_documents method
         breakpoint_threshold_type: BreakpointThresholdType = "percentile",
         breakpoint_threshold_amount: float = 90.0,
         min_chunk_size: int = 100,
@@ -326,7 +325,7 @@ class SemanticTextChunker:
 
 
 def create_semantic_chunker(
-    embeddings: HuggingFaceEmbeddings,
+    embeddings,  # Any embedding model with embed_documents method
     threshold_type: BreakpointThresholdType = "percentile",
     threshold_amount: float = 90.0,
     min_size: int = 100,

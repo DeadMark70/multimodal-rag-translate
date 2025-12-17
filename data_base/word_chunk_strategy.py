@@ -11,9 +11,8 @@ import re
 from typing import List, Optional, Literal
 
 # Third-party
-from langchain.schema import Document
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # Local application
 from data_base.semantic_chunker import SemanticTextChunker
@@ -32,7 +31,7 @@ async def split_markdown(
     chunk_size: int = 1000,
     overlap: int = 150,
     chunking_method: ChunkingMethod = "recursive",
-    embeddings: Optional[HuggingFaceEmbeddings] = None,
+    embeddings = None,  # Any embedding model with embed_documents method
 ) -> List[Document]:
     """
     Splits Markdown text into chunks with metadata.
@@ -118,7 +117,7 @@ def _process_page_content(
     chunking_method: ChunkingMethod,
     chunk_size: int,
     overlap: int,
-    embeddings: Optional[HuggingFaceEmbeddings],
+    embeddings,  # Embedding model (any with embed_documents method)
 ) -> List[Document]:
     """
     Processes a single page's content into chunks.
@@ -170,7 +169,7 @@ def _process_page_content(
 def _split_with_semantic_chunker(
     text: str,
     metadata: dict,
-    embeddings: HuggingFaceEmbeddings,
+    embeddings,  # Embedding model
 ) -> List[Document]:
     """
     Splits text using semantic boundary detection.
@@ -228,7 +227,7 @@ async def split_markdown_semantic(
     markdown_text: str,
     pdf_title: str,
     original_doc_uid: str,
-    embeddings: HuggingFaceEmbeddings,
+    embeddings,  # Embedding model
 ) -> List[Document]:
     """
     Convenience function for semantic chunking.

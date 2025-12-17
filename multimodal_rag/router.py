@@ -19,6 +19,7 @@ from fastapi.concurrency import run_in_threadpool
 from core.auth import get_current_user_id
 from supabase_client import supabase
 from data_base.vector_store_manager import index_extracted_document, delete_document_from_knowledge_base
+from core.summary_service import schedule_summary_generation
 from .structure_analyzer import analyzer
 from .image_summarizer import summarizer
 from .schemas import ExtractedDocument
@@ -109,6 +110,16 @@ async def extract_from_pdf_endpoint(
                 user_id=user_id,
                 doc=extracted_doc
             )
+
+            # Trigger background summary generation (non-blocking)
+            combined_text = "\n\n".join([c.content for c in extracted_doc.text_chunks])
+            schedule_summary_generation(
+                doc_id=doc_uuid,
+                text_content=combined_text,
+                user_id=user_id,
+            )
+            logger.info(f"[Phase 3] Background summary task scheduled for doc {doc_uuid}")
+
         except ValueError as e:
             logger.warning(f"Indexing skipped (embedding model not ready): {e}")
         except Exception as e:

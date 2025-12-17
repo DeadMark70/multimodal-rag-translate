@@ -1,8 +1,10 @@
 """
-Document Reranker Module
+Document Reranker Module (Local - ms-marco)
 
 Provides Cross-Encoder based document reranking for improved retrieval precision.
-Uses BGE-Reranker-v2-M3 for production-quality relevance scoring.
+Uses ms-marco-MiniLM-L-12-v2 for compliant relevance scoring.
+
+Microsoft/SBERT (USA/Germany) - Apache 2.0 License
 """
 
 # Standard library
@@ -10,14 +12,14 @@ import logging
 from typing import List, Optional, Tuple
 
 # Third-party
-from langchain.schema import Document
+from langchain_core.documents import Document
 from sentence_transformers import CrossEncoder
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Default reranker model
-_DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
+# Default reranker model (Microsoft - compliant)
+_DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-12-v2"
 
 
 class DocumentReranker:

@@ -20,8 +20,16 @@ logger = logging.getLogger(__name__)
 LLMPurpose = Literal[
     "rag_qa", "translation", "image_caption", 
     "context_generation", "proposition_extraction", "query_rewrite",
-    "evaluator", "planner", "synthesizer"
+    "evaluator", "planner", "synthesizer", "summary"
 ]
+
+# Model mapping - only translation uses different model
+_MODEL_BY_PURPOSE: dict[str, str] = {
+    "translation": "gemini-2.5-flash",
+}
+
+# Default model for all other purposes
+_DEFAULT_MODEL = "gemma-3-27b-it"
 
 # Configuration for each purpose
 _LLM_CONFIGS: dict[str, dict] = {
@@ -31,7 +39,7 @@ _LLM_CONFIGS: dict[str, dict] = {
     },
     "translation": {
         "temperature": 0.1,
-        "max_output_tokens": 4096,
+        "max_output_tokens": 8192,  # Increased for long document translation
     },
     "image_caption": {
         "temperature": 0.2,
@@ -61,13 +69,13 @@ _LLM_CONFIGS: dict[str, dict] = {
         "temperature": 0.3,
         "max_output_tokens": 2048,
     },
+    "summary": {
+        "temperature": 0.3,
+        "max_output_tokens": 1024,
+    },
 }
 
-# Default model
-_DEFAULT_MODEL = "gemini-2.0-flash"
-
-
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=10)  # Increased to accommodate different model instances
 def get_llm(purpose: LLMPurpose) -> ChatGoogleGenerativeAI:
     """
     Returns a cached LLM instance for a specific purpose.
@@ -95,11 +103,12 @@ def get_llm(purpose: LLMPurpose) -> ChatGoogleGenerativeAI:
         response = await llm.ainvoke([message])
     """
     config = _LLM_CONFIGS.get(purpose, _LLM_CONFIGS["rag_qa"])
+    model = _MODEL_BY_PURPOSE.get(purpose, _DEFAULT_MODEL)
 
-    logger.info(f"Initializing LLM for purpose: {purpose} (config: {config})")
+    logger.info(f"Initializing LLM for purpose: {purpose} (model: {model}, config: {config})")
 
     return ChatGoogleGenerativeAI(
-        model=_DEFAULT_MODEL,
+        model=model,
         **config
     )
 

@@ -53,6 +53,11 @@ async def startup_event():
     """
     logger.info("=== Application Startup ===")
     
+    # 0. Ensure required directories exist
+    os.makedirs("uploads", exist_ok=True)
+    os.makedirs("output/imgs", exist_ok=True)
+    logger.info("Base directories verified")
+    
     # 1. Initialize RAG components (Embedding model + LLM)
     logger.info("Initializing RAG components...")
     await on_startup_rag_init()

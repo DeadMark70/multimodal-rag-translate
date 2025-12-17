@@ -40,7 +40,7 @@ async def get_current_user_id(authorization: str = Header(None)) -> str:
     # Dev mode bypass (for testing only)
     if _DEV_MODE:
         logger.warning("DEV_MODE enabled - using test user ID")
-        return "test-user-id-001"
+        return "00000000-0000-0000-0000-000000000001"
 
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing Authorization Header")
