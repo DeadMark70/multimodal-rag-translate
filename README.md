@@ -12,7 +12,7 @@
 
 ### 📄 文件處理
 
-- **PDF OCR**：使用 PaddleOCR 結構化識別
+- **PDF OCR**：Local Marker / Datalab API 雙模式
 - **多語言翻譯**：Google Gemini AI 驅動
 - **Markdown 輸出**：保留文件結構與格式
 
@@ -49,8 +49,8 @@
 ├─────────────┴─────────────┴──────────────┴──────────────┤
 │                     Core Services                        │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │
-│  │ PaddleOCR   │  │ FAISS Index │  │ Google Gemini   │  │
-│  │ (Structure) │  │ (BGE-M3)    │  │ (LLM)           │  │
+│  │ Marker OCR  │  │ FAISS Index │  │ Google Gemini   │  │
+│  │ (Local/API) │  │ (BGE-M3)    │  │ (LLM)           │  │
 │  └─────────────┘  └─────────────┘  └─────────────────┘  │
 ├─────────────────────────────────────────────────────────┤
 │                     Supabase                             │
@@ -98,6 +98,11 @@ SUPABASE_KEY=your-anon-key
 
 # HuggingFace (選用)
 HF_TOKEN=your-hf-token
+
+# OCR 設定
+USE_LOCAL_MARKER=true          # true=本地 Marker, false=Datalab API
+MARKER_USE_GPU=false           # GPU 加速 (需 CUDA)
+DATALAB_API_KEY=your-api-key   # 僅 USE_LOCAL_MARKER=false 時需要
 
 # 開發模式 (測試用)
 DEV_MODE=false
@@ -164,10 +169,12 @@ file: [PDF 檔案]
 │
 ├── core/                   # 核心模組
 │   ├── auth.py             # Supabase JWT 認證
-│   └── llm_factory.py      # LLM 實例工廠
+│   ├── llm_factory.py      # LLM 實例工廠
+│   └── summary_service.py  # 文件摘要生成
 │
 ├── data_base/              # RAG 核心
 │   ├── router.py           # /rag 端點
+│   ├── schemas.py          # Pydantic 請求/回應模型
 │   ├── RAG_QA_service.py   # RAG 主服務
 │   ├── vector_store_manager.py  # FAISS 管理
 │   ├── semantic_chunker.py # 語義分塊
@@ -181,19 +188,21 @@ file: [PDF 檔案]
 │
 ├── pdfserviceMD/           # PDF 處理
 │   ├── router.py           # /pdfmd 端點
-│   └── PDF_OCR_services.py # PaddleOCR 服務
+│   ├── PDF_OCR_services.py # OCR 路由 (Local/API)
+│   ├── local_marker_service.py  # Local Marker OCR
+│   └── translation_chunker.py   # 頁面翻譯分塊
 │
 ├── multimodal_rag/         # 多模態處理
 │   ├── router.py           # /multimodal 端點
 │   └── image_summarizer.py # 圖片摘要
 │
 ├── image_service/          # 圖片翻譯
-│   └── router.py           # /imagemd 端點
+│   ├── router.py           # /imagemd 端點
+│   └── ocr_service.py      # DocTR OCR
 │
-└── tests/                  # 單元測試
-    ├── test_semantic_chunker.py
-    ├── test_evaluator.py
-    └── ...
+├── checklist/              # 程式碼審核文件
+│
+└── tests/                  # 單元測試 (104 tests)
 ```
 
 ---
@@ -231,8 +240,9 @@ pytest tests/ --cov=. --cov-report=html
 | ------------------ | --------- |
 | BGE-M3 Embeddings  | ~1.5 GB   |
 | BGE-Reranker-v2-M3 | ~1.5 GB   |
-| PaddleOCR          | ~2 GB     |
-| **總計**           | **~5 GB** |
+| Marker OCR (GPU)   | ~3 GB     |
+| DocTR (Image OCR)  | ~1 GB     |
+| **總計**           | **~7 GB** |
 
 ---
 
