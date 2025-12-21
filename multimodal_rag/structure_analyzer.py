@@ -10,7 +10,8 @@ Datalab (USA) - Commercial API
 # Standard library
 import logging
 import os
-from typing import List, Dict, Any, Optional
+import re
+from typing import List, Dict, Any, Optional, Tuple
 from uuid import uuid4
 
 # Third-party
@@ -48,6 +49,65 @@ class StructureAnalyzer:
         if not DATALAB_API_KEY:
             logger.warning("DATALAB_API_KEY not set! Layout analysis may fail.")
         logger.info("StructureAnalyzer initialized (Datalab API mode)")
+
+    def _extract_figure_context(
+        self,
+        markdown_text: str,
+        image_filename: str,
+        page_num: int
+    ) -> Tuple[str, str]:
+        """
+        從 Markdown 提取圖片的上下文資訊。
+        
+        Args:
+            markdown_text: 完整的 Markdown 文字
+            image_filename: 圖片檔案名稱
+            page_num: 頁碼
+        
+        Returns:
+            (context_text, figure_reference): 周圍文字和圖片引用標識
+        """
+        context_text = ""
+        figure_ref = ""
+        
+        if not markdown_text:
+            return context_text, figure_ref
+        
+        # 嘗試在 Markdown 中找到圖片引用
+        escaped_name = re.escape(image_filename)
+        img_pattern = rf"!\[([^\]]*)\]\([^)]*{escaped_name}[^)]*\)"
+        match = re.search(img_pattern, markdown_text)
+        
+        if match:
+            # 提取圖片前後各 200 字作為上下文
+            start_pos = max(0, match.start() - 200)
+            end_pos = min(len(markdown_text), match.end() + 200)
+            context_text = markdown_text[start_pos:end_pos].strip()
+            
+            # 提取圖片的 alt text
+            alt_text = match.group(1)
+            if alt_text:
+                context_text = f"[Alt: {alt_text}] {context_text}"
+        
+        # 嘗試匹配圖片引用標識 (Figure 1, 圖一, Fig. 1)
+        ref_patterns = [
+            rf"(?:Figure|Fig\.?)\s*(\d+)",      # Figure 1, Fig. 1
+            rf"圖\s*[一二三四五六七八九十\d]+",   # 圖一, 圖1
+            rf"表\s*[一二三四五六七八九十\d]+",   # 表一 (雖然是 table，可能在 caption 中)
+        ]
+        
+        search_text = context_text if context_text else markdown_text
+        for pattern in ref_patterns:
+            ref_match = re.search(pattern, search_text, re.IGNORECASE)
+            if ref_match:
+                figure_ref = ref_match.group(0)
+                break
+        
+        # 如果沒找到圖片引用，用頁碼作為備用
+        if not figure_ref:
+            figure_ref = f"Page {page_num} Image"
+        
+        return context_text[:500], figure_ref  # 限制上下文長度
 
     def _call_datalab_layout_api(self, pdf_path: str) -> Dict[str, Any]:
         """
@@ -88,7 +148,8 @@ class StructureAnalyzer:
         self,
         pil_images: List,
         api_result: Dict[str, Any],
-        visuals_dir: str
+        visuals_dir: str,
+        markdown_text: str = ""
     ) -> List[VisualElement]:
         """
         Extracts and crops visual elements from PDF images based on API layout info.
@@ -97,9 +158,10 @@ class StructureAnalyzer:
             pil_images: List of PIL images from PDF.
             api_result: Datalab API response with layout info.
             visuals_dir: Directory to save cropped images.
+            markdown_text: Full markdown text for context extraction.
 
         Returns:
-            List of VisualElement objects.
+            List of VisualElement objects with context information.
         """
         visual_elements: List[VisualElement] = []
         
@@ -161,7 +223,8 @@ class StructureAnalyzer:
                     
                     if cropped.size > 0:
                         vid = uuid4()
-                        img_path = os.path.join(visuals_dir, f"img_{vid}.jpg")
+                        img_filename = f"img_{vid}.jpg"
+                        img_path = os.path.join(visuals_dir, img_filename)
                         cv2.imwrite(img_path, cropped)
                         
                         elem_type = VisualElementType.FIGURE
@@ -170,13 +233,23 @@ class StructureAnalyzer:
                         elif 'formula' in label or 'equation' in label:
                             elem_type = VisualElementType.FORMULA
                         
+                        # 提取圖片上下文（僅對 FIGURE 類型）
+                        context_text = ""
+                        figure_ref = ""
+                        if elem_type == VisualElementType.FIGURE and markdown_text:
+                            context_text, figure_ref = self._extract_figure_context(
+                                markdown_text, img_filename, page_num
+                            )
+                        
                         visual_elements.append(VisualElement(
                             id=vid,
                             type=elem_type,
                             page_number=page_num,
                             image_path=img_path,
                             bbox=[x1, y1, x2, y2],
-                            original_text=element.get("text", "")
+                            original_text=element.get("text", ""),
+                            context_text=context_text if context_text else None,
+                            figure_reference=figure_ref if figure_ref else None
                         ))
         
         return visual_elements
@@ -268,9 +341,12 @@ class StructureAnalyzer:
         # Extract text chunks
         text_chunks = self._extract_text_chunks(api_result)
         
-        # Extract and crop visual elements
+        # 組合完整 Markdown 文字用於上下文提取
+        full_markdown = "\n\n".join(chunk.content for chunk in text_chunks)
+        
+        # Extract and crop visual elements (with context)
         visual_elements = self._extract_visual_elements_locally(
-            pil_images, api_result, visuals_dir
+            pil_images, api_result, visuals_dir, markdown_text=full_markdown
         )
 
         logger.info(f"Extraction complete: {len(text_chunks)} chunks, {len(visual_elements)} visuals")

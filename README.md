@@ -24,10 +24,19 @@
 - **HyDE 查詢轉換**：假設文檔嵌入
 - **多查詢融合**：Reciprocal Rank Fusion
 
+### 🔗 GraphRAG 知識圖譜
+
+- **實體關係抽取**：LLM 驅動的學術實體識別
+- **社群檢測**：Leiden 演算法分群
+- **Local Search**：實體擴展搜尋
+- **Global Search**：社群 Map-Reduce 搜尋
+- **圖譜管理 API**：重建、優化、狀態查詢
+
 ### 🤖 Agent 架構
 
 - **Self-RAG 評估**：檢索相關性 + 答案忠實度
 - **Plan-and-Solve**：複雜問題分解與綜合
+- **Graph-aware Planning**：圖譜輔助任務規劃
 - **深度研究端點**：`/rag/research`
 
 ### 🖼️ 多模態支援
@@ -136,6 +145,32 @@ POST /rag/research
 }
 ```
 
+### GraphRAG 圖譜管理
+
+```bash
+# 取得圖譜狀態
+GET /graph/status
+
+# 重建圖譜
+POST /graph/rebuild
+{"force": false}
+
+# 優化圖譜 (實體融合 + 社群重建)
+POST /graph/optimize
+{"regenerate_communities": true}
+```
+
+### GraphRAG 增強問答
+
+```bash
+POST /rag/ask
+{
+  "question": "這些論文的主要趨勢是什麼？",
+  "enable_graph_rag": true,
+  "graph_search_mode": "auto"
+}
+```
+
 ### PDF 處理
 
 ```bash
@@ -161,49 +196,59 @@ file: [PDF 檔案]
 
 ## 📁 專案結構
 
-```
 .
-├── main.py                 # FastAPI 入口
-├── config.env              # 環境變數 (不提交)
-├── requirements.txt        # Python 依賴
+├── main.py # FastAPI 入口
+├── config.env # 環境變數 (不提交)
+├── requirements.txt # Python 依賴
 │
-├── core/                   # 核心模組
-│   ├── auth.py             # Supabase JWT 認證
-│   ├── llm_factory.py      # LLM 實例工廠
-│   └── summary_service.py  # 文件摘要生成
+├── core/ # 核心模組
+│ ├── auth.py # Supabase JWT 認證
+│ ├── llm_factory.py # LLM 實例工廠
+│ └── summary_service.py # 文件摘要生成
 │
-├── data_base/              # RAG 核心
-│   ├── router.py           # /rag 端點
-│   ├── schemas.py          # Pydantic 請求/回應模型
-│   ├── RAG_QA_service.py   # RAG 主服務
-│   ├── vector_store_manager.py  # FAISS 管理
-│   ├── semantic_chunker.py # 語義分塊
-│   ├── reranker.py         # Cross-Encoder
-│   └── query_transformer.py # HyDE/Multi-Query
+├── data_base/ # RAG 核心
+│ ├── router.py # /rag 端點
+│ ├── schemas.py # Pydantic 請求/回應模型
+│ ├── RAG_QA_service.py # RAG 主服務
+│ ├── vector_store_manager.py # FAISS 管理
+│ ├── semantic_chunker.py # 語義分塊
+│ ├── reranker.py # Cross-Encoder
+│ └── query_transformer.py # HyDE/Multi-Query
 │
-├── agents/                 # Agent 模組
-│   ├── evaluator.py        # Self-RAG 評估
-│   ├── planner.py          # 任務分解
-│   └── synthesizer.py      # 結果綜合
+├── graph_rag/ # 🆕 GraphRAG 模組
+│ ├── schemas.py # Node, Edge, Community 定義
+│ ├── store.py # NetworkX 圖譜存儲
+│ ├── extractor.py # LLM 實體/關係抽取
+│ ├── entity_resolver.py # 實體融合
+│ ├── community_builder.py # Leiden 社群檢測
+│ ├── local_search.py # 實體擴展搜尋
+│ ├── global_search.py # 社群 Map-Reduce
+│ └── router.py # /graph 端點
 │
-├── pdfserviceMD/           # PDF 處理
-│   ├── router.py           # /pdfmd 端點
-│   ├── PDF_OCR_services.py # OCR 路由 (Local/API)
-│   ├── local_marker_service.py  # Local Marker OCR
-│   └── translation_chunker.py   # 頁面翻譯分塊
+├── agents/ # Agent 模組
+│ ├── evaluator.py # Self-RAG 評估
+│ ├── planner.py # 任務分解 (支援 GraphRAG)
+│ └── synthesizer.py # 結果綜合
 │
-├── multimodal_rag/         # 多模態處理
-│   ├── router.py           # /multimodal 端點
-│   └── image_summarizer.py # 圖片摘要
+├── pdfserviceMD/ # PDF 處理
+│ ├── router.py # /pdfmd 端點
+│ ├── PDF_OCR_services.py # OCR 路由 (Local/API)
+│ ├── local_marker_service.py # Local Marker OCR
+│ └── translation_chunker.py # 頁面翻譯分塊
 │
-├── image_service/          # 圖片翻譯
-│   ├── router.py           # /imagemd 端點
-│   └── ocr_service.py      # DocTR OCR
+├── multimodal_rag/ # 多模態處理
+│ ├── router.py # /multimodal 端點
+│ └── image_summarizer.py # 圖片摘要
 │
-├── checklist/              # 程式碼審核文件
+├── image_service/ # 圖片翻譯
+│ ├── router.py # /imagemd 端點
+│ └── ocr_service.py # DocTR OCR
 │
-└── tests/                  # 單元測試 (104 tests)
-```
+├── checklist/ # 程式碼審核文件
+│
+└── tests/ # 單元測試 (104 tests)
+
+````
 
 ---
 
@@ -218,7 +263,7 @@ pytest tests/test_evaluator.py -v
 
 # 測試覆蓋率
 pytest tests/ --cov=. --cov-report=html
-```
+````
 
 **目前測試狀態**：104 tests passing ✅
 
@@ -251,8 +296,14 @@ pytest tests/ --cov=. --cov-report=html
 - [x] Phase 1: 語義分塊 + 上下文增強
 - [x] Phase 2: Cross-Encoder + HyDE
 - [x] Phase 3: Self-RAG + Plan-and-Solve
-- [ ] Phase 4: ColPali 視覺嵌入 (需 8GB+ VRAM)
-- [ ] Phase 5: GraphRAG 知識圖譜
+- [x] Phase 4: 上下文感知圖片摘要 (繁體中文 + 快取)
+- [x] Phase 5: GraphRAG 知識圖譜 ✅
+  - [x] 實體/關係抽取
+  - [x] Leiden 社群檢測
+  - [x] Local/Global Search
+  - [x] 圖譜管理 API
+  - [x] Planner 整合
+- [ ] Phase 6: ColPali (視覺嵌入)
 
 ---
 

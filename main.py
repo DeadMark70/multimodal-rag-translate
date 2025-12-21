@@ -12,6 +12,7 @@ import os
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
 
 # Load environment variables first
 dotenv_path = os.path.join(os.path.dirname(__file__), 'config.env')
@@ -34,11 +35,42 @@ from pdfserviceMD.PDF_OCR_services import initialize_predictor as init_pdf_ocr
 from data_base.router import on_startup_rag_init, router as database_router
 from image_service.router import router as image_router
 from multimodal_rag.router import router as multimodal_router
+from stats.router import router as stats_router
+from graph_rag.router import router as graph_router
 
 app = FastAPI(
     title="PDF Translation & RAG API",
     description="PDF OCR, Translation, and Multimodal RAG services",
-    version="2.0.0"
+    version="2.1.0"
+)
+
+# --- CORS Configuration ---
+# Security: Use explicit origin whitelist, never "*" in production
+# For production, set CORS_ORIGINS env var (comma-separated)
+_DEFAULT_ORIGINS = [
+    "http://localhost:5173",      # Vite dev server
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",      # React CRA
+    "http://127.0.0.1:3000",
+]
+
+_cors_origins_env = os.getenv("CORS_ORIGINS", "")
+if _cors_origins_env:
+    # Production: use env var (comma-separated origins)
+    CORS_ORIGINS = [origin.strip() for origin in _cors_origins_env.split(",")]
+    logger.info(f"CORS: Using env origins: {CORS_ORIGINS}")
+else:
+    # Development: use defaults
+    CORS_ORIGINS = _DEFAULT_ORIGINS
+    logger.info(f"CORS: Using development origins (set CORS_ORIGINS for production)")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,  # Required for JWT auth cookies
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["*"],     # Allow Authorization header for JWT
+    expose_headers=["Content-Disposition"],  # For file downloads
 )
 
 
@@ -78,6 +110,8 @@ app.include_router(pdfmd_router, prefix="/pdfmd", tags=["PDF OCR & Translation"]
 app.include_router(database_router, prefix="/rag", tags=["RAG Question Answering"])
 app.include_router(image_router, prefix="/imagemd", tags=["Image Translation"])
 app.include_router(multimodal_router, prefix="/multimodal", tags=["Multimodal Research"])
+app.include_router(stats_router, prefix="/stats", tags=["Dashboard Statistics"])
+app.include_router(graph_router, prefix="/graph", tags=["Knowledge Graph"])
 
 
 @app.get("/")

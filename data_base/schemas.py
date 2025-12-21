@@ -5,6 +5,7 @@ Provides request/response models for the RAG question answering endpoints.
 """
 
 # Standard library
+from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
@@ -30,6 +31,81 @@ class ChatMessage(BaseModel):
     content: str
 
 
+# --- Document List Schemas ---
+
+class DocumentItem(BaseModel):
+    """
+    Document metadata for list endpoint.
+
+    Attributes:
+        id: Document UUID.
+        filename: Original filename.
+        created_at: Upload timestamp.
+        status: Processing status.
+        processing_step: Current processing step.
+    """
+    id: str
+    filename: str
+    created_at: Optional[datetime] = None
+    status: Optional[str] = None
+    processing_step: Optional[str] = None
+
+
+class DocumentListResponse(BaseModel):
+    """Response for GET /pdfmd/list endpoint."""
+    documents: List[DocumentItem]
+    total: int
+
+
+# --- Enhanced Source/Citation Schemas ---
+
+class SourceDetail(BaseModel):
+    """
+    Detailed source citation for RAG responses.
+
+    Attributes:
+        doc_id: Document UUID.
+        filename: Display-friendly filename.
+        page: Page number (if available).
+        snippet: Relevant text excerpt (first 200 chars).
+        score: Relevance score from reranker.
+    """
+    doc_id: str
+    filename: Optional[str] = None
+    page: Optional[int] = None
+    snippet: str = Field(..., description="引用段落原文 (前 200 字)")
+    score: float = Field(..., ge=0.0, le=1.0, description="相關性分數")
+
+
+# --- Evaluation Metrics Schemas ---
+
+class FaithfulnessLevel(str, Enum):
+    """Faithfulness evaluation results."""
+    grounded = "grounded"
+    hallucinated = "hallucinated"
+    uncertain = "uncertain"
+    evaluation_failed = "evaluation_failed"
+
+
+class EvaluationMetrics(BaseModel):
+    """
+    Responsible AI metrics for answer quality.
+
+    Attributes:
+        faithfulness: Whether answer is grounded in sources.
+        confidence_score: Overall confidence score (0.0-1.0).
+        evaluation_reason: Brief explanation of the evaluation result.
+    """
+    faithfulness: FaithfulnessLevel
+    confidence_score: float = Field(..., ge=0.0, le=1.0)
+    evaluation_reason: Optional[str] = Field(
+        default=None,
+        description="評估結果說明"
+    )
+
+
+# --- Request Schemas ---
+
 class AskRequest(BaseModel):
     """
     Request body for POST /ask endpoint.
@@ -41,6 +117,10 @@ class AskRequest(BaseModel):
         enable_hyde: Enable HyDE (Hypothetical Document Embeddings) retrieval.
         enable_multi_query: Enable multi-query fusion retrieval.
         enable_reranking: Enable Cross-Encoder reranking (recommended).
+        enable_evaluation: Enable Self-RAG evaluation (adds latency).
+        enable_graph_rag: Enable knowledge graph enhanced retrieval.
+        graph_search_mode: Graph search mode (local/global/hybrid/auto).
+        enable_graph_planning: Enable graph-based planning for Deep Research.
     """
     question: str = Field(
         ...,
@@ -68,7 +148,27 @@ class AskRequest(BaseModel):
         default=True,
         description="啟用 Cross-Encoder 重排序（建議開啟）",
     )
+    enable_evaluation: bool = Field(
+        default=False,
+        description="啟用 Self-RAG 評估模式（會增加延遲）",
+    )
+    # GraphRAG parameters
+    enable_graph_rag: bool = Field(
+        default=False,
+        description="啟用知識圖譜增強檢索",
+    )
+    graph_search_mode: str = Field(
+        default="auto",
+        description="圖譜搜尋模式: local (實體擴展), global (社群摘要), hybrid (兩者), auto (自動判斷)",
+    )
+    enable_graph_planning: bool = Field(
+        default=False,
+        description="啟用圖譜輔助規劃 (Deep Research 時使用)",
+    )
 
+
+
+# --- Response Schemas ---
 
 class AskResponse(BaseModel):
     """
@@ -82,3 +182,22 @@ class AskResponse(BaseModel):
     question: str
     answer: str
     sources: List[str] = []
+
+
+class EnhancedAskResponse(BaseModel):
+    """
+    Enhanced response with detailed sources and metrics.
+
+    Used when enable_evaluation=True or for detailed citation display.
+
+    Attributes:
+        question: Echo of the original question.
+        answer: The generated answer.
+        sources: Detailed source citations with snippets and scores.
+        metrics: Optional evaluation metrics (if enable_evaluation=True).
+    """
+    question: str
+    answer: str
+    sources: List[SourceDetail] = []
+    metrics: Optional[EvaluationMetrics] = None
+

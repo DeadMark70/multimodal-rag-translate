@@ -20,12 +20,15 @@ logger = logging.getLogger(__name__)
 LLMPurpose = Literal[
     "rag_qa", "translation", "image_caption", 
     "context_generation", "proposition_extraction", "query_rewrite",
-    "evaluator", "planner", "synthesizer", "summary"
+    "evaluator", "planner", "synthesizer", "summary",
+    "graph_extraction", "community_summary"  # GraphRAG purposes
 ]
 
 # Model mapping - only translation uses different model
 _MODEL_BY_PURPOSE: dict[str, str] = {
-    "translation": "gemini-2.5-flash",
+    "translation": "gemini-3.0-flash",
+    "graph_extraction": "gemini-3.0-flash",   # Fast extraction for GraphRAG
+    "community_summary": "gemini-3.0-flash",   # Fast summarization for communities
 }
 
 # Default model for all other purposes
@@ -71,6 +74,15 @@ _LLM_CONFIGS: dict[str, dict] = {
     },
     "summary": {
         "temperature": 0.3,
+        "max_output_tokens": 1024,
+    },
+    # GraphRAG purposes
+    "graph_extraction": {
+        "temperature": 0.1,  # Low temperature for consistent extraction
+        "max_output_tokens": 2048,
+    },
+    "community_summary": {
+        "temperature": 0.2,
         "max_output_tokens": 1024,
     },
 }

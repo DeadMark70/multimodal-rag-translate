@@ -14,7 +14,7 @@
 ```python
 # 新增模型映射 (Line ~25)
 _MODEL_BY_PURPOSE: dict[str, str] = {
-    "translation": "gemini-2.5-flash",
+    "translation": "gemini-3.0-flash",
 }
 _DEFAULT_MODEL = "gemma-3-27b-it"
 
@@ -29,7 +29,7 @@ def get_llm(purpose: LLMPurpose) -> ChatGoogleGenerativeAI:
 
 | 用途          | 模型               | 原因                    |
 | ------------- | ------------------ | ----------------------- |
-| `translation` | `gemini-2.5-flash` | 高輸出限制 (65K tokens) |
+| `translation` | `gemini-3.0-flash` | 高輸出限制 (65K tokens) |
 | 其他所有      | `gemma-3-27b-it`   | 推理品質較好            |
 
 ---

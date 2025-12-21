@@ -155,7 +155,57 @@ async def run_post_processing_tasks(
         # Non-fatal: PDF was already delivered
 
 
+# --- Document List Endpoint ---
+
+@router.get("/list")
+async def list_documents(
+    user_id: str = Depends(get_current_user_id)
+) -> dict:
+    """
+    Lists all documents uploaded by the user.
+
+    Returns documents ordered by upload time (newest first).
+    Limited to 50 documents maximum.
+
+    Args:
+        user_id: Authenticated user ID (injected).
+
+    Returns:
+        Dict containing documents list and total count.
+
+    Raises:
+        HTTPException: 500 if database query fails.
+    """
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured")
+
+    try:
+        result = supabase.table("documents")\
+            .select("id, file_name, created_at, status, processing_step")\
+            .eq("user_id", user_id)\
+            .order("created_at", desc=True)\
+            .limit(50)\
+            .execute()
+
+        documents = result.data if result.data else []
+
+        logger.info(f"User {user_id} listed {len(documents)} documents")
+
+        return {
+            "documents": documents,
+            "total": len(documents)
+        }
+
+    except PostgrestAPIError as e:
+        logger.error(f"Failed to list documents: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retrieve documents")
+
+
+# --- PDF Upload Endpoint ---
+# Supports both /ocr (legacy) and /upload_pdf_md (new spec) paths
+
 @router.post("/ocr")
+@router.post("/upload_pdf_md")
 async def upload_pdf_md(
     file: UploadFile = File(...),
     user_id: str = Depends(get_current_user_id)

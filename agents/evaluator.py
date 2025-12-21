@@ -4,10 +4,12 @@ Self-RAG Evaluator Module
 Provides LLM-as-judge evaluation for RAG output quality:
 - Retrieval relevance: Do the documents contain needed information?
 - Faithfulness: Is the answer grounded in the documents?
+- Detailed evaluation: 1-5 scoring with weighted confidence
 """
 
 # Standard library
 import asyncio
+import json
 import logging
 from enum import Enum
 from typing import List, Optional
@@ -15,7 +17,7 @@ from typing import List, Optional
 # Third-party
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Local application
 from core.llm_factory import get_llm
@@ -43,6 +45,43 @@ class EvaluationResult(BaseModel):
     should_retry: bool
     retry_reason: Optional[str] = None
     confidence: float = 0.0
+
+
+class DetailedEvaluationResult(BaseModel):
+    """
+    Detailed evaluation result with 1-5 scoring.
+    
+    Attributes:
+        relevance_score: How relevant are the documents to the question (1-5)
+        groundedness_score: How well is the answer grounded in documents (1-5)
+        completeness_score: How completely does the answer address the question (1-5)
+        reason: Brief explanation of the evaluation
+        confidence: Weighted confidence score (0.2-1.0)
+        evaluation_failed: True if LLM evaluation itself failed
+    """
+    relevance_score: int = Field(default=3, ge=1, le=5)
+    groundedness_score: int = Field(default=3, ge=1, le=5)
+    completeness_score: int = Field(default=3, ge=1, le=5)
+    reason: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    evaluation_failed: bool = False
+    
+    @property
+    def is_reliable(self) -> bool:
+        """Returns True if the answer is considered reliable (confidence >= 0.7)."""
+        return self.confidence >= 0.7 and not self.evaluation_failed
+    
+    @property
+    def faithfulness_level(self) -> str:
+        """Maps groundedness score to faithfulness level."""
+        if self.evaluation_failed:
+            return "evaluation_failed"
+        if self.groundedness_score >= 4:
+            return "grounded"
+        elif self.groundedness_score >= 3:
+            return "uncertain"
+        else:
+            return "hallucinated"
 
 
 # Prompts for evaluation
@@ -75,6 +114,37 @@ _FAITHFULNESS_EVAL_PROMPT = """你是一個答案品質評估專家。請評估�
 
 請只回答 GROUNDED 或 HALLUCINATED，不要其他內容："""
 
+_DETAILED_EVAL_PROMPT = """你是 RAG 答案品質評估專家。請詳細評估以下答案的品質。
+
+## 問題
+{question}
+
+## 參考文檔
+{documents}
+
+## 生成的答案
+{answer}
+
+## 評估標準 (1=最差, 5=最佳)
+
+1. **relevance (相關性)**: 檢索到的文檔與問題的相關程度
+   - 5: 文檔完全針對問題，包含所有需要的資訊
+   - 3: 文檔部分相關，有一些有用資訊
+   - 1: 文檔與問題無關
+
+2. **groundedness (依據性)**: 答案有多少內容可以在文檔中驗證
+   - 5: 答案的每個觀點都能在文檔中找到依據
+   - 3: 部分內容有依據，部分是合理推論
+   - 1: 答案包含大量文檔中沒有的資訊
+
+3. **completeness (完整性)**: 答案是否完整回答了問題
+   - 5: 完整且全面地回答了問題
+   - 3: 回答了主要問題，但遺漏了一些細節
+   - 1: 沒有真正回答問題
+
+請用 JSON 格式回答 (只輸出 JSON，不要其他內容):
+{{"relevance": <1-5>, "groundedness": <1-5>, "completeness": <1-5>, "reason": "<一句話解釋>"}}"""
+
 
 class RAGEvaluator:
     """
@@ -83,10 +153,16 @@ class RAGEvaluator:
     Evaluates:
     1. Retrieval relevance: Are retrieved docs relevant to question?
     2. Faithfulness: Is generated answer grounded in retrieved docs?
+    3. Detailed evaluation: 1-5 scoring with confidence calculation
     
     Attributes:
         _semaphore: Rate limiter for LLM calls.
     """
+    
+    # Weights for confidence calculation
+    WEIGHT_RELEVANCE = 0.3
+    WEIGHT_GROUNDEDNESS = 0.5
+    WEIGHT_COMPLETENESS = 0.2
     
     def __init__(self, max_concurrent: int = 2) -> None:
         """
@@ -96,6 +172,63 @@ class RAGEvaluator:
             max_concurrent: Maximum concurrent LLM calls.
         """
         self._semaphore = asyncio.Semaphore(max_concurrent)
+    
+    def _calculate_confidence(self, scores: dict) -> float:
+        """
+        Calculates weighted confidence score.
+        
+        Args:
+            scores: Dict with relevance, groundedness, completeness (1-5 each)
+        
+        Returns:
+            Confidence score between 0.2 and 1.0
+        """
+        relevance = scores.get("relevance", 3)
+        groundedness = scores.get("groundedness", 3)
+        completeness = scores.get("completeness", 3)
+        
+        weighted = (
+            relevance * self.WEIGHT_RELEVANCE +
+            groundedness * self.WEIGHT_GROUNDEDNESS +
+            completeness * self.WEIGHT_COMPLETENESS
+        ) / 5.0
+        
+        return max(0.2, min(1.0, weighted))
+    
+    def _parse_json_response(self, response: str) -> Optional[dict]:
+        """
+        Parses JSON from LLM response, handling potential formatting issues.
+        
+        Args:
+            response: Raw LLM response string
+        
+        Returns:
+            Parsed dict or None if parsing fails
+        """
+        # Try direct parsing
+        try:
+            return json.loads(response.strip())
+        except json.JSONDecodeError:
+            pass
+        
+        # Try extracting JSON from markdown code block
+        import re
+        json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', response, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group(1))
+            except json.JSONDecodeError:
+                pass
+        
+        # Try finding JSON object in response
+        json_match = re.search(r'\{[^{}]*\}', response)
+        if json_match:
+            try:
+                return json.loads(json_match.group(0))
+            except json.JSONDecodeError:
+                pass
+        
+        return None
     
     async def evaluate_retrieval(
         self,
@@ -192,6 +325,95 @@ class RAGEvaluator:
                 logger.warning(f"Faithfulness evaluation failed: {e}")
                 return FaithfulnessGrade.GROUNDED  # Assume grounded on error
     
+    async def evaluate_detailed(
+        self,
+        question: str,
+        documents: List[Document],
+        answer: str,
+    ) -> DetailedEvaluationResult:
+        """
+        Performs detailed evaluation with 1-5 scoring.
+        
+        Args:
+            question: User question.
+            documents: Retrieved documents.
+            answer: Generated answer.
+            
+        Returns:
+            DetailedEvaluationResult with scores and confidence.
+        """
+        # Return failed result if no documents or answer
+        if not documents or not answer:
+            return DetailedEvaluationResult(
+                relevance_score=1,
+                groundedness_score=1,
+                completeness_score=1,
+                reason="無法評估：缺少文檔或答案",
+                confidence=0.2,
+                evaluation_failed=True,
+            )
+        
+        async with self._semaphore:
+            try:
+                llm = get_llm("evaluator")
+                
+                doc_text = "\n\n".join([
+                    f"[{i+1}] {doc.page_content[:500]}"
+                    for i, doc in enumerate(documents[:5])
+                ])
+                
+                prompt = _DETAILED_EVAL_PROMPT.format(
+                    question=question,
+                    documents=doc_text,
+                    answer=answer[:1500],
+                )
+                
+                message = HumanMessage(content=prompt)
+                response = await llm.ainvoke([message])
+                
+                # Parse JSON response
+                scores = self._parse_json_response(response.content)
+                
+                if not scores:
+                    logger.warning(f"Failed to parse evaluation JSON: {response.content[:200]}")
+                    return DetailedEvaluationResult(
+                        reason="評估失敗：無法解析 LLM 回應",
+                        evaluation_failed=True,
+                    )
+                
+                # Validate and clamp scores
+                relevance = max(1, min(5, int(scores.get("relevance", 3))))
+                groundedness = max(1, min(5, int(scores.get("groundedness", 3))))
+                completeness = max(1, min(5, int(scores.get("completeness", 3))))
+                reason = str(scores.get("reason", ""))[:200]
+                
+                confidence = self._calculate_confidence({
+                    "relevance": relevance,
+                    "groundedness": groundedness,
+                    "completeness": completeness,
+                })
+                
+                logger.debug(
+                    f"Detailed evaluation: rel={relevance}, gnd={groundedness}, "
+                    f"cmp={completeness}, conf={confidence:.2f}"
+                )
+                
+                return DetailedEvaluationResult(
+                    relevance_score=relevance,
+                    groundedness_score=groundedness,
+                    completeness_score=completeness,
+                    reason=reason,
+                    confidence=confidence,
+                    evaluation_failed=False,
+                )
+                    
+            except (RuntimeError, ValueError, KeyError, json.JSONDecodeError) as e:
+                logger.error(f"Detailed evaluation failed: {e}")
+                return DetailedEvaluationResult(
+                    reason=f"評估失敗：{str(e)[:100]}",
+                    evaluation_failed=True,
+                )
+    
     async def evaluate(
         self,
         question: str,
@@ -199,7 +421,7 @@ class RAGEvaluator:
         answer: str,
     ) -> EvaluationResult:
         """
-        Performs full RAG evaluation.
+        Performs full RAG evaluation (legacy method).
         
         Args:
             question: User question.
@@ -268,3 +490,35 @@ async def evaluate_rag_result(
     
     evaluator = RAGEvaluator()
     return await evaluator.evaluate(question, documents, answer)
+
+
+async def evaluate_rag_detailed(
+    question: str,
+    documents: List[Document],
+    answer: str,
+    enabled: bool = True,
+) -> DetailedEvaluationResult:
+    """
+    Convenience function for detailed RAG evaluation.
+    
+    Args:
+        question: User question.
+        documents: Retrieved documents.
+        answer: Generated answer.
+        enabled: If False, returns default positive evaluation.
+        
+    Returns:
+        DetailedEvaluationResult with scores and confidence.
+    """
+    if not enabled:
+        return DetailedEvaluationResult(
+            relevance_score=5,
+            groundedness_score=5,
+            completeness_score=5,
+            reason="評估已停用",
+            confidence=1.0,
+            evaluation_failed=False,
+        )
+    
+    evaluator = RAGEvaluator()
+    return await evaluator.evaluate_detailed(question, documents, answer)

@@ -1,342 +1,576 @@
-# Backend RAG API Enhancement Specification
+# Backend API Reference
 
-本文件描述 Englishtran 後端 RAG API 需要進行的修改，以支援上下文感知對話功能。
-
----
-
-## 概覽
-
-### 目標
-
-1. `/ask` 端點支援對話歷史 (`history`) 參數，實現多輪上下文感知對話
-2. 暴露進階檢索選項 (`enable_hyde`, `enable_multi_query`) 給前端
-
-### 影響範圍
-
-| 檔案                          | 變更類型   | 描述                                    |
-| ----------------------------- | ---------- | --------------------------------------- |
-| `data_base/router.py`         | MODIFY     | 新增 `/ask` 的 POST 版本或擴展 GET 參數 |
-| `data_base/RAG_QA_service.py` | MODIFY     | 處理 history 參數注入 prompt            |
-| `data_base/schemas.py` (如有) | NEW/MODIFY | 新增 request/response schema            |
+> 完整的後端 API 文件，供前端 agent 整合使用
 
 ---
 
-## API 變更詳情
+## 認證
 
-### Option A: 擴展現有 GET `/ask` (推薦用於簡單歷史)
-
-```python
-# router.py
-@router.get("/ask")
-async def ask_question(
-    question: str,
-    doc_ids: Optional[str] = None,
-    history: Optional[str] = None,  # JSON-encoded list
-    enable_hyde: bool = False,
-    enable_multi_query: bool = False,
-    enable_reranking: bool = True,
-):
-    history_parsed = json.loads(history) if history else []
-    # ...
-```
-
-**前端呼叫範例**:
+所有端點需要在 Header 帶入 Supabase JWT：
 
 ```
-GET /ask?question=xxx&history=[{"role":"user","content":"xxx"},{"role":"assistant","content":"xxx"}]
+Authorization: Bearer <supabase-jwt-token>
 ```
 
-> ⚠️ **注意**: URL 長度限制，歷史過長時可能出問題
+開發環境設定 `DEV_MODE=true` 可跳過認證。
 
 ---
 
-### Option B: 新增 POST `/ask` (推薦用於完整歷史)
+## RAG 問答端點 (`/rag`)
 
-```python
-# schemas.py
-from pydantic import BaseModel
-from typing import List, Optional
-from enum import Enum
+### GET `/rag/ask` - 基本問答
 
-class MessageRole(str, Enum):
-    user = "user"
-    assistant = "assistant"
-    system = "system"
-
-class ChatMessage(BaseModel):
-    role: MessageRole
-    content: str
-
-class AskRequest(BaseModel):
-    question: str
-    doc_ids: Optional[List[str]] = None
-    history: Optional[List[ChatMessage]] = None
-    enable_hyde: bool = False
-    enable_multi_query: bool = False
-    enable_reranking: bool = True
-    top_k: int = 6
-
-class AskResponse(BaseModel):
-    question: str
-    answer: str
-    sources: List[str] = []
+```http
+GET /rag/ask?question=什麼是機器學習&doc_ids=uuid1,uuid2
 ```
 
-```python
-# router.py
-from .schemas import AskRequest, AskResponse
+| 參數       | 類型   | 必填 | 說明                             |
+| ---------- | ------ | ---- | -------------------------------- |
+| `question` | string | ✅   | 使用者問題                       |
+| `doc_ids`  | string | ❌   | 逗號分隔的文件 ID (留空查詢全部) |
 
-@router.post("/ask", response_model=AskResponse)
-async def ask_question_with_history(request: AskRequest):
-    """
-    上下文感知問答端點。
+**Response:**
 
-    支援傳入對話歷史，讓 LLM 理解對話脈絡。
-    """
-    answer_response = await rag_qa_service.ask_with_context(
-        question=request.question,
-        history=request.history,
-        doc_ids=request.doc_ids,
-        enable_hyde=request.enable_hyde,
-        enable_multi_query=request.enable_multi_query,
-        enable_reranking=request.enable_reranking,
-        top_k=request.top_k,
-    )
-    return answer_response
+```json
+{
+  "question": "什麼是機器學習",
+  "answer": "機器學習是人工智慧的一個分支...",
+  "sources": ["doc-uuid-1", "doc-uuid-2"]
+}
 ```
 
 ---
 
-## RAG Service 變更
+### POST `/rag/ask` - 上下文感知問答 (推薦)
 
-### RAG_QA_service.py
+支援對話歷史與進階檢索策略。**新增實驗室評估模式**。
 
-新增處理歷史的邏輯：
-
-```python
-async def ask_with_context(
-    self,
-    question: str,
-    history: Optional[List[ChatMessage]] = None,
-    doc_ids: Optional[List[str]] = None,
-    enable_hyde: bool = False,
-    enable_multi_query: bool = False,
-    enable_reranking: bool = True,
-    top_k: int = 6,
-) -> AnswerResponse:
-    """
-    帶上下文的問答。
-
-    Args:
-        question: 當前問題
-        history: 對話歷史 (user/assistant 訊息列表)
-        ...其他參數同原本的 ask_question
-    """
-    # 1. 執行檢索 (與原本相同)
-    retrieved_chunks = await self._retrieve(
-        question=question,
-        doc_ids=doc_ids,
-        enable_hyde=enable_hyde,
-        enable_multi_query=enable_multi_query,
-        enable_reranking=enable_reranking,
-        top_k=top_k,
-    )
-
-    # 2. 構建帶歷史的 prompt
-    messages = self._build_messages_with_history(
-        question=question,
-        history=history,
-        context=retrieved_chunks,
-    )
-
-    # 3. 呼叫 LLM
-    answer = await self._llm_generate(messages)
-
-    return AnswerResponse(
-        question=question,
-        answer=answer,
-        sources=[chunk.doc_id for chunk in retrieved_chunks],
-    )
-
-def _build_messages_with_history(
-    self,
-    question: str,
-    history: Optional[List[ChatMessage]],
-    context: List[RetrievedChunk],
-) -> List[Dict[str, str]]:
-    """
-    構建包含對話歷史的 LLM messages。
-    """
-    system_prompt = f"""你是一個知識庫助手。根據以下檢索到的資料回答問題。
-
-檢索到的資料:
-{self._format_context(context)}
-
-請根據上述資料和對話歷史回答用戶的問題。如果資料中沒有相關資訊，請誠實說明。
-"""
-
-    messages = [{"role": "system", "content": system_prompt}]
-
-    # 加入對話歷史 (限制最近 10 條，避免 token 過長)
-    if history:
-        for msg in history[-10:]:
-            messages.append({
-                "role": msg.role.value,
-                "content": msg.content,
-            })
-
-    # 加入當前問題
-    messages.append({"role": "user", "content": question})
-
-    return messages
-```
-
----
-
-## Request/Response 範例
-
-### Request (POST /ask)
+**Request:**
 
 ```json
 {
   "question": "這份文件的結論是什麼？",
+  "doc_ids": ["doc-uuid-123"],
   "history": [
-    {
-      "role": "user",
-      "content": "這份研究報告的主題是什麼？"
-    },
+    { "role": "user", "content": "這份研究報告的主題是什麼？" },
     {
       "role": "assistant",
-      "content": "這份研究報告探討的是機器學習在醫療診斷中的應用..."
+      "content": "這份研究報告探討機器學習在醫療診斷中的應用..."
     }
   ],
-  "doc_ids": ["doc-uuid-123"],
   "enable_hyde": false,
   "enable_multi_query": false,
+  "enable_reranking": true,
+  "enable_evaluation": false
+}
+```
+
+| 欄位                 | 類型          | 預設  | 說明                      |
+| -------------------- | ------------- | ----- | ------------------------- |
+| `question`           | string        | -     | 使用者問題 (1-2000 字)    |
+| `doc_ids`            | string[]      | null  | 限定查詢的文件 ID         |
+| `history`            | ChatMessage[] | null  | 對話歷史 (最多 10 條)     |
+| `enable_hyde`        | boolean       | false | 假設性文件增強檢索        |
+| `enable_multi_query` | boolean       | false | 多重查詢融合檢索          |
+| `enable_reranking`   | boolean       | true  | Cross-Encoder 重排序      |
+| `enable_evaluation`  | boolean       | false | 🆕 啟用 Self-RAG 評估模式 |
+
+**Response (enable_evaluation=false):**
+
+```json
+{
+  "question": "...",
+  "answer": "...",
+  "sources": ["doc-id-1", "doc-id-2"]
+}
+```
+
+**Response (enable_evaluation=true):** 🆕
+
+```json
+{
+  "question": "...",
+  "answer": "...",
+  "sources": [
+    {
+      "doc_id": "doc-id-1",
+      "filename": "paper_a.pdf",
+      "page": 3,
+      "snippet": "相關段落內容...",
+      "score": 0.85
+    }
+  ],
+  "metrics": {
+    "faithfulness": "grounded",
+    "confidence_score": 0.82,
+    "evaluation_reason": "答案完全根據文檔內容，包含具體數據支撑"
+  }
+}
+```
+
+| metrics.欄位        | 說明                   |
+| ------------------- | ---------------------- |
+| `faithfulness`      | 忠實度等級             |
+| `confidence_score`  | 加權信心分數 (0.2-1.0) |
+| `evaluation_reason` | 評估結果說明 (新增)    |
+
+| faithfulness 值     | 說明                                       |
+| ------------------- | ------------------------------------------ |
+| `grounded`          | 答案完全有據 (groundedness ≥ 4) ✅         |
+| `uncertain`         | 部分有據 (groundedness = 3)                |
+| `hallucinated`      | 答案可能包含編造內容 (groundedness ≤ 2) ⚠️ |
+| `evaluation_failed` | LLM 評估失敗 ❌                            |
+
+---
+
+### POST `/rag/research` - 深度研究
+
+複雜問題分解與綜合分析 (Plan-and-Solve)。
+
+**Request:**
+
+```json
+{
+  "question": "比較 Python 和 JavaScript 的優缺點",
+  "max_subtasks": 5,
   "enable_reranking": true
 }
 ```
 
-### Response
+**Response:**
 
 ```json
 {
-  "question": "這份文件的結論是什麼？",
-  "answer": "根據這份關於機器學習醫療應用的研究報告，主要結論包括：\n1. AI 輔助診斷準確率達到 95%\n2. 可有效減少醫師工作負擔\n3. 建議在實際部署前需要更多臨床驗證...",
-  "sources": ["doc-uuid-123"]
-}
-```
-
----
-
-## 前端整合
-
-### Flutter 呼叫方式
-
-```dart
-// rag_repository.dart
-Future<AnswerResponse> askWithHistory(
-  String question, {
-  List<ChatMessageModel>? history,
-  List<String>? docIds,
-  bool enableHyde = false,
-  bool enableMultiQuery = false,
-}) async {
-  final response = await _apiClient.post(
-    RagEndpoints.ask,  // POST /ask
-    body: {
-      'question': question,
-      'history': history?.map((m) => {
-        'role': m.role.name,
-        'content': m.content,
-      }).toList(),
-      'doc_ids': docIds,
-      'enable_hyde': enableHyde,
-      'enable_multi_query': enableMultiQuery,
+  "question": "比較 Python 和 JavaScript 的優缺點",
+  "summary": "兩種語言各有優勢...",
+  "detailed_answer": "## Python\n優點：...\n## JavaScript\n優點：...",
+  "sub_tasks": [
+    {
+      "id": 1,
+      "question": "Python 的主要優點是什麼？",
+      "answer": "...",
+      "sources": []
     },
-  );
-  return AnswerResponse.fromJson(response);
+    {
+      "id": 2,
+      "question": "JavaScript 的主要優點是什麼？",
+      "answer": "...",
+      "sources": []
+    }
+  ],
+  "all_sources": ["doc-1", "doc-2"],
+  "confidence": 0.85
 }
 ```
 
 ---
 
-## 安全性考量
+## PDF 處理端點 (`/pdfmd`)
 
-1. **歷史長度限制**: 限制 `history` 最多 20 條訊息，防止 token 超出
-2. **內容驗證**: 驗證 `role` 只能是 `user`/`assistant`/`system`
-3. **Rate Limiting**: 考慮對 POST 請求增加速率限制
+### GET `/pdfmd/list` - 取得文件列表 🆕
 
-```python
-# 驗證範例
-MAX_HISTORY_LENGTH = 20
+```http
+GET /pdfmd/list
+```
 
-@router.post("/ask")
-async def ask_question_with_history(request: AskRequest):
-    if request.history and len(request.history) > MAX_HISTORY_LENGTH:
-        raise HTTPException(
-            status_code=400,
-            detail=f"History too long. Maximum {MAX_HISTORY_LENGTH} messages allowed."
-        )
-    # ...
+**Response:**
+
+```json
+{
+  "documents": [
+    {
+      "id": "uuid-1",
+      "filename": "paper_a.pdf",
+      "created_at": "2024-12-19T10:00:00Z",
+      "status": "completed",
+      "processing_step": "indexed"
+    }
+  ],
+  "total": 1
+}
+```
+
+| 欄位              | 類型     | 說明         |
+| ----------------- | -------- | ------------ |
+| `id`              | string   | 文件 UUID    |
+| `filename`        | string   | 原始檔名     |
+| `created_at`      | datetime | 上傳時間     |
+| `status`          | string   | 處理狀態     |
+| `processing_step` | string   | 詳細處理步驟 |
+
+> 📌 **限制**: 最多返回 50 筆，依上傳時間降序排序
+
+---
+
+### POST `/pdfmd/upload_pdf_md` - 上傳並翻譯 PDF
+
+```http
+POST /pdfmd/upload_pdf_md
+Content-Type: multipart/form-data
+```
+
+| 欄位   | 類型 | 說明     |
+| ------ | ---- | -------- |
+| `file` | File | PDF 檔案 |
+
+**Response:** 直接返回翻譯後的 PDF 檔案 (FileResponse)
+
+**處理流程:**
+
+1. OCR → 2. 翻譯 → 3. 生成 PDF → 4. (背景) RAG 索引 → 5. (背景) 摘要生成
+
+---
+
+### GET `/pdfmd/file/{doc_id}/status` - 取得處理狀態
+
+前端輪詢用端點。
+
+```http
+GET /pdfmd/file/{doc_id}/status
+```
+
+**Response:**
+
+```json
+{
+  "step": "translating",
+  "step_label": "翻譯中",
+  "is_pdf_ready": false,
+  "is_fully_complete": false
+}
+```
+
+| step 值          | 說明        |
+| ---------------- | ----------- |
+| `uploading`      | 上傳中      |
+| `ocr`            | OCR 辨識中  |
+| `translating`    | 翻譯中      |
+| `generating_pdf` | 生成 PDF 中 |
+| `completed`      | 翻譯完成    |
+| `indexing`       | 建立索引中  |
+| `indexed`        | 全部完成    |
+| `failed`         | 處理失敗    |
+
+---
+
+### GET `/pdfmd/file/{doc_id}` - 下載翻譯 PDF
+
+```http
+GET /pdfmd/file/{doc_id}
+```
+
+**Response:** PDF 檔案 (FileResponse)
+
+---
+
+### DELETE `/pdfmd/file/{doc_id}` - 刪除文件
+
+刪除文件及相關的 RAG 索引。
+
+```http
+DELETE /pdfmd/file/{doc_id}
+```
+
+**Response:**
+
+```json
+{ "status": "success", "message": "Document deleted successfully" }
 ```
 
 ---
 
-## 測試案例
+### GET `/pdfmd/file/{doc_id}/summary` - 取得摘要
 
-### 單元測試
+```http
+GET /pdfmd/file/{doc_id}/summary
+```
 
-```python
-@pytest.mark.asyncio
-async def test_ask_with_history():
-    request = AskRequest(
-        question="這份文件的結論是什麼？",
-        history=[
-            ChatMessage(role=MessageRole.user, content="主題是什麼？"),
-            ChatMessage(role=MessageRole.assistant, content="主題是機器學習..."),
-        ],
-    )
-    response = await ask_question_with_history(request)
-    assert response.question == request.question
-    assert len(response.answer) > 0
+**Response:**
 
-@pytest.mark.asyncio
-async def test_history_length_limit():
-    long_history = [
-        ChatMessage(role=MessageRole.user, content=f"msg {i}")
-        for i in range(25)
-    ]
-    request = AskRequest(question="test", history=long_history)
-    with pytest.raises(HTTPException) as exc:
-        await ask_question_with_history(request)
-    assert exc.value.status_code == 400
+```json
+{
+  "status": "ready",
+  "summary": "本文探討了..."
+}
+```
+
+| status 值       | 說明       |
+| --------------- | ---------- |
+| `ready`         | 摘要已就緒 |
+| `generating`    | 正在生成中 |
+| `not_available` | 尚未生成   |
+
+---
+
+### POST `/pdfmd/file/{doc_id}/summary/regenerate` - 重新生成摘要
+
+```http
+POST /pdfmd/file/{doc_id}/summary/regenerate
+```
+
+**Response:**
+
+```json
+{ "status": "started", "message": "Summary regeneration scheduled" }
 ```
 
 ---
 
-## 遷移計畫
+## 圖片翻譯端點 (`/imagemd`)
 
-### 階段 1: 新增 POST 端點 (向後相容)
+### POST `/imagemd/translate_image` - 圖片文字翻譯
 
-- 保留原有 GET `/ask` 端點
-- 新增 POST `/ask` 支援 history
+```http
+POST /imagemd/translate_image
+Content-Type: multipart/form-data
+```
 
-### 階段 2: 前端遷移
+| 欄位   | 類型 | 說明                |
+| ------ | ---- | ------------------- |
+| `file` | File | 圖片 (jpg/png/webp) |
 
-- 新對話使用 POST 端點
-- 舊邏輯繼續使用 GET (兼容)
-
-### 階段 3: 廢棄 GET (可選)
-
-- 如果確認不再需要，可廢棄 GET `/ask`
+**Response:** 翻譯後的圖片 (JPEG)
 
 ---
 
-## 確認清單
+## 多模態端點 (`/multimodal`)
 
-- [ ] 確認使用 Option A (GET) 或 Option B (POST)
-- [ ] 確認歷史長度限制 (建議 10-20 條)
-- [ ] 確認是否需要支援 `system` role
-- [ ] 後端實作完成
-- [ ] 前端整合測試
+### POST `/multimodal/extract` - 擷取文字與視覺元素
+
+```http
+POST /multimodal/extract
+Content-Type: multipart/form-data
+```
+
+| 欄位   | 類型 | 說明     |
+| ------ | ---- | -------- |
+| `file` | File | PDF 檔案 |
+
+**Response:**
+
+```json
+{
+  "doc_id": "uuid",
+  "user_id": "user-id",
+  "text_chunks": [
+    {"page_number": 1, "content": "...", "chunk_id": "..."}
+  ],
+  "visual_elements": [
+    {
+      "id": "uuid",
+      "type": "figure",
+      "page_number": 1,
+      "image_path": "path/to/img.jpg",
+      "bbox": [x1, y1, x2, y2],
+      "summary": "這是一張流程圖，顯示..."
+    }
+  ]
+}
+```
+
+---
+
+### DELETE `/multimodal/file/{doc_id}` - 刪除多模態文件
+
+```http
+DELETE /multimodal/file/{doc_id}
+```
+
+**Response:**
+
+```json
+{ "status": "success", "message": "Multimodal document deleted successfully" }
+```
+
+---
+
+## 統計端點 (`/stats`) 🆕
+
+### GET `/stats/dashboard` - 儀表板統計
+
+```http
+GET /stats/dashboard
+```
+
+**Response:**
+
+```json
+{
+  "total_queries": 42,
+  "accuracy_rate": 0.85,
+  "grounded_count": 36,
+  "hallucinated_count": 4,
+  "uncertain_count": 2,
+  "avg_confidence": 0.78,
+  "queries_last_7_days": [5, 8, 6, 7, 4, 6, 6],
+  "top_documents": [
+    { "doc_id": "uuid-1", "filename": "paper_a.pdf", "query_count": 15 }
+  ]
+}
+```
+
+| 欄位                  | 類型  | 說明                          |
+| --------------------- | ----- | ----------------------------- |
+| `total_queries`       | int   | 總查詢次數                    |
+| `accuracy_rate`       | float | 準確率 (grounded / evaluated) |
+| `grounded_count`      | int   | 有據回答數                    |
+| `hallucinated_count`  | int   | 幻覺回答數                    |
+| `uncertain_count`     | int   | 無法判斷數                    |
+| `avg_confidence`      | float | 平均信心分數                  |
+| `queries_last_7_days` | int[] | 近 7 天查詢趨勢               |
+| `top_documents`       | array | 最常查詢的文件                |
+
+> 📌 需先執行 `001_create_query_logs.sql` migration
+
+---
+
+## Schemas Reference
+
+### ChatMessage
+
+```typescript
+interface ChatMessage {
+  role: "user" | "assistant"; // 注意：不支援 "system"
+  content: string;
+}
+```
+
+### AskRequest
+
+```typescript
+interface AskRequest {
+  question: string; // 1-2000 字
+  doc_ids?: string[] | null;
+  history?: ChatMessage[] | null; // 最多 10 條
+  enable_hyde?: boolean; // default: false
+  enable_multi_query?: boolean; // default: false
+  enable_reranking?: boolean; // default: true
+  enable_evaluation?: boolean; // default: false 🆕
+}
+```
+
+### AskResponse (基本回應)
+
+```typescript
+interface AskResponse {
+  question: string;
+  answer: string;
+  sources: string[]; // 引用的文件 ID
+}
+```
+
+### EnhancedAskResponse (評估模式回應) 🆕
+
+```typescript
+interface EnhancedAskResponse {
+  question: string;
+  answer: string;
+  sources: SourceDetail[];
+  metrics: EvaluationMetrics | null;
+}
+```
+
+### SourceDetail 🆕
+
+```typescript
+interface SourceDetail {
+  doc_id: string;
+  filename: string | null;
+  page: number | null;
+  snippet: string; // 引用段落 (前 200 字)
+  score: number; // 相關性分數 0.0-1.0
+}
+```
+
+### EvaluationMetrics 🆕
+
+```typescript
+interface EvaluationMetrics {
+  faithfulness: "grounded" | "hallucinated" | "uncertain" | "evaluation_failed";
+  confidence_score: number; // 0.2-1.0 (加權計算)
+  evaluation_reason: string | null; // 評估結果說明
+}
+```
+
+> **信心分數計算**: `(相關性×0.3 + 依據性×0.5 + 完整性×0.2) / 5`
+
+### DocumentItem 🆕
+
+```typescript
+interface DocumentItem {
+  id: string;
+  filename: string;
+  created_at: string; // ISO 8601
+  status: string | null;
+  processing_step: string | null;
+}
+```
+
+### DashboardStats 🆕
+
+```typescript
+interface DashboardStats {
+  total_queries: number;
+  accuracy_rate: number;
+  grounded_count: number;
+  hallucinated_count: number;
+  uncertain_count: number;
+  avg_confidence: number;
+  queries_last_7_days: number[];
+  top_documents: DocumentStat[];
+}
+
+interface DocumentStat {
+  doc_id: string;
+  filename: string | null;
+  query_count: number;
+}
+```
+
+---
+
+## 錯誤處理
+
+| HTTP Status | 說明                                |
+| ----------- | ----------------------------------- |
+| 400         | 無效輸入 (檔案類型錯誤、歷史過長等) |
+| 401         | 未認證或 Token 過期                 |
+| 404         | 文件不存在                          |
+| 500         | 伺服器內部錯誤                      |
+
+**錯誤回應格式:**
+
+```json
+{ "detail": "錯誤訊息" }
+```
+
+---
+
+## 實作狀態
+
+### 已完成 ✅
+
+- [x] GET `/rag/ask` 基本問答
+- [x] POST `/rag/ask` 上下文感知問答 (含評估模式)
+- [x] POST `/rag/research` 深度研究
+- [x] GET `/pdfmd/list` 文件列表
+- [x] POST `/pdfmd/upload_pdf_md` 上傳翻譯
+- [x] GET `/pdfmd/file/{doc_id}/status` 處理狀態
+- [x] GET `/pdfmd/file/{doc_id}` 下載檔案
+- [x] DELETE `/pdfmd/file/{doc_id}` 刪除文件
+- [x] GET `/pdfmd/file/{doc_id}/summary` 取得摘要
+- [x] POST `/pdfmd/file/{doc_id}/summary/regenerate` 重新生成摘要
+- [x] POST `/imagemd/translate_image` 圖片翻譯
+- [x] POST `/multimodal/extract` 多模態擷取
+- [x] DELETE `/multimodal/file/{doc_id}` 刪除多模態文件
+- [x] GET `/stats/dashboard` 儀表板統計
+
+---
+
+## 版本記錄
+
+| 版本  | 日期       | 變更                                             |
+| ----- | ---------- | ------------------------------------------------ |
+| 2.2.0 | 2024-12-20 | 🆕 評估優化：1-5 分制信心計算、evaluation_reason |
+| 2.1.0 | 2024-12-19 | 新增 `/pdfmd/list`, `/stats/dashboard`, 評估模式 |
+| 2.0.0 | 2024-12-01 | 初始 API 規格                                    |

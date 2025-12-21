@@ -16,7 +16,14 @@ class VisualElement(BaseModel):
     image_path: str = Field(description="Path to the cropped image")
     bbox: List[int] = Field(description="[x1, y1, x2, y2] coordinates")
     original_text: Optional[str] = None
-    summary: Optional[str] = Field(None, description="Future use: Gemini generated summary")
+    summary: Optional[str] = Field(None, description="Gemini generated summary")
+    # 新增：上下文感知欄位
+    context_text: Optional[str] = Field(
+        None, description="周圍文字上下文（Caption + 前後文）"
+    )
+    figure_reference: Optional[str] = Field(
+        None, description="圖片引用標識，如 'Figure 1', '圖一'"
+    )
 
 class TextChunk(BaseModel):
     page_number: int

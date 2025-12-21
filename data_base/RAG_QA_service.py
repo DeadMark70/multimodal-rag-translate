@@ -9,7 +9,7 @@ with enhanced reranking and query transformation.
 import base64
 import logging
 import os
-from typing import List, Any, Set, Optional, Tuple, TYPE_CHECKING
+from typing import List, Any, Set, Optional, Tuple, NamedTuple, Union, TYPE_CHECKING
 
 # Type checking imports (avoid circular imports)
 if TYPE_CHECKING:
@@ -33,8 +33,23 @@ from data_base.query_transformer import (
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# GraphRAG-related keywords for auto mode detection
+_GRAPH_KEYWORDS = [
+    "關係", "連結", "趨勢", "比較", "對比",
+    "這些論文", "這幾篇", "跨文件", "綜合",
+    "relationship", "connection", "trend", "compare",
+    "across", "these papers", "multi-document",
+]
+
 # Flag to track initialization
 _llm_initialized = False
+
+
+class RAGResult(NamedTuple):
+    """Result from RAG question answering with optional documents."""
+    answer: str
+    source_doc_ids: List[str]
+    documents: List[Document]
 
 
 async def initialize_llm_service() -> None:
@@ -102,6 +117,86 @@ def _format_history_for_prompt(history: Optional[List["ChatMessage"]]) -> str:
     return "\n".join(lines)
 
 
+def _should_use_graph_search(question: str) -> bool:
+    """
+    Determine if question benefits from graph search (auto mode detection).
+    
+    Args:
+        question: User's question.
+        
+    Returns:
+        True if question contains graph-related keywords.
+    """
+    question_lower = question.lower()
+    return any(keyword in question_lower for keyword in _GRAPH_KEYWORDS)
+
+
+async def _get_graph_context(
+    question: str,
+    user_id: str,
+    search_mode: str = "auto",
+) -> str:
+    """
+    Get context from knowledge graph.
+    
+    Args:
+        question: User's question.
+        user_id: User's ID.
+        search_mode: Search mode (auto/local/global/hybrid).
+        
+    Returns:
+        Graph context string.
+    """
+    try:
+        from graph_rag.store import GraphStore
+        from graph_rag.local_search import local_search
+        from graph_rag.global_search import global_search, build_global_context
+        
+        store = GraphStore(user_id)
+        
+        # Check if graph exists
+        status = store.get_status()
+        if not status.has_graph or status.node_count == 0:
+            logger.debug(f"No graph data for user {user_id}")
+            return ""
+        
+        # Determine effective mode
+        effective_mode = search_mode
+        if search_mode == "auto":
+            if _should_use_graph_search(question):
+                effective_mode = "hybrid" if status.community_count > 0 else "local"
+            else:
+                effective_mode = "local"
+        
+        context_parts = []
+        
+        # Local search: entity expansion
+        if effective_mode in ("local", "hybrid"):
+            local_ctx, node_ids = await local_search(store, question, hops=2, max_nodes=20)
+            if local_ctx:
+                context_parts.append(local_ctx)
+                logger.debug(f"Local search found {len(node_ids)} nodes")
+        
+        # Global search: community-based
+        if effective_mode in ("global", "hybrid"):
+            if status.community_count > 0:
+                global_answer, community_ids = await global_search(store, question, max_communities=3)
+                if global_answer:
+                    context_parts.append(f"=== 社群分析 ===\n{global_answer}")
+                    logger.debug(f"Global search used {len(community_ids)} communities")
+            elif effective_mode == "global":
+                # Fallback to local if global requested but no communities
+                local_ctx, _ = await local_search(store, question, hops=2, max_nodes=20)
+                if local_ctx:
+                    context_parts.append(local_ctx)
+        
+        return "\n\n".join(context_parts)
+        
+    except Exception as e:
+        logger.warning(f"Graph context retrieval failed: {e}")
+        return ""
+
+
 async def rag_answer_question(
     question: str,
     user_id: str,
@@ -110,7 +205,11 @@ async def rag_answer_question(
     enable_reranking: bool = True,
     enable_hyde: bool = False,
     enable_multi_query: bool = False,
-) -> Tuple[str, List[str]]:
+    return_docs: bool = False,
+    # GraphRAG parameters
+    enable_graph_rag: bool = False,
+    graph_search_mode: str = "auto",
+) -> Union[Tuple[str, List[str]], RAGResult]:
     """
     Performs multimodal RAG question answering for a specific user.
 
@@ -119,9 +218,10 @@ async def rag_answer_question(
     2. (Optional) Query transformation (HyDE / Multi-Query)
     3. Execute retrieval (with optional doc_id filtering)
     4. (Optional) Rerank with Cross-Encoder
-    5. Separate text and image data
-    6. Build multimodal prompt (with optional conversation history)
-    7. Call LLM
+    5. (Optional) GraphRAG context enhancement
+    6. Separate text and image data
+    7. Build multimodal prompt (with optional conversation history)
+    8. Call LLM
 
     Args:
         question: The question to answer.
@@ -133,9 +233,12 @@ async def rag_answer_question(
         enable_reranking: If True, use Cross-Encoder reranking.
         enable_hyde: If True, use HyDE query transformation.
         enable_multi_query: If True, use multi-query with RRF fusion.
+        return_docs: If True, returns RAGResult with documents for evaluation.
+        enable_graph_rag: If True, enhance with knowledge graph context.
+        graph_search_mode: Graph search mode (local/global/hybrid/auto).
 
     Returns:
-        Tuple of (answer string, list of source doc_ids).
+        Tuple of (answer, doc_ids) or RAGResult if return_docs=True.
     """
 
     # Step 1: Get LLM instance
@@ -143,6 +246,8 @@ async def rag_answer_question(
         llm = get_llm("rag_qa")
     except (RuntimeError, KeyError, ValueError) as e:
         logger.error(f"Failed to get LLM: {e}")
+        if return_docs:
+            return RAGResult("抱歉，AI 模型尚未初始化 (API Key 可能有誤)。", [], [])
         return ("抱歉，AI 模型尚未初始化 (API Key 可能有誤)。", [])
 
     # Step 2: Get retriever (increase k for reranking)
@@ -150,6 +255,8 @@ async def rag_answer_question(
     retriever = get_user_retriever(user_id, k=retrieval_k)
     
     if retriever is None:
+        if return_docs:
+            return RAGResult("抱歉，您還沒有建立任何知識庫文件，請先上傳 PDF。", [], [])
         return ("抱歉，您還沒有建立任何知識庫文件，請先上傳 PDF。", [])
 
     # Step 3: Query transformation
@@ -178,9 +285,13 @@ async def rag_answer_question(
             logger.debug(f"RRF fused {len(docs)} documents")
     except (RuntimeError, ValueError) as e:
         logger.error(f"Retrieval error: {e}", exc_info=True)
+        if return_docs:
+            return RAGResult("抱歉，檢索知識庫時發生錯誤。", [], [])
         return ("抱歉，檢索知識庫時發生錯誤。", [])
 
     if not docs:
+        if return_docs:
+            return RAGResult("抱歉，在知識庫中找不到相關資訊。", [], [])
         return ("抱歉，在知識庫中找不到相關資訊。", [])
 
     # Step 4.5: Filter by doc_ids if specified (before reranking for efficiency)
@@ -194,6 +305,8 @@ async def rag_answer_question(
         docs = filtered_docs
         
         if not docs:
+            if return_docs:
+                return RAGResult("抱歉，在指定的文件中找不到相關資訊。", list(doc_ids), [])
             return ("抱歉，在指定的文件中找不到相關資訊。", list(doc_ids))
         
         logger.debug(f"Filtered to {len(docs)} docs from specified doc_ids")
@@ -210,6 +323,15 @@ async def rag_answer_question(
         logger.debug(f"Reranked to top {len(docs)} documents")
     else:
         docs = docs[:6]
+
+    # Step 5.5: GraphRAG context enhancement
+    graph_context = ""
+    if enable_graph_rag:
+        graph_context = await _get_graph_context(
+            question=question,
+            user_id=user_id,
+            search_mode=graph_search_mode,
+        )
 
     # Step 6: Separate data and deduplicate
     text_context: List[str] = []
@@ -254,6 +376,9 @@ async def rag_answer_question(
     # Format conversation history if provided
     history_text = _format_history_for_prompt(history)
     history_section = f"\n{history_text}\n" if history_text else ""
+    
+    # Format graph context if available
+    graph_section = f"\n{graph_context}\n" if graph_context else ""
 
     # Enhanced prompt with better multimodal guidance
     prompt_text = f"""你是一位學術研究助手，擅長分析文本與圖表。
@@ -262,7 +387,7 @@ async def rag_answer_question(
 以下是從知識庫檢索到的相關內容：
 
 {context_text}
-{history_section}
+{graph_section}{history_section}
 ## 使用者問題
 {question}
 
@@ -292,9 +417,13 @@ async def rag_answer_question(
     # Step 9: Call LLM
     try:
         response = await llm.ainvoke([message])
+        if return_docs:
+            return RAGResult(response.content, list(source_doc_ids), docs)
         return (response.content, list(source_doc_ids))
     except (RuntimeError, ValueError, OSError) as e:
         logger.error(f"LLM error for user {user_id}: {e}", exc_info=True)
+        if return_docs:
+            return RAGResult("抱歉，處理您的問題時發生錯誤。", list(source_doc_ids), docs)
         return ("抱歉，處理您的問題時發生錯誤。", list(source_doc_ids))
 
 
