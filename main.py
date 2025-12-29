@@ -37,6 +37,7 @@ from image_service.router import router as image_router
 from multimodal_rag.router import router as multimodal_router
 from stats.router import router as stats_router
 from graph_rag.router import router as graph_router
+from conversations.router import router as conversations_router
 
 app = FastAPI(
     title="PDF Translation & RAG API",
@@ -112,6 +113,7 @@ app.include_router(image_router, prefix="/imagemd", tags=["Image Translation"])
 app.include_router(multimodal_router, prefix="/multimodal", tags=["Multimodal Research"])
 app.include_router(stats_router, prefix="/stats", tags=["Dashboard Statistics"])
 app.include_router(graph_router, prefix="/graph", tags=["Knowledge Graph"])
+app.include_router(conversations_router, prefix="/conversations", tags=["Conversations"])
 
 
 @app.get("/")

@@ -31,6 +31,13 @@ from data_base.schemas import (
 from agents.planner import plan_research, SubTask
 from agents.synthesizer import synthesize_results, SubTaskResult
 from agents.evaluator import RAGEvaluator
+from data_base.schemas_deep_research import (
+    ResearchPlanRequest,
+    ResearchPlanResponse,
+    ExecutePlanRequest,
+    ExecutePlanResponse,
+)
+from data_base.deep_research_service import get_deep_research_service
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -116,6 +123,11 @@ async def ask_question(
         description="Comma-separated document IDs to filter (e.g., 'uuid1,uuid2'). "
                     "Leave empty to query all documents."
     ),
+    conversation_id: Optional[str] = Query(
+        default=None,
+        description="Conversation ID to associate this message with. "
+                    "If provided, messages will be saved to chat_logs with role."
+    ),
     user_id: str = Depends(get_current_user_id)
 ) -> AnswerResponse:
     """
@@ -124,6 +136,7 @@ async def ask_question(
     Args:
         question: The question to answer.
         doc_ids: Optional comma-separated document IDs to filter results.
+        conversation_id: Optional conversation ID for history tracking.
         user_id: Authenticated user ID (injected).
 
     Returns:
@@ -155,13 +168,27 @@ async def ask_question(
         # Log to Supabase (non-fatal if fails)
         if supabase:
             try:
-                log_data = {
+                # Save user message
+                user_log_data = {
                     "user_id": user_id,
                     "question": question,
-                    "answer": answer,
+                    "role": "user",
                 }
-                supabase.table("chat_logs").insert(log_data).execute()
-                logger.debug("Chat log saved to Supabase")
+                if conversation_id:
+                    user_log_data["conversation_id"] = conversation_id
+                supabase.table("chat_logs").insert(user_log_data).execute()
+                
+                # Save assistant message
+                assistant_log_data = {
+                    "user_id": user_id,
+                    "answer": answer,
+                    "role": "assistant",
+                }
+                if conversation_id:
+                    assistant_log_data["conversation_id"] = conversation_id
+                supabase.table("chat_logs").insert(assistant_log_data).execute()
+                
+                logger.debug("Chat logs saved to Supabase")
             except PostgrestAPIError as e:
                 logger.warning(f"Failed to save chat log: {e}")
 
@@ -384,7 +411,6 @@ def _log_query_to_supabase(
             "user_id": user_id,
             "question": question,
             "answer": answer,
-            "has_history": has_history,
         }
         supabase.table("chat_logs").insert(chat_log_data).execute()
         logger.debug("Chat log saved to Supabase (background)")
@@ -515,3 +541,165 @@ async def research_question(
     except Exception as e:
         logger.error(f"Research failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Research failed: {str(e)}")
+
+
+# --- Interactive Deep Research Endpoints ---
+
+@router.post("/plan", response_model=ResearchPlanResponse)
+async def generate_research_plan(
+    request: ResearchPlanRequest,
+    user_id: str = Depends(get_current_user_id)
+) -> ResearchPlanResponse:
+    """
+    Generates a research plan for user confirmation.
+    
+    This is the first phase of interactive deep research.
+    Returns a list of sub-tasks that the user can review, modify,
+    or remove before execution.
+    
+    Args:
+        request: Research plan request with question and options.
+        user_id: Authenticated user ID (injected).
+        
+    Returns:
+        ResearchPlanResponse with editable sub-tasks.
+        
+    Raises:
+        HTTPException: 500 if planning fails.
+    """
+    t1 = time.perf_counter()
+    logger.info(f"Generating research plan for user {user_id}: {request.question[:50]}...")
+    
+    try:
+        service = get_deep_research_service()
+        plan = await service.generate_plan(
+            question=request.question,
+            user_id=user_id,
+            doc_ids=request.doc_ids,
+            enable_graph_planning=request.enable_graph_planning,
+        )
+        
+        t2 = time.perf_counter()
+        logger.info(f"Plan generated in {t2 - t1:.2f}s with {len(plan.sub_tasks)} tasks")
+        
+        return plan
+        
+    except (RuntimeError, ValueError) as e:
+        logger.error(f"Plan generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"計畫生成失敗: {str(e)}")
+
+
+@router.post("/execute", response_model=ExecutePlanResponse)
+async def execute_research_plan(
+    request: ExecutePlanRequest,
+    user_id: str = Depends(get_current_user_id)
+) -> ExecutePlanResponse:
+    """
+    Executes a user-confirmed research plan with drill-down.
+    
+    This is the second phase of interactive deep research.
+    Runs the confirmed sub-tasks, identifies knowledge gaps,
+    and performs recursive drill-down up to max_iterations.
+    
+    Args:
+        request: Confirmed execution request with sub-tasks.
+        user_id: Authenticated user ID (injected).
+        
+    Returns:
+        ExecutePlanResponse with complete research results.
+        
+    Raises:
+        HTTPException: 400 if no tasks provided, 500 if execution fails.
+    """
+    t1 = time.perf_counter()
+    enabled_count = sum(1 for t in request.sub_tasks if t.enabled)
+    logger.info(
+        f"Executing research plan for user {user_id}: "
+        f"{enabled_count}/{len(request.sub_tasks)} tasks enabled, "
+        f"max_iter={request.max_iterations}"
+    )
+    
+    if not request.sub_tasks:
+        raise HTTPException(status_code=400, detail="至少需要一個子任務")
+    
+    try:
+        service = get_deep_research_service()
+        result = await service.execute_plan(
+            request=request,
+            user_id=user_id,
+        )
+        
+        t2 = time.perf_counter()
+        logger.info(
+            f"Research executed in {t2 - t1:.2f}s: "
+            f"{len(result.sub_tasks)} tasks, "
+            f"{result.total_iterations} drill-down iterations"
+        )
+        
+        return result
+        
+    except (RuntimeError, ValueError) as e:
+        logger.error(f"Research execution failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"研究執行失敗: {str(e)}")
+
+
+@router.post("/execute/stream")
+async def execute_research_plan_stream(
+    request: ExecutePlanRequest,
+    user_id: str = Depends(get_current_user_id)
+):
+    """
+    Executes research plan with SSE streaming progress updates.
+    
+    This endpoint uses Server-Sent Events (SSE) to stream real-time
+    progress updates during deep research execution.
+    
+    Event types:
+    - plan_confirmed: Research started
+    - task_start: Sub-task execution started
+    - task_done: Sub-task completed
+    - drilldown_start: Drill-down iteration started
+    - drilldown_task_start: Drill-down task started
+    - drilldown_task_done: Drill-down task completed
+    - synthesis_start: Final synthesis started
+    - complete: Research complete (includes full response)
+    - error: Error occurred
+    
+    Args:
+        request: Confirmed execution request with sub-tasks.
+        user_id: Authenticated user ID (injected).
+        
+    Returns:
+        EventSourceResponse with SSE stream.
+        
+    Raises:
+        HTTPException: 400 if no tasks provided.
+    """
+    from sse_starlette.sse import EventSourceResponse
+    
+    logger.info(
+        f"Starting streaming research for user {user_id}: "
+        f"{len(request.sub_tasks)} tasks"
+    )
+    
+    if not request.sub_tasks:
+        raise HTTPException(status_code=400, detail="至少需要一個子任務")
+    
+    service = get_deep_research_service()
+    
+    async def event_generator():
+        try:
+            async for event in service.execute_plan_streaming(
+                request=request,
+                user_id=user_id,
+            ):
+                yield event
+        except (RuntimeError, ValueError) as e:
+            logger.error(f"Streaming research failed: {e}", exc_info=True)
+            from data_base.sse_events import SSEEventType, ErrorData, format_sse_event
+            yield format_sse_event(
+                SSEEventType.ERROR,
+                ErrorData(message=str(e)[:200])
+            )
+    
+    return EventSourceResponse(event_generator())

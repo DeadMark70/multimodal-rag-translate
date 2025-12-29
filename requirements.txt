@@ -52,3 +52,6 @@ python-igraph>=0.11.0
 # Testing
 pytest
 pytest-asyncio
+
+# SSE Streaming
+sse-starlette

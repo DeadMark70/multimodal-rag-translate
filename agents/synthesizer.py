@@ -28,6 +28,7 @@ class SubTaskResult(BaseModel):
     answer: str
     sources: List[str] = []
     confidence: float = 1.0
+    status: str = "completed"  # For future SSE: pending, loading, completed, failed
 
 
 class ResearchReport(BaseModel):
@@ -253,16 +254,23 @@ async def synthesize_results(
     Returns:
         ResearchReport.
     """
-    if not enabled or len(sub_results) <= 1:
+    # Skip LLM synthesis for ≤2 results - use direct concatenation instead
+    if not enabled or len(sub_results) <= 2:
         if sub_results:
-            r = sub_results[0]
+            # Combine all results without LLM call
+            combined_answer = "\n\n".join([
+                f"### {r.question}\n{r.answer}" for r in sub_results
+            ])
+            all_sources = list(set(s for r in sub_results for s in r.sources))
+            avg_confidence = sum(r.confidence for r in sub_results) / len(sub_results)
+            
             return ResearchReport(
                 original_question=original_question,
-                summary=r.answer[:200],
-                detailed_answer=r.answer,
+                summary=sub_results[0].answer[:200] if sub_results[0].answer else "",
+                detailed_answer=combined_answer,
                 sub_results=sub_results,
-                all_sources=r.sources,
-                confidence=r.confidence,
+                all_sources=all_sources,
+                confidence=avg_confidence,
             )
         return ResearchReport(
             original_question=original_question,

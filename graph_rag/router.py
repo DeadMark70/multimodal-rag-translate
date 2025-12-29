@@ -3,13 +3,14 @@ GraphRAG API Router
 
 Provides REST API endpoints for graph management operations:
 - GET /graph/status - Get graph status
+- GET /graph/data - Get visualization data for react-force-graph
 - POST /graph/rebuild - Force full graph rebuild  
 - POST /graph/optimize - Run entity resolution
 """
 
 # Standard library
 import logging
-from typing import Optional
+from typing import List, Optional
 
 # Third-party
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
@@ -51,6 +52,27 @@ class GraphOperationResponse(BaseModel):
     details: Optional[dict] = None
 
 
+class VisNode(BaseModel):
+    """Node for react-force-graph visualization."""
+    id: str = Field(..., description="唯一節點識別碼（標籤）")
+    group: int = Field(..., description="分群 ID（用於著色）")
+    val: int = Field(..., description="節點大小（引用次數）")
+    desc: str = Field(..., description="節點描述")
+
+
+class VisLink(BaseModel):
+    """Link for react-force-graph visualization."""
+    source: str = Field(..., description="來源節點 ID")
+    target: str = Field(..., description="目標節點 ID")
+    label: str = Field(..., description="關係標籤")
+
+
+class GraphVisualizationData(BaseModel):
+    """Response for graph visualization (react-force-graph format)."""
+    nodes: List[VisNode] = Field(default_factory=list)
+    links: List[VisLink] = Field(default_factory=list)
+
+
 # ===== Endpoints =====
 
 @router.get(
@@ -75,6 +97,64 @@ async def get_graph_status(
         return status
     except Exception as e:
         logger.error(f"Failed to get graph status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/data",
+    response_model=GraphVisualizationData,
+    summary="取得視覺化資料",
+    description="取得 react-force-graph 格式的圖譜資料，用於前端視覺化。"
+)
+async def get_graph_visualization_data(
+    user_id: str = Depends(get_current_user_id)
+) -> GraphVisualizationData:
+    """
+    Get graph data for visualization (react-force-graph format).
+    
+    Returns nodes and links for rendering in react-force-graph.
+    
+    Returns:
+        GraphVisualizationData with nodes and links arrays.
+    """
+    try:
+        store = GraphStore(user_id)
+        status = store.get_status()
+        
+        if not status.has_graph:
+            logger.info(f"No graph data for user {user_id}")
+            return GraphVisualizationData(nodes=[], links=[])
+        
+        # Convert graph nodes to visualization format
+        nodes = []
+        for node in store.get_all_nodes():
+            nodes.append(VisNode(
+                id=node.label,
+                group=hash(node.entity_type.value) % 5,
+                val=len(node.doc_ids) * 2,
+                desc=node.description or node.entity_type.value,
+            ))
+        
+        # Convert edges to links
+        links = []
+        for edge in store.get_all_edges():
+            source_node = store.get_node(edge.source_id)
+            target_node = store.get_node(edge.target_id)
+            if source_node and target_node:
+                links.append(VisLink(
+                    source=source_node.label,
+                    target=target_node.label,
+                    label=edge.relation,
+                ))
+        
+        logger.info(f"Graph visualization for user {user_id}: {len(nodes)} nodes, {len(links)} links")
+        return GraphVisualizationData(nodes=nodes, links=links)
+        
+    except (FileNotFoundError, KeyError) as e:
+        logger.warning(f"Graph data not found for user {user_id}: {e}")
+        return GraphVisualizationData(nodes=[], links=[])
+    except Exception as e:
+        logger.error(f"Failed to get graph visualization data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -309,20 +309,48 @@ async def rag_answer_question(
                 return RAGResult("抱歉，在指定的文件中找不到相關資訊。", list(doc_ids), [])
             return ("抱歉，在指定的文件中找不到相關資訊。", list(doc_ids))
         
-        logger.debug(f"Filtered to {len(docs)} docs from specified doc_ids")
+        # Debug: Count chunks per doc_id
+        doc_chunk_count = {}
+        for d in docs:
+            did = d.metadata.get("doc_id") or d.metadata.get("original_doc_uid") or "unknown"
+            doc_chunk_count[did] = doc_chunk_count.get(did, 0) + 1
+        logger.info(f"Multi-doc retrieval: {doc_chunk_count}")
 
-    # Step 5: Rerank with Cross-Encoder
-    if enable_reranking and len(docs) > 6:
+    # Step 5: Rerank with Cross-Encoder (or fair multi-doc selection)
+    target_k = 10  # Increased from 6 for better multi-doc coverage
+    reranker_available = DocumentReranker.is_initialized()
+    
+    if enable_reranking and reranker_available and len(docs) > target_k:
+        # Use cross-encoder reranking
         docs = await run_in_threadpool(
             rerank_documents,
             question,
             docs,
-            top_k=6,
+            top_k=target_k,
             enabled=True,
         )
         logger.debug(f"Reranked to top {len(docs)} documents")
+    elif doc_ids and len(doc_ids) > 1:
+        # Multi-doc fair selection: ensure each doc gets representation
+        docs_per_source = max(2, target_k // len(doc_ids))
+        selected_docs = []
+        docs_by_id = {}
+        
+        for d in docs:
+            did = d.metadata.get("doc_id") or d.metadata.get("original_doc_uid") or "unknown"
+            if did not in docs_by_id:
+                docs_by_id[did] = []
+            docs_by_id[did].append(d)
+        
+        # Take top N from each source
+        for did in doc_ids:
+            if did in docs_by_id:
+                selected_docs.extend(docs_by_id[did][:docs_per_source])
+        
+        docs = selected_docs[:target_k]
+        logger.info(f"Multi-doc fair selection: {len(docs)} docs from {len(docs_by_id)} sources")
     else:
-        docs = docs[:6]
+        docs = docs[:target_k]
 
     # Step 5.5: GraphRAG context enhancement
     graph_context = ""
@@ -333,11 +361,47 @@ async def rag_answer_question(
             search_mode=graph_search_mode,
         )
 
-    # Step 6: Separate data and deduplicate
+    # Step 6: Separate data, label sources, and deduplicate
     text_context: List[str] = []
     image_paths: Set[str] = set()
     source_doc_ids: Set[str] = set()
+    
+    # Build doc_id to filename mapping for labeling
+    doc_id_to_name = {}
+    
+    # Collect unique doc_ids first
+    unique_doc_ids = set()
+    for doc in docs:
+        doc_id = doc.metadata.get("doc_id") or doc.metadata.get("original_doc_uid")
+        if doc_id:
+            unique_doc_ids.add(doc_id)
+    
+    # Query database for actual filenames if we have doc_ids
+    if unique_doc_ids:
+        try:
+            from supabase_client import supabase
+            if supabase:
+                response = supabase.table("documents") \
+                    .select("id, file_name") \
+                    .in_("id", list(unique_doc_ids)) \
+                    .execute()
+                
+                for row in response.data:
+                    doc_id_to_name[row["id"]] = row.get("file_name", f"文件-{row['id'][:8]}")
+                logger.debug(f"Fetched filenames: {doc_id_to_name}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch filenames from DB: {e}")
+    
+    # Fallback for any doc_ids not found in DB
+    for doc in docs:
+        doc_id = doc.metadata.get("doc_id") or doc.metadata.get("original_doc_uid")
+        if doc_id and doc_id not in doc_id_to_name:
+            filename = doc.metadata.get("file_name") or doc.metadata.get("source_file") or f"文件-{doc_id[:8]}"
+            doc_id_to_name[doc_id] = filename
 
+    # Group chunks by source document (anti-hallucination strategy)
+    chunks_by_doc: dict[str, List[str]] = {}
+    
     for doc in docs:
         source = doc.metadata.get("source", "text")
         
@@ -345,6 +409,13 @@ async def rag_answer_question(
         doc_id = doc.metadata.get("doc_id") or doc.metadata.get("original_doc_uid")
         if doc_id:
             source_doc_ids.add(doc_id)
+        
+        # Get source label for this chunk
+        source_label = doc_id_to_name.get(doc_id, "未知來源") if doc_id else "未知來源"
+        
+        # Initialize list for this document if needed
+        if source_label not in chunks_by_doc:
+            chunks_by_doc[source_label] = []
 
         if source == "image":
             img_path = doc.metadata.get("image_path")
@@ -352,10 +423,16 @@ async def rag_answer_question(
                 image_paths.add(img_path)
             # Also add image summary to text context as supplementary info
             if doc.page_content:
-                text_context.append(f"[圖片摘要] {doc.page_content}")
+                chunks_by_doc[source_label].append(f"[圖片摘要] {doc.page_content}")
         else:
             if doc.page_content:
-                text_context.append(doc.page_content)
+                chunks_by_doc[source_label].append(doc.page_content)
+    
+    # Build document-grouped context (each document's content is kept together)
+    for filename, chunks in chunks_by_doc.items():
+        file_section = f"=== 來源文件：{filename} ===\n（以下內容僅來自此文件，請勿與其他文件混淆）\n\n"
+        file_section += "\n\n".join(chunks)
+        text_context.append(file_section)
 
     # Step 7: Process images (limit count to avoid token explosion)
     MAX_IMAGES = 3
@@ -380,25 +457,30 @@ async def rag_answer_question(
     # Format graph context if available
     graph_section = f"\n{graph_context}\n" if graph_context else ""
 
-    # Enhanced prompt with better multimodal guidance
+    # Enhanced prompt with anti-hallucination guidance
     prompt_text = f"""你是一位學術研究助手，擅長分析文本與圖表。
 
 ## 參考資料
-以下是從知識庫檢索到的相關內容：
+以下是從知識庫檢索到的相關內容，已按來源文件分組：
 
 {context_text}
 {graph_section}{history_section}
 ## 使用者問題
 {question}
 
-## 回答指引
-1. 仔細觀察圖表/圖片中的數據與趨勢（如有提供）
-2. 結合文字內容與圖片資訊進行推理
-3. 如有對話歷史，請延續先前的討論脈絡
-4. 引用具體來源時，說明資訊出處
-5. 數學公式請使用 LaTeX 格式 (例如 $\\frac{{a}}{{b}}$)
-6. 以繁體中文回答
-7. 如果圖片與問題無關，請忽略圖片
+## 回答指引（請務必遵守）
+
+### ⚠️ 重要：防止資訊混淆
+1. **每份文件是獨立的研究**，請勿假設它們之間有關聯
+2. **文件 A 中的聲明不適用於文件 B**：例如「文件 A 說 X 輸給 Y」不代表文件 B 中的技術也輸給 Y
+3. 如果某個聲明只出現在一份文件中，請明確指出，不要套用到其他文件的內容
+4. 回答比較問題時，請先分別總結每份文件的觀點，再進行對比
+
+### 一般指引
+5. 引用來源時請標註文件名稱
+6. 仔細觀察圖表數據（如有提供）
+7. 數學公式請使用 LaTeX 格式
+8. 以繁體中文回答
 
 請根據以上資料回答問題："""
 

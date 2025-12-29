@@ -26,9 +26,9 @@ LLMPurpose = Literal[
 
 # Model mapping - only translation uses different model
 _MODEL_BY_PURPOSE: dict[str, str] = {
-    "translation": "gemini-3.0-flash",
-    "graph_extraction": "gemini-3.0-flash",   # Fast extraction for GraphRAG
-    "community_summary": "gemini-3.0-flash",   # Fast summarization for communities
+    "translation": "gemini-2.5-flash",
+    "graph_extraction": "gemma-3-27b-it",   # Fast extraction for GraphRAG
+    "community_summary": "gemini-2.5-flash-lite",   # Fast summarization for communities
 }
 
 # Default model for all other purposes

@@ -21,12 +21,17 @@ from postgrest.exceptions import APIError as PostgrestAPIError
 # Local application
 from core.auth import get_current_user_id
 from supabase_client import supabase
-from data_base.vector_store_manager import add_markdown_to_knowledge_base, delete_document_from_knowledge_base
+from data_base.vector_store_manager import (
+    add_markdown_to_knowledge_base,
+    delete_document_from_knowledge_base,
+)
 from pdfserviceMD.PDF_OCR_services import ocr_service_sync
 from pdfserviceMD.ai_translate_md import translate_text
 from pdfserviceMD.markdown_to_pdf import markdown_to_pdf
 from pdfserviceMD.markdown_process import markdown_extact, replace_markdown
 from core.summary_service import schedule_summary_generation
+from graph_rag.store import GraphStore
+from graph_rag.extractor import extract_and_add_to_graph
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -115,10 +120,10 @@ async def run_post_processing_tasks(
     user_id: str,
 ) -> None:
     """
-    Background task for post-PDF processing (RAG indexing + Summary).
+    Background task for post-PDF processing (RAG indexing + GraphRAG + Summary).
 
     Called after the translated PDF is returned to user.
-    Runs RAG indexing and summary generation in background.
+    Runs RAG indexing, GraphRAG extraction, and summary generation in background.
 
     Args:
         doc_id: Document UUID.
@@ -130,7 +135,7 @@ async def run_post_processing_tasks(
     _update_processing_step(doc_id, "indexing")
 
     try:
-        # RAG indexing
+        # 1. RAG indexing
         await add_markdown_to_knowledge_base(
             user_id=user_id,
             markdown_text=markdown_text,
@@ -140,7 +145,11 @@ async def run_post_processing_tasks(
         )
         logger.info(f"[Background] RAG indexing complete for doc {doc_id}")
 
-        # Summary generation
+        # 2. GraphRAG entity extraction
+        _update_processing_step(doc_id, "graph_indexing")
+        await _run_graph_extraction(user_id, doc_id, markdown_text)
+
+        # 3. Summary generation
         schedule_summary_generation(
             doc_id=doc_id,
             text_content=markdown_text,
@@ -153,6 +162,63 @@ async def run_post_processing_tasks(
     except (RuntimeError, ValueError) as e:
         logger.warning(f"[Background] Post-processing failed for doc {doc_id}: {e}")
         # Non-fatal: PDF was already delivered
+
+
+async def _run_graph_extraction(user_id: str, doc_id: str, markdown_text: str) -> None:
+    """
+    Run GraphRAG entity extraction on document content.
+
+    Extracts entities and relations from the document and adds them to
+    the user's knowledge graph. Non-blocking and gracefully handles errors.
+
+    Args:
+        user_id: User ID for graph store.
+        doc_id: Document UUID.
+        markdown_text: Text content to extract entities from.
+    """
+    try:
+        # Split text into chunks for extraction (max ~8000 chars each)
+        chunk_size = 8000
+        chunks = [
+            markdown_text[i:i + chunk_size]
+            for i in range(0, len(markdown_text), chunk_size)
+        ]
+
+        store = GraphStore(user_id)
+        total_nodes = 0
+        total_edges = 0
+
+        for idx, chunk in enumerate(chunks):
+            if len(chunk.strip()) < 100:  # Skip very small chunks
+                continue
+            try:
+                nodes, edges = await extract_and_add_to_graph(
+                    text=chunk,
+                    doc_id=doc_id,
+                    store=store,
+                    chunk_index=idx,
+                )
+                total_nodes += nodes
+                total_edges += edges
+            except (ValueError, RuntimeError) as chunk_error:
+                logger.warning(f"[GraphRAG] Chunk {idx} extraction failed: {chunk_error}")
+                continue
+
+        # Save graph if any entities were extracted
+        if total_nodes > 0:
+            store.save()
+            logger.info(
+                f"[Background] GraphRAG complete for doc {doc_id}: "
+                f"{total_nodes} nodes, {total_edges} edges"
+            )
+        else:
+            logger.info(f"[Background] GraphRAG: No entities extracted from doc {doc_id}")
+
+    except (FileNotFoundError, PermissionError) as e:
+        logger.warning(f"[GraphRAG] Store access failed for user {user_id}: {e}")
+    except Exception as e:
+        # Catch-all to prevent graph errors from breaking the pipeline
+        logger.error(f"[GraphRAG] Unexpected error: {e}", exc_info=True)
 
 
 # --- Document List Endpoint ---
@@ -355,6 +421,7 @@ _STEP_LABELS = {
     "generating_pdf": "生成 PDF 中",
     "completed": "翻譯完成",
     "indexing": "建立索引中",
+    "graph_indexing": "建立知識圖譜中",
     "indexed": "全部完成",
     "failed": "處理失敗",
 }

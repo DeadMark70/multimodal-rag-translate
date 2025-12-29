@@ -84,6 +84,14 @@ d:\flutterserver\pdftopng\
 │   ├── global_search.py        # 社群 Map-Reduce
 │   └── router.py               # /graph 端點
 │
+├── conversations/              # 🆕 對話歷史管理
+│   ├── router.py               # CRUD 端點 (/conversations/*)
+│   └── schemas.py              # Pydantic 模型
+│
+├── migrations/                 # 🆕 SQL Migrations
+│   ├── 002_create_conversations.sql
+│   └── 003_add_conversation_id_to_chat_logs.sql
+│
 ├── image_service/              # 獨立圖片翻譯
 │   └── router.py               # API 路由 (/imagemd/*)
 │
@@ -119,10 +127,12 @@ file: UploadFile  # PDF 檔案
 
 ### RAG 問答 (`/rag`)
 
-| 端點            | 方法 | 說明                      |
-| --------------- | ---- | ------------------------- |
-| `/rag/ask`      | GET  | 基本問答                  |
-| `/rag/research` | POST | 深度研究 (Plan-and-Solve) |
+| 端點            | 方法 | 說明                                |
+| --------------- | ---- | ----------------------------------- |
+| `/rag/ask`      | GET  | 基本問答                            |
+| `/rag/research` | POST | 深度研究 (Plan-and-Solve)           |
+| `/rag/plan`     | POST | 🆕 生成研究計畫 (Human-in-the-loop) |
+| `/rag/execute`  | POST | 🆕 執行計畫 + 遞迴深入 (Drill-down) |
 
 **GET /rag/ask:**
 
@@ -166,11 +176,12 @@ enable_multi_query: bool = False # 啟用多查詢
 
 ### GraphRAG 知識圖譜 (`/graph`)
 
-| 端點              | 方法 | 說明         |
-| :---------------- | :--- | :----------- |
-| `/graph/status`   | GET  | 取得圖譜狀態 |
-| `/graph/rebuild`  | POST | 強制重建圖譜 |
-| `/graph/optimize` | POST | 執行實體融合 |
+| 端點              | 方法 | 說明                              |
+| :---------------- | :--- | :-------------------------------- |
+| `/graph/status`   | GET  | 取得圖譜狀態                      |
+| `/graph/data`     | GET  | 🆕 視覺化資料 (react-force-graph) |
+| `/graph/rebuild`  | POST | 強制重建圖譜                      |
+| `/graph/optimize` | POST | 執行實體融合                      |
 
 ---
 
@@ -181,7 +192,7 @@ enable_multi_query: bool = False # 啟用多查詢
 | 用途            | 模型               | Input Limit | Output Limit |
 | --------------- | ------------------ | ----------- | ------------ |
 | **translation** | `gemini-3.0-flash` | 1,048,576   | 8,192        |
-| **graph_***     | `gemini-3.0-flash` | 1,048,576   | 8,192        |
+| **graph\_\***   | `gemini-3.0-flash` | 1,048,576   | 8,192        |
 | **其他所有**    | `gemma-3-27b-it`   | 131,072     | 8,192        |
 
 ### LLM 用途類型
@@ -208,7 +219,7 @@ LLMPurpose = Literal[
 ```python
 from core.llm_factory import get_llm
 
-llm = get_llm("translation")  # → gemini-3.0-flash
+llm = get_llm("translation")  # → gemini-2.5-flash
 llm = get_llm("rag_qa")       # → gemma-3-27b-it
 ```
 
@@ -229,7 +240,16 @@ flowchart LR
     F --> G[頁面分塊翻譯]
     G --> H[圖片佔位符還原]
     H --> I[生成翻譯 PDF]
-    F --> J[RAG 索引 (Background)]
+    I --> J[返回 PDF]
+
+    subgraph Background["背景任務"]
+        K[RAG 索引]
+        L[🆕 GraphRAG 實體抽取]
+        M[摘要生成]
+        K --> L --> M
+    end
+
+    I -.-> K
 ```
 
 ### RAG 問答流程
@@ -317,17 +337,18 @@ uvicorn main:app --reload --port 8000
 
 ## 📈 開發路線圖
 
-| Phase | 功能                  | 狀態      |
-| ----- | --------------------- | --------- |
-| 1-3   | 基礎 RAG + Agents     | ✅ 完成   |
-| 4.1   | LLM 雙模型配置        | ✅ 完成   |
-| 4.2   | 翻譯頁面分塊          | ✅ 完成   |
-| 4.3   | 交錯式多模態問答      | ✅ 完成   |
-| 4.4   | 上下文感知圖片摘要    | ✅ 完成   |
-| 4.5   | 評估優化 (1-5 分制)   | ✅ 完成   |
-| 5     | GraphRAG (核心模組)   | ✅ 完成   |
-| 5.3   | GraphRAG 整合         | ✅ 完成   |
-| 6     | ColPali (視覺嵌入)    | 📝 待實作 |
+| Phase | 功能                         | 狀態      |
+| ----- | ---------------------------- | --------- |
+| 1-3   | 基礎 RAG + Agents            | ✅ 完成   |
+| 4.1   | LLM 雙模型配置               | ✅ 完成   |
+| 4.2   | 翻譯頁面分塊                 | ✅ 完成   |
+| 4.3   | 交錯式多模態問答             | ✅ 完成   |
+| 4.4   | 上下文感知圖片摘要           | ✅ 完成   |
+| 4.5   | 評估優化 (1-5 分制)          | ✅ 完成   |
+| 5     | GraphRAG (核心模組)          | ✅ 完成   |
+| 5.3   | GraphRAG 整合                | ✅ 完成   |
+| 5.4   | 🆕 Interactive Deep Research | ✅ 完成   |
+| 6     | ColPali (視覺嵌入)           | 📝 待實作 |
 
 ---
 

@@ -439,6 +439,139 @@
               "confidence": 0.85
             }
           }
+        },
+
+        "generate_research_plan": {
+          "path": "/rag/plan",
+          "method": "POST",
+          "description": "🆕 生成研究計畫 (Human-in-the-loop) - 返回計畫供使用者確認後再執行",
+          "authentication": true,
+          "request": {
+            "contentType": "application/json",
+            "body": {
+              "question": {
+                "type": "string",
+                "required": true,
+                "maxLength": 2000,
+                "description": "要研究的複雜問題"
+              },
+              "doc_ids": {
+                "type": "array",
+                "items": "string",
+                "required": false,
+                "description": "限定查詢的文件 ID 列表"
+              },
+              "enable_graph_planning": {
+                "type": "boolean",
+                "default": false,
+                "description": "使用圖譜感知規劃"
+              }
+            }
+          },
+          "response": {
+            "type": "ResearchPlanResponse",
+            "example": {
+              "status": "waiting_confirmation",
+              "original_question": "比較 Transformer 和 RNN 的優缺點",
+              "sub_tasks": [
+                {"id": 1, "question": "Transformer 的核心架構是什麼？", "task_type": "rag", "enabled": true},
+                {"id": 2, "question": "RNN 的優缺點是什麼？", "task_type": "rag", "enabled": true},
+                {"id": 3, "question": "兩種模型的關係和差異", "task_type": "graph_analysis", "enabled": true}
+              ],
+              "estimated_complexity": "medium",
+              "doc_ids": null
+            }
+          },
+          "notes": [
+            "使用者可修改/刪除/停用子任務後再執行",
+            "task_type 決定使用向量檢索 (rag) 或圖譜分析 (graph_analysis)"
+          ]
+        },
+
+        "execute_research_plan": {
+          "path": "/rag/execute",
+          "method": "POST",
+          "description": "🆕 執行研究計畫 - 支援遞迴深入挖掘 (Drill-down)",
+          "authentication": true,
+          "request": {
+            "contentType": "application/json",
+            "body": {
+              "original_question": {
+                "type": "string",
+                "required": true,
+                "description": "原始研究問題"
+              },
+              "sub_tasks": {
+                "type": "array",
+                "items": "EditableSubTask",
+                "required": true,
+                "description": "使用者確認後的子任務列表"
+              },
+              "doc_ids": {
+                "type": "array",
+                "items": "string",
+                "required": false,
+                "description": "限定查詢的文件 ID 列表"
+              },
+              "max_iterations": {
+                "type": "integer",
+                "default": 2,
+                "range": "1-5",
+                "description": "最大遞迴深入次數"
+              },
+              "enable_reranking": {
+                "type": "boolean",
+                "default": true,
+                "description": "啟用重排序"
+              },
+              "enable_drilldown": {
+                "type": "boolean",
+                "default": true,
+                "description": "啟用遞迴深入挖掘"
+              }
+            }
+          },
+          "response": {
+            "type": "ExecutePlanResponse",
+            "example": {
+              "question": "比較 Transformer 和 RNN 的優缺點",
+              "summary": "Transformer 使用自注意力機制，RNN 使用循環結構...",
+              "detailed_answer": "## Transformer\\n優點：平行計算...\\n## RNN\\n優點：處理序列...",
+              "sub_tasks": [
+                {"id": 1, "question": "Transformer 的核心架構是什麼？", "answer": "...", "sources": ["doc-1"], "is_drilldown": false, "iteration": 0}
+              ],
+              "all_sources": ["doc-1", "doc-2"],
+              "confidence": 0.85,
+              "total_iterations": 1
+            }
+          }
+        },
+
+        "execute_research_plan_stream": {
+          "path": "/rag/execute/stream",
+          "method": "POST",
+          "description": "🆕 執行研究計畫 (SSE 串流) - 即時進度更新",
+          "authentication": true,
+          "request": {
+            "description": "與 /rag/execute 相同"
+          },
+          "response": {
+            "type": "SSE EventStream",
+            "events": {
+              "plan_confirmed": { "task_count": "number", "enabled_count": "number" },
+              "task_start": { "id": "number", "question": "string", "task_type": "string", "iteration": "number" },
+              "task_done": { "id": "number", "question": "string", "answer": "string", "sources": "string[]", "iteration": "number" },
+              "drilldown_start": { "iteration": "number", "new_task_count": "number" },
+              "synthesis_start": { "total_tasks": "number" },
+              "complete": "ExecutePlanResponse",
+              "error": { "message": "string" }
+            }
+          },
+          "notes": [
+            "使用 Server-Sent Events (SSE)",
+            "前端使用 fetch + ReadableStream 或 EventSource",
+            "complete 事件包含完整的 ExecutePlanResponse"
+          ]
         }
       }
     },
@@ -617,6 +750,86 @@
               }
             }
           }
+        },
+        "get_visualization_data": {
+          "path": "/graph/data",
+          "method": "GET",
+          "description": "🆕 取得 react-force-graph 格式的圖譜資料，用於前端視覺化",
+          "authentication": true,
+          "response": {
+            "type": "GraphVisualizationData",
+            "example": {
+              "nodes": [
+                {"id": "Transformer", "group": 1, "val": 10, "desc": "Deep Learning Architecture"},
+                {"id": "BERT", "group": 1, "val": 8, "desc": "Pre-trained Model"},
+                {"id": "Attention", "group": 2, "val": 5, "desc": "Mechanism"}
+              ],
+              "links": [
+                {"source": "BERT", "target": "Transformer", "label": "based on"},
+                {"source": "Transformer", "target": "Attention", "label": "uses"}
+              ]
+            }
+          },
+          "notes": [
+            "空圖譜時回傳 {nodes: [], links: []}",
+            "group 用於前端節點著色 (0-4)",
+            "val 表示節點大小 (引用次數)"
+          ]
+        }
+      }
+    },
+
+    "conversations": {
+      "prefix": "/conversations",
+      "description": "🆕 對話歷史管理服務",
+      "endpoints": {
+        "list_conversations": {
+          "path": "/conversations",
+          "method": "GET",
+          "description": "取得使用者的對話列表",
+          "authentication": true,
+          "response": {
+            "type": "array[ConversationResponse]",
+            "example": [
+              {"id": "uuid", "title": "新對話", "type": "chat", "created_at": "...", "updated_at": "..."}
+            ]
+          }
+        },
+        "create_conversation": {
+          "path": "/conversations",
+          "method": "POST",
+          "description": "建立新對話",
+          "authentication": true,
+          "request": {
+            "body": {
+              "title": {"type": "string", "default": "新對話"},
+              "type": {"type": "enum", "values": ["chat", "research"], "default": "chat"}
+            }
+          }
+        },
+        "get_conversation": {
+          "path": "/conversations/{conversation_id}",
+          "method": "GET",
+          "description": "取得對話詳情 (含訊息)",
+          "authentication": true,
+          "response": {
+            "type": "ConversationDetailResponse",
+            "fields": ["id", "title", "type", "messages[]"]
+          }
+        },
+        "update_conversation": {
+          "path": "/conversations/{conversation_id}",
+          "method": "PATCH",
+          "description": "更新對話標題",
+          "authentication": true,
+          "request": {"body": {"title": {"type": "string", "required": true}}}
+        },
+        "delete_conversation": {
+          "path": "/conversations/{conversation_id}",
+          "method": "DELETE",
+          "description": "刪除對話及所有訊息",
+          "authentication": true,
+          "response": {"statusCode": 204}
         }
       }
     }
@@ -710,7 +923,32 @@
         "id": { "type": "integer" },
         "question": { "type": "string" },
         "answer": { "type": "string" },
-        "sources": { "type": "array[string]" }
+        "sources": { "type": "array[string]" },
+        "status": { "type": "string", "enum": ["pending", "loading", "completed", "failed"], "description": "🆕 任務狀態" }
+      }
+    },
+    "GraphVisualizationData": {
+      "description": "🆕 圖譜視覺化資料 (react-force-graph 格式)",
+      "fields": {
+        "nodes": { "type": "array[VisNode]", "description": "節點陣列" },
+        "links": { "type": "array[VisLink]", "description": "連結陣列" }
+      }
+    },
+    "VisNode": {
+      "description": "🆕 視覺化節點",
+      "fields": {
+        "id": { "type": "string", "description": "節點標籤" },
+        "group": { "type": "integer", "description": "分群 ID (用於著色)" },
+        "val": { "type": "integer", "description": "節點大小" },
+        "desc": { "type": "string", "description": "描述" }
+      }
+    },
+    "VisLink": {
+      "description": "🆕 視覺化連結",
+      "fields": {
+        "source": { "type": "string", "description": "來源節點 ID" },
+        "target": { "type": "string", "description": "目標節點 ID" },
+        "label": { "type": "string", "description": "關係標籤" }
       }
     }
   },
@@ -749,7 +987,7 @@
   },
 
   "metadata": {
-    "generatedAt": "2025-12-20T16:00:00+08:00",
+    "generatedAt": "2025-12-21T19:45:00+08:00",
     "generatedBy": "Antigravity Agent",
     "targetAudience": ["React Developer", "Flutter Developer", "Frontend AI Agent"],
     "language": "zh-TW (繁體中文)"

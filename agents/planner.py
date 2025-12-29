@@ -88,6 +88,32 @@ _GRAPH_PLANNER_PROMPT = """你是一個研究規劃專家。請將以下複雜�
 子問題列表："""
 
 
+# Prompt for follow-up task generation (drill-down)
+_FOLLOWUP_PROMPT = """你正在協助研究以下問題：
+{original_question}
+
+目前已找到的資訊：
+{current_findings}
+
+已經問過的問題：
+{existing_questions}
+
+請判斷是否有任何概念、數據、專有名詞或主張需要進一步在文件中「查證」或「挖掘細節」？
+
+注意：
+1. 我們只能查閱現有的文件，不能上網搜尋
+2. 不要重複已經問過的問題
+3. 只針對文件中「提到但未詳細解釋」的內容追問
+
+如果資訊已經足夠完整，請回覆：無需追加查詢
+
+如果需要深入查詢，請列出 1-3 個子任務，格式：
+1. [RAG] 具體查詢問題
+2. [GRAPH] 具體分析問題
+
+子任務列表："""
+
+
 class TaskPlanner:
     """
     Decomposes complex research questions into sub-tasks.
@@ -270,6 +296,103 @@ class TaskPlanner:
         question_lower = question.lower()
         
         return any(ind in question_lower for ind in graph_indicators)
+    
+    async def create_followup_tasks(
+        self,
+        original_question: str,
+        current_findings: str,
+        existing_tasks: List[SubTask],
+    ) -> List[SubTask]:
+        """
+        Generates follow-up tasks based on knowledge gaps in current findings.
+        
+        This method analyzes the current research results and identifies
+        concepts, data, or claims that need further investigation.
+        Used for recursive drill-down in deep research.
+        
+        Args:
+            original_question: The original research question.
+            current_findings: Summary of current findings.
+            existing_tasks: List of already executed tasks.
+            
+        Returns:
+            List of follow-up SubTask objects, or empty list if no gaps found.
+        """
+        async with self._semaphore:
+            try:
+                llm = get_llm("planner")
+                
+                # Build list of existing questions to avoid duplicates
+                existing_questions = [t.question for t in existing_tasks]
+                existing_list = "\n".join(
+                    f"- {q}" for q in existing_questions
+                )
+                
+                prompt = _FOLLOWUP_PROMPT.format(
+                    original_question=original_question,
+                    current_findings=current_findings,
+                    existing_questions=existing_list,
+                )
+                
+                message = HumanMessage(content=prompt)
+                response = await llm.ainvoke([message])
+                
+                # Check if no follow-up needed
+                content = response.content.strip()
+                if "無需追加" in content or "不需要" in content or "已經足夠" in content:
+                    logger.info("No knowledge gaps identified")
+                    return []
+                
+                # Parse follow-up tasks
+                followup_tasks = self._parse_subtasks(content)
+                
+                # Filter out duplicate questions
+                filtered_tasks = [
+                    task for task in followup_tasks
+                    if not any(
+                        self._is_similar_question(task.question, existing)
+                        for existing in existing_questions
+                    )
+                ]
+                
+                logger.info(f"Generated {len(filtered_tasks)} follow-up tasks")
+                return filtered_tasks[:3]  # Limit to 3 follow-ups per iteration
+                
+            except (RuntimeError, ValueError) as e:
+                logger.warning(f"Follow-up task generation failed: {e}")
+                return []
+    
+    def _is_similar_question(self, q1: str, q2: str) -> bool:
+        """
+        Checks if two questions are similar enough to be considered duplicates.
+        
+        Simple heuristic: checks for significant word overlap.
+        
+        Args:
+            q1: First question.
+            q2: Second question.
+            
+        Returns:
+            True if questions are similar.
+        """
+        # Simple word overlap check
+        words1 = set(q1.lower().split())
+        words2 = set(q2.lower().split())
+        
+        # Remove common stopwords
+        stopwords = {"的", "是", "什麼", "如何", "為什麼", "嗎", "呢", "了", "在", "有",
+                     "the", "is", "what", "how", "why", "a", "an", "in", "of"}
+        words1 -= stopwords
+        words2 -= stopwords
+        
+        if not words1 or not words2:
+            return False
+        
+        # Check overlap ratio
+        overlap = len(words1 & words2)
+        min_len = min(len(words1), len(words2))
+        
+        return overlap / min_len > 0.7 if min_len > 0 else False
 
 
 async def plan_research(
