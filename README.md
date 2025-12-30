@@ -38,6 +38,20 @@
 - **Plan-and-Solve**：複雜問題分解與綜合
 - **Graph-aware Planning**：圖譜輔助任務規劃
 - **深度研究端點**：`/rag/research`
+- **🆕 Interactive Deep Research**：`/rag/plan` + `/rag/execute` 互動式研究
+- **🆕 SSE 串流**：`/rag/execute/stream` 即時進度回報
+
+### 💬 對話管理
+
+- **🆕 對話歷史**：CRUD `/conversations` 端點
+- **🆕 多輪對話**：`/rag/ask?conversation_id=xxx`
+- **🆕 資料庫 Migration**：`migrations/` 目錄
+
+### 🛡️ Multi-Doc Anti-Hallucination
+
+- **🆕 文件分組 Context**：依來源檔案分組 chunks
+- **🆕 來源標籤**：從資料庫查詢實際檔名
+- **🆕 反幻覺指引**：強化 Prompt 警告
 
 ### 🖼️ 多模態支援
 
@@ -138,6 +152,9 @@ GET /rag/ask?question=什麼是機器學習
 # 指定文件查詢
 GET /rag/ask?question=摘要文件&doc_ids=uuid1,uuid2
 
+# 🆕 關聯對話
+GET /rag/ask?question=繼續上個問題&conversation_id=uuid
+
 # 深度研究
 POST /rag/research
 {
@@ -145,6 +162,14 @@ POST /rag/research
   "max_subtasks": 3,
   "enable_reranking": true
 }
+
+# 🆕 互動式深度研究 - 規劃階段
+POST /rag/plan
+{"question": "比較 nnU-Net 和 SAM-Med3D", "max_subtasks": 5}
+
+# 🆕 互動式深度研究 - 執行階段 (SSE 串流)
+POST /rag/execute/stream
+{"sub_tasks": [...], "enable_drilldown": true}
 ```
 
 ### GraphRAG 圖譜管理
@@ -208,7 +233,7 @@ file: [PDF 檔案]
 │
 ├── core/ # 核心模組
 │ ├── auth.py # Supabase JWT 認證
-│ ├── llm_factory.py # LLM 實例工廠
+│ ├── llm*factory.py # LLM 實例工廠
 │ └── summary_service.py # 文件摘要生成
 │
 ├── data_base/ # RAG 核心
@@ -230,6 +255,14 @@ file: [PDF 檔案]
 │ ├── global_search.py # 社群 Map-Reduce
 │ └── router.py # /graph 端點
 │
+├── conversations/ # 🆕 對話歷史管理
+│ ├── router.py # CRUD 端點 (/conversations/\*)
+│ └── schemas.py # Pydantic 模型
+│
+├── migrations/ # 🆕 SQL Migrations
+│ ├── 002_create_conversations.sql
+│ └── 003_add_conversation_id_to_chat_logs.sql
+│
 ├── agents/ # Agent 模組
 │ ├── evaluator.py # Self-RAG 評估
 │ ├── planner.py # 任務分解 (支援 GraphRAG)
@@ -249,9 +282,14 @@ file: [PDF 檔案]
 │ ├── router.py # /imagemd 端點
 │ └── ocr_service.py # DocTR OCR
 │
+├── agentlog/ # 專案文件
+│ ├── codebase_overview.md # 架構總覽
+│ ├── api_documentation.json # API 文件
+│ └── frontend*\*.md # 前端整合指南
+│
 ├── checklist/ # 程式碼審核文件
 │
-└── tests/ # 單元測試 (104 tests)
+└── tests/ # 單元測試
 
 ````
 
@@ -308,6 +346,9 @@ pytest tests/ --cov=. --cov-report=html
   - [x] Local/Global Search
   - [x] 圖譜管理 API
   - [x] Planner 整合
+- [x] Phase 5.4: 🆕 Interactive Deep Research ✅
+- [x] Phase 5.5: 🆕 Conversation History ✅
+- [x] Phase 5.6: 🆕 Multi-Doc Anti-Hallucination ✅
 - [ ] Phase 6: ColPali (視覺嵌入)
 
 ---
