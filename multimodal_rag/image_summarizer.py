@@ -292,6 +292,108 @@ class ImageSummarizer:
         
         return processed
 
+    def _get_reexamine_prompt(
+        self,
+        specific_question: str,
+        original_summary: str = "",
+    ) -> str:
+        """
+        生成針對性問題的圖片分析 Prompt。
+        
+        Args:
+            specific_question: 具體問題 (如「圖中 X 的數值是多少？」)
+            original_summary: 原始摘要，提供上下文
+            
+        Returns:
+            完整的 prompt 字串
+        """
+        context_section = ""
+        if original_summary:
+            truncated = original_summary[:500] + "..." if len(original_summary) > 500 else original_summary
+            context_section = f"""【先前摘要】
+{truncated}
+
+"""
+        
+        return f"""{context_section}請用繁體中文針對以下具體問題分析此圖片：
+
+【問題】{specific_question}
+
+【回答要求】
+1. 直接回答問題，不要泛泛而談
+2. 如果是數據問題，請從圖中讀取具體數值
+3. 如果圖中找不到答案，請明確說明「圖中未顯示此資訊」
+4. 如果需要估算，請說明估算依據
+
+請提供簡潔精確的回答："""
+
+    async def re_examine_image(
+        self,
+        image_path: str,
+        specific_question: str,
+        original_summary: str = "",
+    ) -> str:
+        """
+        對圖片進行針對性問題分析（進階視覺查證）。
+        
+        此方法允許 Agent 對已索引的圖片提出具體問題進行二次分析，
+        適用於需要精確數據驗證的深度研究場景。
+        
+        Args:
+            image_path: 圖片路徑
+            specific_question: 具體問題 (如「圖中 X 的數值是多少？」)
+            original_summary: 原始摘要 (可選，提供上下文以提升準確度)
+            
+        Returns:
+            針對問題的詳細回答
+            
+        Raises:
+            FileNotFoundError: 圖片不存在
+            ValueError: 問題為空
+        """
+        # 驗證輸入
+        if not specific_question or len(specific_question.strip()) < 3:
+            raise ValueError("具體問題不能為空或過短")
+        
+        image_path = os.path.normpath(image_path)
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"圖片不存在: {image_path}")
+        
+        async with self._semaphore:
+            # 預處理圖片
+            b64_image = self._preprocess_image(image_path)
+            if not b64_image:
+                return "Error: 無法處理圖片檔案"
+            
+            # 生成針對性 prompt
+            prompt = self._get_reexamine_prompt(
+                specific_question=specific_question,
+                original_summary=original_summary,
+            )
+            
+            # 呼叫 Gemini Vision API
+            message = HumanMessage(
+                content=[
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}
+                    }
+                ]
+            )
+            
+            try:
+                llm = get_llm("image_caption")
+                response = await llm.ainvoke([message])
+                
+                logger.info(f"Re-examined image: {os.path.basename(image_path)}")
+                return response.content
+                
+            except (RuntimeError, ValueError) as e:
+                logger.error(f"Failed to re-examine image: {e}")
+                return f"Error: 圖片分析失敗 - {str(e)}"
+
 
 # Global instance
 summarizer = ImageSummarizer()
+

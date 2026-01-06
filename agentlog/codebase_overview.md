@@ -26,9 +26,9 @@ The Multimodal RAG System is a FastAPI-based application designed for:
   - **Community**: Leiden algorithm for community detection and summarization.
   - **Search**: Local and Global search strategies.
 - **Agents (`agents/`)**:
-  - **Planner**: Decomposes complex user queries into sub-tasks.
+  - **Planner**: Decomposes complex user queries into sub-tasks. 🆕 `refine_query_from_evaluation()` for smart retry. 🆕 `_is_similar_question()` uses character bigrams for CJK support.
   - **Evaluator**: Self-RAG implementation to score retrieval quality and generation hallucinations.
-  - **Synthesizer**: Combines results from sub-tasks into a coherent final answer.
+  - **Synthesizer**: Combines results from sub-tasks into a coherent final answer. 🆕 Academic report template.
 - **LLM Factory (`core/llm_factory.py`)**: Centralized management of LLM instances with purpose-specific configurations (Temperature, Max Tokens).
 
 ## Data Flow
@@ -50,6 +50,7 @@ The Multimodal RAG System is a FastAPI-based application designed for:
 2.  **Retrieval**: Vectors are fetched from FAISS.
 3.  **Reranking**: Top-K results are re-ordered by relevance.
     - **Generation**: LLM (`gemma-3-27b-it`) generates answer based on context.
+4.  🆕 **Context Enricher**: Short chunks (<100 chars) expanded using parent chunks.
 
 ### 3. GraphRAG Pipeline (Integrated)
 
@@ -63,8 +64,8 @@ The Multimodal RAG System is a FastAPI-based application designed for:
 
 1.  **Planning**: `Planner` breaks down the query.
 2.  **Execution**: Each sub-task is executed via the RAG pipeline.
-3.  **Evaluation**: `Evaluator` checks quality.
-4.  **Synthesis**: `Synthesizer` compiles the final report.
+3.  **Evaluation**: `Evaluator` checks quality. 🆕 Triggers smart retry if score < 3.
+4.  **Synthesis**: `Synthesizer` compiles the final report. 🆕 Academic format with 5 sections.
 
 ## Key Directories
 
@@ -72,7 +73,7 @@ The Multimodal RAG System is a FastAPI-based application designed for:
 | :---------------- | :---------------- | :------------------------------------------------------------------------- |
 | `core/`           | Infrastructure    | `llm_factory.py`, `auth.py`, `supabase_client.py`                          |
 | `pdfserviceMD/`   | PDF Logic         | `PDF_OCR_services.py`, `ai_translate_md.py`                                |
-| `data_base/`      | RAG Logic         | `vector_store_manager.py`, `RAG_QA_service.py`                             |
+| `data_base/`      | RAG Logic         | `vector_store_manager.py`, `RAG_QA_service.py`, `deep_research_service.py` |
 | `graph_rag/`      | Knowledge Graph   | `store.py`, `extractor.py`, `community_builder.py`                         |
 | `agents/`         | AI Agents         | `planner.py`, `evaluator.py`, `synthesizer.py`                             |
 | `multimodal_rag/` | Vision RAG        | `image_summarizer.py`                                                      |
@@ -87,6 +88,7 @@ The Multimodal RAG System is a FastAPI-based application designed for:
 - **Asynchronous Processing**: Heavy tasks (OCR, Translation) run in threadpools or background tasks.
 - **Graph-based Modeling**: `graph_rag/store.py` uses NetworkX for knowledge representation.
 - **Anti-Hallucination**: 🆕 Document-grouped context with source labels in RAG prompts.
+- **Evaluation-Driven Loop**: 🆕 Smart retry based on evaluator feedback in research pipeline.
 
 ## Model Configuration (Internal Defaults)
 
@@ -99,13 +101,15 @@ These are configured in `core/llm_factory.py` and are not currently exposed as e
 
 ## Roadmap Status
 
-| Phase         | Feature                         | Status      |
-| :------------ | :------------------------------ | :---------- |
-| **Phase 1-3** | Basic RAG + Agents              | ✅ Complete |
-| **Phase 4**   | Multimodal Features             | ✅ Complete |
-| **Phase 5**   | GraphRAG (Core Modules)         | ✅ Complete |
-| **Phase 5.3** | GraphRAG Integration            | ✅ Complete |
-| **Phase 5.4** | 🆕 Interactive Deep Research    | ✅ Complete |
-| **Phase 5.5** | 🆕 Conversation History         | ✅ Complete |
-| **Phase 5.6** | 🆕 Multi-Doc Anti-Hallucination | ✅ Complete |
-| **Phase 6**   | ColPali (Visual Embeddings)     | 📝 Planned  |
+| Phase         | Feature                              | Status      |
+| :------------ | :----------------------------------- | :---------- |
+| **Phase 1-3** | Basic RAG + Agents                   | ✅ Complete |
+| **Phase 4**   | Multimodal Features                  | ✅ Complete |
+| **Phase 5**   | GraphRAG (Core Modules)              | ✅ Complete |
+| **Phase 5.3** | GraphRAG Integration                 | ✅ Complete |
+| **Phase 5.4** | 🆕 Interactive Deep Research         | ✅ Complete |
+| **Phase 5.5** | 🆕 Conversation History              | ✅ Complete |
+| **Phase 5.6** | 🆕 Multi-Doc Anti-Hallucination      | ✅ Complete |
+| **Phase 5.7** | 🆕 Deep Research Upgrade (Phase 1+2) | ✅ Complete |
+| **Phase 5.8** | 🆕 Deep Image Analysis (Phase 3)     | ✅ Complete |
+| **Phase 6**   | ColPali (Visual Embeddings)          | 📝 Planned  |

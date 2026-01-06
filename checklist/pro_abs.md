@@ -1,6 +1,6 @@
 **Task: Write the "Abstract" section.**
 
-Based on the following information, generate a comprehensive abstract (approx. 500 words):
+Based on the following information, generate a comprehensive abstract (approx. 1200 words):
 
 - **Background:** [隨著大型語言模型 (LLM) 的快速發展，自然語言處理技術在理解和生成文本方面取得了顯著突破。然而，現實世界中大量的知識仍以非結構化或半結構化的格式（如 PDF 文件、掃描文檔、圖表）存在。傳統的關鍵字搜尋引擎難以捕捉這些文件中的深層語義，而標準的檢索增強生成 (RAG) 系統在面對長篇文檔、複雜排版（如多欄位、表格、圖片）以及跨文檔的綜合推理時，往往面臨上下文遺失和檢索準確度不足的挑戰。此外，跨語言的知識獲取障礙，亦限制了使用者對全球資訊的有效利用。
   ]
@@ -18,7 +18,12 @@ Based on the following information, generate a comprehensive abstract (approx. 5
 3.  **代理人驅動的深度研究 (Agentic Deep Research)**：引入 "Plan-and-Solve" 代理架構，自動將複雜問題拆解為子任務，並透過遞迴檢索與自我評估 (Self-RAG) 生成綜合性報告。
 4.  **多模態理解**：整合視覺模型以理解與摘要文檔中的圖表與影像，豐富檢索的上下文。]
 
-- **Applications:** [在此填入應用，例如：輔助教學、考試評分、自動採譜]
+- **Applications:** [本系統具備廣泛的應用潛力，包括但不限於：
+
+1.  **學術研究輔助**：協助研究人員快速閱讀、翻譯並綜述大量外文期刊論文，自動生成文獻回顧。
+2.  **企業知識管理**：應用於技術手冊、法律合約或財務報告的智慧問答，提供精確且具備引用來源的決策支持。
+3.  **自動化內容轉化**：將掃描的紙本資料轉化為可編輯、可檢索的數位資產，並支援多語言出版。
+4.  **教育與學習**：為學生提供互動式的教材導讀與深度問答服務，克服語言障礙並提升學習效率。]
 
 **Requirement:**
 

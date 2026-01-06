@@ -73,6 +73,7 @@ class ExecutePlanRequest(BaseModel):
         max_iterations: Maximum drill-down iterations (1-5).
         enable_reranking: Enable cross-encoder reranking.
         enable_drilldown: Enable recursive drill-down for knowledge gaps.
+        enable_deep_image_analysis: Enable deep image analysis for specific questions.
     """
     original_question: str
     sub_tasks: List[EditableSubTask]
@@ -80,6 +81,10 @@ class ExecutePlanRequest(BaseModel):
     max_iterations: int = Field(default=2, ge=1, le=5)
     enable_reranking: bool = True
     enable_drilldown: bool = True
+    enable_deep_image_analysis: bool = Field(
+        default=False,
+        description="啟用進階圖片查證（針對特定問題重新分析圖片，會增加 API 調用）"
+    )
 
 
 class DrillDownTask(BaseModel):

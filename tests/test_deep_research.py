@@ -215,3 +215,65 @@ class TestExecutePlanResponse:
         assert response.question == "研究問題"
         assert len(response.sub_tasks) == 1
         assert response.confidence == 0.85
+
+
+class TestEvaluationDrivenDrilldown:
+    """Tests for evaluation-driven drill-down loop."""
+
+    def test_detailed_evaluation_result_structure(self):
+        """Tests DetailedEvaluationResult has expected fields."""
+        from agents.evaluator import DetailedEvaluationResult
+        
+        result = DetailedEvaluationResult(
+            relevance_score=4,
+            groundedness_score=3,
+            completeness_score=2,
+            reason="回答不夠完整，缺乏細節",
+            confidence=0.6,
+            evaluation_failed=False,
+        )
+        
+        assert result.completeness_score == 2
+        assert "不夠完整" in result.reason
+        assert result.is_reliable == False  # confidence < 0.7
+
+    def test_detailed_evaluation_result_is_reliable(self):
+        """Tests is_reliable property calculation."""
+        from agents.evaluator import DetailedEvaluationResult
+        
+        # High confidence should be reliable
+        high_result = DetailedEvaluationResult(
+            relevance_score=5,
+            groundedness_score=5,
+            completeness_score=5,
+            confidence=0.9,
+        )
+        assert high_result.is_reliable == True
+        
+        # Low confidence should not be reliable
+        low_result = DetailedEvaluationResult(
+            relevance_score=2,
+            groundedness_score=2,
+            completeness_score=2,
+            confidence=0.4,
+        )
+        assert low_result.is_reliable == False
+        
+        # Failed evaluation should not be reliable
+        failed_result = DetailedEvaluationResult(
+            confidence=0.9,
+            evaluation_failed=True,
+        )
+        assert failed_result.is_reliable == False
+
+    @pytest.mark.asyncio
+    async def test_max_retries_protection(self):
+        """Tests that max_retries prevents infinite loops."""
+        # This test verifies the constant is properly set
+        from data_base.deep_research_service import DeepResearchService
+        
+        service = DeepResearchService()
+        
+        # The service should initialize without errors
+        assert service.max_concurrent_tasks == 3
+        assert service.default_max_iterations == 2

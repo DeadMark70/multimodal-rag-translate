@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 # Third-party
 import pytest
-from langchain.schema import Document
+from langchain_core.documents import Document
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

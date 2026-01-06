@@ -58,6 +58,7 @@ interface ExecutePlanRequest {
   max_iterations?: number; // 1-5，預設 2
   enable_reranking?: boolean;
   enable_drilldown?: boolean; // 啟用遞迴深入
+  enable_deep_image_analysis?: boolean; // 🆕 啟用進階圖片查證 (預設 false)
 }
 
 // Response: ExecutePlanResponse (完整結果)

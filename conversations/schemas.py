@@ -23,6 +23,7 @@ class ConversationCreate(BaseModel):
     """
     title: Optional[str] = Field(default="新對話", max_length=200)
     type: Literal["chat", "research"] = "chat"
+    metadata: Optional[dict] = Field(default_factory=dict)
 
 
 class ConversationUpdate(BaseModel):
@@ -33,6 +34,21 @@ class ConversationUpdate(BaseModel):
         title: New conversation title.
     """
     title: str = Field(..., min_length=1, max_length=200)
+    metadata: Optional[dict] = None
+
+
+class MessageCreate(BaseModel):
+    """
+    Request model for adding a new message to a conversation.
+    
+    Attributes:
+        role: Message role ('user', 'assistant', 'system').
+        content: Message content.
+        metadata: Optional metadata.
+    """
+    role: Literal["user", "assistant", "system"]
+    content: str
+    metadata: Optional[dict] = Field(default_factory=dict)
 
 
 class ConversationResponse(BaseModel):
@@ -45,12 +61,14 @@ class ConversationResponse(BaseModel):
         type: Conversation type.
         created_at: Creation timestamp.
         updated_at: Last update timestamp.
+        metadata: Optional metadata.
     """
     id: UUID
     title: str
     type: Literal["chat", "research"]
     created_at: datetime
     updated_at: datetime
+    metadata: Optional[dict] = None
 
 
 class ChatMessageResponse(BaseModel):
@@ -59,15 +77,15 @@ class ChatMessageResponse(BaseModel):
     
     Attributes:
         id: Message ID.
-        role: Message role ('user' or 'assistant').
+        role: Message role ('user' or 'assistant' or 'system').
         content: Message content.
-        source_pages: Optional source page references.
+        metadata: Optional metadata.
         created_at: Message timestamp.
     """
     id: UUID
-    role: Literal["user", "assistant"]
+    role: Literal["user", "assistant", "system"]
     content: str
-    source_pages: Optional[dict] = None
+    metadata: Optional[dict] = None
     created_at: datetime
 
 

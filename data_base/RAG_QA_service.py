@@ -29,6 +29,7 @@ from data_base.query_transformer import (
     transform_query_multi,
     reciprocal_rank_fusion,
 )
+from data_base.parent_child_store import ParentDocumentStore
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -197,6 +198,108 @@ async def _get_graph_context(
         return ""
 
 
+# Context Enricher constants
+_MIN_CHUNK_LENGTH = 100       # Minimum characters to trigger expansion
+_MAX_EXPANDED_CHUNKS = 5      # Maximum number of chunks to expand
+_MAX_TOTAL_CHARS = 15000      # Maximum total characters after expansion
+
+
+def _expand_short_chunks(
+    documents: List[Document],
+    user_id: str,
+) -> List[Document]:
+    """
+    Expands short chunks using their parent documents for better context.
+    
+    When a retrieved chunk is too short (< 100 chars), this function
+    replaces it with its parent chunk to avoid out-of-context answers.
+    
+    Args:
+        documents: Retrieved documents from vector search.
+        user_id: User's ID for accessing parent store.
+        
+    Returns:
+        List of documents with short chunks expanded.
+        
+    Note:
+        - Uses defensive programming for missing parent_id metadata
+        - Implements token control to prevent prompt overflow
+        - Wraps I/O operations in try-except for graceful degradation
+    """
+    if not documents:
+        return documents
+    
+    # Check if any document needs expansion
+    short_chunks = [
+        (i, doc) for i, doc in enumerate(documents)
+        if len(doc.page_content) < _MIN_CHUNK_LENGTH
+    ]
+    
+    if not short_chunks:
+        return documents
+    
+    # Load parent store with error handling
+    try:
+        parent_store = ParentDocumentStore(user_id)
+    except (IOError, OSError, EOFError) as e:
+        logger.warning(f"Failed to load parent store: {e}")
+        return documents  # Return original documents on failure
+    
+    # Track expansion stats
+    expanded_count = 0
+    total_chars = sum(len(doc.page_content) for doc in documents)
+    expanded_docs = list(documents)  # Create a copy
+    
+    for idx, doc in short_chunks:
+        # Check expansion limits
+        if expanded_count >= _MAX_EXPANDED_CHUNKS:
+            logger.debug(f"Reached max expanded chunks limit ({_MAX_EXPANDED_CHUNKS})")
+            break
+        
+        if total_chars >= _MAX_TOTAL_CHARS:
+            logger.debug(f"Reached max total chars limit ({_MAX_TOTAL_CHARS})")
+            break
+        
+        # Defensive programming: check for parent_id
+        parent_id = doc.metadata.get('parent_id')
+        if not parent_id:
+            # No parent_id, skip this chunk
+            continue
+        
+        # Try to get parent chunk
+        try:
+            parent_doc = parent_store.get_parent(parent_id)
+            if parent_doc and len(parent_doc.page_content) > len(doc.page_content):
+                # Calculate new total chars
+                new_total = total_chars - len(doc.page_content) + len(parent_doc.page_content)
+                
+                if new_total <= _MAX_TOTAL_CHARS:
+                    # Create new document with parent content but preserve metadata
+                    new_metadata = doc.metadata.copy()
+                    new_metadata['expanded_from_parent'] = True
+                    new_metadata['original_length'] = len(doc.page_content)
+                    
+                    expanded_docs[idx] = Document(
+                        page_content=parent_doc.page_content,
+                        metadata=new_metadata,
+                    )
+                    
+                    total_chars = new_total
+                    expanded_count += 1
+                    logger.debug(
+                        f"Expanded chunk {idx}: {len(doc.page_content)} -> "
+                        f"{len(parent_doc.page_content)} chars"
+                    )
+                    
+        except (KeyError, AttributeError) as e:
+            logger.warning(f"Failed to expand chunk {idx}: {e}")
+            continue
+    
+    if expanded_count > 0:
+        logger.info(f"Context Enricher: Expanded {expanded_count} short chunks")
+    
+    return expanded_docs
+
 async def rag_answer_question(
     question: str,
     user_id: str,
@@ -361,6 +464,9 @@ async def rag_answer_question(
             search_mode=graph_search_mode,
         )
 
+    # Step 5.6: Context Enricher - expand short chunks
+    docs = _expand_short_chunks(docs, user_id)
+
     # Step 6: Separate data, label sources, and deduplicate
     text_context: List[str] = []
     image_paths: Set[str] = set()
@@ -421,8 +527,15 @@ async def rag_answer_question(
             img_path = doc.metadata.get("image_path")
             if img_path and os.path.exists(img_path):
                 image_paths.add(img_path)
-            # Also add image summary to text context as supplementary info
-            if doc.page_content:
+                # Normalize path for Markdown compatibility (Windows backslash -> forward slash)
+                normalized_path = img_path.replace("\\", "/")
+                # Include image path in text context for LLM to reference
+                if doc.page_content:
+                    chunks_by_doc[source_label].append(
+                        f"[圖片摘要] (路徑: {normalized_path})\n{doc.page_content}"
+                    )
+            elif doc.page_content:
+                # No valid image path, just include summary
                 chunks_by_doc[source_label].append(f"[圖片摘要] {doc.page_content}")
         else:
             if doc.page_content:

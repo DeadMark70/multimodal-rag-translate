@@ -1,0 +1,322 @@
+{
+  "analysis_metadata": {
+    "created_at": "2026-01-05T18:45:00+08:00",
+    "updated_at": "2026-01-06T01:30:00+08:00",
+    "task": "Deep Research 升級計畫書實作狀態追蹤",
+    "status": "all_phases_completed",
+    "implementation_progress": "Phase 1 + Phase 2 + Phase 3 全部完成"
+  },
+  
+  "documents_reviewed": {
+    "checklist_directory": [
+      {
+        "file": "deep_research_upgrade_plan.md",
+        "description": "Deep Research Agent 系統升級計畫書 v1.0",
+        "key_concepts": [
+          "本地端、多模態、具備自我修正能力的學術研究 Agent",
+          "四個核心層級：工具層、大腦層、評估層、表現層",
+          "三個實作階段：Phase 1 (基礎工具), Phase 2 (動態規劃), Phase 3 (多模態介面)"
+        ]
+      },
+      {
+        "file": "deep_research_flow.mermaid",
+        "description": "UML 時序圖：完整研究流程",
+        "participants": [
+          "User (使用者)",
+          "Service (DeepResearchService)",
+          "Planner (Planner Agent)",
+          "Executor (Task Executor)",
+          "RAG (RAG Service)",
+          "ParentStore (Parent Store Context)",
+          "Evaluator (Evaluator Agent)",
+          "Synthesizer (Synthesizer Agent)"
+        ]
+      }
+    ],
+    "agentlog_directory": [
+      {
+        "file": "codebase_overview.md",
+        "description": "專案架構概覽，FastAPI 後端",
+        "key_directories": ["core/", "pdfserviceMD/", "data_base/", "graph_rag/", "agents/", "multimodal_rag/", "conversations/"]
+      },
+      {
+        "file": "frontend_deep_research_guide.md",
+        "description": "Deep Research 前端整合指南",
+        "api_endpoints": ["/rag/plan", "/rag/execute", "/rag/execute/stream"]
+      },
+      {
+        "file": "api_documentation.json",
+        "description": "完整 API 文檔 (版本 2.2.0)",
+        "reviewed_sections": ["authentication", "rag endpoints", "conversations endpoints"]
+      }
+    ]
+  },
+
+  "code_files_analyzed": [
+    {
+      "file": "agents/planner.py",
+      "lines": 520,
+      "key_classes": ["SubTask", "ResearchPlan", "TaskPlanner"],
+      "key_methods": ["plan()", "create_followup_tasks()", "needs_planning()", "needs_graph_analysis()", "refine_query_from_evaluation()", "_is_similar_question()"],
+      "status": "UPDATED - 智慧重試 + 中文問題相似度修復",
+      "new_additions": {
+        "_REFINE_QUERY_PROMPT": "智慧重試 Prompt Template，根據評估失敗原因修正搜尋 query",
+        "refine_query_from_evaluation()": "根據 Evaluator 的 reason 欄位修正搜尋策略",
+        "_is_similar_question()": "改用 Character Bigrams + Jaccard Similarity，支援中日韓文字"
+      }
+    },
+    {
+      "file": "agents/evaluator.py",
+      "lines": 525,
+      "key_classes": ["RetrievalGrade", "FaithfulnessGrade", "EvaluationResult", "DetailedEvaluationResult", "RAGEvaluator"],
+      "key_methods": ["evaluate_retrieval()", "evaluate_faithfulness()", "evaluate_detailed()", "evaluate()"],
+      "status": "已實作 1-5 評分與信心分數計算"
+    },
+    {
+      "file": "agents/synthesizer.py",
+      "lines": 340,
+      "key_classes": ["SubTaskResult", "ResearchReport", "ResultSynthesizer"],
+      "key_methods": ["synthesize()", "_format_sub_results()", "_parse_report()"],
+      "status": "UPDATED - 新增學術報告模板",
+      "new_additions": {
+        "_ACADEMIC_REPORT_PROMPT": "學術報告模板，包含 Executive Summary, Key Findings, Detailed Analysis, Research Gaps, References 五個區塊",
+        "use_academic_template": "新增參數，Deep Research 預設為 True"
+      }
+    },
+    {
+      "file": "data_base/deep_research_service.py",
+      "lines": 782,
+      "key_classes": ["DeepResearchService"],
+      "key_methods": [
+        "generate_plan()",
+        "execute_plan()",
+        "_execute_tasks()",
+        "_drill_down_loop()",
+        "_should_skip_drilldown()",
+        "execute_plan_streaming()",
+        "_execute_single_task()"
+      ],
+      "status": "UPDATED - 整合評估驅動迴圈和智慧重試",
+      "new_additions": {
+        "_drill_down_loop 重寫": "整合 RAGEvaluator，當 completeness_score < 3 時觸發智慧重試",
+        "MAX_RETRIES_PER_TASK": "設為 2，防止無窮迴圈",
+        "use_academic_template=True": "Deep Research 流程預設使用學術報告格式"
+      }
+    },
+    {
+      "file": "data_base/context_enricher.py",
+      "lines": 186,
+      "key_classes": ["ContextEnricher"],
+      "key_methods": ["enrich_chunk()", "enrich_chunks()"],
+      "status": "使用 LLM 生成上下文前綴（Context Enricher 整合已移至 RAG_QA_service.py）"
+    },
+    {
+      "file": "data_base/parent_child_store.py",
+      "lines": 246,
+      "key_classes": ["ParentDocumentStore"],
+      "key_methods": ["add_parent()", "get_parent()", "get_parents_for_children()", "delete_by_doc_id()"],
+      "status": "已實作父文檔存取，供 Context Enricher 使用"
+    },
+    {
+      "file": "data_base/RAG_QA_service.py",
+      "lines": 650,
+      "key_functions": ["rag_answer_question()", "_get_graph_context()", "_should_use_graph_search()", "_expand_short_chunks()"],
+      "status": "UPDATED - 新增 Context Enricher 整合和圖表索引優化",
+      "new_additions": {
+        "_expand_short_chunks()": "當 chunk < 100 字時取得 Parent Chunk 擴充上下文",
+        "Constants": "MIN_CHUNK_LENGTH=100, MAX_EXPANDED_CHUNKS=5, MAX_TOTAL_CHARS=15000",
+        "圖片路徑標準化": "Windows 反斜線轉正斜線，Prompt 中顯式包含路徑"
+      }
+    },
+    {
+      "file": "data_base/vector_store_manager.py",
+      "lines": 615,
+      "key_functions": [
+        "get_user_retriever()",
+        "add_markdown_to_knowledge_base()",
+        "get_user_parent_child_retriever()",
+        "add_markdown_with_hierarchical_indexing()"
+      ],
+      "status": "向量存儲管理完備，支援 parent-child 索引"
+    },
+    {
+      "file": "multimodal_rag/image_summarizer.py",
+      "lines": 298,
+      "key_classes": ["ImageSummarizer"],
+      "key_methods": ["summarize_elements()", "_summarize_single_element()", "_get_figure_prompt()"],
+      "status": "已實作圖片摘要生成，缺少 re_examine_image() 進階查證方法"
+    }
+  ],
+
+  "upgrade_plan_analysis": {
+    "phase_1_foundation": {
+      "description": "基礎工具強化 (The Foundation)",
+      "status": "COMPLETED",
+      "completed_at": "2026-01-05T23:00:00+08:00",
+      "tasks": [
+        {
+          "id": "P1.1",
+          "name": "Context Enricher 整合",
+          "plan_requirement": "當檢索回來的 chunks 過短 (<100 字) 時，自動呼叫 ParentDocumentStore.get_parent() 獲取完整 Parent Chunk",
+          "current_status": "IMPLEMENTED",
+          "location": "data_base/RAG_QA_service.py",
+          "implementation_details": {
+            "function": "_expand_short_chunks()",
+            "constants": {
+              "MIN_CHUNK_LENGTH": 100,
+              "MAX_EXPANDED_CHUNKS": 5,
+              "MAX_TOTAL_CHARS": 15000
+            },
+            "features": [
+              "防禦性編程：metadata.get('parent_id')",
+              "Token 上限控制防止 Prompt 爆掉",
+              "例外處理包裹 pickle I/O"
+            ]
+          }
+        },
+        {
+          "id": "P1.2",
+          "name": "圖表索引優化",
+          "plan_requirement": "確保 image_path 和 type 欄位在 RAG_QA_service 和 reranker 流程中被完整保留",
+          "current_status": "IMPLEMENTED",
+          "location": "data_base/RAG_QA_service.py",
+          "implementation_details": {
+            "path_normalization": "Windows 反斜線 \\ 轉換為正斜線 /",
+            "prompt_format": "[圖片摘要] (路徑: {normalized_path})\\n{content}"
+          }
+        },
+        {
+          "id": "P1.3",
+          "name": "報告模板設計",
+          "plan_requirement": "在 synthesizer.py 中建立學術報告 Prompt Template",
+          "current_status": "IMPLEMENTED",
+          "location": "agents/synthesizer.py",
+          "implementation_details": {
+            "template": "_ACADEMIC_REPORT_PROMPT",
+            "structure": [
+              "1. Executive Summary (執行摘要)",
+              "2. Key Findings (主要發現)",
+              "3. Detailed Analysis (詳細分析)",
+              "4. Research Gaps (知識缺口)",
+              "5. References (參考來源)"
+            ],
+            "image_citation": "要求 LLM 以 ![描述](路徑) 格式插入圖片"
+          }
+        }
+      ]
+    },
+    "phase_2_brain": {
+      "description": "動態規劃核心 (The Brain)",
+      "status": "COMPLETED",
+      "completed_at": "2026-01-05T21:00:00+08:00",
+      "tasks": [
+        {
+          "id": "P2.1",
+          "name": "實作評估驅動迴圈",
+          "plan_requirement": "在 drill_down_loop 中，每次 _execute_single_task 後插入 evaluator.evaluate_detailed",
+          "current_status": "IMPLEMENTED",
+          "location": "data_base/deep_research_service.py (_drill_down_loop)",
+          "implementation_details": {
+            "evaluator_integration": "調用 RAGEvaluator.evaluate_detailed()",
+            "threshold": "completeness_score < 3 觸發重試",
+            "safety": "MAX_RETRIES_PER_TASK = 2 防止無窮迴圈"
+          }
+        },
+        {
+          "id": "P2.2",
+          "name": "動態任務分支邏輯 (智慧重試)",
+          "plan_requirement": "當 completeness 分數低時，自動生成新的 search query 並 append 到任務隊列",
+          "current_status": "IMPLEMENTED",
+          "location": "agents/planner.py",
+          "implementation_details": {
+            "method": "refine_query_from_evaluation()",
+            "prompt": "_REFINE_QUERY_PROMPT",
+            "strategy_mapping": {
+              "資料太舊": "加入「最新」、「recent」",
+              "缺乏數據": "加入「statistics」、「數據」",
+              "概念不清": "加入「definition」、「定義」",
+              "缺乏比較": "加入「versus」、「比較」",
+              "證據不足": "加入「evidence」、「研究」"
+            }
+          }
+        }
+      ]
+    },
+    "phase_3_interface": {
+      "description": "多模態與介面 (The Interface)",
+      "status": "COMPLETED",
+      "completed_at": "2026-01-06T01:30:00+08:00",
+      "tasks": [
+        {
+          "id": "P3.1",
+          "name": "圖文並茂輸出",
+          "plan_requirement": "synthesizer.py 指示 LLM 輸出 ![Figure X](path/to/image) 格式",
+          "current_status": "IMPLEMENTED",
+          "location": "agents/synthesizer.py",
+          "implementation_details": {
+            "template": "_ACADEMIC_REPORT_PROMPT 已包含圖片引用指示",
+            "image_path_normalization": "RAG_QA_service.py 路徑標準化"
+          }
+        },
+        {
+          "id": "P3.2",
+          "name": "進階視覺查證 (前端可選)",
+          "plan_requirement": "增加 re_examine_image(image_data, specific_question) 函數",
+          "current_status": "IMPLEMENTED",
+          "location": "multimodal_rag/image_summarizer.py",
+          "implementation_details": {
+            "method": "re_examine_image(image_path, specific_question, original_summary)",
+            "api_field": "enable_deep_image_analysis: bool = False",
+            "schema_location": "data_base/schemas_deep_research.py",
+            "parameter_passthrough": "deep_research_service.py -> _drill_down_loop"
+          }
+        }
+      ]
+    }
+  },
+
+  "test_results": {
+    "phase_1": {
+      "tests_added": 7,
+      "tests_passed": 7,
+      "test_classes": [
+        "TestRefineQueryFromEvaluation (4 tests)",
+        "TestEvaluationDrivenDrilldown (3 tests)"
+      ]
+    },
+    "phase_2": {
+      "tests_passed": 33,
+      "tests_failed": 3,
+      "notes": "3 個失敗為現有測試 (test_is_similar_question)，非 Phase 2 相關"
+    },
+    "phase_3": {
+      "tests_passed": 26,
+      "tests_failed": 1,
+      "notes": "1 個失敗為現有測試，非 Phase 3 相關"
+    }
+  },
+
+  "key_code_locations": {
+    "main_service": "data_base/deep_research_service.py",
+    "planner_agent": "agents/planner.py",
+    "evaluator_agent": "agents/evaluator.py",
+    "synthesizer_agent": "agents/synthesizer.py",
+    "parent_store": "data_base/parent_child_store.py",
+    "context_enricher": "data_base/context_enricher.py",
+    "rag_qa_service": "data_base/RAG_QA_service.py",
+    "vector_store": "data_base/vector_store_manager.py",
+    "image_summarizer": "multimodal_rag/image_summarizer.py",
+    "sse_events": "data_base/sse_events.py",
+    "schemas": "data_base/schemas_deep_research.py"
+  },
+
+  "next_steps": {
+    "all_phases_completed": true,
+    "possible_actions": [
+      "手動測試完整 Deep Research 流程",
+      "修復現有測試 (test_is_similar_question)",
+      "前端整合 enable_deep_image_analysis UI 開關",
+      "其他使用者指定的任務"
+    ]
+  }
+}

@@ -1,0 +1,69 @@
+sequenceDiagram
+    participant User as 使用者
+    participant Service as DeepResearchService
+    participant Planner as Planner Agent
+    participant Executor as Task Executor
+    participant RAG as RAG Service
+    participant ParentStore as Parent Store (Context)
+    participant Evaluator as Evaluator Agent
+    participant Synthesizer as Synthesizer Agent
+
+    User->>Service: 提問: "Transformer 架構的演變?"
+    activate Service
+
+    %% Phase 1: Planning
+    Service->>Planner: 規劃研究步驟 (Plan)
+    Planner-->>Service: 返回 Sub-tasks [Task 1, Task 2...]
+    
+    %% Phase 2: Execution Loop (Adaptive)
+    loop 對每個子任務 (Task N)
+        Service->>Executor: 執行任務 (Task N)
+        activate Executor
+        
+        %% RAG Retrieval
+        Executor->>RAG: 檢索 (Query)
+        RAG->>RAG: Vector/Graph Search + Rerank
+        
+        %% Context Expansion (Phase 1 Feature)
+        alt 檢索片段 < 100 字
+            RAG->>ParentStore: get_parent(parent_id)
+            ParentStore-->>RAG: 返回完整父文檔 (Full Context)
+        end
+        
+        %% Multimodal Metadata Injection (Phase 3 Feature)
+        RAG->>RAG: 組合 Prompt (注入 Image Path)
+        RAG-->>Executor: 返回 Answer + Sources (含圖片路徑)
+        
+        %% Phase 2: Evaluation (Critical Loop)
+        Executor->>Evaluator: 評估回答品質 (Evaluate)
+        activate Evaluator
+        Evaluator-->>Executor: 分數 (Score) + 原因 (Reason)
+        deactivate Evaluator
+        
+        alt 分數 < 3 (品質不佳)
+            Executor->>Planner: 請求救援 (Retry Plan)
+            Planner-->>Executor: 新的檢索策略 (New Query)
+            Executor->>RAG: 使用新策略重新檢索
+            RAG-->>Executor: 新的回答
+        end
+        
+        Executor-->>Service: 任務完成 (Result N)
+        deactivate Executor
+        
+        %% Drill-down Check
+        Service->>Planner: 檢查知識缺口 (Needs Follow-up?)
+        alt 發現缺口
+            Planner-->>Service: 新增 Follow-up Task
+            Service->>Service: Append Task to Queue
+        end
+    end
+
+    %% Phase 3: Synthesis
+    Service->>Synthesizer: 綜合報告 (Context + Image Paths)
+    activate Synthesizer
+    Note right of Synthesizer: 依據 Image Paths<br/>生成 Markdown 圖片引用
+    Synthesizer-->>Service: 最終學術報告 (Markdown)
+    deactivate Synthesizer
+
+    Service-->>User: 回傳報告
+    deactivate Service

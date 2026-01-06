@@ -25,6 +25,7 @@ from data_base.schemas_deep_research import (
 from data_base.RAG_QA_service import rag_answer_question
 from agents.planner import TaskPlanner, SubTask, ResearchPlan
 from agents.synthesizer import synthesize_results, SubTaskResult
+from agents.evaluator import RAGEvaluator, DetailedEvaluationResult
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -178,6 +179,7 @@ class DeepResearchService:
                 doc_ids=request.doc_ids,
                 enable_reranking=request.enable_reranking,
                 max_iterations=request.max_iterations,
+                enable_deep_image_analysis=request.enable_deep_image_analysis,
             )
         
         # Phase 3: Synthesize results
@@ -196,6 +198,7 @@ class DeepResearchService:
             original_question=request.original_question,
             sub_results=synthesizer_results,
             enabled=len(synthesizer_results) > 1,
+            use_academic_template=True,  # Deep Research uses academic format
         )
         
         # Collect all unique sources
@@ -288,9 +291,14 @@ class DeepResearchService:
         doc_ids: Optional[List[str]],
         enable_reranking: bool,
         max_iterations: int,
+        enable_deep_image_analysis: bool = False,
     ) -> int:
         """
-        Performs recursive drill-down to fill knowledge gaps.
+        Performs recursive drill-down to fill knowledge gaps with evaluation-driven retry.
+        
+        Implements smart retry: when an answer has low completeness score,
+        the planner refines the query based on the evaluation reason rather
+        than simply repeating the same question.
         
         Args:
             original_question: The original research question.
@@ -299,11 +307,17 @@ class DeepResearchService:
             doc_ids: Document filter.
             enable_reranking: Enable reranking.
             max_iterations: Maximum iterations allowed.
+            enable_deep_image_analysis: Enable deep image analysis for specific questions.
             
         Returns:
             Number of iterations performed.
         """
         planner = TaskPlanner(max_subtasks=3, enable_graph_planning=False)
+        evaluator = RAGEvaluator()
+        
+        # Constants for evaluation-driven retry
+        MIN_COMPLETENESS_SCORE = 3  # Threshold for smart retry
+        MAX_RETRIES_PER_TASK = 2    # Prevent infinite loops
         
         for iteration in range(1, max_iterations + 1):
             logger.info(f"Drill-down iteration {iteration}/{max_iterations}")
@@ -329,26 +343,94 @@ class DeepResearchService:
             
             # Convert to EditableSubTask with new IDs
             max_id = max(r.id for r in current_results)
-            editable_followups = [
-                EditableSubTask(
-                    id=max_id + i + 1,
-                    question=task.question,
-                    task_type=task.task_type,
-                    enabled=True,
-                )
-                for i, task in enumerate(followup_tasks)
-            ]
             
-            # Execute follow-up tasks
-            new_results = await self._execute_tasks(
-                tasks=editable_followups,
-                user_id=user_id,
-                doc_ids=doc_ids,
-                enable_reranking=enable_reranking,
-                iteration=iteration,
-            )
-            
-            current_results.extend(new_results)
+            # Process each follow-up task with evaluation-driven retry
+            for i, task in enumerate(followup_tasks):
+                task_id = max_id + i + 1
+                current_question = task.question
+                retry_count = 0
+                
+                while retry_count <= MAX_RETRIES_PER_TASK:
+                    # Execute the task
+                    editable_task = EditableSubTask(
+                        id=task_id,
+                        question=current_question,
+                        task_type=task.task_type,
+                        enabled=True,
+                    )
+                    
+                    # Get answer with return_docs for evaluation
+                    try:
+                        use_graph = task.task_type == "graph_analysis"
+                        result = await rag_answer_question(
+                            question=current_question,
+                            user_id=user_id,
+                            doc_ids=doc_ids,
+                            enable_reranking=enable_reranking,
+                            enable_graph_rag=use_graph,
+                            graph_search_mode="hybrid" if use_graph else "auto",
+                            return_docs=True,  # Get documents for evaluation
+                        )
+                        
+                        # Handle return format (answer, sources) or RAGResult
+                        if hasattr(result, 'answer'):
+                            answer = result.answer
+                            sources = result.source_doc_ids
+                            documents = result.documents
+                        else:
+                            answer, sources = result
+                            documents = []
+                        
+                    except (RuntimeError, ValueError) as e:
+                        logger.warning(f"Task {task_id} failed: {e}")
+                        answer = f"無法回答此問題: {str(e)[:100]}"
+                        sources = []
+                        documents = []
+                    
+                    # Evaluate answer quality (only if we have documents)
+                    if documents and retry_count < MAX_RETRIES_PER_TASK:
+                        evaluation = await evaluator.evaluate_detailed(
+                            question=current_question,
+                            documents=documents,
+                            answer=answer,
+                        )
+                        
+                        # Check if retry is needed
+                        if evaluation.completeness_score < MIN_COMPLETENESS_SCORE:
+                            logger.info(
+                                f"Task {task_id} low score ({evaluation.completeness_score}/5), "
+                                f"reason: {evaluation.reason[:50]}..."
+                            )
+                            
+                            # Smart retry: refine query based on evaluation reason
+                            refined_query = await planner.refine_query_from_evaluation(
+                                original_question=current_question,
+                                evaluation_reason=evaluation.reason,
+                                failed_answer=answer,
+                            )
+                            
+                            if refined_query != current_question:
+                                logger.info(f"Smart retry #{retry_count + 1} with refined query")
+                                current_question = refined_query
+                                retry_count += 1
+                                continue  # Retry with new query
+                            else:
+                                logger.info("Could not refine query, accepting current answer")
+                    
+                    # Accept the answer (either good score or max retries reached)
+                    current_results.append(SubTaskExecutionResult(
+                        id=task_id,
+                        question=task.question,  # Use original question for display
+                        answer=answer,
+                        sources=sources,
+                        is_drilldown=True,
+                        iteration=iteration,
+                    ))
+                    
+                    if retry_count > 0:
+                        logger.info(f"Task {task_id} accepted after {retry_count} retry(s)")
+                    
+                    break  # Exit retry loop
         
         return max_iterations
     
@@ -609,6 +691,7 @@ class DeepResearchService:
             original_question=request.original_question,
             sub_results=synthesizer_results,
             enabled=len(synthesizer_results) > 1,
+            use_academic_template=True,  # Deep Research uses academic format
         )
         
         all_sources = list(set(

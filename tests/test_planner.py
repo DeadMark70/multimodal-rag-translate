@@ -156,3 +156,90 @@ class TestPlanResearchConvenience:
         
         assert len(plan.sub_tasks) == 1
         assert plan.sub_tasks[0].question == "問題"
+
+
+class TestRefineQueryFromEvaluation:
+    """Tests for smart query refinement based on evaluation reason."""
+
+    @pytest.mark.asyncio
+    async def test_refine_query_outdated_data(self):
+        """Tests that 'outdated data' reason adds time qualifiers."""
+        from agents.planner import TaskPlanner
+        
+        mock_response = MagicMock()
+        mock_response.content = "最新的 Transformer 架構發展"
+        
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+        
+        with patch("agents.planner.get_llm", return_value=mock_llm):
+            planner = TaskPlanner()
+            refined = await planner.refine_query_from_evaluation(
+                original_question="Transformer 架構是什麼？",
+                evaluation_reason="資料太舊，缺乏最新發展",
+                failed_answer="Transformer 是 2017 年提出的..."
+            )
+        
+        assert "最新" in refined or "recent" in refined.lower()
+
+    @pytest.mark.asyncio
+    async def test_refine_query_lack_of_data(self):
+        """Tests that 'lack of data' reason focuses on statistics."""
+        from agents.planner import TaskPlanner
+        
+        mock_response = MagicMock()
+        mock_response.content = "深度學習模型效能數據比較"
+        
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+        
+        with patch("agents.planner.get_llm", return_value=mock_llm):
+            planner = TaskPlanner()
+            refined = await planner.refine_query_from_evaluation(
+                original_question="深度學習模型的效能？",
+                evaluation_reason="缺乏具體數據，沒有量化指標",
+                failed_answer="深度學習模型效能很好..."
+            )
+        
+        assert "數據" in refined or "statistics" in refined.lower()
+
+    @pytest.mark.asyncio
+    async def test_refine_query_different_from_original(self):
+        """Tests that refined query is different from original."""
+        from agents.planner import TaskPlanner
+        
+        mock_response = MagicMock()
+        mock_response.content = "CNN 和 RNN 的差異比較"
+        
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+        
+        with patch("agents.planner.get_llm", return_value=mock_llm):
+            planner = TaskPlanner()
+            original = "神經網路類型？"
+            refined = await planner.refine_query_from_evaluation(
+                original_question=original,
+                evaluation_reason="範圍太廣，需要更具體",
+                failed_answer="神經網路有很多類型..."
+            )
+        
+        assert refined != original
+
+    @pytest.mark.asyncio
+    async def test_refine_query_fallback_on_error(self):
+        """Tests that refinement falls back to original on error."""
+        from agents.planner import TaskPlanner
+        
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=RuntimeError("API Error"))
+        
+        with patch("agents.planner.get_llm", return_value=mock_llm):
+            planner = TaskPlanner()
+            original = "原始問題"
+            refined = await planner.refine_query_from_evaluation(
+                original_question=original,
+                evaluation_reason="任何原因",
+                failed_answer="失敗的答案"
+            )
+        
+        assert refined == original

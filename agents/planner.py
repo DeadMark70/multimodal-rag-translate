@@ -114,6 +114,33 @@ _FOLLOWUP_PROMPT = """你正在協助研究以下問題：
 子任務列表："""
 
 
+# Prompt for smart query refinement based on evaluation failure
+_REFINE_QUERY_PROMPT = """你是一個搜尋策略專家。一個 AI 系統剛剛嘗試回答問題但品質不佳。
+
+原始問題：{original_question}
+之前的回答：{failed_answer}
+評估失敗原因：{evaluation_reason}
+
+請根據失敗原因，生成一個**修正過的搜尋查詢**來補救問題。
+
+## 策略指南
+- 如果原因提到「資料太舊」或「outdated」→ 加入「最新」、「recent」、「2024」等時間限定詞
+- 如果原因提到「缺乏數據」或「no data」→ 改為搜尋「statistics」、「數據」、「百分比」、「量化」
+- 如果原因提到「定義不清」或「unclear」→ 增加「definition」、「是什麼」、「定義」
+- 如果原因提到「缺乏比較」或「no comparison」→ 增加「versus」、「比較」、「差異」、「對比」
+- 如果原因提到「證據不足」或「insufficient」→ 聚焦「evidence」、「study」、「研究」、「論文」
+- 如果原因提到「範圍太廣」或「too broad」→ 縮小搜尋範圍，更具體化
+- 如果原因提到「不完整」或「incomplete」→ 擴大搜尋範圍，增加相關細節
+
+## 要求
+1. 新的查詢必須與原始問題有**明顯差異**
+2. 針對失敗原因做出有針對性的修正
+3. 保持查詢簡潔（30 字以內），適合向量檢索
+4. 使用與原始問題相同的語言（中文或英文）
+
+請直接輸出修正後的搜尋查詢，不要其他內容："""
+
+
 class TaskPlanner:
     """
     Decomposes complex research questions into sub-tasks.
@@ -366,7 +393,7 @@ class TaskPlanner:
         """
         Checks if two questions are similar enough to be considered duplicates.
         
-        Simple heuristic: checks for significant word overlap.
+        Uses character bigrams for better CJK language support.
         
         Args:
             q1: First question.
@@ -375,24 +402,89 @@ class TaskPlanner:
         Returns:
             True if questions are similar.
         """
-        # Simple word overlap check
-        words1 = set(q1.lower().split())
-        words2 = set(q2.lower().split())
+        # Normalize: lowercase and remove punctuation
+        import re
+        q1_clean = re.sub(r'[^\w\s]', '', q1.lower())
+        q2_clean = re.sub(r'[^\w\s]', '', q2.lower())
         
-        # Remove common stopwords
-        stopwords = {"的", "是", "什麼", "如何", "為什麼", "嗎", "呢", "了", "在", "有",
-                     "the", "is", "what", "how", "why", "a", "an", "in", "of"}
-        words1 -= stopwords
-        words2 -= stopwords
+        # Generate character bigrams for CJK support
+        def get_bigrams(text: str) -> set:
+            text = text.replace(' ', '')  # Remove spaces for Chinese
+            if len(text) < 2:
+                return {text} if text else set()
+            return {text[i:i+2] for i in range(len(text) - 1)}
         
-        if not words1 or not words2:
+        bigrams1 = get_bigrams(q1_clean)
+        bigrams2 = get_bigrams(q2_clean)
+        
+        if not bigrams1 or not bigrams2:
             return False
         
-        # Check overlap ratio
-        overlap = len(words1 & words2)
-        min_len = min(len(words1), len(words2))
+        # Jaccard similarity
+        overlap = len(bigrams1 & bigrams2)
+        union = len(bigrams1 | bigrams2)
         
-        return overlap / min_len > 0.7 if min_len > 0 else False
+        return overlap / union > 0.5 if union > 0 else False
+    
+    async def refine_query_from_evaluation(
+        self,
+        original_question: str,
+        evaluation_reason: str,
+        failed_answer: str,
+    ) -> str:
+        """
+        Generates a refined search query based on evaluation failure reason.
+        
+        This method enables "smart retry" - instead of repeating the same query,
+        it analyzes the evaluation reason and modifies the search strategy
+        accordingly.
+        
+        Args:
+            original_question: The original question that produced low-quality answer.
+            evaluation_reason: The reason from Evaluator explaining why quality is low.
+            failed_answer: The answer that was evaluated as insufficient.
+            
+        Returns:
+            A refined search query that addresses the evaluation failure.
+            Falls back to original question if refinement fails.
+        """
+        async with self._semaphore:
+            try:
+                llm = get_llm("planner")
+                
+                # Truncate long inputs
+                truncated_answer = failed_answer[:500] if len(failed_answer) > 500 else failed_answer
+                truncated_reason = evaluation_reason[:200] if len(evaluation_reason) > 200 else evaluation_reason
+                
+                prompt = _REFINE_QUERY_PROMPT.format(
+                    original_question=original_question,
+                    evaluation_reason=truncated_reason,
+                    failed_answer=truncated_answer,
+                )
+                
+                message = HumanMessage(content=prompt)
+                response = await llm.ainvoke([message])
+                
+                refined_query = response.content.strip()
+                
+                # Validate refined query
+                if not refined_query or len(refined_query) < 5:
+                    logger.warning("Refined query too short, using original")
+                    return original_question
+                
+                # Check if query is actually different
+                if self._is_similar_question(refined_query, original_question):
+                    logger.warning("Refined query too similar to original, appending modifier")
+                    # Append a modifier based on common patterns
+                    if "數據" not in refined_query and "data" not in refined_query.lower():
+                        refined_query = f"{refined_query} 具體數據"
+                
+                logger.info(f"Smart retry: '{original_question[:30]}...' -> '{refined_query[:30]}...'")
+                return refined_query
+                
+            except (RuntimeError, ValueError) as e:
+                logger.warning(f"Query refinement failed: {e}")
+                return original_question
 
 
 async def plan_research(

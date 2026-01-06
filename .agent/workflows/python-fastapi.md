@@ -1,5 +1,5 @@
 ---
-description: Python FastAPI 後端開發規範 (Master Rules) - v2.0
+description: Python FastAPI 後端開發規範 (Master Rules) - v2.1
 ---
 
 # Role
@@ -329,6 +329,24 @@ async def startup():
 
 ---
 
+# Project Management Workflow
+
+## Phase Completion Protocol
+
+After completing any development phase (e.g., Phase 1, Phase 2...), you **MUST** perform the following steps:
+
+1.  **Update Progress Log:**
+    -   Locate or create a JSON file in `checklist/process_done/` corresponding to the active feature (e.g., `checklist/process_done/deep_research_phase1.json`).
+    -   Update the file to record the completed tasks, modified files, and current status.
+    -   Ensure the JSON structure includes: `phase`, `status`, `completed_items`, `modified_files`, `timestamp`.
+
+2.  **Documentation Verification:**
+    -   Check the `agentlog/` directory for relevant documentation files (e.g., `api_documentation.json`, `codebase_overview.md`).
+    -   Verify if the code changes require documentation updates (e.g., new API endpoints, schema changes, architectural shifts).
+    -   If updates are needed, modify the documentation files immediately to reflect the new state.
+
+---
+
 # Code Review Checklist
 
 Before submitting any code, verify:
@@ -343,3 +361,5 @@ Before submitting any code, verify:
 - [ ] All file uploads are validated
 - [ ] CPU-bound operations use `run_in_threadpool`
 - [ ] Imports are organized (stdlib → third-party → local)
+- [ ] **Phase Completion:** Updated `checklist/process_done/*.json`
+- [ ] **Documentation:** Verified/Updated `agentlog/` files

@@ -23,6 +23,7 @@ from conversations.schemas import (
     ConversationResponse,
     ConversationDetailResponse,
     ChatMessageResponse,
+    MessageCreate,
 )
 
 # Configure logging
@@ -90,6 +91,7 @@ async def create_conversation(
             "user_id": user_id,
             "title": data.title,
             "type": data.type,
+            "metadata": data.metadata,
         }
         
         response = supabase.table("conversations") \
@@ -138,9 +140,9 @@ async def get_conversation(
         if not conv_response.data:
             raise HTTPException(status_code=404, detail="對話不存在")
         
-        # Get messages
-        msgs_response = supabase.table("chat_logs") \
-            .select("id, role, question, answer, source_pages, created_at") \
+        # Get messages from 'messages' table
+        msgs_response = supabase.table("messages") \
+            .select("*") \
             .eq("conversation_id", str(conversation_id)) \
             .order("created_at", desc=False) \
             .execute()
@@ -148,17 +150,16 @@ async def get_conversation(
         # Transform messages
         messages = []
         for msg in msgs_response.data:
-            # Determine content based on role
-            content = msg.get("question") or msg.get("answer") or ""
-            role = msg.get("role", "user")
-            
             messages.append(ChatMessageResponse(
                 id=msg["id"],
-                role=role,
-                content=content,
-                source_pages=msg.get("source_pages"),
+                role=msg["role"],
+                content=msg["content"],
+                metadata=msg.get("metadata"),
                 created_at=msg["created_at"],
             ))
+        
+        # Merge created_at/updated_at/metadata from conversation if needed, 
+        # but the query already returns them.
         
         return ConversationDetailResponse(
             **conv_response.data,
@@ -177,11 +178,11 @@ async def update_conversation(
     user_id: str = Depends(get_current_user_id)
 ) -> ConversationResponse:
     """
-    Updates a conversation's title.
+    Updates a conversation's title or metadata.
     
     Args:
         conversation_id: Conversation UUID.
-        data: Update data with new title.
+        data: Update data.
         user_id: Authenticated user ID (injected).
         
     Returns:
@@ -193,8 +194,12 @@ async def update_conversation(
     logger.info(f"Updating conversation {conversation_id}: {data.title}")
     
     try:
+        update_data = {"title": data.title}
+        if data.metadata is not None:
+            update_data["metadata"] = data.metadata
+
         response = supabase.table("conversations") \
-            .update({"title": data.title}) \
+            .update(update_data) \
             .eq("id", str(conversation_id)) \
             .eq("user_id", user_id) \
             .execute()
@@ -249,3 +254,66 @@ async def delete_conversation(
     except PostgrestAPIError as e:
         logger.error(f"Failed to delete conversation: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="刪除對話失敗")
+
+
+@router.post("/{conversation_id}/messages", response_model=ChatMessageResponse, status_code=201)
+async def create_message(
+    conversation_id: UUID,
+    data: MessageCreate,
+    user_id: str = Depends(get_current_user_id)
+) -> ChatMessageResponse:
+    """
+    Adds a message to a conversation.
+    
+    Args:
+        conversation_id: Conversation UUID.
+        data: Message content and role.
+        user_id: Authenticated user ID (injected).
+        
+    Returns:
+        Created ChatMessageResponse.
+        
+    Raises:
+        HTTPException: 404 if conversation not found, 500 if insert fails.
+    """
+    logger.info(f"Adding message to conversation {conversation_id} for user {user_id}")
+    
+    try:
+        # Verify conversation exists and belongs to user
+        # (Technically RLS handles this, but explicit 404 is nicer)
+        conv_check = supabase.table("conversations") \
+            .select("id") \
+            .eq("id", str(conversation_id)) \
+            .eq("user_id", user_id) \
+            .single() \
+            .execute()
+            
+        if not conv_check.data:
+            raise HTTPException(status_code=404, detail="對話不存在")
+            
+        insert_data = {
+            "conversation_id": str(conversation_id),
+            "role": data.role,
+            "content": data.content,
+            "metadata": data.metadata,
+        }
+        
+        response = supabase.table("messages") \
+            .insert(insert_data) \
+            .execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=500, detail="建立訊息失敗")
+            
+        msg = response.data[0]
+        return ChatMessageResponse(
+            id=msg["id"],
+            role=msg["role"],
+            content=msg["content"],
+            metadata=msg.get("metadata"),
+            created_at=msg["created_at"],
+        )
+        
+    except PostgrestAPIError as e:
+        logger.error(f"Failed to add message: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="建立訊息失敗")

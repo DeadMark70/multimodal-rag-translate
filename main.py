@@ -113,7 +113,7 @@ app.include_router(image_router, prefix="/imagemd", tags=["Image Translation"])
 app.include_router(multimodal_router, prefix="/multimodal", tags=["Multimodal Research"])
 app.include_router(stats_router, prefix="/stats", tags=["Dashboard Statistics"])
 app.include_router(graph_router, prefix="/graph", tags=["Knowledge Graph"])
-app.include_router(conversations_router, prefix="/conversations", tags=["Conversations"])
+app.include_router(conversations_router, prefix="/api/conversations", tags=["Conversations"])
 
 
 @app.get("/")

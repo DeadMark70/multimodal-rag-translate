@@ -65,6 +65,45 @@ _SYNTHESIZER_PROMPT = """你是一個研究報告撰寫專家。請根據以下�
 [完整綜合回答]"""
 
 
+# Academic report template for Deep Research
+_ACADEMIC_REPORT_PROMPT = """你是一位專業的學術報告撰寫專家。請根據以下子問題的回答，綜合生成一份結構完整的學術研究報告。
+
+原始研究問題：{original_question}
+
+子問題與回答：
+{sub_results}
+
+## 報告結構（請嚴格遵循此格式）
+
+### 1. Executive Summary (執行摘要)
+- 用 2-3 句話總結關鍵發現
+- 直接回答原始問題的核心
+
+### 2. Key Findings (主要發現)
+- 以條列點整理最重要的發現
+- 每個發現應有明確的資料支撐
+
+### 3. Detailed Analysis (詳細分析)
+- 深入解釋每個發現
+- 如有圖表數據，請使用 Markdown 格式引用圖片：`![圖表說明](圖片路徑)`
+- 若發現矛盾，請明確指出並分析可能原因
+
+### 4. Research Gaps (知識缺口)
+- 指出目前資料庫中缺少的拼圖
+- 建議後續研究方向
+
+### 5. References (參考來源)
+- 列出引用的所有來源文件
+
+## 格式要求
+1. 使用繁體中文
+2. 保持學術嚴謹的語氣
+3. 數學公式使用 LaTeX 格式
+4. 若引用圖片摘要內容，務必以 `![描述](路徑)` 格式插入圖片
+
+請開始撰寫報告："""
+
+
 class ResultSynthesizer:
     """
     Synthesizes results from multiple sub-task queries.
@@ -162,6 +201,7 @@ class ResultSynthesizer:
         self,
         original_question: str,
         sub_results: List[SubTaskResult],
+        use_academic_template: bool = False,
     ) -> ResearchReport:
         """
         Synthesizes sub-task results into a research report.
@@ -169,6 +209,8 @@ class ResultSynthesizer:
         Args:
             original_question: Original research question.
             sub_results: Results from sub-task RAG queries.
+            use_academic_template: If True, use structured academic report format.
+                                   Recommended for Deep Research flows.
             
         Returns:
             ResearchReport with synthesized answer.
@@ -201,7 +243,13 @@ class ResultSynthesizer:
                 
                 formatted_results = self._format_sub_results(sub_results)
                 
-                prompt = _SYNTHESIZER_PROMPT.format(
+                # Select prompt template based on use_academic_template
+                template = (
+                    _ACADEMIC_REPORT_PROMPT if use_academic_template 
+                    else _SYNTHESIZER_PROMPT
+                )
+                
+                prompt = template.format(
                     original_question=original_question,
                     sub_results=formatted_results,
                 )
@@ -242,6 +290,7 @@ async def synthesize_results(
     original_question: str,
     sub_results: List[SubTaskResult],
     enabled: bool = True,
+    use_academic_template: bool = False,
 ) -> ResearchReport:
     """
     Convenience function to synthesize results.
@@ -250,6 +299,7 @@ async def synthesize_results(
         original_question: Original research question.
         sub_results: Sub-task results.
         enabled: If False, returns simple concatenation.
+        use_academic_template: If True, use structured academic report format.
         
     Returns:
         ResearchReport.
@@ -282,4 +332,8 @@ async def synthesize_results(
         )
     
     synthesizer = ResultSynthesizer()
-    return await synthesizer.synthesize(original_question, sub_results)
+    return await synthesizer.synthesize(
+        original_question, 
+        sub_results, 
+        use_academic_template=use_academic_template,
+    )
