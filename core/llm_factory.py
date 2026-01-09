@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Purpose type for type safety
 LLMPurpose = Literal[
-    "rag_qa", "translation", "image_caption", 
+    "rag_qa", "translation", "image_caption", "visual_verification",
     "context_generation", "proposition_extraction", "query_rewrite",
     "evaluator", "planner", "synthesizer", "summary",
     "graph_extraction", "community_summary"  # GraphRAG purposes
@@ -38,15 +38,19 @@ _DEFAULT_MODEL = "gemma-3-27b-it"
 _LLM_CONFIGS: dict[str, dict] = {
     "rag_qa": {
         "temperature": 0.3,
-        "max_output_tokens": 2048,
+        "max_output_tokens": 4096,
     },
     "translation": {
         "temperature": 0.1,
-        "max_output_tokens": 8192,  # Increased for long document translation
+        "max_output_tokens": 65000,  # Increased for long document translation
     },
     "image_caption": {
         "temperature": 0.2,
-        "max_output_tokens": 512,
+        "max_output_tokens": 768,
+    },
+    "visual_verification": {
+        "temperature": 0.2,
+        "max_output_tokens": 2048,  # Increased for detailed deep research analysis
     },
     "context_generation": {
         "temperature": 0.1,
@@ -100,6 +104,7 @@ def get_llm(purpose: LLMPurpose) -> ChatGoogleGenerativeAI:
             - "rag_qa": For question answering (moderate creativity)
             - "translation": For document translation (high precision)
             - "image_caption": For visual element summarization
+            - "visual_verification": For Deep Research detailed image analysis
             - "context_generation": For generating contextual prefixes
             - "proposition_extraction": For decomposing text into propositions
             - "query_rewrite": For HyDE and multi-query generation
