@@ -71,8 +71,8 @@ graph TD
 
     subgraph "Knowledge Base"
         PDF[PDF Files] --> OCR[Marker OCR]
-        OCR --> VectorDB[FAISS (Vector)]
-        OCR --> GraphDB[NetworkX (Graph)]
+        OCR --> VectorDB["FAISS (Vector)"]
+        OCR --> GraphDB["NetworkX (Graph)"]
         OCR --> Vision[Gemini Vision]
     end
 
