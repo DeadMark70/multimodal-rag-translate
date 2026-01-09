@@ -90,17 +90,57 @@ class FaithfulnessLevel(str, Enum):
 class EvaluationMetrics(BaseModel):
     """
     Responsible AI metrics for answer quality.
-
+    
+    Phase 4 Academic Evaluation (1-10 scale):
+    - accuracy: Data precision, citation correctness (50% weight)
+    - completeness: Coverage of all sub-aspects (30% weight)
+    - clarity: Logical structure and expression (20% weight)
+    
     Attributes:
-        faithfulness: Whether answer is grounded in sources.
-        confidence_score: Overall confidence score (0.0-1.0).
-        evaluation_reason: Brief explanation of the evaluation result.
+        faithfulness: Legacy field - maps from accuracy score.
+        confidence_score: Overall confidence (0.0-1.0).
+        evaluation_reason: Detailed evaluation reasoning.
+        accuracy: D1 - Data precision score (1-10).
+        completeness: D2 - Coverage completeness (1-10).
+        clarity: D3 - Logical expression (1-10).
+        weighted_score: Weighted total (0.5*acc + 0.3*cmp + 0.2*clr).
+        suggestion: Improvement suggestion for retry.
+        is_passing: True if accuracy >= 7.
     """
     faithfulness: FaithfulnessLevel
     confidence_score: float = Field(..., ge=0.0, le=1.0)
     evaluation_reason: Optional[str] = Field(
         default=None,
         description="評估結果說明"
+    )
+    # Phase 4: New 1-10 scale fields
+    accuracy: Optional[float] = Field(
+        default=None,
+        ge=1.0, le=10.0,
+        description="D1: 數據精確度 (1-10, 權重 50%)"
+    )
+    completeness: Optional[float] = Field(
+        default=None,
+        ge=1.0, le=10.0,
+        description="D2: 完整覆蓋率 (1-10, 權重 30%)"
+    )
+    clarity: Optional[float] = Field(
+        default=None,
+        ge=1.0, le=10.0,
+        description="D3: 邏輯表達 (1-10, 權重 20%)"
+    )
+    weighted_score: Optional[float] = Field(
+        default=None,
+        ge=1.0, le=10.0,
+        description="加權總分 (0.5*acc + 0.3*cmp + 0.2*clr)"
+    )
+    suggestion: Optional[str] = Field(
+        default=None,
+        description="改進建議 (用於 Smart Retry)"
+    )
+    is_passing: Optional[bool] = Field(
+        default=None,
+        description="是否通過門檻 (accuracy >= 7)"
     )
 
 

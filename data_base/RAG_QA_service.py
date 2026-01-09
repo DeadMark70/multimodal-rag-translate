@@ -7,9 +7,11 @@ with enhanced reranking and query transformation.
 
 # Standard library
 import base64
+import json
 import logging
 import os
-from typing import List, Any, Set, Optional, Tuple, NamedTuple, Union, TYPE_CHECKING
+import re
+from typing import List, Any, Set, Optional, Tuple, NamedTuple, Union, Dict, TYPE_CHECKING
 
 # Type checking imports (avoid circular imports)
 if TYPE_CHECKING:
@@ -45,12 +47,157 @@ _GRAPH_KEYWORDS = [
 # Flag to track initialization
 _llm_initialized = False
 
+# Visual verification Re-Act loop settings
+MAX_VISUAL_ITERATIONS = 2  # Prevent infinite loops
+
+# Prompt instruction for visual verification tool
+VISUAL_TOOL_INSTRUCTION = """
+
+## 視覺查證工具 (Visual Verification Tool)
+如果上述圖片摘要資訊不足以回答問題，且你需要圖片中的**具體數據或細節**，
+請不要猜測或回答「不知道」，而是輸出以下 JSON 指令（獨立一行）：
+
+```json
+{"action": "VERIFY_IMAGE", "path": "完整的圖片路徑", "question": "你想問的具體問題"}
+```
+
+**重要規則：**
+1. `path` 必須完全複製上方 [圖片摘要] 中顯示的路徑，不可自行修改或編造
+2. `question` 必須具體（例如包含年份、座標軸名稱、或特定物件）
+3. 只有當現有摘要確實不足時才使用此工具
+
+如果工具執行失敗，請誠實告知使用者無法獲取更多細節，並根據現有摘要回答。
+"""
 
 class RAGResult(NamedTuple):
     """Result from RAG question answering with optional documents."""
     answer: str
     source_doc_ids: List[str]
     documents: List[Document]
+
+
+def _parse_visual_tool_request(response: str) -> Optional[Dict[str, str]]:
+    """
+    Extracts VERIFY_IMAGE JSON from LLM response with tolerant parsing.
+
+    Handles common LLM JSON formatting issues:
+    - JSON wrapped in markdown code blocks
+    - Extra whitespace/newlines
+    - Minor formatting variations
+
+    Args:
+        response: LLM response text.
+
+    Returns:
+        Parsed dict with 'action', 'path', 'question' or None if not found.
+    """
+    # Pattern to match VERIFY_IMAGE JSON (tolerant of whitespace)
+    patterns = [
+        # Standard JSON format
+        r'\{\s*"action"\s*:\s*"VERIFY_IMAGE"\s*,\s*"path"\s*:\s*"([^"]+)"\s*,\s*"question"\s*:\s*"([^"]+)"\s*\}',
+        # Reordered fields
+        r'\{\s*"action"\s*:\s*"VERIFY_IMAGE"[^}]*"path"\s*:\s*"([^"]+)"[^}]*"question"\s*:\s*"([^"]+)"[^}]*\}',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, response, re.DOTALL | re.IGNORECASE)
+        if match:
+            return {
+                "action": "VERIFY_IMAGE",
+                "path": match.group(1),
+                "question": match.group(2),
+            }
+    
+    # Fallback: try to find and parse any JSON with VERIFY_IMAGE
+    json_pattern = r'```(?:json)?\s*(\{[^`]+\})\s*```'
+    json_match = re.search(json_pattern, response, re.DOTALL)
+    if json_match:
+        try:
+            data = json.loads(json_match.group(1))
+            if data.get("action") == "VERIFY_IMAGE" and data.get("path") and data.get("question"):
+                return data
+        except json.JSONDecodeError:
+            pass
+    
+    return None
+
+
+async def _execute_visual_verification_loop(
+    initial_response: str,
+    context: str,
+    question: str,
+    user_id: str,
+    llm: Any,
+    source_doc_ids: List[str],
+) -> str:
+    """
+    Re-Act loop for visual verification.
+
+    If LLM requests VERIFY_IMAGE, execute the tool and re-prompt for synthesis.
+
+    Args:
+        initial_response: First LLM response (may contain tool request).
+        context: Original context text.
+        question: User's question.
+        user_id: User ID for visual tool.
+        llm: LLM instance for synthesis call.
+        source_doc_ids: Source document IDs for logging.
+
+    Returns:
+        Final answer after visual verification (if triggered).
+    """
+    response = initial_response
+    iteration = 0
+    tool_results: List[Dict[str, Any]] = []
+    
+    while iteration < MAX_VISUAL_ITERATIONS:
+        tool_request = _parse_visual_tool_request(response)
+        if not tool_request:
+            break  # No tool request, return as-is
+        
+        iteration += 1
+        logger.info(f"Visual verification iteration {iteration}: {tool_request.get('question', '')[:50]}")
+        
+        # Execute visual tool
+        from data_base.visual_tools import verify_image_details
+        result = await verify_image_details(
+            image_path=tool_request.get("path", ""),
+            question=tool_request.get("question", ""),
+            user_id=user_id,
+        )
+        
+        tool_results.append({
+            "path": tool_request.get("path"),
+            "question": tool_request.get("question"),
+            "success": result.get("success"),
+            "result": result.get("result") if result["success"] else result.get("error"),
+        })
+        
+        # Build synthesis prompt with tool results
+        results_json = json.dumps(tool_results, ensure_ascii=False, indent=2)
+        synthesis_prompt = f"""你是學術研究助手。先前你請求了視覺查證工具來分析圖片。
+
+## 原始背景資料
+{context}
+
+## 視覺查證結果
+{results_json}
+
+## 使用者問題
+{question}
+
+請根據以上所有資訊（包括視覺查證結果）生成完整的最終答案。
+如果視覺查證失敗 (success: false)，請誠實告知使用者，並基於現有摘要盡可能回答。
+請以繁體中文回答。"""
+
+        from langchain_core.messages import HumanMessage
+        synth_message = HumanMessage(content=synthesis_prompt)
+        synth_response = await llm.ainvoke([synth_message])
+        response = synth_response.content
+        
+        logger.info(f"Visual verification synthesis completed (iteration {iteration})")
+    
+    return response
 
 
 async def initialize_llm_service() -> None:
@@ -312,6 +459,8 @@ async def rag_answer_question(
     # GraphRAG parameters
     enable_graph_rag: bool = False,
     graph_search_mode: str = "auto",
+    # Visual Verification (Phase 9)
+    enable_visual_verification: bool = False,
 ) -> Union[Tuple[str, List[str]], RAGResult]:
     """
     Performs multimodal RAG question answering for a specific user.
@@ -325,6 +474,7 @@ async def rag_answer_question(
     6. Separate text and image data
     7. Build multimodal prompt (with optional conversation history)
     8. Call LLM
+    9. (Optional) Visual Verification Re-Act loop (Phase 9)
 
     Args:
         question: The question to answer.
@@ -339,6 +489,7 @@ async def rag_answer_question(
         return_docs: If True, returns RAGResult with documents for evaluation.
         enable_graph_rag: If True, enhance with knowledge graph context.
         graph_search_mode: Graph search mode (local/global/hybrid/auto).
+        enable_visual_verification: If True, enable Re-Act loop for image details.
 
     Returns:
         Tuple of (answer, doc_ids) or RAGResult if return_docs=True.
@@ -570,7 +721,7 @@ async def rag_answer_question(
     # Format graph context if available
     graph_section = f"\n{graph_context}\n" if graph_context else ""
 
-    # Enhanced prompt with anti-hallucination guidance
+    # Enhanced prompt with anti-hallucination guidance (Phase 5: Conflict Arbitration)
     prompt_text = f"""你是一位學術研究助手，擅長分析文本與圖表。
 
 ## 參考資料
@@ -589,12 +740,20 @@ async def rag_answer_question(
 3. 如果某個聲明只出現在一份文件中，請明確指出，不要套用到其他文件的內容
 4. 回答比較問題時，請先分別總結每份文件的觀點，再進行對比
 
-### 一般指引
-5. 引用來源時請標註文件名稱
-6. 仔細觀察圖表數據（如有提供）
-7. 數學公式請使用 LaTeX 格式
-8. 以繁體中文回答
+### 🔥 Phase 5 衝突處理守則（當文獻觀點衝突時）
+5. **優先採信基準測試 (Benchmark)**：大規模系統性比較 > 單一實驗結果
+6. **優先採信較新發表**：若可從內容推斷年份，較新的研究結論優先
+7. **禁止和稀泥結論**：不可回答「兩者互有優劣」「效果因情況而異」等模糊表述
+8. **衝突明確標註**：若發現文獻觀點衝突，必須使用以下格式：
+   「一方面，[來源A] 主張...；另一方面，[來源B] 的 [Benchmark/實驗] 顯示...。
+   根據證據權重，較可信的結論是...」
 
+### 一般指引
+9. 引用來源時請標註文件名稱
+10. 仔細觀察圖表數據（如有提供）
+11. 數學公式請使用 LaTeX 格式
+12. 以繁體中文回答
+{VISUAL_TOOL_INSTRUCTION if enable_visual_verification and image_paths else ''}
 請根據以上資料回答問題："""
 
     # Build content list
@@ -612,9 +771,22 @@ async def rag_answer_question(
     # Step 9: Call LLM
     try:
         response = await llm.ainvoke([message])
+        answer = response.content
+        
+        # Step 10: Visual Verification Re-Act Loop (Phase 9)
+        if enable_visual_verification and image_paths:
+            answer = await _execute_visual_verification_loop(
+                initial_response=answer,
+                context=context_text,
+                question=question,
+                user_id=user_id,
+                llm=llm,
+                source_doc_ids=list(source_doc_ids),
+            )
+        
         if return_docs:
-            return RAGResult(response.content, list(source_doc_ids), docs)
-        return (response.content, list(source_doc_ids))
+            return RAGResult(answer, list(source_doc_ids), docs)
+        return (answer, list(source_doc_ids))
     except (RuntimeError, ValueError, OSError) as e:
         logger.error(f"LLM error for user {user_id}: {e}", exc_info=True)
         if return_docs:

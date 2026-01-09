@@ -183,3 +183,66 @@ class TestSynthesizeResultsConvenience:
         report = await synthesize_results("問題", [result], enabled=True)
         
         assert report.detailed_answer == "單一答案"
+
+
+class TestPhase6ConflictPenalty:
+    """Tests for Phase 6.2 conflict penalty mechanism."""
+
+    def test_conflict_detection_with_keywords(self):
+        """Tests that conflict keywords are detected in detailed answer."""
+        from agents.synthesizer import ResultSynthesizer, SubTaskResult
+        
+        synthesizer = ResultSynthesizer()
+        
+        sub_results = [
+            SubTaskResult(task_id=1, question="問題1", answer="答案1", confidence=1.0),
+        ]
+        
+        # Report with conflict keywords
+        conflict_response = "一方面，方法 A 效果好。另一方面，方法 B 也有優勢。"
+        report = synthesizer._parse_report(
+            conflict_response,
+            "比較問題",
+            sub_results,
+        )
+        
+        # Confidence should be reduced by conflict penalty (0.8)
+        assert report.confidence == 0.8  # 1.0 * 0.8
+
+    def test_no_conflict_no_penalty(self):
+        """Tests that normal reports have no penalty."""
+        from agents.synthesizer import ResultSynthesizer, SubTaskResult
+        
+        synthesizer = ResultSynthesizer()
+        
+        sub_results = [
+            SubTaskResult(task_id=1, question="問題1", answer="答案1", confidence=1.0),
+        ]
+        
+        # Normal response without conflict keywords
+        normal_response = "方法 A 在所有測試中都表現優異，是最佳選擇。"
+        report = synthesizer._parse_report(
+            normal_response,
+            "簡單問題",
+            sub_results,
+        )
+        
+        # Confidence should not be reduced
+        assert report.confidence == 1.0
+
+    def test_english_conflict_keywords(self):
+        """Tests detection of English conflict keywords."""
+        from agents.synthesizer import ResultSynthesizer, SubTaskResult
+        
+        synthesizer = ResultSynthesizer()
+        
+        sub_results = [
+            SubTaskResult(task_id=1, question="Q1", answer="A1", confidence=0.9),
+        ]
+        
+        # English conflict keywords
+        response = "However, some studies show contradictory results."
+        report = synthesizer._parse_report(response, "Question", sub_results)
+        
+        # Should detect "However" as conflict keyword
+        assert report.confidence == 0.72  # 0.9 * 0.8

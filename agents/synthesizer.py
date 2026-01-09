@@ -65,7 +65,7 @@ _SYNTHESIZER_PROMPT = """你是一個研究報告撰寫專家。請根據以下�
 [完整綜合回答]"""
 
 
-# Academic report template for Deep Research
+# Academic report template for Deep Research (Phase 5: Conflict Arbitration)
 _ACADEMIC_REPORT_PROMPT = """你是一位專業的學術報告撰寫專家。請根據以下子問題的回答，綜合生成一份結構完整的學術研究報告。
 
 原始研究問題：{original_question}
@@ -73,20 +73,56 @@ _ACADEMIC_REPORT_PROMPT = """你是一位專業的學術報告撰寫專家。請
 子問題與回答：
 {sub_results}
 
+## 衝突處理守則 (Critical: 必須遵循)
+
+在撰寫報告前，請先在 <think> 標籤內執行以下推理步驟（此部分不顯示於報告正文）：
+
+<think>
+### 觀點盤點
+列出各來源的核心論點：
+- [來源 1]: {{觀點}} (支持/反駁)
+- [來源 2]: {{觀點}} (支持/反駁)
+
+### 證據權重判斷
+根據以下優先順序：
+1. 大規模基準測試 (Benchmark) > 單一實驗
+2. 較新發表年份 > 較舊發表年份
+3. 多來源共識 > 單一來源聲稱
+
+若 Metadata 無發表年份：
+- 嘗試從文檔標題、頁首、頁尾推斷
+- 若無法推斷，依賴「Benchmark vs 單一實驗」邏輯
+
+### 結論選擇
+採信: {{來源X}}，原因: {{理由}}
+</think>
+
+## 衝突處理格式（報告正文中若有衝突必須使用）
+
+"一方面，{{來源A}} 主張...；
+另一方面，{{來源B}} 的 {{Benchmark/實驗類型}} 顯示...。
+**根據證據權重**，較可信的結論是...，理由是...。"
+
+⚠️ 禁止模糊結論：不可使用「兩者互有優劣」「效果因情況而異」等和稀泥的表述。
+
+---
+
 ## 報告結構（請嚴格遵循此格式）
 
 ### 1. Executive Summary (執行摘要)
 - 用 2-3 句話總結關鍵發現
 - 直接回答原始問題的核心
+- 若發現衝突，明確表態採信哪方結論
 
 ### 2. Key Findings (主要發現)
 - 以條列點整理最重要的發現
 - 每個發現應有明確的資料支撐
+- 標註衝突觀點（若有）
 
 ### 3. Detailed Analysis (詳細分析)
 - 深入解釋每個發現
 - 如有圖表數據，請使用 Markdown 格式引用圖片：`![圖表說明](圖片路徑)`
-- 若發現矛盾，請明確指出並分析可能原因
+- 衝突觀點必須使用「衝突處理格式」呈現
 
 ### 4. Research Gaps (知識缺口)
 - 指出目前資料庫中缺少的拼圖
@@ -94,6 +130,7 @@ _ACADEMIC_REPORT_PROMPT = """你是一位專業的學術報告撰寫專家。請
 
 ### 5. References (參考來源)
 - 列出引用的所有來源文件
+- 標註年份（若可得）
 
 ## 格式要求
 1. 使用繁體中文
@@ -143,6 +180,26 @@ class ResultSynthesizer:
             )
         return "\n".join(formatted)
     
+    def _strip_think_tags(self, text: str) -> str:
+        """
+        Removes <think>...</think> blocks from LLM output.
+        
+        Phase 5: The think tags contain the conflict reasoning process
+        which should not be shown to end users.
+        
+        Args:
+            text: Raw LLM response with potential think tags.
+            
+        Returns:
+            Cleaned text without think blocks.
+        """
+        import re
+        # Remove <think>...</think> blocks (including multiline)
+        cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        # Clean up extra whitespace left behind
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        return cleaned.strip()
+    
     def _parse_report(
         self,
         response: str,
@@ -160,6 +217,9 @@ class ResultSynthesizer:
         Returns:
             ResearchReport.
         """
+        # Phase 5: Strip <think> tags before processing
+        response = self._strip_think_tags(response)
+        
         # Extract summary and detailed answer
         summary = ""
         detailed = response
@@ -182,11 +242,29 @@ class ResultSynthesizer:
             all_sources.extend(r.sources)
         all_sources = list(set(all_sources))  # Deduplicate
         
-        # Calculate confidence as average
+        # Calculate base confidence as average
         avg_confidence = (
             sum(r.confidence for r in sub_results) / len(sub_results)
             if sub_results else 1.0
         )
+        
+        # Phase 6.2: 衝突懲罰機制
+        # 當報告中存在衝突觀點時，降低信心分數以反映不確定性
+        conflict_keywords = [
+            "衝突", "不一致", "相矛盾", "一方面", "另一方面",
+            "conflict", "inconsistent", "contradictory", "on the other hand",
+            "然而", "但是", "相反", "However", "contrary"
+        ]
+        
+        has_conflict = any(kw in detailed for kw in conflict_keywords)
+        conflict_penalty = 0.8 if has_conflict else 1.0
+        final_confidence = avg_confidence * conflict_penalty
+        
+        if has_conflict:
+            logger.info(
+                f"Phase 6.2 Conflict detected: applying {conflict_penalty:.0%} penalty "
+                f"(confidence: {avg_confidence:.2f} -> {final_confidence:.2f})"
+            )
         
         return ResearchReport(
             original_question=original_question,
@@ -194,7 +272,7 @@ class ResultSynthesizer:
             detailed_answer=detailed,
             sub_results=sub_results,
             all_sources=all_sources,
-            confidence=avg_confidence,
+            confidence=final_confidence,  # Phase 6.2: 使用校準後的信心度
         )
     
     async def synthesize(

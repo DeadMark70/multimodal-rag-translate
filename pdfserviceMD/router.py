@@ -23,11 +23,18 @@ from core.auth import get_current_user_id
 from supabase_client import supabase
 from data_base.vector_store_manager import (
     add_markdown_to_knowledge_base,
+    add_visual_summaries_to_knowledge_base,
     delete_document_from_knowledge_base,
 )
+from pdfserviceMD.image_processor import (
+    extract_images_from_markdown,
+    create_visual_elements,
+)
+from multimodal_rag.image_summarizer import summarizer as image_summarizer
 from pdfserviceMD.PDF_OCR_services import ocr_service_sync
 from pdfserviceMD.ai_translate_md import translate_text
-from pdfserviceMD.markdown_to_pdf import markdown_to_pdf
+# Phase 7: 切換至更強大的 Pandoc 引擎
+from pdfserviceMD.Pandoc_md_to_pdf import MDmarkdown_to_pdf as markdown_to_pdf
 from pdfserviceMD.markdown_process import markdown_extact, replace_markdown
 from core.summary_service import schedule_summary_generation
 from graph_rag.store import GraphStore
@@ -118,18 +125,20 @@ async def run_post_processing_tasks(
     markdown_text: str,
     book_title: str,
     user_id: str,
+    user_folder: str,
 ) -> None:
     """
-    Background task for post-PDF processing (RAG indexing + GraphRAG + Summary).
+    Background task for post-PDF processing (RAG + Images + GraphRAG + Summary).
 
     Called after the translated PDF is returned to user.
-    Runs RAG indexing, GraphRAG extraction, and summary generation in background.
+    Runs RAG indexing, image summarization, GraphRAG extraction, and summary in background.
 
     Args:
         doc_id: Document UUID.
         markdown_text: Extracted markdown content for indexing.
         book_title: Title for the document.
         user_id: User ID for knowledge base.
+        user_folder: Path to document folder (for locating images).
     """
     logger.info(f"[Background] Starting post-processing for doc {doc_id}")
     _update_processing_step(doc_id, "indexing")
@@ -145,7 +154,17 @@ async def run_post_processing_tasks(
         )
         logger.info(f"[Background] RAG indexing complete for doc {doc_id}")
 
-        # 2. GraphRAG entity extraction
+        # 2. Image summarization and indexing (Phase 8)
+        _update_processing_step(doc_id, "image_analysis")
+        await _process_document_images(
+            user_id=user_id,
+            doc_id=doc_id,
+            markdown_text=markdown_text,
+            user_folder=user_folder,
+            book_title=book_title,
+        )
+
+        # 3. GraphRAG entity extraction
         _update_processing_step(doc_id, "graph_indexing")
         await _run_graph_extraction(user_id, doc_id, markdown_text)
 
@@ -164,7 +183,72 @@ async def run_post_processing_tasks(
         # Non-fatal: PDF was already delivered
 
 
+async def _process_document_images(
+    user_id: str,
+    doc_id: str,
+    markdown_text: str,
+    user_folder: str,
+    book_title: str,
+) -> int:
+    """
+    Process images in document: extract, summarize, and index.
+
+    This is Phase 8 of the pipeline: image summarization for RAG.
+
+    Args:
+        user_id: User ID for knowledge base.
+        doc_id: Document UUID.
+        markdown_text: Markdown content to extract image paths from.
+        user_folder: Path to document folder.
+        book_title: Document title for context.
+
+    Returns:
+        Number of images processed.
+    """
+    try:
+        # 1. Extract image paths from markdown
+        image_data = extract_images_from_markdown(markdown_text, user_folder)
+        
+        if not image_data:
+            logger.info(f"[Background] No images found in doc {doc_id}")
+            return 0
+        
+        logger.info(f"[Background] Found {len(image_data)} images in doc {doc_id}")
+        
+        # 2. Create VisualElement objects
+        elements = create_visual_elements(image_data, doc_title=book_title)
+        
+        # 3. Generate summaries using ImageSummarizer (async)
+        logger.info(f"[Background] Summarizing {len(elements)} images...")
+        summarized_elements = await image_summarizer.summarize_elements(
+            elements=elements,
+            doc_title=book_title,
+        )
+        
+        # Count successful summaries
+        success_count = sum(1 for e in summarized_elements if e.summary and "Error" not in e.summary)
+        logger.info(f"[Background] Generated {success_count} image summaries")
+        
+        # 4. Index summaries to vector store
+        indexed_count = add_visual_summaries_to_knowledge_base(
+            user_id=user_id,
+            doc_id=doc_id,
+            elements=summarized_elements,
+        )
+        
+        logger.info(f"[Background] Indexed {indexed_count} image summaries for doc {doc_id}")
+        return indexed_count
+        
+    except FileNotFoundError as e:
+        logger.warning(f"[Background] Image file not found: {e}")
+        return 0
+    except (RuntimeError, ValueError) as e:
+        logger.warning(f"[Background] Image processing failed (non-fatal): {e}")
+        return 0
+
+
 async def _run_graph_extraction(user_id: str, doc_id: str, markdown_text: str) -> None:
+
     """
     Run GraphRAG entity extraction on document content.
 
@@ -364,7 +448,8 @@ async def upload_pdf_md(
         output_pdf_filename = f"translated_{filename}"
         output_pdf_path = os.path.normpath(os.path.join(user_folder, output_pdf_filename))
 
-        await run_in_threadpool(markdown_to_pdf, final_md, output_pdf_path)
+        # Phase 7: 傳入 user_folder 作為 base_dir 以正確處理圖片路徑
+        await run_in_threadpool(markdown_to_pdf, final_md, output_pdf_path, user_folder)
         t4 = time.perf_counter()
         logger.info(f"PDF generated in {t4-t3:.2f}s")
 
@@ -375,13 +460,14 @@ async def upload_pdf_md(
         total_time = time.perf_counter() - start_time
         logger.info(f"PDF ready. Time: {total_time:.2f}s. Scheduling background tasks...")
 
-        # 9. Schedule background tasks (RAG + Summary) - NON-BLOCKING
+        # 9. Schedule background tasks (RAG + Images + Summary) - NON-BLOCKING
         asyncio.create_task(
             run_post_processing_tasks(
                 doc_id=document_id,
                 markdown_text=processed_markdown_for_rag,
                 book_title=book_title,
                 user_id=user_id,
+                user_folder=user_folder,
             )
         )
 

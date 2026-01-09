@@ -335,12 +335,12 @@ async def ask_question_with_context(
                 answer=answer
             )
             
-            # Map evaluation result to API schema
+            # Map evaluation result to API schema (Phase 4: 1-10 scale)
             if eval_result.evaluation_failed:
                 faithfulness = FaithfulnessLevel.evaluation_failed
-            elif eval_result.groundedness_score >= 4:
+            elif eval_result.accuracy >= 8:
                 faithfulness = FaithfulnessLevel.grounded
-            elif eval_result.groundedness_score >= 3:
+            elif eval_result.accuracy >= 6:
                 faithfulness = FaithfulnessLevel.uncertain
             else:
                 faithfulness = FaithfulnessLevel.hallucinated
@@ -348,7 +348,14 @@ async def ask_question_with_context(
             metrics = EvaluationMetrics(
                 faithfulness=faithfulness,
                 confidence_score=eval_result.confidence,
-                evaluation_reason=eval_result.reason if eval_result.reason else None
+                evaluation_reason=eval_result.reason if eval_result.reason else None,
+                # Phase 4: New 1-10 scale fields for radar chart
+                accuracy=eval_result.accuracy,
+                completeness=eval_result.completeness,
+                clarity=eval_result.clarity,
+                weighted_score=eval_result.weighted_score,
+                suggestion=eval_result.suggestion if eval_result.suggestion else None,
+                is_passing=eval_result.is_passing,
             )
 
             t3 = time.perf_counter()

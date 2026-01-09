@@ -37,6 +37,11 @@ class DatalabAPIError(Exception):
 async def _call_datalab_api(pdf_path: str) -> Dict[str, Any]:
     """
     Calls Datalab API to convert PDF to Markdown.
+    
+    Implements the async pattern:
+    1. Submit PDF for processing (returns request_id + request_check_url)
+    2. Poll request_check_url until status is 'complete'
+    3. Return the final result with markdown content
 
     Args:
         pdf_path: Path to the PDF file.
@@ -50,6 +55,9 @@ async def _call_datalab_api(pdf_path: str) -> Dict[str, Any]:
     if not DATALAB_API_KEY:
         raise DatalabAPIError("DATALAB_API_KEY not configured")
 
+    POLL_INTERVAL = 2.0  # seconds between polling
+    MAX_POLL_ATTEMPTS = 150  # 5 minutes max (150 * 2s)
+
     async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
         with open(pdf_path, "rb") as f:
             pdf_bytes = f.read()
@@ -61,20 +69,63 @@ async def _call_datalab_api(pdf_path: str) -> Dict[str, Any]:
         # Request parameters for better output
         data = {
             "output_format": "markdown",
-            "force_ocr": False,
-            "paginate_output": True,  # Request page-by-page output
+            "mode": "balanced",
+            "paginate": True,  # Request page delimiters
         }
 
         try:
+            # Step 1: Submit the document for processing
             logger.info(f"Calling Datalab API for PDF: {pdf_path}")
-            response = await client.post(
+            submit_response = await client.post(
                 DATALAB_API_URL,
                 files=files,
                 headers=headers,
                 data=data
             )
-            response.raise_for_status()
-            return response.json()
+            submit_response.raise_for_status()
+            submit_data = submit_response.json()
+            
+            # Check if immediate result (cached)
+            if submit_data.get("status") == "complete" or submit_data.get("markdown"):
+                logger.info("Got immediate result (cached)")
+                return submit_data
+            
+            # Get polling URL
+            request_check_url = submit_data.get("request_check_url")
+            request_id = submit_data.get("request_id")
+            
+            if not request_check_url:
+                logger.warning(f"No request_check_url in response: {submit_data}")
+                raise DatalabAPIError(f"API did not return request_check_url: {submit_data}")
+            
+            logger.info(f"Document submitted. Request ID: {request_id}. Polling for result...")
+            
+            # Step 2: Poll until complete
+            for attempt in range(MAX_POLL_ATTEMPTS):
+                await asyncio.sleep(POLL_INTERVAL)
+                
+                poll_response = await client.get(
+                    request_check_url,
+                    headers=headers
+                )
+                poll_response.raise_for_status()
+                result = poll_response.json()
+                
+                status = result.get("status", "unknown")
+                
+                if status == "complete":
+                    logger.info(f"Processing complete after {attempt + 1} polls")
+                    return result
+                elif status == "failed":
+                    error_msg = result.get("error", "Unknown error")
+                    raise DatalabAPIError(f"Processing failed: {error_msg}")
+                elif status == "processing":
+                    if attempt % 10 == 0:  # Log every 20 seconds
+                        logger.info(f"Still processing... (attempt {attempt + 1})")
+                else:
+                    logger.warning(f"Unknown status: {status}")
+            
+            raise DatalabAPIError(f"Timeout: Processing did not complete after {MAX_POLL_ATTEMPTS * POLL_INTERVAL}s")
 
         except httpx.HTTPStatusError as e:
             logger.error(f"Datalab API HTTP error: {e.response.status_code} - {e.response.text}")
@@ -88,8 +139,8 @@ def _build_markdown_with_page_markers(api_response: Dict[str, Any]) -> str:
     """
     Builds combined Markdown with [[PAGE_N]] markers from API response.
 
-    Datalab API response format (main fields):
-    - markdown: Full markdown text
+    Datalab API response format:
+    - markdown: Full markdown text with {N}---- page separators
     - page_count: Number of pages
     - success: Boolean
     
@@ -99,6 +150,8 @@ def _build_markdown_with_page_markers(api_response: Dict[str, Any]) -> str:
     Returns:
         Combined Markdown text with page markers.
     """
+    import re
+    
     # Debug: log the response keys
     logger.debug(f"API response keys: {list(api_response.keys())}")
     
@@ -131,16 +184,44 @@ def _build_markdown_with_page_markers(api_response: Dict[str, Any]) -> str:
     page_count = api_response.get("page_count", 1)
     logger.debug(f"Markdown length: {len(markdown)}, Page count: {page_count}")
     
-    # Check if markdown already has page separators
-    # Common separators: \n---\n, \n\n---\n\n, or explicit page markers
+    # Datalab uses {N}---- format for page separators
+    # Pattern: {0}---- or {1}---- etc. followed by dashes
+    datalab_page_pattern = re.compile(r'\{(\d+)\}-{10,}', re.MULTILINE)
+    
+    # Check if content has Datalab page separators
+    if datalab_page_pattern.search(markdown):
+        logger.info("Detected Datalab page separator format")
+        # Split by page separators and build with our markers
+        parts = datalab_page_pattern.split(markdown)
+        
+        # parts will be: [content_before_first, page_num_1, content_1, page_num_2, content_2, ...]
+        markdown_parts = []
+        
+        # Handle content before first separator (if any)
+        if parts and parts[0].strip():
+            markdown_parts.append(f"[[PAGE_1]]\n{parts[0].strip()}")
+        
+        # Process remaining parts (alternating: page_num, content)
+        for i in range(1, len(parts), 2):
+            if i + 1 < len(parts):
+                page_num = int(parts[i]) + 1  # Convert 0-indexed to 1-indexed
+                content = parts[i + 1].strip()
+                if content:
+                    markdown_parts.append(f"[[PAGE_{page_num}]]\n{content}")
+        
+        if markdown_parts:
+            result = "\n\n".join(markdown_parts)
+            logger.info(f"Built markdown with {len(markdown_parts)} pages")
+            return result
+    
+    # Fallback: Check for horizontal rule separators
     if page_count > 1:
-        # Try to split by horizontal rule (---) which is common page separator
-        separator_patterns = ["\n---\n\n", "\n\n---\n\n", "\n---\n", "---"]
+        separator_patterns = ["\n---\n\n", "\n\n---\n\n", "\n---\n"]
         
         for sep in separator_patterns:
             if sep in markdown:
                 pages_split = markdown.split(sep)
-                if len(pages_split) >= page_count - 1:  # Allow some tolerance
+                if len(pages_split) >= page_count - 1:
                     markdown_parts = []
                     for i, page_md in enumerate(pages_split):
                         page_md = page_md.strip()
@@ -151,7 +232,6 @@ def _build_markdown_with_page_markers(api_response: Dict[str, Any]) -> str:
                         return "\n\n".join(markdown_parts)
                     break
         
-        # If no separator found, just add PAGE_1 marker to full text
         logger.info(f"No page separator found, treating as single document with {page_count} pages")
     
     # Return with PAGE_1 marker
@@ -237,8 +317,16 @@ def _ocr_with_local_marker(pdf_path: str) -> str:
 def _ocr_with_datalab_api(pdf_path: str) -> str:
     """
     Performs OCR using Datalab API.
+    
+    Also extracts and saves images from the API response to the same directory
+    as the PDF file, so they can be referenced in the markdown.
     """
+    import base64
+    
     logger.info(f"Starting PDF OCR via Datalab API: {pdf_path}")
+    
+    # Get the directory where PDF is located (for saving images)
+    pdf_dir = os.path.dirname(os.path.abspath(pdf_path))
 
     try:
         # Run async API call in event loop
@@ -255,6 +343,26 @@ def _ocr_with_datalab_api(pdf_path: str) -> str:
         except RuntimeError:
             # No event loop exists
             api_response = asyncio.run(_call_datalab_api(pdf_path))
+
+        # Extract and save images from API response
+        images = api_response.get("images", {})
+        if images:
+            logger.info(f"Extracting {len(images)} images from API response...")
+            for filename, base64_data in images.items():
+                try:
+                    # Decode base64 image
+                    image_bytes = base64.b64decode(base64_data)
+                    
+                    # Save to the same directory as the PDF
+                    image_path = os.path.join(pdf_dir, filename)
+                    with open(image_path, "wb") as img_file:
+                        img_file.write(image_bytes)
+                    
+                    logger.info(f"Saved image: {filename} ({len(image_bytes)} bytes)")
+                except Exception as e:
+                    logger.warning(f"Failed to save image {filename}: {e}")
+        else:
+            logger.info("No images in API response")
 
         # Build markdown with page markers
         full_markdown = _build_markdown_with_page_markers(api_response)

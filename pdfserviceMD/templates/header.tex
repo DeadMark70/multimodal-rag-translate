@@ -1,0 +1,29 @@
+% Phase 7: PDF Generation Engine - LaTeX Header
+% Custom packages for enhanced PDF output
+
+% CJK 支援 (取代 ctexart 以避免 SimHei 依賴)
+\usepackage{xeCJK}
+\setCJKmainfont{Microsoft JhengHei}
+\setCJKsansfont{Microsoft JhengHei}
+\setCJKmonofont{Microsoft JhengHei}
+
+% Table packages
+\usepackage{longtable}   % Multi-page tables
+\usepackage{booktabs}    % Professional table styling (\toprule, \midrule, \bottomrule)
+\usepackage{adjustbox}   % Auto-scale wide tables
+
+% Figure placement
+\usepackage{float}       % [H] placement specifier
+
+% Prevent table/figure overflow
+\usepackage{graphicx}
+
+% Better handling of wide content
+\setlength{\tabcolsep}{4pt}  % Reduce table column padding
+
+% Fix for common Marker output issues
+\usepackage{amsmath}     % Math environments
+\usepackage{amssymb}     % Math symbols
+
+% Allow raw LaTeX blocks from Pandoc
+\newcommand{\passmark}{}

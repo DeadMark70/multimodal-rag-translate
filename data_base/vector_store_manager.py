@@ -196,6 +196,89 @@ def index_extracted_document(user_id: str, doc: ExtractedDocument) -> None:
         logger.error(f"Indexing error: {e}", exc_info=True)
 
 
+def add_visual_summaries_to_knowledge_base(
+    user_id: str,
+    doc_id: str,
+    elements: List,
+) -> int:
+    """
+    Adds visual element summaries to user's knowledge base.
+
+    This function is called after ImageSummarizer has generated summaries
+    for visual elements extracted from a document.
+
+    Args:
+        user_id: User's ID.
+        doc_id: Document UUID.
+        elements: List of VisualElement objects with summaries.
+
+    Returns:
+        Number of visual summaries indexed.
+
+    Raises:
+        ValueError: If embedding model not initialized.
+    """
+    global global_embeddings_model
+
+    if global_embeddings_model is None:
+        raise ValueError("Embedding model not initialized")
+
+    # Filter elements with valid summaries
+    documents_to_add: List[Document] = []
+    for element in elements:
+        if not element.summary or not element.summary.strip():
+            continue
+        if "Error" in element.summary or "錯誤" in element.summary:
+            continue
+
+        documents_to_add.append(Document(
+            page_content=element.summary,
+            metadata={
+                "source": "image",
+                "type": element.type.value if hasattr(element.type, 'value') else str(element.type),
+                "doc_id": doc_id,
+                "page": element.page_number,
+                "image_path": element.image_path,
+                "context": element.context_text or "",
+                "figure_ref": element.figure_reference or "",
+            }
+        ))
+
+    if not documents_to_add:
+        logger.info("No visual summaries to index")
+        return 0
+
+    logger.info(f"Indexing {len(documents_to_add)} visual summaries for user {user_id}")
+
+    # Add to existing FAISS index
+    user_index_path = get_user_vector_store_path(user_id)
+    os.makedirs(user_index_path, exist_ok=True)
+
+    try:
+        faiss_file = os.path.join(user_index_path, "index.faiss")
+
+        if os.path.exists(faiss_file):
+            # Append to existing index
+            vector_db = FAISS.load_local(
+                user_index_path,
+                global_embeddings_model,
+                index_name="index",
+                allow_dangerous_deserialization=True
+            )
+            vector_db.add_documents(documents_to_add)
+        else:
+            # Create new index
+            logger.info(f"Creating new index for user {user_id}")
+            vector_db = FAISS.from_documents(documents_to_add, global_embeddings_model)
+
+        vector_db.save_local(user_index_path, index_name="index")
+        logger.info(f"Successfully indexed {len(documents_to_add)} visual summaries")
+        return len(documents_to_add)
+
+    except (RuntimeError, OSError, pickle.PicklingError, ValueError) as e:
+        logger.error(f"Visual summary indexing error: {e}", exc_info=True)
+        return 0
+
 def get_user_retriever(user_id: str, k: int = 3):
     """
     Gets a hybrid retriever for a specific user.

@@ -164,12 +164,14 @@ class DeepResearchService:
             doc_ids=request.doc_ids,
             enable_reranking=request.enable_reranking,
             iteration=0,
+            enable_deep_image_analysis=request.enable_deep_image_analysis,
         )
         all_results.extend(current_results)
         
         # Phase 2: Drill-down loop (if enabled AND answers not already complete)
         total_iterations = 0
-        should_skip = self._should_skip_drilldown(all_results)
+        # Phase 6.1B: 傳入 current_iteration=0 以強制至少一次 Drill-down
+        should_skip = self._should_skip_drilldown(all_results, current_iteration=0)
         
         if request.enable_drilldown and request.max_iterations > 0 and not should_skip:
             total_iterations = await self._drill_down_loop(
@@ -229,6 +231,7 @@ class DeepResearchService:
         doc_ids: Optional[List[str]],
         enable_reranking: bool,
         iteration: int,
+        enable_deep_image_analysis: bool = False,
     ) -> List[SubTaskExecutionResult]:
         """
         Executes a batch of tasks concurrently.
@@ -246,15 +249,17 @@ class DeepResearchService:
         async def execute_single(task: EditableSubTask) -> SubTaskExecutionResult:
             async with self._semaphore:
                 try:
-                    use_graph = task.task_type == "graph_analysis"
+                    # Phase 6.1A: 預設開啟 GraphRAG 以提升抗噪能力
+                    # 大規模文檔環境下，GraphRAG 可捕捉隱藏關聯
                     
                     answer, sources = await rag_answer_question(
                         question=task.question,
                         user_id=user_id,
                         doc_ids=doc_ids,
                         enable_reranking=enable_reranking,
-                        enable_graph_rag=use_graph,
-                        graph_search_mode="hybrid" if use_graph else "auto",
+                        enable_graph_rag=True,  # Phase 6: 預設開啟
+                        graph_search_mode="hybrid",  # Phase 6: 混合模式
+                        enable_visual_verification=enable_deep_image_analysis,  # Phase 9
                     )
                     
                     return SubTaskExecutionResult(
@@ -315,9 +320,9 @@ class DeepResearchService:
         planner = TaskPlanner(max_subtasks=3, enable_graph_planning=False)
         evaluator = RAGEvaluator()
         
-        # Constants for evaluation-driven retry
-        MIN_COMPLETENESS_SCORE = 3  # Threshold for smart retry
-        MAX_RETRIES_PER_TASK = 2    # Prevent infinite loops
+        # Constants for evaluation-driven retry (Phase 4: 1-10 scale)
+        MIN_ACCURACY_SCORE = 6.0   # Accuracy < 6 must retry (poor quality)
+        MAX_RETRIES_PER_TASK = 2   # Prevent infinite loops
         
         for iteration in range(1, max_iterations + 1):
             logger.info(f"Drill-down iteration {iteration}/{max_iterations}")
@@ -370,6 +375,7 @@ class DeepResearchService:
                             enable_graph_rag=use_graph,
                             graph_search_mode="hybrid" if use_graph else "auto",
                             return_docs=True,  # Get documents for evaluation
+                            enable_visual_verification=enable_deep_image_analysis,  # Phase 9
                         )
                         
                         # Handle return format (answer, sources) or RAGResult
@@ -395,17 +401,18 @@ class DeepResearchService:
                             answer=answer,
                         )
                         
-                        # Check if retry is needed
-                        if evaluation.completeness_score < MIN_COMPLETENESS_SCORE:
+                        # Check if retry is needed (Phase 4: use accuracy threshold)
+                        if evaluation.accuracy < MIN_ACCURACY_SCORE:
                             logger.info(
-                                f"Task {task_id} low score ({evaluation.completeness_score}/5), "
+                                f"Task {task_id} low accuracy ({evaluation.accuracy:.1f}/10), "
                                 f"reason: {evaluation.reason[:50]}..."
                             )
                             
-                            # Smart retry: refine query based on evaluation reason
+                            # Smart retry: use suggestion from evaluation if available
+                            retry_hint = evaluation.suggestion or evaluation.reason
                             refined_query = await planner.refine_query_from_evaluation(
                                 original_question=current_question,
-                                evaluation_reason=evaluation.reason,
+                                evaluation_reason=retry_hint,
                                 failed_answer=answer,
                             )
                             
@@ -462,6 +469,7 @@ class DeepResearchService:
         results: List[SubTaskExecutionResult],
         min_answer_length: int = 200,
         min_complete_ratio: float = 0.8,
+        current_iteration: int = -1,  # Phase 6.1B: 新增參數
     ) -> bool:
         """
         Determines whether to skip the drill-down phase based on answer completeness.
@@ -469,15 +477,22 @@ class DeepResearchService:
         Smart termination conditions:
         1. All answers are sufficiently long (not shallow responses)
         2. No answers contain failure markers (e.g., "無法回答", "找不到")
+        3. Phase 6.1B: Iteration 0 is never skipped (forced drill-down)
         
         Args:
             results: Current execution results.
             min_answer_length: Minimum length for a "complete" answer.
             min_complete_ratio: Ratio of complete answers required to skip drill-down.
+            current_iteration: Current iteration number. If 0, drill-down is forced.
             
         Returns:
             True if drill-down should be skipped.
         """
+        # Phase 6.1B: 強制至少執行一次 Drill-down
+        if current_iteration == 0:
+            logger.info("Phase 6 Forced Drill-down: iteration 0 requires at least one drill-down")
+            return False
+        
         if not results:
             return False
         

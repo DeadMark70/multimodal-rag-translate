@@ -1,11 +1,11 @@
 {
   "apiInfo": {
-    "version": "2.2.0",
+    "version": "3.1.0",
     "title": "PDF Translation & RAG API",
     "description": "PDF OCR、翻譯、圖片翻譯、多模態 RAG 與 GraphRAG 知識圖譜服務。支援 Flutter 手機端、Web 端與 React 前端整合。",
     "baseUrlExample": "http://localhost:8000",
     "supportedClients": ["Flutter (Mobile/Web)", "React", "任何支援 REST API 的前端框架"],
-    "lastUpdated": "2025-12-21"
+    "lastUpdated": "2026-01-09"
   },
 
   "authentication": {
@@ -352,6 +352,11 @@
                 "type": "boolean",
                 "default": false,
                 "description": "🆕 啟用圖譜輔助規劃 (Deep Research)"
+              },
+              "enable_visual_verification": {
+                "type": "boolean",
+                "default": false,
+                "description": "🆕 啟用 Agent 視覺查證模式 (針對圖片細節進行二次分析)"
               }
             },
             "example": {
@@ -528,6 +533,11 @@
                 "type": "boolean",
                 "default": true,
                 "description": "啟用遞迴深入挖掘"
+              },
+              "enable_deep_image_analysis": {
+                "type": "boolean",
+                "default": false,
+                "description": "🆕 啟用進階圖片查證 (Agent 會主動重新分析圖片細節)"
               }
             }
           },
@@ -871,9 +881,15 @@
       }
     },
     "EvaluationMetrics": {
-      "description": "🆕 責任 AI 評估指標",
+      "description": "🆕 責任 AI 評估指標 (1-10 分制)",
       "fields": {
-        "faithfulness": { "type": "enum", "values": ["grounded", "hallucinated", "uncertain"], "description": "答案可信度" },
+        "accuracy": { "type": "number", "range": "1.0-10.0", "description": "數據精確度 (50% 權重)" },
+        "completeness": { "type": "number", "range": "1.0-10.0", "description": "完整覆蓋率 (30% 權重)" },
+        "clarity": { "type": "number", "range": "1.0-10.0", "description": "邏輯表達 (20% 權重)" },
+        "weighted_score": { "type": "number", "description": "加權總分" },
+        "is_passing": { "type": "boolean", "description": "是否通過學術門檻 (>=7.0)" },
+        "suggestion": { "type": "string", "description": "改進建議" },
+        "faithfulness": { "type": "enum", "values": ["grounded", "hallucinated", "uncertain"], "description": "答案可信度 (映射自 Accuracy)" },
         "confidence_score": { "type": "number", "range": "0.0-1.0", "description": "信心分數" }
       }
     },
