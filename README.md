@@ -64,7 +64,7 @@ graph TD
     subgraph "Agentic Loop"
         Service --> Planner[Planner Agent]
         Planner --> Executor[Task Executor]
-        Executor --> RAG[RAG / GraphRAG]
+        Executor --> RAG["RAG / GraphRAG"]
         Executor --> Evaluator[Evaluator Agent]
         Evaluator --"低分重試"--> Planner
     end
