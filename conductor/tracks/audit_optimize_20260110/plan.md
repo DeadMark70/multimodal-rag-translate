@@ -9,7 +9,7 @@ Goal: Verify code structure, dependencies, and static quality against the Tech S
 - [x] Task: Static Code Analysis (Agents) 827402e
     - Review `agents/planner.py`, `agents/evaluator.py`, `agents/synthesizer.py`.
     - Check for error handling and type hints.
-- [ ] Task: Static Code Analysis (RAG & Graph)
+- [x] Task: Static Code Analysis (RAG & Graph) 192c8e4
     - Review `data_base/` and `graph_rag/`.
     - Verify implementation of GraphRAG logic (NetworkX/Leidenalg usage).
 - [ ] Task: Conductor - User Manual Verification 'Structural & Static Analysis' (Protocol in workflow.md)
