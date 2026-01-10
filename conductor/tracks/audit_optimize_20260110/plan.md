@@ -1,6 +1,6 @@
 # Plan: Core Agentic Workflow Audit & Optimization
 
-## Phase 1: Structural & Static Analysis
+## Phase 1: Structural & Static Analysis [checkpoint: 8212a6f]
 Goal: Verify code structure, dependencies, and static quality against the Tech Stack and Style Guides.
 
 - [x] Task: Dependency & Environment Verification 512b41b
