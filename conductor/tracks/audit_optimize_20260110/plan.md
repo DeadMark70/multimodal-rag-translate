@@ -3,7 +3,7 @@
 ## Phase 1: Structural & Static Analysis
 Goal: Verify code structure, dependencies, and static quality against the Tech Stack and Style Guides.
 
-- [ ] Task: Dependency & Environment Verification
+- [x] Task: Dependency & Environment Verification 512b41b
     - Check `requirements.txt` vs actual imports.
     - Ensure `.env` structure matches `config.env.example`.
 - [ ] Task: Static Code Analysis (Agents)
