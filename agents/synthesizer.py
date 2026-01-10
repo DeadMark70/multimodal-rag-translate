@@ -194,8 +194,8 @@ class ResultSynthesizer:
             Cleaned text without think blocks.
         """
         import re
-        # Remove <think>...</think> blocks (including multiline)
-        cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        # Remove <think>...</think> blocks (including multiline and case insensitive)
+        cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL | re.IGNORECASE)
         # Clean up extra whitespace left behind
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         return cleaned.strip()
@@ -364,6 +364,11 @@ class ResultSynthesizer:
                 )
 
 
+    def _is_failed_answer(self, text: str) -> bool:
+        """Checks if the answer indicates a RAG retrieval failure."""
+        failure_markers = ["抱歉", "找不到", "無法回答", "未提及", "沒有資料", "not found", "unable to answer"]
+        return any(marker in text for marker in failure_markers) and len(text) < 150
+
 async def synthesize_results(
     original_question: str,
     sub_results: List[SubTaskResult],
@@ -382,23 +387,31 @@ async def synthesize_results(
     Returns:
         ResearchReport.
     """
-    # Skip LLM synthesis for ≤2 results - use direct concatenation instead
-    if not enabled or len(sub_results) <= 2:
+    # Check for general failure across all sub-results
+    all_failed = all(ResultSynthesizer()._is_failed_answer(r.answer) for r in sub_results) if sub_results else False
+    
+    # Skip LLM synthesis for ≤2 results OR if all failed - use direct concatenation/guidance instead
+    if not enabled or len(sub_results) <= 2 or all_failed:
         if sub_results:
-            # Combine all results without LLM call
-            combined_answer = "\n\n".join([
-                f"### {r.question}\n{r.answer}" for r in sub_results
-            ])
+            if all_failed:
+                summary = "檢索失敗：在目前的知識庫中找不到相關資訊。"
+                detailed_answer = "抱歉，系統嘗試分析了多個子面向，但在現有文件中均未發現確切證據。建議：\n1. 確認是否已上傳正確的 PDF 文件\n2. 嘗試調整問題的關鍵字\n3. 檢查文件 OCR 處理是否完整。"
+            else:
+                summary = sub_results[0].answer[:200] if sub_results[0].answer else ""
+                detailed_answer = "\n\n".join([
+                    f"### {r.question}\n{r.answer}" for r in sub_results
+                ])
+            
             all_sources = list(set(s for r in sub_results for s in r.sources))
             avg_confidence = sum(r.confidence for r in sub_results) / len(sub_results)
             
             return ResearchReport(
                 original_question=original_question,
-                summary=sub_results[0].answer[:200] if sub_results[0].answer else "",
-                detailed_answer=combined_answer,
+                summary=summary,
+                detailed_answer=detailed_answer,
                 sub_results=sub_results,
                 all_sources=all_sources,
-                confidence=avg_confidence,
+                confidence=0.0 if all_failed else avg_confidence,
             )
         return ResearchReport(
             original_question=original_question,
