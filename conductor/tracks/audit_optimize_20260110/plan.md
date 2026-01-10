@@ -6,7 +6,7 @@ Goal: Verify code structure, dependencies, and static quality against the Tech S
 - [x] Task: Dependency & Environment Verification 512b41b
     - Check `requirements.txt` vs actual imports.
     - Ensure `.env` structure matches `config.env.example`.
-- [ ] Task: Static Code Analysis (Agents)
+- [x] Task: Static Code Analysis (Agents) 827402e
     - Review `agents/planner.py`, `agents/evaluator.py`, `agents/synthesizer.py`.
     - Check for error handling and type hints.
 - [ ] Task: Static Code Analysis (RAG & Graph)
