@@ -14,17 +14,12 @@ Goal: Verify code structure, dependencies, and static quality against the Tech S
     - Verify implementation of GraphRAG logic (NetworkX/Leidenalg usage).
 - [ ] Task: Conductor - User Manual Verification 'Structural & Static Analysis' (Protocol in workflow.md)
 
-## Phase 2: Logic & Flow Verification (Dry Run)
+## Phase 2: Logic & Flow Verification (Dry Run) [checkpoint: 79926b6]
 Goal: Trace the data flow of a "Research Request" to ensure components interact correctly.
 
-- [ ] Task: Planner Logic Audit
-    - Create a test script to simulate a user query.
-    - Verify Planner output format and step decomposition.
-- [ ] Task: RAG & Context Retrieval Audit
-    - Verify `data_base/RAG_QA_service.py` effectively retrieves chunks without overflowing tokens.
-    - Check integration of `graph_rag` in the retrieval process.
-- [ ] Task: Evaluator & Feedback Loop Audit
-    - Verify `agents/evaluator.py` can trigger a "retry" or "correction" in the workflow.
+- [x] Task: Planner Logic Audit 79926b6
+- [x] Task: RAG & Context Retrieval Audit 79926b6
+- [x] Task: Evaluator & Feedback Loop Audit 79926b6
 - [ ] Task: Conductor - User Manual Verification 'Logic & Flow Verification' (Protocol in workflow.md)
 
 ## Phase 3: Integration Testing & Optimization
