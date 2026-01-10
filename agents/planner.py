@@ -298,10 +298,10 @@ class TaskPlanner:
         # Complex question indicators
         complex_indicators = [
             "比較", "對比", "分析", "評估", "研究",
-            "以及", "並且", "同時", "還有",
-            "怎麼", "為什麼", "如何",
+            "以及", "並且", "同時", "還有", "甚至",
+            "怎麼", "為什麼", "如何", "哪些", "什麼是",
             "compare", "analyze", "evaluate", "research",
-            "and", "as well as", "also",
+            "and", "as well as", "also", "including",
         ]
         
         question_lower = question.lower()
@@ -313,7 +313,7 @@ class TaskPlanner:
         )
         
         # Long questions or multiple indicators suggest complexity
-        return len(question) > 100 or indicator_count >= 2
+        return len(question) > 40 or indicator_count >= 2
     
     def needs_graph_analysis(self, question: str) -> bool:
         """
@@ -327,9 +327,9 @@ class TaskPlanner:
         """
         graph_indicators = [
             "關係", "連結", "趨勢", "比較", "對比",
-            "這些論文", "這幾篇", "跨文件", "綜合",
+            "這些論文", "這幾篇", "跨文件", "綜合", "關聯",
             "relationship", "connection", "trend", "compare",
-            "across", "these papers", "multi-document",
+            "across", "these papers", "multi-document", "global",
         ]
         
         question_lower = question.lower()
