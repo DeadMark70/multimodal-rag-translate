@@ -4,5 +4,5 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 ---
 
-## [ ] Track: Core Agentic Workflow Audit & Optimization
+## [~] Track: Core Agentic Workflow Audit & Optimization
 *Link: [./conductor/tracks/audit_optimize_20260110/](./conductor/tracks/audit_optimize_20260110/)*
