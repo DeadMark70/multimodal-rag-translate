@@ -6,7 +6,18 @@ comparative evaluation of RAG models and configurations using Ragas metrics
 and tiered benchmarking.
 """
 
-from typing import List
+import logging
+import asyncio
+from typing import List, Dict, Any
+
+from ragas import evaluate
+from ragas.metrics.collections import faithfulness, answer_correctness
+from ragas.llms import LangchainLLMWrapper
+from datasets import Dataset
+
+from core.llm_factory import get_llm
+
+logger = logging.getLogger(__name__)
 
 class EvaluationPipeline:
     """
@@ -31,6 +42,8 @@ class EvaluationPipeline:
             "Long Context Mode",
             "Full Agentic RAG"
         ]
+        # Evaluator model for Ragas
+        self.evaluator_model = "gemini-1.5-pro" # Fallback if gemini-3-pro-preview not available
 
     def extract_token_usage(self, response) -> dict:
         """
@@ -55,3 +68,65 @@ class EvaluationPipeline:
             "output_tokens": usage.get("output_tokens", 0),
             "total_tokens": usage.get("total_tokens", 0)
         }
+
+    async def calculate_ragas_metrics(
+        self, 
+        question: str, 
+        answer: str, 
+        contexts: List[str], 
+        ground_truth: str
+    ) -> Dict[str, float]:
+        """
+        Calculates Faithfulness and Answer Correctness using Ragas.
+        
+        Args:
+            question: The input question.
+            answer: The generated answer.
+            contexts: List of retrieved context strings.
+            ground_truth: The reference answer.
+            
+        Returns:
+            A dictionary with metric names and their scores.
+        """
+        logger.info(f"Calculating Ragas metrics for question: {question[:50]}...")
+        
+        # Prepare data for Ragas
+        data = {
+            "question": [question],
+            "answer": [answer],
+            "contexts": [contexts],
+            "ground_truth": [ground_truth]
+        }
+        dataset = Dataset.from_dict(data)
+        
+        # Wrap the evaluator LLM
+        # Note: Using gemini-3-pro-preview as requested in spec if possible
+        # For now using get_llm with the configured evaluator model
+        evaluator_llm = get_llm("evaluator", model_name="gemini-3-pro-preview")
+        ragas_llm = LangchainLLMWrapper(evaluator_llm)
+        
+        try:
+            # Run evaluation
+            # Use a thread pool or run_in_executor if evaluate is blocking
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: evaluate(
+                    dataset=dataset,
+                    metrics=[faithfulness, answer_correctness],
+                    llm=ragas_llm
+                )
+            )
+            
+            # Extract scores (ragas result is a Result object that acts like a dict)
+            return {
+                "faithfulness": float(result.get("faithfulness", 0.0)),
+                "answer_correctness": float(result.get("answer_correctness", 0.0))
+            }
+        except Exception as e:
+            logger.error(f"Error calculating Ragas metrics: {e}")
+            return {
+                "faithfulness": 0.0,
+                "answer_correctness": 0.0,
+                "error": str(e)
+            }
