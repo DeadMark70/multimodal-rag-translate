@@ -9,7 +9,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Third-party
-from langchain.schema import Document
+from langchain_core.documents import Document
 
 # Local application
 from data_base.word_chunk_strategy import split_markdown

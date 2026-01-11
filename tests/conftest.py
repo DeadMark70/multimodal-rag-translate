@@ -102,6 +102,27 @@ def temp_user_dir(tmp_path):
     return user_dir
 
 
+@pytest.fixture
+def integration_test_user_id():
+    """Returns the user ID for integration testing."""
+    return "c1bae279-c099-4c45-ba19-2bb393ca4e4b"
+
+
+@pytest.fixture
+def target_documents():
+    """Returns the list of target documents for testing."""
+    return [
+        "17f74b87-a50b-472d-a551-5b73035e58b5/SwinUNETR.pdf",
+        "27f40556-b6a9-4744-a742-6e4815c14e42/nnU-Net Revisited.pdf"
+    ]
+
+
+@pytest.fixture
+def conflict_resolution_question():
+    """Returns the standard conflict resolution question for this track."""
+    return "SwinUNETR 與 nnU-Net 在醫學影像分割任務上，誰的表現更好？請根據文獻中的實驗數據進行比較。"
+
+
 # ============================================================================
 # Async Helpers
 # ============================================================================
