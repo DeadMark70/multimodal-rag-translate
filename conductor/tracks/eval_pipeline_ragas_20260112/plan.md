@@ -14,9 +14,9 @@ This plan outlines the steps to build a robust evaluation framework for the Mult
 ## Phase 2: Ragas & Metric Integration
 *Integrate Ragas and set up the evaluator LLM.*
 
-- [ ] Task: Write tests for Ragas metric calculation using `gemini-3-pro-preview`
-- [ ] Task: Implement `Faithfulness` and `Answer Correctness` calculation logic
-- [ ] Task: Implement a mock/stub for RAG responses to test metrics in isolation
+- [x] Task: Write tests for Ragas metric calculation using `gemini-3-pro-preview` 173ae30
+- [x] Task: Implement `Faithfulness` and `Answer Correctness` calculation logic 173ae30
+- [x] Task: Implement a mock/stub for RAG responses to test metrics in isolation addabf9
 - [ ] Task: Conductor - User Manual Verification 'Phase 2: Ragas & Metric Integration' (Protocol in workflow.md)
 
 ## Phase 3: Ablation Tier Implementation
