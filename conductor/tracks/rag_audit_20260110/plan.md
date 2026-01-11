@@ -17,7 +17,7 @@ Goal: Ensure backend components are active and correctly logging.
 - [x] Task: Verify HyDE & Multi-Query 4c88112
     - Create `tests/test_query_transform.py`.
     - Assert internal query expansion is happening.
-- [ ] Task: Verify Reranker & Noise Filtering
+- [x] Task: Verify Reranker & Noise Filtering 797fb74
     - Create `tests/test_reranker_logic.py`.
     - Assert top-k chunks belong to relevant documents despite noise.
 - [ ] Task: Verify GraphRAG hybrid search
