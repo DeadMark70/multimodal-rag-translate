@@ -247,46 +247,85 @@ async def _process_document_images(
         return 0
 
 
-async def _run_graph_extraction(user_id: str, doc_id: str, markdown_text: str) -> None:
-
+async def _run_graph_extraction(
+    user_id: str,
+    doc_id: str,
+    markdown_text: str,
+    batch_size: int = 3,
+) -> None:
     """
     Run GraphRAG entity extraction on document content.
 
     Extracts entities and relations from the document and adds them to
-    the user's knowledge graph. Non-blocking and gracefully handles errors.
+    the user's knowledge graph. Uses batch parallel processing for efficiency.
 
     Args:
         user_id: User ID for graph store.
         doc_id: Document UUID.
         markdown_text: Text content to extract entities from.
+        batch_size: Number of chunks to process in parallel (default 3).
     """
     try:
         # Split text into chunks for extraction (max ~8000 chars each)
         chunk_size = 8000
-        chunks = [
+        all_chunks = [
             markdown_text[i:i + chunk_size]
             for i in range(0, len(markdown_text), chunk_size)
         ]
+
+        # Pre-filter chunks that are too short
+        chunks = [
+            (idx, chunk) for idx, chunk in enumerate(all_chunks)
+            if len(chunk.strip()) >= 100
+        ]
+
+        if not chunks:
+            logger.info(f"[GraphRAG] No valid chunks to process for doc {doc_id}")
+            return
 
         store = GraphStore(user_id)
         total_nodes = 0
         total_edges = 0
 
-        for idx, chunk in enumerate(chunks):
-            if len(chunk.strip()) < 100:  # Skip very small chunks
-                continue
-            try:
-                nodes, edges = await extract_and_add_to_graph(
+        # Process chunks in batches
+        num_batches = (len(chunks) + batch_size - 1) // batch_size
+        logger.info(
+            f"[GraphRAG] Processing {len(chunks)} chunks in {num_batches} batches "
+            f"(batch_size={batch_size}) for doc {doc_id}"
+        )
+
+        for batch_idx in range(num_batches):
+            batch_start = batch_idx * batch_size
+            batch_end = min(batch_start + batch_size, len(chunks))
+            batch = chunks[batch_start:batch_end]
+
+            logger.info(f"[GraphRAG] Processing batch {batch_idx + 1}/{num_batches}...")
+
+            # Create async tasks for parallel execution
+            tasks = [
+                extract_and_add_to_graph(
                     text=chunk,
                     doc_id=doc_id,
                     store=store,
                     chunk_index=idx,
                 )
-                total_nodes += nodes
-                total_edges += edges
-            except (ValueError, RuntimeError) as chunk_error:
-                logger.warning(f"[GraphRAG] Chunk {idx} extraction failed: {chunk_error}")
-                continue
+                for idx, chunk in batch
+            ]
+
+            # Execute batch in parallel, capturing exceptions
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Process results
+            for i, result in enumerate(results):
+                chunk_idx = batch[i][0]
+                if isinstance(result, Exception):
+                    logger.warning(
+                        f"[GraphRAG] Chunk {chunk_idx} extraction failed: {result}"
+                    )
+                else:
+                    nodes, edges = result
+                    total_nodes += nodes
+                    total_edges += edges
 
         # Save graph if any entities were extracted
         if total_nodes > 0:
@@ -447,20 +486,37 @@ async def upload_pdf_md(
         _update_processing_step(document_id, "generating_pdf")
         output_pdf_filename = f"translated_{filename}"
         output_pdf_path = os.path.normpath(os.path.join(user_folder, output_pdf_filename))
+        pdf_generation_failed = False
+        pdf_error_msg = ""
 
-        # Phase 7: 傳入 user_folder 作為 base_dir 以正確處理圖片路徑
-        await run_in_threadpool(markdown_to_pdf, final_md, output_pdf_path, user_folder)
-        t4 = time.perf_counter()
-        logger.info(f"PDF generated in {t4-t3:.2f}s")
-
-        # 8. Update DB status - PDF is ready!
-        _update_document_status(document_id, "completed", translated_path=output_pdf_path)
-        _update_processing_step(document_id, "completed")
+        try:
+            # Phase 7: 傳入 user_folder 作為 base_dir 以正確處理圖片路徑
+            await run_in_threadpool(markdown_to_pdf, final_md, output_pdf_path, user_folder)
+            t4 = time.perf_counter()
+            logger.info(f"PDF generated in {t4-t3:.2f}s")
+            
+            # 8. Update DB status - PDF is ready!
+            _update_document_status(document_id, "completed", translated_path=output_pdf_path)
+            _update_processing_step(document_id, "completed")
+            
+        except Exception as e:
+            # RESILIENCE: If PDF fails, log it but CONTINUE to RAG/GraphRAG steps
+            pdf_generation_failed = True
+            pdf_error_msg = str(e)
+            logger.error(f"PDF generation failed, but proceeding with RAG tasks: {e}")
+            # Mark as completed but with a note or just completed (since text is ready for RAG)
+            # We'll use a special status or just log it specificially?
+            # User wants to continue RAG.
+            _update_document_status(document_id, "completed_with_pdf_error", error_message=f"PDF Error: {str(e)}")
+            _update_processing_step(document_id, "completed")
+            # Clear output path so we don't try to return a missing file
+            output_pdf_path = None
 
         total_time = time.perf_counter() - start_time
-        logger.info(f"PDF ready. Time: {total_time:.2f}s. Scheduling background tasks...")
+        logger.info(f"Processing (pre-background) finished. Time: {total_time:.2f}s. Scheduling background tasks...")
 
         # 9. Schedule background tasks (RAG + Images + Summary) - NON-BLOCKING
+        # Always run this, even if PDF failed!
         asyncio.create_task(
             run_post_processing_tasks(
                 doc_id=document_id,
@@ -471,12 +527,21 @@ async def upload_pdf_md(
             )
         )
 
-        # 10. Return translated PDF immediately - user doesn't wait for RAG!
-        return FileResponse(
-            path=output_pdf_path,
-            filename=output_pdf_filename,
-            media_type='application/pdf'
-        )
+        # 10. Return response
+        if not pdf_generation_failed and output_pdf_path and os.path.exists(output_pdf_path):
+             return FileResponse(
+                path=output_pdf_path,
+                filename=output_pdf_filename,
+                media_type='application/pdf'
+            )
+        else:
+            # Return JSON indicating RAG is processing but PDF failed
+            return {
+                "message": "Translation completed and RAG processing started.",
+                "pdf_status": "failed",
+                "pdf_error": pdf_error_msg,
+                "rag_status": "processing_background"
+            }
 
     except HTTPException:
         _update_document_status(document_id, "failed", error_message="HTTP error during processing")

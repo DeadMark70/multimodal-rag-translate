@@ -1,0 +1,16 @@
+{
+  "phase": "Phase 12: Translation & Embedding Optimization",
+  "status": "completed",
+  "completed_at": "2026-01-11T00:57:00+08:00",
+  "completed_items": [
+    "優化翻譯 Prompt - 強化 [[PAGE_X]] marker 保留指令",
+    "圖片品質提升 - MAX_IMAGE_SIZE 1024→1500, JPEG_QUALITY 85→95",
+    "Embedding Retry 機制 - exponential backoff (30s/60s/120s)"
+  ],
+  "modified_files": [
+    "pdfserviceMD/translation_chunker.py",
+    "multimodal_rag/image_summarizer.py",
+    "data_base/vector_store_manager.py"
+  ],
+  "description": "三項效能與穩定性優化：翻譯批次處理 prompt 優化減少 marker 丟失；圖片解析度提升至 1500px/95% 品質；Embedding API 429 錯誤自動重試機制"
+}

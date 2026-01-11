@@ -41,8 +41,8 @@ class ImageSummarizer:
     """
     
     MAX_CACHE_SIZE = 100
-    MAX_IMAGE_SIZE = 1024  # Max dimension in pixels
-    JPEG_QUALITY = 85
+    MAX_IMAGE_SIZE = 1500  # Max dimension in pixels
+    JPEG_QUALITY = 95
 
     def __init__(self, max_concurrent: int = 3) -> None:
         """

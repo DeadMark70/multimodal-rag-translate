@@ -25,10 +25,6 @@ Goal: Trace the data flow of a "Research Request" to ensure components interact 
 ## Phase 3: Integration Testing & Optimization
 Goal: Run a full end-to-end test and apply fixes.
 
-- [ ] Task: Create E2E Test Case
-    - Implement `tests/test_full_workflow.py` using `pytest`.
-    - Simulate: Upload PDF -> Ask Complex Question -> Verify Answer Quality.
-- [ ] Task: Optimization - Critical Fixes
-    - Fix any blocking issues identified in Phase 1 & 2.
-    - Refactor any "Token Heavy" functions to be more efficient.
+- [x] Task: Create E2E Test Case 0a174bb
+- [x] Task: Optimization - Critical Fixes 0a174bb
 - [ ] Task: Conductor - User Manual Verification 'Integration Testing & Optimization' (Protocol in workflow.md)

@@ -8,9 +8,11 @@ Uses Google Gemini Embedding API for vector generation.
 """
 
 # Standard library
+import asyncio
 import logging
 import os
 import pickle
+import time
 from typing import List, Optional, Literal, Any
 
 # Third-party
@@ -97,6 +99,110 @@ def get_embeddings() -> Optional[GoogleGenerativeAIEmbeddings]:
         The global GoogleGenerativeAIEmbeddings instance, or None if not initialized.
     """
     return global_embeddings_model
+
+
+def _add_documents_with_retry(
+    vector_db: FAISS,
+    chunks: List[Document],
+    max_retries: int = 3,
+    base_delay: float = 30.0,
+) -> None:
+    """
+    Adds documents to FAISS with exponential backoff retry for rate limits.
+
+    Handles 429 RESOURCE_EXHAUSTED errors from Gemini Embedding API
+    by waiting and retrying with exponential backoff.
+
+    Args:
+        vector_db: FAISS vector store instance.
+        chunks: List of documents to add.
+        max_retries: Maximum retry attempts (default 3).
+        base_delay: Initial delay in seconds (default 30).
+
+    Raises:
+        RuntimeError: If all retries exhausted.
+    """
+    from langchain_google_genai._common import GoogleGenerativeAIError
+
+    for attempt in range(max_retries + 1):
+        try:
+            vector_db.add_documents(chunks)
+            if attempt > 0:
+                logger.info(f"Embedding succeeded on retry attempt {attempt}")
+            return
+        except GoogleGenerativeAIError as e:
+            error_str = str(e)
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** attempt)  # 30, 60, 120 seconds
+                    logger.warning(
+                        f"Embedding rate limit hit (attempt {attempt + 1}/{max_retries + 1}). "
+                        f"Waiting {delay:.0f}s before retry..."
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(
+                        f"Embedding failed after {max_retries + 1} attempts due to rate limits"
+                    )
+                    raise RuntimeError(
+                        f"Embedding rate limit exceeded after {max_retries + 1} attempts"
+                    ) from e
+            else:
+                # Non-rate-limit error, re-raise immediately
+                raise
+
+
+def _create_faiss_with_retry(
+    chunks: List[Document],
+    embeddings: GoogleGenerativeAIEmbeddings,
+    max_retries: int = 3,
+    base_delay: float = 30.0,
+) -> FAISS:
+    """
+    Creates FAISS from documents with exponential backoff retry for rate limits.
+
+    Args:
+        chunks: List of documents to index.
+        embeddings: Embedding model.
+        max_retries: Maximum retry attempts.
+        base_delay: Initial delay in seconds.
+
+    Returns:
+        FAISS vector store.
+
+    Raises:
+        RuntimeError: If all retries exhausted.
+    """
+    from langchain_google_genai._common import GoogleGenerativeAIError
+
+    for attempt in range(max_retries + 1):
+        try:
+            vector_db = FAISS.from_documents(chunks, embeddings)
+            if attempt > 0:
+                logger.info(f"FAISS creation succeeded on retry attempt {attempt}")
+            return vector_db
+        except GoogleGenerativeAIError as e:
+            error_str = str(e)
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        f"Embedding rate limit hit (attempt {attempt + 1}/{max_retries + 1}). "
+                        f"Waiting {delay:.0f}s before retry..."
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(
+                        f"FAISS creation failed after {max_retries + 1} attempts"
+                    )
+                    raise RuntimeError(
+                        f"Embedding rate limit exceeded after {max_retries + 1} attempts"
+                    ) from e
+            else:
+                raise
+
+    # Should not reach here
+    raise RuntimeError("Unexpected error in _create_faiss_with_retry")
 
 
 def index_extracted_document(user_id: str, doc: ExtractedDocument) -> None:
@@ -425,14 +531,14 @@ async def add_markdown_to_knowledge_base(
                 index_name="index",
                 allow_dangerous_deserialization=True
             )
-            vector_db.add_documents(chunks)
+            _add_documents_with_retry(vector_db, chunks)
         except (RuntimeError, OSError, pickle.UnpicklingError) as e:
             logger.warning(f"Error loading existing index: {e}, creating new one")
             vector_db = None
 
     if vector_db is None:
         logger.info(f"Creating new index for user {user_id}...")
-        vector_db = FAISS.from_documents(chunks, global_embeddings_model)
+        vector_db = _create_faiss_with_retry(chunks, global_embeddings_model)
 
     # 4. Save to disk
     try:

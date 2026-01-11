@@ -1,0 +1,16 @@
+{
+  "phase": "GraphRAG Batch Processing",
+  "status": "completed",
+  "completed_items": [
+    "Implemented batch parallel processing in _run_graph_extraction()",
+    "Added batch_size parameter (default 3)",
+    "Pre-filtering of chunks < 100 chars",
+    "Using asyncio.gather() for parallel execution",
+    "Enhanced logging with batch progress"
+  ],
+  "modified_files": [
+    "pdfserviceMD/router.py"
+  ],
+  "timestamp": "2026-01-10T19:35:00+08:00",
+  "description": "Modified GraphRAG entity extraction to process chunks in batches of 3 concurrently, providing approximately 3x speedup."
+}

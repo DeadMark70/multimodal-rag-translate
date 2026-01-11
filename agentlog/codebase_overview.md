@@ -101,23 +101,61 @@ These are configured in `core/llm_factory.py` and are not currently exposed as e
 
 ## Roadmap Status
 
-| Phase         | Feature                              | Status      |
-| :------------ | :----------------------------------- | :---------- |
-| **Phase 1-3** | Basic RAG + Agents                   | ✅ Complete |
-| **Phase 4**   | Multimodal Features                  | ✅ Complete |
-| **Phase 5**   | GraphRAG (Core Modules)              | ✅ Complete |
-| **Phase 5.3** | GraphRAG Integration                 | ✅ Complete |
-| **Phase 5.4** | 🆕 Interactive Deep Research         | ✅ Complete |
-| **Phase 5.5** | 🆕 Conversation History              | ✅ Complete |
-| **Phase 5.6** | 🆕 Multi-Doc Anti-Hallucination      | ✅ Complete |
-| **Phase 5.7** | 🆕 Deep Research Upgrade (Phase 1+2) | ✅ Complete |
-| **Phase 5.8** | 🆕 Deep Image Analysis (Phase 3)     | ✅ Complete |
-| **Phase 5.9** | 🆕 Academic Evaluation Engine        | ✅ Complete |
-| **Phase 6**   | 🆕 Deep Research Final Optimization  | ✅ Complete |
-| **Phase 7**   | 🆕 PDF Generation Engine Upgrade     | ✅ Complete |
-| **Phase 8**   | 🆕 Image Pipeline Integration        | ✅ Complete |
-| **Phase 9**   | 🆕 Agentic Visual Verification       | ✅ Complete |
-| **Phase 10**  | ColPali (Visual Embeddings)          | 📝 Planned  |
+| Phase         | Feature                                 | Status      |
+| :------------ | :-------------------------------------- | :---------- |
+| **Phase 1-3** | Basic RAG + Agents                      | ✅ Complete |
+| **Phase 4**   | Multimodal Features                     | ✅ Complete |
+| **Phase 5**   | GraphRAG (Core Modules)                 | ✅ Complete |
+| **Phase 5.3** | GraphRAG Integration                    | ✅ Complete |
+| **Phase 5.4** | 🆕 Interactive Deep Research            | ✅ Complete |
+| **Phase 5.5** | 🆕 Conversation History                 | ✅ Complete |
+| **Phase 5.6** | 🆕 Multi-Doc Anti-Hallucination         | ✅ Complete |
+| **Phase 5.7** | 🆕 Deep Research Upgrade (Phase 1+2)    | ✅ Complete |
+| **Phase 5.8** | 🆕 Deep Image Analysis (Phase 3)        | ✅ Complete |
+| **Phase 5.9** | 🆕 Academic Evaluation Engine           | ✅ Complete |
+| **Phase 6**   | 🆕 Deep Research Final Optimization     | ✅ Complete |
+| **Phase 7**   | 🆕 PDF Generation Engine Upgrade        | ✅ Complete |
+| **Phase 8**   | 🆕 Image Pipeline Integration           | ✅ Complete |
+| **Phase 9**   | 🆕 Agentic Visual Verification          | ✅ Complete |
+| **Phase 10**  | ColPali (Visual Embeddings)             | 📝 Planned  |
+| **Phase 11**  | 🆕 GraphRAG Batch Processing            | ✅ Complete |
+| **Phase 12**  | 🆕 Translation & Embedding Optimization | ✅ Complete |
+
+## Phase 12: Translation & Embedding Optimization
+
+三項效能與穩定性優化：
+
+### 12.1 翻譯 Prompt 優化 (`translation_chunker.py`)
+
+- 強化 `[[PAGE_X]]` marker 保留指令（置頂 ⛔ 警告）
+- 增加保留項目清單（數學公式、HTML 標籤等）
+- 結尾加入驗證提醒
+- **效果**: 減少 marker 丟失導致的重試
+
+### 12.2 圖片品質提升 (`image_summarizer.py`)
+
+- `MAX_IMAGE_SIZE`: 1024 → 1500 像素
+- `JPEG_QUALITY`: 85 → 95
+- **效果**: 更高解析度圖片分析
+
+### 12.3 Embedding Retry 機制 (`vector_store_manager.py`)
+
+- 新增 `_add_documents_with_retry()` 函數
+- 新增 `_create_faiss_with_retry()` 函數
+- Exponential backoff: 30s → 60s → 120s
+- 捕捉 `429 RESOURCE_EXHAUSTED` 自動重試
+- **效果**: 免費 API 限制下的容錯
+
+## Phase 11: GraphRAG Batch Processing
+
+優化 GraphRAG 實體提取效能，使用批次並行處理：
+
+- **router.py**: `_run_graph_extraction()` 函數改進
+  - 新增 `batch_size` 參數（預設 3）
+  - 使用 `asyncio.gather()` 並行處理批次
+  - 預先過濾太短的 chunks
+  - 增強批次進度 logging
+- **效能提升**: 理論約 3 倍速度提升
 
 ## Phase 9: Agentic Visual Verification
 

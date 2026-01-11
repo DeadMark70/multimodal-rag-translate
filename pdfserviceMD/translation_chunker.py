@@ -7,6 +7,7 @@ Uses batch translation (multiple pages per API call) to reduce request count.
 """
 
 # Standard library
+import asyncio
 import logging
 import re
 from typing import List, Tuple, Set
@@ -21,7 +22,7 @@ from core.llm_factory import get_llm
 # Configure logging
 logger = logging.getLogger(__name__)
 
-MAX_OUTPUT_TOKENS = 60000  # Leave buffer below 65K limit
+MAX_OUTPUT_TOKENS = 12000  # Reduced for Lite model & better parallelism (approx 16k chars)
 CHARS_PER_TOKEN_ESTIMATE = 1.33  # ~0.75 tokens per char for Chinese
 DEBUG_LOG_PATH = "output/translation_debug.log"
 
@@ -42,38 +43,53 @@ def _write_debug_log(content: str) -> None:
         logger.warning(f"Failed to write debug log: {e}")
 
 # Few-shot translation prompt with concrete examples
-STRICT_TRANSLATION_PROMPT = """你是一個專業翻譯系統。將 Markdown 文字翻譯成繁體中文。
+STRICT_TRANSLATION_PROMPT = """⛔ 格式要求（必須嚴格遵守，否則輸出無效）：
+1. 每個 [[PAGE_X]] 標記必須原封不動保留在輸出中
+2. 標記數量必須完全一致：輸入有幾個 [[PAGE_X]]，輸出就要有幾個
+3. 每個 [[PAGE_X]] 標記必須獨立成行
 
-⚠️ 關鍵規則:
-1. [[PAGE_X]] 標記必須原封不動保留（輸入幾個就輸出幾個）
-2. [IMG_PLACEHOLDER_X] 標記必須保留
-3. 保留所有 Markdown 格式、數學公式、HTML 標籤
+---
+
+你是專業學術翻譯系統。將 Markdown 內容翻譯成繁體中文。
+
+【保留不翻譯】
+- [[PAGE_X]] 標記（頁面分隔符）
+- [IMG_PLACEHOLDER_X] 標記
+- ![...](...) 圖片引用
+- $...$ 和 $$...$$ 數學公式
+- ```...``` 程式碼區塊
+- HTML 標籤如 <sup>, <sub>
+
+【翻譯規則】
+- 保持 Markdown 格式（#、**、-、|）
+- 學術專有名詞可保留英文或首次出現加註
 
 ---
 【範例輸入】
 [[PAGE_1]]
 # Introduction
-Machine learning is a subset of artificial intelligence.
+Deep learning has achieved **state-of-the-art** results.
 
 [[PAGE_2]]
-## Methods
-We used deep neural networks for classification.
+## Method
+We use $f(x) = Wx + b$ for computation.
 
 【範例輸出】
 [[PAGE_1]]
 # 介紹
-機器學習是人工智慧的一個分支。
+深度學習已達到**最先進**的成果。
 
 [[PAGE_2]]
 ## 方法
-我們使用深度神經網路進行分類。
+我們使用 $f(x) = Wx + b$ 進行計算。
 
 ---
-請翻譯以下內容（保留所有 [[PAGE_X]] 標記）:
+
+請翻譯以下內容（確保所有 [[PAGE_X]] 標記都保留）：
 
 {input_text}
 
-翻譯後直接輸出:"""
+翻譯結果："""
 
 # Retry configuration
 MAX_TRANSLATION_RETRIES = 2  # Maximum retry attempts when markers are lost
@@ -437,17 +453,42 @@ async def translate_chunked(markdown: str) -> str:
         logger.info("Single batch translation (all pages fit in one call)")
         return await translate_batch(batches[0])
 
-    # Step 3: Translate each batch
-    logger.info(f"Multi-batch translation: {len(batches)} batches")
-    translated_batches: List[str] = []
+    # Step 3: Translate batches in parallel (max 8 concurrent)
+    MAX_CONCURRENT_TRANSLATIONS = 8
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_TRANSLATIONS)
+    
+    async def translate_with_semaphore(batch_idx: int, batch: List[Tuple[int, str]]) -> str:
+        """Translates a batch with concurrency limiting."""
+        async with semaphore:
+            logger.info(f"Processing batch {batch_idx + 1}/{len(batches)}...")
+            return await translate_batch(batch)
+    
+    logger.info(
+        f"Multi-batch translation: {len(batches)} batches "
+        f"(parallel, max {MAX_CONCURRENT_TRANSLATIONS} concurrent)"
+    )
 
-    for i, batch in enumerate(batches):
-        logger.info(f"Processing batch {i + 1}/{len(batches)}...")
-        translated = await translate_batch(batch)
-        translated_batches.append(translated)
+    # Create translation tasks for all batches
+    translation_tasks = [
+        translate_with_semaphore(i, batch)
+        for i, batch in enumerate(batches)
+    ]
+
+    # Execute translations with concurrency limit
+    translated_batches = await asyncio.gather(*translation_tasks, return_exceptions=True)
+
+    # Handle any exceptions that occurred during translation
+    final_results: List[str] = []
+    for i, result in enumerate(translated_batches):
+        if isinstance(result, Exception):
+            logger.error(f"Batch {i + 1} translation failed: {result}")
+            # Fallback: return original content for failed batch
+            final_results.append(combine_batch_for_translation(batches[i]))
+        else:
+            final_results.append(result)
 
     # Step 4: Combine results
-    result = "\n\n".join(translated_batches)
-    logger.info(f"Translation complete: {len(pages)} pages, {len(batches)} batches")
+    result = "\n\n".join(final_results)
+    logger.info(f"Translation complete: {len(pages)} pages, {len(batches)} batches (parallel)")
 
     return result
