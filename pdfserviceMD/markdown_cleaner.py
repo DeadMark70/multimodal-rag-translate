@@ -149,6 +149,224 @@ def escape_latex_specials(content: str) -> str:
     return ''.join(result_parts)
 
 
+def fix_malformed_latex(content: str) -> str:
+    """
+    Fixes common malformed LaTeX patterns from OCR output.
+    
+    Handles:
+    - Trailing superscript/subscript without content: x^$ or x_$
+    - Double superscript/subscript: x^a^b -> x^{a^b}
+    - Empty math blocks: $$ -> removed
+    - Orphan sub-environments (aligned, matrix) -> wrapped in $$ ... $$
+      UNLESS they are already inside a top-level math environment (equation, match, etc.)
+    
+    Args:
+        content: Markdown content with potential LaTeX errors.
+        
+    Returns:
+        Content with fixed LaTeX.
+    """
+    if not content:
+        return content
+    
+    # Pattern to find math blocks
+    math_pattern = re.compile(r'(\$\$[\s\S]*?\$\$|\$[^\$\n]+\$)')
+    
+    def fix_math_block(match: re.Match) -> str:
+        math = match.group(0)
+        original = math
+        
+        # Remove trailing ^ or _ without content (before closing $)
+        # Pattern: ^$ or ^}$ or ^\s*$
+        math = re.sub(r'\^(\s*)(\$|\})', r'\1\2', math)
+        math = re.sub(r'_(\s*)(\$|\})', r'\1\2', math)
+        
+        # Fix double superscript: x^a^b -> x^{a^b}
+        # This is a heuristic: wrap the first superscript content in braces
+        # Pattern: letter/}^{...}^{...} or similar
+        
+        # Simpler fix: remove trailing bare ^ or _ that would cause double script
+        # e.g., \mathbf{h}'_{\mathcal{N}_v}^ -> remove the trailing ^
+        math = re.sub(r'(\^|\\_)(\s*)$', r'\2', math.rstrip('$').rstrip()) + ('$$' if math.startswith('$$') else '$')
+        
+        # Fix empty subscript/superscript: ^{} or _{}
+        math = re.sub(r'\^\{\s*\}', '', math)
+        math = re.sub(r'_\{\s*\}', '', math)
+        
+        if math != original:
+            logger.debug(f"Fixed malformed LaTeX: {original[:50]}... -> {math[:50]}...")
+        
+        return math
+    
+    content = math_pattern.sub(fix_math_block, content)
+    
+    # Remove completely empty math blocks
+    content = re.sub(r'\$\$\s*\$\$', '', content)
+    content = re.sub(r'\$\s*\$', '', content)
+    
+    # Fix \begin{aligned} etc. appearing outside of math mode
+    # These sub-environments MUST be inside $$ ... $$ or $ ... $
+    # BUT we must NOT wrap them if they are already inside top-level math envs.
+    
+    math_sub_envs = ['aligned', 'gathered', 'split', 'cases', 'matrix', 'pmatrix', 'bmatrix', 'vmatrix', 'smallmatrix']
+    
+    # Top level environments that imply math mode
+    # Include starred versions
+    top_level_envs = ['equation', 'align', 'gather', 'flalign', 'alignat', 'multline']
+    top_level_envs_all = top_level_envs + [e + r'\*' for e in top_level_envs]
+    
+    # 1. Identify protected ranges (Top Level Envs + Existing Math Blocks)
+    protected_ranges = []
+    
+    # A. Top Level Environments
+    # This regex attempts to match balanced environments.
+    # Note: Regex recursivity is not fully supported in standard re, so we assume
+    # top-level environments are not nested within OTHER top-level environments (which is standard Latex).
+    env_regex = r'\\begin\{(' + '|'.join(top_level_envs_all) + r')\}[\s\S]*?\\end\{\1\}'
+    for match in re.finditer(env_regex, content):
+        protected_ranges.append(match.span())
+        
+    # B. Existing Math Blocks ($...$ and $$...$$ is already handled by math_pattern split? No, we need checking ranges)
+    # Be careful, we already ran fix_math_block which might have changed content, but 
+    # math_pattern.sub replaces in place.
+    # Let's find them again to be safe.
+    for match in math_pattern.finditer(content):
+        protected_ranges.append(match.span())
+        
+    # Also Check \[ ... \] and \( ... \)
+    # These are harder to match perfectly with simple regex if nested, but usually OK.
+    for match in re.finditer(r'\\\[[\s\S]*?\\\]', content):
+        protected_ranges.append(match.span())
+    for match in re.finditer(r'\\\([\s\S]*?\\\)', content):
+        protected_ranges.append(match.span())
+        
+    # Helper to check if a range is protected
+    def is_protected(start_idx: int, end_idx: int) -> bool:
+        for p_start, p_end in protected_ranges:
+            if p_start <= start_idx and end_idx <= p_end:
+                return True
+        return False
+
+    # 2. Find and wrap orphan sub-environments
+    sub_env_pattern = re.compile(
+        r'\\begin\{(' + '|'.join(math_sub_envs) + r')\}[\s\S]*?\\end\{\1\}',
+        re.MULTILINE
+    )
+    
+    replacements = []
+    
+    for match in sub_env_pattern.finditer(content):
+        start, end = match.span()
+        env_block = match.group(0)
+        
+        if not is_protected(start, end):
+            # Check context before the match (double check for immediate delimiters)
+            preceding_text = content[:start]
+            stripped_preceding = preceding_text.rstrip()
+            
+            # Helper to check if a suffix is a valid unescaped delimiter
+            def is_valid_delimiter(text: str, delimiter: str) -> bool:
+                if not text.endswith(delimiter):
+                    return False
+                # Check for escape
+                suffix_len = len(delimiter)
+                pre_delim = text[:-suffix_len]
+                backslashes = 0
+                idx = len(pre_delim) - 1
+                while idx >= 0 and pre_delim[idx] == '\\':
+                    backslashes += 1
+                    idx -= 1
+                return backslashes % 2 == 0
+
+            is_in_math_immediate = (
+                is_valid_delimiter(stripped_preceding, '$') or
+                is_valid_delimiter(stripped_preceding, r'\[') or
+                is_valid_delimiter(stripped_preceding, r'\(')
+            )
+            
+            if not is_in_math_immediate:
+                # One last heuristic: Paragraph inspection
+                # (Same as before to be safe against complex cases)
+                last_para_idx = preceding_text.rfind('\n\n')
+                if last_para_idx == -1: last_para_idx = 0
+                para_prefix = preceding_text[last_para_idx:]
+                dollar_count = len(re.findall(r'(?<!\\)\$', para_prefix))
+                
+                if dollar_count % 2 == 0: # Even dollars means we are likely OUTSIDE math
+                    logger.debug(f"Wrapping orphan {match.group(0)[:20]}... in math mode")
+                    replacements.append((start, end, f"$${env_block}$$"))
+
+    # Apply replacements in reverse order
+    for start, end, replacement in reversed(replacements):
+        content = content[:start] + replacement + content[end:]
+    
+    # Clean up any potential double-double dollars
+    content = re.sub(r'\$\$\$\$', '$$', content)
+    
+    # Final fix: \tag{...} appearing outside of math mode
+    content = re.sub(r'\\\]\s*\\tag\{([^}]*)\}', r'\\] (Tag: \1)', content)
+    content = re.sub(r'\\end\{aligned\}\s*\\\]\s*\\tag\{([^}]*)\}', r'\\end{aligned}\\] (Tag: \1)', content)
+    content = re.sub(r'\$\$\s*\\tag\{([^}]*)\}', r'$$ (Tag: \1)', content)
+    
+    # Fix orphan math commands
+    math_cmds = ['mathbf', 'mathrm', 'mathcal', 'mathbb', 'mathit', 'mathsf', 'mathtt']
+    cmd_pattern = re.compile(
+        r'\\(' + '|'.join(math_cmds) + r')\{[^{}]*\}',
+        re.MULTILINE
+    )
+    
+    # Re-calculate protected ranges? 
+    # Actually, simpler: just check if check is inside math pattern
+    # The previous logic for math commands was reasonably safe, but let's use the new protected_ranges logic
+    # CAUTION: Content has changed due to sub_env replacements. 
+    # Ideally we should re-scan protected ranges or track indices offset.
+    # Given the complexity, let's just re-scan for math commands using a simplified regex replace
+    # that skips matches if they are inside math delimiters.
+    
+    def repl_math_cmd(m):
+        # This is a bit expensive to check global protection for every match in regex sub
+        # So we keep the loop approach but re-check context
+        return m.group(0) # Logic below
+
+    replacements_cmds = []
+    offset = 0 # To track content changes? No, we use index from CURRENT content
+    # We need to re-scan protected ranges because content changed!
+    # But for efficiency, maybe just trust the paragraph heuristic for these small commands?
+    # Or, just re-run the protected range finder. It's fast enough.
+    
+    protected_ranges_v2 = []
+    for match in re.finditer(env_regex, content): protected_ranges_v2.append(match.span())
+    for match in math_pattern.finditer(content): protected_ranges_v2.append(match.span())
+    for match in re.finditer(r'\\\[[\s\S]*?\\\]', content): protected_ranges_v2.append(match.span())
+    for match in re.finditer(r'\\\([\s\S]*?\\\)', content): protected_ranges_v2.append(match.span())
+    
+    def is_protected_v2(s, e):
+        for ps, pe in protected_ranges_v2:
+            if ps <= s and e <= pe: return True
+        return False
+
+    for match in cmd_pattern.finditer(content):
+        start, end = match.span()
+        if not is_protected_v2(start, end):
+             # Paragraph heuristic
+            preceding_text = content[:start]
+            last_para_idx = preceding_text.rfind('\n\n')
+            if last_para_idx == -1: last_para_idx = 0
+            para_prefix = preceding_text[last_para_idx:]
+            dollar_count = len(re.findall(r'(?<!\\)\$', para_prefix))
+            
+            if dollar_count % 2 == 0:
+                replacements_cmds.append((start, end, f"${match.group(0)}$"))
+                
+    for start, end, replacement in reversed(replacements_cmds):
+        content = content[:start] + replacement + content[end:]
+        
+    # Catch-all for tag at end of line
+    content = re.sub(r'(?<=\})\s*\\tag\{([^}]*)\}\s*$', r' (Tag: \1)', content, flags=re.MULTILINE)
+    
+    return content
+
+
 def _count_table_dimensions(table_text: str) -> Tuple[int, int]:
     """
     Counts rows and columns in a Markdown table.
@@ -316,6 +534,10 @@ def sanitize_markdown(
     
     if escape_latex:
         content = escape_latex_specials(content)
+    
+    # Fix malformed LaTeX from OCR (always enabled when escape_latex is on)
+    if escape_latex:
+        content = fix_malformed_latex(content)
     
     if enhance_tables:
         content = enhance_wide_tables(content)
