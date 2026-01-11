@@ -1,0 +1,22 @@
+[
+  {
+    "question": "SwinUNETR 與 nnU-Net 在醫學影像分割任務上，誰的表現更好？請根據文獻中的實驗數據進行比較。",
+    "ground_truth": "根據文獻，nnU-Net 通常在多種挑戰賽中表現最為穩健且常獲得第一，而 SwinUNETR 在特定任務（如 BTCV）上表現優異。nnU-Net 的優勢在於其自動化的預處理與訓練框架。",
+    "type": "synthesis"
+  },
+  {
+    "question": "根據 nnU-Net Revisited 論文 (2404.09556v2)，Figure 1 的散點圖主要在分析什麼？圖中位於紅色區域的 BraTS 數據集代表什麼意義？",
+    "ground_truth": "Figure 1 分析了不同數據集作為基準測試的適用性 (Benchmarking suitability)。X 軸代表方法內標準差 (Intra-Method SD)，Y 軸代表方法間標準差 (Inter-Method SD)。BraTS 位於紅色區域 (虛線下方)，意味著其模型間的性能差異 (Inter-SD) 小於方法內部的雜訊 (Intra-SD)，這表示該數據集飽和度過高，不適合作為評判新架構優劣的基準。",
+    "type": "visual_verification"
+  },
+  {
+    "question": "目前的醫學影像分割模型中，哪些模型整合了 Transformer 架構？請舉出至少三個例子。",
+    "ground_truth": "整合 Transformer 的模型包括：SwinUNETR, UNETR, TransUNet, SegFormer (用於分割任務時)。",
+    "type": "standard"
+  },
+  {
+    "question": "對於 nnU-Net 來說，'Data Fingerprint' 包含哪些具體數據屬性？",
+    "ground_truth": "Data Fingerprint 包含：影像尺寸 (image sizes)、體素間距 (voxel spacings)、強度分佈 (intensity distributions) 以及類別比例 (class ratios)。",
+    "type": "standard"
+  }
+]
