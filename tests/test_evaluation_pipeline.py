@@ -55,3 +55,44 @@ class TestEvaluationPipelineStructure:
         
         for tier in expected_tiers:
             assert tier in pipeline.tiers
+
+class TestTokenMonitoring:
+    """Tests for token monitoring logic."""
+
+    def test_extract_token_usage_success(self):
+        """Tests that token usage is correctly extracted from a response object."""
+        from experiments.evaluation_pipeline import EvaluationPipeline
+        from langchain_core.messages import AIMessage
+        
+        pipeline = EvaluationPipeline()
+        
+        # Mock response with usage_metadata
+        mock_response = AIMessage(
+            content="Test response",
+            usage_metadata={
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "total_tokens": 30
+            }
+        )
+        
+        usage = pipeline.extract_token_usage(mock_response)
+        
+        assert usage["input_tokens"] == 10
+        assert usage["output_tokens"] == 20
+        assert usage["total_tokens"] == 30
+
+    def test_extract_token_usage_missing(self):
+        """Tests that missing usage_metadata returns zeros."""
+        from experiments.evaluation_pipeline import EvaluationPipeline
+        from langchain_core.messages import AIMessage
+        
+        pipeline = EvaluationPipeline()
+        
+        mock_response = AIMessage(content="No usage info")
+        
+        usage = pipeline.extract_token_usage(mock_response)
+        
+        assert usage["input_tokens"] == 0
+        assert usage["output_tokens"] == 0
+        assert usage["total_tokens"] == 0
