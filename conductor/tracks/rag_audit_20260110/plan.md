@@ -19,16 +19,12 @@ Goal: Ensure backend components are active and correctly logging.
 - [x] Task: Verify GraphRAG hybrid search de7a4d0
 - [x] Task: Conductor - User Manual Verification 'Component Functionality Audit' (Protocol in workflow.md) deb9692
 
-## Phase 3: Agentic Workflow & Integration
+## Phase 3: Agentic Workflow & Integration [checkpoint: 8238b29]
 Goal: Verify Deep Research and Visual Verification logic.
 
 - [x] Task: Verify Sub-task Count Enforcement 6b5f41f
-    - Create `tests/test_deep_research_constraints.py`.
-    - Verify that N tasks (1, 5, 10) are strictly generated as per params.
 - [x] Task: Verify Visual Verification Trigger 32a724e
-    - Create `tests/test_visual_tool_trigger.py`.
-    - Assert that queries about image details trigger the `VERIFY_IMAGE` tool.
-- [ ] Task: Conductor - User Manual Verification 'Agentic Workflow & Integration' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Agentic Workflow & Integration' (Protocol in workflow.md) 8238b29
 
 ## Phase 4: Baseline Experimentation
 Goal: Conduct the academic ablation study.
