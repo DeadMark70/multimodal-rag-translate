@@ -96,3 +96,43 @@ class TestTokenMonitoring:
         assert usage["input_tokens"] == 0
         assert usage["output_tokens"] == 0
         assert usage["total_tokens"] == 0
+
+class TestBenchmarkQuestions:
+    """Tests for benchmark questions loading."""
+
+    def test_benchmark_file_exists(self):
+        """Tests that experiments/benchmark_questions.json exists and is valid JSON."""
+        import json
+        import os
+        
+        file_path = "experiments/benchmark_questions.json"
+        assert os.path.exists(file_path)
+        
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            assert isinstance(data, list)
+            assert len(data) > 0
+            
+            # Check structure of first item
+            item = data[0]
+            assert "question" in item
+            assert "ground_truth" in item
+            assert "type" in item
+
+class TestMockRAG:
+    """Tests for mock RAG functionality."""
+
+    @pytest.mark.asyncio
+    async def test_mock_rag_answer(self):
+        """Tests that mock_rag_answer returns consistent mocked results."""
+        from experiments.evaluation_pipeline import EvaluationPipeline
+        pipeline = EvaluationPipeline()
+        
+        question = "Test question"
+        answer, contexts = await pipeline.mock_rag_answer(question)
+        
+        assert isinstance(answer, str)
+        assert len(answer) > 0
+        assert isinstance(contexts, list)
+        assert len(contexts) > 0
+        assert "Mocked context" in contexts[0]

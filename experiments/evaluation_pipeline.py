@@ -130,3 +130,21 @@ class EvaluationPipeline:
                 "answer_correctness": 0.0,
                 "error": str(e)
             }
+
+    async def mock_rag_answer(self, question: str) -> tuple[str, List[str]]:
+        """
+        Simulates a RAG response for testing purposes.
+        
+        Args:
+            question: The input question.
+            
+        Returns:
+            A tuple of (mocked_answer, mocked_contexts).
+        """
+        # Simple rule-based mock for testing
+        mocked_answer = f"This is a mocked answer to: {question}. It contains relevant information."
+        mocked_contexts = [
+            f"Mocked context 1 for {question}: Medical imaging is a field of medicine.",
+            f"Mocked context 2 for {question}: nnU-Net is a popular framework."
+        ]
+        return mocked_answer, mocked_contexts
