@@ -14,7 +14,7 @@ Goal: Map the user's uploaded files to specific test cases.
 ## Phase 2: Component Functionality Audit
 Goal: Ensure backend components are active and correctly logging.
 
-- [ ] Task: Verify HyDE & Multi-Query
+- [x] Task: Verify HyDE & Multi-Query 4c88112
     - Create `tests/test_query_transform.py`.
     - Assert internal query expansion is happening.
 - [ ] Task: Verify Reranker & Noise Filtering
