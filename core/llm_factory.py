@@ -91,8 +91,8 @@ _LLM_CONFIGS: dict[str, dict] = {
     },
 }
 
-@lru_cache(maxsize=10)  # Increased to accommodate different model instances
-def get_llm(purpose: LLMPurpose) -> ChatGoogleGenerativeAI:
+@lru_cache(maxsize=30)  # Increased to accommodate different model instances and overrides
+def get_llm(purpose: LLMPurpose, model_name: str = None) -> ChatGoogleGenerativeAI:
     """
     Returns a cached LLM instance for a specific purpose.
 
@@ -101,26 +101,15 @@ def get_llm(purpose: LLMPurpose) -> ChatGoogleGenerativeAI:
 
     Args:
         purpose: The intended use case for the LLM.
-            - "rag_qa": For question answering (moderate creativity)
-            - "translation": For document translation (high precision)
-            - "image_caption": For visual element summarization
-            - "visual_verification": For Deep Research detailed image analysis
-            - "context_generation": For generating contextual prefixes
-            - "proposition_extraction": For decomposing text into propositions
-            - "query_rewrite": For HyDE and multi-query generation
-            - "evaluator": For Self-RAG evaluation judgments
-            - "planner": For task decomposition
-            - "synthesizer": For result synthesis
+        model_name: Optional model name to override the default for this purpose.
 
     Returns:
         Configured ChatGoogleGenerativeAI instance.
-
-    Example:
-        llm = get_llm("rag_qa")
-        response = await llm.ainvoke([message])
     """
     config = _LLM_CONFIGS.get(purpose, _LLM_CONFIGS["rag_qa"])
-    model = _MODEL_BY_PURPOSE.get(purpose, _DEFAULT_MODEL)
+    
+    # Use override model if provided, else use purpose-specific or default
+    model = model_name if model_name else _MODEL_BY_PURPOSE.get(purpose, _DEFAULT_MODEL)
 
     logger.info(f"Initializing LLM for purpose: {purpose} (model: {model}, config: {config})")
 
