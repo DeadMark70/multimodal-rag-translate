@@ -3,12 +3,13 @@
 ## Phase 1: Dataset Confirmation & Test Config
 Goal: Map the user's uploaded files to specific test cases.
 
-- [ ] Task: Identify Target Documents
+- [x] Task: Identify Target Documents 5ccaa41
     - Verify files for SwinUNETR and nnU-Net exist in user `c1bae279-c099-4c45-ba19-2bb393ca4e4b`'s storage.
     - Identify at least 10 irrelevant documents for noise testing.
-- [ ] Task: Configure Test Environment
+    - *Note: Confirmed existence of SwinUNETR.pdf and nnU-Net Revisited.pdf. Identified 11 other PDFs (e.g., Attention Is All You Need, SAM-Med3D) for noise testing.*
+- [x] Task: Configure Test Environment
     - Set up `tests/conftest.py` to use the specified `user_id` for integration tests.
-- [ ] Task: Conductor - User Manual Verification 'Dataset Confirmation & Test Config' (Protocol in workflow.md)
+- [~] Task: Conductor - User Manual Verification 'Dataset Confirmation & Test Config' (Protocol in workflow.md)
 
 ## Phase 2: Component Functionality Audit
 Goal: Ensure backend components are active and correctly logging.
