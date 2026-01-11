@@ -2,14 +2,14 @@
 
 This plan outlines the steps to build a robust evaluation framework for the Multimodal Agentic RAG system using `ragas` and tiered benchmarking.
 
-## Phase 1: Foundation and Infrastructure
+## Phase 1: Foundation and Infrastructure [checkpoint: 3d2534c]
 *Setup the core classes, model overriding logic, and token monitoring infrastructure.*
 
 - [x] Task: Create `experiments/evaluation_pipeline.py` with base class structure e54357d
 - [x] Task: Implement dynamic model overriding for `get_llm` in `core/llm_factory.py` or within the pipeline 6849088
 - [x] Task: Implement Token Monitoring logic to capture `usage_metadata` from LangChain responses 805f205
 - [x] Task: Create `experiments/benchmark_questions.json` with initial set of tiered questions (Standard, Visual, Synthesis) 7b81551
-- [ ] Task: Conductor - User Manual Verification 'Phase 1: Foundation and Infrastructure' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 1: Foundation and Infrastructure' (Protocol in workflow.md) 3d2534c
 
 ## Phase 2: Ragas & Metric Integration
 *Integrate Ragas and set up the evaluator LLM.*
