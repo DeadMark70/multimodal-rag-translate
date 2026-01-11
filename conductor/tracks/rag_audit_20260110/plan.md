@@ -36,8 +36,5 @@ Goal: Conduct the academic ablation study.
 ## Phase 5: Audit Conclusions & Recommendations
 Goal: Summarize findings and suggest future improvements.
 
-- [ ] Task: Document Optimization Recommendations
-    - [ ] Suggestion: Implement direct Responsible AI sub-metrics (bias, safety) in `RAGEvaluator`.
-    - [ ] Suggestion: Further refine `needs_planning` length thresholds for low-resource CJK queries.
-    - [ ] Suggestion: Add a "Verbosity" parameter to control report detail levels.
-- [ ] Task: Conductor - User Manual Verification 'Audit Conclusions' (Protocol in workflow.md)
+- [x] Task: Document Optimization Recommendations e614686
+- [x] Task: Conductor - User Manual Verification 'Audit Conclusions' (Protocol in workflow.md) e614686
