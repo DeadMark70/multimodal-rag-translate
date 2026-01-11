@@ -11,19 +11,13 @@ Goal: Map the user's uploaded files to specific test cases.
     - Set up `tests/conftest.py` to use the specified `user_id` for integration tests.
 - [x] Task: Conductor - User Manual Verification 'Dataset Confirmation & Test Config' (Protocol in workflow.md) ec85fd4
 
-## Phase 2: Component Functionality Audit
+## Phase 2: Component Functionality Audit [checkpoint: deb9692]
 Goal: Ensure backend components are active and correctly logging.
 
 - [x] Task: Verify HyDE & Multi-Query 4c88112
-    - Create `tests/test_query_transform.py`.
-    - Assert internal query expansion is happening.
 - [x] Task: Verify Reranker & Noise Filtering 797fb74
-    - Create `tests/test_reranker_logic.py`.
-    - Assert top-k chunks belong to relevant documents despite noise.
 - [x] Task: Verify GraphRAG hybrid search de7a4d0
-    - Create `tests/test_graphrag_integration.py`.
-    - Assert graph context is retrieved for relational queries.
-- [ ] Task: Conductor - User Manual Verification 'Component Functionality Audit' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Component Functionality Audit' (Protocol in workflow.md) deb9692
 
 ## Phase 3: Agentic Workflow & Integration
 Goal: Verify Deep Research and Visual Verification logic.
