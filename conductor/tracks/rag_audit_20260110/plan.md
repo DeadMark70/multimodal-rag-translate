@@ -25,7 +25,7 @@ Goal: Verify Deep Research and Visual Verification logic.
 - [x] Task: Verify Sub-task Count Enforcement 6b5f41f
     - Create `tests/test_deep_research_constraints.py`.
     - Verify that N tasks (1, 5, 10) are strictly generated as per params.
-- [ ] Task: Verify Visual Verification Trigger
+- [x] Task: Verify Visual Verification Trigger 32a724e
     - Create `tests/test_visual_tool_trigger.py`.
     - Assert that queries about image details trigger the `VERIFY_IMAGE` tool.
 - [ ] Task: Conductor - User Manual Verification 'Agentic Workflow & Integration' (Protocol in workflow.md)
