@@ -26,12 +26,18 @@ Goal: Verify Deep Research and Visual Verification logic.
 - [x] Task: Verify Visual Verification Trigger 32a724e
 - [x] Task: Conductor - User Manual Verification 'Agentic Workflow & Integration' (Protocol in workflow.md) 8238b29
 
-## Phase 4: Baseline Experimentation
+## Phase 4: Baseline Experimentation [checkpoint: 6e4a101]
 Goal: Conduct the academic ablation study.
 
-- [ ] Task: Run Baseline Comparison
-    - Implement `experiments/audit_report.py`.
-    - Compare: Vanilla LLM vs Naive RAG vs Full Agentic RAG.
-- [ ] Task: Evaluation Metrics Audit
-    - Run RAGAS metrics on the results and verify the current calculation logic.
-- [ ] Task: Conductor - User Manual Verification 'Baseline Experimentation' (Protocol in workflow.md)
+- [x] Task: Run Baseline Comparison 0a174bb
+- [x] Task: Evaluation Metrics Audit 0a86f53
+- [x] Task: Conductor - User Manual Verification 'Baseline Experimentation' (Protocol in workflow.md) 6e4a101
+
+## Phase 5: Audit Conclusions & Recommendations
+Goal: Summarize findings and suggest future improvements.
+
+- [ ] Task: Document Optimization Recommendations
+    - [ ] Suggestion: Implement direct Responsible AI sub-metrics (bias, safety) in `RAGEvaluator`.
+    - [ ] Suggestion: Further refine `needs_planning` length thresholds for low-resource CJK queries.
+    - [ ] Suggestion: Add a "Verbosity" parameter to control report detail levels.
+- [ ] Task: Conductor - User Manual Verification 'Audit Conclusions' (Protocol in workflow.md)
