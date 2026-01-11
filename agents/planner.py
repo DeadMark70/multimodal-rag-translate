@@ -217,7 +217,7 @@ class TaskPlanner:
                 if tag and tag.upper() == "GRAPH":
                     task_type = "graph_analysis"
                 
-                if question and len(question) > 5:
+                if question and len(question) >= 3:
                     subtasks.append(SubTask(
                         id=task_id,
                         question=question,
