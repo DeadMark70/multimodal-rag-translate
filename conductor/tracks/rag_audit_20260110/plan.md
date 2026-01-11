@@ -20,7 +20,7 @@ Goal: Ensure backend components are active and correctly logging.
 - [x] Task: Verify Reranker & Noise Filtering 797fb74
     - Create `tests/test_reranker_logic.py`.
     - Assert top-k chunks belong to relevant documents despite noise.
-- [ ] Task: Verify GraphRAG hybrid search
+- [x] Task: Verify GraphRAG hybrid search de7a4d0
     - Create `tests/test_graphrag_integration.py`.
     - Assert graph context is retrieved for relational queries.
 - [ ] Task: Conductor - User Manual Verification 'Component Functionality Audit' (Protocol in workflow.md)
