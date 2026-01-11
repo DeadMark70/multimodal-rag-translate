@@ -22,7 +22,7 @@ Goal: Ensure backend components are active and correctly logging.
 ## Phase 3: Agentic Workflow & Integration
 Goal: Verify Deep Research and Visual Verification logic.
 
-- [ ] Task: Verify Sub-task Count Enforcement
+- [x] Task: Verify Sub-task Count Enforcement 6b5f41f
     - Create `tests/test_deep_research_constraints.py`.
     - Verify that N tasks (1, 5, 10) are strictly generated as per params.
 - [ ] Task: Verify Visual Verification Trigger
