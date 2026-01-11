@@ -1,15 +1,15 @@
 # Plan: RAG System Audit & Experimental Baseline Verification
 
-## Phase 1: Dataset Confirmation & Test Config
+## Phase 1: Dataset Confirmation & Test Config [checkpoint: ec85fd4]
 Goal: Map the user's uploaded files to specific test cases.
 
 - [x] Task: Identify Target Documents 5ccaa41
     - Verify files for SwinUNETR and nnU-Net exist in user `c1bae279-c099-4c45-ba19-2bb393ca4e4b`'s storage.
     - Identify at least 10 irrelevant documents for noise testing.
     - *Note: Confirmed existence of SwinUNETR.pdf and nnU-Net Revisited.pdf. Identified 11 other PDFs (e.g., Attention Is All You Need, SAM-Med3D) for noise testing.*
-- [x] Task: Configure Test Environment
+- [x] Task: Configure Test Environment 5ccaa41
     - Set up `tests/conftest.py` to use the specified `user_id` for integration tests.
-- [~] Task: Conductor - User Manual Verification 'Dataset Confirmation & Test Config' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Dataset Confirmation & Test Config' (Protocol in workflow.md) ec85fd4
 
 ## Phase 2: Component Functionality Audit
 Goal: Ensure backend components are active and correctly logging.
