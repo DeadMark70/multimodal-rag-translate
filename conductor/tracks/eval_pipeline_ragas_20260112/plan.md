@@ -7,7 +7,7 @@ This plan outlines the steps to build a robust evaluation framework for the Mult
 
 - [x] Task: Create `experiments/evaluation_pipeline.py` with base class structure e54357d
 - [x] Task: Implement dynamic model overriding for `get_llm` in `core/llm_factory.py` or within the pipeline 6849088
-- [ ] Task: Implement Token Monitoring logic to capture `usage_metadata` from LangChain responses
+- [x] Task: Implement Token Monitoring logic to capture `usage_metadata` from LangChain responses 805f205
 - [ ] Task: Create `experiments/benchmark_questions.json` with initial set of tiered questions (Standard, Visual, Synthesis)
 - [ ] Task: Conductor - User Manual Verification 'Phase 1: Foundation and Infrastructure' (Protocol in workflow.md)
 
