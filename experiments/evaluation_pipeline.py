@@ -249,18 +249,29 @@ class EvaluationPipeline:
         Returns:
             A dictionary containing input_tokens, output_tokens, and total_tokens.
         """
+        # Try modern LangChain usage_metadata first (LangChain 0.2+)
         usage = getattr(response, "usage_metadata", {})
-        if not usage:
+        if usage:
             return {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0
+                "input_tokens": usage.get("input_tokens", 0),
+                "output_tokens": usage.get("output_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0)
+            }
+            
+        # Fallback to legacy llm_output (LangChain < 0.2 or specific models)
+        llm_output = getattr(response, "llm_output", {})
+        if llm_output and "token_usage" in llm_output:
+            token_usage = llm_output["token_usage"]
+            return {
+                "input_tokens": token_usage.get("prompt_tokens", 0),
+                "output_tokens": token_usage.get("completion_tokens", 0),
+                "total_tokens": token_usage.get("total_tokens", 0)
             }
         
         return {
-            "input_tokens": usage.get("input_tokens", 0),
-            "output_tokens": usage.get("output_tokens", 0),
-            "total_tokens": usage.get("total_tokens", 0)
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0
         }
 
     async def calculate_ragas_metrics(
