@@ -3,7 +3,7 @@
 ## Phase 1: Infrastructure & Token Tracking Fix
 - [x] Task: Disable Ragas scoring in `experiments/evaluation_pipeline.py` to streamline debugging. 56a0115
 - [x] Task: Refactor `extract_token_usage` in `experiments/evaluation_pipeline.py` to correctly handle newer LangChain `usage_metadata` formats. 130a109
-- [ ] Task: Implement token usage aggregation for "Full Agentic RAG" (Tier 5) in `experiments/evaluation_pipeline.py`.
+- [x] Task: Implement token usage aggregation for "Full Agentic RAG" (Tier 5) in `experiments/evaluation_pipeline.py`. f758633
 - [ ] Task: Conductor - User Manual Verification 'Phase 1: Infrastructure & Token Tracking Fix' (Protocol in workflow.md)
 
 ## Phase 2: Observability & Logging Enhancement
