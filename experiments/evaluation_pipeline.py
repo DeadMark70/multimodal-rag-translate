@@ -419,3 +419,26 @@ class EvaluationPipeline:
             logger.info(f"CSV results saved to {output_path}")
         except Exception as e:
             logger.error(f"Error saving CSV results: {e}")
+
+    def check_visual_verification(self, result: Dict[str, Any]) -> bool:
+        """
+        Checks if the visual verification tool was used during execution.
+        
+        Args:
+            result: The result dictionary from run_tier.
+            
+        Returns:
+            True if visual verification usage was detected, False otherwise.
+        """
+        # Check explicit tool usage field
+        tool_usage = result.get("tool_usage", [])
+        if "visual_verification" in tool_usage:
+            return True
+            
+        # Fallback: Check for key phrases in the answer that indicate tool usage
+        # (e.g. "根據視覺查證", "Using visual verification")
+        answer = result.get("answer", "")
+        if "視覺查證" in answer or "visual verification" in answer.lower():
+            return True
+            
+        return False

@@ -315,6 +315,7 @@ class TestReporting:
             }
         }
         
+        
         output_path = "tests/test_results.csv"
         pipeline.save_results_csv(results, output_path)
         
@@ -330,3 +331,38 @@ class TestReporting:
         
         # Cleanup
         os.remove(output_path)
+
+class TestBehavioralCheck:
+                """Tests for behavioral validation."""
+            
+                def test_check_visual_verification_pass(self):
+                    """Tests that behavior check passes when tool usage is detected."""
+                    from experiments.evaluation_pipeline import EvaluationPipeline
+                    
+                    pipeline = EvaluationPipeline()
+                    
+                    # Simulating a result that indicates tool usage
+                    # (This depends on how we implement the check, assuming we look for specific log/text)
+                    result = {
+                        "answer": "Answer based on visual tool.",
+                        "tool_usage": ["visual_verification"] 
+                    }
+                    
+                    passed = pipeline.check_visual_verification(result)
+                    assert passed is True
+            
+                def test_check_visual_verification_fail(self):
+                    """Tests that behavior check fails when tool usage is missing."""
+                    from experiments.evaluation_pipeline import EvaluationPipeline
+                    
+                    pipeline = EvaluationPipeline()
+                    
+                    result = {
+                        "answer": "Standard answer.",
+                        "tool_usage": []
+                    }
+                    
+                    passed = pipeline.check_visual_verification(result)
+                    assert passed is False
+            
+            
