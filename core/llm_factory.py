@@ -8,7 +8,7 @@ Each purpose has its own optimized settings to avoid configuration conflicts.
 # Standard library
 import logging
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Optional
 
 # Third-party
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -33,6 +33,25 @@ _MODEL_BY_PURPOSE: dict[str, str] = {
 
 # Default model for all other purposes
 _DEFAULT_MODEL = "gemma-3-27b-it"
+
+# Session-wide override for testing
+_session_model_override: Optional[str] = None
+
+def set_session_model_override(model_name: Optional[str]) -> None:
+    """
+    Sets a session-wide model override and clears the LLM cache.
+    
+    Args:
+        model_name: The model name to use for all purposes (except translation/graph extraction 
+                   if they have explicit mapping, unless also overridden).
+    """
+    global _session_model_override
+    _session_model_override = model_name
+    clear_llm_cache()
+    if model_name:
+        logger.info(f"Session model override set to: {model_name}")
+    else:
+        logger.info("Session model override cleared")
 
 # Configuration for each purpose
 _LLM_CONFIGS: dict[str, dict] = {
@@ -108,8 +127,13 @@ def get_llm(purpose: LLMPurpose, model_name: str = None) -> ChatGoogleGenerative
     """
     config = _LLM_CONFIGS.get(purpose, _LLM_CONFIGS["rag_qa"])
     
-    # Use override model if provided, else use purpose-specific or default
-    model = model_name if model_name else _MODEL_BY_PURPOSE.get(purpose, _DEFAULT_MODEL)
+    # Priority: 1. explicit model_name, 2. session override, 3. purpose-specific, 4. default
+    if model_name:
+        model = model_name
+    elif _session_model_override:
+        model = _session_model_override
+    else:
+        model = _MODEL_BY_PURPOSE.get(purpose, _DEFAULT_MODEL)
 
     logger.info(f"Initializing LLM for purpose: {purpose} (model: {model}, config: {config})")
 

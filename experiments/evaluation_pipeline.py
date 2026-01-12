@@ -15,7 +15,10 @@ from ragas.metrics.collections import faithfulness, answer_correctness
 from ragas.llms import LangchainLLMWrapper
 from datasets import Dataset
 
-from core.llm_factory import get_llm
+from core.llm_factory import get_llm, set_session_model_override
+from data_base.RAG_QA_service import rag_answer_question, RAGResult
+from data_base.deep_research_service import get_deep_research_service
+from data_base.schemas_deep_research import ExecutePlanRequest
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +30,8 @@ class EvaluationPipeline:
     Ragas for objective metric calculation.
     """
     
-    def __init__(self):
+    def __init__(self, user_id: str = "c1bae279-c099-4c45-ba19-2bb393ca4e4b"):
+        self.user_id = user_id
         self.models: List[str] = [
             "gemma-3-27b",
             "gemini-2.0-flash-lite",
@@ -43,7 +47,69 @@ class EvaluationPipeline:
             "Full Agentic RAG"
         ]
         # Evaluator model for Ragas
-        self.evaluator_model = "gemini-1.5-pro" # Fallback if gemini-3-pro-preview not available
+        self.evaluator_model = "gemini-3-pro-preview" 
+
+    async def run_tier(self, tier: str, question: str, model_name: str) -> Dict[str, Any]:
+        """
+        Executes a single evaluation tier for a given question and model.
+        
+        Args:
+            tier: The name of the tier to run.
+            question: The question to ask.
+            model_name: The LLM model to use.
+            
+        Returns:
+            A dictionary containing the answer, contexts, and usage metadata.
+        """
+        logger.info(f"Running tier '{tier}' for model '{model_name}'...")
+        
+        # Set session model override
+        set_session_model_override(model_name)
+        
+        try:
+            if tier == "Naive RAG":
+                # Tier 1: Naive RAG (Weak Baseline)
+                result = await rag_answer_question(
+                    question=question,
+                    user_id=self.user_id,
+                    enable_reranking=False,
+                    enable_hyde=False,
+                    enable_multi_query=False,
+                    enable_graph_rag=False,
+                    enable_visual_verification=False,
+                    return_docs=True
+                )
+                
+                return {
+                    "answer": result.answer,
+                    "contexts": [d.page_content for d in result.documents],
+                    "source_doc_ids": result.source_doc_ids,
+                    "usage": {"total_tokens": 0} # Placeholder
+                }
+
+            elif tier == "Advanced RAG":
+                # Tier 2: Advanced RAG (Strong Baseline)
+                result = await rag_answer_question(
+                    question=question,
+                    user_id=self.user_id,
+                    enable_reranking=True,
+                    enable_hyde=True,
+                    enable_multi_query=True,
+                    enable_graph_rag=False,
+                    enable_visual_verification=False,
+                    return_docs=True
+                )
+                return {
+                    "answer": result.answer,
+                    "contexts": [d.page_content for d in result.documents],
+                    "source_doc_ids": result.source_doc_ids,
+                    "usage": {"total_tokens": 0}
+                }
+            
+            return {"error": f"Tier {tier} not implemented"}
+        finally:
+            # Clear override after run
+            set_session_model_override(None)
 
     def extract_token_usage(self, response) -> dict:
         """

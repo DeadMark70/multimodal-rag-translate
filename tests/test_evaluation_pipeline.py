@@ -136,3 +136,54 @@ class TestMockRAG:
         assert isinstance(contexts, list)
         assert len(contexts) > 0
         assert "Mocked context" in contexts[0]
+
+class TestTierExecution:
+    """Tests for individual tier execution."""
+
+    @pytest.mark.asyncio
+    async def test_run_tier_naive_rag(self):
+        """Tests execution of Naive RAG tier."""
+        from experiments.evaluation_pipeline import EvaluationPipeline
+        from data_base.RAG_QA_service import RAGResult
+        from langchain_core.documents import Document
+        
+        pipeline = EvaluationPipeline()
+        mock_result = RAGResult(
+            answer="Naive answer",
+            source_doc_ids=["doc1"],
+            documents=[Document(page_content="Naive context")]
+        )
+        
+        with patch("experiments.evaluation_pipeline.rag_answer_question", return_value=mock_result) as mock_rag:
+            res = await pipeline.run_tier("Naive RAG", "Question", "gemini-2.0-flash")
+            
+            assert res["answer"] == "Naive answer"
+            assert res["contexts"] == ["Naive context"]
+            mock_rag.assert_called_once()
+            # Check params
+            args, kwargs = mock_rag.call_args
+            assert kwargs["enable_reranking"] is False
+            assert kwargs["enable_hyde"] is False
+
+    @pytest.mark.asyncio
+    async def test_run_tier_advanced_rag(self):
+        """Tests execution of Advanced RAG tier."""
+        from experiments.evaluation_pipeline import EvaluationPipeline
+        from data_base.RAG_QA_service import RAGResult
+        from langchain_core.documents import Document
+        
+        pipeline = EvaluationPipeline()
+        mock_result = RAGResult(
+            answer="Advanced answer",
+            source_doc_ids=["doc1"],
+            documents=[Document(page_content="Advanced context")]
+        )
+        
+        with patch("experiments.evaluation_pipeline.rag_answer_question", return_value=mock_result) as mock_rag:
+            res = await pipeline.run_tier("Advanced RAG", "Question", "gemini-2.0-flash")
+            
+            assert res["answer"] == "Advanced answer"
+            mock_rag.assert_called_once()
+            args, kwargs = mock_rag.call_args
+            assert kwargs["enable_reranking"] is True
+            assert kwargs["enable_hyde"] is True
