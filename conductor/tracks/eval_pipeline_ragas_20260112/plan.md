@@ -24,7 +24,7 @@ This plan outlines the steps to build a robust evaluation framework for the Mult
 
 - [x] Task: Implement Tier 1 (Naive RAG) & Tier 2 (Advanced RAG) logic db2d40e
 - [x] Task: Implement Tier 3 (Graph RAG) logic ae8f033
-- [ ] Task: Implement Tier 4 (Long Context Mode) - Read all PDFs and feed to context
+- [x] Task: Implement Tier 4 (Long Context Mode) - Read all PDFs and feed to context f130540
 - [ ] Task: Implement Tier 5 (Full Agentic RAG) with 1-minute rate-limit pause
 - [ ] Task: Conductor - User Manual Verification 'Phase 3: Ablation Tier Implementation' (Protocol in workflow.md)
 
