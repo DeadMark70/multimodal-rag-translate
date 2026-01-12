@@ -14,10 +14,11 @@
 - [x] Task: Conductor - User Manual Verification 'Phase 2: Observability & Logging Enhancement' (Protocol in workflow.md)
 
 
-## Phase 3: Agentic Logic & Planner Prompt Tuning
-- [ ] Task: Update `agents/planner.py` prompt templates (`_PLANNER_PROMPT`, `_GRAPH_PLANNER_PROMPT`, `_FOLLOWUP_PROMPT`) with a "Strict Visual Requirement" instruction.
-- [ ] Task: Ensure the instruction explicitly mandates `vision_tool` usage when text retrieval is insufficient for spatial or visual details.
-- [ ] Task: Conductor - User Manual Verification 'Phase 3: Agentic Logic & Planner Prompt Tuning' (Protocol in workflow.md)
+## Phase 3: Agentic Logic & Planner Prompt Tuning [checkpoint: e6ffd04]
+- [x] Task: Update `agents/planner.py` prompt templates (`_PLANNER_PROMPT`, `_GRAPH_PLANNER_PROMPT`, `_FOLLOWUP_PROMPT`) with a "Strict Visual Requirement" instruction. 70b88da
+- [x] Task: Ensure the instruction explicitly mandates `vision_tool` usage when text retrieval is insufficient for spatial or visual details. 70b88da
+- [x] Task: Conductor - User Manual Verification 'Phase 3: Agentic Logic & Planner Prompt Tuning' (Protocol in workflow.md)
+
 
 ## Phase 4: Automated Verification
 - [ ] Task: Create a dedicated verification script `tests/verify_agentic_fix.py` targeting the "nnU-Net Fig 1" visual verification case.
