@@ -72,23 +72,23 @@
 
 ### ✅ Phase 1: 基礎工具強化 (The Foundation)
 
-1. [ ] **Context Enricher 整合**: 修改 `DeepResearchService`，當檢索回來的 chunks 過短 (< 100 字) 時，自動呼叫 `context_enricher.py` 獲取前後文。
+- [x] **Context Enricher 整合**: 修改 `DeepResearchService`，當檢索回來的 chunks 過短 (< 100 字) 時，自動呼叫 `context_enricher.py` 獲取前後文。
     *   *實作細節*: 透過 `metadata['parent_id']` 呼叫 `ParentDocumentStore.get_parent(parent_id)` 來獲取完整的 Parent Chunk (約 2000 字) 作為擴充上下文，不需重新讀取原始 Markdown 檔案。
     *   *未來優化*: 可考慮由 LLM 判斷 `needs_more_context`，但在 MVP 階段先採用字數閾值策略。
-2. [ ] **圖表索引優化**: 檢查 `vector_store_manager.py`，確保 `image_path` 和 `type` 欄位在 `RAG_QA_service` 和 `reranker` 的流程中被**完整保留**，沒有被意外過濾或遺失。
+- [x] **圖表索引優化**: 檢查 `vector_store_manager.py`，確保 `image_path` 和 `type` 欄位在 `RAG_QA_service` 和 `reranker` 的流程中被**完整保留**，沒有被意外過濾或遺失。
     *   *關鍵修正*: 在 `RAG_QA_service.py` 組合 Prompt 時，必須將圖片路徑顯式寫入文字中，例如：`[圖片摘要] (Path: {img_path}) {content}`，否則 LLM 無法得知圖片路徑進而無法在報告中生成圖片連結。
-3. [ ] **報告模板設計**: 在 `synthesizer.py` 中建立一個新的 Prompt Template，專門用於生成上述的「混合式學術報告」。
+- [x] **報告模板設計**: 在 `synthesizer.py` 中建立一個新的 Prompt Template，專門用於生成上述的「混合式學術報告」。
 
 ### ✅ Phase 2: 動態規劃核心 (The Brain)
 
-4. [ ] **實作評估驅動迴圈**: 修改 `planner.py` 的 `drill_down_loop`。在每次 `_execute_single_task` 後，插入 `evaluator.evaluate_detailed`。
-5. [ ] **動態任務分支邏輯**: 寫 code 處理：如果 `completeness` 分數低，則自動生成一個新的 search query 並 append 到任務隊列中。
+- [x] **實作評估驅動迴圈**: 修改 `planner.py` 的 `drill_down_loop`。在每次 `_execute_single_task` 後，插入 `evaluator.evaluate_detailed`。
+- [x] **動態任務分支邏輯**: 寫 code 處理：如果 `completeness` 分數低，則自動生成一個新的 search query 並 append 到任務隊列中。
     *   **⚠️ 安全防護**: 必須設定 `max_retries` (如 2 次) 與 `max_depth`，防止 Agent 因為找不到答案而陷入無窮迴圈。若達上限仍失敗，強制終止並標記「資料不足」。
 
 ### ✅ Phase 3: 多模態與介面 (The Interface)
 
-6. [ ] **圖文並茂輸出**: 修改 `synthesizer.py`，指示 LLM 在提到相關數據時，嘗試輸出 `![Figure X](path/to/image)` (路徑從 Metadata 取得)。
-7. [ ] **(選修) 進階視覺查證**: 修改 `image_summarizer.py`，增加 `re_examine_image(image_data, specific_question)` 函數，以備不時之需。
+- [x] **圖文並茂輸出**: 修改 `synthesizer.py`，指示 LLM 在提到相關數據時，嘗試輸出 `![Figure X](path/to/image)` (路徑從 Metadata 取得)。
+- [ ] **(選修) 進階視覺查證**: 修改 `image_summarizer.py`，增加 `re_examine_image(image_data, specific_question)` 函數，以備不時之需。
 
 ---
 
