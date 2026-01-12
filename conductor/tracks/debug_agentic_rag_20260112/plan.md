@@ -8,7 +8,7 @@
 
 
 ## Phase 2: Observability & Logging Enhancement
-- [ ] Task: Modify `run_tier` in `experiments/evaluation_pipeline.py` to capture and return `thought_process` and `tool_calls`.
+- [x] Task: Modify `run_tier` in `experiments/evaluation_pipeline.py` to capture and return `thought_process` and `tool_calls`. eb569a6
 - [ ] Task: Update `run_tier` to include raw `retrieved_contexts` (text + metadata) in the returned dictionary.
 - [ ] Task: Update `run_full_evaluation` and `save_results_json` to include these new diagnostic fields in the final output.
 - [ ] Task: Conductor - User Manual Verification 'Phase 2: Observability & Logging Enhancement' (Protocol in workflow.md)
