@@ -47,7 +47,7 @@ class EvaluationPipeline:
             "Full Agentic RAG"
         ]
         # Evaluator model for Ragas
-        self.evaluator_model = "gemini-2.5-pro" 
+        self.evaluator_model = "gemini-3-flash-preview" 
 
     async def run_tier(self, tier: str, question: str, model_name: str) -> Dict[str, Any]:
         """
@@ -180,10 +180,15 @@ class EvaluationPipeline:
                 
                 exec_res = await service.execute_plan(exec_request, self.user_id)
                 
+                # Aggregate contexts from all subtasks
+                all_contexts = []
+                for subtask in exec_res.sub_tasks:
+                    all_contexts.extend(subtask.contexts)
+                
                 return {
                     "answer": exec_res.detailed_answer,
                     "summary": exec_res.summary,
-                    "contexts": [], # Contexts are complex in deep research, maybe aggregate from subtasks?
+                    "contexts": all_contexts,
                     "source_doc_ids": exec_res.all_sources,
                     "usage": {"total_tokens": 0} # Usage is even more complex to aggregate here
                 }
@@ -277,15 +282,22 @@ class EvaluationPipeline:
         Returns:
             A dictionary with metric names and their scores.
         """
-        logger.info(f"Calculating Ragas metrics for question: {question[:50]}...")
-        
-        # Prepare data for Ragas
-        data = {
-            "question": [question],
-            "answer": [answer],
-            "contexts": [contexts],
-            "ground_truth": [ground_truth]
+        logger.info(f"Skipping Ragas metrics for question: {question[:50]} (DISABLED for Debugging)")
+        return {
+            "faithfulness": 0.0,
+            "answer_correctness": 0.0
         }
+        
+        # Disabled for debugging phase
+        # logger.info(f"Calculating Ragas metrics for question: {question[:50]}...")
+        # 
+        # # Prepare data for Ragas
+        # data = {
+        #     "question": [question],
+        #     "answer": [answer],
+        #     "contexts": [contexts],
+        #     "ground_truth": [ground_truth]
+        # }
         dataset = Dataset.from_dict(data)
         
         # Wrap the evaluator LLM
@@ -320,11 +332,30 @@ class EvaluationPipeline:
                 )
             )
             
-            # Extract scores (ragas result is a Result object that acts like a dict)
-            return {
-                "faithfulness": float(result.get("faithfulness", 0.0)),
-                "answer_correctness": float(result.get("answer_correctness", 0.0))
-            }
+            # Extract scores
+            try:
+                # Ragas 0.4.x Result object supports __getitem__ but might not have .get()
+                f_score = result["faithfulness"]
+                ac_score = result["answer_correctness"]
+                
+                # Handle single-item list return (common in Ragas 0.4.x for single-row datasets)
+                if isinstance(f_score, (list, tuple)):
+                    f_score = f_score[0] if f_score else 0.0
+                if isinstance(ac_score, (list, tuple)):
+                    ac_score = ac_score[0] if ac_score else 0.0
+                
+                return {
+                    "faithfulness": float(f_score),
+                    "answer_correctness": float(ac_score)
+                }
+            except (KeyError, TypeError) as e:
+                # Fallback or detailed error logging
+                logger.error(f"Error extracting scores from result: {e}. Result type: {type(result)}")
+                return {
+                    "faithfulness": 0.0,
+                    "answer_correctness": 0.0,
+                    "error": f"Score extraction failed: {e}"
+                }
         except Exception as e:
             logger.error(f"Error calculating Ragas metrics: {e}")
             return {
