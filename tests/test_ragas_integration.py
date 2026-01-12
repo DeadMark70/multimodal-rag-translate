@@ -23,14 +23,16 @@ class TestRagasIntegration:
         }
         
         with patch("experiments.evaluation_pipeline.evaluate", return_value=mock_result):
-            # These are stubs/mocks for the parameters
-            question = "What is nnU-Net?"
-            answer = "nnU-Net is a medical imaging framework."
-            contexts = ["nnU-Net is a framework for medical image segmentation."]
-            ground_truth = "nnU-Net is a self-configuring framework for deep learning-based medical image segmentation."
-            
-            # This method doesn't exist yet
-            try:
+            with patch("experiments.evaluation_pipeline.get_embeddings") as mock_get_embeddings:
+                mock_embeddings = MagicMock()
+                mock_get_embeddings.return_value = mock_embeddings
+                
+                # These are stubs/mocks for the parameters
+                question = "What is nnU-Net?"
+                answer = "nnU-Net is a medical imaging framework."
+                contexts = ["nnU-Net is a framework for medical image segmentation."]
+                ground_truth = "nnU-Net is a self-configuring framework for deep learning-based medical image segmentation."
+                
                 scores = await pipeline.calculate_ragas_metrics(
                     question=question,
                     answer=answer,
@@ -39,8 +41,6 @@ class TestRagasIntegration:
                 )
                 assert scores["faithfulness"] == 0.9
                 assert scores["answer_correctness"] == 0.8
-            except AttributeError:
-                pytest.fail("EvaluationPipeline does not have calculate_ragas_metrics method")
 
     def test_ragas_imports(self):
         """Tests that ragas can be imported."""

@@ -11,8 +11,9 @@ import asyncio
 from typing import List, Dict, Any
 
 from ragas import evaluate
-from ragas.metrics.collections import faithfulness, answer_correctness
+from ragas.metrics import faithfulness, answer_correctness
 from ragas.llms import LangchainLLMWrapper
+from ragas.embeddings import LangchainEmbeddingsWrapper
 from datasets import Dataset
 
 from core.llm_factory import get_llm, set_session_model_override
@@ -20,6 +21,7 @@ from data_base.RAG_QA_service import rag_answer_question, RAGResult
 from data_base.deep_research_service import get_deep_research_service
 from data_base.schemas_deep_research import ExecutePlanRequest
 from data_base.router import on_startup_rag_init
+from data_base.vector_store_manager import get_embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +36,8 @@ class EvaluationPipeline:
     def __init__(self, user_id: str = "c1bae279-c099-4c45-ba19-2bb393ca4e4b"):
         self.user_id = user_id
         self.models: List[str] = [
-            "gemma-3-27b",
             "gemini-2.0-flash-lite",
-            "gemini-2.5-flash-lite",
-            "gemini-2.0-flash",
-            "gemini-2.5-flash"
+            "gemini-2.5-flash-lite"
         ]
         self.tiers: List[str] = [
             "Naive RAG",
@@ -48,7 +47,7 @@ class EvaluationPipeline:
             "Full Agentic RAG"
         ]
         # Evaluator model for Ragas
-        self.evaluator_model = "gemini-3-pro-preview" 
+        self.evaluator_model = "gemini-2.5-pro" 
 
     async def run_tier(self, tier: str, question: str, model_name: str) -> Dict[str, Any]:
         """
@@ -85,7 +84,7 @@ class EvaluationPipeline:
                     "answer": result.answer,
                     "contexts": [d.page_content for d in result.documents],
                     "source_doc_ids": result.source_doc_ids,
-                    "usage": {"total_tokens": 0} # Placeholder
+                    "usage": result.usage or {"total_tokens": 0}
                 }
 
             elif tier == "Advanced RAG":
@@ -104,7 +103,7 @@ class EvaluationPipeline:
                     "answer": result.answer,
                     "contexts": [d.page_content for d in result.documents],
                     "source_doc_ids": result.source_doc_ids,
-                    "usage": {"total_tokens": 0}
+                    "usage": result.usage or {"total_tokens": 0}
                 }
 
             elif tier == "Graph RAG":
@@ -124,7 +123,7 @@ class EvaluationPipeline:
                     "answer": result.answer,
                     "contexts": [d.page_content for d in result.documents],
                     "source_doc_ids": result.source_doc_ids,
-                    "usage": {"total_tokens": 0}
+                    "usage": result.usage or {"total_tokens": 0}
                 }
 
             elif tier == "Long Context Mode":
@@ -290,10 +289,23 @@ class EvaluationPipeline:
         dataset = Dataset.from_dict(data)
         
         # Wrap the evaluator LLM
-        # Note: Using gemini-3-pro-preview as requested in spec if possible
-        # For now using get_llm with the configured evaluator model
-        evaluator_llm = get_llm("evaluator", model_name="gemini-3-pro-preview")
+        # Note: Using gemini-2.5-pro as requested
+        evaluator_llm = get_llm("evaluator", model_name=self.evaluator_model)
         ragas_llm = LangchainLLMWrapper(evaluator_llm)
+        
+        # Get and wrap embeddings
+        embeddings_model = get_embeddings()
+        if not embeddings_model:
+             logger.error("Embeddings model not initialized for Ragas")
+             return {"faithfulness": 0.0, "answer_correctness": 0.0, "error": "Embeddings not initialized"}
+             
+        ragas_embeddings = LangchainEmbeddingsWrapper(embeddings_model)
+        
+        # Configure metrics with the evaluator LLM and Embeddings
+        # Note: In 0.4.x, older metrics still use .llm attribute for LangChain wrappers
+        faithfulness.llm = ragas_llm
+        answer_correctness.llm = ragas_llm
+        answer_correctness.embeddings = ragas_embeddings
         
         try:
             # Run evaluation
