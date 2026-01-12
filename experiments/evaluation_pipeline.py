@@ -83,6 +83,10 @@ class EvaluationPipeline:
                 return {
                     "answer": result.answer,
                     "contexts": [d.page_content for d in result.documents],
+                    "retrieved_contexts": [
+                        {"text": d.page_content, "metadata": d.metadata} 
+                        for d in result.documents
+                    ],
                     "source_doc_ids": result.source_doc_ids,
                     "usage": result.usage or {"total_tokens": 0},
                     "thought_process": getattr(result, "thought_process", None),
@@ -104,6 +108,10 @@ class EvaluationPipeline:
                 return {
                     "answer": result.answer,
                     "contexts": [d.page_content for d in result.documents],
+                    "retrieved_contexts": [
+                        {"text": d.page_content, "metadata": d.metadata} 
+                        for d in result.documents
+                    ],
                     "source_doc_ids": result.source_doc_ids,
                     "usage": result.usage or {"total_tokens": 0},
                     "thought_process": getattr(result, "thought_process", None),
@@ -127,6 +135,10 @@ class EvaluationPipeline:
                 return {
                     "answer": result.answer,
                     "contexts": [d.page_content for d in result.documents],
+                    "retrieved_contexts": [
+                        {"text": d.page_content, "metadata": d.metadata} 
+                        for d in result.documents
+                    ],
                     "source_doc_ids": result.source_doc_ids,
                     "usage": result.usage or {"total_tokens": 0},
                     "thought_process": getattr(result, "thought_process", None),
@@ -157,6 +169,7 @@ class EvaluationPipeline:
                 return {
                     "answer": response.content,
                     "contexts": [full_text],
+                    "retrieved_contexts": [{"text": full_text, "metadata": {"source": "all_docs"}}],
                     "source_doc_ids": [], # We don't have specific IDs here as we sent everything
                     "usage": self.extract_token_usage(response),
                     "thought_process": None,
@@ -192,6 +205,7 @@ class EvaluationPipeline:
                 
                 # Aggregate contexts, token usage, and diagnostics from all subtasks
                 all_contexts = []
+                all_retrieved_contexts = []
                 aggregated_usage = {
                     "input_tokens": 0,
                     "output_tokens": 0,
@@ -202,6 +216,12 @@ class EvaluationPipeline:
                 
                 for subtask in exec_res.sub_tasks:
                     all_contexts.extend(subtask.contexts)
+                    # Note: subtask.contexts are just strings, we need to pass documents through if possible.
+                    # Wait, subtask has only 'contexts' (List[str])...
+                    # Let me check if SubTaskExecutionResult has raw docs or if I should add it.
+                    for ctx in subtask.contexts:
+                        all_retrieved_contexts.append({"text": ctx, "metadata": {"subtask_id": subtask.id}})
+                    
                     if subtask.usage:
                         aggregated_usage["input_tokens"] += subtask.usage.get("input_tokens", 0)
                         aggregated_usage["output_tokens"] += subtask.usage.get("output_tokens", 0)
@@ -217,11 +237,13 @@ class EvaluationPipeline:
                     "answer": exec_res.detailed_answer,
                     "summary": exec_res.summary,
                     "contexts": all_contexts,
+                    "retrieved_contexts": all_retrieved_contexts,
                     "source_doc_ids": exec_res.all_sources,
                     "usage": aggregated_usage,
                     "thought_process": "\n\n".join(all_thoughts) if all_thoughts else None,
                     "tool_calls": all_tool_calls
                 }
+
 
 
             

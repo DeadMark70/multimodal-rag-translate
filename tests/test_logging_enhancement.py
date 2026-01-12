@@ -23,6 +23,8 @@ async def test_run_tier_logging_naive():
         
         assert result["thought_process"] == "naive thought"
         assert result["tool_calls"] == [{"action": "search"}]
+        assert result["retrieved_contexts"][0]["text"] == "context1"
+
 
 @pytest.mark.asyncio
 async def test_run_tier_logging_agentic():
