@@ -36,8 +36,7 @@ class EvaluationPipeline:
     def __init__(self, user_id: str = "c1bae279-c099-4c45-ba19-2bb393ca4e4b"):
         self.user_id = user_id
         self.models: List[str] = [
-            "gemini-2.0-flash-lite",
-            "gemini-2.5-flash-lite"
+            "gemini-2.0-flash-lite"
         ]
         self.tiers: List[str] = [
             "Naive RAG",

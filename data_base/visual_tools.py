@@ -38,6 +38,11 @@ def _validate_image_path(image_path: str, user_id: str) -> tuple[bool, str]:
     # Normalize path
     image_path = os.path.normpath(image_path)
     
+    # Security Fix: If the path is just a filename, prepend the user folder
+    if not os.path.dirname(image_path):
+        image_path = os.path.join(BASE_UPLOAD_FOLDER, user_id, image_path)
+        image_path = os.path.normpath(image_path)
+    
     # Check for directory traversal attempts
     if ".." in image_path:
         logger.warning(f"Path traversal attempt detected: {image_path}")

@@ -799,7 +799,7 @@ async def rag_answer_question(
                 list(source_doc_ids), 
                 docs, 
                 usage_metadata,
-                thought_process=None, # Not explicitly captured yet in this layer
+                thought_process=prompt_text, # Capture the prompt as thought trace
                 tool_calls=tool_calls
             )
         return (answer, list(source_doc_ids))

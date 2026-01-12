@@ -801,7 +801,7 @@ class DeepResearchService:
                 enable_reranking=enable_reranking,
                 enable_graph_rag=use_graph,
                 graph_search_mode="hybrid" if use_graph else "auto",
-                return_docs=True, # Capture documents for context
+                return_docs=True, # MUST be True to capture tool_calls and diagnostics
             )
             
             # Handle RAGResult
