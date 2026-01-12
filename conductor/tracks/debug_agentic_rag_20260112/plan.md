@@ -1,10 +1,11 @@
 # Plan: Agentic Logic and Evaluation Logging Fix (Debugging Phase)
 
-## Phase 1: Infrastructure & Token Tracking Fix
+## Phase 1: Infrastructure & Token Tracking Fix [checkpoint: be23366]
 - [x] Task: Disable Ragas scoring in `experiments/evaluation_pipeline.py` to streamline debugging. 56a0115
 - [x] Task: Refactor `extract_token_usage` in `experiments/evaluation_pipeline.py` to correctly handle newer LangChain `usage_metadata` formats. 130a109
 - [x] Task: Implement token usage aggregation for "Full Agentic RAG" (Tier 5) in `experiments/evaluation_pipeline.py`. f758633
-- [ ] Task: Conductor - User Manual Verification 'Phase 1: Infrastructure & Token Tracking Fix' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 1: Infrastructure & Token Tracking Fix' (Protocol in workflow.md)
+
 
 ## Phase 2: Observability & Logging Enhancement
 - [ ] Task: Modify `run_tier` in `experiments/evaluation_pipeline.py` to capture and return `thought_process` and `tool_calls`.
