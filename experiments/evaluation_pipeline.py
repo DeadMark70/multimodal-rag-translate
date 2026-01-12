@@ -358,3 +358,64 @@ class EvaluationPipeline:
             logger.info(f"Results saved to {output_path}")
         except Exception as e:
             logger.error(f"Error saving JSON results: {e}")
+
+    def save_results_csv(self, results: Dict[str, Any], output_path: str) -> None:
+        """
+        Saves the results to a flattened CSV file.
+        
+        Args:
+            results: The nested results dictionary.
+            output_path: Path to save the CSV file.
+        """
+        import csv
+        import os
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        flattened_data = []
+        
+        # Iterate through the nested structure
+        # Structure: Model -> Question -> Tier -> Result Dict
+        for model_name, questions in results.items():
+            for question, tiers in questions.items():
+                for tier_name, res in tiers.items():
+                    if "error" in res:
+                        continue
+                        
+                    scores = res.get("scores", {})
+                    usage = res.get("usage", {})
+                    
+                    row = {
+                        "Model": model_name,
+                        "Question": question,
+                        "Tier": tier_name,
+                        "Answer": res.get("answer", ""),
+                        "Faithfulness": scores.get("faithfulness", ""),
+                        "Answer_Correctness": scores.get("answer_correctness", ""),
+                        "Total_Tokens": usage.get("total_tokens", ""),
+                        "Input_Tokens": usage.get("input_tokens", ""),
+                        "Output_Tokens": usage.get("output_tokens", ""),
+                        "Behavior_Pass": res.get("behavior_pass", "")
+                    }
+                    flattened_data.append(row)
+        
+        if not flattened_data:
+            logger.warning("No data to save to CSV")
+            return
+
+        try:
+            fieldnames = [
+                "Model", "Question", "Tier", "Answer", 
+                "Faithfulness", "Answer_Correctness", 
+                "Total_Tokens", "Input_Tokens", "Output_Tokens",
+                "Behavior_Pass"
+            ]
+            
+            with open(output_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(flattened_data)
+            logger.info(f"CSV results saved to {output_path}")
+        except Exception as e:
+            logger.error(f"Error saving CSV results: {e}")

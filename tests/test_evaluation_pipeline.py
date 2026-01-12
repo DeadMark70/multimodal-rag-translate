@@ -292,3 +292,41 @@ class TestReporting:
         
         # Cleanup
         os.remove(output_path)
+
+    def test_save_results_csv(self):
+        """Tests saving results to CSV."""
+        from experiments.evaluation_pipeline import EvaluationPipeline
+        import csv
+        import os
+        
+        pipeline = EvaluationPipeline()
+        
+        # Nested structure mimicking the real report
+        results = {
+            "model_1": {
+                "question_1": {
+                    "Naive RAG": {
+                        "answer": "Ans",
+                        "scores": {"faithfulness": 0.9, "answer_correctness": 0.8},
+                        "usage": {"total_tokens": 100},
+                        "behavior_pass": True
+                    }
+                }
+            }
+        }
+        
+        output_path = "tests/test_results.csv"
+        pipeline.save_results_csv(results, output_path)
+        
+        assert os.path.exists(output_path)
+        with open(output_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+            assert len(rows) == 1
+            assert rows[0]["Model"] == "model_1"
+            assert rows[0]["Tier"] == "Naive RAG"
+            assert rows[0]["Behavior_Pass"] == "True"
+            assert float(rows[0]["Faithfulness"]) == 0.9
+        
+        # Cleanup
+        os.remove(output_path)
