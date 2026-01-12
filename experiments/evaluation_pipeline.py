@@ -478,6 +478,7 @@ class EvaluationPipeline:
         """
         import csv
         import os
+        import json
         
         # Ensure directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -505,7 +506,9 @@ class EvaluationPipeline:
                         "Total_Tokens": usage.get("total_tokens", ""),
                         "Input_Tokens": usage.get("input_tokens", ""),
                         "Output_Tokens": usage.get("output_tokens", ""),
-                        "Behavior_Pass": res.get("behavior_pass", "")
+                        "Behavior_Pass": res.get("behavior_pass", ""),
+                        "Thought_Process": res.get("thought_process", ""),
+                        "Tool_Calls": json.dumps(res.get("tool_calls", []), ensure_ascii=False)
                     }
                     flattened_data.append(row)
         
@@ -518,7 +521,7 @@ class EvaluationPipeline:
                 "Model", "Question", "Tier", "Answer", 
                 "Faithfulness", "Answer_Correctness", 
                 "Total_Tokens", "Input_Tokens", "Output_Tokens",
-                "Behavior_Pass"
+                "Behavior_Pass", "Thought_Process", "Tool_Calls"
             ]
             
             with open(output_path, "w", encoding="utf-8", newline="") as f:

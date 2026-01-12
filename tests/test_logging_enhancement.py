@@ -63,3 +63,33 @@ async def test_run_tier_logging_agentic():
         assert "thought 2" in result["thought_process"]
         assert len(result["tool_calls"]) == 2
         assert result["tool_calls"][0] == {"t": 1}
+
+def test_save_results_csv_diagnostics(tmp_path):
+    """Test that save_results_csv includes new diagnostic fields"""
+    pipeline = EvaluationPipeline()
+    csv_path = tmp_path / "test.csv"
+    
+    results = {
+        "model1": {
+            "q1": {
+                "Naive RAG": {
+                    "answer": "ans",
+                    "scores": {"faithfulness": 0.1},
+                    "usage": {"total_tokens": 100},
+                    "thought_process": "thought text",
+                    "tool_calls": [{"a": 1}],
+                    "behavior_pass": True
+                }
+            }
+        }
+    }
+    
+    pipeline.save_results_csv(results, str(csv_path))
+    
+    import csv
+    with open(csv_path, newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        assert len(rows) == 1
+        assert rows[0]["Thought_Process"] == "thought text"
+        assert "a" in rows[0]["Tool_Calls"]
