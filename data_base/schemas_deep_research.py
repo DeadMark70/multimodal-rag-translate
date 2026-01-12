@@ -114,15 +114,20 @@ class SubTaskExecutionResult(BaseModel):
         question: The question asked.
         answer: The answer generated.
         sources: Document IDs referenced.
+        contexts: Text chunks used for the answer.
         is_drilldown: Whether this was a drill-down task.
         iteration: Drill-down iteration (0 for original tasks).
+        usage: Token usage information.
     """
     id: int
     question: str
     answer: str
     sources: List[str] = []
+    contexts: List[str] = []
     is_drilldown: bool = False
     iteration: int = 0
+    usage: dict = Field(default_factory=lambda: {"total_tokens": 0})
+
 
 
 class ExecutePlanResponse(BaseModel):

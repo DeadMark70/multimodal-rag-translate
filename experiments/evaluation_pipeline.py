@@ -180,18 +180,29 @@ class EvaluationPipeline:
                 
                 exec_res = await service.execute_plan(exec_request, self.user_id)
                 
-                # Aggregate contexts from all subtasks
+                # Aggregate contexts and token usage from all subtasks
                 all_contexts = []
+                aggregated_usage = {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0
+                }
+                
                 for subtask in exec_res.sub_tasks:
                     all_contexts.extend(subtask.contexts)
+                    if subtask.usage:
+                        aggregated_usage["input_tokens"] += subtask.usage.get("input_tokens", 0)
+                        aggregated_usage["output_tokens"] += subtask.usage.get("output_tokens", 0)
+                        aggregated_usage["total_tokens"] += subtask.usage.get("total_tokens", 0)
                 
                 return {
                     "answer": exec_res.detailed_answer,
                     "summary": exec_res.summary,
                     "contexts": all_contexts,
                     "source_doc_ids": exec_res.all_sources,
-                    "usage": {"total_tokens": 0} # Usage is even more complex to aggregate here
+                    "usage": aggregated_usage
                 }
+
             
             return {"error": f"Tier {tier} not implemented"}
         finally:

@@ -252,7 +252,7 @@ class DeepResearchService:
                     # Phase 6.1A: 預設開啟 GraphRAG 以提升抗噪能力
                     # 大規模文檔環境下，GraphRAG 可捕捉隱藏關聯
                     
-                    answer, sources = await rag_answer_question(
+                    result = await rag_answer_question(
                         question=task.question,
                         user_id=user_id,
                         doc_ids=doc_ids,
@@ -260,16 +260,32 @@ class DeepResearchService:
                         enable_graph_rag=True,  # Phase 6: 預設開啟
                         graph_search_mode="hybrid",  # Phase 6: 混合模式
                         enable_visual_verification=enable_deep_image_analysis,  # Phase 9
+                        return_docs=True, # Capture documents for context
                     )
+                    
+                    # Handle RAGResult
+                    if hasattr(result, 'answer'):
+                        answer = result.answer
+                        sources = result.source_doc_ids
+                        contexts = [d.page_content for d in result.documents]
+                        usage = result.usage or {"total_tokens": 0}
+                    else:
+                        # Fallback if return_docs ignored (shouldn't happen with updated service)
+                        answer, sources = result
+                        contexts = []
+                        usage = {"total_tokens": 0}
                     
                     return SubTaskExecutionResult(
                         id=task.id,
                         question=task.question,
                         answer=answer,
                         sources=sources,
+                        contexts=contexts,
                         is_drilldown=iteration > 0,
                         iteration=iteration,
+                        usage=usage
                     )
+
                 except (RuntimeError, ValueError) as e:
                     logger.warning(f"Task {task.id} failed: {e}")
                     return SubTaskExecutionResult(
@@ -277,6 +293,7 @@ class DeepResearchService:
                         question=task.question,
                         answer=f"無法回答此問題: {str(e)[:100]}",
                         sources=[],
+                        contexts=[],
                         is_drilldown=iteration > 0,
                         iteration=iteration,
                     )
@@ -383,15 +400,20 @@ class DeepResearchService:
                             answer = result.answer
                             sources = result.source_doc_ids
                             documents = result.documents
+                            contexts = [d.page_content for d in documents]
+                            usage = result.usage or {"total_tokens": 0}
                         else:
                             answer, sources = result
                             documents = []
+                            contexts = []
+                            usage = {"total_tokens": 0}
                         
                     except (RuntimeError, ValueError) as e:
                         logger.warning(f"Task {task_id} failed: {e}")
                         answer = f"無法回答此問題: {str(e)[:100]}"
                         sources = []
                         documents = []
+                        contexts = []
                     
                     # Evaluate answer quality (only if we have documents)
                     if documents and retry_count < MAX_RETRIES_PER_TASK:
@@ -430,9 +452,12 @@ class DeepResearchService:
                         question=task.question,  # Use original question for display
                         answer=answer,
                         sources=sources,
+                        contexts=contexts,
                         is_drilldown=True,
                         iteration=iteration,
+                        usage=usage
                     ))
+
                     
                     if retry_count > 0:
                         logger.info(f"Task {task_id} accepted after {retry_count} retry(s)")
@@ -608,6 +633,7 @@ class DeepResearchService:
                     question=result.question,
                     answer=result.answer,
                     sources=result.sources,
+                    contexts=result.contexts,
                     iteration=0,
                 )
             )
@@ -681,6 +707,7 @@ class DeepResearchService:
                             question=result.question,
                             answer=result.answer,
                             sources=result.sources,
+                            contexts=result.contexts,
                             iteration=iteration,
                         )
                     )
@@ -753,23 +780,38 @@ class DeepResearchService:
         try:
             use_graph = task.task_type == "graph_analysis"
             
-            answer, sources = await rag_answer_question(
+            result = await rag_answer_question(
                 question=task.question,
                 user_id=user_id,
                 doc_ids=doc_ids,
                 enable_reranking=enable_reranking,
                 enable_graph_rag=use_graph,
                 graph_search_mode="hybrid" if use_graph else "auto",
+                return_docs=True, # Capture documents for context
             )
+            
+            # Handle RAGResult
+            if hasattr(result, 'answer'):
+                answer = result.answer
+                sources = result.source_doc_ids
+                contexts = [d.page_content for d in result.documents]
+                usage = result.usage or {"total_tokens": 0}
+            else:
+                answer, sources = result
+                contexts = []
+                usage = {"total_tokens": 0}
             
             return SubTaskExecutionResult(
                 id=task.id,
                 question=task.question,
                 answer=answer,
                 sources=sources,
+                contexts=contexts,
                 is_drilldown=iteration > 0,
                 iteration=iteration,
+                usage=usage
             )
+
         except (RuntimeError, ValueError) as e:
             logger.warning(f"Task {task.id} failed: {e}")
             return SubTaskExecutionResult(
@@ -777,6 +819,7 @@ class DeepResearchService:
                 question=task.question,
                 answer=f"無法回答此問題: {str(e)[:100]}",
                 sources=[],
+                contexts=[],
                 is_drilldown=iteration > 0,
                 iteration=iteration,
             )
