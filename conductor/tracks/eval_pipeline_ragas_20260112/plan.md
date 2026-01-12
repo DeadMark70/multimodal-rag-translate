@@ -22,7 +22,7 @@ This plan outlines the steps to build a robust evaluation framework for the Mult
 ## Phase 3: Ablation Tier Implementation
 *Implement the 5 strategic tiers of the evaluation loop.*
 
-- [ ] Task: Implement Tier 1 (Naive RAG) & Tier 2 (Advanced RAG) logic
+- [x] Task: Implement Tier 1 (Naive RAG) & Tier 2 (Advanced RAG) logic db2d40e
 - [ ] Task: Implement Tier 3 (Graph RAG) logic
 - [ ] Task: Implement Tier 4 (Long Context Mode) - Read all PDFs and feed to context
 - [ ] Task: Implement Tier 5 (Full Agentic RAG) with 1-minute rate-limit pause
