@@ -264,3 +264,31 @@ class TestTierExecution:
                 mock_service.generate_plan.assert_called_once()
                 mock_service.execute_plan.assert_called_once()
                 mock_sleep.assert_called_with(60) # Verify 1-minute pause
+
+class TestReporting:
+    """Tests for report generation."""
+
+    def test_save_results_json(self):
+        """Tests saving results to JSON."""
+        from experiments.evaluation_pipeline import EvaluationPipeline
+        import json
+        import os
+        
+        pipeline = EvaluationPipeline()
+        results = {
+            "test_run": {
+                "answer": "Test Answer",
+                "scores": {"faithfulness": 1.0}
+            }
+        }
+        
+        output_path = "tests/test_results.json"
+        pipeline.save_results_json(results, output_path)
+        
+        assert os.path.exists(output_path)
+        with open(output_path, "r", encoding="utf-8") as f:
+            saved_data = json.load(f)
+            assert saved_data["test_run"]["answer"] == "Test Answer"
+        
+        # Cleanup
+        os.remove(output_path)

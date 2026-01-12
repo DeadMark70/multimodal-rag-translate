@@ -337,3 +337,24 @@ class EvaluationPipeline:
             f"Mocked context 2 for {question}: nnU-Net is a popular framework."
         ]
         return mocked_answer, mocked_contexts
+
+    def save_results_json(self, results: Dict[str, Any], output_path: str) -> None:
+        """
+        Saves the results dictionary to a JSON file.
+        
+        Args:
+            results: The results dictionary.
+            output_path: Path to save the JSON file.
+        """
+        import json
+        import os
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        try:
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(results, f, ensure_ascii=False, indent=2)
+            logger.info(f"Results saved to {output_path}")
+        except Exception as e:
+            logger.error(f"Error saving JSON results: {e}")
