@@ -233,3 +233,34 @@ class TestTierExecution:
                 assert res["answer"] == "Long context answer"
                 assert res["contexts"] == [mock_full_text]
                 mock_llm.ainvoke.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_tier_full_agentic(self):
+        """Tests execution of Full Agentic RAG tier."""
+        from experiments.evaluation_pipeline import EvaluationPipeline
+        
+        pipeline = EvaluationPipeline()
+        
+        mock_service = MagicMock()
+        mock_service.generate_plan = AsyncMock()
+        mock_service.execute_plan = AsyncMock()
+        
+        mock_plan = MagicMock()
+        mock_plan.sub_tasks = []
+        mock_service.generate_plan.return_value = mock_plan
+        
+        mock_result = MagicMock()
+        mock_result.detailed_answer = "Agentic answer"
+        mock_result.summary = "Summary"
+        mock_result.all_sources = ["source1"]
+        mock_service.execute_plan.return_value = mock_result
+        
+        with patch("experiments.evaluation_pipeline.get_deep_research_service", return_value=mock_service):
+            with patch("asyncio.sleep", return_value=None) as mock_sleep:
+                res = await pipeline.run_tier("Full Agentic RAG", "Question", "gemini-2.0-flash")
+                
+                assert res["answer"] == "Agentic answer"
+                assert res["source_doc_ids"] == ["source1"]
+                mock_service.generate_plan.assert_called_once()
+                mock_service.execute_plan.assert_called_once()
+                mock_sleep.assert_called_with(60) # Verify 1-minute pause

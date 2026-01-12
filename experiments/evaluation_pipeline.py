@@ -152,6 +152,41 @@ class EvaluationPipeline:
                     "source_doc_ids": [], # We don't have specific IDs here as we sent everything
                     "usage": self.extract_token_usage(response)
                 }
+
+            elif tier == "Full Agentic RAG":
+                # Tier 5: Full Agentic RAG (Ours - Ultimate)
+                # Rate limit management: 1-minute pause as requested
+                logger.info("Tier 5: Applying 1-minute rate-limit pause before execution...")
+                await asyncio.sleep(60)
+                
+                service = get_deep_research_service()
+                
+                # Step 1: Generate Plan
+                plan_res = await service.generate_plan(
+                    question, 
+                    self.user_id, 
+                    enable_graph_planning=True
+                )
+                
+                # Step 2: Execute Plan
+                exec_request = ExecutePlanRequest(
+                    original_question=question,
+                    sub_tasks=plan_res.sub_tasks,
+                    enable_drilldown=True,
+                    max_iterations=1,
+                    enable_reranking=True,
+                    enable_deep_image_analysis=True
+                )
+                
+                exec_res = await service.execute_plan(exec_request, self.user_id)
+                
+                return {
+                    "answer": exec_res.detailed_answer,
+                    "summary": exec_res.summary,
+                    "contexts": [], # Contexts are complex in deep research, maybe aggregate from subtasks?
+                    "source_doc_ids": exec_res.all_sources,
+                    "usage": {"total_tokens": 0} # Usage is even more complex to aggregate here
+                }
             
             return {"error": f"Tier {tier} not implemented"}
         finally:
