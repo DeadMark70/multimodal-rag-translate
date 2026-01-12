@@ -84,7 +84,9 @@ class EvaluationPipeline:
                     "answer": result.answer,
                     "contexts": [d.page_content for d in result.documents],
                     "source_doc_ids": result.source_doc_ids,
-                    "usage": result.usage or {"total_tokens": 0}
+                    "usage": result.usage or {"total_tokens": 0},
+                    "thought_process": getattr(result, "thought_process", None),
+                    "tool_calls": getattr(result, "tool_calls", [])
                 }
 
             elif tier == "Advanced RAG":
@@ -103,8 +105,11 @@ class EvaluationPipeline:
                     "answer": result.answer,
                     "contexts": [d.page_content for d in result.documents],
                     "source_doc_ids": result.source_doc_ids,
-                    "usage": result.usage or {"total_tokens": 0}
+                    "usage": result.usage or {"total_tokens": 0},
+                    "thought_process": getattr(result, "thought_process", None),
+                    "tool_calls": getattr(result, "tool_calls", [])
                 }
+
 
             elif tier == "Graph RAG":
                 # Tier 3: Graph RAG (Structured Enhanced)
@@ -123,8 +128,11 @@ class EvaluationPipeline:
                     "answer": result.answer,
                     "contexts": [d.page_content for d in result.documents],
                     "source_doc_ids": result.source_doc_ids,
-                    "usage": result.usage or {"total_tokens": 0}
+                    "usage": result.usage or {"total_tokens": 0},
+                    "thought_process": getattr(result, "thought_process", None),
+                    "tool_calls": getattr(result, "tool_calls", [])
                 }
+
 
             elif tier == "Long Context Mode":
                 # Tier 4: Long Context Mode (Context Stuffing)
@@ -150,7 +158,9 @@ class EvaluationPipeline:
                     "answer": response.content,
                     "contexts": [full_text],
                     "source_doc_ids": [], # We don't have specific IDs here as we sent everything
-                    "usage": self.extract_token_usage(response)
+                    "usage": self.extract_token_usage(response),
+                    "thought_process": None,
+                    "tool_calls": []
                 }
 
             elif tier == "Full Agentic RAG":
@@ -180,13 +190,15 @@ class EvaluationPipeline:
                 
                 exec_res = await service.execute_plan(exec_request, self.user_id)
                 
-                # Aggregate contexts and token usage from all subtasks
+                # Aggregate contexts, token usage, and diagnostics from all subtasks
                 all_contexts = []
                 aggregated_usage = {
                     "input_tokens": 0,
                     "output_tokens": 0,
                     "total_tokens": 0
                 }
+                all_thoughts = []
+                all_tool_calls = []
                 
                 for subtask in exec_res.sub_tasks:
                     all_contexts.extend(subtask.contexts)
@@ -194,14 +206,23 @@ class EvaluationPipeline:
                         aggregated_usage["input_tokens"] += subtask.usage.get("input_tokens", 0)
                         aggregated_usage["output_tokens"] += subtask.usage.get("output_tokens", 0)
                         aggregated_usage["total_tokens"] += subtask.usage.get("total_tokens", 0)
+                    
+                    if subtask.thought_process:
+                        all_thoughts.append(f"Subtask {subtask.id}: {subtask.thought_process}")
+                    
+                    if subtask.tool_calls:
+                        all_tool_calls.extend(subtask.tool_calls)
                 
                 return {
                     "answer": exec_res.detailed_answer,
                     "summary": exec_res.summary,
                     "contexts": all_contexts,
                     "source_doc_ids": exec_res.all_sources,
-                    "usage": aggregated_usage
+                    "usage": aggregated_usage,
+                    "thought_process": "\n\n".join(all_thoughts) if all_thoughts else None,
+                    "tool_calls": all_tool_calls
                 }
+
 
             
             return {"error": f"Tier {tier} not implemented"}

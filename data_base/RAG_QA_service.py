@@ -74,6 +74,10 @@ class RAGResult(NamedTuple):
     answer: str
     source_doc_ids: List[str]
     documents: List[Document]
+    usage: Dict[str, int] = {}
+    thought_process: Optional[str] = None
+    tool_calls: List[dict] = []
+
 
 
 def _parse_visual_tool_request(response: str) -> Optional[Dict[str, str]]:
@@ -129,7 +133,7 @@ async def _execute_visual_verification_loop(
     user_id: str,
     llm: Any,
     source_doc_ids: List[str],
-) -> str:
+) -> Tuple[str, List[Dict[str, Any]]]:
     """
     Re-Act loop for visual verification.
 
@@ -144,7 +148,7 @@ async def _execute_visual_verification_loop(
         source_doc_ids: Source document IDs for logging.
 
     Returns:
-        Final answer after visual verification (if triggered).
+        Tuple of (final answer, tool_results) after visual verification (if triggered).
     """
     response = initial_response
     iteration = 0
@@ -167,6 +171,7 @@ async def _execute_visual_verification_loop(
         )
         
         tool_results.append({
+            "action": "VERIFY_IMAGE",
             "path": tool_request.get("path"),
             "question": tool_request.get("question"),
             "success": result.get("success"),
@@ -197,7 +202,8 @@ async def _execute_visual_verification_loop(
         
         logger.info(f"Visual verification synthesis completed (iteration {iteration})")
     
-    return response
+    return response, tool_results
+
 
 
 async def initialize_llm_service() -> None:
@@ -772,10 +778,12 @@ async def rag_answer_question(
     try:
         response = await llm.ainvoke([message])
         answer = response.content
+        usage_metadata = getattr(response, "usage_metadata", {})
         
         # Step 10: Visual Verification Re-Act Loop (Phase 9)
+        tool_calls = []
         if enable_visual_verification and image_paths:
-            answer = await _execute_visual_verification_loop(
+            answer, tool_calls = await _execute_visual_verification_loop(
                 initial_response=answer,
                 context=context_text,
                 question=question,
@@ -783,14 +791,23 @@ async def rag_answer_question(
                 llm=llm,
                 source_doc_ids=list(source_doc_ids),
             )
+            # Note: Usage from visual verification loop is not currently aggregated into usage_metadata
         
         if return_docs:
-            return RAGResult(answer, list(source_doc_ids), docs)
+            return RAGResult(
+                answer, 
+                list(source_doc_ids), 
+                docs, 
+                usage_metadata,
+                thought_process=None, # Not explicitly captured yet in this layer
+                tool_calls=tool_calls
+            )
         return (answer, list(source_doc_ids))
+
     except (RuntimeError, ValueError, OSError) as e:
         logger.error(f"LLM error for user {user_id}: {e}", exc_info=True)
         if return_docs:
-            return RAGResult("抱歉，處理您的問題時發生錯誤。", list(source_doc_ids), docs)
+            return RAGResult("抱歉，處理您的問題時發生錯誤。", list(source_doc_ids), docs, {})
         return ("抱歉，處理您的問題時發生錯誤。", list(source_doc_ids))
 
 
