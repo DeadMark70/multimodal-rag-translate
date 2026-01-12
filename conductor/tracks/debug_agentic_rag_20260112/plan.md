@@ -7,11 +7,12 @@
 - [x] Task: Conductor - User Manual Verification 'Phase 1: Infrastructure & Token Tracking Fix' (Protocol in workflow.md)
 
 
-## Phase 2: Observability & Logging Enhancement
+## Phase 2: Observability & Logging Enhancement [checkpoint: cb8c482]
 - [x] Task: Modify `run_tier` in `experiments/evaluation_pipeline.py` to capture and return `thought_process` and `tool_calls`. eb569a6
 - [x] Task: Update `run_tier` to include raw `retrieved_contexts` (text + metadata) in the returned dictionary. d10a8e4
 - [x] Task: Update `run_full_evaluation` and `save_results_json` to include these new diagnostic fields in the final output. 5452c92
-- [ ] Task: Conductor - User Manual Verification 'Phase 2: Observability & Logging Enhancement' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 2: Observability & Logging Enhancement' (Protocol in workflow.md)
+
 
 ## Phase 3: Agentic Logic & Planner Prompt Tuning
 - [ ] Task: Update `agents/planner.py` prompt templates (`_PLANNER_PROMPT`, `_GRAPH_PLANNER_PROMPT`, `_FOLLOWUP_PROMPT`) with a "Strict Visual Requirement" instruction.
