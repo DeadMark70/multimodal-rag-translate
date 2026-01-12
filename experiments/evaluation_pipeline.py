@@ -19,6 +19,7 @@ from core.llm_factory import get_llm, set_session_model_override
 from data_base.RAG_QA_service import rag_answer_question, RAGResult
 from data_base.deep_research_service import get_deep_research_service
 from data_base.schemas_deep_research import ExecutePlanRequest
+from data_base.router import on_startup_rag_init
 
 logger = logging.getLogger(__name__)
 
@@ -442,3 +443,86 @@ class EvaluationPipeline:
             return True
             
         return False
+
+    async def run_full_evaluation(self, questions_path: str, output_prefix: str = "experiments/results/evaluation") -> Dict[str, Any]:
+        """
+        Runs the full evaluation loop across all models and tiers.
+        
+        Args:
+            questions_path: Path to the benchmark_questions.json file.
+            output_prefix: Prefix for the output JSON and CSV files.
+            
+        Returns:
+            The full results dictionary.
+        """
+        import json
+        import os
+        from datetime import datetime
+        
+        # Load questions
+        with open(questions_path, "r", encoding="utf-8") as f:
+            benchmark_questions = json.load(f)
+        
+        results = {}
+        
+        # Initialize RAG components (Embedding, etc.)
+        try:
+            await on_startup_rag_init()
+        except Exception as e:
+            logger.warning(f"RAG init failed (might be ok if already init): {e}")
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        for model_name in self.models:
+            results[model_name] = {}
+            for q_item in benchmark_questions:
+                question = q_item["question"]
+                ground_truth = q_item["ground_truth"]
+                q_type = q_item.get("type", "standard")
+                
+                results[model_name][question] = {}
+                
+                for tier in self.tiers:
+                    try:
+                        # 1. Run the tier
+                        res = await self.run_tier(tier, question, model_name)
+                        
+                        if "error" in res:
+                            logger.error(f"Error in {model_name} | {tier} | {question[:30]}: {res['error']}")
+                            results[model_name][question][tier] = res
+                            continue
+                        
+                        # 2. Calculate Ragas metrics
+                        # Note: Metrics calculation uses the evaluator model (gemini-3-pro-preview)
+                        # We don't want to override the model for Ragas itself
+                        scores = await self.calculate_ragas_metrics(
+                            question=question,
+                            answer=res["answer"],
+                            contexts=res["contexts"],
+                            ground_truth=ground_truth
+                        )
+                        
+                        # 3. Behavioral check
+                        behavior_pass = False
+                        if q_type == "visual_verification":
+                            behavior_pass = self.check_visual_verification(res)
+                        
+                        # 4. Store results
+                        res["scores"] = scores
+                        res["behavior_pass"] = behavior_pass
+                        res["type"] = q_type
+                        
+                        results[model_name][question][tier] = res
+                        
+                        # Partial save to prevent data loss
+                        self.save_results_json(results, f"{output_prefix}_{timestamp}.json")
+                        
+                    except Exception as e:
+                        logger.error(f"Unexpected error in evaluation loop: {e}", exc_info=True)
+                        results[model_name][question][tier] = {"error": str(e)}
+
+        # Final save
+        self.save_results_json(results, f"{output_prefix}_{timestamp}.json")
+        self.save_results_csv(results, f"{output_prefix}_{timestamp}.csv")
+        
+        return results

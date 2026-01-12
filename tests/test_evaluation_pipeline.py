@@ -333,36 +333,151 @@ class TestReporting:
         os.remove(output_path)
 
 class TestBehavioralCheck:
-                """Tests for behavioral validation."""
+
+    """Tests for behavioral validation."""
+
+
+
+    def test_check_visual_verification_pass(self):
+
+        """Tests that behavior check passes when tool usage is detected."""
+
+        from experiments.evaluation_pipeline import EvaluationPipeline
+
+        
+
+        pipeline = EvaluationPipeline()
+
+        
+
+        # Simulating a result that indicates tool usage
+
+        result = {
+
+            "answer": "Answer based on visual tool.",
+
+            "tool_usage": ["visual_verification"] 
+
+        }
+
+        
+
+        passed = pipeline.check_visual_verification(result)
+
+        assert passed is True
+
+
+
+    def test_check_visual_verification_fail(self):
+
+        """Tests that behavior check fails when tool usage is missing."""
+
+        from experiments.evaluation_pipeline import EvaluationPipeline
+
+        
+
+        pipeline = EvaluationPipeline()
+
+        
+
+        result = {
+
+            "answer": "Standard answer.",
+
+            "tool_usage": []
+
+        }
+
+        
+
+        passed = pipeline.check_visual_verification(result)
+
+        assert passed is False
+
+
+
+    @pytest.mark.asyncio
+
+    async def test_run_full_evaluation(self):
+
+        """Tests the full evaluation loop with mocks."""
+
+        from experiments.evaluation_pipeline import EvaluationPipeline
+
+        import os
+
+        import json
+
+        
+
+        pipeline = EvaluationPipeline()
+
+        # Limit models and tiers for faster test
+
+        pipeline.models = ["m1"]
+
+        pipeline.tiers = ["Naive RAG"]
+
+        
+
+        questions = [{"question": "q1", "ground_truth": "gt1", "type": "standard"}]
+
+        q_path = "tests/test_questions.json"
+
+        with open(q_path, "w", encoding="utf-8") as f:
+
+            json.dump(questions, f)
+
             
-                def test_check_visual_verification_pass(self):
-                    """Tests that behavior check passes when tool usage is detected."""
-                    from experiments.evaluation_pipeline import EvaluationPipeline
+
+        mock_tier_res = {"answer": "ans", "contexts": ["ctx"], "usage": {"total_tokens": 10}}
+
+        mock_scores = {"faithfulness": 1.0, "answer_correctness": 1.0}
+
+        
+
+        with patch("experiments.evaluation_pipeline.EvaluationPipeline.run_tier", return_value=mock_tier_res):
+
+            with patch("experiments.evaluation_pipeline.EvaluationPipeline.calculate_ragas_metrics", return_value=mock_scores):
+
+                with patch("experiments.evaluation_pipeline.on_startup_rag_init", return_value=None):
+
+                    output_prefix = "tests/full_eval"
+
+                    res = await pipeline.run_full_evaluation(q_path, output_prefix)
+
                     
-                    pipeline = EvaluationPipeline()
+
+                    assert "m1" in res
+
+                    assert "q1" in res["m1"]
+
+                    assert res["m1"]["q1"]["Naive RAG"]["scores"]["faithfulness"] == 1.0
+
                     
-                    # Simulating a result that indicates tool usage
-                    # (This depends on how we implement the check, assuming we look for specific log/text)
-                    result = {
-                        "answer": "Answer based on visual tool.",
-                        "tool_usage": ["visual_verification"] 
-                    }
+
+                    # Verify files created
+
+                    files = os.listdir("tests")
+
+                    assert any(f.startswith("full_eval") and f.endswith(".json") for f in files)
+
+                    assert any(f.startswith("full_eval") and f.endswith(".csv") for f in files)
+
                     
-                    passed = pipeline.check_visual_verification(result)
-                    assert passed is True
-            
-                def test_check_visual_verification_fail(self):
-                    """Tests that behavior check fails when tool usage is missing."""
-                    from experiments.evaluation_pipeline import EvaluationPipeline
-                    
-                    pipeline = EvaluationPipeline()
-                    
-                    result = {
-                        "answer": "Standard answer.",
-                        "tool_usage": []
-                    }
-                    
-                    passed = pipeline.check_visual_verification(result)
-                    assert passed is False
+
+                    # Cleanup
+
+                    for f in files:
+
+                        if f.startswith("full_eval"):
+
+                            os.remove(os.path.join("tests", f))
+
+        
+
+        os.remove(q_path)
+
+
             
             
