@@ -478,6 +478,56 @@ class TestBehavioralCheck:
 
         os.remove(q_path)
 
+    @pytest.mark.asyncio
+    async def test_full_loop_behavior_pass(self):
+        """Tests that Behavior_Pass is correctly recorded in CSV after full evaluation."""
+        from experiments.evaluation_pipeline import EvaluationPipeline
+        import os
+        import json
+        import csv
+        
+        pipeline = EvaluationPipeline()
+        pipeline.models = ["m1"]
+        pipeline.tiers = ["Full Agentic RAG"]
+        
+        # A visual verification question
+        questions = [{"question": "q_visual", "ground_truth": "gt", "type": "visual_verification"}]
+        q_path = "tests/test_questions_visual.json"
+        with open(q_path, "w", encoding="utf-8") as f:
+            json.dump(questions, f)
+            
+        # Mock result that SHOULD pass behavioral check (contains keyword)
+        mock_tier_res = {
+            "answer": "根據視覺查證, Figure 1 shows...", 
+            "contexts": ["ctx"], 
+            "usage": {"total_tokens": 10}
+        }
+        mock_scores = {"faithfulness": 1.0, "answer_correctness": 1.0}
+        
+        with patch("experiments.evaluation_pipeline.EvaluationPipeline.run_tier", return_value=mock_tier_res):
+            with patch("experiments.evaluation_pipeline.EvaluationPipeline.calculate_ragas_metrics", return_value=mock_scores):
+                with patch("experiments.evaluation_pipeline.on_startup_rag_init", return_value=None):
+                    with patch("asyncio.sleep", return_value=None):
+                        output_prefix = "tests/behavior_eval"
+                        await pipeline.run_full_evaluation(q_path, output_prefix)
+                        
+                        # Find the CSV file
+                        files = os.listdir("tests")
+                        csv_file = next(f for f in files if f.startswith("behavior_eval") and f.endswith(".csv"))
+                        
+                        with open(os.path.join("tests", csv_file), "r", encoding="utf-8") as f:
+                            reader = csv.DictReader(f)
+                            rows = list(reader)
+                            assert len(rows) == 1
+                            assert rows[0]["Behavior_Pass"] == "True" # Keyword detection worked
+                        
+                        # Cleanup
+                        for f in files:
+                            if f.startswith("behavior_eval"):
+                                os.remove(os.path.join("tests", f))
+        
+        os.remove(q_path)
+
 
             
             
