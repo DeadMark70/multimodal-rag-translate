@@ -125,15 +125,15 @@ function useDeepResearch() {
 
 ## SSE 事件類型
 
-| 事件              | 說明         | data 欄位                      |
-| ----------------- | ------------ | ------------------------------ |
-| `plan_confirmed`  | 開始執行     | `total_tasks`                  |
-| `task_start`      | 子任務開始   | `task_id`, `question`          |
-| `task_done`       | 子任務完成   | `task_id`, `answer`, `sources` |
-| `drilldown_start` | 深度探索開始 | `iteration`, `gap_count`       |
-| `synthesis_start` | 合成報告開始 | -                              |
-| `complete`        | 執行完成     | 完整 `ExecutePlanResponse`     |
-| `error`           | 錯誤         | `message`                      |
+| 事件              | 說明         | data 欄位                                  |
+| ----------------- | ------------ | ------------------------------------------ |
+| `plan_confirmed`  | 開始執行     | `total_tasks`                              |
+| `task_start`      | 子任務開始   | `task_id`, `question`                      |
+| `task_done`       | 子任務完成   | `task_id`, `answer`, `sources`, `contexts` |
+| `drilldown_start` | 深度探索開始 | `iteration`, `gap_count`                   |
+| `synthesis_start` | 合成報告開始 | -                                          |
+| `complete`        | 執行完成     | 完整 `ExecutePlanResponse`                 |
+| `error`           | 錯誤         | `message`                                  |
 
 ---
 

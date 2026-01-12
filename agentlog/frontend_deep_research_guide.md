@@ -95,7 +95,7 @@ type SSEEventType =
 { id: number; question: string; task_type: string; iteration: number }
 
 // task_done / drilldown_task_done
-{ id: number; question: string; answer: string; sources: string[]; iteration: number }
+{ id: number; question: string; answer: string; sources: string[]; contexts: string[]; iteration: number }
 
 // drilldown_start
 { iteration: number; new_task_count: number }

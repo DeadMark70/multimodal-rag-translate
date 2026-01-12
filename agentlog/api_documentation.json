@@ -438,7 +438,7 @@
               "summary": "兩種方法各有優缺點...",
               "detailed_answer": "## 深度學習\n優點：...\n## 傳統機器學習\n優點：...",
               "sub_tasks": [
-                {"id": 1, "question": "深度學習的優點?", "answer": "...", "sources": []}
+                {"id": 1, "question": "深度學習的優點?", "answer": "...", "sources": [], "contexts": ["相關段落1...", "相關段落2..."]}
               ],
               "all_sources": ["doc-1", "doc-2"],
               "confidence": 0.85
@@ -548,7 +548,7 @@
               "summary": "Transformer 使用自注意力機制，RNN 使用循環結構...",
               "detailed_answer": "## Transformer\\n優點：平行計算...\\n## RNN\\n優點：處理序列...",
               "sub_tasks": [
-                {"id": 1, "question": "Transformer 的核心架構是什麼？", "answer": "...", "sources": ["doc-1"], "is_drilldown": false, "iteration": 0}
+                {"id": 1, "question": "Transformer 的核心架構是什麼？", "answer": "...", "sources": ["doc-1"], "contexts": ["...Self-Attention..."], "is_drilldown": false, "iteration": 0}
               ],
               "all_sources": ["doc-1", "doc-2"],
               "confidence": 0.85,
@@ -570,7 +570,7 @@
             "events": {
               "plan_confirmed": { "task_count": "number", "enabled_count": "number" },
               "task_start": { "id": "number", "question": "string", "task_type": "string", "iteration": "number" },
-              "task_done": { "id": "number", "question": "string", "answer": "string", "sources": "string[]", "iteration": "number" },
+              "task_done": { "id": "number", "question": "string", "answer": "string", "sources": "string[]", "contexts": "string[]", "iteration": "number" },
               "drilldown_start": { "iteration": "number", "new_task_count": "number" },
               "synthesis_start": { "total_tasks": "number" },
               "complete": "ExecutePlanResponse",
@@ -580,7 +580,8 @@
           "notes": [
             "使用 Server-Sent Events (SSE)",
             "前端使用 fetch + ReadableStream 或 EventSource",
-            "complete 事件包含完整的 ExecutePlanResponse"
+            "complete 事件包含完整的 ExecutePlanResponse",
+            "🆕 task_done 事件現在包含 contexts (參考文段全文)"
           ]
         }
       }

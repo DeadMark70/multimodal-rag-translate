@@ -120,8 +120,15 @@ These are configured in `core/llm_factory.py` and are not currently exposed as e
 | **Phase 10**  | ColPali (Visual Embeddings)             | 📝 Planned  |
 | **Phase 11**  | 🆕 GraphRAG Batch Processing            | ✅ Complete |
 | **Phase 12**  | 🆕 Translation & Embedding Optimization | ✅ Complete |
+| **Phase 13**  | 🆕 Context Transparency (Deep Research) | ✅ Complete |
 
-## Phase 12: Translation & Embedding Optimization
+## Phase 13: Context Transparency (Deep Research)
+
+提升 Deep Research 的可解釋性，讓使用者知道 AI 是依據哪些具體內容得出結論：
+
+- **Context Bubble-up**: `DeepResearchService` 與 `RAG_QA_service` 改進，將檢索到的原始文本片段 (`contexts`) 向上傳遞。
+- **Frontend Integration**: API 回應與 SSE 事件新增 `contexts` 欄位，前端可顯示每個子任務的參考依據。
+- **Schema Update**: `SubTaskExecutionResult` 與 `TaskDoneData` 新增 `contexts: List[str]`。
 
 三項效能與穩定性優化：
 
