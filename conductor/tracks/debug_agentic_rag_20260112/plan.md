@@ -10,7 +10,7 @@
 ## Phase 2: Observability & Logging Enhancement
 - [x] Task: Modify `run_tier` in `experiments/evaluation_pipeline.py` to capture and return `thought_process` and `tool_calls`. eb569a6
 - [x] Task: Update `run_tier` to include raw `retrieved_contexts` (text + metadata) in the returned dictionary. d10a8e4
-- [ ] Task: Update `run_full_evaluation` and `save_results_json` to include these new diagnostic fields in the final output.
+- [x] Task: Update `run_full_evaluation` and `save_results_json` to include these new diagnostic fields in the final output. 5452c92
 - [ ] Task: Conductor - User Manual Verification 'Phase 2: Observability & Logging Enhancement' (Protocol in workflow.md)
 
 ## Phase 3: Agentic Logic & Planner Prompt Tuning
