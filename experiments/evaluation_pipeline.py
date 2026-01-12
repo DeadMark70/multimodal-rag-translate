@@ -125,11 +125,79 @@ class EvaluationPipeline:
                     "source_doc_ids": result.source_doc_ids,
                     "usage": {"total_tokens": 0}
                 }
+
+            elif tier == "Long Context Mode":
+                # Tier 4: Long Context Mode (Context Stuffing)
+                # Read all PDFs and feed directly to LLM
+                full_text = self.get_user_full_text()
+                if not full_text:
+                    return {"error": "No documents found for user"}
+                
+                llm = get_llm("rag_qa", model_name=model_name)
+                prompt = f"""以下是所有相關文獻的完整內容：
+
+{full_text}
+
+請根據以上資料回答問題：
+{question}
+
+請以繁體中文回答。"""
+                
+                from langchain_core.messages import HumanMessage
+                response = await llm.ainvoke([HumanMessage(content=prompt)])
+                
+                return {
+                    "answer": response.content,
+                    "contexts": [full_text],
+                    "source_doc_ids": [], # We don't have specific IDs here as we sent everything
+                    "usage": self.extract_token_usage(response)
+                }
             
             return {"error": f"Tier {tier} not implemented"}
         finally:
             # Clear override after run
             set_session_model_override(None)
+
+    def get_user_full_text(self) -> str:
+        """
+        Retrieves all text content from the user's vector store.
+        
+        Returns:
+            Concatenated text of all indexed documents.
+        """
+        from data_base.vector_store_manager import get_user_vector_store_path, get_embeddings
+        import os
+        from langchain_community.vectorstores import FAISS
+        
+        user_index_path = get_user_vector_store_path(self.user_id)
+        embeddings = get_embeddings()
+        
+        if not os.path.exists(os.path.join(user_index_path, "index.faiss")):
+            logger.warning(f"Vector store not found for user {self.user_id}")
+            return ""
+            
+        try:
+            vector_db = FAISS.load_local(
+                user_index_path,
+                embeddings,
+                index_name="index",
+                allow_dangerous_deserialization=True
+            )
+            
+            all_docs = list(vector_db.docstore._dict.values())
+            # Filter for text only and avoid duplicate chunks if they were expanded
+            # Actually, just take all unique chunks
+            seen_content = set()
+            unique_texts = []
+            for d in all_docs:
+                if d.metadata.get("source") != "image" and d.page_content not in seen_content:
+                    unique_texts.append(d.page_content)
+                    seen_content.add(d.page_content)
+            
+            return "\n\n".join(unique_texts)
+        except Exception as e:
+            logger.error(f"Error loading full text from vector store: {e}")
+            return ""
 
     def extract_token_usage(self, response) -> dict:
         """

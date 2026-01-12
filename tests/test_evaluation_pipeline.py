@@ -5,7 +5,7 @@ Tests the initialization and core structure of the EvaluationPipeline.
 """
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock
 
 class TestEvaluationPipelineStructure:
     """Tests for EvaluationPipeline structure."""
@@ -209,3 +209,27 @@ class TestTierExecution:
             mock_rag.assert_called_once()
             args, kwargs = mock_rag.call_args
             assert kwargs["enable_graph_rag"] is True
+
+    @pytest.mark.asyncio
+    async def test_run_tier_long_context(self):
+        """Tests execution of Long Context Mode tier."""
+        from experiments.evaluation_pipeline import EvaluationPipeline
+        from langchain_core.messages import AIMessage
+        
+        pipeline = EvaluationPipeline()
+        
+        # Mocking getting full text and LLM call
+        mock_full_text = "This is the full text of all PDFs."
+        mock_response = AIMessage(content="Long context answer")
+        
+        with patch("experiments.evaluation_pipeline.EvaluationPipeline.get_user_full_text", return_value=mock_full_text):
+            with patch("experiments.evaluation_pipeline.get_llm") as mock_get_llm:
+                mock_llm = AsyncMock()
+                mock_llm.ainvoke.return_value = mock_response
+                mock_get_llm.return_value = mock_llm
+                
+                res = await pipeline.run_tier("Long Context Mode", "Question", "gemini-2.0-flash")
+                
+                assert res["answer"] == "Long context answer"
+                assert res["contexts"] == [mock_full_text]
+                mock_llm.ainvoke.assert_called_once()
