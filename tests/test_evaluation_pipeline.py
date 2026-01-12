@@ -187,3 +187,25 @@ class TestTierExecution:
             args, kwargs = mock_rag.call_args
             assert kwargs["enable_reranking"] is True
             assert kwargs["enable_hyde"] is True
+
+    @pytest.mark.asyncio
+    async def test_run_tier_graph_rag(self):
+        """Tests execution of Graph RAG tier."""
+        from experiments.evaluation_pipeline import EvaluationPipeline
+        from data_base.RAG_QA_service import RAGResult
+        from langchain_core.documents import Document
+        
+        pipeline = EvaluationPipeline()
+        mock_result = RAGResult(
+            answer="Graph answer",
+            source_doc_ids=["doc1"],
+            documents=[Document(page_content="Graph context")]
+        )
+        
+        with patch("experiments.evaluation_pipeline.rag_answer_question", return_value=mock_result) as mock_rag:
+            res = await pipeline.run_tier("Graph RAG", "Question", "gemini-2.0-flash")
+            
+            assert res["answer"] == "Graph answer"
+            mock_rag.assert_called_once()
+            args, kwargs = mock_rag.call_args
+            assert kwargs["enable_graph_rag"] is True

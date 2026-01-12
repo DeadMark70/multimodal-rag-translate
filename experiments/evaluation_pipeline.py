@@ -105,6 +105,26 @@ class EvaluationPipeline:
                     "source_doc_ids": result.source_doc_ids,
                     "usage": {"total_tokens": 0}
                 }
+
+            elif tier == "Graph RAG":
+                # Tier 3: Graph RAG (Structured Enhanced)
+                # Same as Advanced RAG + enable_graph_rag=True
+                result = await rag_answer_question(
+                    question=question,
+                    user_id=self.user_id,
+                    enable_reranking=True,
+                    enable_hyde=True,
+                    enable_multi_query=True,
+                    enable_graph_rag=True,
+                    enable_visual_verification=False,
+                    return_docs=True
+                )
+                return {
+                    "answer": result.answer,
+                    "contexts": [d.page_content for d in result.documents],
+                    "source_doc_ids": result.source_doc_ids,
+                    "usage": {"total_tokens": 0}
+                }
             
             return {"error": f"Tier {tier} not implemented"}
         finally:
