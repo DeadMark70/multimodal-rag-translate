@@ -19,14 +19,14 @@ This plan outlines the steps to build a robust evaluation framework for the Mult
 - [x] Task: Implement a mock/stub for RAG responses to test metrics in isolation addabf9
 - [x] Task: Conductor - User Manual Verification 'Phase 2: Ragas & Metric Integration' (Protocol in workflow.md) 7cb83ec
 
-## Phase 3: Ablation Tier Implementation
+## Phase 3: Ablation Tier Implementation [checkpoint: 972b23e]
 *Implement the 5 strategic tiers of the evaluation loop.*
 
 - [x] Task: Implement Tier 1 (Naive RAG) & Tier 2 (Advanced RAG) logic db2d40e
 - [x] Task: Implement Tier 3 (Graph RAG) logic ae8f033
 - [x] Task: Implement Tier 4 (Long Context Mode) - Read all PDFs and feed to context f130540
 - [x] Task: Implement Tier 5 (Full Agentic RAG) with 1-minute rate-limit pause 0d8d0c7
-- [ ] Task: Conductor - User Manual Verification 'Phase 3: Ablation Tier Implementation' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 3: Ablation Tier Implementation' (Protocol in workflow.md) 972b23e
 
 ## Phase 4: Reporting and Behavioral Validation
 *Finalize report generation and automated behavioral checks.*
