@@ -20,8 +20,9 @@
 - [x] Task: Conductor - User Manual Verification 'Phase 3: Agentic Logic & Planner Prompt Tuning' (Protocol in workflow.md)
 
 
-## Phase 4: Automated Verification
-- [ ] Task: Create a dedicated verification script `tests/verify_agentic_fix.py` targeting the "nnU-Net Fig 1" visual verification case.
-- [ ] Task: Implement assertions in the script to verify: Tokens > 0, `tool_calls` contains vision tools, and required log fields are present.
-- [ ] Task: Execute the verification script and confirm the "Behavior Pass" for the Agentic RAG tier.
-- [ ] Task: Conductor - User Manual Verification 'Phase 4: Automated Verification' (Protocol in workflow.md)
+## Phase 4: Automated Verification [checkpoint: 2487747]
+- [x] Task: Create a dedicated verification script `tests/verify_agentic_fix.py` targeting the "nnU-Net Fig 1" visual verification case. 2487747
+- [x] Task: Implement assertions in the script to verify: Tokens > 0, `tool_calls` contains vision tools, and required log fields are present. 5452c92
+- [x] Task: Execute the verification script and confirm the "Behavior Pass" for the Agentic RAG tier. be05897
+- [x] Task: Conductor - User Manual Verification 'Phase 4: Automated Verification' (Protocol in workflow.md)
+
