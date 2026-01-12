@@ -11,13 +11,13 @@ This plan outlines the steps to build a robust evaluation framework for the Mult
 - [x] Task: Create `experiments/benchmark_questions.json` with initial set of tiered questions (Standard, Visual, Synthesis) 7b81551
 - [x] Task: Conductor - User Manual Verification 'Phase 1: Foundation and Infrastructure' (Protocol in workflow.md) 3d2534c
 
-## Phase 2: Ragas & Metric Integration
+## Phase 2: Ragas & Metric Integration [checkpoint: 7cb83ec]
 *Integrate Ragas and set up the evaluator LLM.*
 
 - [x] Task: Write tests for Ragas metric calculation using `gemini-3-pro-preview` 173ae30
 - [x] Task: Implement `Faithfulness` and `Answer Correctness` calculation logic 173ae30
 - [x] Task: Implement a mock/stub for RAG responses to test metrics in isolation addabf9
-- [ ] Task: Conductor - User Manual Verification 'Phase 2: Ragas & Metric Integration' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 2: Ragas & Metric Integration' (Protocol in workflow.md) 7cb83ec
 
 ## Phase 3: Ablation Tier Implementation
 *Implement the 5 strategic tiers of the evaluation loop.*
