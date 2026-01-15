@@ -1,8 +1,3 @@
 # Project Tracks
 
 This file tracks all major tracks for the project. Each track has its own detailed plan in its respective folder.
-
----
-
-- [x] **Track: 重構 checklist 資料夾，建立 7 份以主 Router 為核心的技術文件，並更新 README 以符合專案進度。**
-*Link: [./tracks/project_restructuring_20260115/](./tracks/project_restructuring_20260115/)*

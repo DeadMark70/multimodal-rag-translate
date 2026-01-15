@@ -1,0 +1,8 @@
+{
+  "track_id": "project_restructuring_20260115",
+  "type": "refactor",
+  "status": "new",
+  "created_at": "2026-01-15T18:45:00Z",
+  "updated_at": "2026-01-15T18:45:00Z",
+  "description": "重構 checklist 資料夾，建立 7 份以主 Router 為核心的技術文件，並更新 README 以符合專案進度。"
+}

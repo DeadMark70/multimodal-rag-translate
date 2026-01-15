@@ -1,0 +1,8 @@
+{
+  "track_id": "eval_pipeline_ragas_20260112",
+  "type": "feature",
+  "status": "new",
+  "created_at": "2026-01-12T13:19:00Z",
+  "updated_at": "2026-01-12T13:19:00Z",
+  "description": "Refactor experiments to introduce Ragas evaluation pipeline with tiered benchmarking (Naive, Advanced, Graph, Long Context, Full Agentic RAG) across 5 models with token monitoring and behavioral validation."
+}
