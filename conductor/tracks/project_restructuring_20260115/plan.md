@@ -30,10 +30,10 @@
     - [x] Write Technical Details, Map, Guide (with .venv instructions), and Dependencies
 - [x] Task: Conductor - User Manual Verification 'Phase 2: Create Module Documentation' (Protocol in workflow.md)
 
-## Phase 3: README and Finalization
-- [ ] Task: Update root `README.md`
-    - [ ] Refresh project overview and architecture
-    - [ ] Update installation steps with focus on `.venv`
-    - [ ] Add links/references to the new `checklist/` guides
-- [ ] Task: Final cross-check of all documentation links and environment instructions
-- [ ] Task: Conductor - User Manual Verification 'Phase 3: README and Finalization' (Protocol in workflow.md)
+## Phase 3: README and Finalization [checkpoint: a770e87]
+- [x] Task: Update root `README.md`
+    - [x] Refresh project overview and architecture
+    - [x] Update installation steps with focus on `.venv`
+    - [x] Add links/references to the new `checklist/` guides
+- [x] Task: Final cross-check of all documentation links and environment instructions
+- [x] Task: Conductor - User Manual Verification 'Phase 3: README and Finalization' (Protocol in workflow.md)
