@@ -16,6 +16,7 @@
 *   **LangChain 0.3.0+**: 用於構建 Agentic Workflow 與鏈結各項 AI 組件。
 *   **Sentence-Transformers**: 用於生成文本與圖片的向量嵌入。
 *   **FAISS**: 本地向量資料庫，用於高效檢索。
+*   **Ragas**: 用於 RAG 系統的自動化評估，提供 Faithfulness 與 Answer Correctness 等指標。
 *   **GraphRAG**: 利用 NetworkX, Leidenalg, python-igraph 構建學術知識圖譜與全域檢索能力。
 
 ## 5. OCR 與 文件處理 (OCR & Document Processing)

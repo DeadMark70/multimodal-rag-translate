@@ -57,6 +57,7 @@ class TaskDoneData(BaseModel):
     question: str
     answer: str
     sources: List[str]
+    contexts: List[str] = []
     iteration: int = 0
 
 

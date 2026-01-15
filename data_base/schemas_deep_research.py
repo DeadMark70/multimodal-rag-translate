@@ -118,6 +118,8 @@ class SubTaskExecutionResult(BaseModel):
         is_drilldown: Whether this was a drill-down task.
         iteration: Drill-down iteration (0 for original tasks).
         usage: Token usage information.
+        thought_process: The agent's raw Chain of Thought.
+        tool_calls: Details of which tools were invoked.
     """
     id: int
     question: str
@@ -127,6 +129,9 @@ class SubTaskExecutionResult(BaseModel):
     is_drilldown: bool = False
     iteration: int = 0
     usage: dict = Field(default_factory=lambda: {"total_tokens": 0})
+    thought_process: Optional[str] = None
+    tool_calls: List[dict] = []
+
 
 
 

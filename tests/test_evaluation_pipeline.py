@@ -250,6 +250,12 @@ class TestTierExecution:
         mock_result.detailed_answer = "Agentic answer"
         mock_result.summary = "Summary"
         mock_result.all_sources = ["source1"]
+        
+        # Mock subtasks with contexts
+        mock_subtask = MagicMock()
+        mock_subtask.contexts = ["Context 1"]
+        mock_result.sub_tasks = [mock_subtask]
+        
         mock_service.execute_plan.return_value = mock_result
         
         with patch("experiments.evaluation_pipeline.get_deep_research_service", return_value=mock_service):
@@ -258,6 +264,7 @@ class TestTierExecution:
                 
                 assert res["answer"] == "Agentic answer"
                 assert res["source_doc_ids"] == ["source1"]
+                assert res["contexts"] == ["Context 1"]
                 mock_service.generate_plan.assert_called_once()
                 mock_service.execute_plan.assert_called_once()
                 mock_sleep.assert_called_with(60) # Verify 1-minute pause

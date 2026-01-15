@@ -17,9 +17,10 @@ class TestRagasIntegration:
         pipeline = EvaluationPipeline()
         
         # Mocking Ragas evaluate function to avoid actual LLM calls
+        # Ragas 0.4.x might return lists for scores
         mock_result = {
-            "faithfulness": 0.9,
-            "answer_correctness": 0.8
+            "faithfulness": [0.9],
+            "answer_correctness": [0.8]
         }
         
         with patch("experiments.evaluation_pipeline.evaluate", return_value=mock_result):
