@@ -121,6 +121,8 @@ These are configured in `core/llm_factory.py` and are not currently exposed as e
 | **Phase 11**  | 🆕 GraphRAG Batch Processing            | ✅ Complete |
 | **Phase 12**  | 🆕 Translation & Embedding Optimization | ✅ Complete |
 | **Phase 13**  | 🆕 Context Transparency (Deep Research) | ✅ Complete |
+| **Phase 14**  | 🆕 Strict Relevance & Optimization      | ✅ Complete |
+| **Phase 15**  | 🆕 Agentic RAG Precision & Conciseness  | ✅ Complete |
 
 ## Phase 13: Context Transparency (Deep Research)
 
@@ -216,3 +218,14 @@ These are configured in `core/llm_factory.py` and are not currently exposed as e
 - **Pure LLM 模式**: `evaluate_pure_llm()` 支援無文檔評估
 - **Arena 腳本**: `tests/run_arena.py` RAG vs Pure LLM A/B 測試
 - **閾值**: Accuracy < 6 觸發重試
+
+## Phase 15: Agentic RAG Precision & Conciseness
+
+大幅優化 Agentic RAG 的回答品質與精簡度，解決長篇大論與細節幻覺問題：
+
+- **Synthesizer 優化**: 強制執行 **BLUF (Bottom Line Up Front)** 架構，字數限制 < 500 字，禁止廢話。
+- **Technical Root Cause**: 要求在解釋差異時必須引用具體技術原因 (如 Inductive Bias, UpKern)，而非泛泛比較。
+- **效能指標大幅提升**:
+  - **Faithfulness**: 0.70 → **0.91** (超越 Naive RAG)
+  - **Answer Correctness**: 0.48 → **0.63** (接近實用水平)
+- **架構視覺化**: 建立 Mermaid 流程圖對比 Naive vs Agentic 決策路徑。

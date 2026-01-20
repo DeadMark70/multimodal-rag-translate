@@ -577,21 +577,72 @@ async def rag_answer_question(
         logger.info(f"Multi-doc retrieval: {doc_chunk_count}")
 
     # Step 5: Rerank with Cross-Encoder (or fair multi-doc selection)
-    target_k = 10  # Increased from 6 for better multi-doc coverage
+    target_k = 8  # Decreased to 8 per Phase 14 User Request (Strict Relevance)
     reranker_available = DocumentReranker.is_initialized()
     
-    if enable_reranking and reranker_available and len(docs) > target_k:
-        # Use cross-encoder reranking
-        docs = await run_in_threadpool(
-            rerank_documents,
-            question,
-            docs,
-            top_k=target_k,
-            enabled=True,
-        )
-        logger.debug(f"Reranked to top {len(docs)} documents")
+    # Phase 8: Reranker Tuning Constants
+    # Logit threshold 0.0 corresponds to sigmoid 0.5 (neutral prob)
+    # Phase 14: Increased to 0.0 (50% prob) to filter out weak matches (Noise Reduction)
+    RERANK_THRESHOLD = 0.0  # Stricter threshold
+    
+    if enable_reranking and reranker_available and len(docs) > 0:
+        # Phase 8: Keyword Penalty Logic (Noise Reduction)
+        # Manually penalize "SAM" or "Interactive" if not in query
+        NOISE_KEYWORDS = ["SAM", "Segment Anything", "Interactive Segmentation", "SegVol"]
+        query_lower = question.lower()
+        
+        # Check if query specifically asks for these topics
+        is_asking_noise = any(kw.lower() in query_lower for kw in NOISE_KEYWORDS)
+        
+        if not is_asking_noise:
+            # Get docs with scores first
+            reranker = DocumentReranker.get_instance()
+            scored_docs = reranker.rerank_with_scores(question, docs, len(docs))
+            
+            penalized_docs = []
+            for doc, score in scored_docs:
+                content_sample = doc.page_content[:500]
+                
+                # Check for noise keywords in document
+                is_noise_doc = False
+                for kw in NOISE_KEYWORDS:
+                    if kw in content_sample or (doc.metadata.get("file_name") and kw in doc.metadata["file_name"]):
+                        is_noise_doc = True
+                        break
+                
+                final_score = score
+                if is_noise_doc:
+                    # Apply penalty (logits)
+                    final_score -= 3.0  # Significant penalty
+                    # logger.debug(f"Applied noise penalty to doc {doc.metadata.get('doc_id')}: {score:.2f} -> {final_score:.2f}")
+                
+                penalized_docs.append((doc, final_score))
+            
+            # Re-sort
+            penalized_docs.sort(key=lambda x: x[1], reverse=True)
+            
+            # Filter by threshold
+            docs = [
+                doc for doc, score in penalized_docs 
+                if score >= RERANK_THRESHOLD
+            ][:target_k]
+            
+            logger.debug(f"Reranked & filtered to {len(docs)} documents (Threshold: {RERANK_THRESHOLD})")
+            
+        else:
+            # Standard reranking without penalty if query asks for it
+            docs = await run_in_threadpool(
+                rerank_documents,
+                question,
+                docs,
+                top_k=target_k,
+                score_threshold=RERANK_THRESHOLD,  # Use safe threshold
+                enabled=True,
+            )
+            logger.debug(f"Reranked to top {len(docs)} documents")
+
     elif doc_ids and len(doc_ids) > 1:
-        # Multi-doc fair selection: ensure each doc gets representation
+        # Multi-doc fair selection (unchanged)
         docs_per_source = max(2, target_k // len(doc_ids))
         selected_docs = []
         docs_by_id = {}

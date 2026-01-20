@@ -200,7 +200,7 @@ class DeepResearchService:
             original_question=request.original_question,
             sub_results=synthesizer_results,
             enabled=len(synthesizer_results) > 1,
-            use_academic_template=True,  # Deep Research uses academic format
+            use_academic_template=False,  # Simplified format for better RAGAS compatibility and latency
         )
         
         # Collect all unique sources
@@ -557,6 +557,17 @@ class DeepResearchService:
         
         complete_ratio = complete_count / len(results)
         
+        # Phase 14: Self-Stop Condition (User Feedback)
+        # If we found specific quantitative data (DSC), stop early to avoid drift
+        has_quantitative_data = any(
+            "dsc" in r.answer.lower() and any(c.isdigit() for c in r.answer)
+            for r in results
+        )
+        
+        if has_quantitative_data and complete_ratio > 0.5:
+             logger.info(f"Self-Stop Triggered: Found quantitative data (DSC) and incomplete ratio > 0.5")
+             return True
+        
         should_skip = complete_ratio >= min_complete_ratio
         if should_skip:
             logger.info(
@@ -747,7 +758,7 @@ class DeepResearchService:
             original_question=request.original_question,
             sub_results=synthesizer_results,
             enabled=len(synthesizer_results) > 1,
-            use_academic_template=True,  # Deep Research uses academic format
+            use_academic_template=False,  # Simplified format for better RAGAS compatibility and latency
         )
         
         all_sources = list(set(

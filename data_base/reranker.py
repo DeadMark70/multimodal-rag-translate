@@ -99,6 +99,7 @@ class DocumentReranker:
         query: str,
         documents: List[Document],
         top_k: int = 6,
+        score_threshold: Optional[float] = None,
     ) -> List[Document]:
         """
         Reranks documents by relevance to query.
@@ -107,6 +108,7 @@ class DocumentReranker:
             query: User question.
             documents: Candidate documents from initial retrieval.
             top_k: Number of documents to return.
+            score_threshold: Minimum score to keep document (default None).
             
         Returns:
             Top-k documents sorted by relevance score (descending).
@@ -132,9 +134,19 @@ class DocumentReranker:
         scored_docs: List[Tuple[Document, float]] = list(zip(documents, scores))
         scored_docs.sort(key=lambda x: x[1], reverse=True)
         
+        # Filter by threshold if provided
+        filtered_docs = scored_docs
+        if score_threshold is not None:
+            filtered_docs = [
+                (doc, score) for doc, score in scored_docs 
+                if score >= score_threshold
+            ]
+            if len(filtered_docs) < len(scored_docs):
+                logger.debug(f"Threshold {score_threshold} filtered out {len(scored_docs) - len(filtered_docs)} docs")
+        
         logger.debug(f"Reranked {len(documents)} docs, returning top {top_k}")
         
-        return [doc for doc, _ in scored_docs[:top_k]]
+        return [doc for doc, _ in filtered_docs[:top_k]]
     
     def rerank_with_scores(
         self,

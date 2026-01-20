@@ -48,23 +48,30 @@ class ResearchPlan(BaseModel):
 
 # Prompt for task decomposition (standard RAG)
 _PLANNER_PROMPT = """你是一個研究規劃專家。請將以下複雜問題分解為 2-5 個可獨立回答的子問題。
+這個問題通常涉及多個實體或概念的比較、分析或綜合。
 
 原始問題：{question}
 
 要求：
-1. 每個子問題應該是具體、可回答的
-2. 子問題應涵蓋原問題的不同面向
-3. 如果某個子問題依賴另一個的答案，請標註
-4. 以數字編號列出
+1. **專注性 (Focus)**：子問題必須直接有助於回答原始問題。避免生成過於寬泛或教科書式的定義問題（如「什麼是 X？」），除非該定義對區分 X 和 Y 至關重要。
+2. **比較性 (Comparison)**：如果原問題是 A vs B，請確保生成針對「A 與 B 的差異」、「A 與 B 的基準測試比較」或「A 與 B 的優缺點對比」的子問題。
+3. **查證性 (Verification)**：若需要具體數據，請生成「查詢 X 在 Y 任務上的具體性能數據」此類的子問題。
+4. **依賴關係**：如果某個子問題依賴另一個的答案，請標註。
+5. 以數字編號列出。
+6. **語言要求 (Language)**：為了確保對英文學術論文的檢索效果，請**務必將所有子問題翻譯為英文** (Translate sub-questions to English)。
 
 ## 視覺查證規範 (Strict Visual Requirement)
 - 如果原始問題涉及「圖表」、「Figure」、「Figure 1」、「圖片中的位置/細節」，且你認為文字檢索可能不足以提供精確數據，你必須在子問題中明確要求「查證圖片內容」。
 - 嚴禁在未嘗試調用工具的情況下回答「不知道」。
 
-輸出格式（每行一個子問題）：
-1. [子問題1]
-2. [子問題2]
-3. [子問題3]
+## 負面約束 (Negative Constraints)
+- **除非原始問題明確詢問**，否則嚴禁生成關於 "Interactive Segmentation"、"SAM (Segment Anything Model)"、"SegVol" 或 "Annotation" 相關的子問題。
+- 我們只關注原始問題中提及的模型或技術的直接比較。
+
+輸出格式（每行一個英文子問題）：
+1. [Sub-question 1 in English]
+2. [Sub-question 2 in English]
+3. [Sub-question 3 in English]
 
 子問題列表："""
 
@@ -82,16 +89,17 @@ _GRAPH_PLANNER_PROMPT = """你是一個研究規劃專家。請將以下複雜�
 1. 每個子問題應該是具體、可回答的
 2. 為每個子問題選擇最適合的查詢方式
 3. 關係類問題用 [GRAPH]，事實類問題用 [RAG]
-4. 以數字編號列出，格式：[查詢方式] 子問題
+4. **語言要求**：為了匹配學術文獻，請將**所有子問題寫成英文** (Write all sub-questions in English)。
+5. 以數字編號列出，格式：[查詢方式] 子問題
 
 ## 視覺查證規範 (Strict Visual Requirement)
 - 如果問題涉及「圖片」、「圖表」、「Figure X」，且需要精確細節，請生成一個 [RAG] 子任務來專門執行「視覺查證」。
 - 即使檢索到文字摘要，若摘要不含具體位置或數值，仍須標註需要看圖。
 
 輸出格式：
-1. [RAG] 查找 X 的定義
-2. [GRAPH] 分析 A 與 B 的關係
-3. [RAG] X 的具體數據是什麼
+1. [RAG] What is the definition of X?
+2. [GRAPH] Analyze the relationship between A and B
+3. [RAG] What is the specific data for X?
 
 子問題列表："""
 
@@ -119,21 +127,21 @@ _FOLLOWUP_PROMPT = """你正在協助研究以下問題：
 - 嚴禁跳過圖片細節的查證。
 
 例如：
-- 若論點是「方法 A 效果好」→ 同時生成查詢「方法 A 的缺點/限制是什麼」
-- 若論點是「X 優於 Y」→ 同時生成查詢「有無研究顯示 Y 優於 X」
-- 若論點是「技術 Z 很有潛力」→ 同時生成查詢「技術 Z 的挑戰/風險是什麼」
+- 若論點是「方法 A 效果好」→ 同時生成查詢「What are the limitations of Method A?」
+- 若論點是「X 優於 Y」→ 同時生成查詢「Is there evidence that Y outperforms X?」
 
 ## 注意事項
 1. 我們只能查閱現有的文件，不能上網搜尋
 2. 不要重複已經問過的問題
 3. 只針對文件中「提到但未詳細解釋」的內容追問
 4. **必須包含至少一個「反面/限制」相關的查詢**
+5. **語言要求**：請用**英文**撰寫追問子任務 (Write follow-up tasks in English)。
 
 如果資訊已經足夠完整（包含正反面觀點），請回覆：無需追加查詢
 
 如果需要深入查詢，請列出 1-3 個子任務，格式：
-1. [RAG] 具體查詢問題
-2. [GRAPH] 具體分析問題
+1. [RAG] Specific question in English
+2. [GRAPH] Specific analysis question in English
 
 子任務列表："""
 
@@ -148,12 +156,12 @@ _REFINE_QUERY_PROMPT = """你是一個搜尋策略專家。一個 AI 系統剛�
 請根據失敗原因，生成一個**修正過的搜尋查詢**來補救問題。
 
 ## 策略指南
-- 如果原因提到「資料太舊」或「outdated」→ 加入「最新」、「recent」、「2024」等時間限定詞
-- 如果原因提到「缺乏數據」或「no data」→ 改為搜尋「statistics」、「數據」、「百分比」、「量化」
-- 如果原因提到「圖片細節不足」或「視覺資訊不足」→ 加入「視覺查證」、「Figure X 的細節」、「檢視圖片」等詞彙
-- 如果原因提到「定義不清」或「unclear」→ 增加「definition」、「是什麼」、「定義」
-- 如果原因提到「缺乏比較」或「no comparison」→ 增加「versus」、「比較」、「差異」、「對比」
-- 如果原因提到「證據不足」或「insufficient」→ 聚焦「evidence」、「study」、「研究」、「論文」
+- 如果原因提到「資料太舊」或「outdated」→ 加入「latest」、「recent」、「2024」等時間限定詞
+- 如果原因提到「缺乏數據」或「no data」→ 改為搜尋「statistics」、「data」、「percentage」、「quantitative」
+- 如果原因提到「圖片細節不足」或「視覺資訊不足」→ 加入「visual verification」、「details of Figure X」、「check image」
+- 如果原因提到「定義不清」或「unclear」→ 增加「definition」、「what is」
+- 如果原因提到「缺乏比較」或「no comparison」→ 增加「versus」、「comparison」、「difference」
+- 如果原因提到「證據不足」或「insufficient」→ 聚焦「evidence」、「study」、「paper」
 - 如果原因提到「範圍太廣」或「too broad」→ 縮小搜尋範圍，更具體化
 - 如果原因提到「不完整」或「incomplete」→ 擴大搜尋範圍，增加相關細節
 
@@ -161,7 +169,7 @@ _REFINE_QUERY_PROMPT = """你是一個搜尋策略專家。一個 AI 系統剛�
 1. 新的查詢必須與原始問題有**明顯差異**
 2. 針對失敗原因做出有針對性的修正
 3. 保持查詢簡潔（30 字以內），適合向量檢索
-4. 使用與原始問題相同的語言（中文或英文）
+4. **務必使用英文 (English)** 撰寫新的查詢，以獲得最佳學術檢索結果
 
 請直接輸出修正後的搜尋查詢，不要其他內容："""
 

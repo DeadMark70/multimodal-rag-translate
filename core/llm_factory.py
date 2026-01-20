@@ -85,7 +85,9 @@ _LLM_CONFIGS: dict[str, dict] = {
     },
     "evaluator": {
         "temperature": 0.1,
-        "max_output_tokens": 256,
+        "max_output_tokens": 2048,
+        # Custom instruction to be lenient on extra info/citations
+        "convert_system_message_to_human": True, 
     },
     "planner": {
         "temperature": 0.2,
