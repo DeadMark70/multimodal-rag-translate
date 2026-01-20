@@ -1,7 +1,0 @@
-Total log length: 42062 chars
-INPUT section: 31634 chars
-OUTPUT section: 10069 chars
-INPUT markers (14): [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
-OUTPUT markers (14): [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
-MISSING: []
-OUTPUT ends: COMPLETE (has ending delimiter)
