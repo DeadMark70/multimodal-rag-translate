@@ -13,11 +13,11 @@ This plan outlines the steps to perform a comprehensive audit of the Python back
 - [x] Task: Generate the audit report at `agentlog/unused_functions_audit.md`. a11348f
 - [x] Task: Conductor - User Manual Verification 'Dead Code Audit' (Protocol in workflow.md) 17027bd
 
-## Phase 3: Security & Auth Audit
-- [ ] Task: Audit all FastAPI routers to ensure consistent use of `get_current_user_id` dependency.
-- [ ] Task: Scan the repository for hardcoded secrets, API keys, or insecure `.env` patterns.
-- [ ] Task: Review file handling logic in `pdfserviceMD/router.py` and `image_service/router.py` for path traversal or injection risks.
-- [ ] Task: Conductor - User Manual Verification 'Security & Auth Audit' (Protocol in workflow.md)
+## Phase 3: Security & Auth Audit [checkpoint: 82fa15f]
+- [x] Task: Audit all FastAPI routers to ensure consistent use of `get_current_user_id` dependency. cad46a2
+- [x] Task: Scan the repository for hardcoded secrets, API keys, or insecure `.env` patterns. cad46a2
+- [x] Task: Review file handling logic in `pdfserviceMD/router.py` and `image_service/router.py` for path traversal or injection risks. cad46a2
+- [x] Task: Conductor - User Manual Verification 'Security & Auth Audit' (Protocol in workflow.md) 82fa15f
 
 ## Phase 4: PEP 8 & Code Style Audit
 - [ ] Task: Run `flake8` or `ruff` to identify PEP 8 violations across the backend.
