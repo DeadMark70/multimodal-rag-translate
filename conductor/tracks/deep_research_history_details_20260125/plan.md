@@ -14,8 +14,8 @@
     - [x] Logic: After successful execution, update `conversations` table:
         - Set `metadata` = `ExecutePlanResponse`
         - Update `title` based on `original_question` (if generic or default)
-- [ ] Task: Verify API Response
-    - [ ] Test `GET /api/conversations/{id}` returns populated `metadata`
+- [x] Task: Verify API Response (45ebcba)
+    - [x] Test `GET /api/conversations/{id}` returns populated `metadata`
 - [ ] Task: Conductor - User Manual Verification 'Database & Backend API Updates' (Protocol in workflow.md)
 
 ### Phase 2: Frontend API & Types Integration
