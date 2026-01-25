@@ -9,9 +9,9 @@
 - [x] Task: Update Backend Schemas and Models (78464ed)
     - [x] Update `ExecutePlanRequest` (Pydantic model) to accept optional `conversation_id`
     - [x] Update `ConversationResponse` schema to include `metadata` field
-- [ ] Task: Implement Persistence Logic
-    - [ ] Modify `DeepResearchService.execute_plan` or the router handler
-    - [ ] Logic: After successful execution, update `conversations` table:
+- [x] Task: Implement Persistence Logic (d5f750b)
+    - [x] Modify `DeepResearchService.execute_plan` or the router handler
+    - [x] Logic: After successful execution, update `conversations` table:
         - Set `metadata` = `ExecutePlanResponse`
         - Update `title` based on `original_question` (if generic or default)
 - [ ] Task: Verify API Response
