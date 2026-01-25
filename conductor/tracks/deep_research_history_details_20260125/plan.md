@@ -6,9 +6,9 @@
 - [x] Task: Create database migration for `metadata` column (25bb835)
     - [x] Create `supabase/migrations/20260125_add_metadata_to_conversations.sql`
     - [x] Add `metadata` JSONB column to `conversations` table if not exists (ensure JSONB type)
-- [ ] Task: Update Backend Schemas and Models
-    - [ ] Update `ExecutePlanRequest` (Pydantic model) to accept optional `conversation_id`
-    - [ ] Update `ConversationResponse` schema to include `metadata` field
+- [x] Task: Update Backend Schemas and Models (78464ed)
+    - [x] Update `ExecutePlanRequest` (Pydantic model) to accept optional `conversation_id`
+    - [x] Update `ConversationResponse` schema to include `metadata` field
 - [ ] Task: Implement Persistence Logic
     - [ ] Modify `DeepResearchService.execute_plan` or the router handler
     - [ ] Logic: After successful execution, update `conversations` table:
