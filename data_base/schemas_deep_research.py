@@ -74,6 +74,7 @@ class ExecutePlanRequest(BaseModel):
         enable_reranking: Enable cross-encoder reranking.
         enable_drilldown: Enable recursive drill-down for knowledge gaps.
         enable_deep_image_analysis: Enable deep image analysis for specific questions.
+        conversation_id: Optional conversation ID to persist results to.
     """
     original_question: str
     sub_tasks: List[EditableSubTask]
@@ -85,6 +86,7 @@ class ExecutePlanRequest(BaseModel):
         default=False,
         description="啟用進階圖片查證（針對特定問題重新分析圖片，會增加 API 調用）"
     )
+    conversation_id: Optional[str] = None
 
 
 class DrillDownTask(BaseModel):
