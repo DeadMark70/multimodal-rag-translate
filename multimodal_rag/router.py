@@ -10,6 +10,7 @@ import logging
 import os
 import shutil
 import uuid
+from uuid import UUID
 
 # Third-party
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
@@ -17,8 +18,10 @@ from fastapi.concurrency import run_in_threadpool
 
 # Local application
 from core.auth import get_current_user_id
-from supabase_client import supabase
-from data_base.vector_store_manager import index_extracted_document, delete_document_from_knowledge_base
+from data_base.vector_store_manager import (
+    index_extracted_document,
+    delete_document_from_knowledge_base,
+)
 from core.summary_service import schedule_summary_generation
 from .structure_analyzer import analyzer
 from .image_summarizer import summarizer
@@ -42,18 +45,21 @@ def _validate_pdf_upload(file: UploadFile) -> None:
         HTTPException: 400 if file is not a valid PDF.
     """
     if file.content_type != "application/pdf":
-        raise HTTPException(status_code=400, detail="File must be a PDF (invalid content-type)")
+        raise HTTPException(
+            status_code=400, detail="File must be a PDF (invalid content-type)"
+        )
 
     if file.filename:
         _, ext = os.path.splitext(file.filename)
         if ext.lower() != ".pdf":
-            raise HTTPException(status_code=400, detail="File must be a PDF (invalid extension)")
+            raise HTTPException(
+                status_code=400, detail="File must be a PDF (invalid extension)"
+            )
 
 
 @router.post("/extract", response_model=ExtractedDocument)
 async def extract_from_pdf_endpoint(
-    file: UploadFile = File(...),
-    user_id: str = Depends(get_current_user_id)
+    file: UploadFile = File(...), user_id: str = Depends(get_current_user_id)
 ) -> ExtractedDocument:
     """
     Extracts text and visual elements from a PDF, summarizes images, and indexes content.
@@ -92,12 +98,14 @@ async def extract_from_pdf_endpoint(
             pdf_path=input_pdf_path,
             user_id=user_id,
             doc_id=doc_uuid,
-            output_base_dir=doc_dir
+            output_base_dir=doc_dir,
         )
 
         # Phase 2: Summarization (async Gemini API)
         if extracted_doc.visual_elements:
-            logger.info(f"[Phase 2] Summarizing {len(extracted_doc.visual_elements)} visual elements")
+            logger.info(
+                f"[Phase 2] Summarizing {len(extracted_doc.visual_elements)} visual elements"
+            )
             extracted_doc.visual_elements = await summarizer.summarize_elements(
                 extracted_doc.visual_elements
             )
@@ -106,9 +114,7 @@ async def extract_from_pdf_endpoint(
         try:
             logger.info(f"[Phase 3] Indexing document for user {user_id}")
             await run_in_threadpool(
-                index_extracted_document,
-                user_id=user_id,
-                doc=extracted_doc
+                index_extracted_document, user_id=user_id, doc=extracted_doc
             )
 
             # Trigger background summary generation (non-blocking)
@@ -118,7 +124,9 @@ async def extract_from_pdf_endpoint(
                 text_content=combined_text,
                 user_id=user_id,
             )
-            logger.info(f"[Phase 3] Background summary task scheduled for doc {doc_uuid}")
+            logger.info(
+                f"[Phase 3] Background summary task scheduled for doc {doc_uuid}"
+            )
 
         except ValueError as e:
             logger.warning(f"Indexing skipped (embedding model not ready): {e}")
@@ -151,8 +159,7 @@ async def extract_from_pdf_endpoint(
 
 @router.delete("/file/{doc_id}")
 async def delete_multimodal_document(
-    doc_id: str,
-    user_id: str = Depends(get_current_user_id)
+    doc_id: UUID, user_id: str = Depends(get_current_user_id)
 ) -> dict:
     """
     Deletes a multimodal document and all associated files.
@@ -168,17 +175,20 @@ async def delete_multimodal_document(
     Returns:
         Success status dict.
     """
-    logger.info(f"Delete multimodal doc {doc_id} for user {user_id}")
+    doc_id_str = str(doc_id)
+    logger.info(f"Delete multimodal doc {doc_id_str} for user {user_id}")
 
     # 1. Delete from RAG index (non-fatal if fails)
     try:
-        await run_in_threadpool(delete_document_from_knowledge_base, user_id, doc_id)
-        logger.info(f"RAG index entries deleted for doc {doc_id}")
+        await run_in_threadpool(
+            delete_document_from_knowledge_base, user_id, doc_id_str
+        )
+        logger.info(f"RAG index entries deleted for doc {doc_id_str}")
     except Exception as e:
         logger.warning(f"RAG deletion failed (non-fatal): {e}")
 
     # 2. Delete physical files
-    doc_folder = os.path.normpath(os.path.join(BASE_UPLOAD_FOLDER, user_id, doc_id))
+    doc_folder = os.path.normpath(os.path.join(BASE_UPLOAD_FOLDER, user_id, doc_id_str))
     if os.path.exists(doc_folder):
         try:
             shutil.rmtree(doc_folder)

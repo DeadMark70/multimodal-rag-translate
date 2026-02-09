@@ -304,7 +304,7 @@ async def _get_graph_context(
     try:
         from graph_rag.store import GraphStore
         from graph_rag.local_search import local_search
-        from graph_rag.global_search import global_search, build_global_context
+        from graph_rag.global_search import global_search
         
         store = GraphStore(user_id)
         
@@ -861,31 +861,3 @@ async def rag_answer_question(
             return RAGResult("抱歉，處理您的問題時發生錯誤。", list(source_doc_ids), docs, {})
         return ("抱歉，處理您的問題時發生錯誤。", list(source_doc_ids))
 
-
-# Backward compatible alias
-async def rag_answer_question_simple(
-    question: str,
-    user_id: str,
-    doc_ids: Optional[List[str]] = None,
-) -> Tuple[str, List[str]]:
-    """
-    Simple RAG QA without reranking or query transformation.
-    
-    Provided for backward compatibility and testing.
-    
-    Args:
-        question: The question to answer.
-        user_id: The user's ID.
-        doc_ids: Optional document ID filter.
-        
-    Returns:
-        Tuple of (answer, source_doc_ids).
-    """
-    return await rag_answer_question(
-        question=question,
-        user_id=user_id,
-        doc_ids=doc_ids,
-        enable_reranking=False,
-        enable_hyde=False,
-        enable_multi_query=False,
-    )

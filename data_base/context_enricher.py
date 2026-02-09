@@ -8,7 +8,7 @@ coreference resolution and improve retrieval accuracy.
 # Standard library
 import asyncio
 import logging
-from typing import List, Optional
+from typing import List
 
 # Third-party
 from langchain_core.documents import Document

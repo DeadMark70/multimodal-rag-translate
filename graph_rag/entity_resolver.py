@@ -8,13 +8,16 @@ Merges similar entities that represent the same concept across documents.
 # Standard library
 import logging
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 # Third-party
 import numpy as np
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from graph_rag.store import GraphStore
 
 
 def _cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
@@ -261,7 +264,6 @@ async def resolve_entities(store: "GraphStore") -> int:
     Returns:
         Number of merges performed.
     """
-    from graph_rag.store import GraphStore
     
     resolver = EntityResolver()
     

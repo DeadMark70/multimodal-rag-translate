@@ -19,6 +19,7 @@ Handles document ingestion, OCR (Local/Marker), and translation.
 - `GET /pdfmd/list`: List user documents (max 50).
 - `GET /pdfmd/file/{doc_id}/status`: Poll processing status (ocr, translating, indexing, etc.).
 - `GET /pdfmd/file/{doc_id}/summary`: Get AI-generated executive briefing.
+- `doc_id` path parameter for `/pdfmd/file/{doc_id}*` must be a valid UUID. Invalid format returns `422 Unprocessable Entity`.
 
 ### 3.2 RAG Question Answering (`/rag`)
 Intelligent retrieval and research across user documents.
@@ -32,11 +33,11 @@ Global relationship analysis and knowledge graph visualization.
 - `GET /graph/data`: Get `react-force-graph` compatible JSON for UI visualization.
 - `POST /graph/optimize`: Trigger entity resolution and community re-summarization.
 
-### 3.4 Conversations (`/conversations`)
+### 3.4 Conversations (`/api/conversations`)
 Persistence for chat history.
-- `GET /conversations`: List user chat sessions.
-- `POST /conversations`: Create new session.
-- `GET /conversations/{id}`: Fetch session with full message history.
+- `GET /api/conversations`: List user chat sessions.
+- `POST /api/conversations`: Create new session.
+- `GET /api/conversations/{id}`: Fetch session with full message history.
 
 ### 3.5 Image Translation (`/imagemd`)
 - `POST /imagemd/translate_image`: In-place translation of text within images.
@@ -78,3 +79,8 @@ For technical details on individual modules, refer to:
 - [Graph RAG](graph_rag_guide.md) (Checklist)
 - [Multi-modal RAG](multimodal_rag_guide.md) (Checklist)
 - [PDF Service](pdfservice_md_guide.md) (Checklist)
+
+## 6. Refactor Notes (2026-02-09)
+- Phase 3 and Phase 4 refactors were internal-only (dead code cleanup and maintainability extraction).
+- No additional external API path/schema contract changes were introduced in these phases.
+- UUID validation for `doc_id` remains enforced on `/pdfmd/file/{doc_id}*` and `/multimodal/file/{doc_id}`.

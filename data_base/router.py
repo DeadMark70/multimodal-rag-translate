@@ -28,7 +28,7 @@ from data_base.schemas import (
     EvaluationMetrics,
     FaithfulnessLevel,
 )
-from agents.planner import plan_research, SubTask
+from agents.planner import plan_research
 from agents.synthesizer import synthesize_results, SubTaskResult
 from agents.evaluator import RAGEvaluator
 from data_base.schemas_deep_research import (

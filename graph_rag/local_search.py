@@ -7,14 +7,13 @@ in the query to their graph neighbors.
 
 # Standard library
 import logging
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 # Third-party
 from langchain_core.messages import HumanMessage
 
 # Local application
 from core.llm_factory import get_llm
-from graph_rag.schemas import EntityType, GraphNode
 from graph_rag.store import GraphStore
 
 # Configure logging

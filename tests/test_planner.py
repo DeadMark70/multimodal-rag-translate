@@ -132,7 +132,7 @@ class TestTaskPlannerComplexityCheck:
         
         planner = TaskPlanner()
         
-        assert planner.needs_planning("什麼是 Python？") == False
+        assert not planner.needs_planning("什麼是 Python？")
 
     def test_needs_planning_complex_question(self):
         """Tests that complex questions need planning."""
@@ -141,7 +141,7 @@ class TestTaskPlannerComplexityCheck:
         planner = TaskPlanner()
         
         complex_q = "比較 Python 和 JavaScript 的優缺點，並分析它們在網頁開發中的應用"
-        assert planner.needs_planning(complex_q) == True
+        assert planner.needs_planning(complex_q)
 
 
 class TestPlanResearchConvenience:

@@ -1,4 +1,3 @@
-import asyncio
 import pytest
 from agents.planner import TaskPlanner, ResearchPlan
 
@@ -42,7 +41,7 @@ async def test_planner_graph_aware():
     plan = await planner.plan(question)
     
     # Check if any task is assigned as graph_analysis
-    has_graph_task = any(t.task_type == "graph_analysis" for t in plan.sub_tasks)
+    any(t.task_type == "graph_analysis" for t in plan.sub_tasks)
     print(f"Graph-aware plan sub-tasks: {[t.task_type for t in plan.sub_tasks]}")
     # We don't strictly assert has_graph_task because LLM output varies, 
     # but we verify the code handles the tag parsing.

@@ -9,7 +9,7 @@ Each proposition is a self-contained, factual statement that can be independentl
 import asyncio
 import logging
 import re
-from typing import List, Optional
+from typing import List
 
 # Third-party
 from langchain_core.documents import Document

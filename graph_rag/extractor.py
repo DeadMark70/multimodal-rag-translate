@@ -9,7 +9,7 @@ Uses Gemini Flash for fast, cost-effective extraction.
 import json
 import logging
 import re
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 # Third-party
 from langchain_core.messages import HumanMessage
@@ -23,7 +23,7 @@ from graph_rag.schemas import (
     ExtractedRelation,
     ExtractionResult,
 )
-from graph_rag.store import GraphStore, _generate_node_id
+from graph_rag.store import GraphStore
 
 # Configure logging
 logger = logging.getLogger(__name__)

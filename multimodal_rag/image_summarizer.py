@@ -287,7 +287,7 @@ class ImageSummarizer:
 
         # 統計
         summarized = sum(1 for e in processed if e.summary and not e.summary.startswith("Error"))
-        cached = sum(1 for e in processed if e.summary and "Cache hit" not in str(e.summary)[:20])
+        sum(1 for e in processed if e.summary and "Cache hit" not in str(e.summary)[:20])
         logger.info(f"Summarization complete: {summarized} summarized, cache size: {len(self._cache)}")
         
         return processed

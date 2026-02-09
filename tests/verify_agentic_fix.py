@@ -8,8 +8,8 @@ import json
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from experiments.evaluation_pipeline import EvaluationPipeline
-from data_base.router import on_startup_rag_init
+from experiments.evaluation_pipeline import EvaluationPipeline  # noqa: E402
+from data_base.router import on_startup_rag_init  # noqa: E402
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -51,11 +51,10 @@ async def verify_agentic_fix():
         # B. Behavioral pass (Vision tool usage)
         tool_calls = result.get('tool_calls', [])
         print(f"2. Tool Calls count: {len(tool_calls)}")
-        has_vision_call = any(tc.get('action') == 'VERIFY_IMAGE' for tc in tool_calls)
+        any(tc.get('action') == 'VERIFY_IMAGE' for tc in tool_calls)
         
         # If not explicitly in tool_calls, check answer for markers
-        answer = result.get('answer', '')
-        has_vision_marker = "視覺查證" in answer or "Figure 1" in answer
+        result.get('answer', '')
         
         # Note: Depending on how AFC works, tool_calls might be recorded differently.
         # But our manual capture in _execute_visual_verification_loop should be there.

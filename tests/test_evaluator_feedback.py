@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from agents.evaluator import RAGEvaluator, DetailedEvaluationResult
+from agents.evaluator import DetailedEvaluationResult
 from agents.planner import TaskPlanner
 
 @pytest.mark.asyncio

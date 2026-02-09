@@ -260,7 +260,6 @@ async def _rebuild_graph_task(user_id: str) -> None:
     
     try:
         from graph_rag.store import GraphStore
-        from graph_rag.extractor import extract_and_add_to_graph
         from graph_rag.entity_resolver import resolve_entities
         from graph_rag.community_builder import build_communities
         

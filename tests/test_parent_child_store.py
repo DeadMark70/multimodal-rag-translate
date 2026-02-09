@@ -5,13 +5,10 @@ Tests the ParentDocumentStore class and related functions.
 """
 
 # Standard library
-import os
-import pytest
-import tempfile
 from unittest.mock import patch
 
 # Third-party
-from langchain.schema import Document
+from langchain_core.documents import Document
 
 # Local application
 from data_base.parent_child_store import (

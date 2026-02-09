@@ -6,10 +6,8 @@ Tests the SemanticTextChunker class and related functions.
 
 # Standard library
 import pytest
-from unittest.mock import MagicMock
 
 # Third-party
-from langchain.schema import Document
 
 # Local application
 from data_base.semantic_chunker import (
@@ -169,7 +167,7 @@ class TestSemanticTextChunker:
         
         assert len(result) == 1
         assert result[0].page_content == "短文"
-        assert result[0].metadata["test"] == True
+        assert result[0].metadata["test"]
 
     def test_split_text_single_sentence(self, mock_embeddings):
         """Tests splitting text with single sentence."""

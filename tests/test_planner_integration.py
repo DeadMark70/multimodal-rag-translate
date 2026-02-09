@@ -7,8 +7,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from agents.planner import TaskPlanner
-from data_base.router import on_startup_rag_init
+from agents.planner import TaskPlanner  # noqa: E402
+from data_base.router import on_startup_rag_init  # noqa: E402
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -40,4 +40,3 @@ async def run_planner_test():
 
 if __name__ == "__main__":
     asyncio.run(run_planner_test())
-

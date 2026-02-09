@@ -6,7 +6,6 @@ Small chunks are indexed for precision, parent chunks are returned for context.
 """
 
 # Standard library
-import json
 import logging
 import os
 import pickle

@@ -24,6 +24,7 @@ The `pdfserviceMD` module manages the end-to-end processing of PDF documents, tr
 ### Algorithms
 -   **Page-Based Chunking**: Ensures translation context is maintained per page while fitting within API limits.
 -   **Visual Placeholder Replacement**: Identifies image locations in OCR output and re-inserts them into the translated document.
+-   **Markdown/LaTeX Sanitization**: `markdown_cleaner.py` normalizes image paths and applies math-safe fixes, including scanner-based protection for nested LaTeX environments.
 
 ## 2. Codebase Map
 
@@ -36,7 +37,7 @@ The `pdfserviceMD` module manages the end-to-end processing of PDF documents, tr
 | `pdfserviceMD/translation_chunker.py` | Logic for splitting Markdown into manageable chunks for LLM translation. |
 | `pdfserviceMD/markdown_to_pdf.py` | Converts translated Markdown to PDF (Pandoc wrapper). |
 | `pdfserviceMD/image_processor.py` | Utilities for extracting and handling images from Markdown/PDFs. |
-| `pdfserviceMD/markdown_process.py` | Helpers for cleaning and preprocessing Markdown text. |
+| `pdfserviceMD/markdown_cleaner.py` | Markdown sanitization for PDF generation (image path fixes, LaTeX cleanup, table enhancement). |
 
 ## 3. Usage Guide
 
@@ -56,6 +57,10 @@ This module is primarily accessed via HTTP API.
 **Get Translated PDF:**
 `GET /pdfmd/file/{doc_id}`
 
+**Path Parameter Contract:**
+- `doc_id` must be a valid UUID for all `/pdfmd/file/{doc_id}*` endpoints.
+- Invalid `doc_id` format is rejected with HTTP `422`.
+
 ### Standalone Testing (via Script)
 To test OCR or translation logic directly:
 
@@ -69,6 +74,11 @@ source .venv/bin/activate
 # Example: Run a test script (create one if needed)
 python debug_import.py
 ```
+
+### Markdown Cleaner Regression Corpus
+- Seed corpus file: `tests/fixtures/markdown_cleaner/regression_corpus.json`
+- Regression entrypoint: `tests/test_markdown_cleaner.py`
+- Scope: nested/starred math environments, orphan sub-environment wrapping, and sanitization integration with `Pandoc_md_to_pdf.py` (stubbed conversion, no external API calls).
 
 ## 4. Dependencies
 

@@ -8,7 +8,7 @@ Supports both traditional recursive splitting and semantic-aware chunking.
 # Standard library
 import logging
 import re
-from typing import List, Optional, Literal
+from typing import List, Literal
 
 # Third-party
 from langchain_core.documents import Document

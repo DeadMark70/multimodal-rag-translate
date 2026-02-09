@@ -9,7 +9,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Third-party
-from langchain.schema import Document
+from langchain_core.documents import Document
 
 # Local application
 from data_base.proposition_chunker import (
@@ -123,7 +123,7 @@ class TestPropositionChunkerExtraction:
         
         assert len(result) == 2
         for prop_doc in result:
-            assert prop_doc.metadata["is_proposition"] == True
+            assert prop_doc.metadata["is_proposition"]
             assert prop_doc.metadata["parent_chunk_id"] == "chunk-1"
 
     @pytest.mark.asyncio

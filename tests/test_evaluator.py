@@ -9,7 +9,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Third-party
-from langchain.schema import Document
+from langchain_core.documents import Document
 
 
 class TestRetrievalGrade:
@@ -51,7 +51,7 @@ class TestEvaluationResult:
         )
         
         assert result.retrieval_grade == RetrievalGrade.RELEVANT
-        assert result.should_retry == False
+        assert not result.should_retry
         assert result.confidence == 0.9
 
 
@@ -156,7 +156,7 @@ class TestRAGEvaluatorFullEvaluation:
     async def test_evaluate_full_success(self):
         """Tests full evaluation with good results."""
         from agents.evaluator import (
-            RAGEvaluator, RetrievalGrade, FaithfulnessGrade
+            RAGEvaluator
         )
         
         mock_response = MagicMock()
@@ -172,7 +172,7 @@ class TestRAGEvaluatorFullEvaluation:
             result = await evaluator.evaluate("問題", docs, "答案")
         
         # Both calls use same mock, so both return RELEVANT/GROUNDED behavior
-        assert result.should_retry == False or result.should_retry == True
+        assert not result.should_retry or result.should_retry
 
 
 class TestEvaluateRagResultConvenience:
@@ -194,7 +194,7 @@ class TestEvaluateRagResultConvenience:
         
         assert result.retrieval_grade == RetrievalGrade.RELEVANT
         assert result.faithfulness_grade == FaithfulnessGrade.GROUNDED
-        assert result.should_retry == False
+        assert not result.should_retry
 
 
 class TestFineGrainedEvaluator:
@@ -220,7 +220,7 @@ class TestFineGrainedEvaluator:
         
         Simulates: LLM evaluates answer as highly accurate (accuracy=9).
         """
-        from agents.evaluator import RAGEvaluator, DetailedEvaluationResult
+        from agents.evaluator import RAGEvaluator
         
         # Setup: LLM returns high scores
         mock_response = MagicMock()

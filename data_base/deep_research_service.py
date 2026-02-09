@@ -12,7 +12,7 @@ Provides interactive deep research capabilities with:
 # Standard library
 import asyncio
 import logging
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 # Local application
 from supabase_client import supabase
@@ -24,9 +24,9 @@ from data_base.schemas_deep_research import (
     SubTaskExecutionResult,
 )
 from data_base.RAG_QA_service import rag_answer_question
-from agents.planner import TaskPlanner, SubTask, ResearchPlan
+from agents.planner import TaskPlanner, SubTask
 from agents.synthesizer import synthesize_results, SubTaskResult
-from agents.evaluator import RAGEvaluator, DetailedEvaluationResult
+from agents.evaluator import RAGEvaluator
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -413,7 +413,7 @@ class DeepResearchService:
                 
                 while retry_count <= MAX_RETRIES_PER_TASK:
                     # Execute the task
-                    editable_task = EditableSubTask(
+                    EditableSubTask(
                         id=task_id,
                         question=current_question,
                         task_type=task.task_type,
@@ -597,7 +597,7 @@ class DeepResearchService:
         )
         
         if has_quantitative_data and complete_ratio > 0.5:
-             logger.info(f"Self-Stop Triggered: Found quantitative data (DSC) and incomplete ratio > 0.5")
+             logger.info("Self-Stop Triggered: Found quantitative data (DSC) and incomplete ratio > 0.5")
              return True
         
         should_skip = complete_ratio >= min_complete_ratio

@@ -8,11 +8,10 @@ Manages per-user knowledge graphs with CRUD operations.
 # Standard library
 import hashlib
 import logging
-import os
 import pickle
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 # Third-party
 import networkx as nx

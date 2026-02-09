@@ -9,7 +9,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Third-party
-from langchain.schema import Document
+from langchain_core.documents import Document
 
 # Local application
 from data_base.context_enricher import (
@@ -43,7 +43,7 @@ class TestContextEnricher:
         assert "<context>" in result.page_content
         assert "</context>" in result.page_content
         assert "Tesla" in result.page_content
-        assert result.metadata["has_context_prefix"] == True
+        assert result.metadata["has_context_prefix"]
 
     @pytest.mark.asyncio
     async def test_enrich_chunk_preserves_original_content(self):

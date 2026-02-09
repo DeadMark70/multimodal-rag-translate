@@ -9,7 +9,7 @@ async def test_run_tier_5_aggregation():
     
     # Mocking deep research service and its methods
     with patch("experiments.evaluation_pipeline.get_deep_research_service") as mock_get_service, \
-         patch("experiments.evaluation_pipeline.asyncio.sleep") as mock_sleep:
+         patch("experiments.evaluation_pipeline.asyncio.sleep"):
         
         from unittest.mock import AsyncMock
         mock_service = MagicMock()

@@ -9,9 +9,10 @@ https://github.com/VikParuchuri/marker
 """
 
 # Standard library
+import importlib.util
 import logging
 import os
-from typing import Tuple, List, Optional
+from typing import Tuple
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -217,8 +218,4 @@ def is_marker_available() -> bool:
     Returns:
         True if Marker is available, False otherwise.
     """
-    try:
-        import marker
-        return True
-    except ImportError:
-        return False
+    return importlib.util.find_spec("marker") is not None

@@ -7,12 +7,10 @@ from uuid import uuid4
 from datetime import datetime
 
 # Import app
-import sys
-from unittest.mock import MagicMock
+from main import app
 
 
 # Import app
-from conversations.schemas import ConversationResponse, ChatMessageResponse
 
 # Test data
 TEST_USER_ID = "test-user-123"
@@ -24,10 +22,9 @@ def client():
     """Test client with auth override and mocked startup."""
     from core.auth import get_current_user_id
     
-    # Patch heavy startup functions
-    with patch("main.on_startup_rag_init", new=AsyncMock()), \
-         patch("main.init_pdf_ocr", new=MagicMock()), \
-         patch("main.run_in_threadpool", side_effect=lambda f, *a: f(*a) if callable(f) else None):
+    # Patch heavy startup functions (moved into core.app_factory lifecycle helpers)
+    with patch("core.app_factory._initialize_rag_components", new=AsyncMock()), \
+         patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()):
          
         app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
         with TestClient(app) as c:
@@ -53,7 +50,7 @@ def test_list_conversations(client, mock_supabase):
         }
     ]
     
-    response = client.get("/conversations")
+    response = client.get("/api/conversations")
     
     assert response.status_code == 200
     data = response.json()
@@ -83,7 +80,7 @@ def test_create_conversation(client, mock_supabase):
         "metadata": {"foo": "bar"}
     }
     
-    response = client.post("/conversations", json=payload)
+    response = client.post("/api/conversations", json=payload)
     
     assert response.status_code == 201
     data = response.json()
@@ -147,7 +144,7 @@ def test_get_conversation_details_with_messages(client, mock_supabase):
     
     mock_supabase.table.side_effect = side_effect
     
-    response = client.get(f"/conversations/{TEST_CONV_ID}")
+    response = client.get(f"/api/conversations/{TEST_CONV_ID}")
     
     assert response.status_code == 200
     data = response.json()
@@ -190,7 +187,7 @@ def test_create_message(client, mock_supabase):
         "metadata": {"context": "test"}
     }
     
-    response = client.post(f"/conversations/{TEST_CONV_ID}/messages", json=payload)
+    response = client.post(f"/api/conversations/{TEST_CONV_ID}/messages", json=payload)
     
     assert response.status_code == 201
     data = response.json()

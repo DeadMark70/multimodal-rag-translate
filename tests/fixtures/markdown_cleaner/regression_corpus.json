@@ -1,0 +1,32 @@
+[
+  {
+    "name": "nested_equation_aligned_protected",
+    "input": "\\begin{equation}\n\\begin{aligned}\n\\mathbf{h} &= x + y\n\\end{aligned}\n\\end{equation}",
+    "must_contain": ["\\begin{equation}", "\\begin{aligned}", "\\end{equation}"],
+    "must_not_contain": ["$$\\begin{aligned}", "$\\mathbf{h}$"]
+  },
+  {
+    "name": "nested_equation_star_aligned_protected",
+    "input": "\\begin{equation*}\n\\begin{aligned}\na &= b\n\\end{aligned}\n\\end{equation*}",
+    "must_contain": ["\\begin{equation*}", "\\begin{aligned}", "\\end{equation*}"],
+    "must_not_contain": ["$$\\begin{aligned}"]
+  },
+  {
+    "name": "orphan_aligned_wrapped",
+    "input": "\\begin{aligned}\na &= b + c\n\\end{aligned}",
+    "must_contain": ["$$\\begin{aligned}", "\\end{aligned}$$"],
+    "must_not_contain": []
+  },
+  {
+    "name": "orphan_math_command_wrapped",
+    "input": "The vector is \\mathbf{h} in this sentence.",
+    "must_contain": ["$\\mathbf{h}$"],
+    "must_not_contain": []
+  },
+  {
+    "name": "escaped_dollar_not_math_delimiter",
+    "input": "Price is \\$5 and equation is $a+b$.",
+    "must_contain": ["\\$5", "$a+b$"],
+    "must_not_contain": []
+  }
+]

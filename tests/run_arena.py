@@ -30,8 +30,6 @@ from langchain_core.messages import HumanMessage
 
 # Local application
 from agents.evaluator import (
-    RAGEvaluator,
-    DetailedEvaluationResult,
     compare_rag_vs_pure_llm,
 )
 from core.llm_factory import get_llm

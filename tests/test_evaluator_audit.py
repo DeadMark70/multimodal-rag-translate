@@ -1,6 +1,5 @@
 import asyncio
 import pytest
-import json
 from agents.evaluator import RAGEvaluator
 from langchain_core.documents import Document
 

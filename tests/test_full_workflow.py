@@ -1,4 +1,3 @@
-import asyncio
 import pytest
 from data_base.deep_research_service import DeepResearchService
 from data_base.schemas_deep_research import ExecutePlanRequest, EditableSubTask
@@ -34,7 +33,7 @@ async def test_deep_research_full_workflow():
     # Run execution
     # This will perform RAG lookups. If user has no docs, it will return empty/failure results,
     # which is also a valid path to test.
-    print(f"[Step 2] Executing plan...")
+    print("[Step 2] Executing plan...")
     exec_res = await service.execute_plan(exec_request, user_id)
     
     # 3. Verify Results

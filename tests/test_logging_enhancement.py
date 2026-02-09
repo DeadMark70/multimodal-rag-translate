@@ -32,7 +32,7 @@ async def test_run_tier_logging_agentic():
     pipeline = EvaluationPipeline()
     
     with patch("experiments.evaluation_pipeline.get_deep_research_service") as mock_get_service, \
-         patch("experiments.evaluation_pipeline.asyncio.sleep") as mock_sleep:
+         patch("experiments.evaluation_pipeline.asyncio.sleep"):
         
         mock_service = MagicMock()
         mock_get_service.return_value = mock_service

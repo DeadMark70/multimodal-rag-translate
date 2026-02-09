@@ -1,5 +1,4 @@
 import inspect
-import pytest
 from agents import planner, evaluator, synthesizer
 
 def test_planner_structure():

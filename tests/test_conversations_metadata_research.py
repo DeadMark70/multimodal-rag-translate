@@ -1,9 +1,8 @@
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 from uuid import uuid4
 from datetime import datetime
-import json
 
 # Import app
 from main import app
@@ -82,5 +81,4 @@ def test_get_research_conversation_returns_full_metadata(client, mock_supabase):
     assert data["metadata"]["sub_tasks"][0]["answer"] == "A1"
 
 if __name__ == "__main__":
-    import sys
     pytest.main([__file__])

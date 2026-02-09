@@ -5,11 +5,10 @@ Tests the DocumentReranker class and related functions.
 """
 
 # Standard library
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 # Third-party
-from langchain.schema import Document
+from langchain_core.documents import Document
 
 
 class TestDocumentRerankerUnit:
@@ -134,4 +133,4 @@ class TestRerankerSingleton:
         DocumentReranker._instance = None
         DocumentReranker._model = None
         
-        assert DocumentReranker.is_initialized() == False
+        assert not DocumentReranker.is_initialized()

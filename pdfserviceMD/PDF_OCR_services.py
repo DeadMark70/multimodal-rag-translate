@@ -12,7 +12,7 @@ Automatically preserves page boundaries with [[PAGE_N]] markers.
 import logging
 import os
 import asyncio
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 # Third-party
 import httpx

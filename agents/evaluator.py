@@ -717,37 +717,6 @@ async def evaluate_rag_result(
     evaluator = RAGEvaluator()
     return await evaluator.evaluate(question, documents, answer)
 
-
-async def evaluate_rag_detailed(
-    question: str,
-    documents: List[Document],
-    answer: str,
-    enabled: bool = True,
-) -> DetailedEvaluationResult:
-    """
-    Convenience function for detailed RAG evaluation.
-    
-    Args:
-        question: User question.
-        documents: Retrieved documents.
-        answer: Generated answer.
-        enabled: If False, returns default positive evaluation.
-        
-    Returns:
-        DetailedEvaluationResult with scores and confidence.
-    """
-    if not enabled:
-        return DetailedEvaluationResult(
-            accuracy=10.0,
-            completeness=10.0,
-            clarity=10.0,
-            reason="評估已停用",
-        )
-    
-    evaluator = RAGEvaluator()
-    return await evaluator.evaluate_detailed(question, documents, answer)
-
-
 async def compare_rag_vs_pure_llm(
     question: str,
     rag_answer: str,

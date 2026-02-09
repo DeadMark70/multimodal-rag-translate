@@ -348,11 +348,9 @@ async def translate_batch(batch: List[Tuple[int, str]]) -> str:
     chain = prompt | llm | StrOutputParser()
 
     # Retry loop
-    last_translated = ""
     for attempt in range(MAX_TRANSLATION_RETRIES + 1):
         try:
             translated = await chain.ainvoke({"input_text": combined})
-            last_translated = translated
 
             # === DEBUG: Write output to file ===
             found_markers = set(re.findall(r"\[\[PAGE_\d+\]\]", translated))

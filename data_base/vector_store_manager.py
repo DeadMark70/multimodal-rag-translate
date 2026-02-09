@@ -8,12 +8,11 @@ Uses Google Gemini Embedding API for vector generation.
 """
 
 # Standard library
-import asyncio
 import logging
 import os
 import pickle
 import time
-from typing import List, Optional, Literal, Any
+from typing import List, Optional, Literal
 
 # Third-party
 from langchain_classic.retrievers import EnsembleRetriever
@@ -24,7 +23,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 # Local application
-from data_base.word_chunk_strategy import split_markdown, split_markdown_semantic
+from data_base.word_chunk_strategy import split_markdown
 from multimodal_rag.schemas import ExtractedDocument
 
 # Configure logging

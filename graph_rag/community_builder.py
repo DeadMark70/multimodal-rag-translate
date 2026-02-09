@@ -7,7 +7,7 @@ LLM-based community summarization.
 
 # Standard library
 import logging
-from typing import List, Optional
+from typing import List
 
 # Third-party
 from langchain_core.messages import HumanMessage

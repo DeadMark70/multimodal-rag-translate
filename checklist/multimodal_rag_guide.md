@@ -31,7 +31,7 @@ The `multimodal_rag` module handles the extraction, analysis, and indexing of no
 | `multimodal_rag/structure_analyzer.py` | Interfaces with Datalab API to understand page layout and crop images. |
 | `multimodal_rag/image_summarizer.py` | Manages VLM interactions for describing images. Includes caching and prompting logic. |
 | `multimodal_rag/schemas.py` | Defines data structures (`ExtractedDocument`, `VisualElement`) shared across modules. |
-| `multimodal_rag/utils.py` | Helper functions. |
+| `multimodal_rag/utils.py` | Deprecated compatibility module (no active runtime helpers). |
 
 ## 3. Usage Guide
 
@@ -42,6 +42,11 @@ The `multimodal_rag` module handles the extraction, analysis, and indexing of no
 `POST /multimodal/extract`
 -   **Form Data**: `file=@/path/to/doc.pdf`
 -   **Process**: Uploads -> Datalab API -> Crop -> Gemini Vision -> Index.
+
+**Delete Document:**
+`DELETE /multimodal/file/{doc_id}`
+-   `doc_id` must be a valid UUID.
+-   Invalid `doc_id` format is rejected with HTTP `422`.
 
 ### Standalone Testing
 To test image summarization or structure analysis:

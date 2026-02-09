@@ -10,7 +10,7 @@ DocTR (Mindee, France) - Apache 2.0 License
 # Standard library
 import logging
 import os
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 
 # Third-party
 import numpy as np
@@ -42,7 +42,6 @@ def _get_ocr_engine():
         logger.info("Initializing DocTR engine...")
         
         # Import here to avoid loading at module import time
-        from doctr.io import DocumentFile
         from doctr.models import ocr_predictor
         
         _ocr_engine = ocr_predictor(

@@ -10,7 +10,7 @@ Supports GraphRAG-aware planning for multi-document research.
 import asyncio
 import logging
 import re
-from typing import List, Literal, Optional
+from typing import List, Literal
 
 # Third-party
 from langchain_core.messages import HumanMessage
@@ -205,6 +205,39 @@ class TaskPlanner:
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self.max_subtasks = max_subtasks
         self.enable_graph_planning = enable_graph_planning
+
+    def estimate_complexity(self, question: str, subtask_count: int) -> str:
+        """
+        Estimates deep research complexity from plan size and question signals.
+
+        NOTE:
+            `needs_planning()` and `needs_graph_analysis()` are intentionally
+            preserved for future dynamic routing logic in Agentic RAG.
+            Do not remove them as dead code.
+
+        Args:
+            question: Original user question.
+            subtask_count: Number of generated sub-tasks.
+
+        Returns:
+            Complexity level: "simple", "medium", or "complex".
+        """
+        complexity = "simple"
+        if subtask_count >= 4:
+            complexity = "complex"
+        elif subtask_count >= 2:
+            complexity = "medium"
+
+        # If planning produced only one task but question looks complex,
+        # keep complexity at least medium for downstream routing decisions.
+        if subtask_count <= 1 and self.needs_planning(question):
+            complexity = "medium"
+
+        if self.enable_graph_planning and self.needs_graph_analysis(question):
+            if complexity == "simple":
+                complexity = "medium"
+
+        return complexity
     
     def _parse_subtasks(self, response: str) -> List[SubTask]:
         """
@@ -278,11 +311,10 @@ class TaskPlanner:
                     subtasks = [SubTask(id=1, question=question)]
                 
                 # Estimate complexity
-                complexity = "simple"
-                if len(subtasks) >= 4:
-                    complexity = "complex"
-                elif len(subtasks) >= 2:
-                    complexity = "medium"
+                complexity = self.estimate_complexity(
+                    question=question,
+                    subtask_count=len(subtasks),
+                )
                 
                 # Log task type breakdown
                 graph_count = sum(1 for t in subtasks if t.task_type == "graph_analysis")

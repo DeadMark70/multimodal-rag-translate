@@ -1,5 +1,4 @@
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from langchain_core.documents import Document
 from data_base.reranker import DocumentReranker, rerank_documents
 

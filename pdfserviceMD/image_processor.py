@@ -71,7 +71,7 @@ def extract_images_from_markdown(
 
         # Search for images in this section
         for match in IMAGE_PATTERN.finditer(section):
-            alt_text = match.group(1)
+            match.group(1)
             img_path = match.group(2)
 
             # Skip URLs

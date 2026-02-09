@@ -1,5 +1,4 @@
 import inspect
-import pytest
 import sys
 from unittest.mock import MagicMock
 
@@ -8,8 +7,8 @@ sys.modules["networkx"] = MagicMock()
 sys.modules["leidenalg"] = MagicMock()
 sys.modules["igraph"] = MagicMock()
 
-from graph_rag import community_builder, schemas, store
-import graph_rag.local_search as local_search_module
+from graph_rag import community_builder, schemas, store  # noqa: E402
+import graph_rag.local_search as local_search_module  # noqa: E402
 
 def test_community_builder_structure():
     """Verify community_builder module structure."""

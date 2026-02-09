@@ -5,18 +5,28 @@ Tests the Phase 7 PDF Generation Engine Upgrade components.
 """
 
 # Standard library
-import os
-import tempfile
-import pytest
+import json
+from pathlib import Path
 
 # Local application
 from pdfserviceMD.markdown_cleaner import (
     fix_image_paths,
     escape_latex_specials,
+    fix_malformed_latex,
     enhance_wide_tables,
     sanitize_markdown,
     _count_table_dimensions,
 )
+from pdfserviceMD.Pandoc_md_to_pdf import MDmarkdown_to_pdf
+
+
+def _load_regression_corpus() -> list[dict]:
+    """Load markdown_cleaner regression corpus cases from fixture."""
+    fixture_path = (
+        Path(__file__).parent / "fixtures" / "markdown_cleaner" / "regression_corpus.json"
+    )
+    with fixture_path.open("r", encoding="utf-8") as fixture_file:
+        return json.load(fixture_file)
 
 
 class TestFixImagePaths:
@@ -138,6 +148,113 @@ class TestEnhanceWideTables:
         
         # Should add adjustbox for short wide table
         assert "adjustbox" in result
+
+
+class TestFixMalformedLatex:
+    """Regression tests for malformed LaTeX fixes in complex contexts."""
+
+    def test_preserve_nested_aligned_inside_equation(self):
+        """Aligned blocks inside equation env should not be wrapped again."""
+        content = (
+            r"\begin{equation}" "\n"
+            r"\begin{aligned}" "\n"
+            r"\mathbf{h} &= x + y" "\n"
+            r"\end{aligned}" "\n"
+            r"\end{equation}"
+        )
+
+        result = fix_malformed_latex(content)
+
+        assert "$$\\begin{aligned}" not in result
+        assert r"\begin{equation}" in result
+        assert r"\begin{aligned}" in result
+        assert "$\\mathbf{h}$" not in result
+
+    def test_preserve_nested_aligned_inside_equation_star(self):
+        """Starred top-level math env should also protect nested sub-envs."""
+        content = (
+            r"\begin{equation*}" "\n"
+            r"\begin{aligned}" "\n"
+            r"a &= b" "\n"
+            r"\end{aligned}" "\n"
+            r"\end{equation*}"
+        )
+
+        result = fix_malformed_latex(content)
+        assert "$$\\begin{aligned}" not in result
+
+    def test_wrap_orphan_aligned_block(self):
+        """Orphan aligned env should be wrapped with $$...$$."""
+        content = r"\begin{aligned}" "\n" r"a &= b + c" "\n" r"\end{aligned}"
+        result = fix_malformed_latex(content)
+
+        assert "$$\\begin{aligned}" in result
+        assert "\\end{aligned}$$" in result
+
+
+class TestFixMalformedLatexCorpus:
+    """Corpus-driven regression tests for malformed LaTeX handling."""
+
+    def test_regression_corpus(self):
+        """Validate all corpus cases without invoking external services."""
+        corpus = _load_regression_corpus()
+        assert corpus, "regression corpus should not be empty"
+
+        for case in corpus:
+            case_name = case["name"]
+            result = fix_malformed_latex(case["input"])
+
+            for expected_text in case.get("must_contain", []):
+                assert (
+                    expected_text in result
+                ), f"[{case_name}] expected fragment missing: {expected_text}"
+
+            for forbidden_text in case.get("must_not_contain", []):
+                assert (
+                    forbidden_text not in result
+                ), f"[{case_name}] forbidden fragment found: {forbidden_text}"
+
+
+class TestMarkdownCleanerPandocIntegration:
+    """Integration-level test for markdown cleaner usage in Pandoc pipeline."""
+
+    def test_mdpdf_uses_sanitized_markdown_before_convert(self, tmp_path, monkeypatch):
+        """
+        Ensure MDmarkdown_to_pdf passes sanitized markdown to pypandoc.convert_file.
+        This test monkeypatches convert_file to avoid external binaries and API calls.
+        """
+        captured = {"md_text": ""}
+
+        def fake_convert_file(source_file, to, outputfile, extra_args):  # noqa: ANN001
+            with open(source_file, "r", encoding="utf-8") as source_md:
+                captured["md_text"] = source_md.read()
+            assert to == "pdf"
+            assert "--pdf-engine=xelatex" in extra_args
+            with open(outputfile, "wb") as out_pdf:
+                out_pdf.write(b"%PDF-1.4\n")
+            return outputfile
+
+        monkeypatch.setattr("pdfserviceMD.Pandoc_md_to_pdf.pypandoc.convert_file", fake_convert_file)
+
+        output_pdf = tmp_path / "out.pdf"
+        raw_markdown = (
+            "Accuracy is 95%.\n\n"
+            "\\begin{aligned}\n"
+            "a &= b + c\n"
+            "\\end{aligned}\n"
+        )
+
+        result_path = MDmarkdown_to_pdf(
+            markdown_text=raw_markdown,
+            output_pdf=str(output_pdf),
+            base_dir=str(tmp_path),
+            enable_sanitization=True,
+        )
+
+        assert result_path == str(output_pdf)
+        assert output_pdf.exists()
+        assert "\\%" in captured["md_text"]
+        assert "$$\\begin{aligned}" in captured["md_text"]
 
 
 class TestSanitizeMarkdown:

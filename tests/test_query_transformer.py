@@ -50,7 +50,7 @@ async def test_multi_query_generation():
 @pytest.mark.asyncio
 async def test_transformer_fallbacks():
     """Verify fallback behavior on LLM failure."""
-    transformer = QueryTransformer()
+    QueryTransformer()
     question = "Test question"
     
     with patch("data_base.query_transformer.get_llm") as mock_get_llm:

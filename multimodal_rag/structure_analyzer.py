@@ -11,7 +11,7 @@ Datalab (USA) - Commercial API
 import logging
 import os
 import re
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Tuple
 from uuid import uuid4
 
 # Third-party
@@ -91,9 +91,9 @@ class StructureAnalyzer:
         
         # 嘗試匹配圖片引用標識 (Figure 1, 圖一, Fig. 1)
         ref_patterns = [
-            rf"(?:Figure|Fig\.?)\s*(\d+)",      # Figure 1, Fig. 1
-            rf"圖\s*[一二三四五六七八九十\d]+",   # 圖一, 圖1
-            rf"表\s*[一二三四五六七八九十\d]+",   # 表一 (雖然是 table，可能在 caption 中)
+            r"(?:Figure|Fig\.?)\s*(\d+)",      # Figure 1, Fig. 1
+            r"圖\s*[一二三四五六七八九十\d]+",   # 圖一, 圖1
+            r"表\s*[一二三四五六七八九十\d]+",   # 表一 (雖然是 table，可能在 caption 中)
         ]
         
         search_text = context_text if context_text else markdown_text

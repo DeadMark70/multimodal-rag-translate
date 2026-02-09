@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from data_base.deep_research_service import DeepResearchService
-from data_base.schemas_deep_research import ExecutePlanRequest, EditableSubTask, ExecutePlanResponse, SubTaskExecutionResult
+from data_base.schemas_deep_research import ExecutePlanRequest, EditableSubTask, SubTaskExecutionResult
 
 @pytest.mark.asyncio
 async def test_execute_plan_persists_to_supabase():
@@ -45,7 +45,7 @@ async def test_execute_plan_persists_to_supabase():
             conversation_id="test-conv-id"
         )
         
-        result = await service.execute_plan(request, user_id="test-user")
+        await service.execute_plan(request, user_id="test-user")
         
         # Verify supabase.update was called
         mock_supabase.table.assert_any_call("conversations")
