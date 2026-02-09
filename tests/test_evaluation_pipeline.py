@@ -21,7 +21,7 @@ class TestEvaluationPipelineStructure:
         assert pipeline is not None
         assert hasattr(pipeline, "models")
         assert hasattr(pipeline, "tiers")
-        assert len(pipeline.models) == 2
+        assert len(pipeline.models) == 1
         assert len(pipeline.tiers) == 5
 
     def test_models_list(self):
@@ -31,7 +31,6 @@ class TestEvaluationPipelineStructure:
         pipeline = EvaluationPipeline()
         expected_models = [
             "gemini-2.0-flash-lite",
-            "gemini-2.5-flash-lite"
         ]
         
         for model in expected_models:

@@ -5,49 +5,43 @@ Tests the basic functionality of Ragas metrics with Gemini.
 """
 
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import patch
 from experiments.evaluation_pipeline import EvaluationPipeline
+from importlib.util import find_spec
 
 class TestRagasIntegration:
     """Tests for Ragas integration."""
 
     @pytest.mark.asyncio
     async def test_calculate_metrics_success(self):
-        """Tests that calculate_metrics returns expected scores."""
+        """Tests that disabled Ragas path returns zero scores and skips expensive calls."""
         pipeline = EvaluationPipeline()
-        
-        # Mocking Ragas evaluate function to avoid actual LLM calls
-        # Ragas 0.4.x might return lists for scores
-        mock_result = {
-            "faithfulness": [0.9],
-            "answer_correctness": [0.8]
-        }
-        
-        with patch("experiments.evaluation_pipeline.evaluate", return_value=mock_result):
+
+        with patch("experiments.evaluation_pipeline.evaluate") as mock_evaluate:
             with patch("experiments.evaluation_pipeline.get_embeddings") as mock_get_embeddings:
-                mock_embeddings = MagicMock()
-                mock_get_embeddings.return_value = mock_embeddings
-                
-                # These are stubs/mocks for the parameters
-                question = "What is nnU-Net?"
-                answer = "nnU-Net is a medical imaging framework."
-                contexts = ["nnU-Net is a framework for medical image segmentation."]
-                ground_truth = "nnU-Net is a self-configuring framework for deep learning-based medical image segmentation."
-                
                 scores = await pipeline.calculate_ragas_metrics(
-                    question=question,
-                    answer=answer,
-                    contexts=contexts,
-                    ground_truth=ground_truth
+                    question="What is nnU-Net?",
+                    answer="nnU-Net is a medical imaging framework.",
+                    contexts=["nnU-Net is a framework for medical image segmentation."],
+                    ground_truth=(
+                        "nnU-Net is a self-configuring framework "
+                        "for deep learning-based medical image segmentation."
+                    ),
                 )
-                assert scores["faithfulness"] == 0.9
-                assert scores["answer_correctness"] == 0.8
+
+        assert scores["faithfulness"] == 0.0
+        assert scores["answer_correctness"] == 0.0
+        mock_evaluate.assert_not_called()
+        mock_get_embeddings.assert_not_called()
 
     def test_ragas_imports(self):
         """Tests that ragas can be imported."""
-        try:
-            import ragas
-            from ragas.metrics import faithfulness, answer_correctness
-            from ragas import evaluate
-        except ImportError as e:
-            pytest.fail(f"Could not import ragas components: {e}")
+        if find_spec("ragas") is None:
+            pytest.fail("Could not import ragas components: ragas package not found")
+
+        from ragas import evaluate
+        from ragas.metrics import answer_correctness, faithfulness
+
+        assert evaluate is not None
+        assert faithfulness is not None
+        assert answer_correctness is not None

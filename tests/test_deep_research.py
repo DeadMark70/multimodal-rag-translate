@@ -225,17 +225,17 @@ class TestEvaluationDrivenDrilldown:
         from agents.evaluator import DetailedEvaluationResult
         
         result = DetailedEvaluationResult(
-            relevance_score=4,
-            groundedness_score=3,
-            completeness_score=2,
+            accuracy=4,
+            completeness=2,
+            clarity=3,
             reason="回答不夠完整，缺乏細節",
             confidence=0.6,
             evaluation_failed=False,
         )
         
-        assert result.completeness_score == 2
+        assert result.completeness == 2
         assert "不夠完整" in result.reason
-        assert result.is_reliable == False  # confidence < 0.7
+        assert not result.is_reliable  # confidence < 0.7
 
     def test_detailed_evaluation_result_is_reliable(self):
         """Tests is_reliable property calculation."""
@@ -243,28 +243,28 @@ class TestEvaluationDrivenDrilldown:
         
         # High confidence should be reliable
         high_result = DetailedEvaluationResult(
-            relevance_score=5,
-            groundedness_score=5,
-            completeness_score=5,
+            accuracy=9,
+            completeness=8,
+            clarity=8,
             confidence=0.9,
         )
-        assert high_result.is_reliable == True
+        assert high_result.is_reliable
         
         # Low confidence should not be reliable
         low_result = DetailedEvaluationResult(
-            relevance_score=2,
-            groundedness_score=2,
-            completeness_score=2,
+            accuracy=3,
+            completeness=3,
+            clarity=3,
             confidence=0.4,
         )
-        assert low_result.is_reliable == False
+        assert not low_result.is_reliable
         
         # Failed evaluation should not be reliable
         failed_result = DetailedEvaluationResult(
             confidence=0.9,
             evaluation_failed=True,
         )
-        assert failed_result.is_reliable == False
+        assert not failed_result.is_reliable
 
     @pytest.mark.asyncio
     async def test_max_retries_protection(self):

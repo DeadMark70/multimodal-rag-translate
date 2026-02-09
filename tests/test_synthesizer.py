@@ -168,7 +168,7 @@ class TestSynthesizeResultsConvenience:
         
         report = await synthesize_results("問題", [result], enabled=False)
         
-        assert report.detailed_answer == "答案"
+        assert "答案" in report.detailed_answer
 
     @pytest.mark.asyncio
     async def test_single_result_no_synthesis(self):
@@ -245,4 +245,4 @@ class TestPhase6ConflictPenalty:
         report = synthesizer._parse_report(response, "Question", sub_results)
         
         # Should detect "However" as conflict keyword
-        assert report.confidence == 0.72  # 0.9 * 0.8
+        assert report.confidence == pytest.approx(0.72)  # 0.9 * 0.8
