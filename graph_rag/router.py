@@ -13,11 +13,12 @@ import logging
 from typing import List, Optional
 
 # Third-party
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, BackgroundTasks
 from pydantic import BaseModel, Field
 
 # Local application
 from core.auth import get_current_user_id
+from core.errors import AppError, ErrorCode
 from graph_rag.schemas import GraphStatusResponse
 from graph_rag.store import GraphStore
 
@@ -97,7 +98,11 @@ async def get_graph_status(
         return status
     except Exception as e:
         logger.error(f"Failed to get graph status: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get graph status")
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Failed to get graph status",
+            status_code=500,
+        ) from e
 
 
 @router.get(
@@ -155,9 +160,11 @@ async def get_graph_visualization_data(
         return GraphVisualizationData(nodes=[], links=[])
     except Exception as e:
         logger.error(f"Failed to get graph visualization data: {e}")
-        raise HTTPException(
-            status_code=500, detail="Failed to get graph visualization data"
-        )
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Failed to get graph visualization data",
+            status_code=500,
+        ) from e
 
 
 @router.post(
@@ -196,7 +203,11 @@ async def rebuild_graph(
         
     except Exception as e:
         logger.error(f"Failed to start graph rebuild: {e}")
-        raise HTTPException(status_code=500, detail="Failed to start graph rebuild")
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Failed to start graph rebuild",
+            status_code=500,
+        ) from e
 
 
 @router.post(
@@ -247,7 +258,11 @@ async def optimize_graph(
         
     except Exception as e:
         logger.error(f"Failed to optimize graph: {e}")
-        raise HTTPException(status_code=500, detail="Failed to optimize graph")
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Failed to optimize graph",
+            status_code=500,
+        ) from e
 
 
 # ===== Background Tasks =====

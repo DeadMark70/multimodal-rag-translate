@@ -13,11 +13,12 @@ import uuid
 from uuid import UUID
 
 # Third-party
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, File, Depends
 from fastapi.concurrency import run_in_threadpool
 
 # Local application
 from core.auth import get_current_user_id
+from core.errors import AppError, ErrorCode
 from data_base.vector_store_manager import (
     index_extracted_document,
     delete_document_from_knowledge_base,
@@ -42,18 +43,22 @@ def _validate_pdf_upload(file: UploadFile) -> None:
         file: The uploaded file object.
 
     Raises:
-        HTTPException: 400 if file is not a valid PDF.
+        AppError: 400 if file is not a valid PDF.
     """
     if file.content_type != "application/pdf":
-        raise HTTPException(
-            status_code=400, detail="File must be a PDF (invalid content-type)"
+        raise AppError(
+            code=ErrorCode.BAD_REQUEST,
+            message="File must be a PDF (invalid content-type)",
+            status_code=400,
         )
 
     if file.filename:
         _, ext = os.path.splitext(file.filename)
         if ext.lower() != ".pdf":
-            raise HTTPException(
-                status_code=400, detail="File must be a PDF (invalid extension)"
+            raise AppError(
+                code=ErrorCode.BAD_REQUEST,
+                message="File must be a PDF (invalid extension)",
+                status_code=400,
             )
 
 
@@ -77,7 +82,7 @@ async def extract_from_pdf_endpoint(
         ExtractedDocument containing text chunks and visual elements with summaries.
 
     Raises:
-        HTTPException: 400 for invalid input, 500 for processing errors.
+        AppError: 400 for invalid input, 500 for processing errors.
     """
     _validate_pdf_upload(file)
 
@@ -136,7 +141,7 @@ async def extract_from_pdf_endpoint(
         logger.info(f"Extraction complete for doc {doc_uuid}")
         return extracted_doc
 
-    except HTTPException:
+    except AppError:
         if os.path.exists(doc_dir):
             shutil.rmtree(doc_dir)
         raise
@@ -145,13 +150,21 @@ async def extract_from_pdf_endpoint(
         logger.error(f"File operation failed: {e}")
         if os.path.exists(doc_dir):
             shutil.rmtree(doc_dir)
-        raise HTTPException(status_code=500, detail="File processing error")
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="File processing error",
+            status_code=500,
+        ) from e
 
     except Exception as e:
         logger.error(f"Extraction failed for doc {doc_uuid}: {e}", exc_info=True)
         if os.path.exists(doc_dir):
             shutil.rmtree(doc_dir)
-        raise HTTPException(status_code=500, detail="Extraction failed")
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Extraction failed",
+            status_code=500,
+        ) from e
 
     finally:
         file.file.close()

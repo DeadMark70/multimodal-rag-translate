@@ -10,7 +10,7 @@ import logging
 import os
 
 # Third-party
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, File, Depends
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 from PIL import Image
@@ -18,6 +18,7 @@ import numpy as np
 
 # Local application
 from core.auth import get_current_user_id
+from core.errors import AppError, ErrorCode
 from .ocr_service import perform_ocr
 from .translation_service import translate_text_list_langchain
 from .image_processing import draw_translated_text_on_image, image_to_bytes
@@ -36,19 +37,24 @@ def _validate_image_upload(file: UploadFile) -> None:
         file: The uploaded file object.
 
     Raises:
-        HTTPException: 400 if file is not a valid image.
+        AppError: 400 if file is not a valid image.
     """
     allowed_types = ["image/jpeg", "image/png", "image/webp"]
     if file.content_type not in allowed_types:
-        raise HTTPException(
+        raise AppError(
+            code=ErrorCode.BAD_REQUEST,
+            message=f"Unsupported image type. Allowed: {', '.join(allowed_types)}",
             status_code=400,
-            detail=f"Unsupported image type. Allowed: {', '.join(allowed_types)}"
         )
 
     if file.filename:
         _, ext = os.path.splitext(file.filename)
         if ext.lower() not in [".jpg", ".jpeg", ".png", ".webp"]:
-            raise HTTPException(status_code=400, detail="Invalid image extension")
+            raise AppError(
+                code=ErrorCode.BAD_REQUEST,
+                message="Invalid image extension",
+                status_code=400,
+            )
 
 
 @router.post("/translate_image")
@@ -74,7 +80,7 @@ async def translate_image_inplace(
         Response with the translated image as JPEG.
 
     Raises:
-        HTTPException: 400 for invalid input, 500 for processing errors.
+        AppError: 400 for invalid input, 500 for processing errors.
     """
     logger.info(f"Image translation request from user {user_id}")
 
@@ -88,7 +94,11 @@ async def translate_image_inplace(
             image = Image.open(io.BytesIO(image_data)).convert("RGB")
         except Exception as e:
             logger.error(f"Failed to open image: {e}")
-            raise HTTPException(status_code=400, detail="Invalid or corrupted image file")
+            raise AppError(
+                code=ErrorCode.BAD_REQUEST,
+                message="Invalid or corrupted image file",
+                status_code=400,
+            ) from e
 
         img_array = np.array(image)
 
@@ -119,10 +129,14 @@ async def translate_image_inplace(
         logger.info("Image translation completed successfully")
         return Response(content=result_bytes, media_type="image/jpeg")
 
-    except HTTPException:
+    except AppError:
         raise
     except Exception as e:
         logger.error(f"Image translation failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Image translation failed")
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Image translation failed",
+            status_code=500,
+        ) from e
     finally:
         await file.close()
