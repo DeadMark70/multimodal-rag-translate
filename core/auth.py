@@ -13,8 +13,8 @@ from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 # Local application
+from core.auth_repository import fetch_user_id_from_token
 from core.errors import AppError, ErrorCode
-from supabase_client import supabase
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ async def get_current_user_id(
         The authenticated user's ID.
 
     Raises:
-        HTTPException: 401 if token is missing/invalid, 500 if Supabase unavailable.
+        AppError: 401 if token is missing/invalid, 500 if auth service unavailable.
     """
     # Dev mode bypass (for testing only)
     if _DEV_MODE:
@@ -56,25 +56,8 @@ async def get_current_user_id(
 
     token = credentials.credentials
 
-    if not supabase:
-        logger.error("Supabase client not initialized")
-        raise AppError(
-            code=ErrorCode.AUTH_SERVICE_UNAVAILABLE,
-            message="Authentication service unavailable",
-            status_code=500,
-        )
-
     try:
-        user_response = supabase.auth.get_user(token)
-
-        if not user_response or not user_response.user:
-            raise AppError(
-                code=ErrorCode.UNAUTHORIZED,
-                message="Invalid token",
-                status_code=401,
-            )
-
-        return user_response.user.id
+        return await fetch_user_id_from_token(token)
 
     except AppError:
         raise

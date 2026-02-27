@@ -12,11 +12,14 @@ from typing import Optional
 
 # Third-party
 from langchain_core.messages import HumanMessage
-from postgrest.exceptions import APIError as PostgrestAPIError
 
 # Local application
 from core.llm_factory import get_llm
-from supabase_client import supabase
+from core.errors import AppError
+from core.summary_repository import (
+    get_document_summary_record,
+    update_document_summary_record,
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -109,19 +112,11 @@ async def update_document_summary(
     Returns:
         True if update successful, False otherwise.
     """
-    if not supabase:
-        logger.warning("Supabase client not available, cannot update summary")
-        return False
-
     try:
-        supabase.table("documents").update({
-            "executive_summary": summary
-        }).eq("id", doc_id).execute()
-
+        await update_document_summary_record(doc_id=doc_id, summary=summary)
         logger.info(f"Updated summary for doc {doc_id}")
         return True
-
-    except PostgrestAPIError as e:
+    except AppError as e:
         logger.error(f"Failed to update summary in Supabase: {e}")
         return False
 
@@ -136,18 +131,9 @@ async def get_document_summary(doc_id: str) -> Optional[str]:
     Returns:
         Summary string if exists, None otherwise.
     """
-    if not supabase:
-        logger.warning("Supabase client not available")
-        return None
-
     try:
-        result = supabase.table("documents").select(
-            "executive_summary"
-        ).eq("id", doc_id).single().execute()
-
-        return result.data.get("executive_summary") if result.data else None
-
-    except PostgrestAPIError as e:
+        return await get_document_summary_record(doc_id=doc_id)
+    except AppError as e:
         logger.error(f"Failed to get summary from Supabase: {e}")
         return None
 
