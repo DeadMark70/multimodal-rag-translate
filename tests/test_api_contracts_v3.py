@@ -33,6 +33,11 @@ def test_get_rag_ask_is_removed() -> None:
     with _build_client(with_auth=True) as client:
         response = client.get("/rag/ask?question=hello")
         assert response.status_code == 405
+        payload = response.json()
+        assert "error" in payload
+        assert payload["error"]["code"] == "BAD_REQUEST"
+        assert isinstance(payload["error"]["message"], str)
+        assert payload["error"]["request_id"]
 
 
 def test_upload_pdf_returns_json_contract() -> None:
@@ -76,3 +81,15 @@ def test_openapi_contains_http_bearer_security_scheme() -> None:
         assert "HTTPBearer" in security_schemes
         assert security_schemes["HTTPBearer"]["type"] == "http"
         assert security_schemes["HTTPBearer"]["scheme"] == "bearer"
+
+
+def test_validation_error_uses_error_envelope() -> None:
+    """422 responses should use standardized error envelope."""
+    with _build_client(with_auth=True) as client:
+        response = client.get("/pdfmd/file/not-a-uuid/status")
+        assert response.status_code == 422
+        payload = response.json()
+        assert payload["error"]["code"] == "VALIDATION_ERROR"
+        assert payload["error"]["message"] == "Request validation failed"
+        assert payload["error"]["request_id"]
+        assert "details" in payload["error"]

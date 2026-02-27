@@ -15,10 +15,18 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
-from core.errors import AppError, app_error_handler, unhandled_exception_handler
+from core.errors import (
+    AppError,
+    app_error_handler,
+    http_exception_handler,
+    unhandled_exception_handler,
+    validation_exception_handler,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +89,8 @@ def _configure_cors(app: FastAPI) -> None:
 def _register_error_handlers(app: FastAPI) -> None:
     """Register global exception handlers."""
     app.add_exception_handler(AppError, app_error_handler)
+    app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)
 
 

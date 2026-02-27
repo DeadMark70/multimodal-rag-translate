@@ -5,8 +5,10 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
+from fastapi.exceptions import RequestValidationError
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 class ErrorCode(str, Enum):
@@ -19,6 +21,7 @@ class ErrorCode(str, Enum):
     DATABASE_ERROR = "DATABASE_ERROR"
     PROCESSING_ERROR = "PROCESSING_ERROR"
     AUTH_SERVICE_UNAVAILABLE = "AUTH_SERVICE_UNAVAILABLE"
+    VALIDATION_ERROR = "VALIDATION_ERROR"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -50,9 +53,10 @@ def build_error_response(
 ) -> JSONResponse:
     """Builds a standardized error response envelope."""
     request_id = getattr(request.state, "request_id", None)
+    code_value = code.value if isinstance(code, ErrorCode) else str(code)
     payload: dict[str, Any] = {
         "error": {
-            "code": str(code),
+            "code": code_value,
             "message": message,
             "request_id": request_id,
         }
@@ -70,6 +74,60 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
         message=exc.message,
         status_code=exc.status_code,
         details=exc.details,
+    )
+
+
+def _map_status_to_code(status_code: int) -> ErrorCode:
+    """Maps HTTP status to canonical error code."""
+    if status_code == 400:
+        return ErrorCode.BAD_REQUEST
+    if status_code == 401:
+        return ErrorCode.UNAUTHORIZED
+    if status_code == 403:
+        return ErrorCode.FORBIDDEN
+    if status_code == 404:
+        return ErrorCode.NOT_FOUND
+    if status_code == 422:
+        return ErrorCode.VALIDATION_ERROR
+    if 400 <= status_code < 500:
+        return ErrorCode.BAD_REQUEST
+    return ErrorCode.INTERNAL_ERROR
+
+
+async def http_exception_handler(
+    request: Request, exc: StarletteHTTPException
+) -> JSONResponse:
+    """Converts HTTPException responses into the standard error envelope."""
+    details: dict[str, Any] | None = None
+    if isinstance(exc.detail, str):
+        message = exc.detail
+    elif isinstance(exc.detail, dict):
+        message = str(exc.detail.get("message") or "Request failed")
+        details = exc.detail
+    else:
+        message = "Request failed"
+        if exc.detail is not None:
+            details = {"detail": exc.detail}
+
+    return build_error_response(
+        request=request,
+        code=_map_status_to_code(exc.status_code),
+        message=message,
+        status_code=exc.status_code,
+        details=details,
+    )
+
+
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Converts request validation errors into the standard error envelope."""
+    return build_error_response(
+        request=request,
+        code=ErrorCode.VALIDATION_ERROR,
+        message="Request validation failed",
+        status_code=422,
+        details={"errors": exc.errors()},
     )
 
 
