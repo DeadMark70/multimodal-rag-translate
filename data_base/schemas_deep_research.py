@@ -126,13 +126,13 @@ class SubTaskExecutionResult(BaseModel):
     id: int
     question: str
     answer: str
-    sources: List[str] = []
-    contexts: List[str] = []
+    sources: List[str] = Field(default_factory=list)
+    contexts: List[str] = Field(default_factory=list)
     is_drilldown: bool = False
     iteration: int = 0
     usage: dict = Field(default_factory=lambda: {"total_tokens": 0})
     thought_process: Optional[str] = None
-    tool_calls: List[dict] = []
+    tool_calls: List[dict] = Field(default_factory=list)
 
 
 

@@ -123,6 +123,6 @@ async def translate_image_inplace(
         raise
     except Exception as e:
         logger.error(f"Image translation failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Image translation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Image translation failed")
     finally:
         await file.close()

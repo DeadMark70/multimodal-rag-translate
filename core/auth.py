@@ -9,9 +9,11 @@ import logging
 import os
 
 # Third-party
-from fastapi import Header, HTTPException
+from fastapi import Depends
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 # Local application
+from core.errors import AppError, ErrorCode
 from supabase_client import supabase
 
 # Configure logging
@@ -19,9 +21,12 @@ logger = logging.getLogger(__name__)
 
 # Feature flag for testing (set DEV_MODE=true in env to bypass auth)
 _DEV_MODE = os.getenv("DEV_MODE", "false").lower() == "true"
+_bearer_scheme = HTTPBearer(auto_error=False)
 
 
-async def get_current_user_id(authorization: str = Header(None)) -> str:
+async def get_current_user_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+) -> str:
     """
     Validates Supabase JWT token and extracts user ID.
 
@@ -42,30 +47,41 @@ async def get_current_user_id(authorization: str = Header(None)) -> str:
         logger.warning("DEV_MODE enabled - using test user ID")
         return "00000000-0000-0000-0000-000000000001"
 
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing Authorization Header")
+    if not credentials or not credentials.credentials:
+        raise AppError(
+            code=ErrorCode.UNAUTHORIZED,
+            message="Missing Authorization header",
+            status_code=401,
+        )
 
-    # Validate header format
-    parts = authorization.split(" ")
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=401, detail="Invalid Authorization Header format")
-
-    token = parts[1]
+    token = credentials.credentials
 
     if not supabase:
         logger.error("Supabase client not initialized")
-        raise HTTPException(status_code=500, detail="Authentication service unavailable")
+        raise AppError(
+            code=ErrorCode.AUTH_SERVICE_UNAVAILABLE,
+            message="Authentication service unavailable",
+            status_code=500,
+        )
 
     try:
         user_response = supabase.auth.get_user(token)
 
         if not user_response or not user_response.user:
-            raise HTTPException(status_code=401, detail="Invalid Token")
+            raise AppError(
+                code=ErrorCode.UNAUTHORIZED,
+                message="Invalid token",
+                status_code=401,
+            )
 
         return user_response.user.id
 
-    except HTTPException:
+    except AppError:
         raise
     except Exception as e:
         logger.error(f"Authentication failed: {e}", exc_info=True)
-        raise HTTPException(status_code=401, detail="Authentication Failed")
+        raise AppError(
+            code=ErrorCode.UNAUTHORIZED,
+            message="Authentication failed",
+            status_code=401,
+        )

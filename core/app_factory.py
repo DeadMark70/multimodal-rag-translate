@@ -7,14 +7,18 @@ Keeps app assembly separate from route/business modules for easier maintenance.
 # Standard library
 import logging
 import os
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 # Third-party
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import Response
+
+from core.errors import AppError, app_error_handler, unhandled_exception_handler
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +78,26 @@ def _configure_cors(app: FastAPI) -> None:
     )
 
 
+def _register_error_handlers(app: FastAPI) -> None:
+    """Register global exception handlers."""
+    app.add_exception_handler(AppError, app_error_handler)
+    app.add_exception_handler(Exception, unhandled_exception_handler)
+
+
+def _register_middlewares(app: FastAPI) -> None:
+    """Register middleware components."""
+
+    @app.middleware("http")
+    async def request_id_middleware(
+        request: Request, call_next
+    ) -> Response:
+        request_id = request.headers.get("X-Request-Id", str(uuid.uuid4()))
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-Id"] = request_id
+        return response
+
+
 def _register_routers(app: FastAPI) -> None:
     """Register all API routers with existing prefixes."""
     from conversations.router import router as conversations_router
@@ -104,11 +128,12 @@ def _ensure_base_directories() -> None:
     logger.info("Base directories verified")
 
 
-def _initialize_external_clients() -> None:
+def _initialize_external_clients(app: FastAPI) -> None:
     """Initialize external clients needed by API routes."""
     from supabase_client import init_supabase
 
     client = init_supabase()
+    app.state.supabase = client
     if client:
         logger.info("Supabase client ready")
     else:
@@ -139,7 +164,7 @@ async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
     """FastAPI lifespan hook for startup initialization."""
     logger.info("=== Application Startup ===")
     _ensure_base_directories()
-    _initialize_external_clients()
+    _initialize_external_clients(_)
     await _initialize_rag_components()
     await _warm_up_pdf_ocr()
     logger.info("=== All components ready ===")
@@ -163,6 +188,8 @@ def create_app() -> FastAPI:
         lifespan=app_lifespan,
     )
     _configure_cors(app)
+    _register_middlewares(app)
+    _register_error_handlers(app)
     _register_routers(app)
     app.add_api_route("/", read_root, methods=["GET"])
     return app

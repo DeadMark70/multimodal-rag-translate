@@ -9,8 +9,6 @@ import asyncio
 import logging
 import os
 import shutil
-import time
-import uuid
 from uuid import UUID
 
 # Third-party
@@ -32,15 +30,11 @@ from pdfserviceMD.image_processor import (
     create_visual_elements,
 )
 from multimodal_rag.image_summarizer import summarizer as image_summarizer
-from pdfserviceMD.PDF_OCR_services import ocr_service_sync
-from pdfserviceMD.ai_translate_md import translate_text
-
-# Phase 7: 切換至更強大的 Pandoc 引擎
-from pdfserviceMD.Pandoc_md_to_pdf import MDmarkdown_to_pdf as markdown_to_pdf
-from pdfserviceMD.markdown_process import markdown_extact, replace_markdown
 from core.summary_service import schedule_summary_generation
 from graph_rag.store import GraphStore
 from graph_rag.extractor import extract_and_add_to_graph
+from pdfserviceMD.schemas import UploadPdfResponse
+from pdfserviceMD.service import run_upload_pipeline
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -409,9 +403,9 @@ async def list_documents(user_id: str = Depends(get_current_user_id)) -> dict:
 @router.post("/upload_pdf_md")
 async def upload_pdf_md(
     file: UploadFile = File(...), user_id: str = Depends(get_current_user_id)
-) -> FileResponse:
+) -> UploadPdfResponse:
     """
-    Uploads a PDF, performs OCR, translates content, and returns translated PDF.
+    Uploads a PDF, runs OCR/translation/PDF generation, and starts background indexing.
 
     Pipeline:
     1. Save uploaded PDF
@@ -419,175 +413,39 @@ async def upload_pdf_md(
     3. Add to RAG knowledge base
     4. Translate to Traditional Chinese (Gemini API)
     5. Generate translated PDF
-    6. Return translated PDF file
+    6. Return JSON status with doc_id and PDF availability
 
     Args:
         file: The uploaded PDF file.
         user_id: Authenticated user ID.
 
     Returns:
-        FileResponse with the translated PDF.
+        UploadPdfResponse with processing status and download availability.
 
     Raises:
         HTTPException: 400 for invalid input, 500 for processing errors.
     """
-    start_time = time.perf_counter()
-
     # Input validation
     _validate_pdf_upload(file)
 
-    file_uuid = str(uuid.uuid4())
-    user_folder = os.path.normpath(os.path.join(BASE_UPLOAD_FOLDER, user_id, file_uuid))
-    os.makedirs(user_folder, exist_ok=True)
-
-    # Sanitize filename
-    filename = os.path.basename(file.filename) if file.filename else "document.pdf"
-    save_path = os.path.normpath(os.path.join(user_folder, filename))
-    book_title = os.path.splitext(filename)[0]
-
-    document_id = file_uuid
-
     try:
-        # 1. Save uploaded file
-        file_content = await file.read()
-        with open(save_path, "wb") as buffer:
-            buffer.write(file_content)
-        logger.info(f"File saved to: {save_path}")
-
-        # 2. Create DB record
-        if supabase:
-            try:
-                db_data = {
-                    "id": document_id,
-                    "user_id": user_id,
-                    "file_name": filename,
-                    "file_type": "pdf",
-                    "original_path": save_path,
-                    "status": "processing",
-                    "source_lang": "auto",
-                    "target_lang": "zh-TW",
-                }
-                supabase.table("documents").insert(db_data).execute()
-                logger.info(f"DB record created for document {document_id}")
-            except PostgrestAPIError as e:
-                logger.error(f"DB insert failed: {e}", exc_info=True)
-
-        # 3. OCR Processing (CPU-bound, run in threadpool)
-        _update_processing_step(document_id, "ocr")
-        t1 = time.perf_counter()
-        logger.info("Starting OCR processing...")
-        ocr_result = await run_in_threadpool(ocr_service_sync, save_path)
-        t2 = time.perf_counter()
-        logger.info(f"OCR completed in {t2 - t1:.2f}s")
-
-        # 4. Extract markdown and image blocks
-        processed_markdown_for_rag, image_blocks = markdown_extact(ocr_result)
-
-        # 5. Translate (async Gemini API call) - PRIORITIZED
-        _update_processing_step(document_id, "translating")
-        logger.info("Starting translation...")
-        translate_result = await translate_text(processed_markdown_for_rag)
-        t3 = time.perf_counter()
-        logger.info(f"Translation completed in {t3 - t2:.2f}s")
-
-        # 6. Replace image placeholders
-        final_md = replace_markdown(translate_result, image_blocks)
-
-        # 7. Generate PDF (CPU-bound, run in threadpool) - PRIORITIZED
-        _update_processing_step(document_id, "generating_pdf")
-        output_pdf_filename = f"translated_{filename}"
-        output_pdf_path = os.path.normpath(
-            os.path.join(user_folder, output_pdf_filename)
-        )
-        pdf_generation_failed = False
-        pdf_error_msg = ""
-
-        try:
-            # Phase 7: 傳入 user_folder 作為 base_dir 以正確處理圖片路徑
-            await run_in_threadpool(
-                markdown_to_pdf, final_md, output_pdf_path, user_folder
-            )
-            t4 = time.perf_counter()
-            logger.info(f"PDF generated in {t4 - t3:.2f}s")
-
-            # 8. Update DB status - PDF is ready!
-            _update_document_status(
-                document_id, "completed", translated_path=output_pdf_path
-            )
-            _update_processing_step(document_id, "completed")
-
-        except Exception as e:
-            # RESILIENCE: If PDF fails, log it but CONTINUE to RAG/GraphRAG steps
-            pdf_generation_failed = True
-            pdf_error_msg = str(e)
-            logger.error(f"PDF generation failed, but proceeding with RAG tasks: {e}")
-            # Mark as completed but with a note or just completed (since text is ready for RAG)
-            # We'll use a special status or just log it specificially?
-            # User wants to continue RAG.
-            _update_document_status(
-                document_id,
-                "completed_with_pdf_error",
-                error_message=f"PDF Error: {str(e)}",
-            )
-            _update_processing_step(document_id, "completed")
-            # Clear output path so we don't try to return a missing file
-            output_pdf_path = None
-
-        total_time = time.perf_counter() - start_time
-        logger.info(
-            f"Processing (pre-background) finished. Time: {total_time:.2f}s. Scheduling background tasks..."
+        context = await run_upload_pipeline(
+            file=file,
+            user_id=user_id,
+            base_upload_folder=BASE_UPLOAD_FOLDER,
         )
 
-        # 9. Schedule background tasks (RAG + Images + Summary) - NON-BLOCKING
-        # Always run this, even if PDF failed!
+        # Schedule background tasks (RAG + images + graph + summary).
         asyncio.create_task(
             run_post_processing_tasks(
-                doc_id=document_id,
-                markdown_text=processed_markdown_for_rag,
-                book_title=book_title,
+                doc_id=context.doc_id,
+                markdown_text=context.markdown_text,
+                book_title=context.book_title,
                 user_id=user_id,
-                user_folder=user_folder,
+                user_folder=context.user_folder,
             )
         )
-
-        # 10. Return response
-        if (
-            not pdf_generation_failed
-            and output_pdf_path
-            and os.path.exists(output_pdf_path)
-        ):
-            return FileResponse(
-                path=output_pdf_path,
-                filename=output_pdf_filename,
-                media_type="application/pdf",
-            )
-        else:
-            # Return JSON indicating RAG is processing but PDF failed
-            return {
-                "message": "Translation completed and RAG processing started.",
-                "pdf_status": "failed",
-                "pdf_error": pdf_error_msg,
-                "rag_status": "processing_background",
-            }
-
-    except HTTPException:
-        _update_document_status(
-            document_id, "failed", error_message="HTTP error during processing"
-        )
-        _update_processing_step(document_id, "failed")
-        raise
-
-    except FileNotFoundError as e:
-        logger.error(f"File not found: {e}")
-        _update_document_status(document_id, "failed", error_message=str(e))
-        _update_processing_step(document_id, "failed")
-        raise HTTPException(status_code=500, detail="File processing error")
-
-    except Exception as e:
-        logger.error(f"Processing failed: {e}", exc_info=True)
-        _update_document_status(document_id, "failed", error_message=str(e))
-        _update_processing_step(document_id, "failed")
-        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+        return context.response
 
     finally:
         await file.close()

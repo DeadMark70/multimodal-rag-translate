@@ -97,7 +97,7 @@ async def get_graph_status(
         return status
     except Exception as e:
         logger.error(f"Failed to get graph status: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get graph status")
 
 
 @router.get(
@@ -155,7 +155,9 @@ async def get_graph_visualization_data(
         return GraphVisualizationData(nodes=[], links=[])
     except Exception as e:
         logger.error(f"Failed to get graph visualization data: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500, detail="Failed to get graph visualization data"
+        )
 
 
 @router.post(
@@ -194,7 +196,7 @@ async def rebuild_graph(
         
     except Exception as e:
         logger.error(f"Failed to start graph rebuild: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to start graph rebuild")
 
 
 @router.post(
@@ -245,7 +247,7 @@ async def optimize_graph(
         
     except Exception as e:
         logger.error(f"Failed to optimize graph: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to optimize graph")
 
 
 # ===== Background Tasks =====

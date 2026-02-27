@@ -98,4 +98,4 @@ class ConversationDetailResponse(ConversationResponse):
     Attributes:
         messages: List of chat messages in chronological order.
     """
-    messages: List[ChatMessageResponse] = []
+    messages: List[ChatMessageResponse] = Field(default_factory=list)

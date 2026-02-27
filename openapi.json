@@ -14,41 +14,25 @@
         "summary": "List Documents",
         "description": "Lists all documents uploaded by the user.\n\nReturns documents ordered by upload time (newest first).\nLimited to 50 documents maximum.\n\nArgs:\n    user_id: Authenticated user ID (injected).\n\nReturns:\n    Dict containing documents list and total count.\n\nRaises:\n    HTTPException: 500 if database query fails.",
         "operationId": "list_documents_pdfmd_list_get",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
                   "additionalProperties": true,
+                  "type": "object",
                   "title": "Response List Documents Pdfmd List Get"
                 }
               }
             }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/pdfmd/upload_pdf_md": {
@@ -57,35 +41,26 @@
           "PDF OCR & Translation"
         ],
         "summary": "Upload Pdf Md",
-        "description": "Uploads a PDF, performs OCR, translates content, and returns translated PDF.\n\nPipeline:\n1. Save uploaded PDF\n2. OCR extraction (PaddleOCR - CPU bound, runs in threadpool)\n3. Add to RAG knowledge base\n4. Translate to Traditional Chinese (Gemini API)\n5. Generate translated PDF\n6. Return translated PDF file\n\nArgs:\n    file: The uploaded PDF file.\n    user_id: Authenticated user ID.\n\nReturns:\n    FileResponse with the translated PDF.\n\nRaises:\n    HTTPException: 400 for invalid input, 500 for processing errors.",
+        "description": "Uploads a PDF, runs OCR/translation/PDF generation, and starts background indexing.\n\nPipeline:\n1. Save uploaded PDF\n2. OCR extraction (PaddleOCR - CPU bound, runs in threadpool)\n3. Add to RAG knowledge base\n4. Translate to Traditional Chinese (Gemini API)\n5. Generate translated PDF\n6. Return JSON status with doc_id and PDF availability\n\nArgs:\n    file: The uploaded PDF file.\n    user_id: Authenticated user ID.\n\nReturns:\n    UploadPdfResponse with processing status and download availability.\n\nRaises:\n    HTTPException: 400 for invalid input, 500 for processing errors.",
         "operationId": "upload_pdf_md_pdfmd_upload_pdf_md_post",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "requestBody": {
-          "required": true,
           "content": {
             "multipart/form-data": {
               "schema": {
                 "$ref": "#/components/schemas/Body_upload_pdf_md_pdfmd_upload_pdf_md_post"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/UploadPdfResponse"
+                }
               }
             }
           },
@@ -99,7 +74,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/pdfmd/ocr": {
@@ -108,35 +88,26 @@
           "PDF OCR & Translation"
         ],
         "summary": "Upload Pdf Md",
-        "description": "Uploads a PDF, performs OCR, translates content, and returns translated PDF.\n\nPipeline:\n1. Save uploaded PDF\n2. OCR extraction (PaddleOCR - CPU bound, runs in threadpool)\n3. Add to RAG knowledge base\n4. Translate to Traditional Chinese (Gemini API)\n5. Generate translated PDF\n6. Return translated PDF file\n\nArgs:\n    file: The uploaded PDF file.\n    user_id: Authenticated user ID.\n\nReturns:\n    FileResponse with the translated PDF.\n\nRaises:\n    HTTPException: 400 for invalid input, 500 for processing errors.",
+        "description": "Uploads a PDF, runs OCR/translation/PDF generation, and starts background indexing.\n\nPipeline:\n1. Save uploaded PDF\n2. OCR extraction (PaddleOCR - CPU bound, runs in threadpool)\n3. Add to RAG knowledge base\n4. Translate to Traditional Chinese (Gemini API)\n5. Generate translated PDF\n6. Return JSON status with doc_id and PDF availability\n\nArgs:\n    file: The uploaded PDF file.\n    user_id: Authenticated user ID.\n\nReturns:\n    UploadPdfResponse with processing status and download availability.\n\nRaises:\n    HTTPException: 400 for invalid input, 500 for processing errors.",
         "operationId": "upload_pdf_md_pdfmd_ocr_post",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "requestBody": {
-          "required": true,
           "content": {
             "multipart/form-data": {
               "schema": {
                 "$ref": "#/components/schemas/Body_upload_pdf_md_pdfmd_ocr_post"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/UploadPdfResponse"
+                }
               }
             }
           },
@@ -150,7 +121,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/pdfmd/file/{doc_id}/status": {
@@ -161,6 +137,11 @@
         "summary": "Get Processing Status",
         "description": "Returns the current processing status of a document.\n\nAllows frontend to poll for progress updates during upload.\n\nArgs:\n    doc_id: Document UUID.\n    user_id: Authenticated user ID.\n\nReturns:\n    Dict with step info:\n    - step: Current processing step code\n    - step_label: Human-readable step label (Chinese)\n    - is_pdf_ready: True if translated PDF is available\n    - is_fully_complete: True if all processing (including RAG) is done",
         "operationId": "get_processing_status_pdfmd_file__doc_id__status_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "doc_id",
@@ -170,15 +151,6 @@
               "type": "string",
               "format": "uuid",
               "title": "Doc Id"
-            }
-          },
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
             }
           }
         ],
@@ -216,6 +188,11 @@
         "summary": "Get Pdf File",
         "description": "Retrieves a processed PDF file by document ID.\n\nArgs:\n    doc_id: Document UUID.\n    user_id: Authenticated user ID.\n\nReturns:\n    FileResponse with the PDF file.\n\nRaises:\n    HTTPException: 404 if document not found.",
         "operationId": "get_pdf_file_pdfmd_file__doc_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "doc_id",
@@ -225,15 +202,6 @@
               "type": "string",
               "format": "uuid",
               "title": "Doc Id"
-            }
-          },
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
             }
           }
         ],
@@ -265,6 +233,11 @@
         "summary": "Delete Pdf File",
         "description": "Deletes a document and all associated files.\n\nCleanup steps:\n1. Remove from FAISS vector index\n2. Delete physical files\n3. Remove database record\n\nArgs:\n    doc_id: Document UUID.\n    user_id: Authenticated user ID.\n\nReturns:\n    Success status dict.\n\nRaises:\n    HTTPException: 500 if database deletion fails.",
         "operationId": "delete_pdf_file_pdfmd_file__doc_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "doc_id",
@@ -274,15 +247,6 @@
               "type": "string",
               "format": "uuid",
               "title": "Doc Id"
-            }
-          },
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
             }
           }
         ],
@@ -320,6 +284,11 @@
         "summary": "Get Document Summary Endpoint",
         "description": "Retrieves the executive summary for a document.\n\nArgs:\n    doc_id: Document UUID.\n    user_id: Authenticated user ID.\n\nReturns:\n    Dict with summary content and status.\n    - status: \"ready\" | \"generating\" | \"not_available\"\n    - summary: The executive summary text (null if not ready)",
         "operationId": "get_document_summary_endpoint_pdfmd_file__doc_id__summary_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "doc_id",
@@ -329,15 +298,6 @@
               "type": "string",
               "format": "uuid",
               "title": "Doc Id"
-            }
-          },
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
             }
           }
         ],
@@ -375,6 +335,11 @@
         "summary": "Regenerate Summary Endpoint",
         "description": "Triggers regeneration of the executive summary.\n\nRetrieves the document's original text content and schedules\na new background summary generation task.\n\nArgs:\n    doc_id: Document UUID.\n    user_id: Authenticated user ID.\n\nReturns:\n    Status indicating regeneration has started.",
         "operationId": "regenerate_summary_endpoint_pdfmd_file__doc_id__summary_regenerate_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "doc_id",
@@ -384,15 +349,6 @@
               "type": "string",
               "format": "uuid",
               "title": "Doc Id"
-            }
-          },
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
             }
           }
         ],
@@ -423,119 +379,22 @@
       }
     },
     "/rag/ask": {
-      "get": {
-        "tags": [
-          "RAG Question Answering"
-        ],
-        "summary": "Ask Question",
-        "description": "Answers a question using the user's knowledge base.\n\nArgs:\n    question: The question to answer.\n    doc_ids: Optional comma-separated document IDs to filter results.\n    conversation_id: Optional conversation ID for history tracking.\n    user_id: Authenticated user ID (injected).\n\nReturns:\n    AnswerResponse with question, answer, and source document IDs.\n\nRaises:\n    HTTPException: 500 if answering fails.",
-        "operationId": "ask_question_rag_ask_get",
-        "parameters": [
-          {
-            "name": "question",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Question"
-            }
-          },
-          {
-            "name": "doc_ids",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Comma-separated document IDs to filter (e.g., 'uuid1,uuid2'). Leave empty to query all documents.",
-              "title": "Doc Ids"
-            },
-            "description": "Comma-separated document IDs to filter (e.g., 'uuid1,uuid2'). Leave empty to query all documents."
-          },
-          {
-            "name": "conversation_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Conversation ID to associate this message with. If provided, messages will be saved to chat_logs with role.",
-              "title": "Conversation Id"
-            },
-            "description": "Conversation ID to associate this message with. If provided, messages will be saved to chat_logs with role."
-          },
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AnswerResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
       "post": {
         "tags": [
           "RAG Question Answering"
         ],
         "summary": "Ask Question With Context",
-        "description": "Context-aware question answering with conversation history.\n\nThis enhanced endpoint supports:\n- Conversation history for multi-turn dialogue\n- Advanced retrieval options (HyDE, Multi-Query)\n- Document filtering\n- Optional Self-RAG evaluation (enable_evaluation=True)\n\nWhen enable_evaluation=True, returns EnhancedAskResponse with:\n- Detailed source citations (page, snippet, score)\n- Responsibility metrics (faithfulness, confidence)\n\nArgs:\n    request: AskRequest with question, history, and options.\n    background_tasks: FastAPI BackgroundTasks for async logging.\n    user_id: Authenticated user ID (injected).\n\nReturns:\n    AskResponse (default) or EnhancedAskResponse (when enable_evaluation=True).\n\nRaises:\n    HTTPException: 400 if history too long, 500 if answering fails.",
+        "description": "Context-aware question answering with conversation history.\n\nThis enhanced endpoint supports:\n- Conversation history for multi-turn dialogue\n- Advanced retrieval options (HyDE, Multi-Query)\n- Document filtering\n- Optional Self-RAG evaluation (enable_evaluation=True)\n\nWhen enable_evaluation=True, returns EnhancedAskResponse with:\n- Detailed source citations (page, snippet, score)\n- Responsibility metrics (faithfulness, confidence)\n\nArgs:\n    request: AskRequest with question, history, and options.\n    background_tasks: FastAPI BackgroundTasks for async logging.\n    user_id: Authenticated user ID (injected).\n\nReturns:\n    EnhancedAskResponse.\n\nRaises:\n    HTTPException: 400 if history too long, 500 if answering fails.",
         "operationId": "ask_question_with_context_rag_ask_post",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/AskRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -543,15 +402,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/AskResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/EnhancedAskResponse"
-                    }
-                  ],
-                  "title": "Response Ask Question With Context Rag Ask Post"
+                  "$ref": "#/components/schemas/EnhancedAskResponse"
                 }
               }
             }
@@ -566,7 +417,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/rag/research": {
@@ -577,26 +433,15 @@
         "summary": "Research Question",
         "description": "Performs deep research on a complex question using Plan-and-Solve.\n\nThis endpoint:\n1. Decomposes the question into sub-tasks\n2. Runs RAG on each sub-task\n3. Synthesizes results into a research report\n\nArgs:\n    request: Research request with question and options.\n    user_id: Authenticated user ID (injected).\n\nReturns:\n    ResearchResponse with summary, detailed answer, and sub-task results.\n\nRaises:\n    HTTPException: 500 if research fails.",
         "operationId": "research_question_rag_research_post",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ResearchRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -619,7 +464,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/rag/plan": {
@@ -630,26 +480,15 @@
         "summary": "Generate Research Plan",
         "description": "Generates a research plan for user confirmation.\n\nThis is the first phase of interactive deep research.\nReturns a list of sub-tasks that the user can review, modify,\nor remove before execution.\n\nArgs:\n    request: Research plan request with question and options.\n    user_id: Authenticated user ID (injected).\n    \nReturns:\n    ResearchPlanResponse with editable sub-tasks.\n    \nRaises:\n    HTTPException: 500 if planning fails.",
         "operationId": "generate_research_plan_rag_plan_post",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ResearchPlanRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -672,7 +511,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/rag/execute": {
@@ -683,26 +527,15 @@
         "summary": "Execute Research Plan",
         "description": "Executes a user-confirmed research plan with drill-down.\n\nThis is the second phase of interactive deep research.\nRuns the confirmed sub-tasks, identifies knowledge gaps,\nand performs recursive drill-down up to max_iterations.\n\nArgs:\n    request: Confirmed execution request with sub-tasks.\n    user_id: Authenticated user ID (injected).\n    \nReturns:\n    ExecutePlanResponse with complete research results.\n    \nRaises:\n    HTTPException: 400 if no tasks provided, 500 if execution fails.",
         "operationId": "execute_research_plan_rag_execute_post",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ExecutePlanRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -725,7 +558,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/rag/execute/stream": {
@@ -736,26 +574,15 @@
         "summary": "Execute Research Plan Stream",
         "description": "Executes research plan with SSE streaming progress updates.\n\nThis endpoint uses Server-Sent Events (SSE) to stream real-time\nprogress updates during deep research execution.\n\nEvent types:\n- plan_confirmed: Research started\n- task_start: Sub-task execution started\n- task_done: Sub-task completed\n- drilldown_start: Drill-down iteration started\n- drilldown_task_start: Drill-down task started\n- drilldown_task_done: Drill-down task completed\n- synthesis_start: Final synthesis started\n- complete: Research complete (includes full response)\n- error: Error occurred\n\nArgs:\n    request: Confirmed execution request with sub-tasks.\n    user_id: Authenticated user ID (injected).\n    \nReturns:\n    EventSourceResponse with SSE stream.\n    \nRaises:\n    HTTPException: 400 if no tasks provided.",
         "operationId": "execute_research_plan_stream_rag_execute_stream_post",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ExecutePlanRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -776,7 +603,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/imagemd/translate_image": {
@@ -787,26 +619,15 @@
         "summary": "Translate Image Inplace",
         "description": "Translates text in an image and returns the modified image.\n\nPipeline:\n1. Read and validate image\n2. Perform OCR to detect text regions\n3. Translate detected text to Traditional Chinese\n4. Draw translated text back onto image\n5. Return modified image\n\nArgs:\n    file: The uploaded image file.\n    user_id: Authenticated user ID (injected).\n\nReturns:\n    Response with the translated image as JPEG.\n\nRaises:\n    HTTPException: 400 for invalid input, 500 for processing errors.",
         "operationId": "translate_image_inplace_imagemd_translate_image_post",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "requestBody": {
-          "required": true,
           "content": {
             "multipart/form-data": {
               "schema": {
                 "$ref": "#/components/schemas/Body_translate_image_inplace_imagemd_translate_image_post"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -827,7 +648,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/multimodal/extract": {
@@ -838,26 +664,15 @@
         "summary": "Extract From Pdf Endpoint",
         "description": "Extracts text and visual elements from a PDF, summarizes images, and indexes content.\n\nPipeline:\n1. Phase 1: Extract text chunks and visual elements (PaddleOCR)\n2. Phase 2: Summarize visual elements (Gemini)\n3. Phase 3: Index all content to FAISS\n\nArgs:\n    file: The uploaded PDF file.\n    user_id: Authenticated user ID (injected via dependency).\n\nReturns:\n    ExtractedDocument containing text chunks and visual elements with summaries.\n\nRaises:\n    HTTPException: 400 for invalid input, 500 for processing errors.",
         "operationId": "extract_from_pdf_endpoint_multimodal_extract_post",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "requestBody": {
-          "required": true,
           "content": {
             "multipart/form-data": {
               "schema": {
                 "$ref": "#/components/schemas/Body_extract_from_pdf_endpoint_multimodal_extract_post"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -880,7 +695,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/multimodal/file/{doc_id}": {
@@ -891,6 +711,11 @@
         "summary": "Delete Multimodal Document",
         "description": "Deletes a multimodal document and all associated files.\n\nCleanup steps:\n1. Remove from FAISS vector index (text chunks + visual summaries)\n2. Delete physical files (original PDF + cropped images)\n\nArgs:\n    doc_id: Document UUID.\n    user_id: Authenticated user ID.\n\nReturns:\n    Success status dict.",
         "operationId": "delete_multimodal_document_multimodal_file__doc_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "doc_id",
@@ -900,15 +725,6 @@
               "type": "string",
               "format": "uuid",
               "title": "Doc Id"
-            }
-          },
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
             }
           }
         ],
@@ -946,17 +762,6 @@
         "summary": "Get Dashboard Stats",
         "description": "Returns dashboard statistics for the user.\n\nAggregates query_logs data to provide:\n- Total query count\n- Accuracy metrics (grounded/hallucinated rates)\n- 7-day query trend\n- Most queried documents\n\nArgs:\n    user_id: Authenticated user ID (injected).\n\nReturns:\n    DashboardStats with analytics data.\n\nRaises:\n    HTTPException: 500 if database query fails.",
         "operationId": "get_dashboard_stats_stats_dashboard_get",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -967,18 +772,13 @@
                 }
               }
             }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/graph/status": {
@@ -989,17 +789,6 @@
         "summary": "取得圖譜狀態",
         "description": "取得使用者知識圖譜的狀態資訊，包括節點數、邊數、社群數等。",
         "operationId": "get_graph_status_graph_status_get",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1010,18 +799,13 @@
                 }
               }
             }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/graph/data": {
@@ -1032,17 +816,6 @@
         "summary": "取得視覺化資料",
         "description": "取得 react-force-graph 格式的圖譜資料，用於前端視覺化。",
         "operationId": "get_graph_visualization_data_graph_data_get",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1053,18 +826,13 @@
                 }
               }
             }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/graph/rebuild": {
@@ -1075,26 +843,15 @@
         "summary": "重建圖譜",
         "description": "強制重建使用者的知識圖譜。會重新從所有文件中抽取實體與關係。",
         "operationId": "rebuild_graph_graph_rebuild_post",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/GraphRebuildRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -1117,7 +874,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/graph/optimize": {
@@ -1128,26 +890,15 @@
         "summary": "優化圖譜",
         "description": "執行實體融合與社群重建，合併相似的實體節點。",
         "operationId": "optimize_graph_graph_optimize_post",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/GraphOptimizeRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -1170,7 +921,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/api/conversations": {
@@ -1181,43 +937,27 @@
         "summary": "List Conversations",
         "description": "Lists all conversations for the authenticated user.\n\nReturns conversations ordered by updated_at descending (most recent first).\n\nArgs:\n    user_id: Authenticated user ID (injected).\n    \nReturns:\n    List of ConversationResponse.\n    \nRaises:\n    HTTPException: 500 if database query fails.",
         "operationId": "list_conversations_api_conversations_get",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/ConversationResponse"
                   },
+                  "type": "array",
                   "title": "Response List Conversations Api Conversations Get"
                 }
               }
             }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       },
       "post": {
         "tags": [
@@ -1226,26 +966,15 @@
         "summary": "Create Conversation",
         "description": "Creates a new conversation.\n\nArgs:\n    data: Conversation creation data.\n    user_id: Authenticated user ID (injected).\n    \nReturns:\n    Created ConversationResponse.\n    \nRaises:\n    HTTPException: 500 if creation fails.",
         "operationId": "create_conversation_api_conversations_post",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
-            }
-          }
-        ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ConversationCreate"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "201": {
@@ -1268,7 +997,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/api/conversations/{conversation_id}": {
@@ -1279,6 +1013,11 @@
         "summary": "Get Conversation",
         "description": "Gets a conversation with all its messages.\n\nArgs:\n    conversation_id: Conversation UUID.\n    user_id: Authenticated user ID (injected).\n    \nReturns:\n    ConversationDetailResponse with messages.\n    \nRaises:\n    HTTPException: 404 if not found, 500 if query fails.",
         "operationId": "get_conversation_api_conversations__conversation_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "conversation_id",
@@ -1288,15 +1027,6 @@
               "type": "string",
               "format": "uuid",
               "title": "Conversation Id"
-            }
-          },
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
             }
           }
         ],
@@ -1330,6 +1060,11 @@
         "summary": "Update Conversation",
         "description": "Updates a conversation's title or metadata.\n\nArgs:\n    conversation_id: Conversation UUID.\n    data: Update data.\n    user_id: Authenticated user ID (injected).\n    \nReturns:\n    Updated ConversationResponse.\n    \nRaises:\n    HTTPException: 404 if not found, 500 if update fails.",
         "operationId": "update_conversation_api_conversations__conversation_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "conversation_id",
@@ -1339,15 +1074,6 @@
               "type": "string",
               "format": "uuid",
               "title": "Conversation Id"
-            }
-          },
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
             }
           }
         ],
@@ -1391,6 +1117,11 @@
         "summary": "Delete Conversation",
         "description": "Deletes a conversation and all its messages.\n\nMessages are deleted via CASCADE foreign key constraint.\n\nArgs:\n    conversation_id: Conversation UUID.\n    user_id: Authenticated user ID (injected).\n    \nRaises:\n    HTTPException: 404 if not found, 500 if delete fails.",
         "operationId": "delete_conversation_api_conversations__conversation_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "conversation_id",
@@ -1400,15 +1131,6 @@
               "type": "string",
               "format": "uuid",
               "title": "Conversation Id"
-            }
-          },
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
             }
           }
         ],
@@ -1437,6 +1159,11 @@
         "summary": "Create Message",
         "description": "Adds a message to a conversation.\n\nArgs:\n    conversation_id: Conversation UUID.\n    data: Message content and role.\n    user_id: Authenticated user ID (injected).\n    \nReturns:\n    Created ChatMessageResponse.\n    \nRaises:\n    HTTPException: 404 if conversation not found, 500 if insert fails.",
         "operationId": "create_message_api_conversations__conversation_id__messages_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "conversation_id",
@@ -1446,15 +1173,6 @@
               "type": "string",
               "format": "uuid",
               "title": "Conversation Id"
-            }
-          },
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "title": "Authorization"
             }
           }
         ],
@@ -1518,33 +1236,6 @@
   },
   "components": {
     "schemas": {
-      "AnswerResponse": {
-        "properties": {
-          "question": {
-            "type": "string",
-            "title": "Question"
-          },
-          "answer": {
-            "type": "string",
-            "title": "Answer"
-          },
-          "sources": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Sources",
-            "default": []
-          }
-        },
-        "type": "object",
-        "required": [
-          "question",
-          "answer"
-        ],
-        "title": "AnswerResponse",
-        "description": "Response model for answers."
-      },
       "AskRequest": {
         "properties": {
           "question": {
@@ -1616,6 +1307,12 @@
           },
           "graph_search_mode": {
             "type": "string",
+            "enum": [
+              "local",
+              "global",
+              "hybrid",
+              "auto"
+            ],
             "title": "Graph Search Mode",
             "description": "圖譜搜尋模式: local (實體擴展), global (社群摘要), hybrid (兩者), auto (自動判斷)",
             "default": "auto"
@@ -1633,33 +1330,6 @@
         ],
         "title": "AskRequest",
         "description": "Request body for POST /ask endpoint.\n\nAttributes:\n    question: The user's question.\n    doc_ids: Optional list of document IDs to filter retrieval.\n    history: Optional conversation history for context-aware responses.\n    enable_hyde: Enable HyDE (Hypothetical Document Embeddings) retrieval.\n    enable_multi_query: Enable multi-query fusion retrieval.\n    enable_reranking: Enable Cross-Encoder reranking (recommended).\n    enable_evaluation: Enable Self-RAG evaluation (adds latency).\n    enable_graph_rag: Enable knowledge graph enhanced retrieval.\n    graph_search_mode: Graph search mode (local/global/hybrid/auto).\n    enable_graph_planning: Enable graph-based planning for Deep Research."
-      },
-      "AskResponse": {
-        "properties": {
-          "question": {
-            "type": "string",
-            "title": "Question"
-          },
-          "answer": {
-            "type": "string",
-            "title": "Answer"
-          },
-          "sources": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Sources",
-            "default": []
-          }
-        },
-        "type": "object",
-        "required": [
-          "question",
-          "answer"
-        ],
-        "title": "AskResponse",
-        "description": "Response model for /ask endpoint.\n\nAttributes:\n    question: Echo of the original question.\n    answer: The generated answer.\n    sources: List of source document IDs used in the response."
       },
       "Body_extract_from_pdf_endpoint_multimodal_extract_post": {
         "properties": {
@@ -1870,8 +1540,7 @@
               "$ref": "#/components/schemas/ChatMessageResponse"
             },
             "type": "array",
-            "title": "Messages",
-            "default": []
+            "title": "Messages"
           }
         },
         "type": "object",
@@ -2099,8 +1768,7 @@
               "$ref": "#/components/schemas/SourceDetail"
             },
             "type": "array",
-            "title": "Sources",
-            "default": []
+            "title": "Sources"
           },
           "metrics": {
             "anyOf": [
@@ -2839,16 +2507,14 @@
               "type": "string"
             },
             "type": "array",
-            "title": "Sources",
-            "default": []
+            "title": "Sources"
           },
           "contexts": {
             "items": {
               "type": "string"
             },
             "type": "array",
-            "title": "Contexts",
-            "default": []
+            "title": "Contexts"
           },
           "is_drilldown": {
             "type": "boolean",
@@ -2882,8 +2548,7 @@
               "type": "object"
             },
             "type": "array",
-            "title": "Tool Calls",
-            "default": []
+            "title": "Tool Calls"
           }
         },
         "type": "object",
@@ -2914,8 +2579,7 @@
               "type": "string"
             },
             "type": "array",
-            "title": "Sources",
-            "default": []
+            "title": "Sources"
           }
         },
         "type": "object",
@@ -2950,6 +2614,69 @@
           "chunk_id"
         ],
         "title": "TextChunk"
+      },
+      "UploadPdfResponse": {
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id",
+            "description": "Document UUID"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "Document status in database"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Human-readable upload result"
+          },
+          "pdf_available": {
+            "type": "boolean",
+            "title": "Pdf Available",
+            "description": "Whether translated PDF is already available"
+          },
+          "pdf_download_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pdf Download Url",
+            "description": "Download URL when PDF is available"
+          },
+          "pdf_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pdf Error",
+            "description": "PDF generation error if generation failed"
+          },
+          "rag_status": {
+            "type": "string",
+            "title": "Rag Status",
+            "description": "Background RAG post-processing status",
+            "default": "processing_background"
+          }
+        },
+        "type": "object",
+        "required": [
+          "doc_id",
+          "status",
+          "message",
+          "pdf_available"
+        ],
+        "title": "UploadPdfResponse",
+        "description": "Response model for PDF upload and processing kickoff."
       },
       "ValidationError": {
         "properties": {
@@ -3137,6 +2864,12 @@
           "formula"
         ],
         "title": "VisualElementType"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
       }
     }
   }

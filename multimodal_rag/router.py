@@ -151,7 +151,7 @@ async def extract_from_pdf_endpoint(
         logger.error(f"Extraction failed for doc {doc_uuid}: {e}", exc_info=True)
         if os.path.exists(doc_dir):
             shutil.rmtree(doc_dir)
-        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Extraction failed")
 
     finally:
         file.file.close()

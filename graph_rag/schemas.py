@@ -11,7 +11,7 @@ from enum import Enum
 from typing import List, Optional
 
 # Third-party
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class EntityType(str, Enum):
@@ -65,9 +65,8 @@ class GraphNode(BaseModel):
     pending_resolution: bool = Field(default=False, description="是否待融合")
     embedding: Optional[List[float]] = Field(default=None, description="向量嵌入")
     
-    class Config:
-        """Pydantic configuration."""
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "id": "node_transformer_001",
                 "label": "Transformer",
@@ -77,6 +76,7 @@ class GraphNode(BaseModel):
                 "pending_resolution": False,
             }
         }
+    )
 
 
 class GraphEdge(BaseModel):
@@ -98,9 +98,8 @@ class GraphEdge(BaseModel):
     weight: float = Field(default=1.0, ge=0.0, le=1.0, description="關係強度")
     doc_ids: List[str] = Field(default_factory=list, description="來源文件 ID 列表")
     
-    class Config:
-        """Pydantic configuration."""
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "source_id": "node_bert_001",
                 "target_id": "node_lstm_001",
@@ -110,6 +109,7 @@ class GraphEdge(BaseModel):
                 "doc_ids": ["doc-uuid-1"],
             }
         }
+    )
 
 
 class Community(BaseModel):
@@ -132,17 +132,21 @@ class Community(BaseModel):
     title: Optional[str] = Field(default=None, description="社群標題")
     level: int = Field(default=0, description="層級 (Leiden 支援多層)")
     
-    class Config:
-        """Pydantic configuration."""
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "id": 1,
-                "node_ids": ["node_transformer_001", "node_bert_001", "node_attention_001"],
+                "node_ids": [
+                    "node_transformer_001",
+                    "node_bert_001",
+                    "node_attention_001",
+                ],
                 "summary": "此社群包含與 Transformer 架構相關的方法...",
                 "title": "Transformer 與注意力機制",
                 "level": 0,
             }
         }
+    )
 
 
 class GraphStatusResponse(BaseModel):
@@ -159,9 +163,8 @@ class GraphStatusResponse(BaseModel):
     needs_optimization: bool = Field(default=False, description="是否需要優化")
     last_updated: Optional[datetime] = Field(default=None, description="最後更新時間")
     
-    class Config:
-        """Pydantic configuration."""
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "has_graph": True,
                 "node_count": 1250,
@@ -172,6 +175,7 @@ class GraphStatusResponse(BaseModel):
                 "last_updated": "2025-12-21T10:30:00Z",
             }
         }
+    )
 
 
 class ExtractedEntity(BaseModel):

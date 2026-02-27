@@ -7,7 +7,7 @@ Provides request/response models for the RAG question answering endpoints.
 # Standard library
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 # Third-party
 from pydantic import BaseModel, Field
@@ -197,7 +197,7 @@ class AskRequest(BaseModel):
         default=False,
         description="啟用知識圖譜增強檢索",
     )
-    graph_search_mode: str = Field(
+    graph_search_mode: Literal["local", "global", "hybrid", "auto"] = Field(
         default="auto",
         description="圖譜搜尋模式: local (實體擴展), global (社群摘要), hybrid (兩者), auto (自動判斷)",
     )
@@ -221,7 +221,7 @@ class AskResponse(BaseModel):
     """
     question: str
     answer: str
-    sources: List[str] = []
+    sources: List[str] = Field(default_factory=list)
 
 
 class EnhancedAskResponse(BaseModel):
@@ -238,6 +238,6 @@ class EnhancedAskResponse(BaseModel):
     """
     question: str
     answer: str
-    sources: List[SourceDetail] = []
+    sources: List[SourceDetail] = Field(default_factory=list)
     metrics: Optional[EvaluationMetrics] = None
 

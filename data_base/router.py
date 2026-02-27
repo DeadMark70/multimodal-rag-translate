@@ -8,11 +8,11 @@ including enhanced research mode with Plan-and-Solve agents.
 # Standard library
 import logging
 import time
-from typing import Optional, List, Union
+from typing import Optional, List
 
 # Third-party
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from pydantic import BaseModel, Field
 from postgrest.exceptions import APIError as PostgrestAPIError
 
 # Local application
@@ -22,7 +22,6 @@ from data_base.RAG_QA_service import initialize_llm_service, rag_answer_question
 from data_base.vector_store_manager import initialize_embeddings
 from data_base.schemas import (
     AskRequest,
-    AskResponse,
     EnhancedAskResponse,
     SourceDetail,
     EvaluationMetrics,
@@ -49,20 +48,6 @@ router = APIRouter()
 MAX_HISTORY_LENGTH = 10  # Maximum conversation history messages to accept
 
 
-# --- Pydantic Models ---
-
-class QuestionRequest(BaseModel):
-    """Request model for questions."""
-    question: str
-
-
-class AnswerResponse(BaseModel):
-    """Response model for answers."""
-    question: str
-    answer: str
-    sources: list[str] = []  # Document IDs used in the response
-
-
 class ResearchRequest(BaseModel):
     """Request model for research queries."""
     question: str
@@ -76,7 +61,7 @@ class SubTaskResponse(BaseModel):
     id: int
     question: str
     answer: str
-    sources: list[str] = []
+    sources: list[str] = Field(default_factory=list)
 
 
 class ResearchResponse(BaseModel):
@@ -115,96 +100,12 @@ async def on_startup_rag_init() -> None:
 
 # --- Endpoints ---
 
-@router.get("/ask", response_model=AnswerResponse)
-async def ask_question(
-    question: str,
-    doc_ids: Optional[str] = Query(
-        default=None,
-        description="Comma-separated document IDs to filter (e.g., 'uuid1,uuid2'). "
-                    "Leave empty to query all documents."
-    ),
-    conversation_id: Optional[str] = Query(
-        default=None,
-        description="Conversation ID to associate this message with. "
-                    "If provided, messages will be saved to chat_logs with role."
-    ),
-    user_id: str = Depends(get_current_user_id)
-) -> AnswerResponse:
-    """
-    Answers a question using the user's knowledge base.
-
-    Args:
-        question: The question to answer.
-        doc_ids: Optional comma-separated document IDs to filter results.
-        conversation_id: Optional conversation ID for history tracking.
-        user_id: Authenticated user ID (injected).
-
-    Returns:
-        AnswerResponse with question, answer, and source document IDs.
-
-    Raises:
-        HTTPException: 500 if answering fails.
-    """
-    t1 = time.perf_counter()
-    
-    # Parse doc_ids
-    doc_id_list: Optional[list[str]] = None
-    if doc_ids:
-        doc_id_list = [d.strip() for d in doc_ids.split(",") if d.strip()]
-        logger.info(f"RAG query for user {user_id} with {len(doc_id_list)} doc filter(s)")
-    else:
-        logger.info(f"RAG query for user {user_id} (all documents)")
-
-    try:
-        answer, sources = await rag_answer_question(
-            question=question,
-            user_id=user_id,
-            doc_ids=doc_id_list
-        )
-
-        t2 = time.perf_counter()
-        logger.info(f"Answered in {t2 - t1:.2f}s, sources: {sources}")
-
-        # Log to Supabase (non-fatal if fails)
-        if supabase:
-            try:
-                # Save user message
-                user_log_data = {
-                    "user_id": user_id,
-                    "question": question,
-                    "role": "user",
-                }
-                if conversation_id:
-                    user_log_data["conversation_id"] = conversation_id
-                supabase.table("chat_logs").insert(user_log_data).execute()
-                
-                # Save assistant message
-                assistant_log_data = {
-                    "user_id": user_id,
-                    "answer": answer,
-                    "role": "assistant",
-                }
-                if conversation_id:
-                    assistant_log_data["conversation_id"] = conversation_id
-                supabase.table("chat_logs").insert(assistant_log_data).execute()
-                
-                logger.debug("Chat logs saved to Supabase")
-            except PostgrestAPIError as e:
-                logger.warning(f"Failed to save chat log: {e}")
-
-        return AnswerResponse(question=question, answer=answer, sources=sources)
-
-    except Exception as e:
-        logger.error(f"RAG answering failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to answer question: {str(e)}")
-
-
-@router.post("/ask")
+@router.post("/ask", response_model=EnhancedAskResponse)
 async def ask_question_with_context(
     request: AskRequest,
     background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user_id)
-) -> Union[AskResponse, EnhancedAskResponse]:
+) -> EnhancedAskResponse:
     """
     Context-aware question answering with conversation history.
 
@@ -224,7 +125,7 @@ async def ask_question_with_context(
         user_id: Authenticated user ID (injected).
 
     Returns:
-        AskResponse (default) or EnhancedAskResponse (when enable_evaluation=True).
+        EnhancedAskResponse.
 
     Raises:
         HTTPException: 400 if history too long, 500 if answering fails.
@@ -274,12 +175,23 @@ async def ask_question_with_context(
                 has_history=history_count > 0,
             )
 
-        # If evaluation not requested, return simple response
+        # Build default source details for unified response shape.
+        source_details = [
+            SourceDetail(
+                doc_id=doc_id,
+                filename=None,
+                page=None,
+                snippet=answer[:200],
+                score=0.0,
+            )
+            for doc_id in sources
+        ]
         if not request.enable_evaluation:
-            return AskResponse(
+            return EnhancedAskResponse(
                 question=request.question,
                 answer=answer,
-                sources=sources
+                sources=source_details,
+                metrics=None,
             )
 
         # --- Enhanced Response with Evaluation ---
@@ -381,7 +293,9 @@ async def ask_question_with_context(
 
     except (RuntimeError, ValueError) as e:
         logger.error(f"Context-aware RAG failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"回答問題時發生錯誤: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail="Failed to answer question with context"
+        )
 
 
 def _log_query_to_supabase(
@@ -547,7 +461,7 @@ async def research_question(
 
     except Exception as e:
         logger.error(f"Research failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Research failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Research request failed")
 
 
 # --- Interactive Deep Research Endpoints ---
@@ -593,7 +507,7 @@ async def generate_research_plan(
         
     except (RuntimeError, ValueError) as e:
         logger.error(f"Plan generation failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"計畫生成失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to generate research plan")
 
 
 @router.post("/execute", response_model=ExecutePlanResponse)
@@ -647,7 +561,7 @@ async def execute_research_plan(
         
     except (RuntimeError, ValueError) as e:
         logger.error(f"Research execution failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"研究執行失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to execute research plan")
 
 
 @router.post("/execute/stream")
@@ -706,7 +620,7 @@ async def execute_research_plan_stream(
             from data_base.sse_events import SSEEventType, ErrorData, format_sse_event
             yield format_sse_event(
                 SSEEventType.ERROR,
-                ErrorData(message=str(e)[:200])
+                ErrorData(message="Streaming execution failed")
             )
     
     return EventSourceResponse(event_generator())
