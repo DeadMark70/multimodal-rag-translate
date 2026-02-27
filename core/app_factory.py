@@ -104,6 +104,17 @@ def _ensure_base_directories() -> None:
     logger.info("Base directories verified")
 
 
+def _initialize_external_clients() -> None:
+    """Initialize external clients needed by API routes."""
+    from supabase_client import init_supabase
+
+    client = init_supabase()
+    if client:
+        logger.info("Supabase client ready")
+    else:
+        logger.warning("Supabase unavailable; database-backed features are limited")
+
+
 async def _initialize_rag_components() -> None:
     """Initialize embedding and LLM resources used by RAG services."""
     from data_base.router import on_startup_rag_init
@@ -128,6 +139,7 @@ async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
     """FastAPI lifespan hook for startup initialization."""
     logger.info("=== Application Startup ===")
     _ensure_base_directories()
+    _initialize_external_clients()
     await _initialize_rag_components()
     await _warm_up_pdf_ocr()
     logger.info("=== All components ready ===")
