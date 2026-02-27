@@ -15,7 +15,8 @@ import logging
 from typing import List, Optional
 
 # Local application
-from supabase_client import supabase
+from core.errors import AppError
+from data_base.repository import persist_research_conversation
 from data_base.schemas_deep_research import (
     EditableSubTask,
     ExecutePlanRequest,
@@ -218,32 +219,29 @@ class DeepResearchService:
         # Phase 1: Persistence - Update conversation in Supabase if conversation_id provided
         if request.conversation_id:
             try:
-                # Prepare metadata (full response)
-                metadata_update = {
-                    "metadata": {
-                        "summary": report.summary,
-                        "detailed_answer": report.detailed_answer,
-                        "sub_tasks": [t.model_dump() for t in all_results],
-                        "all_sources": all_sources,
-                        "confidence": report.confidence,
-                        "total_iterations": total_iterations,
-                        "question": request.original_question,
-                    },
-                    "updated_at": "now()" # Ensure updated_at is bumped
+                metadata_payload = {
+                    "summary": report.summary,
+                    "detailed_answer": report.detailed_answer,
+                    "sub_tasks": [t.model_dump() for t in all_results],
+                    "all_sources": all_sources,
+                    "confidence": report.confidence,
+                    "total_iterations": total_iterations,
+                    "question": request.original_question,
                 }
-                
-                # Update title to be descriptive (first 100 chars of question)
-                if request.original_question:
-                    metadata_update["title"] = request.original_question[:100]
 
-                supabase.table("conversations") \
-                    .update(metadata_update) \
-                    .eq("id", request.conversation_id) \
-                    .eq("user_id", user_id) \
-                    .execute()
-                
-                logger.info(f"Persisted research results to conversation {request.conversation_id}")
-            except Exception as e:
+                await persist_research_conversation(
+                    conversation_id=request.conversation_id,
+                    user_id=user_id,
+                    title=request.original_question[:100]
+                    if request.original_question
+                    else None,
+                    metadata=metadata_payload,
+                )
+                logger.info(
+                    "Persisted research results to conversation %s",
+                    request.conversation_id,
+                )
+            except AppError as e:
                 logger.error(f"Failed to persist research results: {e}", exc_info=True)
 
         return ExecutePlanResponse(

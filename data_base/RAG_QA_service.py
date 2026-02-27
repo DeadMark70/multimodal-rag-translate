@@ -31,6 +31,7 @@ from data_base.query_transformer import (
     transform_query_multi,
     reciprocal_rank_fusion,
 )
+from data_base.repository import fetch_document_filenames
 from data_base.parent_child_store import ParentDocumentStore
 
 # Configure logging
@@ -693,16 +694,8 @@ async def rag_answer_question(
     # Query database for actual filenames if we have doc_ids
     if unique_doc_ids:
         try:
-            from supabase_client import supabase
-            if supabase:
-                response = supabase.table("documents") \
-                    .select("id, file_name") \
-                    .in_("id", list(unique_doc_ids)) \
-                    .execute()
-                
-                for row in response.data:
-                    doc_id_to_name[row["id"]] = row.get("file_name", f"文件-{row['id'][:8]}")
-                logger.debug(f"Fetched filenames: {doc_id_to_name}")
+            doc_id_to_name = await fetch_document_filenames(list(unique_doc_ids))
+            logger.debug(f"Fetched filenames: {doc_id_to_name}")
         except Exception as e:
             logger.warning(f"Failed to fetch filenames from DB: {e}")
     

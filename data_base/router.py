@@ -11,14 +11,14 @@ import time
 from typing import Optional, List
 
 # Third-party
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, BackgroundTasks
 from pydantic import BaseModel, Field
-from postgrest.exceptions import APIError as PostgrestAPIError
 
 # Local application
 from core.auth import get_current_user_id
-from supabase_client import supabase
+from core.errors import AppError, ErrorCode
 from data_base.RAG_QA_service import initialize_llm_service, rag_answer_question, RAGResult
+from data_base.repository import insert_chat_log, insert_query_log
 from data_base.vector_store_manager import initialize_embeddings
 from data_base.schemas import (
     AskRequest,
@@ -134,9 +134,10 @@ async def ask_question_with_context(
 
     # Validate history length
     if request.history and len(request.history) > MAX_HISTORY_LENGTH:
-        raise HTTPException(
+        raise AppError(
+            code=ErrorCode.BAD_REQUEST,
+            message=f"History too long; max {MAX_HISTORY_LENGTH} messages",
             status_code=400,
-            detail=f"對話歷史過長，最多允許 {MAX_HISTORY_LENGTH} 條訊息"
         )
 
     history_count = len(request.history) if request.history else 0
@@ -165,15 +166,14 @@ async def ask_question_with_context(
         t2 = time.perf_counter()
         logger.info(f"Context-aware answer in {t2 - t1:.2f}s, sources: {sources}")
 
-        # Background task: Log to Supabase (non-blocking)
-        if supabase:
-            background_tasks.add_task(
-                _log_query_to_supabase,
-                user_id=user_id,
-                question=request.question,
-                answer=answer,
-                has_history=history_count > 0,
-            )
+        # Background task: Log analytics and chat history.
+        background_tasks.add_task(
+            _log_query_to_supabase,
+            user_id=user_id,
+            question=request.question,
+            answer=answer,
+            has_history=history_count > 0,
+        )
 
         # Build default source details for unified response shape.
         source_details = [
@@ -281,7 +281,7 @@ async def ask_question_with_context(
             metrics = EvaluationMetrics(
                 faithfulness=FaithfulnessLevel.evaluation_failed,
                 confidence_score=0.5,
-                evaluation_reason=f"評估失敗: {str(e)[:100]}"
+                evaluation_reason="Evaluation failed"
             )
 
         return EnhancedAskResponse(
@@ -293,12 +293,14 @@ async def ask_question_with_context(
 
     except (RuntimeError, ValueError) as e:
         logger.error(f"Context-aware RAG failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500, detail="Failed to answer question with context"
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Failed to answer question with context",
+            status_code=500,
         )
 
 
-def _log_query_to_supabase(
+async def _log_query_to_supabase(
     user_id: str,
     question: str,
     answer: str,
@@ -323,36 +325,31 @@ def _log_query_to_supabase(
         response_time_ms: Response time in milliseconds.
         doc_ids: List of document IDs used.
     """
-    if not supabase:
-        return
-
     # Log to chat_logs (legacy table)
     try:
-        chat_log_data = {
-            "user_id": user_id,
-            "question": question,
-            "answer": answer,
-        }
-        supabase.table("chat_logs").insert(chat_log_data).execute()
+        await insert_chat_log(
+            user_id=user_id,
+            question=question,
+            answer=answer,
+        )
         logger.debug("Chat log saved to Supabase (background)")
-    except PostgrestAPIError as e:
+    except AppError as e:
         logger.warning(f"Failed to save chat log: {e}")
 
     # Log to query_logs (new analytics table)
     try:
-        query_log_data = {
-            "user_id": user_id,
-            "question": question,
-            "answer": answer[:500] if answer else None,  # Truncate for storage
-            "has_history": has_history,
-            "faithfulness": faithfulness,
-            "confidence": confidence,
-            "response_time_ms": response_time_ms,
-            "doc_ids": doc_ids,
-        }
-        supabase.table("query_logs").insert(query_log_data).execute()
+        await insert_query_log(
+            user_id=user_id,
+            question=question,
+            answer=answer[:500] if answer else None,  # Truncate for storage
+            has_history=has_history,
+            faithfulness=faithfulness,
+            confidence=confidence,
+            response_time_ms=response_time_ms,
+            doc_ids=doc_ids,
+        )
         logger.debug("Query log saved to Supabase (background)")
-    except PostgrestAPIError as e:
+    except AppError as e:
         # Non-fatal: table might not exist yet
         logger.debug(f"Failed to save to query_logs (may not exist): {e}")
 
@@ -461,7 +458,11 @@ async def research_question(
 
     except Exception as e:
         logger.error(f"Research failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Research request failed")
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Research request failed",
+            status_code=500,
+        )
 
 
 # --- Interactive Deep Research Endpoints ---
@@ -507,7 +508,11 @@ async def generate_research_plan(
         
     except (RuntimeError, ValueError) as e:
         logger.error(f"Plan generation failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate research plan")
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Failed to generate research plan",
+            status_code=500,
+        )
 
 
 @router.post("/execute", response_model=ExecutePlanResponse)
@@ -541,7 +546,11 @@ async def execute_research_plan(
     )
     
     if not request.sub_tasks:
-        raise HTTPException(status_code=400, detail="至少需要一個子任務")
+        raise AppError(
+            code=ErrorCode.BAD_REQUEST,
+            message="At least one sub-task is required",
+            status_code=400,
+        )
     
     try:
         service = get_deep_research_service()
@@ -561,7 +570,11 @@ async def execute_research_plan(
         
     except (RuntimeError, ValueError) as e:
         logger.error(f"Research execution failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to execute research plan")
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Failed to execute research plan",
+            status_code=500,
+        )
 
 
 @router.post("/execute/stream")
@@ -604,7 +617,11 @@ async def execute_research_plan_stream(
     )
     
     if not request.sub_tasks:
-        raise HTTPException(status_code=400, detail="至少需要一個子任務")
+        raise AppError(
+            code=ErrorCode.BAD_REQUEST,
+            message="At least one sub-task is required",
+            status_code=400,
+        )
     
     service = get_deep_research_service()
     
