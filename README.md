@@ -3,6 +3,11 @@
 > **A Next-Generation Academic Research Assistant**
 > 基於代理人 (Agentic) 架構、具備自我修正與多模態理解能力的深度研究系統。
 
+## 📘 Documentation Entry
+
+- Primary docs entry: `docs/index.md`
+- Legacy conductor docs: `conductor/`
+
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-green.svg)
