@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import time
 import uuid
 from dataclasses import dataclass
@@ -12,18 +13,43 @@ from fastapi import UploadFile
 from fastapi.concurrency import run_in_threadpool
 
 from core.errors import AppError, ErrorCode
+from data_base.vector_store_manager import delete_document_from_knowledge_base
 from pdfserviceMD.PDF_OCR_services import ocr_service_sync
 from pdfserviceMD.Pandoc_md_to_pdf import MDmarkdown_to_pdf as markdown_to_pdf
 from pdfserviceMD.ai_translate_md import translate_text
 from pdfserviceMD.markdown_process import markdown_extact, replace_markdown
 from pdfserviceMD.repository import (
+    clear_document_summary,
     create_document_record,
+    delete_document,
+    get_document,
+    list_documents,
     update_document_status,
     update_processing_step,
 )
-from pdfserviceMD.schemas import UploadPdfResponse
+from pdfserviceMD.schemas import (
+    DeleteDocumentResponse,
+    DocumentListItem,
+    DocumentListResponse,
+    DocumentSummaryResponse,
+    ProcessingStatusResponse,
+    RegenerateSummaryResponse,
+    UploadPdfResponse,
+)
 
 logger = logging.getLogger(__name__)
+
+_STEP_LABELS = {
+    "uploading": "上傳中",
+    "ocr": "OCR 辨識中",
+    "translating": "翻譯中",
+    "generating_pdf": "生成 PDF 中",
+    "completed": "翻譯完成",
+    "indexing": "建立索引中",
+    "graph_indexing": "建立知識圖譜中",
+    "indexed": "全部完成",
+    "failed": "處理失敗",
+}
 
 
 @dataclass
@@ -175,3 +201,177 @@ async def _mark_failed(doc_id: str, error_message: str) -> None:
         await update_processing_step(doc_id=doc_id, step="failed")
     except AppError:
         logger.warning("Failed to persist failure state for doc %s", doc_id)
+
+
+async def list_user_documents(*, user_id: str) -> DocumentListResponse:
+    """Lists all documents for one user."""
+    rows = await list_documents(user_id=user_id, limit=50)
+    return DocumentListResponse(
+        documents=[DocumentListItem(**row) for row in rows],
+        total=len(rows),
+    )
+
+
+async def get_document_processing_status(
+    *, doc_id: str, user_id: str
+) -> ProcessingStatusResponse:
+    """Returns processing step and readiness flags for a document."""
+    row = await get_document(
+        doc_id=doc_id,
+        user_id=user_id,
+        columns="status, processing_step, translated_path",
+    )
+    if not row:
+        raise AppError(
+            code=ErrorCode.NOT_FOUND,
+            message="Document not found",
+            status_code=404,
+        )
+
+    step = row.get("processing_step") or "uploading"
+    status = row.get("status")
+    translated_path = row.get("translated_path")
+
+    return ProcessingStatusResponse(
+        step=step,
+        step_label=_STEP_LABELS.get(step, step),
+        is_pdf_ready=status == "completed" and translated_path is not None,
+        is_fully_complete=step == "indexed",
+    )
+
+
+async def get_document_file_info(*, doc_id: str, user_id: str) -> tuple[str, str]:
+    """Returns file path and download filename for a document."""
+    row = await get_document(
+        doc_id=doc_id,
+        user_id=user_id,
+        columns="file_name, translated_path, original_path",
+    )
+    if not row:
+        raise AppError(
+            code=ErrorCode.NOT_FOUND,
+            message="Document not found",
+            status_code=404,
+        )
+
+    file_path = row.get("translated_path") or row.get("original_path")
+    if not file_path:
+        raise AppError(
+            code=ErrorCode.NOT_FOUND,
+            message="File path not found in record",
+            status_code=404,
+        )
+
+    normalized_path = os.path.normpath(file_path)
+    if not os.path.exists(normalized_path):
+        raise AppError(
+            code=ErrorCode.NOT_FOUND,
+            message="File not found on disk",
+            status_code=404,
+        )
+
+    return normalized_path, row.get("file_name", "document.pdf")
+
+
+async def delete_user_document(
+    *, doc_id: str, user_id: str, base_upload_folder: str
+) -> DeleteDocumentResponse:
+    """Deletes document index data, files, and persistence record."""
+    row = await get_document(doc_id=doc_id, user_id=user_id, columns="id")
+    if not row:
+        raise AppError(
+            code=ErrorCode.NOT_FOUND,
+            message="Document not found",
+            status_code=404,
+        )
+
+    try:
+        await run_in_threadpool(delete_document_from_knowledge_base, user_id, doc_id)
+    except (RuntimeError, ValueError) as exc:
+        logger.warning("RAG deletion failed (non-fatal): %s", exc)
+
+    doc_folder = os.path.normpath(os.path.join(base_upload_folder, user_id, doc_id))
+    if os.path.exists(doc_folder):
+        try:
+            await run_in_threadpool(shutil.rmtree, doc_folder)
+        except OSError as exc:
+            logger.error("Failed to delete folder %s: %s", doc_folder, exc, exc_info=True)
+
+    await delete_document(doc_id=doc_id, user_id=user_id)
+    return DeleteDocumentResponse(status="success", message="Document deleted successfully")
+
+
+async def get_user_document_summary(
+    *, doc_id: str, user_id: str
+) -> DocumentSummaryResponse:
+    """Gets summary status + content for a document."""
+    row = await get_document(
+        doc_id=doc_id,
+        user_id=user_id,
+        columns="executive_summary, status",
+    )
+    if not row:
+        raise AppError(
+            code=ErrorCode.NOT_FOUND,
+            message="Document not found",
+            status_code=404,
+        )
+
+    summary = row.get("executive_summary")
+    doc_status = row.get("status")
+
+    if summary:
+        return DocumentSummaryResponse(summary=summary, status="ready")
+    if doc_status == "processing":
+        return DocumentSummaryResponse(summary=None, status="generating")
+    return DocumentSummaryResponse(summary=None, status="not_available")
+
+
+async def regenerate_document_summary(
+    *, doc_id: str, user_id: str
+) -> RegenerateSummaryResponse:
+    """Clears current summary and signals frontend to poll regeneration status."""
+    row = await get_document(doc_id=doc_id, user_id=user_id, columns="id")
+    if not row:
+        raise AppError(
+            code=ErrorCode.NOT_FOUND,
+            message="Document not found",
+            status_code=404,
+        )
+
+    try:
+        await clear_document_summary(doc_id=doc_id, user_id=user_id)
+    except AppError as exc:
+        logger.warning("Failed to clear summary for doc %s: %s", doc_id, exc)
+
+    return RegenerateSummaryResponse(
+        status="generating",
+        message="Summary regeneration started. Please check back in a few moments.",
+    )
+
+
+async def safe_update_document_status(
+    *,
+    doc_id: str,
+    status: str,
+    translated_path: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    """Best-effort status update for background tasks."""
+    try:
+        await update_document_status(
+            doc_id=doc_id,
+            status=status,
+            translated_path=translated_path,
+            error_message=error_message,
+        )
+    except AppError as exc:
+        logger.warning("Failed to update document status for %s: %s", doc_id, exc)
+
+
+async def safe_update_processing_step(*, doc_id: str, step: str) -> None:
+    """Best-effort processing step update for background tasks."""
+    try:
+        await update_processing_step(doc_id=doc_id, step=step)
+    except AppError as exc:
+        logger.warning("Failed to update processing step for %s: %s", doc_id, exc)

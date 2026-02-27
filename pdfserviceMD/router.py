@@ -8,22 +8,18 @@ Provides API endpoints for PDF upload, OCR processing, translation, and file man
 import asyncio
 import logging
 import os
-import shutil
 from uuid import UUID
 
 # Third-party
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
-from fastapi.concurrency import run_in_threadpool
+from fastapi import APIRouter, UploadFile, File, Depends
 from fastapi.responses import FileResponse
-from postgrest.exceptions import APIError as PostgrestAPIError
 
 # Local application
 from core.auth import get_current_user_id
-from supabase_client import supabase
+from core.errors import AppError, ErrorCode
 from data_base.vector_store_manager import (
     add_markdown_to_knowledge_base,
     add_visual_summaries_to_knowledge_base,
-    delete_document_from_knowledge_base,
 )
 from pdfserviceMD.image_processor import (
     extract_images_from_markdown,
@@ -33,8 +29,24 @@ from multimodal_rag.image_summarizer import summarizer as image_summarizer
 from core.summary_service import schedule_summary_generation
 from graph_rag.store import GraphStore
 from graph_rag.extractor import extract_and_add_to_graph
-from pdfserviceMD.schemas import UploadPdfResponse
-from pdfserviceMD.service import run_upload_pipeline
+from pdfserviceMD.schemas import (
+    DeleteDocumentResponse,
+    DocumentListResponse,
+    DocumentSummaryResponse,
+    ProcessingStatusResponse,
+    RegenerateSummaryResponse,
+    UploadPdfResponse,
+)
+from pdfserviceMD.service import (
+    delete_user_document,
+    get_document_file_info,
+    get_document_processing_status,
+    get_user_document_summary,
+    list_user_documents,
+    regenerate_document_summary,
+    run_upload_pipeline,
+    safe_update_processing_step,
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -52,72 +64,23 @@ def _validate_pdf_upload(file: UploadFile) -> None:
         file: The uploaded file object.
 
     Raises:
-        HTTPException: 400 if file is not a valid PDF.
+        AppError: 400 if file is not a valid PDF.
     """
     if file.content_type != "application/pdf":
-        raise HTTPException(
-            status_code=400, detail="File must be a PDF (invalid content-type)"
+        raise AppError(
+            code=ErrorCode.BAD_REQUEST,
+            message="File must be a PDF (invalid content-type)",
+            status_code=400,
         )
 
     if file.filename:
         _, ext = os.path.splitext(file.filename)
         if ext.lower() != ".pdf":
-            raise HTTPException(
-                status_code=400, detail="File must be a PDF (invalid extension)"
+            raise AppError(
+                code=ErrorCode.BAD_REQUEST,
+                message="File must be a PDF (invalid extension)",
+                status_code=400,
             )
-
-
-def _update_document_status(
-    doc_id: str,
-    status: str,
-    translated_path: str | None = None,
-    error_message: str | None = None,
-) -> None:
-    """
-    Updates document status in Supabase.
-
-    Args:
-        doc_id: Document UUID.
-        status: New status ('processing', 'completed', 'failed').
-        translated_path: Path to translated PDF (optional).
-        error_message: Error message if failed (optional).
-    """
-    if not supabase:
-        return
-
-    try:
-        update_data = {"status": status}
-        if translated_path:
-            update_data["translated_path"] = translated_path
-        if error_message:
-            update_data["error_message"] = error_message
-        else:
-            update_data["error_message"] = None
-
-        supabase.table("documents").update(update_data).eq("id", doc_id).execute()
-        logger.info(f"Document {doc_id} status updated to: {status}")
-    except PostgrestAPIError as e:
-        logger.error(f"Failed to update document status: {e}", exc_info=True)
-
-
-def _update_processing_step(doc_id: str, step: str) -> None:
-    """
-    Updates the document processing step for progress tracking.
-
-    Args:
-        doc_id: Document UUID.
-        step: Processing step ('ocr', 'translating', 'generating_pdf', 'completed', 'indexing').
-    """
-    if not supabase:
-        return
-
-    try:
-        supabase.table("documents").update({"processing_step": step}).eq(
-            "id", doc_id
-        ).execute()
-        logger.debug(f"Document {doc_id} step: {step}")
-    except PostgrestAPIError as e:
-        logger.warning(f"Failed to update processing step: {e}")
 
 
 async def run_post_processing_tasks(
@@ -141,7 +104,7 @@ async def run_post_processing_tasks(
         user_folder: Path to document folder (for locating images).
     """
     logger.info(f"[Background] Starting post-processing for doc {doc_id}")
-    _update_processing_step(doc_id, "indexing")
+    await safe_update_processing_step(doc_id=doc_id, step="indexing")
 
     try:
         # 1. RAG indexing
@@ -155,7 +118,7 @@ async def run_post_processing_tasks(
         logger.info(f"[Background] RAG indexing complete for doc {doc_id}")
 
         # 2. Image summarization and indexing (Phase 8)
-        _update_processing_step(doc_id, "image_analysis")
+        await safe_update_processing_step(doc_id=doc_id, step="image_analysis")
         await _process_document_images(
             user_id=user_id,
             doc_id=doc_id,
@@ -165,7 +128,7 @@ async def run_post_processing_tasks(
         )
 
         # 3. GraphRAG entity extraction
-        _update_processing_step(doc_id, "graph_indexing")
+        await safe_update_processing_step(doc_id=doc_id, step="graph_indexing")
         await _run_graph_extraction(user_id, doc_id, markdown_text)
 
         # 3. Summary generation
@@ -176,7 +139,7 @@ async def run_post_processing_tasks(
         )
         logger.info(f"[Background] Summary scheduled for doc {doc_id}")
 
-        _update_processing_step(doc_id, "indexed")
+        await safe_update_processing_step(doc_id=doc_id, step="indexed")
 
     except (RuntimeError, ValueError) as e:
         logger.warning(f"[Background] Post-processing failed for doc {doc_id}: {e}")
@@ -354,8 +317,10 @@ async def _run_graph_extraction(
 # --- Document List Endpoint ---
 
 
-@router.get("/list")
-async def list_documents(user_id: str = Depends(get_current_user_id)) -> dict:
+@router.get("/list", response_model=DocumentListResponse)
+async def list_documents_endpoint(
+    user_id: str = Depends(get_current_user_id),
+) -> DocumentListResponse:
     """
     Lists all documents uploaded by the user.
 
@@ -366,33 +331,11 @@ async def list_documents(user_id: str = Depends(get_current_user_id)) -> dict:
         user_id: Authenticated user ID (injected).
 
     Returns:
-        Dict containing documents list and total count.
-
-    Raises:
-        HTTPException: 500 if database query fails.
+        DocumentListResponse containing rows and total count.
     """
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Database not configured")
-
-    try:
-        result = (
-            supabase.table("documents")
-            .select("id, file_name, created_at, status, processing_step")
-            .eq("user_id", user_id)
-            .order("created_at", desc=True)
-            .limit(50)
-            .execute()
-        )
-
-        documents = result.data if result.data else []
-
-        logger.info(f"User {user_id} listed {len(documents)} documents")
-
-        return {"documents": documents, "total": len(documents)}
-
-    except PostgrestAPIError as e:
-        logger.error(f"Failed to list documents: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to retrieve documents")
+    response = await list_user_documents(user_id=user_id)
+    logger.info("User %s listed %s documents", user_id, response.total)
+    return response
 
 
 # --- PDF Upload Endpoint ---
@@ -451,24 +394,10 @@ async def upload_pdf_md(
         await file.close()
 
 
-# Processing step labels for frontend display
-_STEP_LABELS = {
-    "uploading": "上傳中",
-    "ocr": "OCR 辨識中",
-    "translating": "翻譯中",
-    "generating_pdf": "生成 PDF 中",
-    "completed": "翻譯完成",
-    "indexing": "建立索引中",
-    "graph_indexing": "建立知識圖譜中",
-    "indexed": "全部完成",
-    "failed": "處理失敗",
-}
-
-
-@router.get("/file/{doc_id}/status")
+@router.get("/file/{doc_id}/status", response_model=ProcessingStatusResponse)
 async def get_processing_status(
     doc_id: UUID, user_id: str = Depends(get_current_user_id)
-) -> dict:
+) -> ProcessingStatusResponse:
     """
     Returns the current processing status of a document.
 
@@ -479,43 +408,9 @@ async def get_processing_status(
         user_id: Authenticated user ID.
 
     Returns:
-        Dict with step info:
-        - step: Current processing step code
-        - step_label: Human-readable step label (Chinese)
-        - is_pdf_ready: True if translated PDF is available
-        - is_fully_complete: True if all processing (including RAG) is done
+        ProcessingStatusResponse with progress and readiness flags.
     """
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Database service unavailable")
-
-    doc_id_str = str(doc_id)
-
-    try:
-        result = (
-            supabase.table("documents")
-            .select("status, processing_step, translated_path")
-            .eq("id", doc_id_str)
-            .eq("user_id", user_id)
-            .single()
-            .execute()
-        )
-    except PostgrestAPIError as e:
-        logger.error(f"Failed to get status: {e}")
-        raise HTTPException(status_code=500, detail="Database query failed")
-
-    if not result.data:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    step = result.data.get("processing_step") or "uploading"
-    status = result.data.get("status")
-    translated_path = result.data.get("translated_path")
-
-    return {
-        "step": step,
-        "step_label": _STEP_LABELS.get(step, step),
-        "is_pdf_ready": status == "completed" and translated_path is not None,
-        "is_fully_complete": step == "indexed",
-    }
+    return await get_document_processing_status(doc_id=str(doc_id), user_id=user_id)
 
 
 @router.get("/file/{doc_id}")
@@ -533,49 +428,24 @@ async def get_pdf_file(
         FileResponse with the PDF file.
 
     Raises:
-        HTTPException: 404 if document not found.
+        AppError: 404 if document or file is unavailable.
     """
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Database service unavailable")
-
-    doc_id_str = str(doc_id)
-
-    try:
-        response = (
-            supabase.table("documents")
-            .select("*")
-            .eq("id", doc_id_str)
-            .eq("user_id", user_id)
-            .execute()
-        )
-    except PostgrestAPIError as e:
-        logger.error(f"Database query failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Database query failed")
-
-    if not response.data:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    doc = response.data[0]
-    file_path = doc.get("translated_path") or doc.get("original_path")
-
-    if not file_path:
-        raise HTTPException(status_code=404, detail="File path not found in record")
-
-    file_path = os.path.normpath(file_path)
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found on disk")
+    file_path, filename = await get_document_file_info(
+        doc_id=str(doc_id),
+        user_id=user_id,
+    )
 
     return FileResponse(
         path=file_path,
-        filename=doc.get("file_name", "document.pdf"),
+        filename=filename,
         media_type="application/pdf",
     )
 
 
-@router.delete("/file/{doc_id}")
+@router.delete("/file/{doc_id}", response_model=DeleteDocumentResponse)
 async def delete_pdf_file(
     doc_id: UUID, user_id: str = Depends(get_current_user_id)
-) -> dict:
+) -> DeleteDocumentResponse:
     """
     Deletes a document and all associated files.
 
@@ -589,55 +459,24 @@ async def delete_pdf_file(
         user_id: Authenticated user ID.
 
     Returns:
-        Success status dict.
-
-    Raises:
-        HTTPException: 500 if database deletion fails.
+        DeleteDocumentResponse.
     """
     doc_id_str = str(doc_id)
     logger.info(f"Delete request for doc {doc_id_str} by user {user_id}")
-
-    # 1. Delete from RAG index (non-fatal if fails)
-    try:
-        await run_in_threadpool(
-            delete_document_from_knowledge_base, user_id, doc_id_str
-        )
-        logger.info(f"RAG index entry deleted for doc {doc_id_str}")
-    except (RuntimeError, ValueError) as e:
-        logger.warning(f"RAG deletion failed (non-fatal): {e}")
-
-    # 2. Delete physical files
-    doc_folder = os.path.normpath(os.path.join(BASE_UPLOAD_FOLDER, user_id, doc_id_str))
-    if os.path.exists(doc_folder):
-        try:
-            shutil.rmtree(doc_folder)
-            logger.info(f"Folder deleted: {doc_folder}")
-        except OSError as e:
-            logger.error(f"Failed to delete folder: {e}", exc_info=True)
-
-    # 3. Delete database record
-    if supabase:
-        try:
-            supabase.table("documents").delete().eq("id", doc_id_str).eq(
-                "user_id", user_id
-            ).execute()
-            logger.info(f"DB record deleted for doc {doc_id_str}")
-        except PostgrestAPIError as e:
-            logger.error(f"DB deletion failed: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500, detail="Failed to delete database record"
-            )
-
-    return {"status": "success", "message": "Document deleted successfully"}
+    return await delete_user_document(
+        doc_id=doc_id_str,
+        user_id=user_id,
+        base_upload_folder=BASE_UPLOAD_FOLDER,
+    )
 
 
 # --- Summary Endpoints ---
 
 
-@router.get("/file/{doc_id}/summary")
+@router.get("/file/{doc_id}/summary", response_model=DocumentSummaryResponse)
 async def get_document_summary_endpoint(
     doc_id: UUID, user_id: str = Depends(get_current_user_id)
-) -> dict:
+) -> DocumentSummaryResponse:
     """
     Retrieves the executive summary for a document.
 
@@ -646,46 +485,18 @@ async def get_document_summary_endpoint(
         user_id: Authenticated user ID.
 
     Returns:
-        Dict with summary content and status.
-        - status: "ready" | "generating" | "not_available"
-        - summary: The executive summary text (null if not ready)
+        DocumentSummaryResponse.
     """
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Database service unavailable")
-
-    doc_id_str = str(doc_id)
-
-    try:
-        result = (
-            supabase.table("documents")
-            .select("executive_summary, status")
-            .eq("id", doc_id_str)
-            .eq("user_id", user_id)
-            .single()
-            .execute()
-        )
-    except PostgrestAPIError as e:
-        logger.error(f"Failed to get summary: {e}")
-        raise HTTPException(status_code=500, detail="Database query failed")
-
-    if not result.data:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    summary = result.data.get("executive_summary")
-    doc_status = result.data.get("status")
-
-    if summary:
-        return {"summary": summary, "status": "ready"}
-    elif doc_status == "processing":
-        return {"summary": None, "status": "generating"}
-    else:
-        return {"summary": None, "status": "not_available"}
+    return await get_user_document_summary(doc_id=str(doc_id), user_id=user_id)
 
 
-@router.post("/file/{doc_id}/summary/regenerate")
+@router.post(
+    "/file/{doc_id}/summary/regenerate",
+    response_model=RegenerateSummaryResponse,
+)
 async def regenerate_summary_endpoint(
     doc_id: UUID, user_id: str = Depends(get_current_user_id)
-) -> dict:
+) -> RegenerateSummaryResponse:
     """
     Triggers regeneration of the executive summary.
 
@@ -699,42 +510,6 @@ async def regenerate_summary_endpoint(
     Returns:
         Status indicating regeneration has started.
     """
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Database service unavailable")
-
     doc_id_str = str(doc_id)
-
-    # Verify document exists and belongs to user
-    try:
-        result = (
-            supabase.table("documents")
-            .select("id, original_path")
-            .eq("id", doc_id_str)
-            .eq("user_id", user_id)
-            .single()
-            .execute()
-        )
-    except PostgrestAPIError as e:
-        logger.error(f"Failed to get document: {e}")
-        raise HTTPException(status_code=500, detail="Database query failed")
-
-    if not result.data:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    # For regeneration, we need to re-read the document content
-    # This is a simplified implementation - in production you might
-    # want to store the extracted text in the database
-    logger.info(f"Summary regeneration requested for doc {doc_id_str}")
-
-    # Clear existing summary to indicate regeneration in progress
-    try:
-        supabase.table("documents").update({"executive_summary": None}).eq(
-            "id", doc_id_str
-        ).execute()
-    except PostgrestAPIError as e:
-        logger.warning(f"Failed to clear summary: {e}")
-
-    return {
-        "status": "generating",
-        "message": "Summary regeneration started. Please check back in a few moments.",
-    }
+    logger.info("Summary regeneration requested for doc %s", doc_id_str)
+    return await regenerate_document_summary(doc_id=doc_id_str, user_id=user_id)

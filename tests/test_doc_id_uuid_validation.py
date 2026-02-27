@@ -1,12 +1,13 @@
 """UUID path parameter validation tests for document APIs."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from core.auth import get_current_user_id
+from core.errors import AppError, ErrorCode
 from main import app
 
 TEST_USER_ID = "test-user-123"
@@ -46,13 +47,17 @@ def test_invalid_doc_id_returns_422(client: TestClient, method: str, path: str) 
 def test_valid_doc_id_status_endpoint_not_422(client: TestClient) -> None:
     """Valid UUID should reach endpoint logic instead of path-validation failure."""
     valid_doc_id = str(uuid4())
-    mock_result = MagicMock()
-    mock_result.data = None
 
-    with patch("pdfserviceMD.router.supabase") as mock_supabase:
-        (
-            mock_supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.single.return_value.execute.return_value
-        ) = mock_result
+    with patch(
+        "pdfserviceMD.router.get_document_processing_status",
+        new=AsyncMock(
+            side_effect=AppError(
+                code=ErrorCode.NOT_FOUND,
+                message="Document not found",
+                status_code=404,
+            )
+        ),
+    ):
         response = client.get(f"/pdfmd/file/{valid_doc_id}/status")
 
     assert response.status_code == 404

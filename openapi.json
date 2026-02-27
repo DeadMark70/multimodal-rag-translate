@@ -11,18 +11,16 @@
         "tags": [
           "PDF OCR & Translation"
         ],
-        "summary": "List Documents",
-        "description": "Lists all documents uploaded by the user.\n\nReturns documents ordered by upload time (newest first).\nLimited to 50 documents maximum.\n\nArgs:\n    user_id: Authenticated user ID (injected).\n\nReturns:\n    Dict containing documents list and total count.\n\nRaises:\n    HTTPException: 500 if database query fails.",
-        "operationId": "list_documents_pdfmd_list_get",
+        "summary": "List Documents Endpoint",
+        "description": "Lists all documents uploaded by the user.\n\nReturns documents ordered by upload time (newest first).\nLimited to 50 documents maximum.\n\nArgs:\n    user_id: Authenticated user ID (injected).\n\nReturns:\n    DocumentListResponse containing rows and total count.",
+        "operationId": "list_documents_endpoint_pdfmd_list_get",
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
-                  "title": "Response List Documents Pdfmd List Get"
+                  "$ref": "#/components/schemas/DocumentListResponse"
                 }
               }
             }
@@ -135,7 +133,7 @@
           "PDF OCR & Translation"
         ],
         "summary": "Get Processing Status",
-        "description": "Returns the current processing status of a document.\n\nAllows frontend to poll for progress updates during upload.\n\nArgs:\n    doc_id: Document UUID.\n    user_id: Authenticated user ID.\n\nReturns:\n    Dict with step info:\n    - step: Current processing step code\n    - step_label: Human-readable step label (Chinese)\n    - is_pdf_ready: True if translated PDF is available\n    - is_fully_complete: True if all processing (including RAG) is done",
+        "description": "Returns the current processing status of a document.\n\nAllows frontend to poll for progress updates during upload.\n\nArgs:\n    doc_id: Document UUID.\n    user_id: Authenticated user ID.\n\nReturns:\n    ProcessingStatusResponse with progress and readiness flags.",
         "operationId": "get_processing_status_pdfmd_file__doc_id__status_get",
         "security": [
           {
@@ -160,9 +158,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Get Processing Status Pdfmd File  Doc Id  Status Get"
+                  "$ref": "#/components/schemas/ProcessingStatusResponse"
                 }
               }
             }
@@ -186,7 +182,7 @@
           "PDF OCR & Translation"
         ],
         "summary": "Get Pdf File",
-        "description": "Retrieves a processed PDF file by document ID.\n\nArgs:\n    doc_id: Document UUID.\n    user_id: Authenticated user ID.\n\nReturns:\n    FileResponse with the PDF file.\n\nRaises:\n    HTTPException: 404 if document not found.",
+        "description": "Retrieves a processed PDF file by document ID.\n\nArgs:\n    doc_id: Document UUID.\n    user_id: Authenticated user ID.\n\nReturns:\n    FileResponse with the PDF file.\n\nRaises:\n    AppError: 404 if document or file is unavailable.",
         "operationId": "get_pdf_file_pdfmd_file__doc_id__get",
         "security": [
           {
@@ -231,7 +227,7 @@
           "PDF OCR & Translation"
         ],
         "summary": "Delete Pdf File",
-        "description": "Deletes a document and all associated files.\n\nCleanup steps:\n1. Remove from FAISS vector index\n2. Delete physical files\n3. Remove database record\n\nArgs:\n    doc_id: Document UUID.\n    user_id: Authenticated user ID.\n\nReturns:\n    Success status dict.\n\nRaises:\n    HTTPException: 500 if database deletion fails.",
+        "description": "Deletes a document and all associated files.\n\nCleanup steps:\n1. Remove from FAISS vector index\n2. Delete physical files\n3. Remove database record\n\nArgs:\n    doc_id: Document UUID.\n    user_id: Authenticated user ID.\n\nReturns:\n    DeleteDocumentResponse.",
         "operationId": "delete_pdf_file_pdfmd_file__doc_id__delete",
         "security": [
           {
@@ -256,9 +252,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Delete Pdf File Pdfmd File  Doc Id  Delete"
+                  "$ref": "#/components/schemas/DeleteDocumentResponse"
                 }
               }
             }
@@ -282,7 +276,7 @@
           "PDF OCR & Translation"
         ],
         "summary": "Get Document Summary Endpoint",
-        "description": "Retrieves the executive summary for a document.\n\nArgs:\n    doc_id: Document UUID.\n    user_id: Authenticated user ID.\n\nReturns:\n    Dict with summary content and status.\n    - status: \"ready\" | \"generating\" | \"not_available\"\n    - summary: The executive summary text (null if not ready)",
+        "description": "Retrieves the executive summary for a document.\n\nArgs:\n    doc_id: Document UUID.\n    user_id: Authenticated user ID.\n\nReturns:\n    DocumentSummaryResponse.",
         "operationId": "get_document_summary_endpoint_pdfmd_file__doc_id__summary_get",
         "security": [
           {
@@ -307,9 +301,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Get Document Summary Endpoint Pdfmd File  Doc Id  Summary Get"
+                  "$ref": "#/components/schemas/DocumentSummaryResponse"
                 }
               }
             }
@@ -358,9 +350,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Regenerate Summary Endpoint Pdfmd File  Doc Id  Summary Regenerate Post"
+                  "$ref": "#/components/schemas/RegenerateSummaryResponse"
                 }
               }
             }
@@ -1683,12 +1673,91 @@
           "grounded_count",
           "hallucinated_count",
           "uncertain_count",
-          "avg_confidence",
-          "queries_last_7_days",
-          "top_documents"
+          "avg_confidence"
         ],
         "title": "DashboardStats",
         "description": "Dashboard statistics response model."
+      },
+      "DeleteDocumentResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "message"
+        ],
+        "title": "DeleteDocumentResponse",
+        "description": "Response model for delete endpoint."
+      },
+      "DocumentListItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "file_name": {
+            "type": "string",
+            "title": "File Name"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "processing_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processing Step"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "file_name",
+          "created_at",
+          "status"
+        ],
+        "title": "DocumentListItem",
+        "description": "Summary row in document list endpoint."
+      },
+      "DocumentListResponse": {
+        "properties": {
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentListItem"
+            },
+            "type": "array",
+            "title": "Documents"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total"
+        ],
+        "title": "DocumentListResponse",
+        "description": "Response model for listing user documents."
       },
       "DocumentStat": {
         "properties": {
@@ -1719,6 +1788,31 @@
         ],
         "title": "DocumentStat",
         "description": "Document usage statistics."
+      },
+      "DocumentSummaryResponse": {
+        "properties": {
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "DocumentSummaryResponse",
+        "description": "Response model for summary retrieval."
       },
       "EditableSubTask": {
         "properties": {
@@ -2276,6 +2370,54 @@
         ],
         "title": "MessageRole",
         "description": "Valid roles for chat messages in conversation history."
+      },
+      "ProcessingStatusResponse": {
+        "properties": {
+          "step": {
+            "type": "string",
+            "title": "Step"
+          },
+          "step_label": {
+            "type": "string",
+            "title": "Step Label"
+          },
+          "is_pdf_ready": {
+            "type": "boolean",
+            "title": "Is Pdf Ready"
+          },
+          "is_fully_complete": {
+            "type": "boolean",
+            "title": "Is Fully Complete"
+          }
+        },
+        "type": "object",
+        "required": [
+          "step",
+          "step_label",
+          "is_pdf_ready",
+          "is_fully_complete"
+        ],
+        "title": "ProcessingStatusResponse",
+        "description": "Response model for document processing progress."
+      },
+      "RegenerateSummaryResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "message"
+        ],
+        "title": "RegenerateSummaryResponse",
+        "description": "Response model for summary regeneration kickoff."
       },
       "ResearchPlanRequest": {
         "properties": {

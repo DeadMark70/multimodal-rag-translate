@@ -99,3 +99,122 @@ async def update_processing_step(*, doc_id: str, step: str) -> None:
             status_code=500,
             details={"operation": "update_processing_step", "error": str(exc)},
         ) from exc
+
+
+async def list_documents(*, user_id: str, limit: int = 50) -> list[dict]:
+    """Lists document metadata rows for one user."""
+    client = get_supabase()
+    if not client:
+        raise AppError(
+            code=ErrorCode.DATABASE_ERROR,
+            message="Database service unavailable",
+            status_code=500,
+        )
+
+    try:
+        response = await run_in_threadpool(
+            lambda: client.table("documents")
+            .select("id, file_name, created_at, status, processing_step")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return response.data or []
+    except PostgrestAPIError as exc:
+        raise AppError(
+            code=ErrorCode.DATABASE_ERROR,
+            message="Failed to retrieve documents",
+            status_code=500,
+            details={"operation": "list_documents"},
+        ) from exc
+
+
+async def get_document(
+    *,
+    doc_id: str,
+    user_id: str,
+    columns: str = "*",
+) -> dict | None:
+    """Gets one document row by id + user."""
+    client = get_supabase()
+    if not client:
+        raise AppError(
+            code=ErrorCode.DATABASE_ERROR,
+            message="Database service unavailable",
+            status_code=500,
+        )
+
+    try:
+        response = await run_in_threadpool(
+            lambda: client.table("documents")
+            .select(columns)
+            .eq("id", doc_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if not response.data:
+            return None
+        return response.data[0]
+    except PostgrestAPIError as exc:
+        raise AppError(
+            code=ErrorCode.DATABASE_ERROR,
+            message="Failed to query document",
+            status_code=500,
+            details={"operation": "get_document"},
+        ) from exc
+
+
+async def delete_document(*, doc_id: str, user_id: str) -> None:
+    """Deletes one document row by id + user."""
+    client = get_supabase()
+    if not client:
+        raise AppError(
+            code=ErrorCode.DATABASE_ERROR,
+            message="Database service unavailable",
+            status_code=500,
+        )
+
+    try:
+        await run_in_threadpool(
+            lambda: client.table("documents")
+            .delete()
+            .eq("id", doc_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+    except PostgrestAPIError as exc:
+        raise AppError(
+            code=ErrorCode.DATABASE_ERROR,
+            message="Failed to delete document record",
+            status_code=500,
+            details={"operation": "delete_document"},
+        ) from exc
+
+
+async def clear_document_summary(*, doc_id: str, user_id: str) -> None:
+    """Clears executive summary field for regeneration."""
+    client = get_supabase()
+    if not client:
+        raise AppError(
+            code=ErrorCode.DATABASE_ERROR,
+            message="Database service unavailable",
+            status_code=500,
+        )
+
+    try:
+        await run_in_threadpool(
+            lambda: client.table("documents")
+            .update({"executive_summary": None})
+            .eq("id", doc_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+    except PostgrestAPIError as exc:
+        raise AppError(
+            code=ErrorCode.DATABASE_ERROR,
+            message="Failed to reset executive summary",
+            status_code=500,
+            details={"operation": "clear_document_summary"},
+        ) from exc
