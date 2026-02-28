@@ -11,7 +11,7 @@ from typing import List
 from uuid import UUID
 
 # Third-party
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 # Local application
 from core.auth import get_current_user_id
@@ -85,6 +85,10 @@ async def create_conversation(
 @router.get("/{conversation_id}", response_model=ConversationDetailResponse)
 async def get_conversation(
     conversation_id: UUID,
+    include_messages: bool = Query(
+        default=True,
+        description="Whether to include full message history in response.",
+    ),
     user_id: str = Depends(get_current_user_id)
 ) -> ConversationDetailResponse:
     """
@@ -102,7 +106,9 @@ async def get_conversation(
     """
     logger.info(f"Getting conversation {conversation_id} for user {user_id}")
     return await get_user_conversation_detail(
-        conversation_id=conversation_id, user_id=user_id
+        conversation_id=conversation_id,
+        user_id=user_id,
+        include_messages=include_messages,
     )
 
 

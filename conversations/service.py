@@ -48,7 +48,7 @@ async def create_user_conversation(
 
 
 async def get_user_conversation_detail(
-    *, conversation_id: UUID, user_id: str
+    *, conversation_id: UUID, user_id: str, include_messages: bool = True
 ) -> ConversationDetailResponse:
     conversation_row = await repo_get_conversation(
         conversation_id=str(conversation_id), user_id=user_id
@@ -60,17 +60,19 @@ async def get_user_conversation_detail(
             status_code=404,
         )
 
-    message_rows = await repo_list_messages(conversation_id=str(conversation_id))
-    messages = [
-        ChatMessageResponse(
-            id=msg["id"],
-            role=msg["role"],
-            content=msg["content"],
-            metadata=msg.get("metadata"),
-            created_at=msg["created_at"],
-        )
-        for msg in message_rows
-    ]
+    messages: list[ChatMessageResponse] = []
+    if include_messages:
+        message_rows = await repo_list_messages(conversation_id=str(conversation_id))
+        messages = [
+            ChatMessageResponse(
+                id=msg["id"],
+                role=msg["role"],
+                content=msg["content"],
+                metadata=msg.get("metadata"),
+                created_at=msg["created_at"],
+            )
+            for msg in message_rows
+        ]
     return ConversationDetailResponse(**conversation_row, messages=messages)
 
 
