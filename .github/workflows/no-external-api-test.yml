@@ -1,0 +1,31 @@
+name: Backend No-External-API Test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  backend-test:
+    runs-on: ubuntu-latest
+    env:
+      TEST_MODE: "true"
+      USE_FAKE_PROVIDERS: "true"
+      CI_BLOCK_EXTERNAL_NETWORK: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run no-external-api test suite
+        run: |
+          python -m pytest -q tests/test_provider_registry.py tests/test_datalab_provider_injection.py tests/test_conversations_api.py tests/test_graph_router_copy.py
