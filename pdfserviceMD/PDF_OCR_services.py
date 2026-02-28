@@ -14,125 +14,14 @@ import os
 import asyncio
 from typing import Dict, Any
 
-# Third-party
-import httpx
+# Local application
+from core.providers import DatalabProvider, ProviderError, get_datalab_provider
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Mode Configuration
 USE_LOCAL_MARKER = os.getenv("USE_LOCAL_MARKER", "true").lower() in ("true", "1", "yes")
-
-# API Configuration (for Datalab mode)
-DATALAB_API_URL = os.getenv("DATALAB_API_URL", "https://www.datalab.to/api/v1/marker")
-DATALAB_API_KEY = os.getenv("DATALAB_API_KEY", "")
-API_TIMEOUT = 300.0  # 5 minutes for large PDFs
-
-
-class DatalabAPIError(Exception):
-    """Custom exception for Datalab API errors."""
-    pass
-
-
-async def _call_datalab_api(pdf_path: str) -> Dict[str, Any]:
-    """
-    Calls Datalab API to convert PDF to Markdown.
-    
-    Implements the async pattern:
-    1. Submit PDF for processing (returns request_id + request_check_url)
-    2. Poll request_check_url until status is 'complete'
-    3. Return the final result with markdown content
-
-    Args:
-        pdf_path: Path to the PDF file.
-
-    Returns:
-        API response containing markdown content.
-
-    Raises:
-        DatalabAPIError: If API call fails.
-    """
-    if not DATALAB_API_KEY:
-        raise DatalabAPIError("DATALAB_API_KEY not configured")
-
-    POLL_INTERVAL = 2.0  # seconds between polling
-    MAX_POLL_ATTEMPTS = 150  # 5 minutes max (150 * 2s)
-
-    async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
-        with open(pdf_path, "rb") as f:
-            pdf_bytes = f.read()
-
-        # Prepare multipart form data
-        files = {"file": ("document.pdf", pdf_bytes, "application/pdf")}
-        headers = {"X-Api-Key": DATALAB_API_KEY}
-        
-        # Request parameters for better output
-        data = {
-            "output_format": "markdown",
-            "mode": "balanced",
-            "paginate": True,  # Request page delimiters
-        }
-
-        try:
-            # Step 1: Submit the document for processing
-            logger.info(f"Calling Datalab API for PDF: {pdf_path}")
-            submit_response = await client.post(
-                DATALAB_API_URL,
-                files=files,
-                headers=headers,
-                data=data
-            )
-            submit_response.raise_for_status()
-            submit_data = submit_response.json()
-            
-            # Check if immediate result (cached)
-            if submit_data.get("status") == "complete" or submit_data.get("markdown"):
-                logger.info("Got immediate result (cached)")
-                return submit_data
-            
-            # Get polling URL
-            request_check_url = submit_data.get("request_check_url")
-            request_id = submit_data.get("request_id")
-            
-            if not request_check_url:
-                logger.warning(f"No request_check_url in response: {submit_data}")
-                raise DatalabAPIError(f"API did not return request_check_url: {submit_data}")
-            
-            logger.info(f"Document submitted. Request ID: {request_id}. Polling for result...")
-            
-            # Step 2: Poll until complete
-            for attempt in range(MAX_POLL_ATTEMPTS):
-                await asyncio.sleep(POLL_INTERVAL)
-                
-                poll_response = await client.get(
-                    request_check_url,
-                    headers=headers
-                )
-                poll_response.raise_for_status()
-                result = poll_response.json()
-                
-                status = result.get("status", "unknown")
-                
-                if status == "complete":
-                    logger.info(f"Processing complete after {attempt + 1} polls")
-                    return result
-                elif status == "failed":
-                    error_msg = result.get("error", "Unknown error")
-                    raise DatalabAPIError(f"Processing failed: {error_msg}")
-                elif status == "processing":
-                    if attempt % 10 == 0:  # Log every 20 seconds
-                        logger.info(f"Still processing... (attempt {attempt + 1})")
-                else:
-                    logger.warning(f"Unknown status: {status}")
-            
-            raise DatalabAPIError(f"Timeout: Processing did not complete after {MAX_POLL_ATTEMPTS * POLL_INTERVAL}s")
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Datalab API HTTP error: {e.response.status_code} - {e.response.text}")
-            raise DatalabAPIError(f"API returned {e.response.status_code}: {e.response.text}")
-        except httpx.RequestError as e:
-            logger.error(f"Datalab API request error: {e}")
-            raise DatalabAPIError(f"API request failed: {e}")
 
 
 def _build_markdown_with_page_markers(api_response: Dict[str, Any]) -> str:
@@ -257,16 +146,17 @@ def initialize_predictor() -> None:
             logger.warning("local_marker_service not found")
     else:
         logger.info("PDF OCR mode: DATALAB API (paid, cloud)")
-        if not DATALAB_API_KEY:
+        provider = get_datalab_provider()
+        if not provider.is_configured():
             logger.warning(
                 "DATALAB_API_KEY not set! PDF OCR will fail. "
                 "Set it in config.env or environment variables."
             )
         else:
-            logger.info(f"Datalab API configured (URL: {DATALAB_API_URL})")
+            logger.info("Datalab provider configured")
 
 
-def ocr_service_sync(pdf_path: str) -> str:
+def ocr_service_sync(pdf_path: str, datalab_provider: DatalabProvider | None = None) -> str:
     """
     Performs OCR on a PDF file and returns combined Markdown text.
 
@@ -292,7 +182,7 @@ def ocr_service_sync(pdf_path: str) -> str:
     if USE_LOCAL_MARKER:
         return _ocr_with_local_marker(pdf_path)
     else:
-        return _ocr_with_datalab_api(pdf_path)
+        return _ocr_with_datalab_api(pdf_path, datalab_provider=datalab_provider)
 
 
 def _ocr_with_local_marker(pdf_path: str) -> str:
@@ -314,7 +204,9 @@ def _ocr_with_local_marker(pdf_path: str) -> str:
         raise RuntimeError(f"OCR processing failed: {e}")
 
 
-def _ocr_with_datalab_api(pdf_path: str) -> str:
+def _ocr_with_datalab_api(
+    pdf_path: str, datalab_provider: DatalabProvider | None = None
+) -> str:
     """
     Performs OCR using Datalab API.
     
@@ -327,6 +219,7 @@ def _ocr_with_datalab_api(pdf_path: str) -> str:
     
     # Get the directory where PDF is located (for saving images)
     pdf_dir = os.path.dirname(os.path.abspath(pdf_path))
+    provider = datalab_provider or get_datalab_provider()
 
     try:
         # Run async API call in event loop
@@ -336,13 +229,17 @@ def _ocr_with_datalab_api(pdf_path: str) -> str:
                 # If already in async context, create a new loop
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, _call_datalab_api(pdf_path))
+                    future = executor.submit(
+                        asyncio.run, provider.request_ocr_markdown(pdf_path)
+                    )
                     api_response = future.result()
             else:
-                api_response = loop.run_until_complete(_call_datalab_api(pdf_path))
+                api_response = loop.run_until_complete(
+                    provider.request_ocr_markdown(pdf_path)
+                )
         except RuntimeError:
             # No event loop exists
-            api_response = asyncio.run(_call_datalab_api(pdf_path))
+            api_response = asyncio.run(provider.request_ocr_markdown(pdf_path))
 
         # Extract and save images from API response
         images = api_response.get("images", {})
@@ -373,7 +270,7 @@ def _ocr_with_datalab_api(pdf_path: str) -> str:
         
         return full_markdown
 
-    except DatalabAPIError as e:
+    except ProviderError as e:
         logger.error(f"Datalab API error: {e}")
         raise RuntimeError(f"OCR processing failed: {e}")
     except Exception as e:

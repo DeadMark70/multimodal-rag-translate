@@ -11,26 +11,20 @@ Datalab (USA) - Commercial API
 import logging
 import os
 import re
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from uuid import uuid4
 
 # Third-party
 import cv2
 import numpy as np
-import httpx
 from pdf2image import convert_from_path
 
 # Local application
+from core.providers import DatalabProvider, ProviderError, get_datalab_provider
 from .schemas import ExtractedDocument, TextChunk, VisualElement, VisualElementType
 
 # Configure logging
 logger = logging.getLogger(__name__)
-
-# API Configuration
-DATALAB_API_URL = os.getenv("DATALAB_API_URL", "https://www.datalab.to/api/v1/marker")
-DATALAB_API_KEY = os.getenv("DATALAB_API_KEY", "")
-API_TIMEOUT = 300.0
-
 
 class StructureAnalyzer:
     """
@@ -44,9 +38,10 @@ class StructureAnalyzer:
     TEXT_LABELS = {'text', 'section-header', 'caption', 'list-item', 'footnote',
                    'page-header', 'page-footer', 'title', 'paragraph'}
 
-    def __init__(self) -> None:
+    def __init__(self, datalab_provider: Optional[DatalabProvider] = None) -> None:
         """Initializes the StructureAnalyzer."""
-        if not DATALAB_API_KEY:
+        self._datalab_provider = datalab_provider or get_datalab_provider()
+        if not self._datalab_provider.is_configured():
             logger.warning("DATALAB_API_KEY not set! Layout analysis may fail.")
         logger.info("StructureAnalyzer initialized (Datalab API mode)")
 
@@ -119,30 +114,7 @@ class StructureAnalyzer:
         Returns:
             API response with layout information.
         """
-        if not DATALAB_API_KEY:
-            raise RuntimeError("DATALAB_API_KEY not configured")
-
-        with open(pdf_path, "rb") as f:
-            files = {"file": ("document.pdf", f, "application/pdf")}
-            headers = {"X-Api-Key": DATALAB_API_KEY}
-            data = {
-                "output_format": "json",
-                "extract_images": True,
-            }
-
-            try:
-                with httpx.Client(timeout=API_TIMEOUT) as client:
-                    response = client.post(
-                        DATALAB_API_URL,
-                        files=files,
-                        headers=headers,
-                        data=data
-                    )
-                    response.raise_for_status()
-                    return response.json()
-            except Exception as e:
-                logger.error(f"Datalab API error: {e}")
-                raise
+        return self._datalab_provider.request_layout_analysis(pdf_path)
 
     def _extract_visual_elements_locally(
         self,
@@ -328,6 +300,15 @@ class StructureAnalyzer:
         # Call Datalab API
         try:
             api_result = self._call_datalab_layout_api(pdf_path)
+        except ProviderError as e:
+            logger.error(f"Datalab API failed: {e}")
+            # Return empty result on API failure
+            return ExtractedDocument(
+                doc_id=doc_id,
+                user_id=user_id,
+                text_chunks=[],
+                visual_elements=[]
+            )
         except Exception as e:
             logger.error(f"Datalab API failed: {e}")
             # Return empty result on API failure

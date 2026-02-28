@@ -19,7 +19,7 @@ from PIL import Image
 from langchain_core.messages import HumanMessage
 
 # Local application
-from core.llm_factory import get_llm
+from core.providers import get_llm
 from .schemas import VisualElement, VisualElementType
 
 # Configure logging

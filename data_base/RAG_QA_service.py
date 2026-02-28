@@ -23,7 +23,7 @@ from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 
 # Local application
-from core.llm_factory import get_llm
+from core.providers import get_llm
 from data_base.vector_store_manager import get_user_retriever
 from data_base.reranker import rerank_documents, DocumentReranker
 from data_base.query_transformer import (

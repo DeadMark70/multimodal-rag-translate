@@ -15,7 +15,7 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
 # Local application
-from core.llm_factory import get_llm
+from core.providers import get_llm
 
 # Configure logging
 logger = logging.getLogger(__name__)

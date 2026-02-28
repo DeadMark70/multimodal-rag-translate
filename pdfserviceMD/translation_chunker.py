@@ -17,7 +17,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 # Local application
-from core.llm_factory import get_llm
+from core.providers import get_llm
 
 # Configure logging
 logger = logging.getLogger(__name__)

@@ -13,7 +13,7 @@ from typing import List, Tuple
 from langchain_core.messages import HumanMessage
 
 # Local application
-from core.llm_factory import get_llm
+from core.providers import get_llm
 from graph_rag.store import GraphStore
 
 # Configure logging

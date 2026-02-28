@@ -6,6 +6,7 @@ Provides common fixtures for Phase 1 unit and integration tests.
 
 # Standard library
 import os
+import socket
 import sys
 from typing import List
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -136,6 +137,51 @@ def event_loop():
     loop.close()
 
 
+@pytest.fixture(autouse=True)
+def block_external_network(monkeypatch):
+    """
+    Block non-local network access during tests when enabled.
+
+    Activate with CI_BLOCK_EXTERNAL_NETWORK=true.
+    """
+    enabled = os.getenv("CI_BLOCK_EXTERNAL_NETWORK", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not enabled:
+        yield
+        return
+
+    allowed_hosts = {"127.0.0.1", "localhost", "::1"}
+    real_connect = socket.socket.connect
+    real_create_connection = socket.create_connection
+
+    def _extract_host(address):  # noqa: ANN001
+        if isinstance(address, tuple) and address:
+            return address[0]
+        if isinstance(address, str):
+            return address
+        return None
+
+    def guarded_connect(sock, address):  # noqa: ANN001
+        host = _extract_host(address)
+        if host and host not in allowed_hosts:
+            raise RuntimeError(f"External network blocked in tests: {host}")
+        return real_connect(sock, address)
+
+    def guarded_create_connection(address, *args, **kwargs):  # noqa: ANN001
+        host = _extract_host(address)
+        if host and host not in allowed_hosts:
+            raise RuntimeError(f"External network blocked in tests: {host}")
+        return real_create_connection(address, *args, **kwargs)
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect, raising=True)
+    monkeypatch.setattr(socket, "create_connection", guarded_create_connection, raising=True)
+    yield
+
+
 # ============================================================================
 # Patch Helpers
 # ============================================================================
@@ -143,5 +189,8 @@ def event_loop():
 @pytest.fixture
 def patch_llm_factory(mock_llm):
     """Patches the LLM factory to return mock LLM."""
-    with patch("core.llm_factory.get_llm", return_value=mock_llm):
+    with (
+        patch("core.llm_factory.get_llm", return_value=mock_llm),
+        patch("core.providers.get_llm", return_value=mock_llm),
+    ):
         yield mock_llm

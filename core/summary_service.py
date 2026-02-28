@@ -14,7 +14,7 @@ from typing import Optional
 from langchain_core.messages import HumanMessage
 
 # Local application
-from core.llm_factory import get_llm
+from core.providers import get_llm
 from core.errors import AppError
 from core.summary_repository import (
     get_document_summary_record,

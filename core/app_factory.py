@@ -27,6 +27,7 @@ from core.errors import (
     unhandled_exception_handler,
     validation_exception_handler,
 )
+from core.providers import configure_providers
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +217,7 @@ def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     _load_environment()
     _configure_logging()
+    configure_providers(use_fake=_should_use_fake_providers())
 
     app = FastAPI(
         title="PDF Translation & RAG API",
