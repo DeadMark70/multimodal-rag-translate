@@ -105,8 +105,10 @@ HF_TOKEN=your_huggingface_token
 ```env
 TEST_MODE=true
 USE_FAKE_PROVIDERS=true
+CI_BLOCK_EXTERNAL_NETWORK=true
 ```
-上述模式會跳過真實 provider 的啟動預熱，避免測試流程誤呼叫外部 API。正式使用時請設為 `false`。
+上述模式會啟用 fake providers 並封鎖測試中的外部連線，避免誤呼叫真實 LLM / Datalab API。
+正式使用時請改為 `TEST_MODE=false`、`USE_FAKE_PROVIDERS=false`（`CI_BLOCK_EXTERNAL_NETWORK` 只在測試/CI 開啟）。
 
 ### 5. 啟動服務
 ```bash
