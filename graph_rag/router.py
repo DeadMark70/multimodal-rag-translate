@@ -4,7 +4,7 @@ GraphRAG API Router
 Provides REST API endpoints for graph management operations:
 - GET /graph/status - Get graph status
 - GET /graph/data - Get visualization data for react-force-graph
-- POST /graph/rebuild - Force full graph rebuild  
+- POST /graph/rebuild - Reset graph state and rerun graph optimization pipeline
 - POST /graph/optimize - Run entity resolution
 """
 
@@ -170,8 +170,11 @@ async def get_graph_visualization_data(
 @router.post(
     "/rebuild",
     response_model=GraphOperationResponse,
-    summary="重建圖譜",
-    description="強制重建使用者的知識圖譜。會重新從所有文件中抽取實體與關係。"
+    summary="重置並重算圖譜狀態",
+    description=(
+        "重置使用者目前的圖譜檔案，並重新執行實體融合與社群建立。"
+        "此操作不會重新從原始文件抽取新實體。"
+    ),
 )
 async def rebuild_graph(
     request: GraphRebuildRequest,
@@ -179,9 +182,7 @@ async def rebuild_graph(
     user_id: str = Depends(get_current_user_id)
 ) -> GraphOperationResponse:
     """
-    Trigger a full graph rebuild.
-    
-    This is a long-running operation that runs in the background.
+    Reset graph state and rerun optimization pipeline in background.
     """
     try:
         store = GraphStore(user_id)
@@ -197,7 +198,7 @@ async def rebuild_graph(
         
         return GraphOperationResponse(
             status="started",
-            message="圖譜重建已開始，請稍後檢查狀態",
+            message="圖譜重置與重算已開始（不重新抽取文件實體）",
             details={"user_id": user_id}
         )
         
@@ -269,9 +270,9 @@ async def optimize_graph(
 
 async def _rebuild_graph_task(user_id: str) -> None:
     """
-    Background task to rebuild graph from all documents.
-    
-    This extracts entities/relations from all indexed documents.
+    Background task to reset graph file and rerun optimization steps.
+
+    This does not re-extract entities/relations from source documents.
     """
     logger.info(f"Starting graph rebuild for user {user_id}")
     
@@ -284,9 +285,7 @@ async def _rebuild_graph_task(user_id: str) -> None:
         store = GraphStore(user_id)
         store.clear()
         
-        # Get all document content from vector store
-        # For now, we just rebuild communities if graph already has nodes
-        # Full rebuild requires re-processing document content
+        # Current behavior: reset file + rerun merge/community stages only.
         
         # Run entity resolution
         await resolve_entities(store)
