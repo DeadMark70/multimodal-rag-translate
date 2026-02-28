@@ -40,6 +40,22 @@ _ALLOWED_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]
 _EXPOSE_HEADERS = ["Content-Disposition"]
 
 
+def _is_true(name: str, default: str = "false") -> bool:
+    """Parse boolean-like env vars."""
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _should_use_fake_providers() -> bool:
+    """
+    Decide whether startup should skip real provider warmups.
+
+    Rules:
+    - TEST_MODE=true -> always fake (test safety)
+    - USE_FAKE_PROVIDERS=true -> fake
+    """
+    return _is_true("TEST_MODE") or _is_true("USE_FAKE_PROVIDERS")
+
+
 def _load_environment() -> None:
     """Load environment variables from config.env."""
     project_root = os.path.dirname(os.path.dirname(__file__))
@@ -58,6 +74,8 @@ def _configure_logging() -> None:
         "Loaded" if os.getenv("GOOGLE_API_KEY") else "Not Found",
     )
     logger.info("HF_TOKEN: %s", "Loaded" if os.getenv("HF_TOKEN") else "Not Found")
+    logger.info("TEST_MODE: %s", _is_true("TEST_MODE"))
+    logger.info("USE_FAKE_PROVIDERS: %s", _should_use_fake_providers())
 
 
 def _get_cors_origins() -> list[str]:
@@ -152,6 +170,10 @@ def _initialize_external_clients(app: FastAPI) -> None:
 
 async def _initialize_rag_components() -> None:
     """Initialize embedding and LLM resources used by RAG services."""
+    if _should_use_fake_providers():
+        logger.info("Skipping RAG startup warmup in fake/test mode")
+        return
+
     from data_base.router import on_startup_rag_init
 
     logger.info("Initializing RAG components...")
@@ -160,6 +182,10 @@ async def _initialize_rag_components() -> None:
 
 async def _warm_up_pdf_ocr() -> None:
     """Pre-load PDF OCR model on GPU."""
+    if _should_use_fake_providers():
+        logger.info("Skipping PDF OCR warmup in fake/test mode")
+        return
+
     from pdfserviceMD.PDF_OCR_services import initialize_predictor
 
     logger.info("Pre-loading PDF OCR model on GPU...")

@@ -114,6 +114,30 @@ def test_get_conversation_details_with_messages(client: TestClient) -> None:
     assert mock_service.await_count == 1
 
 
+def test_get_conversation_details_without_messages(client: TestClient) -> None:
+    returned = {
+        "id": TEST_CONV_ID,
+        "title": "Existing Chat",
+        "type": "chat",
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "metadata": {"plan": {"foo": "bar"}},
+        "messages": [],
+    }
+    with patch(
+        "conversations.router.get_user_conversation_detail",
+        new=AsyncMock(return_value=returned),
+    ) as mock_service:
+        response = client.get(f"/api/conversations/{TEST_CONV_ID}?include_messages=false")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == TEST_CONV_ID
+    assert data["messages"] == []
+    assert mock_service.await_count == 1
+    assert mock_service.await_args.kwargs["include_messages"] is False
+
+
 def test_create_message(client: TestClient) -> None:
     returned = {
         "id": str(uuid4()),

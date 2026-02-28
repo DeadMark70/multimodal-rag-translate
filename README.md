@@ -101,6 +101,13 @@ DATALAB_API_KEY=your_key
 HF_TOKEN=your_huggingface_token
 ```
 
+測試與 CI 建議：
+```env
+TEST_MODE=true
+USE_FAKE_PROVIDERS=true
+```
+上述模式會跳過真實 provider 的啟動預熱，避免測試流程誤呼叫外部 API。正式使用時請設為 `false`。
+
 ### 5. 啟動服務
 ```bash
 uvicorn main:app --reload
