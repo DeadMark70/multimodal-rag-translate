@@ -131,6 +131,7 @@ def _register_routers(app: FastAPI) -> None:
     """Register all API routers with existing prefixes."""
     from conversations.router import router as conversations_router
     from data_base.router import router as database_router
+    from evaluation.router import router as evaluation_router
     from graph_rag.router import router as graph_router
     from image_service.router import router as image_router
     from multimodal_rag.router import router as multimodal_router
@@ -145,6 +146,7 @@ def _register_routers(app: FastAPI) -> None:
     )
     app.include_router(stats_router, prefix="/stats", tags=["Dashboard Statistics"])
     app.include_router(graph_router, prefix="/graph", tags=["Knowledge Graph"])
+    app.include_router(evaluation_router, prefix="/api/evaluation", tags=["Evaluation"])
     app.include_router(
         conversations_router, prefix="/api/conversations", tags=["Conversations"]
     )
