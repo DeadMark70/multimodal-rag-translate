@@ -1,58 +1,71 @@
 # FastAPI & Server
-fastapi
-uvicorn
-python-multipart
+fastapi==0.124.4
+uvicorn==0.38.0
+python-multipart==0.0.20
+sse-starlette==3.1.1
 
 # Image Processing
-pillow
-pdf2image
-PyMuPDF
-opencv-python-headless
+pillow==10.4.0
+pdf2image==1.17.0
+PyMuPDF==1.26.7
+opencv-python-headless==4.11.0.86
 
 # OCR - DocTR (Image Translation)
-python-doctr[torch]
+python-doctr==1.0.0
 
 # OCR - Local Marker (PDF to Markdown)
-marker-pdf
+marker-pdf==1.10.1
 
 # PDF Generation
-markdown-it-py
+markdown-it-py==3.0.0
+pypandoc==1.16.2
 
 # HTTP & API
-httpx
-python-dotenv
+httpx==0.28.1
+httpx-sse==0.4.3
+python-dotenv==1.2.1
 
 # LLM & AI
-google-generativeai
-langchain>=0.3.0,<0.4.0
-langchain-core>=0.3.0,<1.0.0
-langchain-community>=0.3.0,<0.4.0
-langchain-google-genai>=2.0.0,<3.0.0
-ragas
+google-generativeai==0.8.5
+langchain==1.2.0
+langchain-core==1.2.7
+langchain-community==0.3.31
+langchain-google-genai==4.1.1
+langchain-text-splitters==1.1.0
+ragas==0.4.2
 
 # Vector Store & Embeddings
-sentence-transformers
-faiss-cpu
-torch
-accelerate
+sentence-transformers==5.2.0
+faiss-cpu==1.13.1
+torch==2.9.1+cu128
+accelerate==1.12.0
+rank-bm25==0.2.2
 
 # Database
-supabase
+supabase==2.25.1
+postgrest==2.25.1
 
-# Data Validation
-pydantic>=2.0
+# Data Validation & Serialization
+pydantic==2.12.5
+pydantic-settings==2.12.0
 
 # Scientific Computing
-numpy
+numpy==2.2.6
+networkx==3.6.1
+scikit-learn==1.8.0
 
 # GraphRAG
-networkx>=3.0
-leidenalg>=0.10.0
+# igraph and leidenalg are imported in code but not found in pip list (likely provided differently)
+# Keep them if they were previously there as they are listed in the original requirements.txt
 python-igraph>=0.11.0
+leidenalg>=0.10.0
 
 # Testing
-pytest
-pytest-asyncio
+pytest==9.0.2
+pytest-asyncio==1.3.0
 
-# SSE Streaming
-sse-starlette
+# Utilities
+beautifulsoup4==4.14.3
+markdownify==1.2.2
+pypdfium2==4.30.0
+ruff==0.14.13
