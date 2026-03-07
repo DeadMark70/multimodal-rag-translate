@@ -21,6 +21,36 @@
   - `graph_rag/router.py`
   - `conversations/router.py`
   - `stats/router.py`
+  - `evaluation/router.py`
+
+## Evaluation Backend
+
+### Phase 1 delivered
+
+- `evaluation/schemas.py`: test case, import/export, model config, available model schemas
+- `evaluation/storage.py`: per-user JSON storage under `uploads/<user_id>/evaluation/`
+- `evaluation/model_discovery.py`: dynamic Gemini model listing with cache
+- `evaluation/router.py`: `/api/evaluation/test-cases`, `/models`, `/model-configs`
+
+### Phase 2 delivered
+
+- `evaluation/db.py`: SQLite repository layer backed by `pdftopng/data/evaluation.db`
+- `evaluation/retry.py`: tenacity-based retry wrapper for 429/503 and RPM budget helper
+- `evaluation/rag_modes.py`: importable benchmark execution core extracted from Bergen flow
+- `evaluation/campaign_engine.py`: async campaign orchestration, incremental result persistence, cancellation
+- `evaluation/router.py`: `/api/evaluation/campaigns`, `/campaigns/{id}/stream`, `/results`, `/cancel`
+- `core/llm_factory.py`: request-scoped LLM overrides to avoid cross-campaign model leakage
+
+### Runtime behavior
+
+- Campaign progress is persisted in SQLite and survives browser refreshes
+- SSE clients reconnect by campaign id and recover from the latest DB snapshot
+- SQLite runs in WAL mode and is ignored from git via `data/evaluation.db*`
+
+### Focused verification
+
+- `tests/test_evaluation_api.py`: Phase 1 CRUD and dynamic model discovery coverage
+- `tests/test_campaign_engine.py`: smoke campaign, cancel path, retry behavior, concurrent SQLite write stress test
 
 ## API Boundary Rules
 
@@ -33,4 +63,3 @@
 
 - CORS defaults are local-dev friendly and overrideable with `CORS_ORIGINS`.
 - Environment is loaded from `config.env` in app factory bootstrap.
-

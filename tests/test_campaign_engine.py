@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -214,3 +215,84 @@ def test_run_with_retry_retries_resource_exhausted() -> None:
     assert result == "ok"
     assert attempts["count"] == 3
 
+
+def test_campaign_sqlite_concurrent_writes_complete_without_loss() -> None:
+    async def concurrent_runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        mode = kwargs["mode"]
+        await asyncio.sleep(0.02)
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=mode,
+            answer=f"{test_case.id}-{mode}-answer",
+            contexts=[f"context-{test_case.id}-{mode}"],
+            source_doc_ids=[f"doc-{test_case.id}"],
+            expected_sources=list(test_case.source_docs),
+            latency_ms=20,
+            token_usage={"total_tokens": 10},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+        )
+
+    engine = CampaignEngine(runner=concurrent_runner)
+    upload_root = _make_upload_root()
+    db_path = _make_db_path()
+    test_case_ids = [f"Q{i}" for i in range(1, 5)]
+    modes = ["naive", "advanced", "graph", "agentic"]
+    repeat_count = 2
+    expected_total = len(test_case_ids) * len(modes) * repeat_count
+
+    with _build_client("user-a", upload_root, db_path, engine) as client:
+        for test_case_id in test_case_ids:
+            _create_test_case(client, test_case_id)
+
+        created = client.post(
+            "/api/evaluation/campaigns",
+            json={
+                "name": "Concurrent stress",
+                "test_case_ids": test_case_ids,
+                "modes": modes,
+                "model_config": {
+                    "id": "cfg-1",
+                    "name": "Balanced",
+                    "model_name": "gemini-2.5-flash",
+                    "temperature": 0.7,
+                    "top_p": 0.95,
+                    "top_k": 40,
+                    "max_input_tokens": 8192,
+                    "max_output_tokens": 2048,
+                    "thinking_mode": False,
+                    "thinking_budget": 8192,
+                },
+                "model_config_id": "cfg-1",
+                "repeat_count": repeat_count,
+                "batch_size": 4,
+                "rpm_limit": 600,
+            },
+        )
+        assert created.status_code == 200
+        campaign_id = created.json()["campaign_id"]
+
+        terminal = _wait_for_terminal_status(client, campaign_id, timeout_seconds=8.0)
+        assert terminal["status"] == "completed"
+        assert terminal["completed_units"] == expected_total
+        assert terminal["total_units"] == expected_total
+
+        results = client.get(f"/api/evaluation/campaigns/{campaign_id}/results")
+        assert results.status_code == 200
+        body = results.json()
+        assert len(body["results"]) == expected_total
+        assert all(item["status"] == "completed" for item in body["results"])
+
+        unique_result_keys = {
+            (item["question_id"], item["mode"], item["run_number"])
+            for item in body["results"]
+        }
+        assert len(unique_result_keys) == expected_total
+
+    with sqlite3.connect(db_path) as connection:
+        journal_mode = connection.execute("PRAGMA journal_mode;").fetchone()
+        assert journal_mode is not None
+        assert str(journal_mode[0]).lower() == "wal"

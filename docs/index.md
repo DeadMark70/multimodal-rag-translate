@@ -19,6 +19,12 @@ Format inspired by OpenAI Harness Engineering:
 - Product specs: `docs/product-specs/index.md`
 - Execution plans: `docs/exec-plans/index.md`
 
+## Evaluation Delivery
+
+- Phase 1 completed: test case CRUD/import, model discovery, model config preset APIs
+- Phase 2 completed: campaign engine, SQLite persistence, retry guard, campaign SSE
+- Completed implementation note: `docs/exec-plans/completed/evaluation-phase1-phase2.md`
+
 ## Legacy Anchors
 
 - `conductor/product.md`

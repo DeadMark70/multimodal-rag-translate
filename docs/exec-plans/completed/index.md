@@ -1,5 +1,3 @@
 # Completed Plans
 
-- No completed plan files yet.
-- Move plans here when exit criteria are met.
-
+- `docs/exec-plans/completed/evaluation-phase1-phase2.md`
