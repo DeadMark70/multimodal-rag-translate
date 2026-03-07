@@ -82,6 +82,9 @@ htmlcov/
 tmp/
 temp/
 outdate/
+data/evaluation.db
+data/evaluation.db-shm
+data/evaluation.db-wal
 
 #experiments
 experiments/
