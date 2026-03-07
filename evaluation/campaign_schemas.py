@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from evaluation.schemas import ModelConfig
 
 CampaignMode = Literal["naive", "advanced", "graph", "agentic"]
+CampaignEvaluationPhase = Literal["execution", "evaluation"]
 
 
 class CampaignLifecycleStatus(str, Enum):
@@ -93,9 +94,12 @@ class CampaignStatus(BaseModel):
     id: str
     name: Optional[str] = None
     status: CampaignLifecycleStatus
+    phase: CampaignEvaluationPhase = "execution"
     config: CampaignConfig
     completed_units: int = Field(default=0, ge=0)
     total_units: int = Field(default=0, ge=0)
+    evaluation_completed_units: int = Field(default=0, ge=0)
+    evaluation_total_units: int = Field(default=0, ge=0)
     current_question_id: Optional[str] = None
     current_mode: Optional[CampaignMode] = None
     error_message: Optional[str] = None
@@ -140,8 +144,58 @@ class CampaignProgressEvent(BaseModel):
     """Incremental SSE progress payload."""
 
     campaign_id: str
+    status: CampaignLifecycleStatus
+    phase: CampaignEvaluationPhase = "execution"
     completed_units: int = Field(default=0, ge=0)
     total_units: int = Field(default=0, ge=0)
+    evaluation_completed_units: int = Field(default=0, ge=0)
+    evaluation_total_units: int = Field(default=0, ge=0)
     current_question_id: Optional[str] = None
     current_mode: Optional[CampaignMode] = None
     latest_result_id: Optional[str] = None
+
+
+class MetricAggregate(BaseModel):
+    """Aggregate statistics for one metric."""
+
+    mean: float = Field(default=0, ge=0)
+    max: float = Field(default=0, ge=0)
+    stddev: float = Field(default=0, ge=0)
+
+
+class CampaignMetricRow(BaseModel):
+    """One evaluated row used by tables and charts."""
+
+    campaign_result_id: str
+    question_id: str
+    question: str
+    mode: CampaignMode
+    run_number: int = Field(ge=1)
+    category: Optional[str] = None
+    difficulty: Optional[str] = None
+    total_tokens: int = Field(default=0, ge=0)
+    faithfulness: float = Field(default=0, ge=0)
+    answer_correctness: float = Field(default=0, ge=0)
+
+
+class ModeMetricsSummary(BaseModel):
+    """Aggregated metrics for a single RAG mode."""
+
+    mode: CampaignMode
+    sample_count: int = Field(default=0, ge=0)
+    faithfulness: MetricAggregate
+    answer_correctness: MetricAggregate
+    total_tokens: MetricAggregate
+    delta_answer_correctness: float = 0
+    delta_total_tokens: float = 0
+    ecr: Optional[float] = None
+    ecr_note: Optional[str] = None
+
+
+class CampaignMetricsResponse(BaseModel):
+    """Campaign-level metrics response for result analysis."""
+
+    campaign: CampaignStatus
+    evaluator_model: str
+    summary_by_mode: dict[CampaignMode, ModeMetricsSummary] = Field(default_factory=dict)
+    rows: list[CampaignMetricRow] = Field(default_factory=list)

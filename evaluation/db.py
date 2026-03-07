@@ -28,9 +28,12 @@ CREATE TABLE IF NOT EXISTS campaigns (
     user_id TEXT NOT NULL,
     name TEXT,
     status TEXT NOT NULL,
+    phase TEXT NOT NULL DEFAULT 'execution',
     config_json TEXT NOT NULL,
     completed_units INTEGER NOT NULL DEFAULT 0,
     total_units INTEGER NOT NULL DEFAULT 0,
+    evaluation_completed_units INTEGER NOT NULL DEFAULT 0,
+    evaluation_total_units INTEGER NOT NULL DEFAULT 0,
     current_question_id TEXT,
     current_mode TEXT,
     error_message TEXT,
@@ -89,6 +92,9 @@ CREATE TABLE IF NOT EXISTS ragas_scores (
     details_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ragas_scores_result_metric
+ON ragas_scores(campaign_result_id, metric_name);
 """
 
 
@@ -116,7 +122,38 @@ async def init_db() -> None:
     """Initialize evaluation database and future-proof tables."""
     async with connect_db() as connection:
         await connection.executescript(_INIT_SQL)
+        await _apply_migrations(connection)
         await connection.commit()
+
+
+async def _apply_migrations(connection: aiosqlite.Connection) -> None:
+    """Apply additive migrations for existing Phase 2 databases."""
+    campaign_columns = await _table_columns(connection, "campaigns")
+    if "phase" not in campaign_columns:
+        await connection.execute(
+            "ALTER TABLE campaigns ADD COLUMN phase TEXT NOT NULL DEFAULT 'execution'"
+        )
+    if "evaluation_completed_units" not in campaign_columns:
+        await connection.execute(
+            "ALTER TABLE campaigns ADD COLUMN evaluation_completed_units INTEGER NOT NULL DEFAULT 0"
+        )
+    if "evaluation_total_units" not in campaign_columns:
+        await connection.execute(
+            "ALTER TABLE campaigns ADD COLUMN evaluation_total_units INTEGER NOT NULL DEFAULT 0"
+        )
+
+    await connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ragas_scores_result_metric
+        ON ragas_scores(campaign_result_id, metric_name)
+        """
+    )
+
+
+async def _table_columns(connection: aiosqlite.Connection, table_name: str) -> set[str]:
+    cursor = await connection.execute(f"PRAGMA table_info({table_name})")
+    rows = await cursor.fetchall()
+    return {str(row[1]) for row in rows}
 
 
 def _json_dumps(payload: Any) -> str:
@@ -138,9 +175,12 @@ def _row_to_campaign_status(row: aiosqlite.Row) -> CampaignStatus:
         id=row["id"],
         name=row["name"],
         status=CampaignLifecycleStatus(row["status"]),
+        phase=row["phase"],
         config=CampaignConfig.model_validate(config_payload),
         completed_units=row["completed_units"],
         total_units=row["total_units"],
+        evaluation_completed_units=row["evaluation_completed_units"],
+        evaluation_total_units=row["evaluation_total_units"],
         current_question_id=row["current_question_id"],
         current_mode=row["current_mode"],
         error_message=row["error_message"],
@@ -193,16 +233,18 @@ class CampaignRepository:
             await connection.execute(
                 """
                 INSERT INTO campaigns (
-                    id, user_id, name, status, config_json, completed_units, total_units,
-                    current_question_id, current_mode, error_message, cancel_requested,
-                    created_at, started_at, completed_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, NULL, NULL, ?)
+                    id, user_id, name, status, phase, config_json, completed_units, total_units,
+                    evaluation_completed_units, evaluation_total_units, current_question_id,
+                    current_mode, error_message, cancel_requested, created_at, started_at,
+                    completed_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, NULL, NULL, NULL, 0, ?, NULL, NULL, ?)
                 """,
                 (
                     campaign_id,
                     user_id,
                     name,
                     CampaignLifecycleStatus.PENDING.value,
+                    "execution",
                     _json_dumps(config.model_dump(mode="json", by_alias=True)),
                     0,
                     total_units,
@@ -244,6 +286,7 @@ class CampaignRepository:
             user_id=user_id,
             campaign_id=campaign_id,
             status=CampaignLifecycleStatus.RUNNING,
+            phase="execution",
             started_at=_utc_now_iso(),
         )
 
@@ -253,6 +296,8 @@ class CampaignRepository:
         user_id: str,
         campaign_id: str,
         completed_units: int,
+        evaluation_completed_units: Optional[int] = None,
+        evaluation_total_units: Optional[int] = None,
         current_question_id: Optional[str],
         current_mode: Optional[str],
     ) -> CampaignStatus:
@@ -260,16 +305,42 @@ class CampaignRepository:
             user_id=user_id,
             campaign_id=campaign_id,
             completed_units=completed_units,
+            evaluation_completed_units=evaluation_completed_units,
+            evaluation_total_units=evaluation_total_units,
             current_question_id=current_question_id,
             current_mode=current_mode,
         )
 
-    async def mark_completed(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
+    async def mark_evaluating(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        evaluation_total_units: int,
+    ) -> CampaignStatus:
+        return await self._update_campaign(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            status=CampaignLifecycleStatus.EVALUATING,
+            phase="evaluation",
+            evaluation_completed_units=0,
+            evaluation_total_units=evaluation_total_units,
+            error_message=None,
+        )
+
+    async def mark_completed(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        phase: Optional[str] = None,
+    ) -> CampaignStatus:
         now = _utc_now_iso()
         return await self._update_campaign(
             user_id=user_id,
             campaign_id=campaign_id,
             status=CampaignLifecycleStatus.COMPLETED,
+            phase=phase,
             completed_at=now,
             current_question_id=None,
             current_mode=None,
@@ -281,6 +352,7 @@ class CampaignRepository:
         user_id: str,
         campaign_id: str,
         error_message: str,
+        phase: Optional[str] = None,
     ) -> CampaignStatus:
         now = _utc_now_iso()
         return await self._update_campaign(
@@ -288,6 +360,7 @@ class CampaignRepository:
             campaign_id=campaign_id,
             status=CampaignLifecycleStatus.FAILED,
             error_message=error_message,
+            phase=phase,
             completed_at=now,
             current_question_id=None,
             current_mode=None,
@@ -321,10 +394,13 @@ class CampaignRepository:
         user_id: str,
         campaign_id: str,
         status: Optional[CampaignLifecycleStatus] = None,
+        phase: Optional[str] = None,
         completed_units: Optional[int] = None,
+        evaluation_completed_units: Optional[int] = None,
+        evaluation_total_units: Optional[int] = None,
         current_question_id: Optional[str] | object = _UNSET,
         current_mode: Optional[str] | object = _UNSET,
-        error_message: Optional[str] = None,
+        error_message: Optional[str] | object = _UNSET,
         cancel_requested: Optional[bool] = None,
         started_at: Optional[str] = None,
         completed_at: Optional[str] = None,
@@ -336,16 +412,25 @@ class CampaignRepository:
         if status is not None:
             updates.append("status = ?")
             values.append(status.value)
+        if phase is not None:
+            updates.append("phase = ?")
+            values.append(phase)
         if completed_units is not None:
             updates.append("completed_units = ?")
             values.append(completed_units)
+        if evaluation_completed_units is not None:
+            updates.append("evaluation_completed_units = ?")
+            values.append(evaluation_completed_units)
+        if evaluation_total_units is not None:
+            updates.append("evaluation_total_units = ?")
+            values.append(evaluation_total_units)
         if current_question_id is not _UNSET:
             updates.append("current_question_id = ?")
             values.append(current_question_id)
         if current_mode is not _UNSET:
             updates.append("current_mode = ?")
             values.append(current_mode)
-        if error_message is not None:
+        if error_message is not _UNSET:
             updates.append("error_message = ?")
             values.append(error_message)
         if cancel_requested is not None:
@@ -481,3 +566,69 @@ class CampaignResultRepository:
             rows = await cursor.fetchall()
         return [_row_to_campaign_result(row) for row in rows]
 
+
+class RagasScoreRepository:
+    """Persistence for per-result RAGAS metrics."""
+
+    async def replace_for_campaign(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        score_rows: list[dict[str, Any]],
+    ) -> None:
+        await init_db()
+        async with connect_db() as connection:
+            await connection.execute(
+                "DELETE FROM ragas_scores WHERE campaign_id = ? AND user_id = ?",
+                (campaign_id, user_id),
+            )
+            for row in score_rows:
+                await connection.execute(
+                    """
+                    INSERT INTO ragas_scores (
+                        id, campaign_id, campaign_result_id, user_id, metric_name,
+                        metric_value, details_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid4()),
+                        campaign_id,
+                        row["campaign_result_id"],
+                        user_id,
+                        row["metric_name"],
+                        row["metric_value"],
+                        _json_dumps(row.get("details", {})),
+                        _utc_now_iso(),
+                    ),
+                )
+            await connection.commit()
+
+    async def list_for_campaign(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+    ) -> list[dict[str, Any]]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT campaign_result_id, metric_name, metric_value, details_json
+                FROM ragas_scores
+                WHERE campaign_id = ? AND user_id = ?
+                ORDER BY created_at ASC
+                """,
+                (campaign_id, user_id),
+            )
+            rows = await cursor.fetchall()
+
+        return [
+            {
+                "campaign_result_id": row["campaign_result_id"],
+                "metric_name": row["metric_name"],
+                "metric_value": row["metric_value"],
+                "details": _json_loads(row["details_json"], {}),
+            }
+            for row in rows
+        ]

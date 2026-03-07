@@ -9,6 +9,7 @@ from typing import Awaitable, Callable, Optional
 
 from core.errors import AppError, ErrorCode
 from evaluation.campaign_schemas import (
+    CampaignMetricsResponse,
     CampaignConfig,
     CampaignCreateResponse,
     CampaignLifecycleStatus,
@@ -18,6 +19,7 @@ from evaluation.campaign_schemas import (
 )
 from evaluation.db import CampaignRepository, CampaignResultRepository
 from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
+from evaluation.ragas_evaluator import RagasEvaluator
 from evaluation.retry import RateBudget
 from evaluation.schemas import TestCase
 from evaluation.storage import list_test_cases
@@ -43,10 +45,14 @@ class CampaignEngine:
         self,
         campaign_repository: Optional[CampaignRepository] = None,
         result_repository: Optional[CampaignResultRepository] = None,
+        ragas_evaluator: Optional[RagasEvaluator] = None,
         runner: CampaignRunner = run_campaign_case,
     ) -> None:
         self._campaign_repository = campaign_repository or CampaignRepository()
         self._result_repository = result_repository or CampaignResultRepository()
+        self._ragas_evaluator = ragas_evaluator or RagasEvaluator(
+            result_repository=self._result_repository,
+        )
         self._runner = runner
         self._active_tasks: dict[str, asyncio.Task[None]] = {}
         self._task_guard = asyncio.Lock()
@@ -85,6 +91,10 @@ class CampaignEngine:
         results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
         return CampaignResultsResponse(campaign=campaign, results=results)
 
+    async def get_metrics(self, *, user_id: str, campaign_id: str) -> CampaignMetricsResponse:
+        campaign = await self.get_campaign(user_id=user_id, campaign_id=campaign_id)
+        return await self._ragas_evaluator.get_metrics(user_id=user_id, campaign=campaign)
+
     async def cancel_campaign(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
         campaign = await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
         if campaign.status in {
@@ -100,6 +110,46 @@ class CampaignEngine:
         if active_task is not None:
             active_task.cancel()
         return updated
+
+    async def evaluate_campaign(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
+        campaign = await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
+        if campaign.status in {
+            CampaignLifecycleStatus.RUNNING,
+            CampaignLifecycleStatus.EVALUATING,
+        }:
+            raise AppError(
+                code=ErrorCode.BAD_REQUEST,
+                message="Campaign is already running",
+                status_code=400,
+            )
+
+        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        completed_results = [row for row in results if row.status == CampaignResultStatus.COMPLETED]
+        if not completed_results:
+            raise AppError(
+                code=ErrorCode.BAD_REQUEST,
+                message="Campaign has no completed raw results to evaluate",
+                status_code=400,
+            )
+
+        await self._campaign_repository.mark_evaluating(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            evaluation_total_units=len(completed_results),
+        )
+        task = asyncio.create_task(
+            self._run_evaluation_only(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                completed_units=campaign.completed_units,
+                evaluation_total_units=len(completed_results),
+            ),
+            name=f"evaluation-ragas-{campaign_id}",
+        )
+        async with self._task_guard:
+            self._active_tasks[campaign_id] = task
+        task.add_done_callback(lambda _: asyncio.create_task(self._drop_active_task(campaign_id)))
+        return await self.get_campaign(user_id=user_id, campaign_id=campaign_id)
 
     async def _run_campaign(
         self,
@@ -158,7 +208,11 @@ class CampaignEngine:
                         result.id,
                     )
 
-            await self._campaign_repository.mark_completed(user_id=user_id, campaign_id=campaign_id)
+            await self._run_ragas_evaluation(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                completed_units=completed_units,
+            )
         except asyncio.CancelledError:
             for task in batch_tasks:
                 task.cancel()
@@ -171,7 +225,100 @@ class CampaignEngine:
                 user_id=user_id,
                 campaign_id=campaign_id,
                 error_message=str(exc),
+                phase="evaluation",
             )
+
+    async def _run_evaluation_only(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        completed_units: int,
+        evaluation_total_units: int,
+    ) -> None:
+        try:
+            await self._evaluate_campaign_results(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                completed_units=completed_units,
+                evaluation_total_units=evaluation_total_units,
+            )
+            await self._campaign_repository.mark_completed(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                phase="evaluation",
+            )
+        except asyncio.CancelledError:
+            await self._campaign_repository.mark_cancelled(user_id=user_id, campaign_id=campaign_id)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Campaign %s evaluation rerun failed: %s", campaign_id, exc, exc_info=True)
+            await self._campaign_repository.mark_failed(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                error_message=str(exc),
+                phase="evaluation",
+            )
+
+    async def _run_ragas_evaluation(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        completed_units: int,
+    ) -> None:
+        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        completed_results = [row for row in results if row.status == CampaignResultStatus.COMPLETED]
+        if not completed_results:
+            await self._campaign_repository.mark_completed(user_id=user_id, campaign_id=campaign_id)
+            return
+
+        await self._campaign_repository.mark_evaluating(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            evaluation_total_units=len(completed_results),
+        )
+        await self._evaluate_campaign_results(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            completed_units=completed_units,
+            evaluation_total_units=len(completed_results),
+        )
+        await self._campaign_repository.mark_completed(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            phase="evaluation",
+        )
+
+    async def _evaluate_campaign_results(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        completed_units: int,
+        evaluation_total_units: int,
+    ) -> None:
+        async def on_progress(
+            evaluation_completed_units: int,
+            _evaluation_total_units: int,
+            current_question_id: str | None,
+            current_mode: str | None,
+        ) -> None:
+            await self._campaign_repository.update_progress(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                completed_units=completed_units,
+                evaluation_completed_units=evaluation_completed_units,
+                evaluation_total_units=evaluation_total_units,
+                current_question_id=current_question_id,
+                current_mode=current_mode,
+            )
+
+        await self._ragas_evaluator.evaluate_campaign(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            on_progress=on_progress,
+        )
 
     async def _execute_unit(
         self,

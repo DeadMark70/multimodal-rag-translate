@@ -15,6 +15,7 @@ from google.api_core import exceptions as google_exceptions
 
 from core.auth import get_current_user_id
 from evaluation.campaign_engine import CampaignEngine
+from evaluation.campaign_schemas import CampaignMetricsResponse, MetricAggregate, ModeMetricsSummary
 from evaluation.rag_modes import BenchmarkExecutionResult
 from evaluation.retry import run_with_retry
 from main import app
@@ -63,6 +64,38 @@ def _create_test_case(client: TestClient, test_case_id: str = "Q1") -> None:
     assert response.status_code == 200
 
 
+class FakeRagasEvaluator:
+    def __init__(self, progress_total: int = 1) -> None:
+        self.evaluate_calls: list[str] = []
+        self.progress_total = progress_total
+
+    async def evaluate_campaign(self, *, user_id: str, campaign_id: str, on_progress=None) -> str:
+        self.evaluate_calls.append(f"{user_id}:{campaign_id}")
+        if on_progress:
+            await on_progress(self.progress_total, self.progress_total, "Q1", "naive")
+        return "fake-evaluator"
+
+    async def get_metrics(self, *, user_id: str, campaign):
+        return CampaignMetricsResponse(
+            campaign=campaign,
+            evaluator_model="fake-evaluator",
+            summary_by_mode={
+                "naive": ModeMetricsSummary(
+                    mode="naive",
+                    sample_count=1,
+                    faithfulness=MetricAggregate(mean=0.5, max=0.5, stddev=0),
+                    answer_correctness=MetricAggregate(mean=0.5, max=0.5, stddev=0),
+                    total_tokens=MetricAggregate(mean=123, max=123, stddev=0),
+                    delta_answer_correctness=0,
+                    delta_total_tokens=0,
+                    ecr=0,
+                    ecr_note=None,
+                )
+            },
+            rows=[],
+        )
+
+
 def _wait_for_terminal_status(client: TestClient, campaign_id: str, timeout_seconds: float = 3.0) -> dict:
     deadline = time.time() + timeout_seconds
     latest = {}
@@ -95,7 +128,8 @@ def test_campaign_api_runs_and_streams_results() -> None:
             difficulty=test_case.difficulty,
         )
 
-    engine = CampaignEngine(runner=runner)
+    fake_ragas = FakeRagasEvaluator()
+    engine = CampaignEngine(runner=runner, ragas_evaluator=fake_ragas)
     upload_root = _make_upload_root()
     db_path = _make_db_path()
 
@@ -130,7 +164,10 @@ def test_campaign_api_runs_and_streams_results() -> None:
 
         terminal = _wait_for_terminal_status(client, campaign_id)
         assert terminal["status"] == "completed"
+        assert terminal["phase"] == "evaluation"
         assert terminal["completed_units"] == 1
+        assert terminal["evaluation_completed_units"] == 1
+        assert terminal["evaluation_total_units"] == 1
 
         results = client.get(f"/api/evaluation/campaigns/{campaign_id}/results")
         assert results.status_code == 200
@@ -139,10 +176,15 @@ def test_campaign_api_runs_and_streams_results() -> None:
         assert len(body["results"]) == 1
         assert body["results"][0]["answer"] == "generated answer"
 
+        metrics = client.get(f"/api/evaluation/campaigns/{campaign_id}/metrics")
+        assert metrics.status_code == 200
+        assert metrics.json()["evaluator_model"] == "fake-evaluator"
+
         with client.stream("GET", f"/api/evaluation/campaigns/{campaign_id}/stream") as stream_response:
             stream_body = "".join(stream_response.iter_text())
         assert "event: campaign_snapshot" in stream_body
         assert "event: campaign_completed" in stream_body
+        assert fake_ragas.evaluate_calls
 
 
 def test_campaign_cancel_marks_campaign_cancelled() -> None:
@@ -164,7 +206,7 @@ def test_campaign_cancel_marks_campaign_cancelled() -> None:
             difficulty=test_case.difficulty,
         )
 
-    engine = CampaignEngine(runner=slow_runner)
+    engine = CampaignEngine(runner=slow_runner, ragas_evaluator=FakeRagasEvaluator())
     upload_root = _make_upload_root()
     db_path = _make_db_path()
 
@@ -216,6 +258,67 @@ def test_run_with_retry_retries_resource_exhausted() -> None:
     assert attempts["count"] == 3
 
 
+def test_campaign_manual_evaluate_reruns_ragas() -> None:
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="generated answer",
+            contexts=["ctx-1"],
+            source_doc_ids=["doc-1"],
+            expected_sources=[],
+            latency_ms=10,
+            token_usage={"total_tokens": 50},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+        )
+
+    fake_ragas = FakeRagasEvaluator()
+    engine = CampaignEngine(runner=runner, ragas_evaluator=fake_ragas)
+    upload_root = _make_upload_root()
+    db_path = _make_db_path()
+
+    with _build_client("user-a", upload_root, db_path, engine) as client:
+        _create_test_case(client)
+        created = client.post(
+            "/api/evaluation/campaigns",
+            json={
+                "name": "Manual evaluate",
+                "test_case_ids": ["Q1"],
+                "modes": ["naive"],
+                "model_config": {
+                    "id": "cfg-1",
+                    "name": "Balanced",
+                    "model_name": "gemini-2.5-flash",
+                    "temperature": 0.7,
+                    "top_p": 0.95,
+                    "top_k": 40,
+                    "max_input_tokens": 8192,
+                    "max_output_tokens": 2048,
+                    "thinking_mode": False,
+                    "thinking_budget": 8192,
+                },
+                "repeat_count": 1,
+                "batch_size": 1,
+                "rpm_limit": 60,
+            },
+        )
+        campaign_id = created.json()["campaign_id"]
+        terminal = _wait_for_terminal_status(client, campaign_id)
+        assert terminal["status"] == "completed"
+
+        rerun = client.post(f"/api/evaluation/campaigns/{campaign_id}/evaluate")
+        assert rerun.status_code == 200
+        assert rerun.json()["status"] == "evaluating"
+
+        terminal = _wait_for_terminal_status(client, campaign_id)
+        assert terminal["status"] == "completed"
+        assert len(fake_ragas.evaluate_calls) == 2
+
+
 def test_campaign_sqlite_concurrent_writes_complete_without_loss() -> None:
     async def concurrent_runner(**kwargs) -> BenchmarkExecutionResult:
         test_case = kwargs["test_case"]
@@ -236,13 +339,16 @@ def test_campaign_sqlite_concurrent_writes_complete_without_loss() -> None:
             difficulty=test_case.difficulty,
         )
 
-    engine = CampaignEngine(runner=concurrent_runner)
-    upload_root = _make_upload_root()
-    db_path = _make_db_path()
     test_case_ids = [f"Q{i}" for i in range(1, 5)]
     modes = ["naive", "advanced", "graph", "agentic"]
     repeat_count = 2
     expected_total = len(test_case_ids) * len(modes) * repeat_count
+    engine = CampaignEngine(
+        runner=concurrent_runner,
+        ragas_evaluator=FakeRagasEvaluator(progress_total=expected_total),
+    )
+    upload_root = _make_upload_root()
+    db_path = _make_db_path()
 
     with _build_client("user-a", upload_root, db_path, engine) as client:
         for test_case_id in test_case_ids:
@@ -277,8 +383,11 @@ def test_campaign_sqlite_concurrent_writes_complete_without_loss() -> None:
 
         terminal = _wait_for_terminal_status(client, campaign_id, timeout_seconds=8.0)
         assert terminal["status"] == "completed"
+        assert terminal["phase"] == "evaluation"
         assert terminal["completed_units"] == expected_total
         assert terminal["total_units"] == expected_total
+        assert terminal["evaluation_completed_units"] == expected_total
+        assert terminal["evaluation_total_units"] == expected_total
 
         results = client.get(f"/api/evaluation/campaigns/{campaign_id}/results")
         assert results.status_code == 200

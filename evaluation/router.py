@@ -17,6 +17,7 @@ from evaluation.campaign_schemas import (
     CampaignCreateRequest,
     CampaignCreateResponse,
     CampaignLifecycleStatus,
+    CampaignMetricsResponse,
     CampaignProgressEvent,
     CampaignResultsResponse,
     CampaignStatus,
@@ -254,6 +255,26 @@ async def get_campaign_results(
     return await engine.get_results(user_id=user_id, campaign_id=campaign_id)
 
 
+@router.get("/campaigns/{campaign_id}/metrics", response_model=CampaignMetricsResponse)
+async def get_campaign_metrics(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> CampaignMetricsResponse:
+    """Fetch aggregated RAGAS metrics for a campaign."""
+    engine = get_campaign_engine()
+    return await engine.get_metrics(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.post("/campaigns/{campaign_id}/evaluate", response_model=CampaignStatus)
+async def evaluate_campaign(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> CampaignStatus:
+    """Trigger a manual RAGAS rerun for an existing campaign."""
+    engine = get_campaign_engine()
+    return await engine.evaluate_campaign(user_id=user_id, campaign_id=campaign_id)
+
+
 @router.post("/campaigns/{campaign_id}/cancel", response_model=CampaignStatus)
 async def cancel_campaign(
     campaign_id: str,
@@ -276,10 +297,13 @@ async def stream_campaign(
         snapshot = await engine.get_campaign(user_id=user_id, campaign_id=campaign_id)
         yield _to_sse_event("campaign_snapshot", snapshot)
         last_progress = (
+            snapshot.status,
+            snapshot.phase,
             snapshot.completed_units,
+            snapshot.evaluation_completed_units,
+            snapshot.evaluation_total_units,
             snapshot.current_question_id,
             snapshot.current_mode,
-            snapshot.status,
             snapshot.error_message,
         )
 
@@ -291,10 +315,13 @@ async def stream_campaign(
             await asyncio.sleep(1)
             current = await engine.get_campaign(user_id=user_id, campaign_id=campaign_id)
             progress_state = (
+                current.status,
+                current.phase,
                 current.completed_units,
+                current.evaluation_completed_units,
+                current.evaluation_total_units,
                 current.current_question_id,
                 current.current_mode,
-                current.status,
                 current.error_message,
             )
             if progress_state != last_progress:
@@ -302,8 +329,12 @@ async def stream_campaign(
                     "campaign_progress",
                     CampaignProgressEvent(
                         campaign_id=current.id,
+                        status=current.status,
+                        phase=current.phase,
                         completed_units=current.completed_units,
                         total_units=current.total_units,
+                        evaluation_completed_units=current.evaluation_completed_units,
+                        evaluation_total_units=current.evaluation_total_units,
                         current_question_id=current.current_question_id,
                         current_mode=current.current_mode,
                     ),
