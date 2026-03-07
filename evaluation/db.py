@@ -1,0 +1,483 @@
+"""SQLite persistence for evaluation campaigns."""
+
+from __future__ import annotations
+
+import json
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+from uuid import uuid4
+
+import aiosqlite
+
+from core.errors import AppError, ErrorCode
+from evaluation.campaign_schemas import (
+    CampaignConfig,
+    CampaignLifecycleStatus,
+    CampaignResult,
+    CampaignResultStatus,
+    CampaignStatus,
+)
+
+EVALUATION_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "evaluation.db"
+_UNSET = object()
+_INIT_SQL = """
+CREATE TABLE IF NOT EXISTS campaigns (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT,
+    status TEXT NOT NULL,
+    config_json TEXT NOT NULL,
+    completed_units INTEGER NOT NULL DEFAULT 0,
+    total_units INTEGER NOT NULL DEFAULT 0,
+    current_question_id TEXT,
+    current_mode TEXT,
+    error_message TEXT,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_campaigns_user_created
+ON campaigns(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS campaign_results (
+    id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    question_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    ground_truth TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    run_number INTEGER NOT NULL,
+    answer TEXT NOT NULL,
+    contexts_json TEXT NOT NULL,
+    source_doc_ids_json TEXT NOT NULL,
+    expected_sources_json TEXT NOT NULL,
+    latency_ms REAL NOT NULL DEFAULT 0,
+    token_usage_json TEXT NOT NULL,
+    category TEXT,
+    difficulty TEXT,
+    status TEXT NOT NULL,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_campaign_results_campaign_created
+ON campaign_results(campaign_id, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS agent_traces (
+    id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL,
+    campaign_result_id TEXT,
+    user_id TEXT NOT NULL,
+    trace_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ragas_scores (
+    id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL,
+    campaign_result_id TEXT,
+    user_id TEXT NOT NULL,
+    metric_name TEXT NOT NULL,
+    metric_value REAL NOT NULL,
+    details_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@asynccontextmanager
+async def connect_db():
+    """Open SQLite connection with WAL-friendly settings."""
+    db_path = Path(EVALUATION_DB_PATH)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = await aiosqlite.connect(db_path)
+    connection.row_factory = aiosqlite.Row
+    await connection.execute("PRAGMA journal_mode=WAL;")
+    await connection.execute("PRAGMA synchronous=NORMAL;")
+    await connection.execute("PRAGMA foreign_keys=ON;")
+    try:
+        yield connection
+    finally:
+        await connection.close()
+
+
+async def init_db() -> None:
+    """Initialize evaluation database and future-proof tables."""
+    async with connect_db() as connection:
+        await connection.executescript(_INIT_SQL)
+        await connection.commit()
+
+
+def _json_dumps(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _json_loads(payload: str | None, fallback: Any) -> Any:
+    if not payload:
+        return fallback
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        return fallback
+
+
+def _row_to_campaign_status(row: aiosqlite.Row) -> CampaignStatus:
+    config_payload = _json_loads(row["config_json"], {})
+    return CampaignStatus(
+        id=row["id"],
+        name=row["name"],
+        status=CampaignLifecycleStatus(row["status"]),
+        config=CampaignConfig.model_validate(config_payload),
+        completed_units=row["completed_units"],
+        total_units=row["total_units"],
+        current_question_id=row["current_question_id"],
+        current_mode=row["current_mode"],
+        error_message=row["error_message"],
+        cancel_requested=bool(row["cancel_requested"]),
+        created_at=datetime.fromisoformat(row["created_at"]),
+        started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
+        completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
+    return CampaignResult(
+        id=row["id"],
+        campaign_id=row["campaign_id"],
+        question_id=row["question_id"],
+        question=row["question"],
+        ground_truth=row["ground_truth"],
+        mode=row["mode"],
+        run_number=row["run_number"],
+        answer=row["answer"],
+        contexts=_json_loads(row["contexts_json"], []),
+        source_doc_ids=_json_loads(row["source_doc_ids_json"], []),
+        expected_sources=_json_loads(row["expected_sources_json"], []),
+        latency_ms=row["latency_ms"],
+        token_usage=_json_loads(row["token_usage_json"], {}),
+        category=row["category"],
+        difficulty=row["difficulty"],
+        status=CampaignResultStatus(row["status"]),
+        error_message=row["error_message"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+class CampaignRepository:
+    """CRUD operations for campaign lifecycle rows."""
+
+    async def create(
+        self,
+        *,
+        user_id: str,
+        name: Optional[str],
+        config: CampaignConfig,
+    ) -> CampaignStatus:
+        await init_db()
+        campaign_id = str(uuid4())
+        now = _utc_now_iso()
+        total_units = len(config.test_case_ids) * len(config.modes) * config.repeat_count
+        async with connect_db() as connection:
+            await connection.execute(
+                """
+                INSERT INTO campaigns (
+                    id, user_id, name, status, config_json, completed_units, total_units,
+                    current_question_id, current_mode, error_message, cancel_requested,
+                    created_at, started_at, completed_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, NULL, NULL, ?)
+                """,
+                (
+                    campaign_id,
+                    user_id,
+                    name,
+                    CampaignLifecycleStatus.PENDING.value,
+                    _json_dumps(config.model_dump(mode="json", by_alias=True)),
+                    0,
+                    total_units,
+                    now,
+                    now,
+                ),
+            )
+            await connection.commit()
+        return await self.get(user_id=user_id, campaign_id=campaign_id)
+
+    async def get(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                "SELECT * FROM campaigns WHERE id = ? AND user_id = ?",
+                (campaign_id, user_id),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            raise AppError(
+                code=ErrorCode.NOT_FOUND,
+                message="Campaign not found",
+                status_code=404,
+            )
+        return _row_to_campaign_status(row)
+
+    async def list_by_user(self, *, user_id: str) -> list[CampaignStatus]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                "SELECT * FROM campaigns WHERE user_id = ? ORDER BY created_at DESC",
+                (user_id,),
+            )
+            rows = await cursor.fetchall()
+        return [_row_to_campaign_status(row) for row in rows]
+
+    async def mark_running(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
+        return await self._update_campaign(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            status=CampaignLifecycleStatus.RUNNING,
+            started_at=_utc_now_iso(),
+        )
+
+    async def update_progress(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        completed_units: int,
+        current_question_id: Optional[str],
+        current_mode: Optional[str],
+    ) -> CampaignStatus:
+        return await self._update_campaign(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            completed_units=completed_units,
+            current_question_id=current_question_id,
+            current_mode=current_mode,
+        )
+
+    async def mark_completed(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
+        now = _utc_now_iso()
+        return await self._update_campaign(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            status=CampaignLifecycleStatus.COMPLETED,
+            completed_at=now,
+            current_question_id=None,
+            current_mode=None,
+        )
+
+    async def mark_failed(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        error_message: str,
+    ) -> CampaignStatus:
+        now = _utc_now_iso()
+        return await self._update_campaign(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            status=CampaignLifecycleStatus.FAILED,
+            error_message=error_message,
+            completed_at=now,
+            current_question_id=None,
+            current_mode=None,
+        )
+
+    async def mark_cancelled(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
+        now = _utc_now_iso()
+        return await self._update_campaign(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            status=CampaignLifecycleStatus.CANCELLED,
+            completed_at=now,
+            current_question_id=None,
+            current_mode=None,
+        )
+
+    async def request_cancel(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
+        return await self._update_campaign(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            cancel_requested=True,
+        )
+
+    async def is_cancel_requested(self, *, user_id: str, campaign_id: str) -> bool:
+        campaign = await self.get(user_id=user_id, campaign_id=campaign_id)
+        return campaign.cancel_requested
+
+    async def _update_campaign(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        status: Optional[CampaignLifecycleStatus] = None,
+        completed_units: Optional[int] = None,
+        current_question_id: Optional[str] | object = _UNSET,
+        current_mode: Optional[str] | object = _UNSET,
+        error_message: Optional[str] = None,
+        cancel_requested: Optional[bool] = None,
+        started_at: Optional[str] = None,
+        completed_at: Optional[str] = None,
+    ) -> CampaignStatus:
+        await init_db()
+        updates: list[str] = ["updated_at = ?"]
+        values: list[Any] = [_utc_now_iso()]
+
+        if status is not None:
+            updates.append("status = ?")
+            values.append(status.value)
+        if completed_units is not None:
+            updates.append("completed_units = ?")
+            values.append(completed_units)
+        if current_question_id is not _UNSET:
+            updates.append("current_question_id = ?")
+            values.append(current_question_id)
+        if current_mode is not _UNSET:
+            updates.append("current_mode = ?")
+            values.append(current_mode)
+        if error_message is not None:
+            updates.append("error_message = ?")
+            values.append(error_message)
+        if cancel_requested is not None:
+            updates.append("cancel_requested = ?")
+            values.append(1 if cancel_requested else 0)
+        if started_at is not None:
+            updates.append("started_at = ?")
+            values.append(started_at)
+        if completed_at is not None:
+            updates.append("completed_at = ?")
+            values.append(completed_at)
+
+        values.extend([campaign_id, user_id])
+
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                f"UPDATE campaigns SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
+                values,
+            )
+            await connection.commit()
+            if cursor.rowcount == 0:
+                raise AppError(
+                    code=ErrorCode.NOT_FOUND,
+                    message="Campaign not found",
+                    status_code=404,
+                )
+        return await self.get(user_id=user_id, campaign_id=campaign_id)
+
+
+class CampaignResultRepository:
+    """Persistence for per-unit campaign outputs."""
+
+    async def create(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        question_id: str,
+        question: str,
+        ground_truth: str,
+        mode: str,
+        run_number: int,
+        answer: str,
+        contexts: list[str],
+        source_doc_ids: list[str],
+        expected_sources: list[str],
+        latency_ms: float,
+        token_usage: dict[str, int],
+        category: Optional[str],
+        difficulty: Optional[str],
+        status: CampaignResultStatus,
+        error_message: Optional[str] = None,
+    ) -> CampaignResult:
+        await init_db()
+        result_id = str(uuid4())
+        created_at = _utc_now_iso()
+        async with connect_db() as connection:
+            await connection.execute(
+                """
+                INSERT INTO campaign_results (
+                    id, campaign_id, user_id, question_id, question, ground_truth, mode,
+                    run_number, answer, contexts_json, source_doc_ids_json,
+                    expected_sources_json, latency_ms, token_usage_json, category,
+                    difficulty, status, error_message, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    result_id,
+                    campaign_id,
+                    user_id,
+                    question_id,
+                    question,
+                    ground_truth,
+                    mode,
+                    run_number,
+                    answer,
+                    _json_dumps(contexts),
+                    _json_dumps(source_doc_ids),
+                    _json_dumps(expected_sources),
+                    latency_ms,
+                    _json_dumps(token_usage),
+                    category,
+                    difficulty,
+                    status.value,
+                    error_message,
+                    created_at,
+                ),
+            )
+            await connection.commit()
+        return await self.get(user_id=user_id, campaign_id=campaign_id, result_id=result_id)
+
+    async def get(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        result_id: str,
+    ) -> CampaignResult:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM campaign_results
+                WHERE id = ? AND campaign_id = ? AND user_id = ?
+                """,
+                (result_id, campaign_id, user_id),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            raise AppError(
+                code=ErrorCode.NOT_FOUND,
+                message="Campaign result not found",
+                status_code=404,
+            )
+        return _row_to_campaign_result(row)
+
+    async def list_for_campaign(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+    ) -> list[CampaignResult]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM campaign_results
+                WHERE campaign_id = ? AND user_id = ?
+                ORDER BY created_at ASC, question_id ASC, mode ASC, run_number ASC
+                """,
+                (campaign_id, user_id),
+            )
+            rows = await cursor.fetchall()
+        return [_row_to_campaign_result(row) for row in rows]
+

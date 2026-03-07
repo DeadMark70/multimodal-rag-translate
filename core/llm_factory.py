@@ -7,8 +7,10 @@ Each purpose has its own optimized settings to avoid configuration conflicts.
 
 # Standard library
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from functools import lru_cache
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 # Third-party
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -36,6 +38,10 @@ _DEFAULT_MODEL = "gemma-3-27b-it"
 
 # Session-wide override for testing
 _session_model_override: Optional[str] = None
+_runtime_llm_overrides: ContextVar[dict[str, Any]] = ContextVar(
+    "runtime_llm_overrides",
+    default={},
+)
 
 def set_session_model_override(model_name: Optional[str]) -> None:
     """
@@ -52,6 +58,23 @@ def set_session_model_override(model_name: Optional[str]) -> None:
         logger.info(f"Session model override set to: {model_name}")
     else:
         logger.info("Session model override cleared")
+
+
+@contextmanager
+def llm_runtime_override(**overrides: Any):
+    """
+    Apply request-scoped runtime overrides for nested LLM calls.
+
+    ContextVar keeps overrides task-local so concurrent requests do not leak
+    model parameters into each other.
+    """
+    current = dict(_runtime_llm_overrides.get())
+    merged = {**current, **{key: value for key, value in overrides.items() if value is not None}}
+    token: Token[dict[str, Any]] = _runtime_llm_overrides.set(merged)
+    try:
+        yield
+    finally:
+        _runtime_llm_overrides.reset(token)
 
 # Configuration for each purpose
 _LLM_CONFIGS: dict[str, dict] = {
@@ -112,24 +135,32 @@ _LLM_CONFIGS: dict[str, dict] = {
     },
 }
 
-@lru_cache(maxsize=30)  # Increased to accommodate different model instances and overrides
-def get_llm(purpose: LLMPurpose, model_name: str = None) -> ChatGoogleGenerativeAI:
+@lru_cache(maxsize=64)
+def _get_llm_cached(
+    purpose: LLMPurpose,
+    model_name: Optional[str],
+    temperature: Optional[float],
+    top_p: Optional[float],
+    top_k: Optional[int],
+    max_output_tokens: Optional[int],
+) -> ChatGoogleGenerativeAI:
     """
     Returns a cached LLM instance for a specific purpose.
 
     Each purpose has its own optimized configuration (temperature, max_tokens).
     Instances are cached using lru_cache to avoid repeated initialization.
-
-    Args:
-        purpose: The intended use case for the LLM.
-        model_name: Optional model name to override the default for this purpose.
-
-    Returns:
-        Configured ChatGoogleGenerativeAI instance.
     """
-    config = _LLM_CONFIGS.get(purpose, _LLM_CONFIGS["rag_qa"])
-    
-    # Priority: 1. explicit model_name, 2. session override, 3. purpose-specific, 4. default
+    config = dict(_LLM_CONFIGS.get(purpose, _LLM_CONFIGS["rag_qa"]))
+
+    if temperature is not None:
+        config["temperature"] = temperature
+    if top_p is not None:
+        config["top_p"] = top_p
+    if top_k is not None:
+        config["top_k"] = top_k
+    if max_output_tokens is not None:
+        config["max_output_tokens"] = max_output_tokens
+
     if model_name:
         model = model_name
     elif _session_model_override:
@@ -137,11 +168,32 @@ def get_llm(purpose: LLMPurpose, model_name: str = None) -> ChatGoogleGenerative
     else:
         model = _MODEL_BY_PURPOSE.get(purpose, _DEFAULT_MODEL)
 
-    logger.info(f"Initializing LLM for purpose: {purpose} (model: {model}, config: {config})")
+    logger.info(
+        "Initializing LLM for purpose: %s (model: %s, config: %s)",
+        purpose,
+        model,
+        config,
+    )
 
-    return ChatGoogleGenerativeAI(
-        model=model,
-        **config
+    return ChatGoogleGenerativeAI(model=model, **config)
+
+
+def get_llm(purpose: LLMPurpose, model_name: str = None) -> ChatGoogleGenerativeAI:
+    """
+    Returns a cached LLM instance for a specific purpose.
+
+    Runtime overrides come from task-local context so nested async flows can use
+    request-scoped model settings safely.
+    """
+    overrides = _runtime_llm_overrides.get()
+    effective_model = model_name or overrides.get("model_name")
+    return _get_llm_cached(
+        purpose=purpose,
+        model_name=effective_model,
+        temperature=overrides.get("temperature"),
+        top_p=overrides.get("top_p"),
+        top_k=overrides.get("top_k"),
+        max_output_tokens=overrides.get("max_output_tokens"),
     )
 
 
@@ -151,5 +203,5 @@ def clear_llm_cache() -> None:
 
     Useful for testing or when configuration needs to be reloaded.
     """
-    get_llm.cache_clear()
+    _get_llm_cached.cache_clear()
     logger.info("LLM cache cleared")

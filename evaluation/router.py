@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
+from sse_starlette.sse import EventSourceResponse
 
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
+from evaluation.campaign_engine import get_campaign_engine
+from evaluation.campaign_schemas import (
+    CampaignCreateRequest,
+    CampaignCreateResponse,
+    CampaignLifecycleStatus,
+    CampaignProgressEvent,
+    CampaignResultsResponse,
+    CampaignStatus,
+)
 from evaluation.model_discovery import list_available_models
 from evaluation.schemas import (
     AvailableModel,
@@ -30,6 +42,11 @@ from evaluation.storage import (
 )
 
 router = APIRouter()
+_TERMINAL_CAMPAIGN_STATUSES = {
+    CampaignLifecycleStatus.COMPLETED,
+    CampaignLifecycleStatus.FAILED,
+    CampaignLifecycleStatus.CANCELLED,
+}
 
 
 class TestCaseCreateRequest(BaseModel):
@@ -65,6 +82,14 @@ class ModelConfigCreateRequest(BaseModel):
     max_output_tokens: int = Field(8192, ge=1)
     thinking_mode: bool = False
     thinking_budget: int = Field(8192, ge=1024, le=32768)
+
+
+def _to_sse_event(event_name: str, payload: BaseModel | dict[str, Any]) -> dict[str, str]:
+    body = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
+    return {
+        "event": event_name,
+        "data": json.dumps(body, ensure_ascii=False),
+    }
 
 
 @router.get("/test-cases", response_model=list[TestCase])
@@ -194,3 +219,99 @@ async def remove_model_config(
     """Delete one model config preset."""
     total = await delete_model_config(user_id=user_id, config_id=config_id)
     return DeleteResult(deleted_id=config_id, total=total)
+
+
+@router.post("/campaigns", response_model=CampaignCreateResponse)
+async def create_campaign(
+    payload: CampaignCreateRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> CampaignCreateResponse:
+    """Create and start an evaluation campaign."""
+    engine = get_campaign_engine()
+    return await engine.create_and_start(
+        user_id=user_id,
+        name=payload.name,
+        config=payload.to_config(),
+    )
+
+
+@router.get("/campaigns", response_model=list[CampaignStatus])
+async def get_campaigns(
+    user_id: str = Depends(get_current_user_id),
+) -> list[CampaignStatus]:
+    """List evaluation campaigns for current user."""
+    engine = get_campaign_engine()
+    return await engine.list_campaigns(user_id=user_id)
+
+
+@router.get("/campaigns/{campaign_id}/results", response_model=CampaignResultsResponse)
+async def get_campaign_results(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> CampaignResultsResponse:
+    """Fetch persisted campaign results."""
+    engine = get_campaign_engine()
+    return await engine.get_results(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.post("/campaigns/{campaign_id}/cancel", response_model=CampaignStatus)
+async def cancel_campaign(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> CampaignStatus:
+    """Request cancellation for a running campaign."""
+    engine = get_campaign_engine()
+    return await engine.cancel_campaign(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get("/campaigns/{campaign_id}/stream")
+async def stream_campaign(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> EventSourceResponse:
+    """Stream campaign progress with authenticated SSE."""
+    engine = get_campaign_engine()
+
+    async def event_generator():
+        snapshot = await engine.get_campaign(user_id=user_id, campaign_id=campaign_id)
+        yield _to_sse_event("campaign_snapshot", snapshot)
+        last_progress = (
+            snapshot.completed_units,
+            snapshot.current_question_id,
+            snapshot.current_mode,
+            snapshot.status,
+            snapshot.error_message,
+        )
+
+        if snapshot.status in _TERMINAL_CAMPAIGN_STATUSES:
+            yield _to_sse_event(f"campaign_{snapshot.status.value}", snapshot)
+            return
+
+        while True:
+            await asyncio.sleep(1)
+            current = await engine.get_campaign(user_id=user_id, campaign_id=campaign_id)
+            progress_state = (
+                current.completed_units,
+                current.current_question_id,
+                current.current_mode,
+                current.status,
+                current.error_message,
+            )
+            if progress_state != last_progress:
+                yield _to_sse_event(
+                    "campaign_progress",
+                    CampaignProgressEvent(
+                        campaign_id=current.id,
+                        completed_units=current.completed_units,
+                        total_units=current.total_units,
+                        current_question_id=current.current_question_id,
+                        current_mode=current.current_mode,
+                    ),
+                )
+                last_progress = progress_state
+
+            if current.status in _TERMINAL_CAMPAIGN_STATUSES:
+                yield _to_sse_event(f"campaign_{current.status.value}", current)
+                return
+
+    return EventSourceResponse(event_generator())

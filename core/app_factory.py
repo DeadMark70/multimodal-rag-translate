@@ -201,9 +201,12 @@ async def _warm_up_pdf_ocr() -> None:
 @asynccontextmanager
 async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
     """FastAPI lifespan hook for startup initialization."""
+    from evaluation.db import init_db
+
     logger.info("=== Application Startup ===")
     _ensure_base_directories()
     _initialize_external_clients(_)
+    await init_db()
     await _initialize_rag_components()
     await _warm_up_pdf_ocr()
     logger.info("=== All components ready ===")
