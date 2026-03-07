@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Any
 
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 _CACHE_TTL_SECONDS = 600
 _cache: tuple[float, list[AvailableModel]] | None = None
 _cache_lock = asyncio.Lock()
+_configured_api_key: str | None = None
 
 _FALLBACK_MODELS: list[AvailableModel] = [
     AvailableModel(
@@ -41,8 +43,21 @@ _FALLBACK_MODELS: list[AvailableModel] = [
 
 def _fetch_models_sync() -> list[Any]:
     """Fetch and materialize model pager synchronously."""
+    _ensure_genai_configured()
     pager = genai.list_models(request_options={"timeout": 10})
     return list(pager)
+
+
+def _ensure_genai_configured() -> None:
+    """Configure google.generativeai client from env key when available."""
+    global _configured_api_key
+    api_key = (os.getenv("GOOGLE_API_KEY") or "").strip().strip('"')
+    if not api_key:
+        return
+    if _configured_api_key == api_key:
+        return
+    genai.configure(api_key=api_key)
+    _configured_api_key = api_key
 
 
 def _normalize_model(raw_model: Any) -> AvailableModel | None:
