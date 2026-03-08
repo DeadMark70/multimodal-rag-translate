@@ -42,10 +42,21 @@ _FALLBACK_MODELS: list[AvailableModel] = [
 
 
 def _fetch_models_sync() -> list[Any]:
-    """Fetch and materialize model pager synchronously."""
+    """Fetch and materialize model pager synchronously.
+
+    Iterates using a manual for-loop so that a single model that fails to
+    deserialize (e.g. when the SDK is older than the API and encounters an
+    unknown field like `thinking_config`) does not abort the entire listing.
+    """
     _ensure_genai_configured()
     pager = genai.list_models(request_options={"timeout": 10})
-    return list(pager)
+    results: list[Any] = []
+    for raw in pager:
+        try:
+            results.append(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Skipping unparseable model entry: %s", exc)
+    return results
 
 
 def _ensure_genai_configured() -> None:
@@ -103,7 +114,8 @@ async def list_available_models(force_refresh: bool = False) -> list[AvailableMo
                     normalized.append(model)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "Dynamic Gemini model discovery unavailable, using fallback list: %s",
+                "Dynamic Gemini model discovery failed (%s: %s), using fallback list.",
+                type(exc).__name__,
                 exc,
             )
 
