@@ -78,6 +78,7 @@ class RAGResult(NamedTuple):
     usage: Dict[str, int] = {}
     thought_process: Optional[str] = None
     tool_calls: List[dict] = []
+    agent_trace: Optional[dict] = None
 
 
 

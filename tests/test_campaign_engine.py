@@ -405,3 +405,132 @@ def test_campaign_sqlite_concurrent_writes_complete_without_loss() -> None:
         journal_mode = connection.execute("PRAGMA journal_mode;").fetchone()
         assert journal_mode is not None
         assert str(journal_mode[0]).lower() == "wal"
+
+
+def test_agent_trace_api_persists_and_reads_trace_payload() -> None:
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        run_number = kwargs["run_number"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="agentic answer",
+            contexts=["ctx-1", "ctx-2"],
+            source_doc_ids=["doc-1"],
+            expected_sources=[],
+            latency_ms=33,
+            token_usage={"total_tokens": 120},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+            agent_trace={
+                "trace_id": f"trace-{run_number}",
+                "question_id": test_case.id,
+                "question": test_case.question,
+                "mode": "agentic",
+                "run_number": run_number,
+                "trace_status": "completed",
+                "summary": "trace summary",
+                "step_count": 2,
+                "tool_call_count": 1,
+                "total_tokens": 120,
+                "created_at": "2026-03-08T00:00:00+00:00",
+                "steps": [
+                    {
+                        "step_id": "planning-1",
+                        "phase": "planning",
+                        "step_type": "plan_generation",
+                        "title": "Generate research plan",
+                        "status": "completed",
+                        "started_at": "2026-03-08T00:00:00+00:00",
+                        "completed_at": "2026-03-08T00:00:00+00:00",
+                        "input_preview": test_case.question,
+                        "output_preview": "2 tasks",
+                        "raw_text": "1. sub task",
+                        "tool_calls": [],
+                        "token_usage": {"total_tokens": 20},
+                        "metadata": {},
+                    },
+                    {
+                        "step_id": "execution-2",
+                        "phase": "execution",
+                        "step_type": "sub_task_execution",
+                        "title": "Step 1",
+                        "status": "completed",
+                        "started_at": "2026-03-08T00:00:01+00:00",
+                        "completed_at": "2026-03-08T00:00:01+00:00",
+                        "input_preview": "sub task 1",
+                        "output_preview": "answer preview",
+                        "raw_text": "raw thought",
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "action": "VERIFY_IMAGE",
+                                "status": "completed",
+                                "payload": {"path": "img.png"},
+                                "result_preview": "verified",
+                            }
+                        ],
+                        "token_usage": {"total_tokens": 100},
+                        "metadata": {},
+                    },
+                ],
+            },
+        )
+
+    engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+    upload_root = _make_upload_root()
+    db_path = _make_db_path()
+
+    with _build_client("user-a", upload_root, db_path, engine) as client:
+        _create_test_case(client)
+        created = client.post(
+            "/api/evaluation/campaigns",
+            json={
+                "name": "Agent trace",
+                "test_case_ids": ["Q1"],
+                "modes": ["agentic"],
+                "model_config": {
+                    "id": "cfg-1",
+                    "name": "Balanced",
+                    "model_name": "gemini-2.5-flash",
+                    "temperature": 0.7,
+                    "top_p": 0.95,
+                    "top_k": 40,
+                    "max_input_tokens": 8192,
+                    "max_output_tokens": 2048,
+                    "thinking_mode": False,
+                    "thinking_budget": 8192,
+                },
+                "repeat_count": 1,
+                "batch_size": 1,
+                "rpm_limit": 60,
+            },
+        )
+        assert created.status_code == 200
+        campaign_id = created.json()["campaign_id"]
+
+        terminal = _wait_for_terminal_status(client, campaign_id)
+        assert terminal["status"] == "completed"
+
+        results = client.get(f"/api/evaluation/campaigns/{campaign_id}/results")
+        assert results.status_code == 200
+        result_rows = results.json()["results"]
+        assert len(result_rows) == 1
+        assert result_rows[0]["has_trace"] is True
+        result_id = result_rows[0]["id"]
+
+        traces = client.get(f"/api/evaluation/campaigns/{campaign_id}/traces")
+        assert traces.status_code == 200
+        trace_rows = traces.json()
+        assert len(trace_rows) == 1
+        assert trace_rows[0]["campaign_result_id"] == result_id
+        assert trace_rows[0]["tool_call_count"] == 1
+
+        detail = client.get(f"/api/evaluation/campaigns/{campaign_id}/results/{result_id}/trace")
+        assert detail.status_code == 200
+        trace_detail = detail.json()
+        assert trace_detail["summary"] == "trace summary"
+        assert trace_detail["steps"][0]["phase"] == "planning"
+        assert trace_detail["steps"][1]["tool_calls"][0]["action"] == "VERIFY_IMAGE"

@@ -17,12 +17,13 @@ from evaluation.campaign_schemas import (
     CampaignResultsResponse,
     CampaignStatus,
 )
-from evaluation.db import CampaignRepository, CampaignResultRepository
+from evaluation.db import AgentTraceRepository, CampaignRepository, CampaignResultRepository
 from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
 from evaluation.ragas_evaluator import RagasEvaluator
 from evaluation.retry import RateBudget
 from evaluation.schemas import TestCase
 from evaluation.storage import list_test_cases
+from evaluation.trace_schemas import AgentTraceDetail, AgentTraceSummary
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +46,13 @@ class CampaignEngine:
         self,
         campaign_repository: Optional[CampaignRepository] = None,
         result_repository: Optional[CampaignResultRepository] = None,
+        trace_repository: Optional[AgentTraceRepository] = None,
         ragas_evaluator: Optional[RagasEvaluator] = None,
         runner: CampaignRunner = run_campaign_case,
     ) -> None:
         self._campaign_repository = campaign_repository or CampaignRepository()
         self._result_repository = result_repository or CampaignResultRepository()
+        self._trace_repository = trace_repository or AgentTraceRepository()
         self._ragas_evaluator = ragas_evaluator or RagasEvaluator(
             result_repository=self._result_repository,
         )
@@ -94,6 +97,24 @@ class CampaignEngine:
     async def get_metrics(self, *, user_id: str, campaign_id: str) -> CampaignMetricsResponse:
         campaign = await self.get_campaign(user_id=user_id, campaign_id=campaign_id)
         return await self._ragas_evaluator.get_metrics(user_id=user_id, campaign=campaign)
+
+    async def list_traces(self, *, user_id: str, campaign_id: str) -> list[AgentTraceSummary]:
+        await self.get_campaign(user_id=user_id, campaign_id=campaign_id)
+        return await self._trace_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+
+    async def get_trace(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        campaign_result_id: str,
+    ) -> AgentTraceDetail:
+        await self.get_campaign(user_id=user_id, campaign_id=campaign_id)
+        return await self._trace_repository.get_for_result(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            campaign_result_id=campaign_result_id,
+        )
 
     async def cancel_campaign(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
         campaign = await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
@@ -179,6 +200,7 @@ class CampaignEngine:
                             user_id=user_id,
                             model_config=config.model_preset.model_dump(mode="json"),
                             rate_budget=rate_budget,
+                            run_number=unit.run_number,
                         )
                     )
                     for unit in batch
@@ -327,6 +349,7 @@ class CampaignEngine:
         user_id: str,
         model_config: dict,
         rate_budget: RateBudget,
+        run_number: int,
     ) -> tuple[CampaignUnit, BenchmarkExecutionResult | Exception]:
         await rate_budget.acquire()
         try:
@@ -335,6 +358,7 @@ class CampaignEngine:
                 user_id=user_id,
                 mode=unit.mode,
                 model_config=model_config,
+                run_number=run_number,
             )
             return unit, payload
         except Exception as exc:  # noqa: BLE001
@@ -349,7 +373,7 @@ class CampaignEngine:
         payload: BenchmarkExecutionResult | Exception,
     ):
         if isinstance(payload, Exception):
-            return await self._result_repository.create(
+            created = await self._result_repository.create(
                 user_id=user_id,
                 campaign_id=campaign_id,
                 question_id=unit.test_case.id,
@@ -368,8 +392,17 @@ class CampaignEngine:
                 status=CampaignResultStatus.FAILED,
                 error_message=str(payload),
             )
+            trace_payload = getattr(payload, "agent_trace", None)
+            if trace_payload:
+                await self._trace_repository.replace_for_result(
+                    user_id=user_id,
+                    campaign_id=campaign_id,
+                    campaign_result_id=created.id,
+                    trace_payload=trace_payload,
+                )
+            return created
 
-        return await self._result_repository.create(
+        created = await self._result_repository.create(
             user_id=user_id,
             campaign_id=campaign_id,
             question_id=payload.question_id,
@@ -388,6 +421,14 @@ class CampaignEngine:
             status=CampaignResultStatus.COMPLETED if not payload.error_message else CampaignResultStatus.FAILED,
             error_message=payload.error_message,
         )
+        if payload.agent_trace:
+            await self._trace_repository.replace_for_result(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                campaign_result_id=created.id,
+                trace_payload=payload.agent_trace,
+            )
+        return created
 
     async def _resolve_test_cases(self, *, user_id: str, test_case_ids: list[str]) -> list[TestCase]:
         available = [TestCase.model_validate(item) for item in await list_test_cases(user_id)]

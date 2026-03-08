@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,9 +20,11 @@ from evaluation.campaign_schemas import (
     CampaignResultStatus,
     CampaignStatus,
 )
+from evaluation.trace_schemas import AgentTraceDetail, AgentTraceSummary, summarize_agent_trace
 
 EVALUATION_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "evaluation.db"
 _UNSET = object()
+logger = logging.getLogger(__name__)
 _INIT_SQL = """
 CREATE TABLE IF NOT EXISTS campaigns (
     id TEXT PRIMARY KEY,
@@ -95,6 +98,9 @@ CREATE TABLE IF NOT EXISTS ragas_scores (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ragas_scores_result_metric
 ON ragas_scores(campaign_result_id, metric_name);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_traces_result
+ON agent_traces(campaign_result_id);
 """
 
 
@@ -146,6 +152,12 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_ragas_scores_result_metric
         ON ragas_scores(campaign_result_id, metric_name)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_traces_result
+        ON agent_traces(campaign_result_id)
         """
     )
 
@@ -211,8 +223,28 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
         difficulty=row["difficulty"],
         status=CampaignResultStatus(row["status"]),
         error_message=row["error_message"],
+        has_trace=bool(row["has_trace"]) if "has_trace" in row.keys() else False,
         created_at=datetime.fromisoformat(row["created_at"]),
     )
+
+
+def _row_to_agent_trace_detail(row: aiosqlite.Row) -> AgentTraceDetail:
+    payload = _json_loads(row["trace_json"], {})
+    if not payload:
+        raise AppError(
+            code=ErrorCode.INTERNAL_ERROR,
+            message="Stored agent trace is invalid",
+            status_code=500,
+        )
+    try:
+        return AgentTraceDetail.model_validate(payload)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to parse agent trace row %s: %s", row["id"], exc)
+        raise AppError(
+            code=ErrorCode.INTERNAL_ERROR,
+            message="Stored agent trace is invalid",
+            status_code=500,
+        ) from exc
 
 
 class CampaignRepository:
@@ -533,7 +565,13 @@ class CampaignResultRepository:
         async with connect_db() as connection:
             cursor = await connection.execute(
                 """
-                SELECT * FROM campaign_results
+                SELECT campaign_results.*,
+                       EXISTS(
+                           SELECT 1
+                           FROM agent_traces
+                           WHERE agent_traces.campaign_result_id = campaign_results.id
+                       ) AS has_trace
+                FROM campaign_results
                 WHERE id = ? AND campaign_id = ? AND user_id = ?
                 """,
                 (result_id, campaign_id, user_id),
@@ -557,7 +595,13 @@ class CampaignResultRepository:
         async with connect_db() as connection:
             cursor = await connection.execute(
                 """
-                SELECT * FROM campaign_results
+                SELECT campaign_results.*,
+                       EXISTS(
+                           SELECT 1
+                           FROM agent_traces
+                           WHERE agent_traces.campaign_result_id = campaign_results.id
+                       ) AS has_trace
+                FROM campaign_results
                 WHERE campaign_id = ? AND user_id = ?
                 ORDER BY created_at ASC, question_id ASC, mode ASC, run_number ASC
                 """,
@@ -565,6 +609,112 @@ class CampaignResultRepository:
             )
             rows = await cursor.fetchall()
         return [_row_to_campaign_result(row) for row in rows]
+
+
+class AgentTraceRepository:
+    """Persistence helpers for campaign-linked agent traces."""
+
+    async def replace_for_result(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        campaign_result_id: str,
+        trace_payload: dict[str, Any],
+    ) -> AgentTraceDetail:
+        await init_db()
+        steps = trace_payload.get("steps", [])
+        tool_call_count = sum(len(step.get("tool_calls", [])) for step in steps)
+        total_tokens = sum(int(step.get("token_usage", {}).get("total_tokens", 0) or 0) for step in steps)
+        detail = AgentTraceDetail.model_validate(
+            {
+                "trace_id": trace_payload.get("trace_id") or str(uuid4()),
+                "campaign_id": campaign_id,
+                "campaign_result_id": campaign_result_id,
+                "question_id": trace_payload.get("question_id", ""),
+                "question": trace_payload.get("question", ""),
+                "mode": trace_payload.get("mode"),
+                "run_number": trace_payload.get("run_number", 1),
+                "trace_status": trace_payload.get("trace_status", "completed"),
+                "summary": trace_payload.get("summary", ""),
+                "step_count": len(steps),
+                "tool_call_count": tool_call_count,
+                "total_tokens": total_tokens,
+                "created_at": trace_payload.get("created_at") or _utc_now_iso(),
+                "steps": steps,
+            }
+        )
+        async with connect_db() as connection:
+            await connection.execute(
+                """
+                DELETE FROM agent_traces
+                WHERE campaign_result_id = ? AND user_id = ?
+                """,
+                (campaign_result_id, user_id),
+            )
+            await connection.execute(
+                """
+                INSERT INTO agent_traces (
+                    id, campaign_id, campaign_result_id, user_id, trace_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    detail.trace_id,
+                    campaign_id,
+                    campaign_result_id,
+                    user_id,
+                    _json_dumps(detail.model_dump(mode="json")),
+                    detail.created_at.isoformat(),
+                ),
+            )
+            await connection.commit()
+        return detail
+
+    async def list_for_campaign(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+    ) -> list[AgentTraceSummary]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT *
+                FROM agent_traces
+                WHERE campaign_id = ? AND user_id = ?
+                ORDER BY created_at DESC
+                """,
+                (campaign_id, user_id),
+            )
+            rows = await cursor.fetchall()
+        return [summarize_agent_trace(_row_to_agent_trace_detail(row)) for row in rows]
+
+    async def get_for_result(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        campaign_result_id: str,
+    ) -> AgentTraceDetail:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT *
+                FROM agent_traces
+                WHERE campaign_id = ? AND campaign_result_id = ? AND user_id = ?
+                """,
+                (campaign_id, campaign_result_id, user_id),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            raise AppError(
+                code=ErrorCode.NOT_FOUND,
+                message="Agent trace not found",
+                status_code=404,
+            )
+        return _row_to_agent_trace_detail(row)
 
 
 class RagasScoreRepository:

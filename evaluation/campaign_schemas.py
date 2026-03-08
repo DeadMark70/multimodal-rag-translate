@@ -130,6 +130,7 @@ class CampaignResult(BaseModel):
     difficulty: Optional[str] = None
     status: CampaignResultStatus
     error_message: Optional[str] = None
+    has_trace: bool = False
     created_at: datetime
 
 

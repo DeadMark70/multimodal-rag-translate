@@ -41,6 +41,7 @@ from evaluation.storage import (
     update_model_config,
     update_test_case,
 )
+from evaluation.trace_schemas import AgentTraceDetail, AgentTraceSummary
 
 router = APIRouter()
 _TERMINAL_CAMPAIGN_STATUSES = {
@@ -253,6 +254,34 @@ async def get_campaign_results(
     """Fetch persisted campaign results."""
     engine = get_campaign_engine()
     return await engine.get_results(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get("/campaigns/{campaign_id}/traces", response_model=list[AgentTraceSummary])
+async def get_campaign_traces(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> list[AgentTraceSummary]:
+    """List available persisted agent traces for a campaign."""
+    engine = get_campaign_engine()
+    return await engine.list_traces(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get(
+    "/campaigns/{campaign_id}/results/{campaign_result_id}/trace",
+    response_model=AgentTraceDetail,
+)
+async def get_campaign_result_trace(
+    campaign_id: str,
+    campaign_result_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> AgentTraceDetail:
+    """Fetch one persisted agent trace by campaign result id."""
+    engine = get_campaign_engine()
+    return await engine.get_trace(
+        user_id=user_id,
+        campaign_id=campaign_id,
+        campaign_result_id=campaign_result_id,
+    )
 
 
 @router.get("/campaigns/{campaign_id}/metrics", response_model=CampaignMetricsResponse)
