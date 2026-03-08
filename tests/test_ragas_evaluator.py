@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +15,8 @@ from evaluation.campaign_schemas import (
 )
 from evaluation.ragas_evaluator import RagasEvaluator
 from evaluation.schemas import ModelConfig
+
+FIXTURE_DIR = Path(__file__).resolve().parents[1] / "bergen"
 
 
 class FakeResultRepository:
@@ -34,7 +38,7 @@ class FakeScoreRepository:
         self._scores = list(score_rows)
 
 
-def _campaign_status() -> CampaignStatus:
+def _campaign_status(*, modes: list[str] | None = None) -> CampaignStatus:
     return CampaignStatus(
         id="cmp-1",
         name="Metrics",
@@ -42,7 +46,7 @@ def _campaign_status() -> CampaignStatus:
         phase="evaluation",
         config=CampaignConfig(
             test_case_ids=["Q1"],
-            modes=["naive", "advanced"],
+            modes=modes or ["naive", "advanced"],
             model_preset=ModelConfig(
                 id="cfg-1",
                 name="Balanced",
@@ -89,6 +93,10 @@ def _result(result_id: str, mode: str, total_tokens: int, *, status: CampaignRes
     )
 
 
+def _fixture_json(filename: str) -> dict:
+    return json.loads((FIXTURE_DIR / filename).read_text(encoding="utf-8"))
+
+
 @pytest.mark.asyncio
 async def test_ragas_evaluator_aggregates_marginal_ecr_and_skips_failed_rows():
     results = [
@@ -122,3 +130,104 @@ async def test_ragas_evaluator_aggregates_marginal_ecr_and_skips_failed_rows():
     assert response.summary_by_mode["advanced"].ecr == pytest.approx(6.6666666667)
     assert response.summary_by_mode["graph"].ecr is None
     assert response.summary_by_mode["graph"].ecr_note == "non_positive_marginal_cost"
+
+
+def test_benchmark_results_ragas_fixture_has_aligned_columns():
+    fixture = _fixture_json("benchmark_results_ragas.json")
+
+    row_count = len(fixture["questions"])
+    assert row_count > 0
+    assert len(fixture["answers"]) == row_count
+    assert len(fixture["contexts"]) == row_count
+    assert len(fixture["ground_truths"]) == row_count
+    assert len(fixture["metadata"]["modes"]) == row_count
+    assert len(fixture["metadata"]["question_ids"]) == row_count
+    assert len(fixture["metadata"]["categories"]) == row_count
+
+
+@pytest.mark.asyncio
+async def test_ragas_evaluator_matches_bergen_fixture_summary():
+    full_results = _fixture_json("full_results.json")
+    evaluation_results = _fixture_json("evaluation_results.json")
+
+    results: list[CampaignResult] = []
+    scores: list[dict] = []
+
+    detail_by_mode_question = {
+        mode: {
+            detail["question"]: detail
+            for detail in payload["details"]
+        }
+        for mode, payload in evaluation_results["results_by_mode"].items()
+    }
+
+    for index, raw in enumerate(full_results["results"], start=1):
+        result_id = f"fixture-{index}"
+        results.append(
+            CampaignResult(
+                id=result_id,
+                campaign_id="cmp-1",
+                question_id=raw["question_id"],
+                question=raw["question"],
+                ground_truth=raw["ground_truth"],
+                mode=raw["mode"],
+                run_number=1,
+                answer=raw["answer"],
+                contexts=raw["contexts"],
+                source_doc_ids=raw["source_doc_ids"],
+                expected_sources=raw["expected_sources"],
+                category=raw.get("category"),
+                difficulty=raw.get("difficulty"),
+                latency_ms=float(raw["latency_ms"]),
+                token_usage={
+                    "input_tokens": raw["token_usage"].get("input_tokens", 0),
+                    "output_tokens": raw["token_usage"].get("output_tokens", 0),
+                    "total_tokens": raw["token_usage"].get("total_tokens", 0),
+                },
+                status=CampaignResultStatus.COMPLETED,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        detail = detail_by_mode_question[raw["mode"]][raw["question"]]
+        scores.extend(
+            [
+                {
+                    "campaign_result_id": result_id,
+                    "metric_name": "faithfulness",
+                    "metric_value": detail["faithfulness"],
+                    "details": {"evaluator_model": evaluation_results["evaluator_model"]},
+                },
+                {
+                    "campaign_result_id": result_id,
+                    "metric_name": "answer_correctness",
+                    "metric_value": detail["answer_correctness"],
+                    "details": {"evaluator_model": evaluation_results["evaluator_model"]},
+                },
+            ]
+        )
+
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository(results),
+        score_repository=FakeScoreRepository(scores),
+        evaluator_model=evaluation_results["evaluator_model"],
+    )
+
+    response = await evaluator.get_metrics(
+        user_id="user-a",
+        campaign=_campaign_status(modes=list(evaluation_results["results_by_mode"].keys())),
+    )
+
+    for mode, expected in evaluation_results["results_by_mode"].items():
+        summary = response.summary_by_mode[mode]
+        expected_faithfulness = sum(
+            detail["faithfulness"] for detail in expected["details"]
+        ) / len(expected["details"])
+        expected_correctness = sum(
+            detail["answer_correctness"] for detail in expected["details"]
+        ) / len(expected["details"])
+        assert summary.sample_count == expected["num_questions"]
+        assert summary.faithfulness.mean == pytest.approx(expected_faithfulness, abs=1e-4)
+        assert summary.answer_correctness.mean == pytest.approx(
+            expected_correctness,
+            abs=1e-4,
+        )
