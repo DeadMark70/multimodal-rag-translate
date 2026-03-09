@@ -163,3 +163,33 @@ def test_create_message(client: TestClient) -> None:
     assert data["role"] == "user"
     assert data["metadata"] == {"context": "test"}
     assert mock_service.await_count == 1
+
+
+def test_update_conversation_metadata_only(client: TestClient) -> None:
+    returned = {
+        "id": TEST_CONV_ID,
+        "title": "Existing Chat",
+        "type": "research",
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "metadata": {"plan": {"status": "waiting_confirmation"}},
+    }
+    with patch(
+        "conversations.router.update_user_conversation",
+        new=AsyncMock(return_value=returned),
+    ) as mock_service:
+        payload = {"metadata": {"plan": {"status": "waiting_confirmation"}}}
+        response = client.patch(f"/api/conversations/{TEST_CONV_ID}", json=payload)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["metadata"] == {"plan": {"status": "waiting_confirmation"}}
+    assert mock_service.await_count == 1
+    assert mock_service.await_args.kwargs["data"].metadata == payload["metadata"]
+    assert mock_service.await_args.kwargs["data"].title is None
+
+
+def test_update_conversation_rejects_empty_patch(client: TestClient) -> None:
+    response = client.patch(f"/api/conversations/{TEST_CONV_ID}", json={})
+
+    assert response.status_code == 422

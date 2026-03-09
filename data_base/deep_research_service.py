@@ -12,7 +12,7 @@ Provides interactive deep research capabilities with:
 # Standard library
 import asyncio
 import logging
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Local application
 from core.errors import AppError
@@ -216,35 +216,7 @@ class DeepResearchService:
             f"{len(all_sources)} sources"
         )
         
-        # Phase 1: Persistence - Update conversation in Supabase if conversation_id provided
-        if request.conversation_id:
-            try:
-                metadata_payload = {
-                    "summary": report.summary,
-                    "detailed_answer": report.detailed_answer,
-                    "sub_tasks": [t.model_dump() for t in all_results],
-                    "all_sources": all_sources,
-                    "confidence": report.confidence,
-                    "total_iterations": total_iterations,
-                    "question": request.original_question,
-                }
-
-                await persist_research_conversation(
-                    conversation_id=request.conversation_id,
-                    user_id=user_id,
-                    title=request.original_question[:100]
-                    if request.original_question
-                    else None,
-                    metadata=metadata_payload,
-                )
-                logger.info(
-                    "Persisted research results to conversation %s",
-                    request.conversation_id,
-                )
-            except AppError as e:
-                logger.error(f"Failed to persist research results: {e}", exc_info=True)
-
-        return ExecutePlanResponse(
+        response = ExecutePlanResponse(
             question=request.original_question,
             summary=report.summary,
             detailed_answer=report.detailed_answer,
@@ -253,6 +225,14 @@ class DeepResearchService:
             confidence=report.confidence,
             total_iterations=total_iterations,
         )
+
+        await self._persist_research_result(
+            request=request,
+            user_id=user_id,
+            response=response,
+        )
+
+        return response
     
     async def _execute_tasks(
         self,
@@ -805,11 +785,47 @@ class DeepResearchService:
             confidence=report.confidence,
             total_iterations=total_iterations,
         )
+
+        await self._persist_research_result(
+            request=request,
+            user_id=user_id,
+            response=final_response,
+        )
         
         yield format_sse_event(
             SSEEventType.COMPLETE,
             final_response.model_dump()
         )
+
+    async def _persist_research_result(
+        self,
+        *,
+        request: ExecutePlanRequest,
+        user_id: str,
+        response: ExecutePlanResponse,
+    ) -> None:
+        """Persists the canonical Deep Research session state to conversation metadata."""
+        if not request.conversation_id:
+            return
+
+        try:
+            metadata_payload: dict[str, Any] = {
+                "original_question": request.original_question,
+                "result": response.model_dump(mode="json"),
+            }
+
+            await persist_research_conversation(
+                conversation_id=request.conversation_id,
+                user_id=user_id,
+                title=request.original_question[:100] if request.original_question else None,
+                metadata=metadata_payload,
+            )
+            logger.info(
+                "Persisted research results to conversation %s",
+                request.conversation_id,
+            )
+        except AppError as e:
+            logger.error("Failed to persist research results: %s", e, exc_info=True)
     
     async def _execute_single_task(
         self,

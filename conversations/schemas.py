@@ -10,7 +10,8 @@ from typing import List, Literal, Optional
 from uuid import UUID
 
 # Third-party
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from pydantic_core import PydanticCustomError
 
 
 class ConversationCreate(BaseModel):
@@ -33,8 +34,17 @@ class ConversationUpdate(BaseModel):
     Attributes:
         title: New conversation title.
     """
-    title: str = Field(..., min_length=1, max_length=200)
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
     metadata: Optional[dict] = None
+
+    @model_validator(mode="after")
+    def validate_non_empty(self) -> "ConversationUpdate":
+        if self.title is None and self.metadata is None:
+            raise PydanticCustomError(
+                "empty_conversation_update",
+                "At least one of title or metadata is required",
+            )
+        return self
 
 
 class MessageCreate(BaseModel):

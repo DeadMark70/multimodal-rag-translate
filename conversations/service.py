@@ -79,7 +79,9 @@ async def get_user_conversation_detail(
 async def update_user_conversation(
     *, conversation_id: UUID, user_id: str, data: ConversationUpdate
 ) -> ConversationResponse:
-    update_payload: dict[str, object] = {"title": data.title}
+    update_payload: dict[str, object] = {}
+    if data.title is not None:
+        update_payload["title"] = data.title
     if data.metadata is not None:
         update_payload["metadata"] = data.metadata
 

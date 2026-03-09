@@ -115,8 +115,35 @@ async def persist_research_conversation(
 ) -> None:
     """Persists deep-research result payload to conversations metadata."""
     client = _get_client_or_raise()
+    try:
+        existing_response = await run_in_threadpool(
+            lambda: client.table("conversations")
+            .select("metadata")
+            .eq("id", conversation_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    except PostgrestAPIError as exc:
+        raise AppError(
+            code=ErrorCode.DATABASE_ERROR,
+            message="Failed to load existing research conversation",
+            status_code=500,
+            details={"operation": "persist_research_conversation"},
+        ) from exc
+
+    existing_metadata = {}
+    if existing_response.data:
+        existing_row = existing_response.data[0] or {}
+        existing_value = existing_row.get("metadata")
+        if isinstance(existing_value, dict):
+            existing_metadata = existing_value
+
     payload = {
-        "metadata": metadata,
+        "metadata": {
+            **existing_metadata,
+            **metadata,
+        },
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     if title:
