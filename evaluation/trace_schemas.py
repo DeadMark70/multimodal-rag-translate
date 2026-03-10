@@ -50,6 +50,7 @@ class AgentTraceDetail(BaseModel):
     question_id: str = Field(min_length=1)
     question: str = Field(min_length=1)
     mode: CampaignMode
+    execution_profile: Optional[str] = None
     run_number: int = Field(ge=1)
     trace_status: TraceStatus
     summary: str = ""
@@ -68,6 +69,7 @@ class AgentTraceSummary(BaseModel):
     question_id: str = Field(min_length=1)
     question: str = Field(min_length=1)
     mode: CampaignMode
+    execution_profile: Optional[str] = None
     run_number: int = Field(ge=1)
     trace_status: TraceStatus
     summary: str = ""
@@ -86,6 +88,7 @@ def summarize_agent_trace(detail: AgentTraceDetail) -> AgentTraceSummary:
         question_id=detail.question_id,
         question=detail.question,
         mode=detail.mode,
+        execution_profile=detail.execution_profile,
         run_number=detail.run_number,
         trace_status=detail.trace_status,
         summary=detail.summary,

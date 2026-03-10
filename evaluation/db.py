@@ -13,6 +13,7 @@ from uuid import uuid4
 import aiosqlite
 
 from core.errors import AppError, ErrorCode
+from evaluation.agentic_evaluation_service import LEGACY_SHARED_PROFILE
 from evaluation.campaign_schemas import (
     CampaignConfig,
     CampaignLifecycleStatus,
@@ -58,6 +59,7 @@ CREATE TABLE IF NOT EXISTS campaign_results (
     question TEXT NOT NULL,
     ground_truth TEXT NOT NULL,
     mode TEXT NOT NULL,
+    execution_profile TEXT,
     run_number INTEGER NOT NULL,
     answer TEXT NOT NULL,
     contexts_json TEXT NOT NULL,
@@ -148,6 +150,12 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
             "ALTER TABLE campaigns ADD COLUMN evaluation_total_units INTEGER NOT NULL DEFAULT 0"
         )
 
+    campaign_result_columns = await _table_columns(connection, "campaign_results")
+    if "execution_profile" not in campaign_result_columns:
+        await connection.execute(
+            "ALTER TABLE campaign_results ADD COLUMN execution_profile TEXT"
+        )
+
     await connection.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_ragas_scores_result_metric
@@ -205,6 +213,10 @@ def _row_to_campaign_status(row: aiosqlite.Row) -> CampaignStatus:
 
 
 def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
+    execution_profile = row["execution_profile"] if "execution_profile" in row.keys() else None
+    if not execution_profile and row["mode"] == "agentic":
+        execution_profile = LEGACY_SHARED_PROFILE
+
     return CampaignResult(
         id=row["id"],
         campaign_id=row["campaign_id"],
@@ -212,6 +224,7 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
         question=row["question"],
         ground_truth=row["ground_truth"],
         mode=row["mode"],
+        execution_profile=execution_profile,
         run_number=row["run_number"],
         answer=row["answer"],
         contexts=_json_loads(row["contexts_json"], []),
@@ -237,6 +250,8 @@ def _row_to_agent_trace_detail(row: aiosqlite.Row) -> AgentTraceDetail:
             status_code=500,
         )
     try:
+        if not payload.get("execution_profile") and payload.get("mode") == "agentic":
+            payload["execution_profile"] = LEGACY_SHARED_PROFILE
         return AgentTraceDetail.model_validate(payload)
     except Exception as exc:  # noqa: BLE001
         logger.error("Failed to parse agent trace row %s: %s", row["id"], exc)
@@ -504,6 +519,7 @@ class CampaignResultRepository:
         question: str,
         ground_truth: str,
         mode: str,
+        execution_profile: Optional[str],
         run_number: int,
         answer: str,
         contexts: list[str],
@@ -524,10 +540,11 @@ class CampaignResultRepository:
                 """
                 INSERT INTO campaign_results (
                     id, campaign_id, user_id, question_id, question, ground_truth, mode,
+                    execution_profile,
                     run_number, answer, contexts_json, source_doc_ids_json,
                     expected_sources_json, latency_ms, token_usage_json, category,
                     difficulty, status, error_message, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result_id,
@@ -537,6 +554,7 @@ class CampaignResultRepository:
                     question,
                     ground_truth,
                     mode,
+                    execution_profile,
                     run_number,
                     answer,
                     _json_dumps(contexts),
@@ -634,6 +652,10 @@ class AgentTraceRepository:
                 "question_id": trace_payload.get("question_id", ""),
                 "question": trace_payload.get("question", ""),
                 "mode": trace_payload.get("mode"),
+                "execution_profile": (
+                    trace_payload.get("execution_profile")
+                    or (LEGACY_SHARED_PROFILE if trace_payload.get("mode") == "agentic" else None)
+                ),
                 "run_number": trace_payload.get("run_number", 1),
                 "trace_status": trace_payload.get("trace_status", "completed"),
                 "summary": trace_payload.get("summary", ""),

@@ -17,6 +17,7 @@ from typing import Any, List, Optional
 # Local application
 from core.errors import AppError
 from data_base.repository import persist_research_conversation
+from data_base.research_execution_core import ResearchExecutionCore
 from data_base.schemas_deep_research import (
     EditableSubTask,
     ExecutePlanRequest,
@@ -33,7 +34,7 @@ from agents.evaluator import RAGEvaluator
 logger = logging.getLogger(__name__)
 
 
-class DeepResearchService:
+class DeepResearchService(ResearchExecutionCore):
     """
     Deep Research Service for interactive plan-and-execute workflow.
     
@@ -138,92 +139,9 @@ class DeepResearchService:
         Returns:
             ExecutePlanResponse with complete research results.
         """
-        logger.info(
-            f"Executing research plan for user {user_id}: "
-            f"{len(request.sub_tasks)} tasks, max_iter={request.max_iterations}"
-        )
-        
-        # Filter enabled tasks only
-        enabled_tasks = [t for t in request.sub_tasks if t.enabled]
-        
-        if not enabled_tasks:
-            logger.warning("No enabled tasks in plan")
-            return ExecutePlanResponse(
-                question=request.original_question,
-                summary="沒有啟用的子任務。",
-                detailed_answer="請至少啟用一個子任務後重試。",
-                sub_tasks=[],
-                all_sources=[],
-                confidence=0.0,
-                total_iterations=0,
-            )
-        
-        # Phase 1: Breadth-first execution
-        all_results: List[SubTaskExecutionResult] = []
-        current_results = await self._execute_tasks(
-            tasks=enabled_tasks,
+        response = await self.run_execute_plan(
+            request=request,
             user_id=user_id,
-            doc_ids=request.doc_ids,
-            enable_reranking=request.enable_reranking,
-            iteration=0,
-            enable_deep_image_analysis=request.enable_deep_image_analysis,
-        )
-        all_results.extend(current_results)
-        
-        # Phase 2: Drill-down loop (if enabled AND answers not already complete)
-        total_iterations = 0
-        # Phase 6.1B: 傳入 current_iteration=0 以強制至少一次 Drill-down
-        should_skip = self._should_skip_drilldown(all_results, current_iteration=0)
-        
-        if request.enable_drilldown and request.max_iterations > 0 and not should_skip:
-            total_iterations = await self._drill_down_loop(
-                original_question=request.original_question,
-                current_results=all_results,
-                user_id=user_id,
-                doc_ids=request.doc_ids,
-                enable_reranking=request.enable_reranking,
-                max_iterations=request.max_iterations,
-                enable_deep_image_analysis=request.enable_deep_image_analysis,
-            )
-        
-        # Phase 3: Synthesize results
-        synthesizer_results = [
-            SubTaskResult(
-                task_id=r.id,
-                question=r.question,
-                answer=r.answer,
-                sources=r.sources,
-                confidence=1.0 if r.answer else 0.0,
-            )
-            for r in all_results
-        ]
-        
-        report = await synthesize_results(
-            original_question=request.original_question,
-            sub_results=synthesizer_results,
-            enabled=len(synthesizer_results) > 1,
-            use_academic_template=False,  # Simplified format for better RAGAS compatibility and latency
-        )
-        
-        # Collect all unique sources
-        all_sources = list(set(
-            src for r in all_results for src in r.sources
-        ))
-        
-        logger.info(
-            f"Research complete: {len(all_results)} tasks, "
-            f"{total_iterations} drill-down iterations, "
-            f"{len(all_sources)} sources"
-        )
-        
-        response = ExecutePlanResponse(
-            question=request.original_question,
-            summary=report.summary,
-            detailed_answer=report.detailed_answer,
-            sub_tasks=all_results,
-            all_sources=all_sources,
-            confidence=report.confidence,
-            total_iterations=total_iterations,
         )
 
         await self._persist_research_result(
@@ -657,6 +575,7 @@ class DeepResearchService:
                 doc_ids=request.doc_ids,
                 enable_reranking=request.enable_reranking,
                 iteration=0,
+                enable_deep_image_analysis=request.enable_deep_image_analysis,
             )
             all_results.append(result)
             
@@ -732,6 +651,7 @@ class DeepResearchService:
                         doc_ids=request.doc_ids,
                         enable_reranking=request.enable_reranking,
                         iteration=iteration,
+                        enable_deep_image_analysis=request.enable_deep_image_analysis,
                     )
                     all_results.append(result)
                     
@@ -753,36 +673,9 @@ class DeepResearchService:
             SynthesisStartData(total_tasks=len(all_results))
         )
         
-        synthesizer_results = [
-            SubTaskResult(
-                task_id=r.id,
-                question=r.question,
-                answer=r.answer,
-                sources=r.sources,
-                confidence=1.0 if r.answer else 0.0,
-            )
-            for r in all_results
-        ]
-        
-        report = await synthesize_results(
+        final_response = await self._synthesize_execution_results(
             original_question=request.original_question,
-            sub_results=synthesizer_results,
-            enabled=len(synthesizer_results) > 1,
-            use_academic_template=False,  # Simplified format for better RAGAS compatibility and latency
-        )
-        
-        all_sources = list(set(
-            src for r in all_results for src in r.sources
-        ))
-        
-        # Emit complete with full response
-        final_response = ExecutePlanResponse(
-            question=request.original_question,
-            summary=report.summary,
-            detailed_answer=report.detailed_answer,
-            sub_tasks=all_results,
-            all_sources=all_sources,
-            confidence=report.confidence,
+            all_results=all_results,
             total_iterations=total_iterations,
         )
 
@@ -834,6 +727,7 @@ class DeepResearchService:
         doc_ids: Optional[List[str]],
         enable_reranking: bool,
         iteration: int,
+        enable_deep_image_analysis: bool = False,
     ) -> SubTaskExecutionResult:
         """
         Executes a single task.
@@ -859,6 +753,7 @@ class DeepResearchService:
                 enable_graph_rag=use_graph,
                 graph_search_mode="hybrid" if use_graph else "auto",
                 return_docs=True, # MUST be True to capture tool_calls and diagnostics
+                enable_visual_verification=enable_deep_image_analysis,
             )
             
             # Handle RAGResult

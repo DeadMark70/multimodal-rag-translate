@@ -380,6 +380,9 @@ class CampaignEngine:
                 question=unit.test_case.question,
                 ground_truth=unit.test_case.ground_truth,
                 mode=unit.mode,
+                execution_profile=(
+                    getattr(payload, "agent_trace", {}) or {}
+                ).get("execution_profile"),
                 run_number=unit.run_number,
                 answer=f"ERROR: {payload}",
                 contexts=[],
@@ -409,6 +412,7 @@ class CampaignEngine:
             question=payload.question,
             ground_truth=payload.ground_truth,
             mode=payload.mode,
+            execution_profile=payload.execution_profile,
             run_number=unit.run_number,
             answer=payload.answer,
             contexts=payload.contexts,

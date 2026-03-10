@@ -39,6 +39,7 @@ This is a FastAPI-based multimodal Agentic RAG backend.
   - `bergen/benchmark_rag_modes.py` generates benchmark outputs and `*_ragas.json`.
   - `bergen/evaluate_ragas.py` computes RAGAS metrics (faithfulness, answer_correctness).
 - Refactors in `data_base/`, `agents/`, `core/llm_factory.py`, schema fields, or output formats must preserve this evaluation flow unless explicitly planned.
+- User-facing `Deep Research` and evaluation `agentic` may share execution primitives, but must not share an unversioned wrapper once their behavior diverges. Persist an explicit `execution_profile` for evaluation baselines.
 
 ## 3. Refactor Priority (Execution Order)
 ### P0: Security hardening (must do first)

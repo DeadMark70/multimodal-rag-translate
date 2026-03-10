@@ -119,6 +119,7 @@ class CampaignResult(BaseModel):
     question: str
     ground_truth: str
     mode: CampaignMode
+    execution_profile: Optional[str] = None
     run_number: int = Field(ge=1)
     answer: str
     contexts: list[str] = Field(default_factory=list)

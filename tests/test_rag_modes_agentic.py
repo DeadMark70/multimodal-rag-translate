@@ -1,0 +1,66 @@
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from langchain_core.documents import Document
+
+from data_base.RAG_QA_service import RAGResult
+from evaluation.rag_modes import run_campaign_case
+from evaluation.schemas import TestCase as EvaluationCase
+
+
+@pytest.mark.asyncio
+async def test_run_campaign_case_agentic_uses_evaluation_service_and_profile() -> None:
+    test_case = EvaluationCase(
+        id="Q1",
+        question="What changed?",
+        ground_truth="A forked agentic flow",
+        source_docs=[],
+        requires_multi_doc_reasoning=False,
+    )
+    mock_result = RAGResult(
+        answer="agentic answer",
+        source_doc_ids=["doc-1"],
+        documents=[Document(page_content="ctx-1")],
+        usage={"total_tokens": 55},
+        thought_process="summary",
+        tool_calls=[],
+        agent_trace={
+            "trace_id": "trace-1",
+            "question_id": "Q1",
+            "question": "What changed?",
+            "mode": "agentic",
+            "execution_profile": "agentic_eval_v1",
+            "run_number": 1,
+            "trace_status": "completed",
+            "summary": "summary",
+            "step_count": 1,
+            "tool_call_count": 0,
+            "total_tokens": 55,
+            "created_at": "2026-03-10T00:00:00+00:00",
+            "steps": [],
+        },
+    )
+
+    with patch("evaluation.rag_modes.AgenticEvaluationService") as mock_service_cls:
+        mock_service = mock_service_cls.return_value
+        mock_service.run_case = AsyncMock(return_value=mock_result)
+
+        result = await run_campaign_case(
+            test_case=test_case,
+            user_id="user-1",
+            mode="agentic",
+            model_config={
+                "model_name": "gemini-2.5-flash",
+                "temperature": 0.7,
+                "top_p": 0.95,
+                "top_k": 40,
+                "max_output_tokens": 2048,
+            },
+            run_number=1,
+        )
+
+    mock_service_cls.assert_called_once_with(max_concurrent_tasks=3)
+    mock_service.run_case.assert_awaited_once()
+    assert result.answer == "agentic answer"
+    assert result.contexts == ["ctx-1"]
+    assert result.execution_profile == "agentic_eval_v1"

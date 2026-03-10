@@ -56,7 +56,7 @@ async def test_execute_plan_persists_to_supabase():
     )
     
     with patch.object(service, '_execute_tasks', return_value=[mock_subtask_result]), \
-         patch('data_base.deep_research_service.synthesize_results') as mock_synth, \
+         patch('data_base.research_execution_core.synthesize_results') as mock_synth, \
          patch('data_base.deep_research_service.persist_research_conversation', new=AsyncMock()) as mock_persist:
         mock_synth.return_value = _build_report()
 
@@ -79,7 +79,7 @@ async def test_execute_plan_streaming_persists_to_supabase():
     )
 
     with patch.object(service, "_execute_single_task", new=AsyncMock(return_value=mock_subtask_result)), \
-         patch("data_base.deep_research_service.synthesize_results") as mock_synth, \
+         patch("data_base.research_execution_core.synthesize_results") as mock_synth, \
          patch("data_base.deep_research_service.persist_research_conversation", new=AsyncMock()) as mock_persist:
         mock_synth.return_value = _build_report()
 
@@ -88,6 +88,31 @@ async def test_execute_plan_streaming_persists_to_supabase():
 
         assert events[-1]["event"] == "complete"
         _assert_persist_payload(mock_persist)
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_streaming_forwards_deep_image_analysis_flag():
+    service = DeepResearchService()
+
+    request = _build_request()
+    request.enable_deep_image_analysis = True
+    mock_subtask_result = SubTaskExecutionResult(
+        id=1,
+        question="Life?",
+        answer="42",
+        sources=["doc1"],
+    )
+
+    with patch.object(service, "_execute_single_task", new=AsyncMock(return_value=mock_subtask_result)) as mock_execute_single, \
+         patch("data_base.research_execution_core.synthesize_results") as mock_synth, \
+         patch("data_base.deep_research_service.persist_research_conversation", new=AsyncMock()):
+        mock_synth.return_value = _build_report()
+
+        _ = [event async for event in service.execute_plan_streaming(request, user_id="test-user")]
+
+        assert mock_execute_single.await_count == 1
+        kwargs = mock_execute_single.await_args.kwargs
+        assert kwargs["enable_deep_image_analysis"] is True
 
 if __name__ == "__main__":
     import asyncio

@@ -424,11 +424,13 @@ def test_agent_trace_api_persists_and_reads_trace_payload() -> None:
             token_usage={"total_tokens": 120},
             category=test_case.category,
             difficulty=test_case.difficulty,
+            execution_profile="agentic_eval_v1",
             agent_trace={
                 "trace_id": f"trace-{run_number}",
                 "question_id": test_case.id,
                 "question": test_case.question,
                 "mode": "agentic",
+                "execution_profile": "agentic_eval_v1",
                 "run_number": run_number,
                 "trace_status": "completed",
                 "summary": "trace summary",
@@ -519,6 +521,7 @@ def test_agent_trace_api_persists_and_reads_trace_payload() -> None:
         result_rows = results.json()["results"]
         assert len(result_rows) == 1
         assert result_rows[0]["has_trace"] is True
+        assert result_rows[0]["execution_profile"] == "agentic_eval_v1"
         result_id = result_rows[0]["id"]
 
         traces = client.get(f"/api/evaluation/campaigns/{campaign_id}/traces")
@@ -526,11 +529,13 @@ def test_agent_trace_api_persists_and_reads_trace_payload() -> None:
         trace_rows = traces.json()
         assert len(trace_rows) == 1
         assert trace_rows[0]["campaign_result_id"] == result_id
+        assert trace_rows[0]["execution_profile"] == "agentic_eval_v1"
         assert trace_rows[0]["tool_call_count"] == 1
 
         detail = client.get(f"/api/evaluation/campaigns/{campaign_id}/results/{result_id}/trace")
         assert detail.status_code == 200
         trace_detail = detail.json()
         assert trace_detail["summary"] == "trace summary"
+        assert trace_detail["execution_profile"] == "agentic_eval_v1"
         assert trace_detail["steps"][0]["phase"] == "planning"
         assert trace_detail["steps"][1]["tool_calls"][0]["action"] == "VERIFY_IMAGE"
