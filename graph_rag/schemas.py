@@ -8,7 +8,7 @@ and API response schemas.
 # Standard library
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 # Third-party
 from pydantic import BaseModel, ConfigDict, Field
@@ -131,6 +131,10 @@ class Community(BaseModel):
     summary: Optional[str] = Field(default=None, description="社群摘要 (LLM 生成)")
     title: Optional[str] = Field(default=None, description="社群標題")
     level: int = Field(default=0, description="層級 (Leiden 支援多層)")
+    parent_id: Optional[int] = Field(default=None, description="父社群 ID")
+    child_ids: List[int] = Field(default_factory=list, description="子社群 ID 列表")
+    ranking_text: Optional[str] = Field(default=None, description="檢索排序文字")
+    summary_version: int = Field(default=1, description="社群摘要版本")
     
     model_config = ConfigDict(
         json_schema_extra={
@@ -144,6 +148,10 @@ class Community(BaseModel):
                 "summary": "此社群包含與 Transformer 架構相關的方法...",
                 "title": "Transformer 與注意力機制",
                 "level": 0,
+                "parent_id": None,
+                "child_ids": [],
+                "ranking_text": "Transformer 與注意力機制 此社群包含與 Transformer 架構相關的方法...",
+                "summary_version": 1,
             }
         }
     )
@@ -162,6 +170,12 @@ class GraphStatusResponse(BaseModel):
     pending_resolution: int = Field(default=0, description="待融合實體數量")
     needs_optimization: bool = Field(default=False, description="是否需要優化")
     last_updated: Optional[datetime] = Field(default=None, description="最後更新時間")
+    index_version: int = Field(default=1, description="圖譜索引版本")
+    community_level_counts: Dict[str, int] = Field(
+        default_factory=dict,
+        description="各層級社群數量",
+    )
+    last_optimized_at: Optional[datetime] = Field(default=None, description="最後優化時間")
     
     model_config = ConfigDict(
         json_schema_extra={
@@ -172,7 +186,10 @@ class GraphStatusResponse(BaseModel):
                 "community_count": 12,
                 "pending_resolution": 45,
                 "needs_optimization": True,
+                "index_version": 2,
+                "community_level_counts": {"0": 12},
                 "last_updated": "2025-12-21T10:30:00Z",
+                "last_optimized_at": "2025-12-21T10:35:00Z",
             }
         }
     )

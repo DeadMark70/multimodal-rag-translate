@@ -7,11 +7,12 @@ Manages per-user knowledge graphs with CRUD operations.
 
 # Standard library
 import hashlib
+import json
 import logging
 import pickle
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Third-party
 import networkx as nx
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Base path for user uploads
 BASE_UPLOAD_FOLDER = "uploads"
+GRAPH_INDEX_VERSION = 2
 
 
 def _generate_node_id(label: str, entity_type: EntityType) -> str:
@@ -75,6 +77,9 @@ class GraphStore:
         self.graph: nx.DiGraph = nx.DiGraph()
         self.communities: List[Community] = []
         self.last_updated: Optional[datetime] = None
+        self.last_optimized_at: Optional[datetime] = None
+        self.index_version: int = GRAPH_INDEX_VERSION
+        self.graph_dirty: bool = False
         self._pending_count: int = 0
         
         # Try to load existing graph
@@ -100,7 +105,72 @@ class GraphStore:
             True if graph file exists.
         """
         return self._get_graph_path().exists()
-    
+
+    def _get_metadata_path(self) -> Path:
+        """Get path to sidecar metadata JSON file."""
+        return self._get_graph_path().with_name("graph.meta.json")
+
+    def _build_metadata_payload(self) -> Dict[str, Any]:
+        """Build sidecar metadata payload."""
+        return {
+            "index_version": self.index_version,
+            "communities": [c.model_dump() for c in self.communities],
+            "last_updated": self.last_updated.isoformat() if self.last_updated else None,
+            "last_optimized_at": (
+                self.last_optimized_at.isoformat() if self.last_optimized_at else None
+            ),
+            "graph_dirty": self.graph_dirty,
+            "pending_count": self._pending_count,
+            "community_level_counts": self.get_community_level_counts(),
+        }
+
+    def _write_metadata(self) -> None:
+        """Persist sidecar metadata JSON."""
+        path = self._get_metadata_path()
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self._build_metadata_payload(), f, ensure_ascii=False, indent=2)
+
+    def _load_legacy_metadata(self, legacy_data: Dict[str, Any]) -> None:
+        """Load metadata fields embedded in older pickle payloads."""
+        self.communities = [
+            Community(**c) for c in legacy_data.get("communities", [])
+        ]
+        self.last_updated = legacy_data.get("last_updated")
+        self._pending_count = legacy_data.get("pending_count", 0)
+        self.last_optimized_at = legacy_data.get("last_optimized_at")
+        self.index_version = int(legacy_data.get("index_version", 1))
+        self.graph_dirty = bool(self._pending_count) or self.index_version < GRAPH_INDEX_VERSION
+
+    def _load_metadata(self, legacy_data: Optional[Dict[str, Any]] = None) -> None:
+        """Load sidecar metadata or fall back to legacy pickle metadata."""
+        metadata_path = self._get_metadata_path()
+
+        if metadata_path.exists():
+            try:
+                with open(metadata_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.index_version = int(data.get("index_version", GRAPH_INDEX_VERSION))
+                self.communities = [
+                    Community(**c) for c in data.get("communities", [])
+                ]
+                last_updated = data.get("last_updated")
+                self.last_updated = datetime.fromisoformat(last_updated) if last_updated else None
+                last_optimized = data.get("last_optimized_at")
+                self.last_optimized_at = (
+                    datetime.fromisoformat(last_optimized) if last_optimized else None
+                )
+                self.graph_dirty = bool(data.get("graph_dirty", False))
+                self._pending_count = int(data.get("pending_count", 0))
+                return
+            except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+                logger.warning("Failed to load graph metadata for user %s: %s", self.user_id, e)
+                if legacy_data:
+                    self._load_legacy_metadata(legacy_data)
+                    return
+
+        if legacy_data:
+            self._load_legacy_metadata(legacy_data)
+
     def save(self) -> None:
         """
         Serialize graph to pickle file.
@@ -111,14 +181,12 @@ class GraphStore:
         
         data = {
             "graph": self.graph,
-            "communities": [c.model_dump() for c in self.communities],
-            "last_updated": self.last_updated,
-            "pending_count": self._pending_count,
         }
-        
+
         path = self._get_graph_path()
         with open(path, "wb") as f:
             pickle.dump(data, f)
+        self._write_metadata()
         
         logger.info(
             f"Saved graph for user {self.user_id}: "
@@ -144,11 +212,7 @@ class GraphStore:
                 data = pickle.load(f)
             
             self.graph = data.get("graph", nx.DiGraph())
-            self.communities = [
-                Community(**c) for c in data.get("communities", [])
-            ]
-            self.last_updated = data.get("last_updated")
-            self._pending_count = data.get("pending_count", 0)
+            self._load_metadata(legacy_data=data)
             
             logger.info(
                 f"Loaded graph for user {self.user_id}: "
@@ -171,7 +235,19 @@ class GraphStore:
         self.graph.clear()
         self.communities.clear()
         self._pending_count = 0
+        self.last_optimized_at = None
+        self.graph_dirty = False
         logger.info(f"Cleared graph for user {self.user_id}")
+
+    def mark_dirty(self) -> None:
+        """Mark graph metadata as needing optimization or rebuild."""
+        self.graph_dirty = True
+
+    def get_communities(self, level: Optional[int] = None) -> List[Community]:
+        """Return communities, optionally filtered by hierarchy level."""
+        if level is None:
+            return list(self.communities)
+        return [community for community in self.communities if community.level == level]
     
     # ===== Node Operations =====
     
@@ -211,6 +287,7 @@ class GraphStore:
                 self._pending_count += 1
             
             logger.debug(f"Added node: {node_id} ({node.label})")
+        self.mark_dirty()
         
         return node_id
     
@@ -339,6 +416,7 @@ class GraphStore:
                 doc_ids=edge.doc_ids,
             )
             logger.debug(f"Added edge: {source} --[{edge.relation}]--> {target}")
+        self.mark_dirty()
         
         return source, target
     
@@ -463,6 +541,8 @@ class GraphStore:
             f"Removed doc {doc_id} from graph: "
             f"{len(nodes_to_remove)} nodes, {len(edges_to_remove)} edges removed"
         )
+        if nodes_to_remove or edges_to_remove:
+            self.mark_dirty()
         
         return len(nodes_to_remove)
     
@@ -598,14 +678,25 @@ class GraphStore:
             if data.get("pending_resolution", False)
         )
         
+        has_graph = self.graph.number_of_nodes() > 0
+        needs_optimization = (
+            pending > 0
+            or self.graph_dirty
+            or (has_graph and len(self.communities) == 0)
+            or self.index_version < GRAPH_INDEX_VERSION
+        )
+
         return GraphStatusResponse(
-            has_graph=self.graph.number_of_nodes() > 0,
+            has_graph=has_graph,
             node_count=self.graph.number_of_nodes(),
             edge_count=self.graph.number_of_edges(),
             community_count=len(self.communities),
             pending_resolution=pending,
-            needs_optimization=pending > 0,
+            needs_optimization=needs_optimization,
             last_updated=self.last_updated,
+            index_version=self.index_version,
+            community_level_counts=self.get_community_level_counts(),
+            last_optimized_at=self.last_optimized_at,
         )
     
     def mark_pending_resolution(self, node_ids: List[str]) -> int:
@@ -626,6 +717,8 @@ class GraphStore:
                     count += 1
         
         self._pending_count += count
+        if count:
+            self.mark_dirty()
         return count
     
     def clear_pending_resolution(self) -> int:
@@ -682,3 +775,17 @@ class GraphStore:
                 doc_ids=data.get("doc_ids", []),
             ))
         return edges
+
+    def get_community_level_counts(self) -> Dict[str, int]:
+        """Return a count of communities grouped by level."""
+        counts: Dict[str, int] = {}
+        for community in self.communities:
+            level_key = str(community.level)
+            counts[level_key] = counts.get(level_key, 0) + 1
+        return counts
+
+    def mark_optimized(self) -> None:
+        """Mark the graph metadata as optimized."""
+        self.index_version = GRAPH_INDEX_VERSION
+        self.last_optimized_at = datetime.now()
+        self.graph_dirty = False

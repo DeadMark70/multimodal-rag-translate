@@ -4,7 +4,7 @@ GraphRAG API Router
 Provides REST API endpoints for graph management operations:
 - GET /graph/status - Get graph status
 - GET /graph/data - Get visualization data for react-force-graph
-- POST /graph/rebuild - Reset graph state and rerun graph optimization pipeline
+- POST /graph/rebuild - Re-run graph optimization safely without re-extraction
 - POST /graph/optimize - Run entity resolution
 """
 
@@ -170,9 +170,9 @@ async def get_graph_visualization_data(
 @router.post(
     "/rebuild",
     response_model=GraphOperationResponse,
-    summary="重置並重算圖譜狀態",
+    summary="安全重算圖譜索引",
     description=(
-        "重置使用者目前的圖譜檔案，並重新執行實體融合與社群建立。"
+        "重新執行既有圖譜上的實體融合與社群建立，刷新索引與摘要。"
         "此操作不會重新從原始文件抽取新實體。"
     ),
 )
@@ -182,7 +182,7 @@ async def rebuild_graph(
     user_id: str = Depends(get_current_user_id)
 ) -> GraphOperationResponse:
     """
-    Reset graph state and rerun optimization pipeline in background.
+    Re-run graph optimization pipeline in background without clearing graph data.
     """
     try:
         store = GraphStore(user_id)
@@ -198,7 +198,7 @@ async def rebuild_graph(
         
         return GraphOperationResponse(
             status="started",
-            message="圖譜重置與重算已開始（不重新抽取文件實體）",
+            message="圖譜安全重算已開始（不重新抽取文件實體，且不清空既有關係）",
             details={"user_id": user_id}
         )
         
@@ -233,19 +233,10 @@ async def optimize_graph(
                 message="圖譜是空的，無需優化",
             )
         
-        # Run entity resolution
-        from graph_rag.entity_resolver import resolve_entities
-        merges = await resolve_entities(store)
-        
-        # Rebuild communities if requested
-        communities_count = 0
-        if request.regenerate_communities:
-            from graph_rag.community_builder import build_communities
-            communities = await build_communities(store, generate_summaries=True)
-            communities_count = len(communities)
-        
-        # Save changes
-        store.save()
+        merges, communities_count = await _optimize_existing_graph(
+            store,
+            regenerate_communities=request.regenerate_communities,
+        )
         
         return GraphOperationResponse(
             status="success",
@@ -268,33 +259,42 @@ async def optimize_graph(
 
 # ===== Background Tasks =====
 
+async def _optimize_existing_graph(
+    store: GraphStore,
+    *,
+    regenerate_communities: bool = True,
+) -> tuple[int, int]:
+    """Run entity resolution and optionally rebuild communities on an existing graph."""
+    from graph_rag.entity_resolver import resolve_entities
+
+    merges = await resolve_entities(store)
+    communities_count = 0
+
+    if regenerate_communities:
+        from graph_rag.community_builder import build_communities
+
+        communities = await build_communities(store, generate_summaries=True)
+        communities_count = len(communities)
+
+    store.save()
+    return merges, communities_count
+
 async def _rebuild_graph_task(user_id: str) -> None:
     """
-    Background task to reset graph file and rerun optimization steps.
+    Background task to safely rebuild graph metadata and communities.
 
     This does not re-extract entities/relations from source documents.
     """
     logger.info(f"Starting graph rebuild for user {user_id}")
     
     try:
-        from graph_rag.store import GraphStore
-        from graph_rag.entity_resolver import resolve_entities
-        from graph_rag.community_builder import build_communities
-        
-        # Create fresh store
         store = GraphStore(user_id)
-        store.clear()
-        
-        # Current behavior: reset file + rerun merge/community stages only.
-        
-        # Run entity resolution
-        await resolve_entities(store)
-        
-        # Build communities
-        await build_communities(store, generate_summaries=True)
-        
-        # Save
-        store.save()
+
+        if store.get_status().node_count == 0:
+            logger.info("Skipping graph rebuild for user %s because graph is empty", user_id)
+            return
+
+        await _optimize_existing_graph(store, regenerate_communities=True)
         
         logger.info(f"Graph rebuild complete for user {user_id}")
         

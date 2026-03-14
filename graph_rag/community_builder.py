@@ -38,6 +38,15 @@ _COMMUNITY_SUMMARY_PROMPT = """你是一個學術論文分析專家。請為以�
 
 JSON 輸出："""
 
+_PARENT_COMMUNITY_PROMPT = """你是一個學術知識圖譜整理專家。請把多個子社群整理成一個上層主題。
+
+子社群資訊：
+{child_summaries}
+
+請輸出 JSON：
+{{"title": "上層主題標題", "summary": "50-100 字摘要"}}
+"""
+
 
 async def detect_communities_leiden(store: GraphStore) -> List[Community]:
     """
@@ -211,11 +220,22 @@ async def build_communities(
                 if node:
                     community.title = node.label
                     community.summary = node.description or ""
+            if community.title or community.summary:
+                community.ranking_text = " ".join(
+                    part for part in [community.title, community.summary] if part
+                )
             summarized.append(community)
         communities = summarized
-    
+
+    communities = await _build_hierarchy_communities(
+        store,
+        communities,
+        generate_summaries=generate_summaries,
+    )
+
     # Update store with communities
     store.communities = communities
+    store.mark_optimized()
     
     logger.info(f"Built {len(communities)} communities for user {store.user_id}")
     return communities
@@ -235,3 +255,105 @@ async def rebuild_communities(store: GraphStore) -> List[Community]:
     communities = await build_communities(store, generate_summaries=True)
     store.save()
     return communities
+
+
+async def _summarize_parent_community(
+    community_id: int,
+    children: List[Community],
+) -> Community:
+    """Build a lightweight level-1 summary community from child communities."""
+    node_ids = []
+    child_summary_lines = []
+    child_ids = []
+    for child in children:
+        node_ids.extend(child.node_ids)
+        child_ids.append(child.id)
+        child_summary_lines.append(
+            f"- {child.title or f'社群 {child.id}'}: {child.summary or '無摘要'}"
+        )
+
+    parent = Community(
+        id=community_id,
+        node_ids=list(dict.fromkeys(node_ids)),
+        level=1,
+        child_ids=child_ids,
+    )
+
+    try:
+        llm = get_llm("community_summary")
+        response = await llm.ainvoke(
+            [
+                HumanMessage(
+                    content=_PARENT_COMMUNITY_PROMPT.format(
+                        child_summaries="\n".join(child_summary_lines)
+                    )
+                )
+            ]
+        )
+        import json
+        import re
+
+        json_match = re.search(r"\{[\s\S]*\}", response.content)
+        if json_match:
+            data = json.loads(json_match.group(0))
+            parent.title = data.get("title", f"主題 {community_id}")
+            parent.summary = data.get("summary", "")
+    except Exception as exc:
+        logger.warning("Failed to summarize parent community %s: %s", community_id, exc)
+        parent.title = f"主題 {community_id}"
+        parent.summary = "；".join(
+            child.title or f"社群 {child.id}"
+            for child in children[:4]
+        )
+
+    parent.ranking_text = " ".join(
+        part for part in [parent.title, parent.summary] if part
+    )
+    return parent
+
+
+async def _build_hierarchy_communities(
+    store: GraphStore,
+    leaf_communities: List[Community],
+    *,
+    generate_summaries: bool,
+) -> List[Community]:
+    """Build a lightweight two-level hierarchy on top of leaf communities."""
+    if not leaf_communities:
+        return []
+
+    ordered_leaves = sorted(
+        leaf_communities,
+        key=lambda community: len(community.node_ids),
+        reverse=True,
+    )
+
+    if len(ordered_leaves) <= 3:
+        return ordered_leaves
+
+    parent_groups: list[list[Community]] = []
+    group_size = 3
+    for index in range(0, len(ordered_leaves), group_size):
+        parent_groups.append(ordered_leaves[index:index + group_size])
+
+    all_communities = list(ordered_leaves)
+    next_id = max(community.id for community in ordered_leaves) + 1
+
+    for group in parent_groups:
+        parent = await _summarize_parent_community(next_id, group) if generate_summaries else Community(
+            id=next_id,
+            node_ids=list(dict.fromkeys(node_id for child in group for node_id in child.node_ids)),
+            level=1,
+            child_ids=[child.id for child in group],
+            title=f"主題 {next_id}",
+            summary="",
+            ranking_text="",
+        )
+        for child in group:
+            child.parent_id = parent.id
+            child.summary_version = 1
+        parent.summary_version = 1
+        all_communities.append(parent)
+        next_id += 1
+
+    return all_communities

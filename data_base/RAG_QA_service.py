@@ -6,6 +6,7 @@ with enhanced reranking and query transformation.
 """
 
 # Standard library
+import asyncio
 import base64
 import json
 import logging
@@ -33,6 +34,13 @@ from data_base.query_transformer import (
 )
 from data_base.repository import fetch_document_filenames
 from data_base.parent_child_store import ParentDocumentStore
+from graph_rag.generic_mode import (
+    GenericGraphRouter,
+    GraphEvidence,
+    GraphQueryHints,
+    estimate_token_count,
+    merge_graph_evidence,
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -44,6 +52,10 @@ _GRAPH_KEYWORDS = [
     "relationship", "connection", "trend", "compare",
     "across", "these papers", "multi-document",
 ]
+
+_LAZY_GRAPH_UPGRADE_TASKS: set[str] = set()
+DEFAULT_GRAPH_LOCAL_HOPS = 2
+DEFAULT_GRAPH_LOCAL_MAX_NODES = 20
 
 # Flag to track initialization
 _llm_initialized = False
@@ -287,10 +299,44 @@ def _should_use_graph_search(question: str) -> bool:
     return any(keyword in question_lower for keyword in _GRAPH_KEYWORDS)
 
 
+async def _run_lazy_graph_upgrade(user_id: str) -> None:
+    """Refresh graph metadata and hierarchy in the background when stale."""
+    try:
+        from graph_rag.community_builder import build_communities
+        from graph_rag.entity_resolver import resolve_entities
+        from graph_rag.store import GraphStore
+
+        store = GraphStore(user_id)
+        if store.get_status().node_count == 0:
+            return
+        await resolve_entities(store)
+        await build_communities(store, generate_summaries=True)
+        store.save()
+        logger.info("Completed lazy graph upgrade for user %s", user_id)
+    except Exception as exc:
+        logger.warning("Lazy graph upgrade failed for user %s: %s", user_id, exc)
+    finally:
+        _LAZY_GRAPH_UPGRADE_TASKS.discard(user_id)
+
+
+def _schedule_lazy_graph_upgrade(user_id: str) -> None:
+    """Schedule a best-effort graph metadata refresh without blocking the request."""
+    # This guards duplicate work within a single process. Multi-worker deployments
+    # would need a distributed lock if cross-process deduplication becomes necessary.
+    if user_id in _LAZY_GRAPH_UPGRADE_TASKS:
+        return
+    _LAZY_GRAPH_UPGRADE_TASKS.add(user_id)
+    try:
+        asyncio.create_task(_run_lazy_graph_upgrade(user_id))
+    except RuntimeError:
+        _LAZY_GRAPH_UPGRADE_TASKS.discard(user_id)
+
+
 async def _get_graph_context(
     question: str,
     user_id: str,
     search_mode: str = "auto",
+    graph_execution_hints: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Get context from knowledge graph.
@@ -298,16 +344,17 @@ async def _get_graph_context(
     Args:
         question: User's question.
         user_id: User's ID.
-        search_mode: Search mode (auto/local/global/hybrid).
+        search_mode: Search mode (auto/local/global/hybrid/generic).
+        graph_execution_hints: Optional internal routing hints for generic mode.
         
     Returns:
         Graph context string.
     """
     try:
         from graph_rag.store import GraphStore
-        from graph_rag.local_search import local_search
-        from graph_rag.global_search import global_search
-        
+        from graph_rag.global_search import global_search_evidence
+        from graph_rag.local_search import local_search, local_search_evidence
+
         store = GraphStore(user_id)
         
         # Check if graph exists
@@ -315,38 +362,135 @@ async def _get_graph_context(
         if not status.has_graph or status.node_count == 0:
             logger.debug(f"No graph data for user {user_id}")
             return ""
-        
-        # Determine effective mode
-        effective_mode = search_mode
-        if search_mode == "auto":
-            if _should_use_graph_search(question):
-                effective_mode = "hybrid" if status.community_count > 0 else "local"
-            else:
-                effective_mode = "local"
-        
-        context_parts = []
-        
-        # Local search: entity expansion
-        if effective_mode in ("local", "hybrid"):
-            local_ctx, node_ids = await local_search(store, question, hops=2, max_nodes=20)
+
+        if status.needs_optimization:
+            _schedule_lazy_graph_upgrade(user_id)
+
+        effective_mode = "generic" if search_mode == "auto" else search_mode
+        hints = GraphQueryHints(**(graph_execution_hints or {}))
+        has_hierarchy = bool(status.community_level_counts.get("1"))
+
+        if effective_mode == "local":
+            local_ctx, node_ids = await local_search(
+                store,
+                question,
+                hops=DEFAULT_GRAPH_LOCAL_HOPS,
+                max_nodes=DEFAULT_GRAPH_LOCAL_MAX_NODES,
+            )
             if local_ctx:
-                context_parts.append(local_ctx)
-                logger.debug(f"Local search found {len(node_ids)} nodes")
-        
-        # Global search: community-based
-        if effective_mode in ("global", "hybrid"):
+                logger.debug("Local search found %s nodes", len(node_ids))
+            return local_ctx
+
+        if effective_mode == "global":
             if status.community_count > 0:
-                global_answer, community_ids = await global_search(store, question, max_communities=3)
+                global_answer, _, community_ids = await global_search_evidence(
+                    store,
+                    question,
+                    max_communities=3,
+                    level=1 if has_hierarchy else None,
+                )
                 if global_answer:
-                    context_parts.append(f"=== 社群分析 ===\n{global_answer}")
-                    logger.debug(f"Global search used {len(community_ids)} communities")
-            elif effective_mode == "global":
-                # Fallback to local if global requested but no communities
-                local_ctx, _ = await local_search(store, question, hops=2, max_nodes=20)
-                if local_ctx:
-                    context_parts.append(local_ctx)
-        
-        return "\n\n".join(context_parts)
+                    logger.debug("Global search used %s communities", len(community_ids))
+                    return f"=== 社群分析 ===\n{global_answer}"
+            local_ctx, _ = await local_search(
+                store,
+                question,
+                hops=DEFAULT_GRAPH_LOCAL_HOPS,
+                max_nodes=DEFAULT_GRAPH_LOCAL_MAX_NODES,
+            )
+            return local_ctx
+
+        if effective_mode == "hybrid":
+            local_ctx, local_node_ids = await local_search(store, question, hops=2, max_nodes=16)
+            global_answer = ""
+            community_ids: list[int] = []
+            if status.community_count > 0:
+                global_answer, _, community_ids = await global_search_evidence(
+                    store,
+                    question,
+                    max_communities=2,
+                    level=1 if has_hierarchy else None,
+                )
+            context_parts = [part for part in [local_ctx, f"=== 社群分析 ===\n{global_answer}" if global_answer else ""] if part]
+            if community_ids:
+                logger.debug("Hybrid search used %s communities", len(community_ids))
+            if local_node_ids:
+                logger.debug("Hybrid search found %s local nodes", len(local_node_ids))
+            return "\n\n".join(context_parts)
+
+        router = GenericGraphRouter()
+        decision = await router.route(
+            question,
+            has_communities=status.community_count > 0,
+            hints=hints,
+        )
+
+        local_evidence = []
+        global_evidence = []
+
+        if decision.path in ("local-first", "blended"):
+            local_evidence, node_ids = await local_search_evidence(
+                store,
+                question,
+                hops=decision.hops,
+                max_nodes=decision.max_nodes,
+            )
+            if node_ids:
+                logger.debug("Generic local search found %s nodes", len(node_ids))
+
+        if decision.path in ("global-first", "blended") and status.community_count > 0:
+            _, global_evidence, community_ids = await global_search_evidence(
+                store,
+                question,
+                max_communities=decision.max_communities,
+                level=1 if (has_hierarchy and decision.query_kind == "summary") else None,
+            )
+            if (
+                decision.query_kind == "summary"
+                and has_hierarchy
+                and community_ids
+            ):
+                selected_leaf_ids = []
+                for community_id in community_ids:
+                    parent = next(
+                        (community for community in store.get_communities(level=1) if community.id == community_id),
+                        None,
+                    )
+                    if not parent or not parent.child_ids:
+                        continue
+                    selected_leaf_ids.extend(parent.child_ids[:2])
+                if selected_leaf_ids:
+                    leaf_communities = [
+                        community for community in store.get_communities(level=0)
+                        if community.id in selected_leaf_ids
+                    ]
+                    for leaf in leaf_communities:
+                        text = f"{leaf.title or f'社群 {leaf.id}'}: {leaf.summary or ''}"
+                        global_evidence.append(
+                            GraphEvidence(
+                                evidence_id=f"community-summary:{leaf.id}",
+                                evidence_type="community_summary",
+                                text=text,
+                                score=0.6,
+                                token_estimate=estimate_token_count(text),
+                                metadata={"community_id": leaf.id, "level": leaf.level},
+                            )
+                        )
+            if community_ids:
+                logger.debug("Generic global search used %s communities", len(community_ids))
+
+        merged_context, merged_units = merge_graph_evidence(
+            local_evidence=local_evidence,
+            global_evidence=global_evidence,
+            token_budget=decision.token_budget,
+        )
+        logger.debug(
+            "Generic graph route resolved to %s/%s with %s evidence units",
+            decision.query_kind,
+            decision.path,
+            len(merged_units),
+        )
+        return merged_context
         
     except Exception as e:
         logger.warning(f"Graph context retrieval failed: {e}")
@@ -467,6 +611,7 @@ async def rag_answer_question(
     # GraphRAG parameters
     enable_graph_rag: bool = False,
     graph_search_mode: str = "auto",
+    graph_execution_hints: Optional[Dict[str, Any]] = None,
     # Visual Verification (Phase 9)
     enable_visual_verification: bool = False,
 ) -> Union[Tuple[str, List[str]], RAGResult]:
@@ -496,7 +641,8 @@ async def rag_answer_question(
         enable_multi_query: If True, use multi-query with RRF fusion.
         return_docs: If True, returns RAGResult with documents for evaluation.
         enable_graph_rag: If True, enhance with knowledge graph context.
-        graph_search_mode: Graph search mode (local/global/hybrid/auto).
+        graph_search_mode: Graph search mode (local/global/hybrid/auto/generic).
+        graph_execution_hints: Internal generic-mode routing hints from execution layers.
         enable_visual_verification: If True, enable Re-Act loop for image details.
 
     Returns:
@@ -672,6 +818,7 @@ async def rag_answer_question(
             question=question,
             user_id=user_id,
             search_mode=graph_search_mode,
+            graph_execution_hints=graph_execution_hints,
         )
 
     # Step 5.6: Context Enricher - expand short chunks

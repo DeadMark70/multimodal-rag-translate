@@ -7,6 +7,7 @@ in the query to their graph neighbors.
 
 # Standard library
 import logging
+import re
 from typing import List, Tuple
 
 # Third-party
@@ -14,6 +15,7 @@ from langchain_core.messages import HumanMessage
 
 # Local application
 from core.providers import get_llm
+from graph_rag.generic_mode import GraphEvidence, estimate_token_count
 from graph_rag.store import GraphStore
 
 # Configure logging
@@ -25,6 +27,18 @@ _ENTITY_IDENTIFICATION_PROMPT = """請從以下問題中識別可能存在於知
 問題：{question}
 
 只輸出實體名稱，每行一個，不要其他文字："""
+
+
+def _question_terms(question: str) -> set[str]:
+    return {token for token in re.findall(r"[\w\-]+", question.lower()) if len(token) > 1}
+
+
+def _text_overlap_score(question_terms: set[str], *values: str) -> float:
+    if not question_terms:
+        return 0.0
+    haystack = " ".join(value.lower() for value in values if value)
+    hits = sum(1 for token in question_terms if token in haystack)
+    return hits / max(len(question_terms), 1)
 
 
 async def identify_query_entities(question: str) -> List[str]:
@@ -94,6 +108,7 @@ def find_matching_nodes(
 def expand_to_neighbors(
     store: GraphStore,
     node_ids: List[str],
+    question: str = "",
     hops: int = 1,
     max_nodes: int = 30,
 ) -> List[str]:
@@ -110,15 +125,106 @@ def expand_to_neighbors(
         List of all relevant node IDs (including original).
     """
     all_nodes = set(node_ids)
-    
+    ranked_candidates: list[tuple[float, str]] = []
+    question_terms = _question_terms(question)
+
     for node_id in node_ids:
         neighbors = store.get_neighbors(node_id, hops=hops, max_nodes=max_nodes)
-        all_nodes.update(neighbors)
-        
+        for neighbor_id in neighbors:
+            score = 0.0
+            neighbor = store.get_node(neighbor_id)
+            if neighbor:
+                score += _text_overlap_score(
+                    question_terms,
+                    neighbor.label,
+                    neighbor.description or "",
+                )
+                score += min(len(neighbor.doc_ids), 5) / 10
+            ranked_candidates.append((score, neighbor_id))
+
+    for _, neighbor_id in sorted(ranked_candidates, reverse=True):
+        all_nodes.add(neighbor_id)
         if len(all_nodes) >= max_nodes:
             break
-    
+
     return list(all_nodes)[:max_nodes]
+
+
+def build_local_evidence(
+    store: GraphStore,
+    question: str,
+    node_ids: List[str],
+    max_edges: int = 14,
+) -> List[GraphEvidence]:
+    """Build scored local evidence units for generic mode merging."""
+    evidence: list[GraphEvidence] = []
+    question_terms = _question_terms(question)
+    node_set = set(node_ids)
+
+    for node_id in node_ids[:20]:
+        node = store.get_node(node_id)
+        if not node:
+            continue
+        text = f"{node.label} ({node.entity_type.value})"
+        if node.description:
+            text += f": {node.description}"
+        score = 0.55 + _text_overlap_score(question_terms, node.label, node.description or "")
+        score += min(len(node.doc_ids), 5) / 20
+        evidence.append(
+            GraphEvidence(
+                evidence_id=f"node:{node_id}",
+                evidence_type="local_node",
+                text=text,
+                score=min(score, 1.0),
+                token_estimate=estimate_token_count(text),
+                metadata={"node_id": node_id, "doc_ids": node.doc_ids},
+            )
+        )
+
+    seen_edges = set()
+    edge_candidates: list[GraphEvidence] = []
+    for node_id in node_ids:
+        for edge in store.get_edges_for_node(node_id):
+            if edge.source_id not in node_set or edge.target_id not in node_set:
+                continue
+            edge_key = (edge.source_id, edge.target_id, edge.relation)
+            if edge_key in seen_edges:
+                continue
+            seen_edges.add(edge_key)
+            source = store.get_node(edge.source_id)
+            target = store.get_node(edge.target_id)
+            if not source or not target:
+                continue
+            text = f"{source.label} [{edge.relation}] {target.label}"
+            if edge.description:
+                text += f" ({edge.description})"
+            score = 0.65 + _text_overlap_score(
+                question_terms,
+                source.label,
+                target.label,
+                edge.relation,
+                edge.description or "",
+            )
+            score += min(edge.weight, 1.0) / 5
+            edge_candidates.append(
+                GraphEvidence(
+                    evidence_id=f"edge:{edge.source_id}:{edge.target_id}:{edge.relation}",
+                    evidence_type="local_edge",
+                    text=text,
+                    score=min(score, 1.0),
+                    token_estimate=estimate_token_count(text),
+                    metadata={
+                        "source_id": edge.source_id,
+                        "target_id": edge.target_id,
+                        "doc_ids": edge.doc_ids,
+                    },
+                )
+            )
+
+    edge_candidates.sort(key=lambda item: item.score, reverse=True)
+    evidence.extend(edge_candidates[:max_edges])
+    evidence.sort(key=lambda item: item.score, reverse=True)
+    return evidence
 
 
 def build_local_context(
@@ -211,12 +317,37 @@ async def local_search(
     logger.info(f"Found {len(matched_nodes)} matching nodes for query")
     
     # Step 3: Expand to neighbors
-    expanded_nodes = expand_to_neighbors(store, matched_nodes, hops=hops, max_nodes=max_nodes)
+    expanded_nodes = expand_to_neighbors(
+        store,
+        matched_nodes,
+        question=question,
+        hops=hops,
+        max_nodes=max_nodes,
+    )
     
     # Step 4: Build context
     context = build_local_context(store, expanded_nodes)
     
     return context, expanded_nodes
+
+
+async def local_search_evidence(
+    store: GraphStore,
+    question: str,
+    hops: int = 2,
+    max_nodes: int = 30,
+    max_edges: int = 14,
+) -> Tuple[List[GraphEvidence], List[str]]:
+    """Return local evidence units for generic graph context merging."""
+    context, expanded_nodes = await local_search(
+        store=store,
+        question=question,
+        hops=hops,
+        max_nodes=max_nodes,
+    )
+    if not context or not expanded_nodes:
+        return [], expanded_nodes
+    return build_local_evidence(store, question, expanded_nodes, max_edges=max_edges), expanded_nodes
 
 
 def local_search_by_node_ids(

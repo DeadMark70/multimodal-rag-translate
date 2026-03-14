@@ -8,6 +8,7 @@ Queries each relevant community and synthesizes answers.
 # Standard library
 import asyncio
 import logging
+import re
 from typing import List, Optional, Tuple
 
 # Third-party
@@ -15,6 +16,7 @@ from langchain_core.messages import HumanMessage
 
 # Local application
 from core.providers import get_llm
+from graph_rag.generic_mode import GraphEvidence, estimate_token_count
 from graph_rag.schemas import Community
 from graph_rag.store import GraphStore
 
@@ -64,6 +66,28 @@ _SYNTHESIS_PROMPT = """你是一個研究報告撰寫專家。請將以下多個
 綜合答案："""
 
 
+def _question_terms(question: str) -> set[str]:
+    return {token for token in re.findall(r"[\w\-]+", question.lower()) if len(token) > 1}
+
+
+def score_community_relevance(community: Community, question: str) -> float:
+    """Cheap lexical relevance score used for community pruning."""
+    question_terms = _question_terms(question)
+    if not question_terms:
+        return 0.1
+    haystack = " ".join(
+        value.lower()
+        for value in (community.title or "", community.summary or "", community.ranking_text or "")
+        if value
+    )
+    hits = sum(1 for token in question_terms if token in haystack)
+    if hits == 0:
+        return 0.0
+    size_bonus = min(len(community.node_ids), 10) / 50
+    level_bonus = 0.05 if community.level > 0 else 0.0
+    return (hits / max(len(question_terms), 1)) + size_bonus + level_bonus
+
+
 async def check_community_relevance(
     community: Community,
     question: str,
@@ -80,22 +104,7 @@ async def check_community_relevance(
     """
     if not community.summary:
         return False
-    
-    try:
-        llm = get_llm("graph_extraction")  # Use fast model
-        prompt = _RELEVANCE_CHECK_PROMPT.format(
-            question=question,
-            title=community.title or f"社群 {community.id}",
-            summary=community.summary,
-        )
-        
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        return "相關" in response.content
-        
-    except Exception as e:
-        logger.warning(f"Relevance check failed: {e}")
-        # Default to include if check fails
-        return True
+    return score_community_relevance(community, question) > 0.0
 
 
 async def query_community(
@@ -195,6 +204,7 @@ async def global_search(
     store: GraphStore,
     question: str,
     max_communities: int = 5,
+    level: Optional[int] = None,
 ) -> Tuple[str, List[int]]:
     """
     Perform global search using community Map-Reduce.
@@ -207,7 +217,7 @@ async def global_search(
     Returns:
         Tuple of (synthesized_answer, community_ids_used).
     """
-    communities = store.communities
+    communities = store.get_communities(level=level)
     
     if not communities:
         logger.info("No communities in graph, cannot perform global search")
@@ -215,16 +225,19 @@ async def global_search(
     
     logger.info(f"Global search across {len(communities)} communities")
     
-    # Step 1: Filter to relevant communities
-    relevance_tasks = [
-        check_community_relevance(c, question)
-        for c in communities
-    ]
-    relevance_results = await asyncio.gather(*relevance_tasks)
-    
+    scored_communities = sorted(
+        (
+            (community, score_community_relevance(community, question))
+            for community in communities
+            if community.summary
+        ),
+        key=lambda item: item[1],
+        reverse=True,
+    )
     relevant_communities = [
-        c for c, is_relevant in zip(communities, relevance_results)
-        if is_relevant
+        community
+        for community, score in scored_communities
+        if score > 0.0
     ][:max_communities]
     
     if not relevant_communities:
@@ -259,6 +272,71 @@ async def global_search(
     logger.info(f"Global search completed using {len(community_ids)} communities")
     
     return final_answer, community_ids
+
+
+async def global_search_evidence(
+    store: GraphStore,
+    question: str,
+    max_communities: int = 3,
+    level: Optional[int] = None,
+) -> Tuple[str, List[GraphEvidence], List[int]]:
+    """Return global answer plus structured community evidence."""
+    communities = store.get_communities(level=level)
+    if not communities:
+        return "", [], []
+
+    scored = sorted(
+        (
+            (community, score_community_relevance(community, question))
+            for community in communities
+            if community.summary
+        ),
+        key=lambda item: item[1],
+        reverse=True,
+    )[:max_communities]
+
+    relevant = [(community, score) for community, score in scored if score > 0.0]
+    if not relevant:
+        return "", [], []
+
+    query_tasks = [query_community(store, community, question) for community, _ in relevant]
+    answers = await asyncio.gather(*query_tasks)
+
+    answer_pairs: list[tuple[str, str]] = []
+    evidence: list[GraphEvidence] = []
+    community_ids: list[int] = []
+
+    for (community, score), answer in zip(relevant, answers):
+        title = community.title or f"社群 {community.id}"
+        summary_text = f"{title}: {community.summary}"
+        evidence.append(
+            GraphEvidence(
+                evidence_id=f"community-summary:{community.id}",
+                evidence_type="community_summary",
+                text=summary_text,
+                score=min(0.55 + score, 1.0),
+                token_estimate=estimate_token_count(summary_text),
+                metadata={"community_id": community.id, "level": community.level},
+            )
+        )
+        if answer:
+            answer_pairs.append((title, answer))
+            community_ids.append(community.id)
+            answer_text = f"{title}: {answer}"
+            evidence.append(
+                GraphEvidence(
+                    evidence_id=f"community-answer:{community.id}",
+                    evidence_type="community_answer",
+                    text=answer_text,
+                    score=min(0.7 + score, 1.0),
+                    token_estimate=estimate_token_count(answer_text),
+                    metadata={"community_id": community.id, "level": community.level},
+                )
+            )
+
+    final_answer = await synthesize_answers(question, answer_pairs) if answer_pairs else ""
+    evidence.sort(key=lambda item: item.score, reverse=True)
+    return final_answer, evidence, community_ids
 
 
 def build_global_context(store: GraphStore) -> str:
