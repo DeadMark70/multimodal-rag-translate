@@ -27,7 +27,6 @@ from data_base.schemas_deep_research import (
 )
 from data_base.RAG_QA_service import rag_answer_question
 from agents.planner import TaskPlanner, SubTask
-from agents.synthesizer import synthesize_results, SubTaskResult
 from agents.evaluator import RAGEvaluator
 
 # Configure logging
@@ -186,7 +185,11 @@ class DeepResearchService(ResearchExecutionCore):
                         doc_ids=doc_ids,
                         enable_reranking=enable_reranking,
                         enable_graph_rag=True,  # Phase 6: 預設開啟
-                        graph_search_mode="hybrid",  # Phase 6: 混合模式
+                        graph_search_mode="generic",
+                        graph_execution_hints=self._graph_execution_hints(
+                            stage_hint="exploration",
+                            task_type=task.task_type,
+                        ),
                         enable_visual_verification=enable_deep_image_analysis,  # Phase 9
                         return_docs=True, # Capture documents for context
                     )
@@ -325,7 +328,11 @@ class DeepResearchService(ResearchExecutionCore):
                             doc_ids=doc_ids,
                             enable_reranking=enable_reranking,
                             enable_graph_rag=use_graph,
-                            graph_search_mode="hybrid" if use_graph else "auto",
+                            graph_search_mode="generic" if use_graph else "auto",
+                            graph_execution_hints=self._graph_execution_hints(
+                                stage_hint="verification",
+                                task_type=task.task_type,
+                            ),
                             return_docs=True,  # Get documents for evaluation
                             enable_visual_verification=enable_deep_image_analysis,  # Phase 9
                         )
@@ -751,7 +758,11 @@ class DeepResearchService(ResearchExecutionCore):
                 doc_ids=doc_ids,
                 enable_reranking=enable_reranking,
                 enable_graph_rag=use_graph,
-                graph_search_mode="hybrid" if use_graph else "auto",
+                graph_search_mode="generic" if use_graph else "auto",
+                graph_execution_hints=self._graph_execution_hints(
+                    stage_hint="exploration" if iteration == 0 else "verification",
+                    task_type=task.task_type,
+                ),
                 return_docs=True, # MUST be True to capture tool_calls and diagnostics
                 enable_visual_verification=enable_deep_image_analysis,
             )

@@ -33,6 +33,20 @@ class ResearchExecutionCore:
         self.default_max_iterations = default_max_iterations
         self._semaphore = asyncio.Semaphore(max_concurrent_tasks)
 
+    @staticmethod
+    def _graph_execution_hints(
+        *,
+        stage_hint: str,
+        task_type: str,
+    ) -> dict[str, object]:
+        """Build generic-mode graph routing hints for research execution."""
+        return {
+            "stage_hint": stage_hint,
+            "task_type_hint": task_type,
+            "prefer_global": stage_hint == "exploration" or task_type == "graph_analysis",
+            "prefer_local": stage_hint == "verification" and task_type != "graph_analysis",
+        }
+
     async def generate_plan(
         self,
         question: str,
@@ -186,7 +200,11 @@ class ResearchExecutionCore:
                         doc_ids=doc_ids,
                         enable_reranking=enable_reranking,
                         enable_graph_rag=True,
-                        graph_search_mode="hybrid",
+                        graph_search_mode="generic",
+                        graph_execution_hints=self._graph_execution_hints(
+                            stage_hint="exploration",
+                            task_type=task.task_type,
+                        ),
                         enable_visual_verification=enable_deep_image_analysis,
                         return_docs=True,
                     )
@@ -282,7 +300,11 @@ class ResearchExecutionCore:
                             doc_ids=doc_ids,
                             enable_reranking=enable_reranking,
                             enable_graph_rag=use_graph,
-                            graph_search_mode="hybrid" if use_graph else "auto",
+                            graph_search_mode="generic" if use_graph else "auto",
+                            graph_execution_hints=self._graph_execution_hints(
+                                stage_hint="verification",
+                                task_type=task.task_type,
+                            ),
                             return_docs=True,
                             enable_visual_verification=enable_deep_image_analysis,
                         )
@@ -445,7 +467,11 @@ class ResearchExecutionCore:
                 doc_ids=doc_ids,
                 enable_reranking=enable_reranking,
                 enable_graph_rag=use_graph,
-                graph_search_mode="hybrid" if use_graph else "auto",
+                graph_search_mode="generic" if use_graph else "auto",
+                graph_execution_hints=self._graph_execution_hints(
+                    stage_hint="exploration" if iteration == 0 else "verification",
+                    task_type=task.task_type,
+                ),
                 return_docs=True,
                 enable_visual_verification=enable_deep_image_analysis,
             )

@@ -406,7 +406,13 @@ async def research_question(
                     user_id=user_id,
                     enable_reranking=request.enable_reranking,
                     enable_graph_rag=use_graph,
-                    graph_search_mode="hybrid" if use_graph else "auto",
+                    graph_search_mode="generic" if use_graph else "auto",
+                    graph_execution_hints={
+                        "stage_hint": "exploration",
+                        "task_type_hint": task.task_type,
+                        "prefer_global": use_graph,
+                        "prefer_local": not use_graph,
+                    },
                 )
                 
                 sub_results.append(SubTaskResult(
