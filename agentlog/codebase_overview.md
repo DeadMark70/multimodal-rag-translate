@@ -18,7 +18,7 @@ The Multimodal RAG System is a FastAPI-based application designed for:
 - **RAG Engine (`data_base/`)**:
   - **Vector Store**: FAISS for fast similarity search.
   - **Embeddings**: `models/gemini-embedding-001` (Google API).
-  - **Reranker**: `cross-encoder/ms-marco-MiniLM-L-12-v2` (Microsoft SBERT) for high-precision re-ranking.
+  - **Reranker**: `jinaai/jina-reranker-v3` via local Hugging Face inference for high-precision re-ranking.
   - **Query Transformation**: Implements HyDE (Hypothetical Document Embeddings) and Multi-Query expansion.
 - **GraphRAG (`graph_rag/`)**:
   - **Store**: NetworkX based graph storage.

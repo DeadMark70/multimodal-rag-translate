@@ -16,7 +16,7 @@ The `data_base` module forms the backbone of the project's Retrieval-Augmented G
     -   **Workflow**:
         1.  **Retrieval**: Fetches relevant documents using the hybrid retriever.
         2.  **Query Transformation**: Optional HyDE (Hypothetical Document Embeddings) or Multi-Query expansion.
-        3.  **Reranking**: Re-scores results using Cross-Encoders or reciprocal rank fusion.
+        3.  **Reranking**: Re-scores results using the local Jina reranker or reciprocal rank fusion.
         4.  **Context Enrichment**: Expands short chunks with parent context.
         5.  **Multimodal Synthesis**: Combines text and image data into a prompt for the LLM (Gemini).
         6.  **Visual Verification**: Optional Re-Act loop to verify image details if the initial summary is insufficient.
@@ -40,7 +40,7 @@ The `data_base` module forms the backbone of the project's Retrieval-Augmented G
 | `data_base/vector_store_manager.py` | Manages FAISS indices, embeddings, and chunking strategies. |
 | `data_base/RAG_QA_service.py` | Core RAG pipeline logic (retrieval, ranking, synthesis). |
 | `data_base/deep_research_service.py` | Orchestrates the agentic deep research workflow. |
-| `data_base/reranker.py` | Implements Cross-Encoder reranking logic. |
+| `data_base/reranker.py` | Implements local Jina reranking logic. |
 | `data_base/query_transformer.py` | HyDE and Multi-Query transformation logic. |
 | `data_base/parent_child_store.py` | Manages hierarchical document storage. |
 | `data_base/context_enricher.py` | Enriches chunks with additional context. |
@@ -88,5 +88,5 @@ python debug_ragas_real.py
 -   `langchain`: Framework for RAG and chains.
 -   `faiss-cpu`: Vector database.
 -   `google-generativeai`: Embedding and LLM services.
--   `sentence-transformers`: Reranking models.
+-   `transformers`: Local reranker model loading.
 -   `rank_bm25`: Keyword retrieval.

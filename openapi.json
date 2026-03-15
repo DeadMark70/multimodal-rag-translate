@@ -1280,7 +1280,7 @@
           "enable_reranking": {
             "type": "boolean",
             "title": "Enable Reranking",
-            "description": "啟用 Cross-Encoder 重排序（建議開啟）",
+            "description": "啟用本地 reranker 重排序（建議開啟）",
             "default": true
           },
           "enable_evaluation": {
@@ -1320,7 +1320,7 @@
           "question"
         ],
         "title": "AskRequest",
-        "description": "Request body for POST /ask endpoint.\n\nAttributes:\n    question: The user's question.\n    doc_ids: Optional list of document IDs to filter retrieval.\n    history: Optional conversation history for context-aware responses.\n    enable_hyde: Enable HyDE (Hypothetical Document Embeddings) retrieval.\n    enable_multi_query: Enable multi-query fusion retrieval.\n    enable_reranking: Enable Cross-Encoder reranking (recommended).\n    enable_evaluation: Enable Self-RAG evaluation (adds latency).\n    enable_graph_rag: Enable knowledge graph enhanced retrieval.\n    graph_search_mode: Graph search mode (local/global/hybrid/auto).\n    enable_graph_planning: Enable graph-based planning for Deep Research."
+        "description": "Request body for POST /ask endpoint.\n\nAttributes:\n    question: The user's question.\n    doc_ids: Optional list of document IDs to filter retrieval.\n    history: Optional conversation history for context-aware responses.\n    enable_hyde: Enable HyDE (Hypothetical Document Embeddings) retrieval.\n    enable_multi_query: Enable multi-query fusion retrieval.\n    enable_reranking: Enable local document reranking (recommended).\n    enable_evaluation: Enable Self-RAG evaluation (adds latency).\n    enable_graph_rag: Enable knowledge graph enhanced retrieval.\n    graph_search_mode: Graph search mode (local/global/hybrid/auto).\n    enable_graph_planning: Enable graph-based planning for Deep Research."
       },
       "Body_extract_from_pdf_endpoint_multimodal_extract_post": {
         "properties": {
