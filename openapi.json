@@ -1301,11 +1301,12 @@
               "local",
               "global",
               "hybrid",
-              "auto"
+              "auto",
+              "generic"
             ],
             "title": "Graph Search Mode",
-            "description": "圖譜搜尋模式: local (實體擴展), global (社群摘要), hybrid (兩者), auto (自動判斷)",
-            "default": "auto"
+            "description": "圖譜搜尋模式: generic (推薦/預設), auto (相容別名), local/global/hybrid (legacy 相容/除錯模式，內部仍走 generic 核心)",
+            "default": "generic"
           },
           "enable_graph_planning": {
             "type": "boolean",

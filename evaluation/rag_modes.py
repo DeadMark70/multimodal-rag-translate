@@ -34,7 +34,7 @@ RAG_MODES: dict[str, dict[str, Any]] = {
         "enable_hyde": True,
         "enable_multi_query": True,
         "enable_graph_rag": True,
-        "graph_search_mode": "hybrid",
+        "graph_search_mode": "generic",
         "enable_visual_verification": False,
     },
     "agentic": {
@@ -42,7 +42,7 @@ RAG_MODES: dict[str, dict[str, Any]] = {
         "enable_hyde": True,
         "enable_multi_query": True,
         "enable_graph_rag": True,
-        "graph_search_mode": "hybrid",
+        "graph_search_mode": "generic",
         "enable_visual_verification": True,
     },
 }

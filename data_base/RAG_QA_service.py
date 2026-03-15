@@ -37,6 +37,7 @@ from data_base.parent_child_store import ParentDocumentStore
 from graph_rag.generic_mode import (
     GenericGraphRouter,
     GraphEvidence,
+    GraphRouteDecision,
     GraphQueryHints,
     estimate_token_count,
     merge_graph_evidence,
@@ -332,10 +333,49 @@ def _schedule_lazy_graph_upgrade(user_id: str) -> None:
         _LAZY_GRAPH_UPGRADE_TASKS.discard(user_id)
 
 
+def _legacy_graph_route_decision(
+    search_mode: str,
+    *,
+    has_communities: bool,
+) -> Optional[GraphRouteDecision]:
+    """Map legacy public graph modes onto the generic execution core."""
+    if search_mode == "local":
+        return GraphRouteDecision(
+            query_kind="fact",
+            path="local-first",
+            hops=DEFAULT_GRAPH_LOCAL_HOPS,
+            max_nodes=DEFAULT_GRAPH_LOCAL_MAX_NODES,
+            max_communities=1,
+            token_budget=760,
+        )
+
+    if search_mode == "global":
+        return GraphRouteDecision(
+            query_kind="summary",
+            path="global-first" if has_communities else "local-first",
+            hops=1 if has_communities else DEFAULT_GRAPH_LOCAL_HOPS,
+            max_nodes=8 if has_communities else DEFAULT_GRAPH_LOCAL_MAX_NODES,
+            max_communities=3 if has_communities else 1,
+            token_budget=1000 if has_communities else 760,
+        )
+
+    if search_mode == "hybrid":
+        return GraphRouteDecision(
+            query_kind="relation",
+            path="blended" if has_communities else "local-first",
+            hops=2,
+            max_nodes=12 if has_communities else DEFAULT_GRAPH_LOCAL_MAX_NODES,
+            max_communities=2 if has_communities else 1,
+            token_budget=920 if has_communities else 760,
+        )
+
+    return None
+
+
 async def _get_graph_context(
     question: str,
     user_id: str,
-    search_mode: str = "auto",
+    search_mode: str = "generic",
     graph_execution_hints: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
@@ -344,7 +384,7 @@ async def _get_graph_context(
     Args:
         question: User's question.
         user_id: User's ID.
-        search_mode: Search mode (auto/local/global/hybrid/generic).
+        search_mode: Search mode (`generic` recommended; `auto/local/global/hybrid` are legacy compatibility values).
         graph_execution_hints: Optional internal routing hints for generic mode.
         
     Returns:
@@ -353,7 +393,7 @@ async def _get_graph_context(
     try:
         from graph_rag.store import GraphStore
         from graph_rag.global_search import global_search_evidence
-        from graph_rag.local_search import local_search, local_search_evidence
+        from graph_rag.local_search import local_search_evidence
 
         store = GraphStore(user_id)
         
@@ -369,61 +409,24 @@ async def _get_graph_context(
         effective_mode = "generic" if search_mode == "auto" else search_mode
         hints = GraphQueryHints(**(graph_execution_hints or {}))
         has_hierarchy = bool(status.community_level_counts.get("1"))
+        has_communities = status.community_count > 0
 
-        if effective_mode == "local":
-            local_ctx, node_ids = await local_search(
-                store,
-                question,
-                hops=DEFAULT_GRAPH_LOCAL_HOPS,
-                max_nodes=DEFAULT_GRAPH_LOCAL_MAX_NODES,
-            )
-            if local_ctx:
-                logger.debug("Local search found %s nodes", len(node_ids))
-            return local_ctx
-
-        if effective_mode == "global":
-            if status.community_count > 0:
-                global_answer, _, community_ids = await global_search_evidence(
-                    store,
-                    question,
-                    max_communities=3,
-                    level=1 if has_hierarchy else None,
-                )
-                if global_answer:
-                    logger.debug("Global search used %s communities", len(community_ids))
-                    return f"=== 社群分析 ===\n{global_answer}"
-            local_ctx, _ = await local_search(
-                store,
-                question,
-                hops=DEFAULT_GRAPH_LOCAL_HOPS,
-                max_nodes=DEFAULT_GRAPH_LOCAL_MAX_NODES,
-            )
-            return local_ctx
-
-        if effective_mode == "hybrid":
-            local_ctx, local_node_ids = await local_search(store, question, hops=2, max_nodes=16)
-            global_answer = ""
-            community_ids: list[int] = []
-            if status.community_count > 0:
-                global_answer, _, community_ids = await global_search_evidence(
-                    store,
-                    question,
-                    max_communities=2,
-                    level=1 if has_hierarchy else None,
-                )
-            context_parts = [part for part in [local_ctx, f"=== 社群分析 ===\n{global_answer}" if global_answer else ""] if part]
-            if community_ids:
-                logger.debug("Hybrid search used %s communities", len(community_ids))
-            if local_node_ids:
-                logger.debug("Hybrid search found %s local nodes", len(local_node_ids))
-            return "\n\n".join(context_parts)
-
-        router = GenericGraphRouter()
-        decision = await router.route(
-            question,
-            has_communities=status.community_count > 0,
-            hints=hints,
+        decision = _legacy_graph_route_decision(
+            effective_mode,
+            has_communities=has_communities,
         )
+        if decision is not None:
+            logger.warning(
+                "Legacy graph_search_mode '%s' requested; routing through generic graph core",
+                effective_mode,
+            )
+        else:
+            router = GenericGraphRouter()
+            decision = await router.route(
+                question,
+                has_communities=has_communities,
+                hints=hints,
+            )
 
         local_evidence = []
         global_evidence = []
@@ -610,7 +613,7 @@ async def rag_answer_question(
     return_docs: bool = False,
     # GraphRAG parameters
     enable_graph_rag: bool = False,
-    graph_search_mode: str = "auto",
+    graph_search_mode: str = "generic",
     graph_execution_hints: Optional[Dict[str, Any]] = None,
     # Visual Verification (Phase 9)
     enable_visual_verification: bool = False,
@@ -641,7 +644,7 @@ async def rag_answer_question(
         enable_multi_query: If True, use multi-query with RRF fusion.
         return_docs: If True, returns RAGResult with documents for evaluation.
         enable_graph_rag: If True, enhance with knowledge graph context.
-        graph_search_mode: Graph search mode (local/global/hybrid/auto/generic).
+        graph_search_mode: Graph search mode (`generic` recommended; `auto/local/global/hybrid` are legacy compatibility values).
         graph_execution_hints: Internal generic-mode routing hints from execution layers.
         enable_visual_verification: If True, enable Re-Act loop for image details.
 

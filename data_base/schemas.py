@@ -159,7 +159,7 @@ class AskRequest(BaseModel):
         enable_reranking: Enable Cross-Encoder reranking (recommended).
         enable_evaluation: Enable Self-RAG evaluation (adds latency).
         enable_graph_rag: Enable knowledge graph enhanced retrieval.
-        graph_search_mode: Graph search mode (local/global/hybrid/auto/generic).
+        graph_search_mode: Graph search mode (`generic` recommended; `local/global/hybrid/auto` are legacy compatibility values).
         enable_graph_planning: Enable graph-based planning for Deep Research.
     """
     question: str = Field(
@@ -199,7 +199,7 @@ class AskRequest(BaseModel):
     )
     graph_search_mode: Literal["local", "global", "hybrid", "auto", "generic"] = Field(
         default="generic",
-        description="圖譜搜尋模式: local (實體擴展), global (社群摘要), hybrid (兩者), auto (相容別名), generic (泛化路由)",
+        description="圖譜搜尋模式: generic (推薦/預設), auto (相容別名), local/global/hybrid (legacy 相容/除錯模式，內部仍走 generic 核心)",
     )
     enable_graph_planning: bool = Field(
         default=False,

@@ -9,6 +9,45 @@ from evaluation.schemas import TestCase as EvaluationCase
 
 
 @pytest.mark.asyncio
+async def test_run_campaign_case_graph_uses_generic_graph_mode() -> None:
+    test_case = EvaluationCase(
+        id="Q1",
+        question="What changed?",
+        ground_truth="A generic graph path",
+        source_docs=[],
+        requires_multi_doc_reasoning=False,
+    )
+    mock_result = RAGResult(
+        answer="graph answer",
+        source_doc_ids=["doc-1"],
+        documents=[Document(page_content="ctx-1")],
+        usage={"total_tokens": 21},
+    )
+
+    with patch("evaluation.rag_modes.run_with_retry", new=AsyncMock(return_value=mock_result)) as mock_retry:
+        result = await run_campaign_case(
+            test_case=test_case,
+            user_id="user-1",
+            mode="graph",
+            model_config={
+                "model_name": "gemini-2.5-flash",
+                "temperature": 0.7,
+                "top_p": 0.95,
+                "top_k": 40,
+                "max_output_tokens": 2048,
+            },
+            run_number=1,
+        )
+
+    mock_retry.assert_awaited_once()
+    _, kwargs = mock_retry.await_args
+    assert kwargs["enable_graph_rag"] is True
+    assert kwargs["graph_search_mode"] == "generic"
+    assert result.answer == "graph answer"
+    assert result.contexts == ["ctx-1"]
+
+
+@pytest.mark.asyncio
 async def test_run_campaign_case_agentic_uses_evaluation_service_and_profile() -> None:
     test_case = EvaluationCase(
         id="Q1",
