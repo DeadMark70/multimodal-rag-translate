@@ -79,6 +79,7 @@ This is a FastAPI-based multimodal Agentic RAG backend.
 - CPU-bound/blocking work must use `run_in_threadpool` in FastAPI paths.
 - Protected endpoints must keep `Depends(get_current_user_id)`.
 - Use safe path building (`os.path.join`, `os.path.normpath`) and strict input validation.
+- When adding streamed and non-streamed variants of the same API capability, keep them on one shared execution path and make the streamed `complete` payload match the synchronous response contract.
 - Keep changes incremental and reviewable; avoid large mixed-purpose patches.
 
 ## 5. Refactor Workflow (Per Task)

@@ -6,8 +6,10 @@ including enhanced research mode with Plan-and-Solve agents.
 """
 
 # Standard library
+import asyncio
 import logging
 import time
+from contextlib import suppress
 from typing import Optional, List
 
 # Third-party
@@ -38,6 +40,12 @@ from data_base.schemas_deep_research import (
     ExecutePlanResponse,
 )
 from data_base.deep_research_service import get_deep_research_service
+from data_base.sse_events import (
+    ErrorData,
+    PhaseUpdateData,
+    SSEEventType,
+    format_sse_event,
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -73,6 +81,203 @@ class ResearchResponse(BaseModel):
     sub_tasks: list[SubTaskResponse]
     all_sources: list[str]
     confidence: float
+
+
+_ASK_PHASE_LABELS = {
+    "query_expansion": "正在擴展查詢",
+    "retrieval": "正在檢索文件",
+    "reranking": "正在重排序結果",
+    "graph_context": "正在分析圖譜上下文",
+    "answer_generation": "正在生成回答",
+}
+
+
+def _validate_ask_history(request: AskRequest) -> None:
+    """Validate ask request invariants shared by sync and streaming flows."""
+    if request.history and len(request.history) > MAX_HISTORY_LENGTH:
+        raise AppError(
+            code=ErrorCode.BAD_REQUEST,
+            message=f"History too long; max {MAX_HISTORY_LENGTH} messages",
+            status_code=400,
+        )
+
+
+def _build_source_details(answer: str, sources: list[str]) -> list[SourceDetail]:
+    """Build fallback source details for unified response shape."""
+    return [
+        SourceDetail(
+            doc_id=doc_id,
+            filename=None,
+            page=None,
+            snippet=answer[:200],
+            score=0.0,
+        )
+        for doc_id in sources
+    ]
+
+
+async def _run_contextual_ask(
+    request: AskRequest,
+    background_tasks: BackgroundTasks,
+    user_id: str,
+    *,
+    progress_callback=None,
+) -> EnhancedAskResponse:
+    """Execute the ordinary ask flow for both sync and SSE endpoints."""
+    t1 = time.perf_counter()
+    _validate_ask_history(request)
+
+    history_count = len(request.history) if request.history else 0
+    logger.info(
+        "Context-aware RAG for user %s: history=%s, hyde=%s, multi_query=%s, evaluation=%s, graph_rag=%s",
+        user_id,
+        history_count,
+        request.enable_hyde,
+        request.enable_multi_query,
+        request.enable_evaluation,
+        request.enable_graph_rag,
+    )
+
+    try:
+        answer, sources = await rag_answer_question(
+            question=request.question,
+            user_id=user_id,
+            doc_ids=request.doc_ids,
+            history=request.history,
+            enable_reranking=request.enable_reranking,
+            enable_hyde=request.enable_hyde,
+            enable_multi_query=request.enable_multi_query,
+            enable_graph_rag=request.enable_graph_rag,
+            graph_search_mode=request.graph_search_mode,
+            progress_callback=progress_callback,
+        )
+
+        t2 = time.perf_counter()
+        logger.info("Context-aware answer in %.2fs, sources: %s", t2 - t1, sources)
+
+        background_tasks.add_task(
+            _log_query_to_supabase,
+            user_id=user_id,
+            question=request.question,
+            answer=answer,
+            has_history=history_count > 0,
+        )
+
+        source_details = _build_source_details(answer, sources)
+        if not request.enable_evaluation:
+            return EnhancedAskResponse(
+                question=request.question,
+                answer=answer,
+                sources=source_details,
+                metrics=None,
+            )
+
+        logger.info("Running Self-RAG evaluation with documents...")
+        result_with_docs = await rag_answer_question(
+            question=request.question,
+            user_id=user_id,
+            doc_ids=request.doc_ids,
+            history=request.history,
+            enable_reranking=request.enable_reranking,
+            enable_hyde=request.enable_hyde,
+            enable_multi_query=request.enable_multi_query,
+            return_docs=True,
+            enable_graph_rag=request.enable_graph_rag,
+            graph_search_mode=request.graph_search_mode,
+        )
+
+        if isinstance(result_with_docs, RAGResult):
+            answer = result_with_docs.answer
+            sources = result_with_docs.source_doc_ids
+            docs = result_with_docs.documents
+        else:
+            answer, sources = result_with_docs
+            docs = []
+
+        source_details = []
+        for doc_id in sources:
+            snippet = ""
+            for doc in docs:
+                if doc.metadata.get("doc_id") == doc_id or doc.metadata.get("original_doc_uid") == doc_id:
+                    snippet = doc.page_content[:200]
+                    break
+            source_details.append(
+                SourceDetail(
+                    doc_id=doc_id,
+                    filename=None,
+                    page=None,
+                    snippet=snippet if snippet else answer[:200],
+                    score=0.7,
+                )
+            )
+
+        try:
+            evaluator = RAGEvaluator()
+            eval_result = await evaluator.evaluate_detailed(
+                question=request.question,
+                documents=docs,
+                answer=answer,
+            )
+
+            if eval_result.evaluation_failed:
+                faithfulness = FaithfulnessLevel.evaluation_failed
+            elif eval_result.accuracy >= 8:
+                faithfulness = FaithfulnessLevel.grounded
+            elif eval_result.accuracy >= 6:
+                faithfulness = FaithfulnessLevel.uncertain
+            else:
+                faithfulness = FaithfulnessLevel.hallucinated
+
+            metrics = EvaluationMetrics(
+                faithfulness=faithfulness,
+                confidence_score=eval_result.confidence,
+                evaluation_reason=eval_result.reason if eval_result.reason else None,
+                accuracy=eval_result.accuracy,
+                completeness=eval_result.completeness,
+                clarity=eval_result.clarity,
+                weighted_score=eval_result.weighted_score,
+                suggestion=eval_result.suggestion if eval_result.suggestion else None,
+                is_passing=eval_result.is_passing,
+            )
+
+            t3 = time.perf_counter()
+            logger.info(
+                "Evaluation complete in %.2fs: %s, confidence=%.2f",
+                t3 - t2,
+                faithfulness.value,
+                eval_result.confidence,
+            )
+        except (RuntimeError, ValueError) as e:
+            logger.warning("Evaluation failed: %s", e)
+            metrics = EvaluationMetrics(
+                faithfulness=FaithfulnessLevel.evaluation_failed,
+                confidence_score=0.5,
+                evaluation_reason="Evaluation failed",
+            )
+
+        return EnhancedAskResponse(
+            question=request.question,
+            answer=answer,
+            sources=source_details,
+            metrics=metrics,
+        )
+    except (RuntimeError, ValueError) as e:
+        logger.error("Context-aware RAG failed: %s", e, exc_info=True)
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Failed to answer question with context",
+            status_code=500,
+        ) from e
+
+
+async def _emit_ask_phase(queue: "asyncio.Queue[dict | None]", stage: str, _: dict | None = None) -> None:
+    """Emit a phase_update event for chat ask streaming."""
+    await queue.put(
+        format_sse_event(
+            SSEEventType.PHASE_UPDATE,
+            PhaseUpdateData(stage=stage, label=_ASK_PHASE_LABELS.get(stage)),
+        )
+    )
 
 
 # --- Startup ---
@@ -142,174 +347,78 @@ async def ask_question_with_context(
     Raises:
         HTTPException: 400 if history too long, 500 if answering fails.
     """
-    t1 = time.perf_counter()
-
-    # Validate history length
-    if request.history and len(request.history) > MAX_HISTORY_LENGTH:
-        raise AppError(
-            code=ErrorCode.BAD_REQUEST,
-            message=f"History too long; max {MAX_HISTORY_LENGTH} messages",
-            status_code=400,
-        )
-
-    history_count = len(request.history) if request.history else 0
-    logger.info(
-        f"Context-aware RAG for user {user_id}: "
-        f"history={history_count}, hyde={request.enable_hyde}, "
-        f"multi_query={request.enable_multi_query}, "
-        f"evaluation={request.enable_evaluation}, "
-        f"graph_rag={request.enable_graph_rag}"
+    return await _run_contextual_ask(
+        request=request,
+        background_tasks=background_tasks,
+        user_id=user_id,
     )
 
-    try:
-        # Get RAG answer
-        answer, sources = await rag_answer_question(
-            question=request.question,
-            user_id=user_id,
-            doc_ids=request.doc_ids,
-            history=request.history,
-            enable_reranking=request.enable_reranking,
-            enable_hyde=request.enable_hyde,
-            enable_multi_query=request.enable_multi_query,
-            enable_graph_rag=request.enable_graph_rag,
-            graph_search_mode=request.graph_search_mode,
-        )
 
-        t2 = time.perf_counter()
-        logger.info(f"Context-aware answer in {t2 - t1:.2f}s, sources: {sources}")
+@router.post("/ask/stream")
+async def ask_question_with_context_stream(
+    request: AskRequest,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Context-aware question answering with SSE progress updates.
 
-        # Background task: Log analytics and chat history.
-        background_tasks.add_task(
-            _log_query_to_supabase,
-            user_id=user_id,
-            question=request.question,
-            answer=answer,
-            has_history=history_count > 0,
-        )
+    Event types:
+    - phase_update: One of query_expansion / retrieval / reranking / graph_context / answer_generation
+    - complete: Final EnhancedAskResponse payload
+    - error: Error occurred during processing
+    """
+    from sse_starlette.sse import EventSourceResponse
 
-        # Build default source details for unified response shape.
-        source_details = [
-            SourceDetail(
-                doc_id=doc_id,
-                filename=None,
-                page=None,
-                snippet=answer[:200],
-                score=0.0,
-            )
-            for doc_id in sources
-        ]
-        if not request.enable_evaluation:
-            return EnhancedAskResponse(
-                question=request.question,
-                answer=answer,
-                sources=source_details,
-                metrics=None,
-            )
+    _validate_ask_history(request)
+    logger.info("Starting streaming ask for user %s", user_id)
 
-        # --- Enhanced Response with Evaluation ---
-        logger.info("Running Self-RAG evaluation with documents...")
-        
-        # Re-fetch with documents for evaluation
-        result_with_docs = await rag_answer_question(
-            question=request.question,
-            user_id=user_id,
-            doc_ids=request.doc_ids,
-            history=request.history,
-            enable_reranking=request.enable_reranking,
-            enable_hyde=request.enable_hyde,
-            enable_multi_query=request.enable_multi_query,
-            return_docs=True,
-            enable_graph_rag=request.enable_graph_rag,
-            graph_search_mode=request.graph_search_mode,
-        )
-        
-        # Unpack result
-        if isinstance(result_with_docs, RAGResult):
-            answer = result_with_docs.answer
-            sources = result_with_docs.source_doc_ids
-            docs = result_with_docs.documents
-        else:
-            # Fallback if somehow not RAGResult
-            answer, sources = result_with_docs
-            docs = []
+    async def event_generator():
+        queue: asyncio.Queue[dict | None] = asyncio.Queue()
 
-        # Build SourceDetail list with document snippets
-        source_details = []
-        for i, doc_id in enumerate(sources):
-            # Find matching document for snippet
-            snippet = ""
-            for doc in docs:
-                if doc.metadata.get("doc_id") == doc_id or doc.metadata.get("original_doc_uid") == doc_id:
-                    snippet = doc.page_content[:200]
-                    break
-            source_details.append(SourceDetail(
-                doc_id=doc_id,
-                filename=None,
-                page=None,
-                snippet=snippet if snippet else answer[:200],
-                score=0.7  # Placeholder
-            ))
+        async def run_ask() -> None:
+            try:
+                response = await _run_contextual_ask(
+                    request=request,
+                    background_tasks=background_tasks,
+                    user_id=user_id,
+                    progress_callback=lambda stage, details=None: _emit_ask_phase(queue, stage, details),
+                )
+                await queue.put(format_sse_event(SSEEventType.COMPLETE, response))
+            except AppError as exc:
+                logger.error("Streaming ask failed: %s", exc, exc_info=True)
+                await queue.put(
+                    format_sse_event(
+                        SSEEventType.ERROR,
+                        ErrorData(message=exc.message),
+                    )
+                )
+            except (RuntimeError, ValueError) as exc:
+                logger.error("Streaming ask failed: %s", exc, exc_info=True)
+                await queue.put(
+                    format_sse_event(
+                        SSEEventType.ERROR,
+                        ErrorData(message="Streaming ask failed"),
+                    )
+                )
+            finally:
+                await queue.put(None)
 
-        # Run detailed evaluation with real documents
+        task = asyncio.create_task(run_ask())
+
         try:
-            evaluator = RAGEvaluator()
-            eval_result = await evaluator.evaluate_detailed(
-                question=request.question,
-                documents=docs,
-                answer=answer
-            )
-            
-            # Map evaluation result to API schema (Phase 4: 1-10 scale)
-            if eval_result.evaluation_failed:
-                faithfulness = FaithfulnessLevel.evaluation_failed
-            elif eval_result.accuracy >= 8:
-                faithfulness = FaithfulnessLevel.grounded
-            elif eval_result.accuracy >= 6:
-                faithfulness = FaithfulnessLevel.uncertain
-            else:
-                faithfulness = FaithfulnessLevel.hallucinated
-            
-            metrics = EvaluationMetrics(
-                faithfulness=faithfulness,
-                confidence_score=eval_result.confidence,
-                evaluation_reason=eval_result.reason if eval_result.reason else None,
-                # Phase 4: New 1-10 scale fields for radar chart
-                accuracy=eval_result.accuracy,
-                completeness=eval_result.completeness,
-                clarity=eval_result.clarity,
-                weighted_score=eval_result.weighted_score,
-                suggestion=eval_result.suggestion if eval_result.suggestion else None,
-                is_passing=eval_result.is_passing,
-            )
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield event
+        finally:
+            if not task.done():
+                task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
-            t3 = time.perf_counter()
-            logger.info(
-                f"Evaluation complete in {t3 - t2:.2f}s: "
-                f"{faithfulness.value}, confidence={eval_result.confidence:.2f}"
-            )
-
-        except (RuntimeError, ValueError) as e:
-            logger.warning(f"Evaluation failed: {e}")
-            metrics = EvaluationMetrics(
-                faithfulness=FaithfulnessLevel.evaluation_failed,
-                confidence_score=0.5,
-                evaluation_reason="Evaluation failed"
-            )
-
-        return EnhancedAskResponse(
-            question=request.question,
-            answer=answer,
-            sources=source_details,
-            metrics=metrics
-        )
-
-    except (RuntimeError, ValueError) as e:
-        logger.error(f"Context-aware RAG failed: {e}", exc_info=True)
-        raise AppError(
-            code=ErrorCode.PROCESSING_ERROR,
-            message="Failed to answer question with context",
-            status_code=500,
-        )
+    return EventSourceResponse(event_generator(), background=background_tasks)
 
 
 async def _log_query_to_supabase(

@@ -24,6 +24,7 @@ Handles document ingestion, OCR (Local/Marker), and translation.
 ### 3.2 RAG Question Answering (`/rag`)
 Intelligent retrieval and research across user documents.
 - `POST /rag/ask`: Context-aware Q&A. Supports `enable_evaluation`, `enable_graph_rag`, and `enable_visual_verification`.
+- `POST /rag/ask/stream`: SSE version of ordinary Q&A. Emits `phase_update` (`query_expansion`, `retrieval`, `reranking`, `graph_context`, `answer_generation`) followed by `complete` or `error`.
 - `POST /rag/research`: Deep Research mode using Plan-and-Solve workflow.
 - `POST /rag/plan` & `POST /rag/execute/stream`: Human-in-the-loop research planning and SSE-streamed execution.
 

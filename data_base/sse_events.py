@@ -16,7 +16,10 @@ from pydantic import BaseModel
 
 class SSEEventType(str, Enum):
     """SSE event types for deep research streaming."""
-    
+
+    # Generic phase update
+    PHASE_UPDATE = "phase_update"
+
     # Planning phase
     PLAN_CONFIRMED = "plan_confirmed"
     
@@ -41,6 +44,12 @@ class PlanConfirmedData(BaseModel):
     """Data for plan_confirmed event."""
     task_count: int
     enabled_count: int
+
+
+class PhaseUpdateData(BaseModel):
+    """Data for generic phase_update events."""
+    stage: str
+    label: Optional[str] = None
 
 
 class TaskStartData(BaseModel):

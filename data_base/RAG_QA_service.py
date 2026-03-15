@@ -11,7 +11,19 @@ import json
 import logging
 import os
 import re
-from typing import List, Any, Set, Optional, Tuple, NamedTuple, Union, Dict, TYPE_CHECKING
+from typing import (
+    List,
+    Any,
+    Set,
+    Optional,
+    Tuple,
+    NamedTuple,
+    Union,
+    Dict,
+    TYPE_CHECKING,
+    Callable,
+    Awaitable,
+)
 
 # Type checking imports (avoid circular imports)
 if TYPE_CHECKING:
@@ -90,6 +102,20 @@ class RAGResult(NamedTuple):
     thought_process: Optional[str] = None
     tool_calls: List[dict] = []
     agent_trace: Optional[dict] = None
+
+
+ProgressCallback = Callable[[str, Optional[Dict[str, Any]]], Awaitable[None]]
+
+
+async def _emit_progress(
+    progress_callback: Optional[ProgressCallback],
+    stage: str,
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Emit a best-effort progress callback when provided."""
+    if progress_callback is None:
+        return
+    await progress_callback(stage, details)
 
 
 
@@ -637,6 +663,7 @@ async def rag_answer_question(
     graph_execution_hints: Optional[Dict[str, Any]] = None,
     # Visual Verification (Phase 9)
     enable_visual_verification: bool = False,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> Union[Tuple[str, List[str]], RAGResult]:
     """
     Performs multimodal RAG question answering for a specific user.
@@ -694,15 +721,22 @@ async def rag_answer_question(
     search_queries = [question]
     
     if enable_hyde:
+        await _emit_progress(progress_callback, "query_expansion", {"mode": "hyde"})
         hyde_doc = await transform_query_with_hyde(question, enabled=True)
         search_queries = [hyde_doc]
         logger.debug(f"HyDE transformed query: {hyde_doc[:100]}...")
     elif enable_multi_query:
+        await _emit_progress(progress_callback, "query_expansion", {"mode": "multi_query"})
         search_queries = await transform_query_multi(question, enabled=True)
         logger.debug(f"Multi-query generated {len(search_queries)} queries")
 
     # Step 4: Execute retrieval
     try:
+        await _emit_progress(
+            progress_callback,
+            "retrieval",
+            {"query_count": len(search_queries)},
+        )
         if len(search_queries) == 1:
             # Single query retrieval
             docs = retriever.invoke(search_queries[0])
@@ -751,6 +785,16 @@ async def rag_answer_question(
     target_k = _RERANK_TARGET_K
     reranker_available = DocumentReranker.is_initialized()
 
+    if enable_reranking:
+        await _emit_progress(
+            progress_callback,
+            "reranking",
+            {
+                "reranker_available": reranker_available,
+                "document_count": len(docs),
+            },
+        )
+
     if enable_reranking and reranker_available and len(docs) > 0:
         docs = await run_in_threadpool(
             _rerank_documents_for_generation,
@@ -789,6 +833,11 @@ async def rag_answer_question(
     # Step 5.5: GraphRAG context enhancement
     graph_context = ""
     if enable_graph_rag:
+        await _emit_progress(
+            progress_callback,
+            "graph_context",
+            {"search_mode": graph_search_mode},
+        )
         graph_context = await _get_graph_context(
             question=question,
             user_id=user_id,
@@ -943,6 +992,14 @@ async def rag_answer_question(
 
     # Step 9: Call LLM
     try:
+        await _emit_progress(
+            progress_callback,
+            "answer_generation",
+            {
+                "image_count": len(encoded_images),
+                "document_count": len(docs),
+            },
+        )
         response = await llm.ainvoke([message])
         answer = response.content
         usage_metadata = getattr(response, "usage_metadata", {})
