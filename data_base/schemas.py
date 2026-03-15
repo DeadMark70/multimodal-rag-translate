@@ -156,7 +156,7 @@ class AskRequest(BaseModel):
         history: Optional conversation history for context-aware responses.
         enable_hyde: Enable HyDE (Hypothetical Document Embeddings) retrieval.
         enable_multi_query: Enable multi-query fusion retrieval.
-        enable_reranking: Enable Cross-Encoder reranking (recommended).
+        enable_reranking: Enable local document reranking (recommended).
         enable_evaluation: Enable Self-RAG evaluation (adds latency).
         enable_graph_rag: Enable knowledge graph enhanced retrieval.
         graph_search_mode: Graph search mode (`generic` recommended; `local/global/hybrid/auto` are legacy compatibility values).
@@ -186,7 +186,7 @@ class AskRequest(BaseModel):
     )
     enable_reranking: bool = Field(
         default=True,
-        description="啟用 Cross-Encoder 重排序（建議開啟）",
+        description="啟用本地 reranker 重排序（建議開啟）",
     )
     enable_evaluation: bool = Field(
         default=False,

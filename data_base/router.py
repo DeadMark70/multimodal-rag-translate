@@ -19,6 +19,7 @@ from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
 from data_base.RAG_QA_service import initialize_llm_service, rag_answer_question, RAGResult
 from data_base.repository import insert_chat_log, insert_query_log
+from data_base.reranker import DocumentReranker, initialize_reranker
 from data_base.vector_store_manager import initialize_embeddings
 from data_base.schemas import (
     AskRequest,
@@ -83,6 +84,7 @@ async def on_startup_rag_init() -> None:
     Initializes:
     - Embedding model (Google Gemini Embedding API)
     - LLM service (Gemini)
+    - Reranker model (Jina v3, non-fatal warmup)
     """
     logger.info("=== Initializing RAG components ===")
     try:
@@ -91,6 +93,16 @@ async def on_startup_rag_init() -> None:
 
         # 2. Initialize LLM (API Client)
         await initialize_llm_service()
+
+        # 3. Initialize reranker (graceful degradation on failure)
+        try:
+            await initialize_reranker()
+        except (RuntimeError, ImportError, OSError, ValueError) as exc:
+            logger.warning(
+                "Reranker warmup failed; continuing without reranking: %s | state=%s",
+                exc,
+                DocumentReranker.runtime_metadata(reason="startup_warmup_failed"),
+            )
 
         logger.info("=== RAG components ready ===")
     except (RuntimeError, ImportError, OSError) as e:

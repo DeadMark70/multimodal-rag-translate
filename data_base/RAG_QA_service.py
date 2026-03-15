@@ -26,7 +26,7 @@ from langchain_core.messages import HumanMessage
 # Local application
 from core.providers import get_llm
 from data_base.vector_store_manager import get_user_retriever
-from data_base.reranker import rerank_documents, DocumentReranker
+from data_base.reranker import DocumentReranker
 from data_base.query_transformer import (
     transform_query_with_hyde,
     transform_query_multi,
@@ -504,6 +504,8 @@ async def _get_graph_context(
 _MIN_CHUNK_LENGTH = 100       # Minimum characters to trigger expansion
 _MAX_EXPANDED_CHUNKS = 5      # Maximum number of chunks to expand
 _MAX_TOTAL_CHARS = 15000      # Maximum total characters after expansion
+_RERANK_TARGET_K = 8
+_RERANK_NOISE_KEYWORDS = ("SAM", "Segment Anything", "Interactive Segmentation", "SegVol")
 
 
 def _expand_short_chunks(
@@ -602,6 +604,56 @@ def _expand_short_chunks(
     
     return expanded_docs
 
+
+def _query_explicitly_requests_noise_topics(question: str) -> bool:
+    """Return True when the query is explicitly about known noisy topics."""
+    query_lower = question.lower()
+    return any(keyword.lower() in query_lower for keyword in _RERANK_NOISE_KEYWORDS)
+
+
+def _is_noise_document(doc: Document) -> bool:
+    """Detect documents that match known noisy-topic heuristics."""
+    content_sample = doc.page_content[:500]
+    filename = doc.metadata.get("file_name") or doc.metadata.get("source_file") or ""
+    return any(
+        keyword in content_sample or keyword in filename
+        for keyword in _RERANK_NOISE_KEYWORDS
+    )
+
+
+def _rerank_documents_for_generation(
+    question: str,
+    documents: List[Document],
+    target_k: int = _RERANK_TARGET_K,
+) -> List[Document]:
+    """Rerank candidates and prefer non-noise documents before backfilling."""
+    if not documents or not DocumentReranker.is_initialized():
+        return documents[:target_k]
+
+    reranker = DocumentReranker.get_instance()
+    scored_docs = reranker.rerank_with_scores(question, documents, len(documents))
+    if not scored_docs:
+        return documents[:target_k]
+
+    if _query_explicitly_requests_noise_topics(question):
+        return [doc for doc, _ in scored_docs[:target_k]]
+
+    non_noise_docs = [(doc, score) for doc, score in scored_docs if not _is_noise_document(doc)]
+    noise_docs = [(doc, score) for doc, score in scored_docs if _is_noise_document(doc)]
+
+    selected = list(non_noise_docs[:target_k])
+    if len(selected) < target_k:
+        selected.extend(noise_docs[: target_k - len(selected)])
+
+    logger.debug(
+        "Reranker selection complete: total=%s clean=%s noisy=%s selected=%s",
+        len(scored_docs),
+        len(non_noise_docs),
+        len(noise_docs),
+        len(selected),
+    )
+    return [doc for doc, _ in selected]
+
 async def rag_answer_question(
     question: str,
     user_id: str,
@@ -625,7 +677,7 @@ async def rag_answer_question(
     1. Get user's retriever
     2. (Optional) Query transformation (HyDE / Multi-Query)
     3. Execute retrieval (with optional doc_id filtering)
-    4. (Optional) Rerank with Cross-Encoder
+    4. (Optional) Rerank with local document reranker
     5. (Optional) GraphRAG context enhancement
     6. Separate text and image data
     7. Build multimodal prompt (with optional conversation history)
@@ -639,7 +691,7 @@ async def rag_answer_question(
                  If None or empty, queries all documents.
         history: Optional conversation history for context-aware responses.
                  Limited to last 10 messages to control token usage.
-        enable_reranking: If True, use Cross-Encoder reranking.
+        enable_reranking: If True, use local document reranking.
         enable_hyde: If True, use HyDE query transformation.
         enable_multi_query: If True, use multi-query with RRF fusion.
         return_docs: If True, returns RAGResult with documents for evaluation.
@@ -727,71 +779,23 @@ async def rag_answer_question(
             doc_chunk_count[did] = doc_chunk_count.get(did, 0) + 1
         logger.info(f"Multi-doc retrieval: {doc_chunk_count}")
 
-    # Step 5: Rerank with Cross-Encoder (or fair multi-doc selection)
-    target_k = 8  # Decreased to 8 per Phase 14 User Request (Strict Relevance)
+    # Step 5: Rerank with local document reranker (or fair multi-doc selection)
+    target_k = _RERANK_TARGET_K
     reranker_available = DocumentReranker.is_initialized()
-    
-    # Phase 8: Reranker Tuning Constants
-    # Logit threshold 0.0 corresponds to sigmoid 0.5 (neutral prob)
-    # Phase 14: Increased to 0.0 (50% prob) to filter out weak matches (Noise Reduction)
-    RERANK_THRESHOLD = 0.0  # Stricter threshold
-    
-    if enable_reranking and reranker_available and len(docs) > 0:
-        # Phase 8: Keyword Penalty Logic (Noise Reduction)
-        # Manually penalize "SAM" or "Interactive" if not in query
-        NOISE_KEYWORDS = ["SAM", "Segment Anything", "Interactive Segmentation", "SegVol"]
-        query_lower = question.lower()
-        
-        # Check if query specifically asks for these topics
-        is_asking_noise = any(kw.lower() in query_lower for kw in NOISE_KEYWORDS)
-        
-        if not is_asking_noise:
-            # Get docs with scores first
-            reranker = DocumentReranker.get_instance()
-            scored_docs = reranker.rerank_with_scores(question, docs, len(docs))
-            
-            penalized_docs = []
-            for doc, score in scored_docs:
-                content_sample = doc.page_content[:500]
-                
-                # Check for noise keywords in document
-                is_noise_doc = False
-                for kw in NOISE_KEYWORDS:
-                    if kw in content_sample or (doc.metadata.get("file_name") and kw in doc.metadata["file_name"]):
-                        is_noise_doc = True
-                        break
-                
-                final_score = score
-                if is_noise_doc:
-                    # Apply penalty (logits)
-                    final_score -= 3.0  # Significant penalty
-                    # logger.debug(f"Applied noise penalty to doc {doc.metadata.get('doc_id')}: {score:.2f} -> {final_score:.2f}")
-                
-                penalized_docs.append((doc, final_score))
-            
-            # Re-sort
-            penalized_docs.sort(key=lambda x: x[1], reverse=True)
-            
-            # Filter by threshold
-            docs = [
-                doc for doc, score in penalized_docs 
-                if score >= RERANK_THRESHOLD
-            ][:target_k]
-            
-            logger.debug(f"Reranked & filtered to {len(docs)} documents (Threshold: {RERANK_THRESHOLD})")
-            
-        else:
-            # Standard reranking without penalty if query asks for it
-            docs = await run_in_threadpool(
-                rerank_documents,
-                question,
-                docs,
-                top_k=target_k,
-                score_threshold=RERANK_THRESHOLD,  # Use safe threshold
-                enabled=True,
-            )
-            logger.debug(f"Reranked to top {len(docs)} documents")
 
+    if enable_reranking and reranker_available and len(docs) > 0:
+        docs = await run_in_threadpool(
+            _rerank_documents_for_generation,
+            question,
+            docs,
+            target_k,
+        )
+        logger.debug("Reranked to top %s documents", len(docs))
+    elif enable_reranking and not reranker_available:
+        logger.info(
+            "Reranking requested but inactive: %s",
+            DocumentReranker.runtime_metadata(reason="runtime_not_initialized"),
+        )
     elif doc_ids and len(doc_ids) > 1:
         # Multi-doc fair selection (unchanged)
         docs_per_source = max(2, target_k // len(doc_ids))
