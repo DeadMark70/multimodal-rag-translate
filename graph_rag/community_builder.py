@@ -6,7 +6,9 @@ LLM-based community summarization.
 """
 
 # Standard library
+import asyncio
 import logging
+from dataclasses import dataclass
 from typing import List
 
 # Third-party
@@ -19,6 +21,9 @@ from graph_rag.store import GraphStore
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+DEFAULT_COMMUNITY_SUMMARY_LIMIT = 8
+DEFAULT_COMMUNITY_SUMMARY_DELAY_SECONDS = 0.25
 
 # Prompt for community summarization
 _COMMUNITY_SUMMARY_PROMPT = """你是一個學術論文分析專家。請為以下知識圖譜社群生成一個簡潔的摘要。
@@ -191,9 +196,42 @@ async def summarize_community(
     return community
 
 
+@dataclass
+class _SummaryBudget:
+    remaining_calls: int
+    delay_seconds: float
+
+    def can_use_llm(self) -> bool:
+        return self.remaining_calls > 0
+
+    async def consume(self) -> None:
+        self.remaining_calls -= 1
+        if self.delay_seconds > 0:
+            await asyncio.sleep(self.delay_seconds)
+
+
+def _apply_leaf_fallback_summary(store: GraphStore, community: Community) -> Community:
+    """Populate deterministic fallback text when LLM summaries are skipped."""
+    if len(community.node_ids) == 1:
+        node = store.get_node(community.node_ids[0]) if community.node_ids else None
+        if node:
+            community.title = node.label
+            community.summary = node.description or ""
+    else:
+        community.title = community.title or f"社群 {community.id}"
+        community.summary = community.summary or f"包含 {len(community.node_ids)} 個實體"
+
+    community.ranking_text = " ".join(
+        part for part in [community.title, community.summary] if part
+    )
+    return community
+
+
 async def build_communities(
     store: GraphStore,
     generate_summaries: bool = True,
+    max_llm_summaries: int = DEFAULT_COMMUNITY_SUMMARY_LIMIT,
+    summary_delay_seconds: float = DEFAULT_COMMUNITY_SUMMARY_DELAY_SECONDS,
 ) -> List[Community]:
     """
     Detect communities and optionally generate summaries.
@@ -208,22 +246,19 @@ async def build_communities(
     # Detect communities
     communities = await detect_communities_leiden(store)
     
+    summary_budget = _SummaryBudget(
+        remaining_calls=max(max_llm_summaries, 0),
+        delay_seconds=max(summary_delay_seconds, 0.0),
+    )
+
     # Generate summaries
     if generate_summaries:
         summarized = []
-        for community in communities:
-            if len(community.node_ids) > 1:  # Only summarize multi-node communities
+        for community in sorted(communities, key=lambda item: len(item.node_ids), reverse=True):
+            if len(community.node_ids) > 1 and summary_budget.can_use_llm():
                 community = await summarize_community(store, community)
-            else:
-                # Single-node community: use node label as title
-                node = store.get_node(community.node_ids[0]) if community.node_ids else None
-                if node:
-                    community.title = node.label
-                    community.summary = node.description or ""
-            if community.title or community.summary:
-                community.ranking_text = " ".join(
-                    part for part in [community.title, community.summary] if part
-                )
+                await summary_budget.consume()
+            community = _apply_leaf_fallback_summary(store, community)
             summarized.append(community)
         communities = summarized
 
@@ -231,12 +266,21 @@ async def build_communities(
         store,
         communities,
         generate_summaries=generate_summaries,
+        summary_budget=summary_budget,
     )
 
     # Update store with communities
     store.communities = communities
     store.mark_optimized()
     
+    if generate_summaries:
+        logger.info(
+            "Built communities with summary budget: max_calls=%s, remaining=%s, delay=%ss",
+            max_llm_summaries,
+            summary_budget.remaining_calls,
+            max(summary_delay_seconds, 0.0),
+        )
+
     logger.info(f"Built {len(communities)} communities for user {store.user_id}")
     return communities
 
@@ -317,6 +361,7 @@ async def _build_hierarchy_communities(
     leaf_communities: List[Community],
     *,
     generate_summaries: bool,
+    summary_budget: _SummaryBudget,
 ) -> List[Community]:
     """Build a lightweight two-level hierarchy on top of leaf communities."""
     if not leaf_communities:
@@ -340,15 +385,25 @@ async def _build_hierarchy_communities(
     next_id = max(community.id for community in ordered_leaves) + 1
 
     for group in parent_groups:
-        parent = await _summarize_parent_community(next_id, group) if generate_summaries else Community(
-            id=next_id,
-            node_ids=list(dict.fromkeys(node_id for child in group for node_id in child.node_ids)),
-            level=1,
-            child_ids=[child.id for child in group],
-            title=f"主題 {next_id}",
-            summary="",
-            ranking_text="",
-        )
+        if generate_summaries and summary_budget.can_use_llm():
+            parent = await _summarize_parent_community(next_id, group)
+            await summary_budget.consume()
+        else:
+            parent = Community(
+                id=next_id,
+                node_ids=list(dict.fromkeys(node_id for child in group for node_id in child.node_ids)),
+                level=1,
+                child_ids=[child.id for child in group],
+                title=f"主題 {next_id}",
+                summary="；".join(
+                    child.title or f"社群 {child.id}"
+                    for child in group[:4]
+                ),
+                ranking_text="",
+            )
+            parent.ranking_text = " ".join(
+                part for part in [parent.title, parent.summary] if part
+            )
         for child in group:
             child.parent_id = parent.id
             child.summary_version = 1

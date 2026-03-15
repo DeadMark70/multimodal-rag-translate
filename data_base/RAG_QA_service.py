@@ -6,7 +6,6 @@ with enhanced reranking and query transformation.
 """
 
 # Standard library
-import asyncio
 import base64
 import json
 import logging
@@ -54,7 +53,6 @@ _GRAPH_KEYWORDS = [
     "across", "these papers", "multi-document",
 ]
 
-_LAZY_GRAPH_UPGRADE_TASKS: set[str] = set()
 DEFAULT_GRAPH_LOCAL_HOPS = 2
 DEFAULT_GRAPH_LOCAL_MAX_NODES = 20
 
@@ -300,39 +298,6 @@ def _should_use_graph_search(question: str) -> bool:
     return any(keyword in question_lower for keyword in _GRAPH_KEYWORDS)
 
 
-async def _run_lazy_graph_upgrade(user_id: str) -> None:
-    """Refresh graph metadata and hierarchy in the background when stale."""
-    try:
-        from graph_rag.community_builder import build_communities
-        from graph_rag.entity_resolver import resolve_entities
-        from graph_rag.store import GraphStore
-
-        store = GraphStore(user_id)
-        if store.get_status().node_count == 0:
-            return
-        await resolve_entities(store)
-        await build_communities(store, generate_summaries=True)
-        store.save()
-        logger.info("Completed lazy graph upgrade for user %s", user_id)
-    except Exception as exc:
-        logger.warning("Lazy graph upgrade failed for user %s: %s", user_id, exc)
-    finally:
-        _LAZY_GRAPH_UPGRADE_TASKS.discard(user_id)
-
-
-def _schedule_lazy_graph_upgrade(user_id: str) -> None:
-    """Schedule a best-effort graph metadata refresh without blocking the request."""
-    # This guards duplicate work within a single process. Multi-worker deployments
-    # would need a distributed lock if cross-process deduplication becomes necessary.
-    if user_id in _LAZY_GRAPH_UPGRADE_TASKS:
-        return
-    _LAZY_GRAPH_UPGRADE_TASKS.add(user_id)
-    try:
-        asyncio.create_task(_run_lazy_graph_upgrade(user_id))
-    except RuntimeError:
-        _LAZY_GRAPH_UPGRADE_TASKS.discard(user_id)
-
-
 def _legacy_graph_route_decision(
     search_mode: str,
     *,
@@ -404,7 +369,10 @@ async def _get_graph_context(
             return ""
 
         if status.needs_optimization:
-            _schedule_lazy_graph_upgrade(user_id)
+            logger.info(
+                "Graph metadata for user %s is stale; skipping automatic chat-path optimization and waiting for explicit maintenance",
+                user_id,
+            )
 
         effective_mode = "generic" if search_mode == "auto" else search_mode
         hints = GraphQueryHints(**(graph_execution_hints or {}))

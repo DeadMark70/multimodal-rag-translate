@@ -72,6 +72,50 @@ async def test_graph_context_retrieval_no_graph():
         context = await _get_graph_context(question, user_id)
         assert context == ""
 
+
+@pytest.mark.asyncio
+async def test_graph_context_skips_automatic_optimization_when_graph_is_stale(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    user_id = "stale-graph-user"
+    question = "分析 SwinUNETR 與 nnU-Net 的關係"
+    caplog.set_level("INFO")
+
+    with patch("graph_rag.store.GraphStore") as MockStore:
+        mock_instance = MockStore.return_value
+        mock_status = MagicMock()
+        mock_status.has_graph = True
+        mock_status.node_count = 10
+        mock_status.community_count = 2
+        mock_status.community_level_counts = {"0": 2}
+        mock_status.needs_optimization = True
+        mock_instance.get_status.return_value = mock_status
+
+        with patch("graph_rag.local_search.local_search_evidence", new_callable=AsyncMock) as mock_local:
+            mock_local.return_value = ([
+                GraphEvidence(
+                    evidence_id="local-edge-1",
+                    evidence_type="local_edge",
+                    text="Local relation evidence",
+                    score=0.9,
+                    token_estimate=estimate_token_count("Local relation evidence"),
+                )
+            ], ["n1", "n2"])
+
+            with (
+                patch("graph_rag.global_search.global_search_evidence", new_callable=AsyncMock) as mock_global,
+                patch("graph_rag.entity_resolver.resolve_entities", new_callable=AsyncMock) as mock_resolve,
+                patch("graph_rag.community_builder.build_communities", new_callable=AsyncMock) as mock_build,
+            ):
+                context = await _get_graph_context(question, user_id, search_mode="local")
+
+    assert "Local relation evidence" in context
+    mock_local.assert_awaited_once()
+    mock_global.assert_not_awaited()
+    mock_resolve.assert_not_awaited()
+    mock_build.assert_not_awaited()
+    assert "skipping automatic chat-path optimization" in caplog.text
+
 def test_should_use_graph_search_logic():
     """Test the keyword detection for graph search."""
     from data_base.RAG_QA_service import _should_use_graph_search
