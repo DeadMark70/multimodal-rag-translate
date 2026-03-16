@@ -718,6 +718,7 @@ async def execute_research_plan_stream(
     Event types:
     - plan_confirmed: Research started
     - task_start: Sub-task execution started
+    - task_phase_update: Sub-task runtime stage changed
     - task_done: Sub-task completed
     - drilldown_start: Drill-down iteration started
     - drilldown_task_start: Drill-down task started

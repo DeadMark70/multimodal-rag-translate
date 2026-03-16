@@ -25,12 +25,20 @@ from data_base.schemas_deep_research import (
     ResearchPlanResponse,
     SubTaskExecutionResult,
 )
-from data_base.RAG_QA_service import rag_answer_question
+from data_base.RAG_QA_service import ProgressCallback, rag_answer_question
 from agents.planner import TaskPlanner, SubTask
 from agents.evaluator import RAGEvaluator
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+_TASK_STAGE_LABELS = {
+    "query_expansion": "正在擴展查詢",
+    "retrieval": "正在檢索文件",
+    "reranking": "正在重排序結果",
+    "graph_context": "正在分析圖譜上下文",
+    "answer_generation": "正在生成回答",
+}
 
 
 class DeepResearchService(ResearchExecutionCore):
@@ -534,6 +542,7 @@ class DeepResearchService(ResearchExecutionCore):
             SSEEventType,
             PlanConfirmedData,
             TaskStartData,
+            TaskPhaseUpdateData,
             TaskDoneData,
             DrilldownStartData,
             SynthesisStartData,
@@ -574,16 +583,61 @@ class DeepResearchService(ResearchExecutionCore):
                     iteration=0,
                 )
             )
-            
-            # Execute task
-            result = await self._execute_single_task(
-                task=task,
-                user_id=user_id,
-                doc_ids=request.doc_ids,
-                enable_reranking=request.enable_reranking,
-                iteration=0,
-                enable_deep_image_analysis=request.enable_deep_image_analysis,
-            )
+
+            queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+
+            async def emit_task_phase(stage: str, details: Optional[dict[str, Any]] = None) -> None:
+                await queue.put(
+                    (
+                        "phase",
+                        format_sse_event(
+                            SSEEventType.TASK_PHASE_UPDATE,
+                            TaskPhaseUpdateData(
+                                id=task.id,
+                                iteration=0,
+                                stage=stage,
+                                label=_TASK_STAGE_LABELS.get(stage),
+                                details=details,
+                            ),
+                        ),
+                    )
+                )
+
+            async def run_task() -> None:
+                try:
+                    result = await self._execute_single_task(
+                        task=task,
+                        user_id=user_id,
+                        doc_ids=request.doc_ids,
+                        enable_reranking=request.enable_reranking,
+                        iteration=0,
+                        enable_deep_image_analysis=request.enable_deep_image_analysis,
+                        progress_callback=emit_task_phase,
+                    )
+                    await queue.put(("result", result))
+                except Exception as exc:  # noqa: BLE001
+                    await queue.put(("error", exc))
+                finally:
+                    await queue.put(("done", None))
+
+            runner = asyncio.create_task(run_task())
+            result: Optional[SubTaskExecutionResult] = None
+            while True:
+                kind, payload = await queue.get()
+                if kind == "phase":
+                    yield payload
+                    continue
+                if kind == "result":
+                    result = payload
+                    continue
+                if kind == "error":
+                    raise payload
+                if kind == "done":
+                    break
+
+            await runner
+            if result is None:
+                raise RuntimeError(f"Task {task.id} completed without a result")
             all_results.append(result)
             
             # Emit task done
@@ -652,14 +706,60 @@ class DeepResearchService(ResearchExecutionCore):
                         )
                     )
                     
-                    result = await self._execute_single_task(
-                        task=editable_task,
-                        user_id=user_id,
-                        doc_ids=request.doc_ids,
-                        enable_reranking=request.enable_reranking,
-                        iteration=iteration,
-                        enable_deep_image_analysis=request.enable_deep_image_analysis,
-                    )
+                    queue = asyncio.Queue()
+
+                    async def emit_task_phase(stage: str, details: Optional[dict[str, Any]] = None) -> None:
+                        await queue.put(
+                            (
+                                "phase",
+                                format_sse_event(
+                                    SSEEventType.TASK_PHASE_UPDATE,
+                                    TaskPhaseUpdateData(
+                                        id=editable_task.id,
+                                        iteration=iteration,
+                                        stage=stage,
+                                        label=_TASK_STAGE_LABELS.get(stage),
+                                        details=details,
+                                    ),
+                                ),
+                            )
+                        )
+
+                    async def run_task() -> None:
+                        try:
+                            result = await self._execute_single_task(
+                                task=editable_task,
+                                user_id=user_id,
+                                doc_ids=request.doc_ids,
+                                enable_reranking=request.enable_reranking,
+                                iteration=iteration,
+                                enable_deep_image_analysis=request.enable_deep_image_analysis,
+                                progress_callback=emit_task_phase,
+                            )
+                            await queue.put(("result", result))
+                        except Exception as exc:  # noqa: BLE001
+                            await queue.put(("error", exc))
+                        finally:
+                            await queue.put(("done", None))
+
+                    runner = asyncio.create_task(run_task())
+                    result: Optional[SubTaskExecutionResult] = None
+                    while True:
+                        kind, payload = await queue.get()
+                        if kind == "phase":
+                            yield payload
+                            continue
+                        if kind == "result":
+                            result = payload
+                            continue
+                        if kind == "error":
+                            raise payload
+                        if kind == "done":
+                            break
+
+                    await runner
+                    if result is None:
+                        raise RuntimeError(f"Task {editable_task.id} completed without a result")
                     all_results.append(result)
                     
                     yield format_sse_event(
@@ -735,6 +835,7 @@ class DeepResearchService(ResearchExecutionCore):
         enable_reranking: bool,
         iteration: int,
         enable_deep_image_analysis: bool = False,
+        progress_callback: Optional[ProgressCallback] = None,
     ) -> SubTaskExecutionResult:
         """
         Executes a single task.
@@ -765,6 +866,7 @@ class DeepResearchService(ResearchExecutionCore):
                 ),
                 return_docs=True, # MUST be True to capture tool_calls and diagnostics
                 enable_visual_verification=enable_deep_image_analysis,
+                progress_callback=progress_callback,
             )
             
             # Handle RAGResult

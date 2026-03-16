@@ -25,6 +25,7 @@ class SSEEventType(str, Enum):
     
     # Task execution
     TASK_START = "task_start"
+    TASK_PHASE_UPDATE = "task_phase_update"
     TASK_DONE = "task_done"
     
     # Drill-down phase
@@ -58,6 +59,15 @@ class TaskStartData(BaseModel):
     question: str
     task_type: str
     iteration: int = 0
+
+
+class TaskPhaseUpdateData(BaseModel):
+    """Data for task_phase_update event."""
+    id: int
+    iteration: int = 0
+    stage: str
+    label: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
 
 
 class TaskDoneData(BaseModel):

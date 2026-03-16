@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from data_base.RAG_QA_service import RAGResult
 from data_base.deep_research_service import DeepResearchService
 from data_base.schemas_deep_research import (
     EditableSubTask,
@@ -113,6 +114,40 @@ async def test_execute_plan_streaming_forwards_deep_image_analysis_flag():
         assert mock_execute_single.await_count == 1
         kwargs = mock_execute_single.await_args.kwargs
         assert kwargs["enable_deep_image_analysis"] is True
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_streaming_emits_task_phase_updates():
+    service = DeepResearchService()
+
+    async def fake_rag_answer_question(**kwargs):
+        progress_callback = kwargs["progress_callback"]
+        await progress_callback("retrieval", {"query_count": 1})
+        await progress_callback("reranking", {"document_count": 5})
+        return RAGResult(
+            answer="42",
+            source_doc_ids=["doc1"],
+            documents=[],
+            usage={},
+        )
+
+    with patch(
+        "data_base.deep_research_service.rag_answer_question",
+        new=AsyncMock(side_effect=fake_rag_answer_question),
+    ), patch("data_base.research_execution_core.synthesize_results") as mock_synth, patch(
+        "data_base.deep_research_service.persist_research_conversation",
+        new=AsyncMock(),
+    ):
+        mock_synth.return_value = _build_report()
+
+        request = _build_request()
+        events = [event async for event in service.execute_plan_streaming(request, user_id="test-user")]
+
+    phase_events = [event for event in events if event["event"] == "task_phase_update"]
+    assert len(phase_events) == 2
+    assert '"stage": "retrieval"' in phase_events[0]["data"]
+    assert '"stage": "reranking"' in phase_events[1]["data"]
+    assert '"id": 1' in phase_events[0]["data"]
 
 if __name__ == "__main__":
     import asyncio
