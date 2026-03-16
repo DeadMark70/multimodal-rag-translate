@@ -20,6 +20,7 @@ def reset_reranker_singleton():
     DocumentReranker._device = None
     DocumentReranker._init_error = None
     DocumentReranker._device_reason = None
+    DocumentReranker._device_policy = "auto"
     yield
     DocumentReranker._instance = None
     DocumentReranker._model = None
@@ -27,6 +28,7 @@ def reset_reranker_singleton():
     DocumentReranker._device = None
     DocumentReranker._init_error = None
     DocumentReranker._device_reason = None
+    DocumentReranker._device_policy = "auto"
 
 
 def test_reranker_singleton() -> None:
@@ -55,6 +57,7 @@ def test_reranking_logic() -> None:
     DocumentReranker._model = mock_model
     DocumentReranker._model_name = "jinaai/jina-reranker-v3"
     DocumentReranker._device = "cpu"
+    DocumentReranker._device_policy = "cpu"
 
     query = "SwinUNETR優勢"
     docs = [
@@ -94,6 +97,7 @@ def test_generation_rerank_prefers_non_noise_docs() -> None:
     DocumentReranker._model = mock_model
     DocumentReranker._model_name = "jinaai/jina-reranker-v3"
     DocumentReranker._device = "cpu"
+    DocumentReranker._device_policy = "cpu"
 
     docs = [
         Document(page_content="SAM benchmark details", metadata={"id": "noise-1", "file_name": "sam-paper.pdf"}),
@@ -121,6 +125,7 @@ def test_generation_rerank_keeps_noise_when_query_requests_it() -> None:
     DocumentReranker._model = mock_model
     DocumentReranker._model_name = "jinaai/jina-reranker-v3"
     DocumentReranker._device = "cpu"
+    DocumentReranker._device_policy = "cpu"
 
     docs = [
         Document(page_content="SAM benchmark details", metadata={"id": "noise-1", "file_name": "sam-paper.pdf"}),

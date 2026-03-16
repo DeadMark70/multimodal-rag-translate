@@ -9,6 +9,7 @@ keeping a stable wrapper API for the rest of the application.
 import gc
 import logging
 import os
+import threading
 from typing import Any, List, Optional, Tuple
 
 # Third-party
@@ -47,14 +48,38 @@ def _clear_cuda_memory() -> None:
         pass
 
 
+def _cuda_device_count() -> int:
+    """Return a stable CUDA device count, retrying after explicit init when needed."""
+    try:
+        cuda_available = torch.cuda.is_available()
+    except (AssertionError, RuntimeError):
+        cuda_available = False
+
+    try:
+        count = torch.cuda.device_count()
+    except (AssertionError, RuntimeError):
+        count = 0
+
+    if count > 0:
+        return count
+
+    # During worker startup, is_available() can briefly report False even though
+    # an explicit CUDA init makes the device visible immediately after.
+    try:
+        torch.cuda.init()
+        return torch.cuda.device_count()
+    except (AssertionError, RuntimeError):
+        if not cuda_available:
+            logger.info("CUDA probe returned unavailable before explicit init; falling back to CPU")
+        return 0
+
+
 def _gpu_total_memory_gb() -> Optional[float]:
     """Return total memory of the first CUDA device in GiB when available."""
-    if not torch.cuda.is_available():
+    if _cuda_device_count() < 1:
         return None
 
     try:
-        if torch.cuda.device_count() < 1:
-            return None
         return torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
     except (AssertionError, RuntimeError):
         return None
@@ -74,11 +99,11 @@ def _select_runtime_device(policy: Optional[str] = None) -> tuple[str, Optional[
         return "cpu", "manual_cpu_override"
 
     if normalized_policy == "cuda":
-        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+        if _cuda_device_count() > 0:
             return "cuda", None
         return "cpu", "cuda_requested_unavailable"
 
-    if not torch.cuda.is_available() or torch.cuda.device_count() < 1:
+    if _cuda_device_count() < 1:
         return "cpu", "cuda_unavailable"
 
     total_memory_gb = _gpu_total_memory_gb()
@@ -108,6 +133,8 @@ class DocumentReranker:
     _device: Optional[str] = None
     _init_error: Optional[str] = None
     _device_reason: Optional[str] = None
+    _device_policy: str = _DEFAULT_RERANKER_DEVICE_POLICY
+    _promotion_lock = threading.Lock()
 
     def __new__(
         cls,
@@ -126,6 +153,7 @@ class DocumentReranker:
                 cls._device = None
                 cls._init_error = str(exc)
                 cls._device_reason = None
+                cls._device_policy = _normalize_device_policy(device_policy)
                 raise
             cls._instance = instance
         return cls._instance
@@ -172,9 +200,64 @@ class DocumentReranker:
         )
         return cpu_model
 
+    @classmethod
+    def _maybe_promote_to_cuda(cls) -> None:
+        """Upgrade a startup CPU model to CUDA when runtime probing later succeeds."""
+        if cls._model is None or cls._device == "cuda":
+            return
+
+        normalized_policy = _normalize_device_policy(cls._device_policy)
+        if normalized_policy == "cpu":
+            return
+
+        device, _ = _select_runtime_device(normalized_policy)
+        if device != "cuda":
+            return
+
+        with cls._promotion_lock:
+            if cls._model is None or cls._device == "cuda":
+                return
+
+            logger.info(
+                "Promoting reranker from CPU to CUDA after startup (previous_reason=%s)",
+                cls._device_reason,
+            )
+            previous_model = cls._model
+
+            try:
+                cuda_model = cls._load_model(
+                    cls._model_name or _DEFAULT_RERANKER_MODEL,
+                    "cuda",
+                )
+            except RuntimeError as exc:
+                if _is_cuda_oom_error(exc):
+                    logger.warning(
+                        "Runtime CUDA promotion hit OOM; staying on CPU: %s",
+                        exc,
+                    )
+                    return
+                raise
+
+            cls._model = cuda_model
+            cls._device = "cuda"
+            cls._device_reason = "runtime_cuda_promotion"
+            cls._init_error = None
+            logger.info(
+                "Reranker runtime promotion complete (reranker_model=%s, reranker_device=%s, reranker_reason=%s)",
+                cls._model_name or _DEFAULT_RERANKER_MODEL,
+                cls._device,
+                cls._device_reason,
+            )
+
+            if previous_model is not None:
+                del previous_model
+            gc.collect()
+            _clear_cuda_memory()
+
     def _init_model(self, model_name: str, device_policy: Optional[str] = None) -> None:
         """Initialize the Jina reranker model."""
-        device, device_reason = _select_runtime_device(device_policy)
+        normalized_policy = _normalize_device_policy(device_policy)
+        device, device_reason = _select_runtime_device(normalized_policy)
         logger.info(
             "Loading reranker model: %s (device=%s, reason=%s)",
             model_name,
@@ -204,6 +287,7 @@ class DocumentReranker:
         type(self)._device = device
         type(self)._init_error = None
         type(self)._device_reason = device_reason
+        type(self)._device_policy = normalized_policy
         logger.info(
             "Reranker model loaded successfully (reranker_active=%s, reranker_model=%s, reranker_device=%s, reranker_reason=%s)",
             True,
@@ -251,6 +335,18 @@ class DocumentReranker:
                 type(self).runtime_metadata(reason="not_initialized"),
             )
             return [(doc, 0.0) for doc in documents[:top_k]]
+
+        type(self)._maybe_promote_to_cuda()
+        model = type(self)._model
+        if model is None:
+            return [(doc, 0.0) for doc in documents[:top_k]]
+        logger.info(
+            "Running rerank (reranker_device=%s, reranker_reason=%s, candidate_count=%s, top_k=%s)",
+            type(self)._device,
+            type(self)._device_reason or "default",
+            len(documents),
+            top_k,
+        )
 
         doc_texts = [doc.page_content for doc in documents]
 

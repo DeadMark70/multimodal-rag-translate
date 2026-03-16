@@ -3,6 +3,7 @@ Unit tests for the Jina-based reranker module.
 """
 
 # Standard library
+import logging
 from unittest.mock import MagicMock, patch
 
 # Third-party
@@ -21,6 +22,7 @@ def reset_reranker_singleton():
     DocumentReranker._device = None
     DocumentReranker._init_error = None
     DocumentReranker._device_reason = None
+    DocumentReranker._device_policy = "auto"
     yield
     DocumentReranker._instance = None
     DocumentReranker._model = None
@@ -28,6 +30,7 @@ def reset_reranker_singleton():
     DocumentReranker._device = None
     DocumentReranker._init_error = None
     DocumentReranker._device_reason = None
+    DocumentReranker._device_policy = "auto"
 
 
 class TestDocumentRerankerUnit:
@@ -104,6 +107,7 @@ class TestDocumentRerankerWithMock:
         DocumentReranker._model = mock_model
         DocumentReranker._model_name = "jinaai/jina-reranker-v3"
         DocumentReranker._device = "cpu"
+        DocumentReranker._device_policy = "cpu"
 
         result = reranker.rerank("query", docs, top_k=2)
 
@@ -131,6 +135,7 @@ class TestDocumentRerankerWithMock:
         DocumentReranker._model = mock_model
         DocumentReranker._model_name = "jinaai/jina-reranker-v3"
         DocumentReranker._device = "cpu"
+        DocumentReranker._device_policy = "cpu"
 
         result = reranker.rerank_with_scores("query", docs, top_k=2)
 
@@ -157,15 +162,74 @@ class TestDocumentRerankerWithMock:
         DocumentReranker._model = mock_model
         DocumentReranker._model_name = "jinaai/jina-reranker-v3"
         DocumentReranker._device = "cpu"
+        DocumentReranker._device_policy = "cpu"
 
         result = reranker.rerank("query", docs, top_k=2)
 
         assert len(result) == 2
         assert result[0].page_content == "Doc 1"
 
+    def test_rerank_logs_runtime_device(self, caplog):
+        """Rerank logs should expose the active runtime device and candidate count."""
+        from data_base.reranker import DocumentReranker
+
+        mock_model = MagicMock()
+        mock_model.rerank.return_value = [
+            {"index": 0, "relevance_score": 0.9},
+            {"index": 1, "relevance_score": 0.4},
+        ]
+
+        docs = [
+            Document(page_content="First", metadata={}),
+            Document(page_content="Second", metadata={}),
+        ]
+
+        reranker = object.__new__(DocumentReranker)
+        DocumentReranker._instance = reranker
+        DocumentReranker._model = mock_model
+        DocumentReranker._model_name = "jinaai/jina-reranker-v3"
+        DocumentReranker._device = "cpu"
+        DocumentReranker._device_reason = "cuda_unavailable"
+        DocumentReranker._device_policy = "cpu"
+
+        with caplog.at_level(logging.INFO, logger="data_base.reranker"):
+            reranker.rerank("query", docs, top_k=2)
+
+        assert "Running rerank (reranker_device=cpu, reranker_reason=cuda_unavailable, candidate_count=2, top_k=2)" in caplog.text
+
 
 class TestRerankerSingleton:
     """Tests for initialization and device selection."""
+
+    def test_cuda_device_count_retries_after_explicit_init(self):
+        """CUDA device counting should retry once after explicit init."""
+        from data_base.reranker import _cuda_device_count
+
+        with patch("data_base.reranker.torch.cuda.is_available", return_value=True), patch(
+            "data_base.reranker.torch.cuda.device_count",
+            side_effect=[0, 1],
+        ) as mock_device_count, patch(
+            "data_base.reranker.torch.cuda.init",
+        ) as mock_cuda_init:
+            assert _cuda_device_count() == 1
+
+        assert mock_device_count.call_count == 2
+        mock_cuda_init.assert_called_once()
+
+    def test_cuda_device_count_can_recover_after_false_is_available(self):
+        """CUDA probing should not trust an early false is_available() result."""
+        from data_base.reranker import _cuda_device_count
+
+        with patch("data_base.reranker.torch.cuda.is_available", return_value=False), patch(
+            "data_base.reranker.torch.cuda.device_count",
+            side_effect=[0, 1],
+        ) as mock_device_count, patch(
+            "data_base.reranker.torch.cuda.init",
+        ) as mock_cuda_init:
+            assert _cuda_device_count() == 1
+
+        assert mock_device_count.call_count == 2
+        mock_cuda_init.assert_called_once()
 
     def test_is_initialized_before_creation(self):
         """is_initialized returns False before model load."""
@@ -178,7 +242,13 @@ class TestRerankerSingleton:
         from data_base.reranker import DocumentReranker
 
         mock_model = MagicMock()
-        with patch("data_base.reranker.torch.cuda.is_available", return_value=False):
+        with patch("data_base.reranker.torch.cuda.is_available", return_value=False), patch(
+            "data_base.reranker.torch.cuda.device_count",
+            return_value=0,
+        ), patch(
+            "data_base.reranker.torch.cuda.init",
+            side_effect=RuntimeError("cuda unavailable"),
+        ):
             with patch("data_base.reranker.AutoModel.from_pretrained", return_value=mock_model) as mock_from_pretrained:
                 r1 = DocumentReranker()
                 r2 = DocumentReranker()
