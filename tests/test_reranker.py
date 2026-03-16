@@ -20,12 +20,14 @@ def reset_reranker_singleton():
     DocumentReranker._model_name = None
     DocumentReranker._device = None
     DocumentReranker._init_error = None
+    DocumentReranker._device_reason = None
     yield
     DocumentReranker._instance = None
     DocumentReranker._model = None
     DocumentReranker._model_name = None
     DocumentReranker._device = None
     DocumentReranker._init_error = None
+    DocumentReranker._device_reason = None
 
 
 class TestDocumentRerankerUnit:
@@ -188,3 +190,49 @@ class TestRerankerSingleton:
         mock_model.to.assert_called_once_with("cpu")
         mock_model.eval.assert_called_once()
 
+    def test_singleton_uses_cpu_when_gpu_memory_is_too_small(self):
+        """Auto device selection should keep low-VRAM GPUs off the reranker path."""
+        from data_base.reranker import DocumentReranker
+
+        mock_model = MagicMock()
+        with patch("data_base.reranker._DEFAULT_MIN_GPU_MEMORY_GB", 12.0), patch(
+            "data_base.reranker.torch.cuda.is_available",
+            return_value=True,
+        ), patch(
+            "data_base.reranker._gpu_total_memory_gb",
+            return_value=8.0,
+        ), patch(
+            "data_base.reranker.AutoModel.from_pretrained",
+            return_value=mock_model,
+        ):
+            DocumentReranker()
+
+        assert DocumentReranker.runtime_metadata() == {
+            "reranker_active": True,
+            "reranker_model": "jinaai/jina-reranker-v3",
+            "reranker_device": "cpu",
+            "reranker_reason": "low_vram_8.0gb",
+        }
+        mock_model.to.assert_called_once_with("cpu")
+
+    def test_singleton_retries_on_cpu_after_cuda_oom(self):
+        """Warmup should retry on CPU after a CUDA OOM during model load."""
+        from data_base.reranker import DocumentReranker
+
+        gpu_model = MagicMock()
+        gpu_model.to.side_effect = RuntimeError("CUDA out of memory")
+        cpu_model = MagicMock()
+        with patch("data_base.reranker._select_runtime_device", return_value=("cuda", None)), patch(
+            "data_base.reranker.AutoModel.from_pretrained",
+            side_effect=[gpu_model, cpu_model],
+        ):
+            DocumentReranker()
+
+        assert DocumentReranker.runtime_metadata() == {
+            "reranker_active": True,
+            "reranker_model": "jinaai/jina-reranker-v3",
+            "reranker_device": "cpu",
+            "reranker_reason": "cuda_oom_fallback",
+        }
+        cpu_model.to.assert_called_once_with("cpu")
+        cpu_model.eval.assert_called_once()

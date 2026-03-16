@@ -499,6 +499,7 @@ _MIN_CHUNK_LENGTH = 100       # Minimum characters to trigger expansion
 _MAX_EXPANDED_CHUNKS = 5      # Maximum number of chunks to expand
 _MAX_TOTAL_CHARS = 15000      # Maximum total characters after expansion
 _RERANK_TARGET_K = 8
+_RERANK_CANDIDATE_LIMIT = 20
 _RERANK_NOISE_KEYWORDS = ("SAM", "Segment Anything", "Interactive Segmentation", "SegVol")
 
 
@@ -648,6 +649,22 @@ def _rerank_documents_for_generation(
     )
     return [doc for doc, _ in selected]
 
+
+def _limit_rerank_candidates(
+    documents: List[Document],
+    max_candidates: int = _RERANK_CANDIDATE_LIMIT,
+) -> List[Document]:
+    """Cap reranker candidates to reduce peak inference memory usage."""
+    if len(documents) <= max_candidates:
+        return documents
+
+    logger.info(
+        "Capping reranker candidates from %s to %s for memory stability",
+        len(documents),
+        max_candidates,
+    )
+    return documents[:max_candidates]
+
 async def rag_answer_question(
     question: str,
     user_id: str,
@@ -709,7 +726,7 @@ async def rag_answer_question(
         return ("抱歉，AI 模型尚未初始化 (API Key 可能有誤)。", [])
 
     # Step 2: Get retriever (increase k for reranking)
-    retrieval_k = 50 if enable_reranking else (18 if doc_ids else 6)
+    retrieval_k = _RERANK_CANDIDATE_LIMIT if enable_reranking else (18 if doc_ids else 6)
     retriever = get_user_retriever(user_id, k=retrieval_k)
     
     if retriever is None:
@@ -784,6 +801,7 @@ async def rag_answer_question(
     # Step 5: Rerank with local document reranker (or fair multi-doc selection)
     target_k = _RERANK_TARGET_K
     reranker_available = DocumentReranker.is_initialized()
+    rerank_candidates = _limit_rerank_candidates(docs) if enable_reranking else docs
 
     if enable_reranking:
         await _emit_progress(
@@ -792,14 +810,15 @@ async def rag_answer_question(
             {
                 "reranker_available": reranker_available,
                 "document_count": len(docs),
+                "candidate_count": len(rerank_candidates),
             },
         )
 
-    if enable_reranking and reranker_available and len(docs) > 0:
+    if enable_reranking and reranker_available and len(rerank_candidates) > 0:
         docs = await run_in_threadpool(
             _rerank_documents_for_generation,
             question,
-            docs,
+            rerank_candidates,
             target_k,
         )
         logger.debug("Reranked to top %s documents", len(docs))

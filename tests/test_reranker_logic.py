@@ -1,6 +1,7 @@
 """Focused regression tests for reranker selection behavior."""
 
 # Standard library
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock, patch
 
 # Third-party
@@ -18,12 +19,14 @@ def reset_reranker_singleton():
     DocumentReranker._model_name = None
     DocumentReranker._device = None
     DocumentReranker._init_error = None
+    DocumentReranker._device_reason = None
     yield
     DocumentReranker._instance = None
     DocumentReranker._model = None
     DocumentReranker._model_name = None
     DocumentReranker._device = None
     DocumentReranker._init_error = None
+    DocumentReranker._device_reason = None
 
 
 def test_reranker_singleton() -> None:
@@ -127,3 +130,56 @@ def test_generation_rerank_keeps_noise_when_query_requests_it() -> None:
     selected = _rerank_documents_for_generation("請比較 SAM 與 SegVol", docs, target_k=2)
 
     assert [doc.metadata["id"] for doc in selected] == ["noise-1", "relevant-1"]
+
+
+def test_reranker_inference_retries_on_cpu_after_cuda_oom() -> None:
+    """Inference-time CUDA OOM should reload the model on CPU and retry once."""
+    cpu_model = MagicMock()
+    cpu_model.rerank.return_value = [{"index": 1, "relevance_score": 0.8}]
+
+    gpu_model = MagicMock()
+    gpu_model.rerank.side_effect = RuntimeError("CUDA out of memory")
+
+    reranker = object.__new__(DocumentReranker)
+    DocumentReranker._instance = reranker
+    DocumentReranker._model = gpu_model
+    DocumentReranker._model_name = "jinaai/jina-reranker-v3"
+    DocumentReranker._device = "cuda"
+
+    docs = [
+        Document(page_content="Noise", metadata={"id": "noise"}),
+        Document(page_content="Relevant", metadata={"id": "relevant"}),
+    ]
+
+    with patch.object(DocumentReranker, "_load_model", return_value=cpu_model):
+        reranked = reranker.rerank("query", docs, top_k=1)
+
+    assert [doc.metadata["id"] for doc in reranked] == ["relevant"]
+    assert DocumentReranker.runtime_metadata()["reranker_device"] == "cpu"
+    assert DocumentReranker.runtime_metadata()["reranker_reason"] == "cuda_oom_fallback"
+
+
+def test_rag_answer_question_caps_rerank_candidate_count() -> None:
+    """Rerank-enabled retrieval should not pull the old 50-document candidate set."""
+    from data_base import RAG_QA_service
+
+    mock_llm = MagicMock()
+    mock_llm.ainvoke = AsyncMock(return_value=MagicMock(content="answer", usage_metadata={}))
+    mock_retriever = MagicMock()
+    mock_retriever.invoke.return_value = [Document(page_content="Doc 1", metadata={})]
+
+    with patch("data_base.RAG_QA_service.get_llm", return_value=mock_llm), patch(
+        "data_base.RAG_QA_service.get_user_retriever",
+        return_value=mock_retriever,
+    ) as mock_get_retriever:
+        import asyncio
+
+        asyncio.run(
+            RAG_QA_service.rag_answer_question(
+                question="Explain",
+                user_id="user-1",
+                enable_reranking=True,
+            )
+        )
+
+    assert mock_get_retriever.call_args.kwargs["k"] == 20
