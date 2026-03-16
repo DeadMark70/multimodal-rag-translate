@@ -17,6 +17,7 @@ from langchain_core.messages import HumanMessage
 # Local application
 from core.providers import get_llm
 from graph_rag.generic_mode import GraphEvidence, estimate_token_count
+from graph_rag.llm_response import response_content_to_text
 from graph_rag.schemas import Community
 from graph_rag.store import GraphStore
 
@@ -145,7 +146,7 @@ async def query_community(
         )
         
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        answer = response.content.strip()
+        answer = response_content_to_text(response.content)
         
         # Skip non-answers
         if "無法從此社群" in answer or "無相關資訊" in answer:
@@ -192,7 +193,7 @@ async def synthesize_answers(
         )
         
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        return response.content.strip()
+        return response_content_to_text(response.content)
         
     except Exception as e:
         logger.error(f"Answer synthesis failed: {e}")

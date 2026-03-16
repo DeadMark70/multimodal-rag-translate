@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage
 
 # Local application
 from core.providers import get_llm
+from graph_rag.llm_response import response_content_to_text
 from graph_rag.schemas import Community
 from graph_rag.store import GraphStore
 
@@ -177,12 +178,13 @@ async def summarize_community(
         prompt = _COMMUNITY_SUMMARY_PROMPT.format(entities_and_relations=context)
         
         response = await llm.ainvoke([HumanMessage(content=prompt)])
+        response_text = response_content_to_text(response.content)
         
         # Parse response
         import json
         import re
         
-        json_match = re.search(r'\{[\s\S]*\}', response.content)
+        json_match = re.search(r'\{[\s\S]*\}', response_text)
         if json_match:
             data = json.loads(json_match.group(0))
             community.title = data.get("title", f"社群 {community.id}")
@@ -334,10 +336,11 @@ async def _summarize_parent_community(
                 )
             ]
         )
+        response_text = response_content_to_text(response.content)
         import json
         import re
 
-        json_match = re.search(r"\{[\s\S]*\}", response.content)
+        json_match = re.search(r"\{[\s\S]*\}", response_text)
         if json_match:
             data = json.loads(json_match.group(0))
             parent.title = data.get("title", f"主題 {community_id}")
