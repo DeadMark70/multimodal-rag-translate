@@ -215,6 +215,31 @@ class TestRerankerSingleton:
         }
         mock_model.to.assert_called_once_with("cpu")
 
+    def test_singleton_uses_cpu_when_cuda_reports_no_valid_device(self):
+        """Device selection should degrade to CPU when CUDA is flagged but no device is usable."""
+        from data_base.reranker import DocumentReranker
+
+        mock_model = MagicMock()
+        with patch(
+            "data_base.reranker.torch.cuda.is_available",
+            return_value=True,
+        ), patch(
+            "data_base.reranker.torch.cuda.device_count",
+            return_value=0,
+        ), patch(
+            "data_base.reranker.AutoModel.from_pretrained",
+            return_value=mock_model,
+        ):
+            DocumentReranker()
+
+        assert DocumentReranker.runtime_metadata() == {
+            "reranker_active": True,
+            "reranker_model": "jinaai/jina-reranker-v3",
+            "reranker_device": "cpu",
+            "reranker_reason": "cuda_unavailable",
+        }
+        mock_model.to.assert_called_once_with("cpu")
+
     def test_singleton_retries_on_cpu_after_cuda_oom(self):
         """Warmup should retry on CPU after a CUDA OOM during model load."""
         from data_base.reranker import DocumentReranker

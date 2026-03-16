@@ -53,8 +53,10 @@ def _gpu_total_memory_gb() -> Optional[float]:
         return None
 
     try:
+        if torch.cuda.device_count() < 1:
+            return None
         return torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-    except RuntimeError:
+    except (AssertionError, RuntimeError):
         return None
 
 
@@ -72,11 +74,11 @@ def _select_runtime_device(policy: Optional[str] = None) -> tuple[str, Optional[
         return "cpu", "manual_cpu_override"
 
     if normalized_policy == "cuda":
-        if torch.cuda.is_available():
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
             return "cuda", None
         return "cpu", "cuda_requested_unavailable"
 
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.device_count() < 1:
         return "cpu", "cuda_unavailable"
 
     total_memory_gb = _gpu_total_memory_gb()
