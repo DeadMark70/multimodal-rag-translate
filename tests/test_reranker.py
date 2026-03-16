@@ -195,12 +195,12 @@ class TestRerankerSingleton:
         from data_base.reranker import DocumentReranker
 
         mock_model = MagicMock()
-        with patch("data_base.reranker._DEFAULT_MIN_GPU_MEMORY_GB", 12.0), patch(
+        with patch("data_base.reranker._DEFAULT_MIN_GPU_MEMORY_GB", 8.0), patch(
             "data_base.reranker.torch.cuda.is_available",
             return_value=True,
         ), patch(
             "data_base.reranker._gpu_total_memory_gb",
-            return_value=8.0,
+            return_value=7.0,
         ), patch(
             "data_base.reranker.AutoModel.from_pretrained",
             return_value=mock_model,
@@ -211,7 +211,7 @@ class TestRerankerSingleton:
             "reranker_active": True,
             "reranker_model": "jinaai/jina-reranker-v3",
             "reranker_device": "cpu",
-            "reranker_reason": "low_vram_8.0gb",
+            "reranker_reason": "low_vram_7.0gb",
         }
         mock_model.to.assert_called_once_with("cpu")
 

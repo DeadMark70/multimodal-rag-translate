@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Default reranker model
 _DEFAULT_RERANKER_MODEL = os.getenv("RERANKER_MODEL", "jinaai/jina-reranker-v3")
 _DEFAULT_RERANKER_DEVICE_POLICY = os.getenv("RERANKER_DEVICE", "auto").strip().lower()
-_DEFAULT_MIN_GPU_MEMORY_GB = float(os.getenv("RERANKER_MIN_GPU_GB", "12"))
+_DEFAULT_MIN_GPU_MEMORY_GB = float(os.getenv("RERANKER_MIN_GPU_GB", "7.5"))
 
 
 def _is_cuda_oom_error(exc: RuntimeError) -> bool:

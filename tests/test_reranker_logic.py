@@ -182,4 +182,4 @@ def test_rag_answer_question_caps_rerank_candidate_count() -> None:
             )
         )
 
-    assert mock_get_retriever.call_args.kwargs["k"] == 20
+    assert mock_get_retriever.call_args.kwargs["k"] == 12

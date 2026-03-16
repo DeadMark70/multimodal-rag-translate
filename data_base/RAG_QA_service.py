@@ -499,7 +499,7 @@ _MIN_CHUNK_LENGTH = 100       # Minimum characters to trigger expansion
 _MAX_EXPANDED_CHUNKS = 5      # Maximum number of chunks to expand
 _MAX_TOTAL_CHARS = 15000      # Maximum total characters after expansion
 _RERANK_TARGET_K = 8
-_RERANK_CANDIDATE_LIMIT = 20
+_RERANK_CANDIDATE_LIMIT = 12
 _RERANK_NOISE_KEYWORDS = ("SAM", "Segment Anything", "Interactive Segmentation", "SegVol")
 
 
