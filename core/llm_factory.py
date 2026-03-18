@@ -28,9 +28,9 @@ LLMPurpose = Literal[
 
 # Model mapping - only translation uses different model
 _MODEL_BY_PURPOSE: dict[str, str] = {
-    "translation": "gemini-2.5-flash-lite",
-    "graph_extraction": "gemini-2.5-flash-lite",   # Fast extraction for GraphRAG
-    "community_summary": "gemini-2.5-flash-lite",   # Fast summarization for communities
+    "translation": "gemini-3.1-flash-lite-preview",
+    "graph_extraction": "gemini-3.1-flash-lite-preview",   # Fast extraction for GraphRAG
+    "community_summary": "gemini-3.1-flash-lite-preview",   # Fast summarization for communities
 }
 
 # Default model for all other purposes
@@ -46,9 +46,9 @@ _runtime_llm_overrides: ContextVar[dict[str, Any]] = ContextVar(
 def set_session_model_override(model_name: Optional[str]) -> None:
     """
     Sets a session-wide model override and clears the LLM cache.
-    
+
     Args:
-        model_name: The model name to use for all purposes (except translation/graph extraction 
+        model_name: The model name to use for all purposes (except translation/graph extraction
                    if they have explicit mapping, unless also overridden).
     """
     global _session_model_override
@@ -110,7 +110,7 @@ _LLM_CONFIGS: dict[str, dict] = {
         "temperature": 0.1,
         "max_output_tokens": 2048,
         # Custom instruction to be lenient on extra info/citations
-        "convert_system_message_to_human": True, 
+        "convert_system_message_to_human": True,
     },
     "planner": {
         "temperature": 0.2,
