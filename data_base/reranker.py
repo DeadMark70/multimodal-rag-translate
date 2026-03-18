@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_RERANKER_MODEL = os.getenv("RERANKER_MODEL", "jinaai/jina-reranker-v3")
 _DEFAULT_RERANKER_DEVICE_POLICY = os.getenv("RERANKER_DEVICE", "auto").strip().lower()
 _DEFAULT_MIN_GPU_MEMORY_GB = float(os.getenv("RERANKER_MIN_GPU_GB", "7.5"))
+_MASKED_CUDA_VISIBLE_VALUES = {"", "-1", "none", "null"}
 
 
 def _is_cuda_oom_error(exc: RuntimeError) -> bool:
@@ -48,35 +49,89 @@ def _clear_cuda_memory() -> None:
         pass
 
 
-def _cuda_device_count() -> int:
-    """Return a stable CUDA device count, retrying after explicit init when needed."""
-    try:
-        cuda_available = torch.cuda.is_available()
-    except (AssertionError, RuntimeError):
-        cuda_available = False
+def _collect_cuda_probe() -> dict[str, Any]:
+    """
+    Collect CUDA probe diagnostics for stable device selection and observability.
+
+    Returns:
+        Dict with CUDA visibility, probe booleans/counts, and error summaries.
+    """
+    probe: dict[str, Any] = {
+        "cuda_visible_devices": os.getenv("CUDA_VISIBLE_DEVICES"),
+        "is_available": False,
+        "device_count": 0,
+        "is_available_error": None,
+        "device_count_error": None,
+        "init_error": None,
+    }
 
     try:
-        count = torch.cuda.device_count()
-    except (AssertionError, RuntimeError):
-        count = 0
+        probe["is_available"] = bool(torch.cuda.is_available())
+    except (AssertionError, RuntimeError) as exc:
+        probe["is_available_error"] = f"{type(exc).__name__}: {exc}"
 
-    if count > 0:
-        return count
+    try:
+        probe["device_count"] = int(torch.cuda.device_count())
+    except (AssertionError, RuntimeError) as exc:
+        probe["device_count"] = 0
+        probe["device_count_error"] = f"{type(exc).__name__}: {exc}"
 
-    # During worker startup, is_available() can briefly report False even though
-    # an explicit CUDA init makes the device visible immediately after.
+    if probe["device_count"] > 0:
+        return probe
+
     try:
         torch.cuda.init()
-        return torch.cuda.device_count()
-    except (AssertionError, RuntimeError):
-        if not cuda_available:
-            logger.info("CUDA probe returned unavailable before explicit init; falling back to CPU")
-        return 0
+        probe["device_count"] = int(torch.cuda.device_count())
+    except (AssertionError, RuntimeError) as exc:
+        probe["init_error"] = f"{type(exc).__name__}: {exc}"
+
+    return probe
 
 
-def _gpu_total_memory_gb() -> Optional[float]:
+def _is_cuda_masked_by_env(cuda_visible_devices: Optional[str]) -> bool:
+    """Return True if CUDA visibility appears masked by environment variable."""
+    if cuda_visible_devices is None:
+        return False
+    return cuda_visible_devices.strip().lower() in _MASKED_CUDA_VISIBLE_VALUES
+
+
+def _cuda_unavailable_reason(probe: dict[str, Any], *, policy: str) -> str:
+    """Choose a stable CPU fallback reason from CUDA probe details."""
+    if _is_cuda_masked_by_env(probe.get("cuda_visible_devices")):
+        return "cuda_masked_by_env"
+    if policy == "cuda":
+        return "cuda_requested_unavailable"
+    return "cuda_unavailable"
+
+
+def _log_cuda_probe_unavailable(probe: dict[str, Any]) -> None:
+    """Log structured CUDA diagnostics when no usable device is detected."""
+    logger.info(
+        "CUDA probe unavailable (CUDA_VISIBLE_DEVICES=%r, is_available=%s, device_count=%s, "
+        "is_available_error=%s, device_count_error=%s, init_error=%s)",
+        probe.get("cuda_visible_devices"),
+        probe.get("is_available"),
+        probe.get("device_count"),
+        probe.get("is_available_error"),
+        probe.get("device_count_error"),
+        probe.get("init_error"),
+    )
+
+
+def _cuda_device_count() -> int:
+    """Return a stable CUDA device count, retrying after explicit init when needed."""
+    probe = _collect_cuda_probe()
+    count = int(probe.get("device_count") or 0)
+    if count > 0:
+        return count
+    _log_cuda_probe_unavailable(probe)
+    return 0
+
+
+def _gpu_total_memory_gb(device_count: Optional[int] = None) -> Optional[float]:
     """Return total memory of the first CUDA device in GiB when available."""
-    if _cuda_device_count() < 1:
+    count = _cuda_device_count() if device_count is None else int(device_count)
+    if count < 1:
         return None
 
     try:
@@ -98,15 +153,20 @@ def _select_runtime_device(policy: Optional[str] = None) -> tuple[str, Optional[
     if normalized_policy == "cpu":
         return "cpu", "manual_cpu_override"
 
+    probe = _collect_cuda_probe()
+    device_count = int(probe.get("device_count") or 0)
+
     if normalized_policy == "cuda":
-        if _cuda_device_count() > 0:
+        if device_count > 0:
             return "cuda", None
-        return "cpu", "cuda_requested_unavailable"
+        _log_cuda_probe_unavailable(probe)
+        return "cpu", _cuda_unavailable_reason(probe, policy=normalized_policy)
 
-    if _cuda_device_count() < 1:
-        return "cpu", "cuda_unavailable"
+    if device_count < 1:
+        _log_cuda_probe_unavailable(probe)
+        return "cpu", _cuda_unavailable_reason(probe, policy=normalized_policy)
 
-    total_memory_gb = _gpu_total_memory_gb()
+    total_memory_gb = _gpu_total_memory_gb(device_count)
     if total_memory_gb is not None and total_memory_gb < _DEFAULT_MIN_GPU_MEMORY_GB:
         return "cpu", f"low_vram_{total_memory_gb:.1f}gb"
 

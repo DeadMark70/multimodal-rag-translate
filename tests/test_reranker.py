@@ -4,6 +4,7 @@ Unit tests for the Jina-based reranker module.
 
 # Standard library
 import logging
+import os
 from unittest.mock import MagicMock, patch
 
 # Third-party
@@ -307,6 +308,34 @@ class TestRerankerSingleton:
             "reranker_model": "jinaai/jina-reranker-v3",
             "reranker_device": "cpu",
             "reranker_reason": "cuda_unavailable",
+        }
+        mock_model.to.assert_called_once_with("cpu")
+
+    def test_singleton_marks_masked_cuda_env(self):
+        """Masked CUDA visibility should produce an explicit diagnostic reason."""
+        from data_base.reranker import DocumentReranker
+
+        mock_model = MagicMock()
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": ""}, clear=False), patch(
+            "data_base.reranker.torch.cuda.is_available",
+            return_value=True,
+        ), patch(
+            "data_base.reranker.torch.cuda.device_count",
+            return_value=0,
+        ), patch(
+            "data_base.reranker.torch.cuda.init",
+            side_effect=RuntimeError("masked"),
+        ), patch(
+            "data_base.reranker.AutoModel.from_pretrained",
+            return_value=mock_model,
+        ):
+            DocumentReranker()
+
+        assert DocumentReranker.runtime_metadata() == {
+            "reranker_active": True,
+            "reranker_model": "jinaai/jina-reranker-v3",
+            "reranker_device": "cpu",
+            "reranker_reason": "cuda_masked_by_env",
         }
         mock_model.to.assert_called_once_with("cpu")
 
