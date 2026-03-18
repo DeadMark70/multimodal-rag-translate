@@ -19,14 +19,83 @@ from PIL import Image
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Force CPU mode for image service (GPU reserved for other tasks)
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
+# Default OCR device policy
+_DEFAULT_IMAGE_OCR_DEVICE_POLICY = os.getenv("IMAGE_OCR_DEVICE", "cpu")
 
 # Global OCR engine (singleton pattern)
 _ocr_engine = None
 
 # Configuration
 MAX_IMAGE_DIMENSION = 2048  # Resize images larger than this
+
+
+def _normalize_ocr_device_policy(policy: str | None = None) -> str:
+    """Normalize OCR device policy to supported values."""
+    normalized = (policy or _DEFAULT_IMAGE_OCR_DEVICE_POLICY).strip().lower()
+    return normalized if normalized in {"cpu", "cuda", "auto"} else "cpu"
+
+
+def _probe_cuda_state() -> tuple[bool, int, str | None]:
+    """
+    Probe CUDA availability for OCR device selection.
+
+    Returns:
+        Tuple of (is_available, device_count, probe_error_summary).
+    """
+    try:
+        import torch
+    except Exception as exc:  # noqa: BLE001
+        return False, 0, f"torch_import_failed:{type(exc).__name__}: {exc}"
+
+    try:
+        is_available = bool(torch.cuda.is_available())
+    except Exception as exc:  # noqa: BLE001
+        return False, 0, f"cuda_is_available_failed:{type(exc).__name__}: {exc}"
+
+    try:
+        device_count = int(torch.cuda.device_count())
+    except Exception as exc:  # noqa: BLE001
+        return is_available, 0, f"cuda_device_count_failed:{type(exc).__name__}: {exc}"
+
+    return is_available, device_count, None
+
+
+def _resolve_ocr_device(policy: str | None = None) -> tuple[str, str | None]:
+    """Resolve runtime OCR device and optional fallback reason."""
+    normalized_policy = _normalize_ocr_device_policy(policy)
+
+    if normalized_policy == "cpu":
+        return "cpu", "policy_cpu"
+
+    cuda_available, cuda_count, probe_error = _probe_cuda_state()
+    if cuda_available and cuda_count > 0:
+        return "cuda", None
+
+    if normalized_policy == "cuda":
+        logger.warning(
+            "IMAGE_OCR_DEVICE=cuda requested but CUDA unavailable; falling back to CPU "
+            "(is_available=%s, device_count=%s, error=%s)",
+            cuda_available,
+            cuda_count,
+            probe_error,
+        )
+        return "cpu", "cuda_requested_unavailable"
+
+    logger.info(
+        "IMAGE_OCR_DEVICE=auto selected CPU fallback "
+        "(is_available=%s, device_count=%s, error=%s)",
+        cuda_available,
+        cuda_count,
+        probe_error,
+    )
+    return "cpu", "cuda_unavailable_auto"
+
+
+def _load_ocr_predictor_factory():
+    """Load and return DocTR OCR predictor factory."""
+    from doctr.models import ocr_predictor
+
+    return ocr_predictor
 
 
 def _get_ocr_engine():
@@ -40,10 +109,8 @@ def _get_ocr_engine():
 
     if _ocr_engine is None:
         logger.info("Initializing DocTR engine...")
-        
-        # Import here to avoid loading at module import time
-        from doctr.models import ocr_predictor
-        
+
+        ocr_predictor = _load_ocr_predictor_factory()
         _ocr_engine = ocr_predictor(
             det_arch='db_resnet50',
             reco_arch='crnn_vgg16_bn',
@@ -51,7 +118,20 @@ def _get_ocr_engine():
             assume_straight_pages=True,  # Faster, assumes no rotation
             export_as_straight_boxes=True  # Always output axis-aligned boxes
         )
-        logger.info("DocTR engine ready")
+
+        selected_device, fallback_reason = _resolve_ocr_device()
+        if hasattr(_ocr_engine, "to"):
+            moved_engine = _ocr_engine.to(selected_device)
+            if moved_engine is not None:
+                _ocr_engine = moved_engine
+        else:
+            logger.warning("DocTR OCR engine does not expose .to(); device placement skipped")
+
+        logger.info(
+            "DocTR engine ready (image_ocr_device=%s, image_ocr_reason=%s)",
+            selected_device,
+            fallback_reason or "default",
+        )
 
     return _ocr_engine
 

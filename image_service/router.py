@@ -19,7 +19,6 @@ import numpy as np
 # Local application
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
-from .ocr_service import perform_ocr
 from .translation_service import translate_text_list_langchain
 from .image_processing import draw_translated_text_on_image, image_to_bytes
 
@@ -103,6 +102,8 @@ async def translate_image_inplace(
         img_array = np.array(image)
 
         # 2. OCR (CPU-bound, run in threadpool)
+        from .ocr_service import perform_ocr
+
         ocr_items = await run_in_threadpool(perform_ocr, img_array)
 
         if not ocr_items:
