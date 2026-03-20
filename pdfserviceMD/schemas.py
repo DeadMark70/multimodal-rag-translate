@@ -28,6 +28,23 @@ class UploadPdfResponse(BaseModel):
     )
 
 
+class TranslatePdfResponse(BaseModel):
+    """Response model for manual translation kickoff/completion."""
+
+    doc_id: str = Field(..., description="Document UUID")
+    status: str = Field(..., description="Document status in database")
+    message: str = Field(..., description="Human-readable translation result")
+    pdf_available: bool = Field(
+        ..., description="Whether translated PDF is already available"
+    )
+    pdf_download_url: str | None = Field(
+        default=None, description="Download URL when translated PDF is available"
+    )
+    pdf_error: str | None = Field(
+        default=None, description="PDF generation error if generation failed"
+    )
+
+
 class DocumentListItem(BaseModel):
     """Summary row in document list endpoint."""
 
@@ -36,6 +53,9 @@ class DocumentListItem(BaseModel):
     created_at: datetime
     status: str
     processing_step: str | None = None
+    has_original_pdf: bool = False
+    has_translated_pdf: bool = False
+    can_translate: bool = False
 
 
 class DocumentListResponse(BaseModel):

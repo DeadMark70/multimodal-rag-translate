@@ -32,6 +32,7 @@ def client():
     [
         ("get", f"/pdfmd/file/{INVALID_DOC_ID}/status"),
         ("get", f"/pdfmd/file/{INVALID_DOC_ID}"),
+        ("post", f"/pdfmd/file/{INVALID_DOC_ID}/translate"),
         ("delete", f"/pdfmd/file/{INVALID_DOC_ID}"),
         ("get", f"/pdfmd/file/{INVALID_DOC_ID}/summary"),
         ("post", f"/pdfmd/file/{INVALID_DOC_ID}/summary/regenerate"),

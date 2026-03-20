@@ -199,6 +199,26 @@
               "format": "uuid",
               "title": "Doc Id"
             }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "original",
+                    "translated"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
+            }
           }
         ],
         "responses": {
@@ -253,6 +273,55 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeleteDocumentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pdfmd/file/{doc_id}/translate": {
+      "post": {
+        "tags": [
+          "PDF OCR & Translation"
+        ],
+        "summary": "Translate Pdf File",
+        "description": "Translates an OCR-complete document and generates a translated PDF.\n\nArgs:\n    doc_id: Document UUID.\n    user_id: Authenticated user ID.\n\nReturns:\n    TranslatePdfResponse with translated PDF availability details.",
+        "operationId": "translate_pdf_file_pdfmd_file__doc_id__translate_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Doc Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranslatePdfResponse"
                 }
               }
             }
@@ -607,7 +676,7 @@
           "RAG Question Answering"
         ],
         "summary": "Execute Research Plan Stream",
-        "description": "Executes research plan with SSE streaming progress updates.\n\nThis endpoint uses Server-Sent Events (SSE) to stream real-time\nprogress updates during deep research execution.\n\nEvent types:\n- plan_confirmed: Research started\n- task_start: Sub-task execution started\n- task_done: Sub-task completed\n- drilldown_start: Drill-down iteration started\n- drilldown_task_start: Drill-down task started\n- drilldown_task_done: Drill-down task completed\n- synthesis_start: Final synthesis started\n- complete: Research complete (includes full response)\n- error: Error occurred\n\nArgs:\n    request: Confirmed execution request with sub-tasks.\n    user_id: Authenticated user ID (injected).\n    \nReturns:\n    EventSourceResponse with SSE stream.\n    \nRaises:\n    HTTPException: 400 if no tasks provided.",
+        "description": "Executes research plan with SSE streaming progress updates.\n\nThis endpoint uses Server-Sent Events (SSE) to stream real-time\nprogress updates during deep research execution.\n\nEvent types:\n- plan_confirmed: Research started\n- task_start: Sub-task execution started\n- task_phase_update: Sub-task runtime stage changed\n- task_done: Sub-task completed\n- drilldown_start: Drill-down iteration started\n- drilldown_task_start: Drill-down task started\n- drilldown_task_done: Drill-down task completed\n- synthesis_start: Final synthesis started\n- complete: Research complete (includes full response)\n- error: Error occurred\n\nArgs:\n    request: Confirmed execution request with sub-tasks.\n    user_id: Authenticated user ID (injected).\n    \nReturns:\n    EventSourceResponse with SSE stream.\n    \nRaises:\n    HTTPException: 400 if no tasks provided.",
         "operationId": "execute_research_plan_stream_rag_execute_stream_post",
         "requestBody": {
           "content": {
@@ -3733,6 +3802,21 @@
               }
             ],
             "title": "Processing Step"
+          },
+          "has_original_pdf": {
+            "type": "boolean",
+            "title": "Has Original Pdf",
+            "default": false
+          },
+          "has_translated_pdf": {
+            "type": "boolean",
+            "title": "Has Translated Pdf",
+            "default": false
+          },
+          "can_translate": {
+            "type": "boolean",
+            "title": "Can Translate",
+            "default": false
           }
         },
         "type": "object",
@@ -5264,6 +5348,63 @@
           "chunk_id"
         ],
         "title": "TextChunk"
+      },
+      "TranslatePdfResponse": {
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id",
+            "description": "Document UUID"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "Document status in database"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Human-readable translation result"
+          },
+          "pdf_available": {
+            "type": "boolean",
+            "title": "Pdf Available",
+            "description": "Whether translated PDF is already available"
+          },
+          "pdf_download_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pdf Download Url",
+            "description": "Download URL when translated PDF is available"
+          },
+          "pdf_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pdf Error",
+            "description": "PDF generation error if generation failed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "doc_id",
+          "status",
+          "message",
+          "pdf_available"
+        ],
+        "title": "TranslatePdfResponse",
+        "description": "Response model for manual translation kickoff/completion."
       },
       "UploadPdfResponse": {
         "properties": {

@@ -44,15 +44,14 @@ def test_upload_pdf_returns_json_contract() -> None:
     """Upload endpoint must return JSON response envelope, not binary blob."""
     context = UploadPipelineContext(
         doc_id="doc-123",
-        markdown_text="content",
         book_title="demo",
         user_folder="uploads/test-user-123/doc-123",
         response=UploadPdfResponse(
             doc_id="doc-123",
-            status="completed",
-            message="Upload accepted. Background indexing started.",
+            status="ready",
+            message="OCR 已完成，背景索引進行中；如需翻譯請從歷史列表手動觸發。",
             pdf_available=True,
-            pdf_download_url="/pdfmd/file/doc-123",
+            pdf_download_url="/pdfmd/file/doc-123?type=original",
             pdf_error=None,
             rag_status="processing_background",
         ),
@@ -70,7 +69,7 @@ def test_upload_pdf_returns_json_contract() -> None:
         payload = response.json()
         assert payload["doc_id"] == "doc-123"
         assert payload["pdf_available"] is True
-        assert payload["pdf_download_url"] == "/pdfmd/file/doc-123"
+        assert payload["pdf_download_url"] == "/pdfmd/file/doc-123?type=original"
 
 
 def test_openapi_contains_http_bearer_security_scheme() -> None:

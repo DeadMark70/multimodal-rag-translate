@@ -8,10 +8,12 @@ Provides API endpoints for PDF upload, OCR processing, translation, and file man
 import asyncio
 import logging
 import os
+from typing import Literal
 from uuid import UUID
 
 # Third-party
-from fastapi import APIRouter, UploadFile, File, Depends
+from fastapi import APIRouter, UploadFile, File, Depends, Query
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
 # Local application
@@ -35,17 +37,22 @@ from pdfserviceMD.schemas import (
     DocumentSummaryResponse,
     ProcessingStatusResponse,
     RegenerateSummaryResponse,
+    TranslatePdfResponse,
     UploadPdfResponse,
 )
 from pdfserviceMD.service import (
     delete_user_document,
+    finalize_indexing_status,
     get_document_file_info,
     get_document_processing_status,
     get_user_document_summary,
+    load_ocr_artifacts,
     list_user_documents,
     regenerate_document_summary,
     run_upload_pipeline,
     safe_update_processing_step,
+    translate_user_document,
+    update_indexing_processing_step,
 )
 
 # Configure logging
@@ -85,7 +92,6 @@ def _validate_pdf_upload(file: UploadFile) -> None:
 
 async def run_post_processing_tasks(
     doc_id: str,
-    markdown_text: str,
     book_title: str,
     user_id: str,
     user_folder: str,
@@ -93,20 +99,28 @@ async def run_post_processing_tasks(
     """
     Background task for post-PDF processing (RAG + Images + GraphRAG + Summary).
 
-    Called after the translated PDF is returned to user.
+    Called after OCR artifact persistence completes.
     Runs RAG indexing, image summarization, GraphRAG extraction, and summary in background.
 
     Args:
         doc_id: Document UUID.
-        markdown_text: Extracted markdown content for indexing.
         book_title: Title for the document.
         user_id: User ID for knowledge base.
         user_folder: Path to document folder (for locating images).
     """
     logger.info(f"[Background] Starting post-processing for doc {doc_id}")
-    await safe_update_processing_step(doc_id=doc_id, step="indexing")
 
     try:
+        markdown_text, _ = await run_in_threadpool(
+            load_ocr_artifacts,
+            user_folder=user_folder,
+        )
+        await update_indexing_processing_step(
+            doc_id=doc_id,
+            user_id=user_id,
+            step="indexing",
+        )
+
         # 1. RAG indexing
         await add_markdown_to_knowledge_base(
             user_id=user_id,
@@ -118,7 +132,11 @@ async def run_post_processing_tasks(
         logger.info(f"[Background] RAG indexing complete for doc {doc_id}")
 
         # 2. Image summarization and indexing (Phase 8)
-        await safe_update_processing_step(doc_id=doc_id, step="image_analysis")
+        await update_indexing_processing_step(
+            doc_id=doc_id,
+            user_id=user_id,
+            step="image_analysis",
+        )
         await _process_document_images(
             user_id=user_id,
             doc_id=doc_id,
@@ -128,7 +146,11 @@ async def run_post_processing_tasks(
         )
 
         # 3. GraphRAG entity extraction
-        await safe_update_processing_step(doc_id=doc_id, step="graph_indexing")
+        await update_indexing_processing_step(
+            doc_id=doc_id,
+            user_id=user_id,
+            step="graph_indexing",
+        )
         await _run_graph_extraction(user_id, doc_id, markdown_text)
 
         # 3. Summary generation
@@ -140,10 +162,13 @@ async def run_post_processing_tasks(
         logger.info(f"[Background] Summary scheduled for doc {doc_id}")
 
         await safe_update_processing_step(doc_id=doc_id, step="indexed")
+        await finalize_indexing_status(doc_id=doc_id, user_id=user_id)
 
     except (RuntimeError, ValueError) as e:
         logger.warning(f"[Background] Post-processing failed for doc {doc_id}: {e}")
         # Non-fatal: PDF was already delivered
+    except FileNotFoundError as e:
+        logger.warning(f"[Background] OCR artifacts unavailable for doc {doc_id}: {e}")
 
 
 async def _process_document_images(
@@ -382,7 +407,6 @@ async def upload_pdf_md(
         asyncio.create_task(
             run_post_processing_tasks(
                 doc_id=context.doc_id,
-                markdown_text=context.markdown_text,
                 book_title=context.book_title,
                 user_id=user_id,
                 user_folder=context.user_folder,
@@ -415,7 +439,9 @@ async def get_processing_status(
 
 @router.get("/file/{doc_id}")
 async def get_pdf_file(
-    doc_id: UUID, user_id: str = Depends(get_current_user_id)
+    doc_id: UUID,
+    type: Literal["original", "translated"] | None = Query(default=None),
+    user_id: str = Depends(get_current_user_id),
 ) -> FileResponse:
     """
     Retrieves a processed PDF file by document ID.
@@ -433,6 +459,7 @@ async def get_pdf_file(
     file_path, filename = await get_document_file_info(
         doc_id=str(doc_id),
         user_id=user_id,
+        file_type=type,
     )
 
     return FileResponse(
@@ -440,6 +467,23 @@ async def get_pdf_file(
         filename=filename,
         media_type="application/pdf",
     )
+
+
+@router.post("/file/{doc_id}/translate", response_model=TranslatePdfResponse)
+async def translate_pdf_file(
+    doc_id: UUID, user_id: str = Depends(get_current_user_id)
+) -> TranslatePdfResponse:
+    """
+    Translates an OCR-complete document and generates a translated PDF.
+
+    Args:
+        doc_id: Document UUID.
+        user_id: Authenticated user ID.
+
+    Returns:
+        TranslatePdfResponse with translated PDF availability details.
+    """
+    return await translate_user_document(doc_id=str(doc_id), user_id=user_id)
 
 
 @router.delete("/file/{doc_id}", response_model=DeleteDocumentResponse)
