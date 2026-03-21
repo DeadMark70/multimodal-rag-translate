@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -231,3 +233,138 @@ async def test_ragas_evaluator_matches_bergen_fixture_summary():
             expected_correctness,
             abs=1e-4,
         )
+
+
+class _FakeDataset:
+    @staticmethod
+    def from_dict(payload: dict) -> dict:
+        return payload
+
+
+@pytest.mark.asyncio
+async def test_evaluate_batch_falls_back_to_zero_scores_on_ragas_failure():
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository([]),
+        score_repository=FakeScoreRepository([]),
+        evaluator_model="fake-evaluator",
+    )
+    batch_rows = [
+        SimpleNamespace(
+            id="r1",
+            question_id="Q1",
+            question="Question 1",
+            answer="Answer 1",
+            contexts=["ctx-1"],
+            ground_truth="Ground truth 1",
+        )
+    ]
+
+    with patch("evaluation.ragas_evaluator.run_with_retry", new=AsyncMock(side_effect=RuntimeError("ragas down"))):
+        score_rows = await evaluator._evaluate_batch(
+            batch_rows=batch_rows,
+            ragas_dependencies={
+                "Dataset": _FakeDataset,
+            },
+            evaluator_llm=object(),
+            evaluator_embeddings=object(),
+        )
+
+    assert len(score_rows) == 2
+    assert all(row["metric_value"] == 0.0 for row in score_rows)
+    assert all(row["details"]["evaluator_model"] == "fake-evaluator" for row in score_rows)
+    assert all("ragas down" in row["details"]["error"] for row in score_rows)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_campaign_reports_progress_when_batches_fall_back():
+    result = CampaignResult(
+        id="r1",
+        campaign_id="cmp-1",
+        question_id="Q1",
+        question="Question 1",
+        ground_truth="Ground truth 1",
+        mode="naive",
+        run_number=1,
+        answer="Answer 1",
+        contexts=["ctx-1"],
+        source_doc_ids=[],
+        expected_sources=[],
+        latency_ms=10,
+        token_usage={"total_tokens": 100},
+        status=CampaignResultStatus.COMPLETED,
+        created_at=datetime.now(timezone.utc),
+    )
+    score_repository = FakeScoreRepository([])
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository([result]),
+        score_repository=score_repository,
+        evaluator_model="fake-evaluator",
+    )
+    progress_updates: list[tuple[int, int, str | None, str | None]] = []
+
+    with patch.object(
+        evaluator,
+        "_load_ragas_dependencies",
+        new=AsyncMock(
+            return_value={
+                "LangchainLLMWrapper": lambda llm: llm,
+                "initialize_embeddings": AsyncMock(),
+                "LangchainEmbeddingsWrapper": lambda embeddings: embeddings,
+                "get_embeddings": lambda: object(),
+            }
+        ),
+    ), patch.object(
+        evaluator,
+        "_evaluate_batch",
+        new=AsyncMock(
+            return_value=[
+                {
+                    "campaign_result_id": "r1",
+                    "metric_name": "faithfulness",
+                    "metric_value": 0.0,
+                    "details": {
+                        "evaluator_model": "fake-evaluator",
+                        "question_id": "Q1",
+                        "error": "ragas down",
+                    },
+                },
+                {
+                    "campaign_result_id": "r1",
+                    "metric_name": "answer_correctness",
+                    "metric_value": 0.0,
+                    "details": {
+                        "evaluator_model": "fake-evaluator",
+                        "question_id": "Q1",
+                        "error": "ragas down",
+                    },
+                },
+            ]
+        ),
+    ):
+        model_name = await evaluator.evaluate_campaign(
+            user_id="user-a",
+            campaign_id="cmp-1",
+            on_progress=lambda completed, total, question_id, mode: _record_progress(
+                progress_updates,
+                completed,
+                total,
+                question_id,
+                mode,
+            ),
+        )
+
+    assert model_name == "fake-evaluator"
+    assert progress_updates == [(1, 1, "Q1", "naive")]
+    assert len(score_repository._scores) == 2
+    assert all(score["metric_value"] == 0.0 for score in score_repository._scores)
+    assert all(score["details"]["error"] == "ragas down" for score in score_repository._scores)
+
+
+async def _record_progress(
+    sink: list[tuple[int, int, str | None, str | None]],
+    completed: int,
+    total: int,
+    question_id: str | None,
+    mode: str | None,
+) -> None:
+    sink.append((completed, total, question_id, mode))

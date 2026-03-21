@@ -12,12 +12,16 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from google.api_core import exceptions as google_exceptions
+from langchain_core.documents import Document
+import pytest
 
 from core.auth import get_current_user_id
 from evaluation.campaign_engine import CampaignEngine
 from evaluation.campaign_schemas import CampaignMetricsResponse, MetricAggregate, ModeMetricsSummary
-from evaluation.rag_modes import BenchmarkExecutionResult
+from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
+from evaluation.ragas_evaluator import RagasEvaluator
 from evaluation.retry import run_with_retry
+from data_base.RAG_QA_service import RAGResult
 from main import app
 
 
@@ -62,6 +66,47 @@ def _create_test_case(client: TestClient, test_case_id: str = "Q1") -> None:
         },
     )
     assert response.status_code == 200
+
+
+def _campaign_payload(
+    *,
+    name: str,
+    test_case_ids: list[str],
+    modes: list[str],
+    repeat_count: int = 1,
+    batch_size: int = 1,
+    rpm_limit: int = 60,
+) -> dict:
+    return {
+        "name": name,
+        "test_case_ids": test_case_ids,
+        "modes": modes,
+        "model_config": {
+            "id": "cfg-1",
+            "name": "Balanced",
+            "model_name": "gemini-2.5-flash",
+            "temperature": 0.7,
+            "top_p": 0.95,
+            "top_k": 40,
+            "max_input_tokens": 8192,
+            "max_output_tokens": 2048,
+            "thinking_mode": False,
+            "thinking_budget": 8192,
+        },
+        "model_config_id": "cfg-1",
+        "repeat_count": repeat_count,
+        "batch_size": batch_size,
+        "rpm_limit": rpm_limit,
+    }
+
+
+def _fake_ragas_dependencies() -> dict:
+    return {
+        "LangchainLLMWrapper": lambda llm: llm,
+        "initialize_embeddings": AsyncMock(),
+        "LangchainEmbeddingsWrapper": lambda embeddings: embeddings,
+        "get_embeddings": lambda: object(),
+    }
 
 
 class FakeRagasEvaluator:
@@ -244,7 +289,8 @@ def test_campaign_cancel_marks_campaign_cancelled() -> None:
         assert terminal["status"] == "cancelled"
 
 
-def test_run_with_retry_retries_resource_exhausted() -> None:
+@pytest.mark.asyncio
+async def test_run_with_retry_retries_resource_exhausted() -> None:
     attempts = {"count": 0}
 
     async def flaky() -> str:
@@ -253,7 +299,7 @@ def test_run_with_retry_retries_resource_exhausted() -> None:
             raise google_exceptions.ResourceExhausted("rate limited")
         return "ok"
 
-    result = asyncio.run(run_with_retry(flaky))
+    result = await run_with_retry(flaky)
     assert result == "ok"
     assert attempts["count"] == 3
 
@@ -539,3 +585,254 @@ def test_agent_trace_api_persists_and_reads_trace_payload() -> None:
         assert trace_detail["execution_profile"] == "agentic_eval_v1"
         assert trace_detail["steps"][0]["phase"] == "planning"
         assert trace_detail["steps"][1]["tool_calls"][0]["action"] == "VERIFY_IMAGE"
+
+
+def test_campaign_integration_uses_real_runner_and_real_ragas_persistence() -> None:
+    ragas = RagasEvaluator(batch_size=2)
+    engine = CampaignEngine(runner=run_campaign_case, ragas_evaluator=ragas)
+    upload_root = _make_upload_root()
+    db_path = _make_db_path()
+    rag_calls: list[dict] = []
+
+    async def fake_rag_answer_question(*, question: str, user_id: str, return_docs: bool, **kwargs) -> RAGResult:
+        assert user_id == "user-a"
+        assert return_docs is True
+        if kwargs.get("enable_graph_rag"):
+            mode = "graph"
+        elif kwargs.get("enable_reranking"):
+            mode = "advanced"
+        else:
+            mode = "naive"
+        rag_calls.append({"question": question, "mode": mode, **kwargs})
+        return RAGResult(
+            answer=f"{mode} answer",
+            source_doc_ids=[f"{mode}-doc"],
+            documents=[Document(page_content=f"{mode} context", metadata={"doc_id": f"{mode}-doc"})],
+            usage={"total_tokens": {"naive": 20, "advanced": 40, "graph": 60}[mode]},
+        )
+
+    async def fake_evaluate_batch(*, batch_rows, **_kwargs):
+        score_rows: list[dict] = []
+        for row in batch_rows:
+            faithfulness = {
+                "naive": 0.45,
+                "advanced": 0.7,
+                "graph": 0.8,
+                "agentic": 0.9,
+            }[row.mode]
+            correctness = {
+                "naive": 0.5,
+                "advanced": 0.72,
+                "graph": 0.83,
+                "agentic": 0.91,
+            }[row.mode]
+            for metric_name, metric_value in (
+                ("faithfulness", faithfulness),
+                ("answer_correctness", correctness),
+            ):
+                score_rows.append(
+                    {
+                        "campaign_result_id": row.id,
+                        "metric_name": metric_name,
+                        "metric_value": metric_value,
+                        "details": {
+                            "evaluator_model": "fake-ragas",
+                            "question_id": row.question_id,
+                        },
+                    }
+                )
+        return score_rows
+
+    agentic_result = RAGResult(
+        answer="agentic answer",
+        source_doc_ids=["agentic-doc"],
+        documents=[Document(page_content="agentic context", metadata={"doc_id": "agentic-doc"})],
+        usage={"total_tokens": 120},
+        thought_process="trace summary",
+        tool_calls=[],
+        agent_trace={
+            "trace_id": "trace-1",
+            "question_id": "Q1",
+            "question": "What is the answer?",
+            "mode": "agentic",
+            "execution_profile": "agentic_eval_v1",
+            "run_number": 1,
+            "trace_status": "completed",
+            "summary": "trace summary",
+            "step_count": 1,
+            "tool_call_count": 0,
+            "total_tokens": 120,
+            "created_at": "2026-03-21T00:00:00+00:00",
+            "steps": [],
+        },
+    )
+
+    with (
+        patch("evaluation.rag_modes.rag_answer_question", new=AsyncMock(side_effect=fake_rag_answer_question)),
+        patch("evaluation.rag_modes.AgenticEvaluationService") as mock_service_cls,
+        patch.object(ragas, "_load_ragas_dependencies", new=AsyncMock(return_value=_fake_ragas_dependencies())),
+        patch.object(ragas, "_evaluate_batch", new=AsyncMock(side_effect=fake_evaluate_batch)),
+    ):
+        mock_service = mock_service_cls.return_value
+        mock_service.run_case = AsyncMock(return_value=agentic_result)
+
+        with _build_client("user-a", upload_root, db_path, engine) as client:
+            _create_test_case(client)
+            created = client.post(
+                "/api/evaluation/campaigns",
+                json=_campaign_payload(
+                    name="Real runner integration",
+                    test_case_ids=["Q1"],
+                    modes=["naive", "advanced", "graph", "agentic"],
+                    batch_size=2,
+                ),
+            )
+            assert created.status_code == 200
+            campaign_id = created.json()["campaign_id"]
+
+            terminal = _wait_for_terminal_status(client, campaign_id, timeout_seconds=8.0)
+            assert terminal["status"] == "completed"
+            assert terminal["phase"] == "evaluation"
+            assert terminal["completed_units"] == 4
+            assert terminal["total_units"] == 4
+            assert terminal["evaluation_completed_units"] == 4
+            assert terminal["evaluation_total_units"] == 4
+
+            results = client.get(f"/api/evaluation/campaigns/{campaign_id}/results")
+            assert results.status_code == 200
+            result_rows = results.json()["results"]
+            assert len(result_rows) == 4
+            assert {row["mode"] for row in result_rows} == {"naive", "advanced", "graph", "agentic"}
+            assert all(row["status"] == "completed" for row in result_rows)
+            agentic_row = next(row for row in result_rows if row["mode"] == "agentic")
+            assert agentic_row["execution_profile"] == "agentic_eval_v1"
+            assert agentic_row["has_trace"] is True
+
+            metrics = client.get(f"/api/evaluation/campaigns/{campaign_id}/metrics")
+            assert metrics.status_code == 200
+            metrics_body = metrics.json()
+            assert metrics_body["evaluator_model"] == "fake-ragas"
+            assert set(metrics_body["summary_by_mode"].keys()) == {"naive", "advanced", "graph", "agentic"}
+            assert len(metrics_body["rows"]) == 4
+
+            traces = client.get(f"/api/evaluation/campaigns/{campaign_id}/traces")
+            assert traces.status_code == 200
+            trace_rows = traces.json()
+            assert len(trace_rows) == 1
+            assert trace_rows[0]["execution_profile"] == "agentic_eval_v1"
+
+            trace_detail = client.get(
+                f"/api/evaluation/campaigns/{campaign_id}/results/{agentic_row['id']}/trace"
+            )
+            assert trace_detail.status_code == 200
+            assert trace_detail.json()["execution_profile"] == "agentic_eval_v1"
+
+    assert len(rag_calls) == 3
+    graph_call = next(call for call in rag_calls if call["mode"] == "graph")
+    assert graph_call["enable_graph_rag"] is True
+    assert graph_call["graph_search_mode"] == "generic"
+
+
+def test_campaign_integration_keeps_running_when_one_mode_fails() -> None:
+    ragas = RagasEvaluator(batch_size=2)
+    engine = CampaignEngine(runner=run_campaign_case, ragas_evaluator=ragas)
+    upload_root = _make_upload_root()
+    db_path = _make_db_path()
+
+    async def flaky_rag_answer_question(*, return_docs: bool, **kwargs) -> RAGResult:
+        assert return_docs is True
+        if kwargs.get("enable_graph_rag"):
+            raise RuntimeError("graph retrieval blew up")
+        mode = "advanced" if kwargs.get("enable_reranking") else "naive"
+        return RAGResult(
+            answer=f"{mode} answer",
+            source_doc_ids=[f"{mode}-doc"],
+            documents=[Document(page_content=f"{mode} context", metadata={"doc_id": f"{mode}-doc"})],
+            usage={"total_tokens": {"naive": 20, "advanced": 40}[mode]},
+        )
+
+    async def fake_evaluate_batch(*, batch_rows, **_kwargs):
+        score_rows: list[dict] = []
+        for row in batch_rows:
+            for metric_name, metric_value in (
+                ("faithfulness", 0.6),
+                ("answer_correctness", 0.7),
+            ):
+                score_rows.append(
+                    {
+                        "campaign_result_id": row.id,
+                        "metric_name": metric_name,
+                        "metric_value": metric_value,
+                        "details": {
+                            "evaluator_model": "fake-ragas",
+                            "question_id": row.question_id,
+                        },
+                    }
+                )
+        return score_rows
+
+    agentic_result = RAGResult(
+        answer="agentic answer",
+        source_doc_ids=["agentic-doc"],
+        documents=[Document(page_content="agentic context", metadata={"doc_id": "agentic-doc"})],
+        usage={"total_tokens": 120},
+        agent_trace={
+            "trace_id": "trace-2",
+            "question_id": "Q1",
+            "question": "What is the answer?",
+            "mode": "agentic",
+            "execution_profile": "agentic_eval_v1",
+            "run_number": 1,
+            "trace_status": "completed",
+            "summary": "trace summary",
+            "step_count": 1,
+            "tool_call_count": 0,
+            "total_tokens": 120,
+            "created_at": "2026-03-21T00:00:00+00:00",
+            "steps": [],
+        },
+    )
+
+    with (
+        patch("evaluation.rag_modes.rag_answer_question", new=AsyncMock(side_effect=flaky_rag_answer_question)),
+        patch("evaluation.rag_modes.AgenticEvaluationService") as mock_service_cls,
+        patch.object(ragas, "_load_ragas_dependencies", new=AsyncMock(return_value=_fake_ragas_dependencies())),
+        patch.object(ragas, "_evaluate_batch", new=AsyncMock(side_effect=fake_evaluate_batch)),
+    ):
+        mock_service = mock_service_cls.return_value
+        mock_service.run_case = AsyncMock(return_value=agentic_result)
+
+        with _build_client("user-a", upload_root, db_path, engine) as client:
+            _create_test_case(client)
+            created = client.post(
+                "/api/evaluation/campaigns",
+                json=_campaign_payload(
+                    name="Partial failure integration",
+                    test_case_ids=["Q1"],
+                    modes=["naive", "graph", "agentic"],
+                    batch_size=2,
+                ),
+            )
+            assert created.status_code == 200
+            campaign_id = created.json()["campaign_id"]
+
+            terminal = _wait_for_terminal_status(client, campaign_id, timeout_seconds=8.0)
+            assert terminal["status"] == "completed"
+            assert terminal["completed_units"] == 3
+            assert terminal["total_units"] == 3
+            assert terminal["evaluation_completed_units"] == 2
+            assert terminal["evaluation_total_units"] == 2
+
+            results = client.get(f"/api/evaluation/campaigns/{campaign_id}/results")
+            assert results.status_code == 200
+            result_rows = results.json()["results"]
+            assert len(result_rows) == 3
+            failed_row = next(row for row in result_rows if row["mode"] == "graph")
+            assert failed_row["status"] == "failed"
+            assert "graph retrieval blew up" in failed_row["error_message"]
+
+            metrics = client.get(f"/api/evaluation/campaigns/{campaign_id}/metrics")
+            assert metrics.status_code == 200
+            metrics_body = metrics.json()
+            assert set(metrics_body["summary_by_mode"].keys()) == {"naive", "agentic"}
+            assert len(metrics_body["rows"]) == 2
