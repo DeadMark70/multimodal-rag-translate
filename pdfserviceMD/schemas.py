@@ -56,6 +56,7 @@ class DocumentListItem(BaseModel):
     has_original_pdf: bool = False
     has_translated_pdf: bool = False
     can_translate: bool = False
+    error_message: str | None = None
 
 
 class DocumentListResponse(BaseModel):
@@ -72,6 +73,7 @@ class ProcessingStatusResponse(BaseModel):
     step_label: str
     is_pdf_ready: bool
     is_fully_complete: bool
+    error_message: str | None = None
 
 
 class DeleteDocumentResponse(BaseModel):

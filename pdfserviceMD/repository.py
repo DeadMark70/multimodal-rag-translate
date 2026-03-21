@@ -115,7 +115,7 @@ async def list_documents(*, user_id: str, limit: int = 50) -> list[dict]:
         response = await run_in_threadpool(
             lambda: client.table("documents")
             .select(
-                "id, file_name, created_at, status, processing_step, original_path, translated_path"
+                "id, file_name, created_at, status, processing_step, original_path, translated_path, error_message"
             )
             .eq("user_id", user_id)
             .order("created_at", desc=True)

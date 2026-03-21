@@ -48,6 +48,7 @@ from pdfserviceMD.service import (
     get_user_document_summary,
     load_ocr_artifacts,
     list_user_documents,
+    record_background_processing_failure,
     regenerate_document_summary,
     run_upload_pipeline,
     safe_update_processing_step,
@@ -109,19 +110,28 @@ async def run_post_processing_tasks(
         user_folder: Path to document folder (for locating images).
     """
     logger.info(f"[Background] Starting post-processing for doc {doc_id}")
+    error_messages: list[str] = []
 
     try:
         markdown_text, _ = await run_in_threadpool(
             load_ocr_artifacts,
             user_folder=user_folder,
         )
+    except (FileNotFoundError, RuntimeError, ValueError) as e:
+        logger.warning(f"[Background] OCR artifacts unavailable for doc {doc_id}: {e}")
+        await record_background_processing_failure(
+            doc_id=doc_id,
+            user_id=user_id,
+            error_messages=[f"OCR artifacts unavailable: {e}"],
+        )
+        return
+
+    try:
         await update_indexing_processing_step(
             doc_id=doc_id,
             user_id=user_id,
             step="indexing",
         )
-
-        # 1. RAG indexing
         await add_markdown_to_knowledge_base(
             user_id=user_id,
             markdown_text=markdown_text,
@@ -130,8 +140,11 @@ async def run_post_processing_tasks(
             k_retriever=3,
         )
         logger.info(f"[Background] RAG indexing complete for doc {doc_id}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[Background] RAG indexing failed for doc {doc_id}: {e}")
+        error_messages.append(f"RAG indexing failed: {e}")
 
-        # 2. Image summarization and indexing (Phase 8)
+    try:
         await update_indexing_processing_step(
             doc_id=doc_id,
             user_id=user_id,
@@ -144,31 +157,42 @@ async def run_post_processing_tasks(
             user_folder=user_folder,
             book_title=book_title,
         )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[Background] Image analysis failed for doc {doc_id}: {e}")
+        error_messages.append(f"Image analysis failed: {e}")
 
-        # 3. GraphRAG entity extraction
+    try:
         await update_indexing_processing_step(
             doc_id=doc_id,
             user_id=user_id,
             step="graph_indexing",
         )
         await _run_graph_extraction(user_id, doc_id, markdown_text)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[Background] Graph indexing failed for doc {doc_id}: {e}")
+        error_messages.append(f"Graph indexing failed: {e}")
 
-        # 3. Summary generation
+    try:
         schedule_summary_generation(
             doc_id=doc_id,
             text_content=markdown_text,
             user_id=user_id,
         )
         logger.info(f"[Background] Summary scheduled for doc {doc_id}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[Background] Summary scheduling failed for doc {doc_id}: {e}")
+        error_messages.append(f"Summary scheduling failed: {e}")
 
-        await safe_update_processing_step(doc_id=doc_id, step="indexed")
-        await finalize_indexing_status(doc_id=doc_id, user_id=user_id)
+    if error_messages:
+        await record_background_processing_failure(
+            doc_id=doc_id,
+            user_id=user_id,
+            error_messages=error_messages,
+        )
+        return
 
-    except (RuntimeError, ValueError) as e:
-        logger.warning(f"[Background] Post-processing failed for doc {doc_id}: {e}")
-        # Non-fatal: PDF was already delivered
-    except FileNotFoundError as e:
-        logger.warning(f"[Background] OCR artifacts unavailable for doc {doc_id}: {e}")
+    await safe_update_processing_step(doc_id=doc_id, step="indexed")
+    await finalize_indexing_status(doc_id=doc_id, user_id=user_id)
 
 
 async def _process_document_images(

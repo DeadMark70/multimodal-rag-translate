@@ -53,6 +53,7 @@ _STEP_LABELS = {
     "image_analysis": "分析圖片中",
     "graph_indexing": "建立知識圖譜中",
     "indexed": "全部完成",
+    "index_failed": "索引失敗",
     "failed": "處理失敗",
 }
 
@@ -262,6 +263,7 @@ async def list_user_documents(*, user_id: str) -> DocumentListResponse:
                 has_original_pdf=_has_file(row.get("original_path")),
                 has_translated_pdf=_has_file(row.get("translated_path")),
                 can_translate=_can_translate_document(row),
+                error_message=row.get("error_message"),
             )
         )
     return DocumentListResponse(
@@ -277,7 +279,7 @@ async def get_document_processing_status(
     row = await get_document(
         doc_id=doc_id,
         user_id=user_id,
-        columns="status, processing_step, original_path, translated_path",
+        columns="status, processing_step, original_path, translated_path, error_message",
     )
     if not row:
         raise AppError(
@@ -296,6 +298,7 @@ async def get_document_processing_status(
         step_label=_STEP_LABELS.get(step, step),
         is_pdf_ready=has_original_pdf or has_translated_pdf,
         is_fully_complete=step == "indexed",
+        error_message=row.get("error_message"),
     )
 
 
@@ -395,6 +398,32 @@ async def finalize_indexing_status(*, doc_id: str, user_id: str) -> None:
         return
 
     await update_document_status(doc_id=doc_id, status="indexed")
+
+
+async def record_background_processing_failure(
+    *,
+    doc_id: str,
+    user_id: str,
+    error_messages: list[str],
+) -> None:
+    """Persists a non-fatal background indexing failure for a document."""
+    messages = [message.strip() for message in error_messages if message and message.strip()]
+    if not messages:
+        return
+
+    row = await get_document(
+        doc_id=doc_id,
+        user_id=user_id,
+        columns="status",
+    )
+    current_status = row.get("status") if row else "ready"
+
+    await safe_update_document_status(
+        doc_id=doc_id,
+        status=current_status or "ready",
+        error_message=" | ".join(messages),
+    )
+    await safe_update_processing_step(doc_id=doc_id, step="index_failed")
 
 
 async def translate_user_document(*, doc_id: str, user_id: str) -> TranslatePdfResponse:
