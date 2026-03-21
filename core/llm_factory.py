@@ -28,13 +28,13 @@ LLMPurpose = Literal[
 
 # Model mapping - only translation uses different model
 _MODEL_BY_PURPOSE: dict[str, str] = {
-    "translation": "gemini-3.1-flash-lite-preview",
-    "graph_extraction": "gemini-3.1-flash-lite-preview",   # Fast extraction for GraphRAG
-    "community_summary": "gemini-3.1-flash-lite-preview",   # Fast summarization for communities
+    "translation": "gemini-2.5-flash-lite",
+    "graph_extraction": "gemini-2.5-flash-lite",   # Fast extraction for GraphRAG
+    "community_summary": "gemini-2.5-flash-lite",   # Fast summarization for communities
 }
 
 # Default model for all other purposes
-_DEFAULT_MODEL = "gemma-3-27b-it"
+_DEFAULT_MODEL = "gemini-2.5-flash-lite"
 
 # Session-wide override for testing
 _session_model_override: Optional[str] = None
