@@ -8,7 +8,7 @@ and API response schemas.
 # Standard library
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 # Third-party
 from pydantic import BaseModel, ConfigDict, Field
@@ -176,6 +176,12 @@ class GraphStatusResponse(BaseModel):
         description="各層級社群數量",
     )
     last_optimized_at: Optional[datetime] = Field(default=None, description="最後優化時間")
+    eligible_document_count: int = Field(default=0, description="可用於 GraphRAG 重建的文件數量")
+    indexed_document_count: int = Field(default=0, description="GraphRAG 成功建入的文件數量")
+    failed_document_count: int = Field(default=0, description="GraphRAG 失敗文件數量")
+    partial_document_count: int = Field(default=0, description="GraphRAG 部分成功文件數量")
+    empty_document_count: int = Field(default=0, description="GraphRAG 成功執行但未抽出實體的文件數量")
+    active_job_state: Optional[str] = Field(default=None, description="目前進行中的圖譜工作狀態")
     
     model_config = ConfigDict(
         json_schema_extra={
@@ -190,9 +196,60 @@ class GraphStatusResponse(BaseModel):
                 "community_level_counts": {"0": 12},
                 "last_updated": "2025-12-21T10:30:00Z",
                 "last_optimized_at": "2025-12-21T10:35:00Z",
+                "eligible_document_count": 15,
+                "indexed_document_count": 12,
+                "failed_document_count": 1,
+                "partial_document_count": 1,
+                "empty_document_count": 1,
+                "active_job_state": None,
             }
         }
     )
+
+
+GraphDocumentExtractionState = Literal["indexed", "partial", "empty", "failed", "running", "skipped"]
+
+
+class GraphDocumentStatus(BaseModel):
+    """Persisted GraphRAG extraction status for one source document."""
+
+    doc_id: str = Field(..., description="來源文件 ID")
+    status: GraphDocumentExtractionState = Field(..., description="GraphRAG 抽取狀態")
+    chunk_count: int = Field(default=0, ge=0, description="文件被切成的有效 chunk 數")
+    chunks_succeeded: int = Field(default=0, ge=0, description="成功抽取的 chunk 數")
+    chunks_failed: int = Field(default=0, ge=0, description="失敗的 chunk 數")
+    entities_added: int = Field(default=0, ge=0, description="新增節點數")
+    edges_added: int = Field(default=0, ge=0, description="新增邊數")
+    last_error: Optional[str] = Field(default=None, description="最後一次錯誤訊息")
+    last_attempted_at: Optional[datetime] = Field(default=None, description="最後一次嘗試時間")
+    last_succeeded_at: Optional[datetime] = Field(default=None, description="最後一次成功時間")
+
+
+class GraphDocumentStatusItem(GraphDocumentStatus):
+    """Graph document status row returned to the frontend."""
+
+    file_name: Optional[str] = Field(default=None, description="文件名稱")
+    is_eligible: bool = Field(default=True, description="是否仍具備 OCR artifact 可重建")
+
+
+class GraphDocumentStatusListResponse(BaseModel):
+    """Response for GraphRAG per-document status listing."""
+
+    documents: List[GraphDocumentStatusItem] = Field(default_factory=list)
+    total: int = Field(default=0, ge=0)
+
+
+class GraphExtractionRunResult(BaseModel):
+    """Internal summary of one document-level GraphRAG extraction run."""
+
+    doc_id: str
+    status: GraphDocumentExtractionState
+    chunk_count: int = 0
+    chunks_succeeded: int = 0
+    chunks_failed: int = 0
+    entities_added: int = 0
+    edges_added: int = 0
+    last_error: Optional[str] = None
 
 
 class ExtractedEntity(BaseModel):

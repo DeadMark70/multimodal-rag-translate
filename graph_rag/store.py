@@ -20,6 +20,7 @@ import networkx as nx
 # Local application
 from graph_rag.schemas import (
     Community,
+    GraphDocumentStatus,
     EntityType,
     GraphEdge,
     GraphNode,
@@ -32,6 +33,8 @@ logger = logging.getLogger(__name__)
 # Base path for user uploads
 BASE_UPLOAD_FOLDER = "uploads"
 GRAPH_INDEX_VERSION = 2
+GRAPH_DOCUMENTS_FILENAME = "graph.documents.json"
+GRAPH_SOURCE_MARKDOWN_FILENAME = "extracted.md"
 
 
 def _generate_node_id(label: str, entity_type: EntityType) -> str:
@@ -64,7 +67,7 @@ class GraphStore:
         last_updated: Timestamp of last modification.
     """
     
-    def __init__(self, user_id: str) -> None:
+    def __init__(self, user_id: str, storage_dir: str | Path | None = None) -> None:
         """
         Initialize GraphStore for a user.
         
@@ -74,17 +77,28 @@ class GraphStore:
             user_id: User's ID.
         """
         self.user_id = user_id
+        self._storage_dir = (
+            Path(storage_dir)
+            if storage_dir is not None
+            else Path(BASE_UPLOAD_FOLDER) / self.user_id / "rag_index"
+        )
+        self._storage_dir.mkdir(parents=True, exist_ok=True)
         self.graph: nx.DiGraph = nx.DiGraph()
         self.communities: List[Community] = []
+        self.document_statuses: Dict[str, GraphDocumentStatus] = {}
         self.last_updated: Optional[datetime] = None
         self.last_optimized_at: Optional[datetime] = None
         self.index_version: int = GRAPH_INDEX_VERSION
         self.graph_dirty: bool = False
         self._pending_count: int = 0
+        self.active_job_state: Optional[str] = None
         
-        # Try to load existing graph
+        # Try to load existing graph; if only sidecars exist, still recover metadata/status.
         if self._graph_exists():
             self.load()
+        else:
+            self._load_metadata()
+            self._load_document_statuses()
     
     def _get_graph_path(self) -> Path:
         """
@@ -93,9 +107,7 @@ class GraphStore:
         Returns:
             Path to graph.pkl file.
         """
-        user_folder = Path(BASE_UPLOAD_FOLDER) / self.user_id / "rag_index"
-        user_folder.mkdir(parents=True, exist_ok=True)
-        return user_folder / "graph.pkl"
+        return self._storage_dir / "graph.pkl"
     
     def _graph_exists(self) -> bool:
         """
@@ -110,6 +122,10 @@ class GraphStore:
         """Get path to sidecar metadata JSON file."""
         return self._get_graph_path().with_name("graph.meta.json")
 
+    def _get_document_status_path(self) -> Path:
+        """Get path to GraphRAG per-document status sidecar."""
+        return self._get_graph_path().with_name(GRAPH_DOCUMENTS_FILENAME)
+
     def _build_metadata_payload(self) -> Dict[str, Any]:
         """Build sidecar metadata payload."""
         return {
@@ -122,6 +138,7 @@ class GraphStore:
             "graph_dirty": self.graph_dirty,
             "pending_count": self._pending_count,
             "community_level_counts": self.get_community_level_counts(),
+            "active_job_state": self.active_job_state,
         }
 
     def _write_metadata(self) -> None:
@@ -129,6 +146,18 @@ class GraphStore:
         path = self._get_metadata_path()
         with open(path, "w", encoding="utf-8") as f:
             json.dump(self._build_metadata_payload(), f, ensure_ascii=False, indent=2)
+
+    def _write_document_statuses(self) -> None:
+        """Persist GraphRAG per-document status JSON."""
+        path = self._get_document_status_path()
+        payload = {
+            "documents": [
+                status.model_dump(mode="json")
+                for status in sorted(self.document_statuses.values(), key=lambda item: item.doc_id)
+            ]
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
 
     def _load_legacy_metadata(self, legacy_data: Dict[str, Any]) -> None:
         """Load metadata fields embedded in older pickle payloads."""
@@ -140,6 +169,7 @@ class GraphStore:
         self.last_optimized_at = legacy_data.get("last_optimized_at")
         self.index_version = int(legacy_data.get("index_version", 1))
         self.graph_dirty = bool(self._pending_count) or self.index_version < GRAPH_INDEX_VERSION
+        self.active_job_state = legacy_data.get("active_job_state")
 
     def _load_metadata(self, legacy_data: Optional[Dict[str, Any]] = None) -> None:
         """Load sidecar metadata or fall back to legacy pickle metadata."""
@@ -161,6 +191,7 @@ class GraphStore:
                 )
                 self.graph_dirty = bool(data.get("graph_dirty", False))
                 self._pending_count = int(data.get("pending_count", 0))
+                self.active_job_state = data.get("active_job_state")
                 return
             except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
                 logger.warning("Failed to load graph metadata for user %s: %s", self.user_id, e)
@@ -170,6 +201,27 @@ class GraphStore:
 
         if legacy_data:
             self._load_legacy_metadata(legacy_data)
+
+    def _load_document_statuses(self) -> None:
+        """Load per-document GraphRAG statuses from sidecar JSON."""
+        self.document_statuses = {}
+        path = self._get_document_status_path()
+        if not path.exists():
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            for item in payload.get("documents", []):
+                status = GraphDocumentStatus.model_validate(item)
+                self.document_statuses[status.doc_id] = status
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+            logger.warning("Failed to load graph document statuses for user %s: %s", self.user_id, e)
+
+    def save_sidecars(self) -> None:
+        """Persist metadata-only sidecars without rewriting the graph pickle."""
+        self._write_metadata()
+        self._write_document_statuses()
 
     def save(self) -> None:
         """
@@ -186,7 +238,7 @@ class GraphStore:
         path = self._get_graph_path()
         with open(path, "wb") as f:
             pickle.dump(data, f)
-        self._write_metadata()
+        self.save_sidecars()
         
         logger.info(
             f"Saved graph for user {self.user_id}: "
@@ -213,6 +265,7 @@ class GraphStore:
             
             self.graph = data.get("graph", nx.DiGraph())
             self._load_metadata(legacy_data=data)
+            self._load_document_statuses()
             
             logger.info(
                 f"Loaded graph for user {self.user_id}: "
@@ -234,10 +287,17 @@ class GraphStore:
         """
         self.graph.clear()
         self.communities.clear()
+        self.document_statuses.clear()
         self._pending_count = 0
         self.last_optimized_at = None
         self.graph_dirty = False
+        self.active_job_state = None
         logger.info(f"Cleared graph for user {self.user_id}")
+
+    @property
+    def storage_dir(self) -> Path:
+        """Return the on-disk storage directory used by this store."""
+        return self._storage_dir
 
     def mark_dirty(self) -> None:
         """Mark graph metadata as needing optimization or rebuild."""
@@ -559,6 +619,53 @@ class GraphStore:
             doc_ids.update(data.get("doc_ids", []))
         
         return doc_ids
+
+    def get_document_status(self, doc_id: str) -> Optional[GraphDocumentStatus]:
+        """Return persisted GraphRAG status for one document."""
+        return self.document_statuses.get(doc_id)
+
+    def upsert_document_status(self, status: GraphDocumentStatus) -> None:
+        """Insert or replace GraphRAG status for one document."""
+        self.document_statuses[status.doc_id] = status
+
+    def remove_document_status(self, doc_id: str) -> None:
+        """Remove persisted GraphRAG status for one document if present."""
+        self.document_statuses.pop(doc_id, None)
+
+    def get_all_document_statuses(self) -> List[GraphDocumentStatus]:
+        """Return all persisted GraphRAG document statuses."""
+        return list(self.document_statuses.values())
+
+    def list_eligible_document_ids(self) -> List[str]:
+        """Return document ids that still have OCR markdown artifacts on disk."""
+        user_dir = Path(BASE_UPLOAD_FOLDER) / self.user_id
+        if not user_dir.exists():
+            return []
+
+        doc_ids: List[str] = []
+        for entry in sorted(user_dir.iterdir(), key=lambda item: item.name):
+            if not entry.is_dir():
+                continue
+            if (entry / GRAPH_SOURCE_MARKDOWN_FILENAME).exists():
+                doc_ids.append(entry.name)
+        return doc_ids
+
+    def set_active_job_state(self, state: Optional[str]) -> None:
+        """Update the currently active graph maintenance job label."""
+        self.active_job_state = state
+
+    def get_document_status_counts(self) -> Dict[str, int]:
+        """Aggregate persisted document statuses by state."""
+        counts = {
+            "indexed": 0,
+            "failed": 0,
+            "partial": 0,
+            "empty": 0,
+        }
+        for status in self.document_statuses.values():
+            if status.status in counts:
+                counts[status.status] += 1
+        return counts
     
     # ===== Graph Analysis =====
     
@@ -679,6 +786,8 @@ class GraphStore:
         )
         
         has_graph = self.graph.number_of_nodes() > 0
+        eligible_document_ids = self.list_eligible_document_ids()
+        document_counts = self.get_document_status_counts()
         needs_optimization = (
             pending > 0
             or self.graph_dirty
@@ -697,6 +806,12 @@ class GraphStore:
             index_version=self.index_version,
             community_level_counts=self.get_community_level_counts(),
             last_optimized_at=self.last_optimized_at,
+            eligible_document_count=len(eligible_document_ids),
+            indexed_document_count=document_counts["indexed"],
+            failed_document_count=document_counts["failed"],
+            partial_document_count=document_counts["partial"],
+            empty_document_count=document_counts["empty"],
+            active_job_state=self.active_job_state,
         )
     
     def mark_pending_resolution(self, node_ids: List[str]) -> int:

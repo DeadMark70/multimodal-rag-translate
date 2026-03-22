@@ -8,6 +8,7 @@ Provides API endpoints for PDF upload, OCR processing, translation, and file man
 import asyncio
 import logging
 import os
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -31,6 +32,7 @@ from multimodal_rag.image_summarizer import summarizer as image_summarizer
 from core.summary_service import schedule_summary_generation
 from graph_rag.store import GraphStore
 from graph_rag.extractor import extract_and_add_to_graph
+from graph_rag.schemas import GraphDocumentStatus, GraphExtractionRunResult
 from pdfserviceMD.schemas import (
     DeleteDocumentResponse,
     DocumentListResponse,
@@ -167,7 +169,9 @@ async def run_post_processing_tasks(
             user_id=user_id,
             step="graph_indexing",
         )
-        await _run_graph_extraction(user_id, doc_id, markdown_text)
+        graph_result = await _run_graph_extraction(user_id, doc_id, markdown_text)
+        if graph_result.status in {"failed", "partial"} and graph_result.last_error:
+            error_messages.append(f"Graph indexing failed: {graph_result.last_error}")
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[Background] Graph indexing failed for doc {doc_id}: {e}")
         error_messages.append(f"Graph indexing failed: {e}")
@@ -268,7 +272,8 @@ async def _run_graph_extraction(
     doc_id: str,
     markdown_text: str,
     batch_size: int = 3,
-) -> None:
+    store: GraphStore | None = None,
+) -> GraphExtractionRunResult:
     """
     Run GraphRAG entity extraction on document content.
 
@@ -282,15 +287,51 @@ async def _run_graph_extraction(
         markdown_text: Text content to extract entities from.
         batch_size: Number of chunks to process in parallel (default 3).
     """
+    active_store = store or GraphStore(user_id)
+    attempted_at = datetime.now()
+
+    def _persist_status(
+        *,
+        status: str,
+        chunk_count: int,
+        chunks_succeeded: int,
+        chunks_failed: int,
+        entities_added: int,
+        edges_added: int,
+        last_error: str | None,
+    ) -> GraphExtractionRunResult:
+        active_store.upsert_document_status(
+            GraphDocumentStatus(
+                doc_id=doc_id,
+                status=status,
+                chunk_count=chunk_count,
+                chunks_succeeded=chunks_succeeded,
+                chunks_failed=chunks_failed,
+                entities_added=entities_added,
+                edges_added=edges_added,
+                last_error=last_error,
+                last_attempted_at=attempted_at,
+                last_succeeded_at=attempted_at if status in {"indexed", "partial", "empty"} else None,
+            )
+        )
+        active_store.save_sidecars()
+        return GraphExtractionRunResult(
+            doc_id=doc_id,
+            status=status,
+            chunk_count=chunk_count,
+            chunks_succeeded=chunks_succeeded,
+            chunks_failed=chunks_failed,
+            entities_added=entities_added,
+            edges_added=edges_added,
+            last_error=last_error,
+        )
+
     try:
-        # Split text into chunks for extraction (max ~8000 chars each)
         chunk_size = 8000
         all_chunks = [
             markdown_text[i : i + chunk_size]
             for i in range(0, len(markdown_text), chunk_size)
         ]
-
-        # Pre-filter chunks that are too short
         chunks = [
             (idx, chunk)
             for idx, chunk in enumerate(all_chunks)
@@ -299,14 +340,21 @@ async def _run_graph_extraction(
 
         if not chunks:
             logger.info(f"[GraphRAG] No valid chunks to process for doc {doc_id}")
-            return
+            return _persist_status(
+                status="empty",
+                chunk_count=0,
+                chunks_succeeded=0,
+                chunks_failed=0,
+                entities_added=0,
+                edges_added=0,
+                last_error=None,
+            )
 
-        store = GraphStore(user_id)
         total_nodes = 0
         total_edges = 0
+        completed_chunks = 0
+        chunk_failures: list[str] = []
 
-        # Process chunks in concurrent batches. Each chunk still maps to one
-        # extraction request; batches only control parallelism, not prompt merging.
         num_batches = (len(chunks) + batch_size - 1) // batch_size
         logger.info(
             f"[GraphRAG] Processing {len(chunks)} chunks in {num_batches} concurrent batches "
@@ -320,35 +368,33 @@ async def _run_graph_extraction(
 
             logger.info(f"[GraphRAG] Processing batch {batch_idx + 1}/{num_batches}...")
 
-            # Create async tasks for parallel execution
             tasks = [
                 extract_and_add_to_graph(
                     text=chunk,
                     doc_id=doc_id,
-                    store=store,
+                    store=active_store,
                     chunk_index=idx,
                 )
                 for idx, chunk in batch
             ]
-
-            # Execute batch in parallel, capturing exceptions
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Process results
             for i, result in enumerate(results):
                 chunk_idx = batch[i][0]
                 if isinstance(result, Exception):
+                    chunk_failures.append(f"chunk {chunk_idx}: {result}")
                     logger.warning(
                         f"[GraphRAG] Chunk {chunk_idx} extraction failed: {result}"
                     )
-                else:
-                    nodes, edges = result
-                    total_nodes += nodes
-                    total_edges += edges
+                    continue
 
-        # Save graph if any entities were extracted
+                nodes, edges = result
+                completed_chunks += 1
+                total_nodes += nodes
+                total_edges += edges
+
         if total_nodes > 0:
-            store.save()
+            active_store.save()
             logger.info(
                 f"[Background] GraphRAG complete for doc {doc_id}: "
                 f"{total_nodes} nodes, {total_edges} edges"
@@ -358,11 +404,47 @@ async def _run_graph_extraction(
                 f"[Background] GraphRAG: No entities extracted from doc {doc_id}"
             )
 
+        if chunk_failures and completed_chunks > 0:
+            status = "partial"
+        elif chunk_failures:
+            status = "failed"
+        elif total_nodes == 0:
+            status = "empty"
+        else:
+            status = "indexed"
+
+        return _persist_status(
+            status=status,
+            chunk_count=len(chunks),
+            chunks_succeeded=completed_chunks,
+            chunks_failed=len(chunk_failures),
+            entities_added=total_nodes,
+            edges_added=total_edges,
+            last_error=" | ".join(chunk_failures) if chunk_failures else None,
+        )
+
     except (FileNotFoundError, PermissionError) as e:
         logger.warning(f"[GraphRAG] Store access failed for user {user_id}: {e}")
+        return _persist_status(
+            status="failed",
+            chunk_count=0,
+            chunks_succeeded=0,
+            chunks_failed=0,
+            entities_added=0,
+            edges_added=0,
+            last_error=str(e),
+        )
     except Exception as e:
-        # Catch-all to prevent graph errors from breaking the pipeline
         logger.error(f"[GraphRAG] Unexpected error: {e}", exc_info=True)
+        return _persist_status(
+            status="failed",
+            chunk_count=0,
+            chunks_succeeded=0,
+            chunks_failed=0,
+            entities_added=0,
+            edges_added=0,
+            last_error=str(e),
+        )
 
 
 # --- Document List Endpoint ---

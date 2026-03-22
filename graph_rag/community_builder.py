@@ -15,6 +15,7 @@ from typing import List
 from langchain_core.messages import HumanMessage
 
 # Local application
+from core.llm_factory import llm_runtime_override
 from core.providers import get_llm
 from graph_rag.llm_response import response_content_to_text
 from graph_rag.schemas import Community
@@ -174,10 +175,10 @@ async def summarize_community(
     context = "\n".join(lines)
     
     try:
-        llm = get_llm("community_summary")
         prompt = _COMMUNITY_SUMMARY_PROMPT.format(entities_and_relations=context)
-        
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        with llm_runtime_override(thinking_budget=-1, include_thoughts=False):
+            llm = get_llm("community_summary")
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
         response_text = response_content_to_text(response.content)
         
         # Parse response
@@ -326,16 +327,17 @@ async def _summarize_parent_community(
     )
 
     try:
-        llm = get_llm("community_summary")
-        response = await llm.ainvoke(
-            [
-                HumanMessage(
-                    content=_PARENT_COMMUNITY_PROMPT.format(
-                        child_summaries="\n".join(child_summary_lines)
+        with llm_runtime_override(thinking_budget=-1, include_thoughts=False):
+            llm = get_llm("community_summary")
+            response = await llm.ainvoke(
+                [
+                    HumanMessage(
+                        content=_PARENT_COMMUNITY_PROMPT.format(
+                            child_summaries="\n".join(child_summary_lines)
+                        )
                     )
-                )
-            ]
-        )
+                ]
+            )
         response_text = response_content_to_text(response.content)
         import json
         import re

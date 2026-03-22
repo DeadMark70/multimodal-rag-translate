@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 # Local application
+from core.llm_factory import llm_runtime_override
 from core.providers import get_llm
 from graph_rag.schemas import (
     EntityType,
@@ -255,16 +256,17 @@ class EntityRelationExtractor:
         Raises:
             Exception: Any model setup / invocation / validation failure.
         """
-        llm = get_llm("graph_extraction")
-        if not hasattr(llm, "with_structured_output"):
-            raise RuntimeError("graph_extraction model does not support structured output")
+        with llm_runtime_override(thinking_budget=-1, include_thoughts=False):
+            llm = get_llm("graph_extraction")
+            if not hasattr(llm, "with_structured_output"):
+                raise RuntimeError("graph_extraction model does not support structured output")
 
-        structured_llm = llm.with_structured_output(
-            schema=_StructuredExtractionPayload.model_json_schema(),
-            method="json_schema",
-        )
-        prompt = _ONE_PASS_EXTRACTION_PROMPT.format(text=text[:4000])
-        raw_payload = await structured_llm.ainvoke([HumanMessage(content=prompt)])
+            structured_llm = llm.with_structured_output(
+                schema=_StructuredExtractionPayload.model_json_schema(),
+                method="json_schema",
+            )
+            prompt = _ONE_PASS_EXTRACTION_PROMPT.format(text=text[:4000])
+            raw_payload = await structured_llm.ainvoke([HumanMessage(content=prompt)])
         payload = _coerce_structured_payload(raw_payload)
         return self._build_extraction_from_payload(payload)
 
@@ -353,10 +355,10 @@ class EntityRelationExtractor:
             return []
         
         try:
-            llm = get_llm("graph_extraction")
-            prompt = _ENTITY_EXTRACTION_PROMPT.format(text=text[:4000])  # Limit input
-            
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            with llm_runtime_override(thinking_budget=-1, include_thoughts=False):
+                llm = get_llm("graph_extraction")
+                prompt = _ENTITY_EXTRACTION_PROMPT.format(text=text[:4000])  # Limit input
+                response = await llm.ainvoke([HumanMessage(content=prompt)])
             raw_entities = _parse_json_from_response(response.content)
             
             entities = []
@@ -399,20 +401,21 @@ class EntityRelationExtractor:
             return []
         
         try:
-            llm = get_llm("graph_extraction")
-            
-            # Format entities for prompt
-            entity_str = "\n".join([
-                f"- {e.label} ({e.entity_type.value})"
-                for e in entities
-            ])
-            
-            prompt = _RELATION_EXTRACTION_PROMPT.format(
-                entities=entity_str,
-                text=text[:4000],
-            )
-            
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            with llm_runtime_override(thinking_budget=-1, include_thoughts=False):
+                llm = get_llm("graph_extraction")
+
+                # Format entities for prompt
+                entity_str = "\n".join([
+                    f"- {e.label} ({e.entity_type.value})"
+                    for e in entities
+                ])
+
+                prompt = _RELATION_EXTRACTION_PROMPT.format(
+                    entities=entity_str,
+                    text=text[:4000],
+                )
+
+                response = await llm.ainvoke([HumanMessage(content=prompt)])
             raw_relations = _parse_json_from_response(response.content)
             
             # Build a set of valid entity labels for validation

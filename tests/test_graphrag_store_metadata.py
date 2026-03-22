@@ -2,7 +2,7 @@ from pathlib import Path
 from uuid import uuid4
 from unittest.mock import patch
 
-from graph_rag.schemas import Community, EntityType
+from graph_rag.schemas import Community, EntityType, GraphDocumentStatus
 from graph_rag.store import GraphStore
 
 
@@ -120,3 +120,37 @@ def test_graph_store_falls_back_to_legacy_metadata_when_sidecar_is_corrupted() -
 
     assert len(reloaded.communities) == 1
     assert reloaded.communities[0].title == "Legacy community"
+
+
+def test_graph_store_persists_document_status_sidecar_without_graph_pickle() -> None:
+    upload_root = _workspace_upload_root("graphrag_store_doc_status")
+
+    with patch("graph_rag.store.BASE_UPLOAD_FOLDER", str(upload_root)):
+        artifact_dir = upload_root / "status-user" / "doc-1"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / "extracted.md").write_text("demo", encoding="utf-8")
+
+        store = GraphStore("status-user")
+        store.upsert_document_status(
+            GraphDocumentStatus(
+                doc_id="doc-1",
+                status="failed",
+                chunk_count=2,
+                chunks_succeeded=1,
+                chunks_failed=1,
+                entities_added=3,
+                edges_added=2,
+                last_error="chunk 1: quota exceeded",
+            )
+        )
+        store.set_active_job_state("rebuild_full")
+        store.save_sidecars()
+
+        reloaded = GraphStore("status-user")
+        status = reloaded.get_status()
+
+    assert reloaded.get_document_status("doc-1") is not None
+    assert reloaded.get_document_status("doc-1").status == "failed"
+    assert status.eligible_document_count == 1
+    assert status.failed_document_count == 1
+    assert status.active_job_state == "rebuild_full"

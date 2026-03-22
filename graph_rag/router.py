@@ -9,8 +9,13 @@ Provides REST API endpoints for graph management operations:
 """
 
 # Standard library
+import asyncio
 import logging
+import os
+import shutil
+from pathlib import Path
 from typing import List, Optional
+from uuid import uuid4
 
 # Third-party
 from fastapi import APIRouter, Depends, BackgroundTasks
@@ -19,8 +24,16 @@ from pydantic import BaseModel, Field
 # Local application
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
-from graph_rag.schemas import GraphStatusResponse
+from graph_rag.schemas import (
+    GraphDocumentStatus,
+    GraphDocumentStatusItem,
+    GraphDocumentStatusListResponse,
+    GraphStatusResponse,
+)
 from graph_rag.store import GraphStore
+from pdfserviceMD.repository import get_document, list_documents as list_pdf_documents
+from pdfserviceMD.router import _run_graph_extraction
+from pdfserviceMD.service import load_ocr_artifacts
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -74,6 +87,79 @@ class GraphVisualizationData(BaseModel):
     links: List[VisLink] = Field(default_factory=list)
 
 
+def _copy_graph_sidecars(src: GraphStore, dest: GraphStore) -> None:
+    """Copy graph pickle and sidecars from one store location to another."""
+    for source_path, target_path in (
+        (src._get_graph_path(), dest._get_graph_path()),
+        (src._get_metadata_path(), dest._get_metadata_path()),
+        (src._get_document_status_path(), dest._get_document_status_path()),
+    ):
+        if source_path.exists():
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, target_path)
+
+
+def _replace_live_graph_files(temp_store: GraphStore, live_store: GraphStore) -> None:
+    """Atomically replace the live graph pickle and sidecars from a temp store."""
+    for source_path, target_path in (
+        (temp_store._get_graph_path(), live_store._get_graph_path()),
+        (temp_store._get_metadata_path(), live_store._get_metadata_path()),
+        (temp_store._get_document_status_path(), live_store._get_document_status_path()),
+    ):
+        if source_path.exists():
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_target = target_path.with_suffix(target_path.suffix + ".tmp")
+            shutil.copy2(source_path, temp_target)
+            os.replace(temp_target, target_path)
+
+
+def _make_graph_work_dir(base_dir: Path, prefix: str) -> Path:
+    """Create a writable unique workspace directory for graph maintenance jobs."""
+    work_dir = base_dir / f"{prefix}{uuid4().hex}"
+    work_dir.mkdir(parents=True, exist_ok=False)
+    return work_dir
+
+
+async def _list_graph_source_documents(user_id: str) -> list[dict[str, str | None]]:
+    """List OCR-complete documents that can act as GraphRAG rebuild sources."""
+    store = GraphStore(user_id)
+    eligible_ids = store.list_eligible_document_ids()
+    rows = await list_pdf_documents(user_id=user_id, limit=max(len(eligible_ids) + 50, 200))
+    row_map = {row["id"]: row for row in rows}
+    sources: list[dict[str, str | None]] = []
+    for doc_id in eligible_ids:
+        row = row_map.get(doc_id, {})
+        sources.append(
+            {
+                "doc_id": doc_id,
+                "file_name": row.get("file_name"),
+                "original_path": row.get("original_path"),
+            }
+        )
+    return sources
+
+
+async def _build_graph_document_rows(user_id: str, store: GraphStore) -> list[GraphDocumentStatusItem]:
+    """Build API rows by joining persisted graph statuses with OCR-eligible docs."""
+    sources = await _list_graph_source_documents(user_id)
+    source_map = {item["doc_id"]: item for item in sources}
+    known_doc_ids = set(source_map) | set(store.document_statuses)
+    rows: list[GraphDocumentStatusItem] = []
+
+    for doc_id in sorted(known_doc_ids):
+        persisted = store.get_document_status(doc_id)
+        source = source_map.get(doc_id, {})
+        status = persisted or GraphDocumentStatus(doc_id=doc_id, status="skipped")
+        rows.append(
+            GraphDocumentStatusItem(
+                **status.model_dump(),
+                file_name=source.get("file_name"),
+                is_eligible=doc_id in source_map,
+            )
+        )
+    return rows
+
+
 # ===== Endpoints =====
 
 @router.get(
@@ -101,6 +187,29 @@ async def get_graph_status(
         raise AppError(
             code=ErrorCode.PROCESSING_ERROR,
             message="Failed to get graph status",
+            status_code=500,
+        ) from e
+
+
+@router.get(
+    "/documents",
+    response_model=GraphDocumentStatusListResponse,
+    summary="列出 GraphRAG 文件狀態",
+    description="列出所有可用於 GraphRAG 的文件，以及每個文件最近一次抽圖的狀態。",
+)
+async def list_graph_documents(
+    user_id: str = Depends(get_current_user_id)
+) -> GraphDocumentStatusListResponse:
+    """List per-document GraphRAG extraction status rows."""
+    try:
+        store = GraphStore(user_id)
+        documents = await _build_graph_document_rows(user_id, store)
+        return GraphDocumentStatusListResponse(documents=documents, total=len(documents))
+    except Exception as e:
+        logger.error("Failed to list graph documents: %s", e, exc_info=True)
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Failed to list graph documents",
             status_code=500,
         ) from e
 
@@ -212,6 +321,116 @@ async def rebuild_graph(
 
 
 @router.post(
+    "/rebuild-full",
+    response_model=GraphOperationResponse,
+    summary="完整重構圖譜",
+    description="從所有 OCR artifact 重新抽取並建立全新圖譜；成功後才會覆蓋目前圖譜。",
+)
+async def rebuild_graph_full(
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user_id),
+) -> GraphOperationResponse:
+    """Build a fresh graph from all OCR-complete document artifacts."""
+    try:
+        store = GraphStore(user_id)
+        if store.active_job_state:
+            return GraphOperationResponse(
+                status="skipped",
+                message=f"已有圖譜工作執行中：{store.active_job_state}",
+            )
+
+        sources = await _list_graph_source_documents(user_id)
+        if not sources:
+            return GraphOperationResponse(
+                status="skipped",
+                message="沒有可用的 OCR 文件可供完整重構",
+            )
+
+        store.set_active_job_state("rebuild_full")
+        store.save_sidecars()
+        background_tasks.add_task(_rebuild_full_graph_task, user_id)
+        return GraphOperationResponse(
+            status="started",
+            message="完整圖譜重構已開始，將從所有 OCR 文件重新抽取",
+            details={"document_count": len(sources)},
+        )
+    except Exception as e:
+        logger.error("Failed to start full graph rebuild: %s", e, exc_info=True)
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Failed to start full graph rebuild",
+            status_code=500,
+        ) from e
+
+
+@router.post(
+    "/documents/{doc_id}/retry",
+    response_model=GraphOperationResponse,
+    summary="重試單一文件 GraphRAG",
+    description="只對指定文件重新抽取 GraphRAG；成功後會刷新整體社群。",
+)
+async def retry_graph_document(
+    doc_id: str,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user_id),
+) -> GraphOperationResponse:
+    """Retry GraphRAG extraction for a single OCR-complete document."""
+    try:
+        store = GraphStore(user_id)
+        if store.active_job_state:
+            return GraphOperationResponse(
+                status="skipped",
+                message=f"已有圖譜工作執行中：{store.active_job_state}",
+            )
+
+        row = await get_document(
+            doc_id=doc_id,
+            user_id=user_id,
+            columns="id, file_name, original_path",
+        )
+        if not row:
+            raise AppError(
+                code=ErrorCode.NOT_FOUND,
+                message="Document not found",
+                status_code=404,
+            )
+
+        original_path = row.get("original_path")
+        if not original_path:
+            raise AppError(
+                code=ErrorCode.BAD_REQUEST,
+                message="Document has no original path",
+                status_code=409,
+            )
+
+        user_folder = Path(original_path).resolve().parent
+        if not (user_folder / "extracted.md").exists():
+            raise AppError(
+                code=ErrorCode.BAD_REQUEST,
+                message="Document has no OCR artifacts for GraphRAG retry",
+                status_code=409,
+            )
+
+        store.set_active_job_state(f"retry:{doc_id}")
+        store.save_sidecars()
+        background_tasks.add_task(_retry_graph_document_task, user_id, doc_id)
+        return GraphOperationResponse(
+            status="started",
+            message="單一文件 GraphRAG 重試已開始",
+            details={"doc_id": doc_id, "file_name": row.get("file_name")},
+        )
+    except AppError:
+        raise
+    except Exception as e:
+        logger.error("Failed to start graph retry for %s: %s", doc_id, e, exc_info=True)
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Failed to start graph document retry",
+            status_code=500,
+        ) from e
+
+
+@router.post(
     "/optimize",
     response_model=GraphOperationResponse,
     summary="優化圖譜",
@@ -300,3 +519,161 @@ async def _rebuild_graph_task(user_id: str) -> None:
         
     except Exception as e:
         logger.error(f"Graph rebuild failed for user {user_id}: {e}")
+
+
+async def _rebuild_full_graph_task(user_id: str) -> None:
+    """Build a brand-new graph from all OCR-complete document artifacts."""
+    logger.info("Starting full graph rebuild for user %s", user_id)
+    live_store = GraphStore(user_id)
+    sources = await _list_graph_source_documents(user_id)
+    temp_dir = _make_graph_work_dir(live_store.storage_dir.parent, "graph-rebuild-")
+
+    try:
+        temp_store = GraphStore(user_id, storage_dir=temp_dir)
+        temp_store.clear()
+        temp_store.save()
+
+        for source in sources:
+            doc_id = str(source["doc_id"])
+            original_path = source.get("original_path")
+            user_folder = (
+                Path(original_path).resolve().parent
+                if original_path
+                else Path("uploads") / user_id / doc_id
+            )
+
+            try:
+                markdown_text, _ = await asyncio.to_thread(
+                    load_ocr_artifacts,
+                    user_folder=str(user_folder),
+                )
+            except Exception as exc:  # noqa: BLE001
+                temp_store.upsert_document_status(
+                    GraphDocumentStatus(
+                        doc_id=doc_id,
+                        status="failed",
+                        last_error=str(exc),
+                    )
+                )
+                temp_store.save_sidecars()
+                logger.warning("Failed to load OCR artifacts for %s during full rebuild: %s", doc_id, exc)
+                continue
+
+            await _run_graph_extraction(
+                user_id=user_id,
+                doc_id=doc_id,
+                markdown_text=markdown_text,
+                store=temp_store,
+            )
+
+        blocking_failures = [
+            status
+            for status in temp_store.get_all_document_statuses()
+            if status.status in {"failed", "partial"}
+        ]
+
+        if not blocking_failures:
+            await _optimize_existing_graph(temp_store, regenerate_communities=True)
+            temp_store.set_active_job_state(None)
+            temp_store.save_sidecars()
+            _replace_live_graph_files(temp_store, live_store)
+            logger.info("Full graph rebuild complete for user %s", user_id)
+        else:
+            live_store.document_statuses = {
+                status.doc_id: status for status in temp_store.get_all_document_statuses()
+            }
+            live_store.save_sidecars()
+            logger.warning(
+                "Full graph rebuild for user %s kept old graph because %s document(s) failed or were partial",
+                user_id,
+                len(blocking_failures),
+            )
+
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Full graph rebuild failed for user %s: %s", user_id, exc, exc_info=True)
+        if "temp_store" in locals():
+            live_store.document_statuses = {
+                status.doc_id: status for status in temp_store.get_all_document_statuses()
+            }
+            live_store.save_sidecars()
+    finally:
+        live_store = GraphStore(user_id)
+        live_store.set_active_job_state(None)
+        live_store.save_sidecars()
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+async def _retry_graph_document_task(user_id: str, doc_id: str) -> None:
+    """Retry GraphRAG extraction for one document using a temp copy of the live graph."""
+    logger.info("Starting graph retry for user %s doc %s", user_id, doc_id)
+    live_store = GraphStore(user_id)
+    temp_dir = _make_graph_work_dir(live_store.storage_dir.parent, f"graph-retry-{doc_id}-")
+
+    try:
+        _copy_graph_sidecars(live_store, GraphStore(user_id, storage_dir=temp_dir))
+        temp_store = GraphStore(user_id, storage_dir=temp_dir)
+        temp_store.remove_document(doc_id)
+        temp_store.remove_document_status(doc_id)
+        temp_store.save()
+
+        row = await get_document(
+            doc_id=doc_id,
+            user_id=user_id,
+            columns="original_path",
+        )
+        original_path = row.get("original_path") if row else None
+        user_folder = (
+            Path(original_path).resolve().parent
+            if original_path
+            else Path("uploads") / user_id / doc_id
+        )
+        markdown_text, _ = await asyncio.to_thread(
+            load_ocr_artifacts,
+            user_folder=str(user_folder),
+        )
+
+        result = await _run_graph_extraction(
+            user_id=user_id,
+            doc_id=doc_id,
+            markdown_text=markdown_text,
+            store=temp_store,
+        )
+
+        if result.status in {"failed", "partial"}:
+            live_store.upsert_document_status(
+                GraphDocumentStatus(
+                    doc_id=doc_id,
+                    status=result.status,
+                    chunk_count=result.chunk_count,
+                    chunks_succeeded=result.chunks_succeeded,
+                    chunks_failed=result.chunks_failed,
+                    entities_added=result.entities_added,
+                    edges_added=result.edges_added,
+                    last_error=result.last_error,
+                )
+            )
+            live_store.save_sidecars()
+            logger.warning("Graph retry for %s failed or was partial; preserving live graph", doc_id)
+            return
+
+        await _optimize_existing_graph(temp_store, regenerate_communities=True)
+        temp_store.set_active_job_state(None)
+        temp_store.save_sidecars()
+        _replace_live_graph_files(temp_store, live_store)
+        logger.info("Graph retry complete for user %s doc %s", user_id, doc_id)
+
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Graph retry failed for user %s doc %s: %s", user_id, doc_id, exc, exc_info=True)
+        live_store.upsert_document_status(
+            GraphDocumentStatus(
+                doc_id=doc_id,
+                status="failed",
+                last_error=str(exc),
+            )
+        )
+        live_store.save_sidecars()
+    finally:
+        live_store = GraphStore(user_id)
+        live_store.set_active_job_state(None)
+        live_store.save_sidecars()
+        shutil.rmtree(temp_dir, ignore_errors=True)

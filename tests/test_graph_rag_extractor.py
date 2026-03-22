@@ -226,3 +226,45 @@ async def test_run_graph_extraction_invokes_one_extraction_call_per_valid_chunk(
     assert mock_extract.await_count == 2
     assert [call.kwargs["chunk_index"] for call in mock_extract.await_args_list] == [0, 1]
     mock_store.save.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_run_graph_extraction_marks_empty_when_no_valid_chunks() -> None:
+    mock_store = Mock()
+
+    with patch("pdfserviceMD.router.GraphStore", return_value=mock_store):
+        result = await _run_graph_extraction(
+            user_id="user-1",
+            doc_id="doc-empty",
+            markdown_text="too short",
+        )
+
+    assert result.status == "empty"
+    mock_store.upsert_document_status.assert_called_once()
+    saved_status = mock_store.upsert_document_status.call_args.args[0]
+    assert saved_status.status == "empty"
+
+
+@pytest.mark.asyncio
+async def test_run_graph_extraction_marks_partial_when_some_chunks_fail() -> None:
+    markdown_text = "A" * 16050
+    mock_store = Mock()
+
+    with (
+        patch("pdfserviceMD.router.GraphStore", return_value=mock_store),
+        patch(
+            "pdfserviceMD.router.extract_and_add_to_graph",
+            new=AsyncMock(side_effect=[(1, 0), RuntimeError("quota exceeded")]),
+        ),
+    ):
+        result = await _run_graph_extraction(
+            user_id="user-1",
+            doc_id="doc-partial",
+            markdown_text=markdown_text,
+            batch_size=2,
+        )
+
+    assert result.status == "partial"
+    saved_status = mock_store.upsert_document_status.call_args.args[0]
+    assert saved_status.status == "partial"
+    assert "quota exceeded" in (saved_status.last_error or "")

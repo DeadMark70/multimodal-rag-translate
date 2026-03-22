@@ -1,18 +1,16 @@
-"""
-Unit Tests for LLM Factory Model Overriding
+"""Unit tests for LLM factory model and runtime overrides."""
 
-Tests the ability to dynamically override the model in get_llm.
-"""
+from unittest.mock import patch
 
 import pytest
-from core.llm_factory import get_llm, clear_llm_cache
+
+from core.llm_factory import clear_llm_cache, get_llm, llm_runtime_override
 
 def test_get_llm_default_model():
     """Tests that get_llm returns the default model when no override is provided."""
     clear_llm_cache()
     llm = get_llm("rag_qa")
-    # _DEFAULT_MODEL is "gemma-3-27b-it" in the current file
-    assert llm.model == "gemma-3-27b-it"
+    assert llm.model == "gemini-2.5-flash-lite"
 
 def test_get_llm_override_model():
     """Tests that get_llm returns the overridden model when provided."""
@@ -28,3 +26,17 @@ def test_get_llm_override_model():
         if "unexpected keyword argument 'model_name'" in str(e):
             pytest.fail("get_llm does not yet support 'model_name' override")
         raise e
+
+
+def test_get_llm_runtime_override_passes_thinking_config() -> None:
+    """GraphRAG runtime overrides should forward dynamic thinking config to the SDK."""
+    clear_llm_cache()
+    with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
+        mock_chat.return_value.model = "gemini-2.5-flash-lite"
+        with llm_runtime_override(thinking_budget=-1, include_thoughts=False):
+            get_llm("graph_extraction")
+
+    mock_chat.assert_called_once()
+    kwargs = mock_chat.call_args.kwargs
+    assert kwargs["thinking_budget"] == -1
+    assert kwargs["include_thoughts"] is False

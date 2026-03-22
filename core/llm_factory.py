@@ -143,6 +143,9 @@ def _get_llm_cached(
     top_p: Optional[float],
     top_k: Optional[int],
     max_output_tokens: Optional[int],
+    thinking_budget: Optional[int],
+    include_thoughts: Optional[bool],
+    thinking_level: Optional[str],
 ) -> ChatGoogleGenerativeAI:
     """
     Returns a cached LLM instance for a specific purpose.
@@ -160,6 +163,12 @@ def _get_llm_cached(
         config["top_k"] = top_k
     if max_output_tokens is not None:
         config["max_output_tokens"] = max_output_tokens
+    if thinking_budget is not None:
+        config["thinking_budget"] = thinking_budget
+    if include_thoughts is not None:
+        config["include_thoughts"] = include_thoughts
+    if thinking_level is not None:
+        config["thinking_level"] = thinking_level
 
     if model_name:
         model = model_name
@@ -194,6 +203,9 @@ def get_llm(purpose: LLMPurpose, model_name: str = None) -> ChatGoogleGenerative
         top_p=overrides.get("top_p"),
         top_k=overrides.get("top_k"),
         max_output_tokens=overrides.get("max_output_tokens"),
+        thinking_budget=overrides.get("thinking_budget"),
+        include_thoughts=overrides.get("include_thoughts"),
+        thinking_level=overrides.get("thinking_level"),
     )
 
 
