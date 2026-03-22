@@ -15,6 +15,8 @@ import time
 from typing import List, Optional, Literal
 
 # Third-party
+import httpcore
+import httpx
 try:
     from langchain_classic.retrievers import EnsembleRetriever
 except ModuleNotFoundError:  # Backward compatibility for environments without langchain_classic
@@ -40,6 +42,34 @@ BASE_UPLOAD_FOLDER = "uploads"
 
 # Chunking method type
 ChunkingMethod = Literal["recursive", "semantic"]
+
+
+def _iter_exception_chain(exc: BaseException):
+    """Yields the exception and its linked causes/contexts once each."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """Returns True when the exception chain indicates a quota/rate-limit error."""
+    return any(
+        "429" in str(item) or "RESOURCE_EXHAUSTED" in str(item)
+        for item in _iter_exception_chain(exc)
+    )
+
+
+def _is_transient_transport_error(exc: BaseException) -> bool:
+    """Returns True for retryable network/transport errors from embedding calls."""
+    for item in _iter_exception_chain(exc):
+        if isinstance(item, (httpx.TransportError, httpcore.HTTPError)):
+            return True
+        if isinstance(item, OSError) and getattr(item, "winerror", None) == 10035:
+            return True
+    return False
 
 
 def get_user_vector_store_path(user_id: str) -> str:
@@ -108,6 +138,7 @@ def _add_documents_with_retry(
     chunks: List[Document],
     max_retries: int = 3,
     base_delay: float = 30.0,
+    transport_base_delay: float = 1.0,
 ) -> None:
     """
     Adds documents to FAISS with exponential backoff retry for rate limits.
@@ -124,17 +155,14 @@ def _add_documents_with_retry(
     Raises:
         RuntimeError: If all retries exhausted.
     """
-    from langchain_google_genai._common import GoogleGenerativeAIError
-
     for attempt in range(max_retries + 1):
         try:
             vector_db.add_documents(chunks)
             if attempt > 0:
                 logger.info(f"Embedding succeeded on retry attempt {attempt}")
             return
-        except GoogleGenerativeAIError as e:
-            error_str = str(e)
-            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+        except Exception as e:
+            if _is_rate_limit_error(e):
                 if attempt < max_retries:
                     delay = base_delay * (2 ** attempt)  # 30, 60, 120 seconds
                     logger.warning(
@@ -142,16 +170,33 @@ def _add_documents_with_retry(
                         f"Waiting {delay:.0f}s before retry..."
                     )
                     time.sleep(delay)
-                else:
-                    logger.error(
-                        f"Embedding failed after {max_retries + 1} attempts due to rate limits"
+                    continue
+
+                logger.error(
+                    f"Embedding failed after {max_retries + 1} attempts due to rate limits"
+                )
+                raise RuntimeError(
+                    f"Embedding rate limit exceeded after {max_retries + 1} attempts"
+                ) from e
+
+            if _is_transient_transport_error(e):
+                if attempt < max_retries:
+                    delay = transport_base_delay * (2 ** attempt)
+                    logger.warning(
+                        f"Embedding transport error (attempt {attempt + 1}/{max_retries + 1}). "
+                        f"Waiting {delay:.1f}s before retry..."
                     )
-                    raise RuntimeError(
-                        f"Embedding rate limit exceeded after {max_retries + 1} attempts"
-                    ) from e
-            else:
-                # Non-rate-limit error, re-raise immediately
-                raise
+                    time.sleep(delay)
+                    continue
+
+                logger.error(
+                    f"Embedding failed after {max_retries + 1} attempts due to transport errors"
+                )
+                raise RuntimeError(
+                    f"Embedding transport error after {max_retries + 1} attempts"
+                ) from e
+
+            raise
 
 
 def _create_faiss_with_retry(
@@ -159,6 +204,7 @@ def _create_faiss_with_retry(
     embeddings: GoogleGenerativeAIEmbeddings,
     max_retries: int = 3,
     base_delay: float = 30.0,
+    transport_base_delay: float = 1.0,
 ) -> FAISS:
     """
     Creates FAISS from documents with exponential backoff retry for rate limits.
@@ -175,17 +221,14 @@ def _create_faiss_with_retry(
     Raises:
         RuntimeError: If all retries exhausted.
     """
-    from langchain_google_genai._common import GoogleGenerativeAIError
-
     for attempt in range(max_retries + 1):
         try:
             vector_db = FAISS.from_documents(chunks, embeddings)
             if attempt > 0:
                 logger.info(f"FAISS creation succeeded on retry attempt {attempt}")
             return vector_db
-        except GoogleGenerativeAIError as e:
-            error_str = str(e)
-            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+        except Exception as e:
+            if _is_rate_limit_error(e):
                 if attempt < max_retries:
                     delay = base_delay * (2 ** attempt)
                     logger.warning(
@@ -193,15 +236,33 @@ def _create_faiss_with_retry(
                         f"Waiting {delay:.0f}s before retry..."
                     )
                     time.sleep(delay)
-                else:
-                    logger.error(
-                        f"FAISS creation failed after {max_retries + 1} attempts"
+                    continue
+
+                logger.error(
+                    f"FAISS creation failed after {max_retries + 1} attempts"
+                )
+                raise RuntimeError(
+                    f"Embedding rate limit exceeded after {max_retries + 1} attempts"
+                ) from e
+
+            if _is_transient_transport_error(e):
+                if attempt < max_retries:
+                    delay = transport_base_delay * (2 ** attempt)
+                    logger.warning(
+                        f"Embedding transport error (attempt {attempt + 1}/{max_retries + 1}). "
+                        f"Waiting {delay:.1f}s before retry..."
                     )
-                    raise RuntimeError(
-                        f"Embedding rate limit exceeded after {max_retries + 1} attempts"
-                    ) from e
-            else:
-                raise
+                    time.sleep(delay)
+                    continue
+
+                logger.error(
+                    f"FAISS creation failed after {max_retries + 1} attempts due to transport errors"
+                )
+                raise RuntimeError(
+                    f"Embedding transport error after {max_retries + 1} attempts"
+                ) from e
+
+            raise
 
     # Should not reach here
     raise RuntimeError("Unexpected error in _create_faiss_with_retry")
@@ -373,19 +434,25 @@ def add_visual_summaries_to_knowledge_base(
                 index_name="index",
                 allow_dangerous_deserialization=True
             )
-            vector_db.add_documents(documents_to_add)
+            _add_documents_with_retry(vector_db, documents_to_add)
         else:
             # Create new index
             logger.info(f"Creating new index for user {user_id}")
-            vector_db = FAISS.from_documents(documents_to_add, global_embeddings_model)
+            vector_db = _create_faiss_with_retry(documents_to_add, global_embeddings_model)
 
         vector_db.save_local(user_index_path, index_name="index")
         logger.info(f"Successfully indexed {len(documents_to_add)} visual summaries")
         return len(documents_to_add)
 
-    except (RuntimeError, OSError, pickle.PicklingError, ValueError) as e:
+    except (
+        RuntimeError,
+        OSError,
+        pickle.PicklingError,
+        pickle.UnpicklingError,
+        ValueError,
+    ) as e:
         logger.error(f"Visual summary indexing error: {e}", exc_info=True)
-        return 0
+        raise RuntimeError(f"Visual summary indexing failed: {e}") from e
 
 def get_user_retriever(user_id: str, k: int = 3):
     """

@@ -66,6 +66,23 @@ BASE_UPLOAD_FOLDER = "uploads"
 os.makedirs(BASE_UPLOAD_FOLDER, exist_ok=True)
 
 
+class DocumentImageProcessingError(RuntimeError):
+    """Typed image-processing failure that preserves the failed stage."""
+
+    def __init__(self, *, stage: str, detail: str) -> None:
+        super().__init__(detail)
+        self.stage = stage
+
+
+def _format_image_processing_error(exc: DocumentImageProcessingError) -> str:
+    """Maps internal image-processing stages to user-facing error text."""
+    if exc.stage == "image_summary_api_failed":
+        return f"Image summary generation failed: {exc}"
+    if exc.stage == "visual_summary_index_failed":
+        return f"Visual summary indexing failed: {exc}"
+    return f"Image processing failed: {exc}"
+
+
 def _validate_pdf_upload(file: UploadFile) -> None:
     """
     Validates that the uploaded file is a PDF.
@@ -159,6 +176,14 @@ async def run_post_processing_tasks(
             user_folder=user_folder,
             book_title=book_title,
         )
+    except DocumentImageProcessingError as e:
+        logger.warning(
+            "[Background] %s for doc %s: %s",
+            e.stage,
+            doc_id,
+            e,
+        )
+        error_messages.append(_format_image_processing_error(e))
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[Background] Image analysis failed for doc {doc_id}: {e}")
         error_messages.append(f"Image analysis failed: {e}")
@@ -233,6 +258,12 @@ async def _process_document_images(
 
         # 2. Create VisualElement objects
         elements = create_visual_elements(image_data, doc_title=book_title)
+        figure_count = sum(
+            1
+            for element in elements
+            if getattr(getattr(element, "type", None), "value", getattr(element, "type", None))
+            == "figure"
+        )
 
         # 3. Generate summaries using ImageSummarizer (async)
         logger.info(f"[Background] Summarizing {len(elements)} images...")
@@ -246,19 +277,40 @@ async def _process_document_images(
             1 for e in summarized_elements if e.summary and "Error" not in e.summary
         )
         logger.info(f"[Background] Generated {success_count} image summaries")
+        if figure_count > 0 and success_count == 0:
+            raise DocumentImageProcessingError(
+                stage="image_summary_api_failed",
+                detail=f"No figure summaries were generated for {figure_count} extracted images",
+            )
 
         # 4. Index summaries to vector store
-        indexed_count = add_visual_summaries_to_knowledge_base(
-            user_id=user_id,
-            doc_id=doc_id,
-            elements=summarized_elements,
-        )
+        try:
+            indexed_count = add_visual_summaries_to_knowledge_base(
+                user_id=user_id,
+                doc_id=doc_id,
+                elements=summarized_elements,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise DocumentImageProcessingError(
+                stage="visual_summary_index_failed",
+                detail=(
+                    f"Generated {success_count} image summaries, but vector indexing failed: {exc}"
+                ),
+            ) from exc
+
+        if success_count > 0 and indexed_count == 0:
+            raise DocumentImageProcessingError(
+                stage="visual_summary_index_failed",
+                detail=f"Generated {success_count} image summaries, but indexed 0 entries",
+            )
 
         logger.info(
             f"[Background] Indexed {indexed_count} image summaries for doc {doc_id}"
         )
         return indexed_count
 
+    except DocumentImageProcessingError:
+        raise
     except FileNotFoundError as e:
         logger.warning(f"[Background] Image file not found: {e}")
         return 0
