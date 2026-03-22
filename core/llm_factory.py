@@ -217,3 +217,47 @@ def clear_llm_cache() -> None:
     """
     _get_llm_cached.cache_clear()
     logger.info("LLM cache cleared")
+
+
+def get_llm_usage_metrics(response: Any) -> dict[str, int]:
+    """
+    Extract normalized token usage metrics from a LangChain/Google response object.
+
+    Returns zeroes when usage metadata is unavailable.
+    """
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage_metadata")
+
+    if usage is None:
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "reasoning_tokens": 0,
+        }
+
+    if hasattr(usage, "model_dump"):
+        usage = usage.model_dump()
+    elif hasattr(usage, "dict"):
+        usage = usage.dict()
+
+    if not isinstance(usage, dict):
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "reasoning_tokens": 0,
+        }
+
+    output_details = usage.get("output_token_details") or {}
+    reasoning_tokens = output_details.get("reasoning")
+    if reasoning_tokens is None:
+        reasoning_tokens = usage.get("thoughts_token_count", 0)
+
+    return {
+        "input_tokens": int(usage.get("input_tokens", 0) or usage.get("prompt_token_count", 0) or 0),
+        "output_tokens": int(usage.get("output_tokens", 0) or usage.get("candidates_token_count", 0) or 0),
+        "total_tokens": int(usage.get("total_tokens", 0) or usage.get("total_token_count", 0) or 0),
+        "reasoning_tokens": int(reasoning_tokens or 0),
+    }

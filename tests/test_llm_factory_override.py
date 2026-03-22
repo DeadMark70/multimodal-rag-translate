@@ -1,15 +1,18 @@
 """Unit tests for LLM factory model and runtime overrides."""
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
-from core.llm_factory import clear_llm_cache, get_llm, llm_runtime_override
+from core.llm_factory import clear_llm_cache, get_llm, get_llm_usage_metrics, llm_runtime_override
 
 def test_get_llm_default_model():
     """Tests that get_llm returns the default model when no override is provided."""
     clear_llm_cache()
-    llm = get_llm("rag_qa")
+    with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
+        mock_chat.return_value.model = "gemini-2.5-flash-lite"
+        llm = get_llm("rag_qa")
+
     assert llm.model == "gemini-2.5-flash-lite"
 
 def test_get_llm_override_model():
@@ -20,7 +23,9 @@ def test_get_llm_override_model():
     
     # This should fail if the parameter doesn't exist yet
     try:
-        llm = get_llm("rag_qa", model_name=override_model)
+        with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
+            mock_chat.return_value.model = override_model
+            llm = get_llm("rag_qa", model_name=override_model)
         assert llm.model == override_model
     except TypeError as e:
         if "unexpected keyword argument 'model_name'" in str(e):
@@ -40,3 +45,23 @@ def test_get_llm_runtime_override_passes_thinking_config() -> None:
     kwargs = mock_chat.call_args.kwargs
     assert kwargs["thinking_budget"] == -1
     assert kwargs["include_thoughts"] is False
+
+
+def test_get_llm_usage_metrics_reads_reasoning_tokens() -> None:
+    response = Mock(
+        usage_metadata={
+            "input_tokens": 100,
+            "output_tokens": 40,
+            "total_tokens": 140,
+            "output_token_details": {"reasoning": 24},
+        }
+    )
+
+    usage = get_llm_usage_metrics(response)
+
+    assert usage == {
+        "input_tokens": 100,
+        "output_tokens": 40,
+        "total_tokens": 140,
+        "reasoning_tokens": 24,
+    }

@@ -9,14 +9,14 @@ Uses Gemini Flash for fast, cost-effective extraction.
 import json
 import logging
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 # Third-party
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 # Local application
-from core.llm_factory import llm_runtime_override
+from core.llm_factory import get_llm_usage_metrics, llm_runtime_override
 from core.providers import get_llm
 from graph_rag.schemas import (
     EntityType,
@@ -24,6 +24,7 @@ from graph_rag.schemas import (
     ExtractedRelation,
     ExtractionResult,
 )
+from graph_rag.llm_response import response_content_to_text
 from graph_rag.store import GraphStore
 
 # Configure logging
@@ -41,13 +42,14 @@ _ENTITY_EXTRACTION_PROMPT = """你是一個學術論文實體抽取專家。請�
 - result: 結果/發現 (例如: "最先進性能", "顯著改進")
 - author: 作者/研究者 (例如: "Vaswani et al.")
 
-請嚴格以 JSON 格式輸出，不要添加其他文字：
-```json
-[
-  {{"label": "實體名稱", "entity_type": "method", "description": "簡短描述"}},
-  ...
-]
-```
+輸出格式規則:
+- 只輸出一個 JSON 陣列，不能有任何前言、結語、註解或 Markdown code fence
+- 第一個字元必須是 `[`，最後一個字元必須是 `]`
+- 若沒有可抽取的實體，回傳 `[]`
+- 不要重複輸出同一批資料，也不要在 JSON 後面補充說明
+
+輸出範例:
+[{{"label":"實體名稱","entity_type":"method","description":"簡短描述"}}]
 
 文本：
 {text}
@@ -69,13 +71,15 @@ _RELATION_EXTRACTION_PROMPT = """你是一個學術論文關係抽取專家。�
 - part_of: 是...的一部分
 - applies_to: 應用於
 
-請嚴格以 JSON 格式輸出，不要添加其他文字：
-```json
-[
-  {{"entity1": "來源實體", "entity1_type": "method", "relation": "uses", "entity2": "目標實體", "entity2_type": "concept", "description": "關係描述"}},
-  ...
-]
-```
+輸出格式規則:
+- 只輸出一個 JSON 陣列，不能有任何前言、結語、註解或 Markdown code fence
+- 第一個字元必須是 `[`，最後一個字元必須是 `]`
+- 若沒有可抽取的關係，回傳 `[]`
+- 僅可使用上方已識別實體中的名稱，不要自行創造新實體
+- 不要重複輸出同一批資料，也不要在 JSON 後面補充說明
+
+輸出範例:
+[{{"entity1":"來源實體","entity1_type":"method","relation":"uses","entity2":"目標實體","entity2_type":"concept","description":"關係描述"}}]
 
 文本：
 {text}
@@ -106,6 +110,12 @@ _ONE_PASS_EXTRACTION_PROMPT = """你是一個學術論文知識圖譜抽取專�
 - 每個 entity 都要有唯一 `id`，relation 必須引用這些 entity `id`
 - 不要為了補齊圖譜而猜測文本中不存在的關係
 - 如果同一個實體重複出現，可以重用同一個實體概念
+- 若無法同時提供 `source_entity_id`、`target_entity_id`、`relation` 三個欄位，該 relation 就不要輸出
+- 每個 relation 都必須引用 `entities` 陣列中已出現的 `id`
+- 只輸出單一 JSON 物件，不能有任何前言、結語、註解或 Markdown code fence
+- JSON 物件必須符合此形狀：`{{"entities":[...],"relations":[...]}}`
+- 若沒有可抽取內容，回傳 `{{"entities":[],"relations":[]}}`
+- 不要重複輸出同一個 JSON 物件，也不要在 JSON 前後補充說明
 
 文本：
 {text}
@@ -143,7 +153,11 @@ class _StructuredExtractionPayload(BaseModel):
     relations: List[_StructuredRelation] = Field(default_factory=list)
 
 
-def _parse_json_from_response(response: str) -> List[dict]:
+def _parse_json_from_response(
+    response: Any,
+    *,
+    list_keys: Sequence[str] | None = None,
+) -> List[dict]:
     """
     Parse JSON from LLM response, handling markdown code blocks.
     
@@ -153,26 +167,54 @@ def _parse_json_from_response(response: str) -> List[dict]:
     Returns:
         Parsed list of dictionaries.
     """
+    response_text = response_content_to_text(response)
+
+    if not response_text:
+        logger.warning("Failed to parse JSON: empty response text")
+        return []
+
+    response_text = response_text.strip().lstrip("\ufeff")
+
     # Try to extract JSON from markdown code block
-    json_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', response)
+    json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", response_text)
     if json_match:
         json_str = json_match.group(1).strip()
     else:
         # Try to find raw JSON array
-        json_match = re.search(r'\[[\s\S]*\]', response)
+        json_match = re.search(r"\[[\s\S]*\]", response_text)
         if json_match:
             json_str = json_match.group(0)
         else:
-            json_str = response.strip()
-    
+            object_match = re.search(r"\{[\s\S]*\}", response_text)
+            json_str = object_match.group(0) if object_match else response_text
+
     try:
-        result = json.loads(json_str)
+        decoder = json.JSONDecoder()
+        result, _ = decoder.raw_decode(json_str.lstrip())
         if isinstance(result, list):
             return result
+        if isinstance(result, dict):
+            for key in list_keys or ():
+                value = result.get(key)
+                if isinstance(value, list):
+                    return value
         return []
     except json.JSONDecodeError as e:
-        logger.warning(f"Failed to parse JSON: {e}")
+        logger.warning("Failed to parse JSON: %s", e)
         return []
+
+
+def _log_thinking_usage(call_name: str, response: Any) -> None:
+    """Log reasoning-token usage for GraphRAG calls when available."""
+    usage = get_llm_usage_metrics(response)
+    logger.info(
+        "%s usage: input_tokens=%s output_tokens=%s total_tokens=%s reasoning_tokens=%s",
+        call_name,
+        usage["input_tokens"],
+        usage["output_tokens"],
+        usage["total_tokens"],
+        usage["reasoning_tokens"],
+    )
 
 
 def _normalize_entity_type(type_str: str) -> EntityType:
@@ -215,6 +257,24 @@ def _coerce_structured_payload(raw_payload: Any) -> _StructuredExtractionPayload
     if isinstance(raw_payload, BaseModel):
         raw_payload = raw_payload.model_dump()
     if isinstance(raw_payload, dict):
+        if "parsed" in raw_payload or "raw" in raw_payload:
+            parsed_payload = raw_payload.get("parsed")
+            if parsed_payload is not None:
+                return _coerce_structured_payload(parsed_payload)
+
+            parsing_error = raw_payload.get("parsing_error")
+            raw_message = raw_payload.get("raw")
+            raw_preview = response_content_to_text(
+                getattr(raw_message, "content", raw_message)
+            )
+            raw_preview = raw_preview[:200] if raw_preview else ""
+            detail_parts = []
+            if parsing_error:
+                detail_parts.append(f"parsing_error={parsing_error}")
+            if raw_preview:
+                detail_parts.append(f"raw_preview={raw_preview!r}")
+            detail = ", ".join(detail_parts) or "parsed payload was None"
+            raise RuntimeError(f"Structured output returned no parsed payload ({detail})")
         return _StructuredExtractionPayload.model_validate(raw_payload)
     raise TypeError(f"Unexpected structured payload type: {type(raw_payload)!r}")
 
@@ -261,12 +321,22 @@ class EntityRelationExtractor:
             if not hasattr(llm, "with_structured_output"):
                 raise RuntimeError("graph_extraction model does not support structured output")
 
-            structured_llm = llm.with_structured_output(
-                schema=_StructuredExtractionPayload.model_json_schema(),
-                method="json_schema",
-            )
+            try:
+                structured_llm = llm.with_structured_output(
+                    _StructuredExtractionPayload,
+                    include_raw=True,
+                )
+            except TypeError:
+                structured_llm = llm.with_structured_output(
+                    schema=_StructuredExtractionPayload,
+                    include_raw=True,
+                )
             prompt = _ONE_PASS_EXTRACTION_PROMPT.format(text=text[:4000])
             raw_payload = await structured_llm.ainvoke([HumanMessage(content=prompt)])
+        if isinstance(raw_payload, dict):
+            raw_response = raw_payload.get("raw")
+            if raw_response is not None:
+                _log_thinking_usage("Structured graph extraction", raw_response)
         payload = _coerce_structured_payload(raw_payload)
         return self._build_extraction_from_payload(payload)
 
@@ -359,7 +429,11 @@ class EntityRelationExtractor:
                 llm = get_llm("graph_extraction")
                 prompt = _ENTITY_EXTRACTION_PROMPT.format(text=text[:4000])  # Limit input
                 response = await llm.ainvoke([HumanMessage(content=prompt)])
-            raw_entities = _parse_json_from_response(response.content)
+            _log_thinking_usage("Legacy entity extraction", response)
+            raw_entities = _parse_json_from_response(
+                response.content,
+                list_keys=("entities", "items", "data"),
+            )
             
             entities = []
             for item in raw_entities[:self.max_entities_per_chunk]:
@@ -416,7 +490,11 @@ class EntityRelationExtractor:
                 )
 
                 response = await llm.ainvoke([HumanMessage(content=prompt)])
-            raw_relations = _parse_json_from_response(response.content)
+            _log_thinking_usage("Legacy relation extraction", response)
+            raw_relations = _parse_json_from_response(
+                response.content,
+                list_keys=("relations", "items", "data"),
+            )
             
             # Build a set of valid entity labels for validation
             valid_labels = {e.label.lower() for e in entities}

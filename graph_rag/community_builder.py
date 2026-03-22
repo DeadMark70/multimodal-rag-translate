@@ -15,7 +15,7 @@ from typing import List
 from langchain_core.messages import HumanMessage
 
 # Local application
-from core.llm_factory import llm_runtime_override
+from core.llm_factory import get_llm_usage_metrics, llm_runtime_override
 from core.providers import get_llm
 from graph_rag.llm_response import response_content_to_text
 from graph_rag.schemas import Community
@@ -26,6 +26,19 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_COMMUNITY_SUMMARY_LIMIT = 8
 DEFAULT_COMMUNITY_SUMMARY_DELAY_SECONDS = 0.25
+
+
+def _log_summary_usage(call_name: str, response: object) -> None:
+    """Log token usage for community summary calls."""
+    usage = get_llm_usage_metrics(response)
+    logger.info(
+        "%s usage: input_tokens=%s output_tokens=%s total_tokens=%s reasoning_tokens=%s",
+        call_name,
+        usage["input_tokens"],
+        usage["output_tokens"],
+        usage["total_tokens"],
+        usage["reasoning_tokens"],
+    )
 
 # Prompt for community summarization
 _COMMUNITY_SUMMARY_PROMPT = """你是一個學術論文分析專家。請為以下知識圖譜社群生成一個簡潔的摘要。
@@ -179,6 +192,7 @@ async def summarize_community(
         with llm_runtime_override(thinking_budget=-1, include_thoughts=False):
             llm = get_llm("community_summary")
             response = await llm.ainvoke([HumanMessage(content=prompt)])
+        _log_summary_usage("Community summary", response)
         response_text = response_content_to_text(response.content)
         
         # Parse response
@@ -338,6 +352,7 @@ async def _summarize_parent_community(
                     )
                 ]
             )
+        _log_summary_usage("Parent community summary", response)
         response_text = response_content_to_text(response.content)
         import json
         import re
