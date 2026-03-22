@@ -95,3 +95,10 @@ class RegenerateSummaryResponse(BaseModel):
 
     status: str
     message: str
+
+
+class RetryIndexResponse(BaseModel):
+    """Response model for retrying OCR-post indexing work."""
+
+    status: str
+    message: str

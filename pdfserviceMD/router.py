@@ -13,7 +13,7 @@ from typing import Literal
 from uuid import UUID
 
 # Third-party
-from fastapi import APIRouter, UploadFile, File, Depends, Query
+from fastapi import APIRouter, UploadFile, File, Depends, Query, BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
@@ -23,6 +23,7 @@ from core.errors import AppError, ErrorCode
 from data_base.vector_store_manager import (
     add_markdown_to_knowledge_base,
     add_visual_summaries_to_knowledge_base,
+    delete_document_from_knowledge_base,
 )
 from pdfserviceMD.image_processor import (
     extract_images_from_markdown,
@@ -39,6 +40,7 @@ from pdfserviceMD.schemas import (
     DocumentSummaryResponse,
     ProcessingStatusResponse,
     RegenerateSummaryResponse,
+    RetryIndexResponse,
     TranslatePdfResponse,
     UploadPdfResponse,
 )
@@ -53,10 +55,12 @@ from pdfserviceMD.service import (
     record_background_processing_failure,
     regenerate_document_summary,
     run_upload_pipeline,
+    safe_update_document_status,
     safe_update_processing_step,
     translate_user_document,
     update_indexing_processing_step,
 )
+from pdfserviceMD.repository import get_document
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -110,6 +114,67 @@ def _validate_pdf_upload(file: UploadFile) -> None:
             )
 
 
+async def _run_pre_graph_indexing_steps(
+    *,
+    doc_id: str,
+    book_title: str,
+    user_id: str,
+    user_folder: str,
+    markdown_text: str,
+    clear_existing_vectors: bool,
+) -> list[str]:
+    """Run OCR-post indexing steps up to, but not including, GraphRAG."""
+    error_messages: list[str] = []
+
+    if clear_existing_vectors:
+        try:
+            await run_in_threadpool(delete_document_from_knowledge_base, user_id, doc_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[Background] Existing vector cleanup failed for doc %s: %s", doc_id, e)
+            error_messages.append(f"Existing index cleanup failed: {e}")
+            return error_messages
+
+    try:
+        await update_indexing_processing_step(
+            doc_id=doc_id,
+            user_id=user_id,
+            step="indexing",
+        )
+        await add_markdown_to_knowledge_base(
+            user_id=user_id,
+            markdown_text=markdown_text,
+            pdf_title=book_title,
+            doc_id=doc_id,
+            k_retriever=3,
+        )
+        logger.info("[Background] RAG indexing complete for doc %s", doc_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[Background] RAG indexing failed for doc %s: %s", doc_id, e)
+        error_messages.append(f"RAG indexing failed: {e}")
+
+    try:
+        await update_indexing_processing_step(
+            doc_id=doc_id,
+            user_id=user_id,
+            step="image_analysis",
+        )
+        await _process_document_images(
+            user_id=user_id,
+            doc_id=doc_id,
+            markdown_text=markdown_text,
+            user_folder=user_folder,
+            book_title=book_title,
+        )
+    except DocumentImageProcessingError as e:
+        logger.warning("[Background] %s for doc %s: %s", e.stage, doc_id, e)
+        error_messages.append(_format_image_processing_error(e))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[Background] Image analysis failed for doc %s: %s", doc_id, e)
+        error_messages.append(f"Image analysis failed: {e}")
+
+    return error_messages
+
+
 async def run_post_processing_tasks(
     doc_id: str,
     book_title: str,
@@ -129,7 +194,6 @@ async def run_post_processing_tasks(
         user_folder: Path to document folder (for locating images).
     """
     logger.info(f"[Background] Starting post-processing for doc {doc_id}")
-    error_messages: list[str] = []
 
     try:
         markdown_text, _ = await run_in_threadpool(
@@ -145,48 +209,14 @@ async def run_post_processing_tasks(
         )
         return
 
-    try:
-        await update_indexing_processing_step(
-            doc_id=doc_id,
-            user_id=user_id,
-            step="indexing",
-        )
-        await add_markdown_to_knowledge_base(
-            user_id=user_id,
-            markdown_text=markdown_text,
-            pdf_title=book_title,
-            doc_id=doc_id,
-            k_retriever=3,
-        )
-        logger.info(f"[Background] RAG indexing complete for doc {doc_id}")
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[Background] RAG indexing failed for doc {doc_id}: {e}")
-        error_messages.append(f"RAG indexing failed: {e}")
-
-    try:
-        await update_indexing_processing_step(
-            doc_id=doc_id,
-            user_id=user_id,
-            step="image_analysis",
-        )
-        await _process_document_images(
-            user_id=user_id,
-            doc_id=doc_id,
-            markdown_text=markdown_text,
-            user_folder=user_folder,
-            book_title=book_title,
-        )
-    except DocumentImageProcessingError as e:
-        logger.warning(
-            "[Background] %s for doc %s: %s",
-            e.stage,
-            doc_id,
-            e,
-        )
-        error_messages.append(_format_image_processing_error(e))
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[Background] Image analysis failed for doc {doc_id}: {e}")
-        error_messages.append(f"Image analysis failed: {e}")
+    error_messages = await _run_pre_graph_indexing_steps(
+        doc_id=doc_id,
+        book_title=book_title,
+        user_id=user_id,
+        user_folder=user_folder,
+        markdown_text=markdown_text,
+        clear_existing_vectors=False,
+    )
 
     try:
         await update_indexing_processing_step(
@@ -222,6 +252,55 @@ async def run_post_processing_tasks(
 
     await safe_update_processing_step(doc_id=doc_id, step="indexed")
     await finalize_indexing_status(doc_id=doc_id, user_id=user_id)
+
+
+async def _retry_document_index_task(
+    *,
+    doc_id: str,
+    book_title: str,
+    current_status: str,
+    user_id: str,
+    user_folder: str,
+) -> None:
+    """Retry OCR-post indexing up to the GraphRAG boundary for one document."""
+    logger.info("[Background] Starting retry-index for doc %s", doc_id)
+
+    try:
+        markdown_text, _ = await run_in_threadpool(
+            load_ocr_artifacts,
+            user_folder=user_folder,
+        )
+    except (FileNotFoundError, RuntimeError, ValueError) as e:
+        logger.warning("[Background] OCR artifacts unavailable for retry-index doc %s: %s", doc_id, e)
+        await record_background_processing_failure(
+            doc_id=doc_id,
+            user_id=user_id,
+            error_messages=[f"OCR artifacts unavailable: {e}"],
+        )
+        return
+
+    await safe_update_document_status(doc_id=doc_id, status=current_status, error_message=None)
+    error_messages = await _run_pre_graph_indexing_steps(
+        doc_id=doc_id,
+        book_title=book_title,
+        user_id=user_id,
+        user_folder=user_folder,
+        markdown_text=markdown_text,
+        clear_existing_vectors=True,
+    )
+
+    if error_messages:
+        await record_background_processing_failure(
+            doc_id=doc_id,
+            user_id=user_id,
+            error_messages=error_messages,
+        )
+        return
+
+    await safe_update_document_status(doc_id=doc_id, status=current_status, error_message=None)
+    await safe_update_processing_step(doc_id=doc_id, step="indexed")
+    await finalize_indexing_status(doc_id=doc_id, user_id=user_id)
+    logger.info("[Background] Retry-index complete for doc %s", doc_id)
 
 
 async def _process_document_images(
@@ -576,6 +655,72 @@ async def upload_pdf_md(
 
     finally:
         await file.close()
+
+
+@router.post("/file/{doc_id}/retry-index", response_model=RetryIndexResponse)
+async def retry_document_index(
+    doc_id: UUID,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user_id),
+) -> RetryIndexResponse:
+    """Retry OCR-post indexing for an `index_failed` document without GraphRAG."""
+    doc_id_str = str(doc_id)
+    row = await get_document(
+        doc_id=doc_id_str,
+        user_id=user_id,
+        columns="id, file_name, original_path, processing_step, status",
+    )
+    if not row:
+        raise AppError(
+            code=ErrorCode.NOT_FOUND,
+            message="Document not found",
+            status_code=404,
+        )
+
+    current_step = row.get("processing_step")
+    if current_step != "index_failed":
+        raise AppError(
+            code=ErrorCode.BAD_REQUEST,
+            message="Document is not eligible for retry-index",
+            status_code=409,
+        )
+
+    if GraphStore(user_id).active_job_state:
+        raise AppError(
+            code=ErrorCode.BAD_REQUEST,
+            message="Graph maintenance is currently running",
+            status_code=409,
+        )
+
+    original_path = row.get("original_path")
+    if not original_path:
+        raise AppError(
+            code=ErrorCode.BAD_REQUEST,
+            message="Document has no original path",
+            status_code=409,
+        )
+
+    user_folder = os.path.dirname(os.path.normpath(original_path))
+    if not os.path.exists(os.path.join(user_folder, "extracted.md")):
+        raise AppError(
+            code=ErrorCode.BAD_REQUEST,
+            message="Document has no OCR artifacts for retry-index",
+            status_code=409,
+        )
+
+    book_title = os.path.splitext(row.get("file_name") or "document.pdf")[0]
+    background_tasks.add_task(
+        _retry_document_index_task,
+        doc_id=doc_id_str,
+        book_title=book_title,
+        current_status=row.get("status") or "ready",
+        user_id=user_id,
+        user_folder=user_folder,
+    )
+    return RetryIndexResponse(
+        status="started",
+        message="重新嵌入已開始",
+    )
 
 
 @router.get("/file/{doc_id}/status", response_model=ProcessingStatusResponse)

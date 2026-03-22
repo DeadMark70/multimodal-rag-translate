@@ -143,13 +143,15 @@ async def _build_graph_document_rows(user_id: str, store: GraphStore) -> list[Gr
     """Build API rows by joining persisted graph statuses with OCR-eligible docs."""
     sources = await _list_graph_source_documents(user_id)
     source_map = {item["doc_id"]: item for item in sources}
-    known_doc_ids = set(source_map) | set(store.document_statuses)
+    graph_doc_ids = store.get_documents()
+    known_doc_ids = set(source_map) | set(store.document_statuses) | graph_doc_ids
     rows: list[GraphDocumentStatusItem] = []
 
     for doc_id in sorted(known_doc_ids):
         persisted = store.get_document_status(doc_id)
         source = source_map.get(doc_id, {})
-        status = persisted or GraphDocumentStatus(doc_id=doc_id, status="skipped")
+        fallback_status = "indexed" if doc_id in graph_doc_ids else "skipped"
+        status = persisted or GraphDocumentStatus(doc_id=doc_id, status=fallback_status)
         rows.append(
             GraphDocumentStatusItem(
                 **status.model_dump(),
@@ -430,6 +432,49 @@ async def retry_graph_document(
         ) from e
 
 
+@router.delete(
+    "/documents/{doc_id}",
+    response_model=GraphOperationResponse,
+    summary="移除單一文件圖譜殘留",
+    description="從目前圖譜中移除指定文件的節點/邊與文件狀態；適用於已刪除文件的 orphan graph cleanup。",
+)
+async def purge_graph_document(
+    doc_id: str,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user_id),
+) -> GraphOperationResponse:
+    """Purge one document's remaining GraphRAG contribution from the live graph."""
+    try:
+        store = GraphStore(user_id)
+        if store.active_job_state:
+            return GraphOperationResponse(
+                status="skipped",
+                message=f"已有圖譜工作執行中：{store.active_job_state}",
+            )
+
+        if not store.get_document_status(doc_id) and doc_id not in store.get_documents():
+            return GraphOperationResponse(
+                status="skipped",
+                message="找不到可移除的圖譜殘留",
+            )
+
+        store.set_active_job_state(f"purge:{doc_id}")
+        store.save_sidecars()
+        background_tasks.add_task(_purge_graph_document_task, user_id, doc_id)
+        return GraphOperationResponse(
+            status="started",
+            message="文件圖譜殘留移除已開始",
+            details={"doc_id": doc_id},
+        )
+    except Exception as e:
+        logger.error("Failed to start graph purge for %s: %s", doc_id, e, exc_info=True)
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Failed to start graph document purge",
+            status_code=500,
+        ) from e
+
+
 @router.post(
     "/optimize",
     response_model=GraphOperationResponse,
@@ -669,6 +714,47 @@ async def _retry_graph_document_task(user_id: str, doc_id: str) -> None:
                 doc_id=doc_id,
                 status="failed",
                 last_error=str(exc),
+            )
+        )
+        live_store.save_sidecars()
+    finally:
+        live_store = GraphStore(user_id)
+        live_store.set_active_job_state(None)
+        live_store.save_sidecars()
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+async def _purge_graph_document_task(user_id: str, doc_id: str) -> None:
+    """Safely purge one document's remaining contribution from the live graph."""
+    logger.info("Starting graph purge for user %s doc %s", user_id, doc_id)
+    live_store = GraphStore(user_id)
+    temp_dir = _make_graph_work_dir(live_store.storage_dir.parent, f"graph-purge-{doc_id}-")
+
+    try:
+        _copy_graph_sidecars(live_store, GraphStore(user_id, storage_dir=temp_dir))
+        temp_store = GraphStore(user_id, storage_dir=temp_dir)
+        temp_store.remove_document(doc_id)
+        temp_store.remove_document_status(doc_id)
+
+        if temp_store.get_status().has_graph:
+            await _optimize_existing_graph(temp_store, regenerate_communities=True)
+        else:
+            temp_store.communities.clear()
+            temp_store.graph_dirty = False
+            temp_store.last_optimized_at = None
+            temp_store.save()
+
+        temp_store.set_active_job_state(None)
+        temp_store.save_sidecars()
+        _replace_live_graph_files(temp_store, live_store)
+        logger.info("Graph purge complete for user %s doc %s", user_id, doc_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Graph purge failed for user %s doc %s: %s", user_id, doc_id, exc, exc_info=True)
+        live_store.upsert_document_status(
+            GraphDocumentStatus(
+                doc_id=doc_id,
+                status="failed",
+                last_error=f"Graph purge failed: {exc}",
             )
         )
         live_store.save_sidecars()

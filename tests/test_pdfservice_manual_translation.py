@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from core.errors import AppError
 from main import app
 from pdfserviceMD.service import (
+    delete_user_document,
     finalize_indexing_status,
     get_document_file_info,
     translate_user_document,
@@ -145,3 +146,29 @@ def test_get_pdf_file_forwards_type_query_param() -> None:
         user_id=TEST_USER_ID,
         file_type="original",
     )
+
+
+@pytest.mark.asyncio
+async def test_delete_user_document_triggers_best_effort_graph_purge() -> None:
+    with (
+        patch("pdfserviceMD.service.get_document", new=AsyncMock(return_value={"id": "doc-1"})),
+        patch("pdfserviceMD.service.run_in_threadpool", new=AsyncMock()),
+        patch("pdfserviceMD.service.os.path.exists", return_value=False),
+        patch("pdfserviceMD.service.delete_document", new=AsyncMock()) as delete_record,
+        patch("graph_rag.router._purge_graph_document_task", new=AsyncMock()) as purge_task,
+        patch("graph_rag.store.GraphStore") as graph_store_cls,
+    ):
+        graph_store = graph_store_cls.return_value
+        graph_store.active_job_state = None
+        graph_store.get_document_status.return_value = object()
+        graph_store.get_documents.return_value = set()
+
+        response = await delete_user_document(
+            doc_id="doc-1",
+            user_id=TEST_USER_ID,
+            base_upload_folder="uploads",
+        )
+
+    assert response.status == "success"
+    delete_record.assert_awaited_once_with(doc_id="doc-1", user_id=TEST_USER_ID)
+    purge_task.assert_awaited_once_with(TEST_USER_ID, "doc-1")

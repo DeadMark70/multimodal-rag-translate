@@ -553,6 +553,24 @@ async def delete_user_document(
             logger.error("Failed to delete folder %s: %s", doc_folder, exc, exc_info=True)
 
     await delete_document(doc_id=doc_id, user_id=user_id)
+
+    try:
+        from graph_rag.store import GraphStore
+
+        graph_store = GraphStore(user_id)
+        if graph_store.active_job_state:
+            logger.info(
+                "Skip graph purge for doc %s because graph job %s is active",
+                doc_id,
+                graph_store.active_job_state,
+            )
+        elif graph_store.get_document_status(doc_id) or doc_id in graph_store.get_documents():
+            from graph_rag.router import _purge_graph_document_task
+
+            await _purge_graph_document_task(user_id, doc_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Best-effort graph purge failed for doc %s: %s", doc_id, exc)
+
     return DeleteDocumentResponse(status="success", message="Document deleted successfully")
 
 

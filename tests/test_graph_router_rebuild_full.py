@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from core.auth import get_current_user_id
 from graph_rag.router import (
     _rebuild_full_graph_task,
+    _purge_graph_document_task,
     _retry_graph_document_task,
 )
 from graph_rag.schemas import EntityType, GraphDocumentStatus, GraphExtractionRunResult
@@ -50,6 +51,9 @@ def test_graph_documents_endpoint_returns_persisted_and_unattempted_rows() -> No
         def list_eligible_document_ids(self) -> list[str]:
             return ["doc-1", "doc-2"]
 
+        def get_documents(self) -> set[str]:
+            return {"doc-1", "doc-orphan"}
+
     with (
         patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
         patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
@@ -70,9 +74,12 @@ def test_graph_documents_endpoint_returns_persisted_and_unattempted_rows() -> No
     app.dependency_overrides = {}
     assert response.status_code == 200
     payload = response.json()
-    assert payload["total"] == 2
+    assert payload["total"] == 3
     assert payload["documents"][0]["status"] == "failed"
     assert payload["documents"][1]["status"] == "skipped"
+    assert payload["documents"][2]["doc_id"] == "doc-orphan"
+    assert payload["documents"][2]["status"] == "indexed"
+    assert payload["documents"][2]["is_eligible"] is False
 
 
 def test_rebuild_full_endpoint_sets_active_job_and_starts_background_task() -> None:
@@ -100,6 +107,31 @@ def test_rebuild_full_endpoint_sets_active_job_and_starts_background_task() -> N
     mock_store.set_active_job_state.assert_called_once_with("rebuild_full")
     mock_store.save_sidecars.assert_called()
     mock_task.assert_awaited_once_with(TEST_USER_ID)
+
+
+def test_purge_graph_document_endpoint_sets_active_job_and_starts_background_task() -> None:
+    mock_store = Mock()
+    mock_store.active_job_state = None
+    mock_store.get_document_status.return_value = GraphDocumentStatus(doc_id="doc-1", status="failed")
+    mock_store.get_documents.return_value = {"doc-1"}
+    mock_store.save_sidecars = Mock()
+    mock_task = AsyncMock()
+
+    with (
+        patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
+        patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
+        patch("graph_rag.router.GraphStore", return_value=mock_store),
+        patch("graph_rag.router._purge_graph_document_task", new=mock_task),
+        _client() as client,
+    ):
+        response = client.delete("/graph/documents/doc-1")
+
+    app.dependency_overrides = {}
+    assert response.status_code == 200
+    assert response.json()["status"] == "started"
+    mock_store.set_active_job_state.assert_called_once_with("purge:doc-1")
+    mock_store.save_sidecars.assert_called()
+    mock_task.assert_awaited_once_with(TEST_USER_ID, "doc-1")
 
 
 @pytest.mark.asyncio
@@ -202,3 +234,36 @@ async def test_retry_graph_document_replaces_only_target_document_contribution()
     assert "Keep Entity" in labels
     assert reloaded.get_document_status("doc-1") is not None
     assert reloaded.get_document_status("doc-1").status == "indexed"
+
+
+@pytest.mark.asyncio
+async def test_purge_graph_document_removes_orphan_contribution() -> None:
+    upload_root = _workspace_upload_root("graph_purge_success")
+
+    with patch("graph_rag.store.BASE_UPLOAD_FOLDER", str(upload_root)):
+        live_store = GraphStore(TEST_USER_ID)
+        live_store.add_node_from_extraction(
+            label="Orphan Entity",
+            entity_type=EntityType.CONCEPT,
+            doc_id="doc-orphan",
+            pending_resolution=False,
+        )
+        live_store.add_node_from_extraction(
+            label="Keep Entity",
+            entity_type=EntityType.CONCEPT,
+            doc_id="doc-2",
+            pending_resolution=False,
+        )
+        live_store.upsert_document_status(
+            GraphDocumentStatus(doc_id="doc-orphan", status="failed", last_error="left behind")
+        )
+        live_store.save()
+
+        await _purge_graph_document_task(TEST_USER_ID, "doc-orphan")
+
+        reloaded = GraphStore(TEST_USER_ID)
+        labels = {node.label for node in reloaded.get_all_nodes()}
+
+    assert "Orphan Entity" not in labels
+    assert "Keep Entity" in labels
+    assert reloaded.get_document_status("doc-orphan") is None
