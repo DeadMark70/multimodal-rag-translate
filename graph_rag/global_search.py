@@ -15,6 +15,7 @@ from typing import List, Optional, Tuple
 from langchain_core.messages import HumanMessage
 
 # Local application
+from core.llm_factory import graph_rag_llm_runtime_override
 from core.providers import get_llm
 from graph_rag.generic_mode import GraphEvidence, estimate_token_count
 from graph_rag.llm_response import response_content_to_text
@@ -137,15 +138,15 @@ async def query_community(
     entity_str = "\n".join(entities) if entities else "無詳細實體資訊"
     
     try:
-        llm = get_llm("community_summary")
-        prompt = _COMMUNITY_ANSWER_PROMPT.format(
-            question=question,
-            title=community.title or f"社群 {community.id}",
-            summary=community.summary,
-            entities=entity_str,
-        )
-        
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        with graph_rag_llm_runtime_override("community_summary"):
+            llm = get_llm("community_summary")
+            prompt = _COMMUNITY_ANSWER_PROMPT.format(
+                question=question,
+                title=community.title or f"社群 {community.id}",
+                summary=community.summary,
+                entities=entity_str,
+            )
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
         answer = response_content_to_text(response.content)
         
         # Skip non-answers
@@ -186,13 +187,13 @@ async def synthesize_answers(
     ])
     
     try:
-        llm = get_llm("community_summary")
-        prompt = _SYNTHESIS_PROMPT.format(
-            question=question,
-            community_answers=answers_str,
-        )
-        
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        with graph_rag_llm_runtime_override("community_summary"):
+            llm = get_llm("community_summary")
+            prompt = _SYNTHESIS_PROMPT.format(
+                question=question,
+                community_answers=answers_str,
+            )
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
         return response_content_to_text(response.content)
         
     except Exception as e:

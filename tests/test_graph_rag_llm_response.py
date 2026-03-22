@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -59,3 +60,31 @@ async def test_summarize_community_handles_list_content_blocks() -> None:
 
     assert updated.title == "模型比較"
     assert updated.summary == "整理 SwinUNETR 與 nnU-Net 的對比"
+
+
+@pytest.mark.asyncio
+async def test_summarize_community_uses_graph_rag_runtime_override() -> None:
+    store = _GraphStoreStub()
+    community = Community(id=5, node_ids=["n1", "n2"])
+    mock_llm = MagicMock()
+    mock_llm.ainvoke = AsyncMock(
+        return_value=MagicMock(
+            content='{"title": "總結", "summary": "使用統一 thinking override"}',
+            usage_metadata={},
+        )
+    )
+    override_calls: list[str] = []
+
+    @contextmanager
+    def _fake_override(purpose: str):
+        override_calls.append(purpose)
+        yield
+
+    with (
+        patch("graph_rag.community_builder.get_llm", return_value=mock_llm),
+        patch("graph_rag.community_builder.graph_rag_llm_runtime_override", side_effect=_fake_override),
+    ):
+        updated = await summarize_community(store, community)
+
+    assert override_calls == ["community_summary"]
+    assert updated.title == "總結"

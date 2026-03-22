@@ -16,7 +16,7 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 # Local application
-from core.llm_factory import get_llm_usage_metrics, llm_runtime_override
+from core.llm_factory import get_llm_usage_metrics, graph_rag_llm_runtime_override
 from core.providers import get_llm
 from graph_rag.schemas import (
     EntityType,
@@ -257,26 +257,63 @@ def _coerce_structured_payload(raw_payload: Any) -> _StructuredExtractionPayload
     if isinstance(raw_payload, BaseModel):
         raw_payload = raw_payload.model_dump()
     if isinstance(raw_payload, dict):
-        if "parsed" in raw_payload or "raw" in raw_payload:
-            parsed_payload = raw_payload.get("parsed")
-            if parsed_payload is not None:
-                return _coerce_structured_payload(parsed_payload)
-
-            parsing_error = raw_payload.get("parsing_error")
-            raw_message = raw_payload.get("raw")
-            raw_preview = response_content_to_text(
-                getattr(raw_message, "content", raw_message)
-            )
-            raw_preview = raw_preview[:200] if raw_preview else ""
-            detail_parts = []
-            if parsing_error:
-                detail_parts.append(f"parsing_error={parsing_error}")
-            if raw_preview:
-                detail_parts.append(f"raw_preview={raw_preview!r}")
-            detail = ", ".join(detail_parts) or "parsed payload was None"
-            raise RuntimeError(f"Structured output returned no parsed payload ({detail})")
         return _StructuredExtractionPayload.model_validate(raw_payload)
     raise TypeError(f"Unexpected structured payload type: {type(raw_payload)!r}")
+
+
+def _extract_json_object_text(raw_text: str) -> str:
+    """Extract the first JSON object from a model response string."""
+    response_text = raw_text.strip().lstrip("\ufeff")
+    json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", response_text)
+    if json_match:
+        candidate = json_match.group(1).strip()
+    else:
+        object_match = re.search(r"\{[\s\S]*\}", response_text)
+        if not object_match:
+            preview = response_text[:200]
+            raise RuntimeError(
+                f"Structured output returned no JSON object (raw_preview={preview!r})"
+            )
+        candidate = object_match.group(0)
+    return candidate
+
+
+def _coerce_structured_payload_from_response(response: Any) -> _StructuredExtractionPayload:
+    """Parse and validate a native JSON-schema response payload."""
+    response_text = response_content_to_text(getattr(response, "content", response))
+    if not response_text:
+        raise RuntimeError("Structured output returned empty response text")
+
+    try:
+        decoder = json.JSONDecoder()
+        payload, _ = decoder.raw_decode(_extract_json_object_text(response_text).lstrip())
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Structured output returned invalid JSON ({exc})") from exc
+
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            f"Structured output returned non-object payload ({type(payload)!r})"
+        )
+
+    return _coerce_structured_payload(payload)
+
+
+def _coerce_structured_payload_from_raw_payload(raw_payload: Any) -> _StructuredExtractionPayload:
+    """Recover structured payload from LangChain's include_raw response shape."""
+    if not isinstance(raw_payload, dict):
+        raise TypeError(f"Unexpected structured raw payload type: {type(raw_payload)!r}")
+
+    parsed_payload = raw_payload.get("parsed")
+    if parsed_payload is not None:
+        return _coerce_structured_payload(parsed_payload)
+
+    raw_message = raw_payload.get("raw")
+    if raw_message is not None:
+        return _coerce_structured_payload_from_response(raw_message)
+
+    parsing_error = raw_payload.get("parsing_error")
+    detail = f"parsing_error={parsing_error}" if parsing_error else "parsed payload was None"
+    raise RuntimeError(f"Structured output returned no parsed payload ({detail})")
 
 
 class EntityRelationExtractor:
@@ -316,28 +353,45 @@ class EntityRelationExtractor:
         Raises:
             Exception: Any model setup / invocation / validation failure.
         """
-        with llm_runtime_override(thinking_budget=-1, include_thoughts=False):
+        prompt = _ONE_PASS_EXTRACTION_PROMPT.format(text=text[:4000])
+        with graph_rag_llm_runtime_override("graph_extraction"):
             llm = get_llm("graph_extraction")
-            if not hasattr(llm, "with_structured_output"):
-                raise RuntimeError("graph_extraction model does not support structured output")
-
             try:
-                structured_llm = llm.with_structured_output(
-                    _StructuredExtractionPayload,
-                    include_raw=True,
+                structured_llm = llm.bind(
+                    response_mime_type="application/json",
+                    response_json_schema=_StructuredExtractionPayload.model_json_schema(),
                 )
-            except TypeError:
-                structured_llm = llm.with_structured_output(
-                    schema=_StructuredExtractionPayload,
-                    include_raw=True,
+                response = await structured_llm.ainvoke([HumanMessage(content=prompt)])
+                _log_thinking_usage("Structured graph extraction", response)
+                payload = _coerce_structured_payload_from_response(response)
+            except TypeError as exc:
+                if "response_mime_type" not in str(exc):
+                    raise
+                logger.info(
+                    "Native JSON-schema binding unsupported for current Gemini client; "
+                    "falling back to include_raw structured output: %s",
+                    exc,
                 )
-            prompt = _ONE_PASS_EXTRACTION_PROMPT.format(text=text[:4000])
-            raw_payload = await structured_llm.ainvoke([HumanMessage(content=prompt)])
-        if isinstance(raw_payload, dict):
-            raw_response = raw_payload.get("raw")
-            if raw_response is not None:
-                _log_thinking_usage("Structured graph extraction", raw_response)
-        payload = _coerce_structured_payload(raw_payload)
+                if not hasattr(llm, "with_structured_output"):
+                    raise RuntimeError(
+                        "graph_extraction model does not support structured output"
+                    ) from exc
+                try:
+                    structured_llm = llm.with_structured_output(
+                        _StructuredExtractionPayload,
+                        include_raw=True,
+                    )
+                except TypeError:
+                    structured_llm = llm.with_structured_output(
+                        schema=_StructuredExtractionPayload,
+                        include_raw=True,
+                    )
+                raw_payload = await structured_llm.ainvoke([HumanMessage(content=prompt)])
+                if isinstance(raw_payload, dict):
+                    raw_response = raw_payload.get("raw")
+                    if raw_response is not None:
+                        _log_thinking_usage("Structured graph extraction", raw_response)
+                payload = _coerce_structured_payload_from_raw_payload(raw_payload)
         return self._build_extraction_from_payload(payload)
 
     def _build_extraction_from_payload(
@@ -425,7 +479,7 @@ class EntityRelationExtractor:
             return []
         
         try:
-            with llm_runtime_override(thinking_budget=-1, include_thoughts=False):
+            with graph_rag_llm_runtime_override("graph_extraction"):
                 llm = get_llm("graph_extraction")
                 prompt = _ENTITY_EXTRACTION_PROMPT.format(text=text[:4000])  # Limit input
                 response = await llm.ainvoke([HumanMessage(content=prompt)])
@@ -475,7 +529,7 @@ class EntityRelationExtractor:
             return []
         
         try:
-            with llm_runtime_override(thinking_budget=-1, include_thoughts=False):
+            with graph_rag_llm_runtime_override("graph_extraction"):
                 llm = get_llm("graph_extraction")
 
                 # Format entities for prompt

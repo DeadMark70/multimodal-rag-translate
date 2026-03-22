@@ -14,7 +14,9 @@ from typing import List, Tuple
 from langchain_core.messages import HumanMessage
 
 # Local application
+from core.llm_factory import graph_rag_llm_runtime_override
 from core.providers import get_llm
+from graph_rag.llm_response import response_content_to_text
 from graph_rag.generic_mode import GraphEvidence, estimate_token_count
 from graph_rag.store import GraphStore
 
@@ -52,14 +54,14 @@ async def identify_query_entities(question: str) -> List[str]:
         List of entity names mentioned in the question.
     """
     try:
-        llm = get_llm("graph_extraction")
-        prompt = _ENTITY_IDENTIFICATION_PROMPT.format(question=question)
-        
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        with graph_rag_llm_runtime_override("graph_extraction"):
+            llm = get_llm("graph_extraction")
+            prompt = _ENTITY_IDENTIFICATION_PROMPT.format(question=question)
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
         
         # Parse response (one entity per line)
         entities = []
-        for line in response.content.strip().split("\n"):
+        for line in response_content_to_text(response.content).split("\n"):
             entity = line.strip().strip("-").strip("•").strip()
             if entity and len(entity) > 1:
                 entities.append(entity)

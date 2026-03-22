@@ -17,7 +17,9 @@ from typing import Literal, Optional
 
 from langchain_core.messages import HumanMessage
 
+from core.llm_factory import graph_rag_llm_runtime_override
 from core.providers import get_llm
+from graph_rag.llm_response import response_content_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -252,22 +254,25 @@ class GenericGraphRouter:
     ) -> GraphRouteDecision:
         hints = hints or GraphQueryHints()
         try:
-            llm = get_llm("graph_extraction")
-            response = await llm.ainvoke(
-                [
-                    HumanMessage(
-                        content=_ROUTER_PROMPT.format(
-                            question=question,
-                            stage_hint=hints.stage_hint or "none",
-                            task_type_hint=hints.task_type_hint or "none",
-                            prefer_global=str(hints.prefer_global).lower(),
-                            prefer_local=str(hints.prefer_local).lower(),
-                            has_communities=str(has_communities).lower(),
+            with graph_rag_llm_runtime_override("graph_extraction"):
+                llm = get_llm("graph_extraction")
+                response = await llm.ainvoke(
+                    [
+                        HumanMessage(
+                            content=_ROUTER_PROMPT.format(
+                                question=question,
+                                stage_hint=hints.stage_hint or "none",
+                                task_type_hint=hints.task_type_hint or "none",
+                                prefer_global=str(hints.prefer_global).lower(),
+                                prefer_local=str(hints.prefer_local).lower(),
+                                has_communities=str(has_communities).lower(),
+                            )
                         )
-                    )
-                ]
+                    ]
+                )
+            payload = json.loads(
+                re.search(r"\{[\s\S]*\}", response_content_to_text(response.content)).group(0)
             )
-            payload = json.loads(re.search(r"\{[\s\S]*\}", response.content).group(0))
             budget_name = payload.get("budget", "balanced")
             token_budget = {"tight": 700, "balanced": 900, "wide": 1100}.get(
                 budget_name,

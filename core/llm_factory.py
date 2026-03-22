@@ -29,8 +29,8 @@ LLMPurpose = Literal[
 # Model mapping - only translation uses different model
 _MODEL_BY_PURPOSE: dict[str, str] = {
     "translation": "gemini-2.5-flash-lite",
-    "graph_extraction": "gemini-2.5-flash-lite",   # Fast extraction for GraphRAG
-    "community_summary": "gemini-2.5-flash-lite",   # Fast summarization for communities
+    "graph_extraction": "gemini-2.5-flash-lite",   # Thinking-enabled extraction for GraphRAG
+    "community_summary": "gemini-2.5-flash-lite",   # Thinking-enabled summarization for GraphRAG
 }
 
 # Default model for all other purposes
@@ -42,6 +42,10 @@ _runtime_llm_overrides: ContextVar[dict[str, Any]] = ContextVar(
     "runtime_llm_overrides",
     default={},
 )
+_GRAPH_RAG_THINKING_BUDGETS: dict[Literal["graph_extraction", "community_summary"], int] = {
+    "graph_extraction": 2048,
+    "community_summary": 1024,
+}
 
 def set_session_model_override(model_name: Optional[str]) -> None:
     """
@@ -75,6 +79,43 @@ def llm_runtime_override(**overrides: Any):
         yield
     finally:
         _runtime_llm_overrides.reset(token)
+
+
+def _resolve_model_name(purpose: LLMPurpose, model_name: Optional[str] = None) -> str:
+    """Resolve the effective model name for a purpose before SDK initialization."""
+    if model_name:
+        return model_name
+    if _session_model_override:
+        return _session_model_override
+    return _MODEL_BY_PURPOSE.get(purpose, _DEFAULT_MODEL)
+
+
+def get_graph_rag_runtime_overrides(
+    purpose: Literal["graph_extraction", "community_summary"],
+    *,
+    model_name: Optional[str] = None,
+) -> dict[str, Any]:
+    """Return model-family-aware thinking overrides for GraphRAG calls."""
+    model = _resolve_model_name(purpose, model_name=model_name)
+    overrides: dict[str, Any] = {"include_thoughts": False}
+
+    if model.startswith("gemini-3"):
+        overrides["thinking_level"] = "high"
+    else:
+        overrides["thinking_budget"] = _GRAPH_RAG_THINKING_BUDGETS[purpose]
+
+    return overrides
+
+
+@contextmanager
+def graph_rag_llm_runtime_override(
+    purpose: Literal["graph_extraction", "community_summary"],
+    *,
+    model_name: Optional[str] = None,
+):
+    """Apply the correct thinking config for the current GraphRAG model family."""
+    with llm_runtime_override(**get_graph_rag_runtime_overrides(purpose, model_name=model_name)):
+        yield
 
 # Configuration for each purpose
 _LLM_CONFIGS: dict[str, dict] = {
@@ -170,12 +211,7 @@ def _get_llm_cached(
     if thinking_level is not None:
         config["thinking_level"] = thinking_level
 
-    if model_name:
-        model = model_name
-    elif _session_model_override:
-        model = _session_model_override
-    else:
-        model = _MODEL_BY_PURPOSE.get(purpose, _DEFAULT_MODEL)
+    model = _resolve_model_name(purpose, model_name=model_name)
 
     logger.info(
         "Initializing LLM for purpose: %s (model: %s, config: %s)",

@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -11,18 +12,27 @@ from graph_rag.schemas import EntityType, ExtractedEntity, ExtractedRelation
 from pdfserviceMD.router import _run_graph_extraction
 
 
-def _make_llm_with_structured_payload(payload: dict) -> tuple[Mock, Mock]:
-    structured_llm = Mock()
-    structured_llm.ainvoke = AsyncMock(return_value=payload)
+def _make_llm_with_structured_payload(
+    payload: dict | str,
+    *,
+    content_as_list: bool = False,
+) -> tuple[Mock, Mock]:
+    bound_llm = Mock()
+    content = payload if isinstance(payload, str) else json.dumps(payload)
+    response = Mock(
+        content=[{"type": "text", "text": content}] if content_as_list else content,
+        usage_metadata={},
+    )
+    bound_llm.ainvoke = AsyncMock(return_value=response)
     llm = Mock()
-    llm.with_structured_output = Mock(return_value=structured_llm)
-    return llm, structured_llm
+    llm.bind = Mock(return_value=bound_llm)
+    return llm, bound_llm
 
 
 @pytest.mark.asyncio
 async def test_structured_one_pass_returns_entities_and_relations() -> None:
     extractor = EntityRelationExtractor()
-    llm, structured_llm = _make_llm_with_structured_payload(
+    llm, bound_llm = _make_llm_with_structured_payload(
         {
             "entities": [
                 {
@@ -52,8 +62,8 @@ async def test_structured_one_pass_returns_entities_and_relations() -> None:
     with patch("graph_rag.extractor.get_llm", return_value=llm):
         result = await extractor.extract("x" * 120, "doc-1", 3)
 
-    llm.with_structured_output.assert_called_once()
-    structured_llm.ainvoke.assert_awaited_once()
+    llm.bind.assert_called_once()
+    bound_llm.ainvoke.assert_awaited_once()
     assert result.doc_id == "doc-1"
     assert result.chunk_index == 3
     assert [entity.label for entity in result.entities] == ["Transformer", "Attention"]
@@ -64,33 +74,27 @@ async def test_structured_one_pass_returns_entities_and_relations() -> None:
 
 
 @pytest.mark.asyncio
-async def test_structured_one_pass_uses_compatible_structured_output_call() -> None:
+async def test_structured_one_pass_binds_native_json_schema() -> None:
     extractor = EntityRelationExtractor()
-    structured_llm = Mock()
-    structured_llm.ainvoke = AsyncMock(
-        return_value={
-            "parsed": {
-                "entities": [{"id": "e1", "label": "Transformer", "entity_type": "method"}],
-                "relations": [],
-            },
-            "raw": None,
-            "parsing_error": None,
-        }
+    bound_llm = Mock()
+    bound_llm.ainvoke = AsyncMock(
+        return_value=Mock(
+            content='{"entities":[{"id":"e1","label":"Transformer","entity_type":"method"}],"relations":[]}',
+            usage_metadata={},
+        )
     )
     llm = Mock()
-
-    def _compatible_with_structured_output(*args, **kwargs):
-        assert kwargs == {"include_raw": True}
-        assert args == (_StructuredExtractionPayload,)
-        return structured_llm
-
-    llm.with_structured_output = Mock(side_effect=_compatible_with_structured_output)
+    llm.bind = Mock(return_value=bound_llm)
 
     with patch("graph_rag.extractor.get_llm", return_value=llm):
         result = await extractor.extract("x" * 120, "doc-1")
 
+    llm.bind.assert_called_once()
+    kwargs = llm.bind.call_args.kwargs
+    assert kwargs["response_mime_type"] == "application/json"
+    assert kwargs["response_json_schema"] == _StructuredExtractionPayload.model_json_schema()
     assert [entity.label for entity in result.entities] == ["Transformer"]
-    structured_llm.ainvoke.assert_awaited_once()
+    bound_llm.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -171,7 +175,7 @@ async def test_structured_one_pass_deduplicates_labels_and_keeps_valid_relations
 async def test_structured_one_pass_falls_back_to_legacy_two_pass() -> None:
     extractor = EntityRelationExtractor()
     llm = Mock()
-    llm.with_structured_output = Mock(side_effect=RuntimeError("schema init failed"))
+    llm.bind = Mock(side_effect=RuntimeError("schema init failed"))
     legacy_entities = [
         ExtractedEntity(
             label="LeNet",
@@ -242,7 +246,7 @@ async def test_structured_one_pass_enforces_max_entities_per_chunk() -> None:
 async def test_legacy_entity_parsing_handles_content_blocks_and_wrapped_dict() -> None:
     extractor = EntityRelationExtractor()
     llm = Mock()
-    llm.with_structured_output = Mock(side_effect=RuntimeError("force fallback"))
+    llm.bind = Mock(side_effect=RuntimeError("force fallback"))
     llm.ainvoke = AsyncMock(
         return_value=Mock(
             content=[
@@ -264,18 +268,27 @@ async def test_legacy_entity_parsing_handles_content_blocks_and_wrapped_dict() -
 
 
 @pytest.mark.asyncio
-async def test_structured_one_pass_falls_back_when_parser_returns_none() -> None:
+async def test_structured_one_pass_accepts_json_from_list_content_blocks() -> None:
     extractor = EntityRelationExtractor()
-    structured_llm = Mock()
-    structured_llm.ainvoke = AsyncMock(
-        return_value={
-            "parsed": None,
-            "raw": Mock(content='{"entities":[{"id":"e1","label":"raw only"}]}'),
-            "parsing_error": ValueError("schema parse failed"),
-        }
+    llm, _ = _make_llm_with_structured_payload(
+        {
+            "entities": [{"id": "e1", "label": "raw only", "entity_type": "concept"}],
+            "relations": [],
+        },
+        content_as_list=True,
     )
-    llm = Mock()
-    llm.with_structured_output = Mock(return_value=structured_llm)
+
+    with patch("graph_rag.extractor.get_llm", return_value=llm):
+        result = await extractor.extract("x" * 120, "doc-1")
+
+    assert [entity.label for entity in result.entities] == ["raw only"]
+    assert result.relations == []
+
+
+@pytest.mark.asyncio
+async def test_structured_one_pass_falls_back_on_invalid_json_response() -> None:
+    extractor = EntityRelationExtractor()
+    llm, _ = _make_llm_with_structured_payload('{"entities": [', content_as_list=True)
     legacy_entities = [
         ExtractedEntity(label="Fallback Entity", entity_type=EntityType.CONCEPT, description=None)
     ]
@@ -290,6 +303,37 @@ async def test_structured_one_pass_falls_back_when_parser_returns_none() -> None
     mock_entities.assert_awaited_once()
     mock_relations.assert_awaited_once_with("x" * 120, legacy_entities)
     assert [entity.label for entity in result.entities] == ["Fallback Entity"]
+
+
+@pytest.mark.asyncio
+async def test_structured_one_pass_recovers_via_include_raw_when_native_schema_bind_is_unsupported() -> None:
+    extractor = EntityRelationExtractor()
+    structured_llm = Mock()
+    structured_llm.ainvoke = AsyncMock(
+        return_value={
+            "parsed": None,
+            "raw": Mock(
+                content='{"entities":[{"id":"e1","label":"Recovered","entity_type":"method"}],"relations":[]}',
+                usage_metadata={},
+            ),
+            "parsing_error": TypeError("schema parse failed"),
+        }
+    )
+    llm = Mock()
+    llm.bind = Mock(
+        side_effect=TypeError(
+            "GenerativeServiceAsyncClient.generate_content() got an unexpected keyword argument 'response_mime_type'"
+        )
+    )
+    llm.with_structured_output = Mock(return_value=structured_llm)
+
+    with patch("graph_rag.extractor.get_llm", return_value=llm):
+        result = await extractor.extract("x" * 120, "doc-1")
+
+    llm.bind.assert_called_once()
+    llm.with_structured_output.assert_called_once()
+    structured_llm.ainvoke.assert_awaited_once()
+    assert [entity.label for entity in result.entities] == ["Recovered"]
 
 
 def test_parse_json_from_response_ignores_trailing_text_after_array() -> None:

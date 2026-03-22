@@ -15,7 +15,7 @@ from typing import List
 from langchain_core.messages import HumanMessage
 
 # Local application
-from core.llm_factory import get_llm_usage_metrics, llm_runtime_override
+from core.llm_factory import get_llm_usage_metrics, graph_rag_llm_runtime_override
 from core.providers import get_llm
 from graph_rag.llm_response import response_content_to_text
 from graph_rag.schemas import Community
@@ -189,7 +189,7 @@ async def summarize_community(
     
     try:
         prompt = _COMMUNITY_SUMMARY_PROMPT.format(entities_and_relations=context)
-        with llm_runtime_override(thinking_budget=-1, include_thoughts=False):
+        with graph_rag_llm_runtime_override("community_summary"):
             llm = get_llm("community_summary")
             response = await llm.ainvoke([HumanMessage(content=prompt)])
         _log_summary_usage("Community summary", response)
@@ -341,7 +341,7 @@ async def _summarize_parent_community(
     )
 
     try:
-        with llm_runtime_override(thinking_budget=-1, include_thoughts=False):
+        with graph_rag_llm_runtime_override("community_summary"):
             llm = get_llm("community_summary")
             response = await llm.ainvoke(
                 [
