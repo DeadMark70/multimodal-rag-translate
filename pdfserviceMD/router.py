@@ -273,7 +273,8 @@ async def _run_graph_extraction(
     Run GraphRAG entity extraction on document content.
 
     Extracts entities and relations from the document and adds them to
-    the user's knowledge graph. Uses batch parallel processing for efficiency.
+    the user's knowledge graph. Uses batch parallel execution for efficiency;
+    this does not merge multiple chunks into a single prompt.
 
     Args:
         user_id: User ID for graph store.
@@ -304,10 +305,11 @@ async def _run_graph_extraction(
         total_nodes = 0
         total_edges = 0
 
-        # Process chunks in batches
+        # Process chunks in concurrent batches. Each chunk still maps to one
+        # extraction request; batches only control parallelism, not prompt merging.
         num_batches = (len(chunks) + batch_size - 1) // batch_size
         logger.info(
-            f"[GraphRAG] Processing {len(chunks)} chunks in {num_batches} batches "
+            f"[GraphRAG] Processing {len(chunks)} chunks in {num_batches} concurrent batches "
             f"(batch_size={batch_size}) for doc {doc_id}"
         )
 

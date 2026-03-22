@@ -9,11 +9,11 @@ Uses Gemini Flash for fast, cost-effective extraction.
 import json
 import logging
 import re
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
 
 # Third-party
 from langchain_core.messages import HumanMessage
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 # Local application
 from core.providers import get_llm
@@ -81,6 +81,66 @@ _RELATION_EXTRACTION_PROMPT = """你是一個學術論文關係抽取專家。�
 
 JSON 輸出："""
 
+_ONE_PASS_EXTRACTION_PROMPT = """你是一個學術論文知識圖譜抽取專家。請從以下文本中一次完成實體與關係抽取。
+
+實體類別 (entity_type):
+- concept: 概念/理論 (例如: "注意力機制", "深度學習")
+- method: 方法/技術/模型 (例如: "BERT", "Transformer", "CNN")
+- metric: 指標/度量 (例如: "F1 分數", "準確率", "BLEU")
+- result: 結果/發現 (例如: "最先進性能", "顯著改進")
+- author: 作者/研究者 (例如: "Vaswani et al.")
+
+關係類型 (relation):
+- uses: 使用 (A 使用 B)
+- outperforms: 優於 (A 的表現優於 B)
+- proposes: 提出 (作者提出方法)
+- evaluates_with: 用...評估 (用指標評估方法)
+- cites: 引用 (引用其他工作)
+- extends: 擴展 (基於...擴展)
+- part_of: 是...的一部分
+- applies_to: 應用於
+
+抽取規則:
+- 只抽取文本中明確提到的重要學術實體與關係
+- 每個 entity 都要有唯一 `id`，relation 必須引用這些 entity `id`
+- 不要為了補齊圖譜而猜測文本中不存在的關係
+- 如果同一個實體重複出現，可以重用同一個實體概念
+
+文本：
+{text}
+"""
+
+
+class _StructuredEntity(BaseModel):
+    """Private schema for one-pass Gemini structured output."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(..., description="Unique entity id referenced by relations")
+    label: str = Field(..., description="Entity label from the text")
+    entity_type: str = Field(default="concept", description="Academic entity type")
+    description: str | None = Field(default=None, description="Short entity description")
+
+
+class _StructuredRelation(BaseModel):
+    """Private schema for one-pass Gemini structured output."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    source_entity_id: str = Field(..., description="Source entity id")
+    target_entity_id: str = Field(..., description="Target entity id")
+    relation: str = Field(..., description="Relation type between the entities")
+    description: str | None = Field(default=None, description="Short relation description")
+
+
+class _StructuredExtractionPayload(BaseModel):
+    """Private schema for one-pass Gemini structured output."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    entities: List[_StructuredEntity] = Field(default_factory=list)
+    relations: List[_StructuredRelation] = Field(default_factory=list)
+
 
 def _parse_json_from_response(response: str) -> List[dict]:
     """
@@ -142,12 +202,28 @@ def _normalize_entity_type(type_str: str) -> EntityType:
     return type_map.get(type_str.lower().strip(), EntityType.CONCEPT)
 
 
+def _normalize_label(label: str) -> str:
+    """Normalize entity labels for deduplication and validation."""
+    return label.strip().lower()
+
+
+def _coerce_structured_payload(raw_payload: Any) -> _StructuredExtractionPayload:
+    """Validate raw structured output into the private extraction payload."""
+    if isinstance(raw_payload, _StructuredExtractionPayload):
+        return raw_payload
+    if isinstance(raw_payload, BaseModel):
+        raw_payload = raw_payload.model_dump()
+    if isinstance(raw_payload, dict):
+        return _StructuredExtractionPayload.model_validate(raw_payload)
+    raise TypeError(f"Unexpected structured payload type: {type(raw_payload)!r}")
+
+
 class EntityRelationExtractor:
     """
     Extracts entities and relationships from text using LLM.
     
     Uses Gemini Flash for fast, cost-effective extraction.
-    Implements two-stage extraction: entities first, then relations.
+    Defaults to one-pass structured extraction with hidden two-stage fallback.
     
     Attributes:
         min_text_length: Minimum text length to process.
@@ -168,6 +244,100 @@ class EntityRelationExtractor:
         """
         self.min_text_length = min_text_length
         self.max_entities_per_chunk = max_entities_per_chunk
+
+    async def _extract_one_pass_structured(
+        self,
+        text: str,
+    ) -> tuple[List[ExtractedEntity], List[ExtractedRelation]]:
+        """
+        Extract entities and relations in a single structured-output call.
+
+        Raises:
+            Exception: Any model setup / invocation / validation failure.
+        """
+        llm = get_llm("graph_extraction")
+        if not hasattr(llm, "with_structured_output"):
+            raise RuntimeError("graph_extraction model does not support structured output")
+
+        structured_llm = llm.with_structured_output(
+            schema=_StructuredExtractionPayload.model_json_schema(),
+            method="json_schema",
+        )
+        prompt = _ONE_PASS_EXTRACTION_PROMPT.format(text=text[:4000])
+        raw_payload = await structured_llm.ainvoke([HumanMessage(content=prompt)])
+        payload = _coerce_structured_payload(raw_payload)
+        return self._build_extraction_from_payload(payload)
+
+    def _build_extraction_from_payload(
+        self,
+        payload: _StructuredExtractionPayload,
+    ) -> tuple[List[ExtractedEntity], List[ExtractedRelation]]:
+        """Convert structured payload into existing extraction result types."""
+        entities: List[ExtractedEntity] = []
+        canonical_entities: Dict[str, ExtractedEntity] = {}
+        canonical_ids_by_label: Dict[str, str] = {}
+        entity_aliases: Dict[str, str] = {}
+
+        for item in payload.entities:
+            normalized_label = _normalize_label(item.label)
+            if not normalized_label:
+                continue
+
+            existing_canonical_id = canonical_ids_by_label.get(normalized_label)
+            if existing_canonical_id:
+                entity_aliases[item.id] = existing_canonical_id
+                continue
+
+            if len(entities) >= self.max_entities_per_chunk:
+                continue
+
+            entity = ExtractedEntity(
+                label=item.label.strip(),
+                entity_type=_normalize_entity_type(item.entity_type),
+                description=item.description,
+            )
+            entities.append(entity)
+            canonical_entities[item.id] = entity
+            canonical_ids_by_label[normalized_label] = item.id
+            entity_aliases[item.id] = item.id
+
+        relations: List[ExtractedRelation] = []
+        for item in payload.relations:
+            source_id = entity_aliases.get(item.source_entity_id)
+            target_id = entity_aliases.get(item.target_entity_id)
+            if not source_id or not target_id:
+                logger.debug(
+                    "Skipping structured relation: missing entity id(s) %s -> %s",
+                    item.source_entity_id,
+                    item.target_entity_id,
+                )
+                continue
+
+            source_entity = canonical_entities.get(source_id)
+            target_entity = canonical_entities.get(target_id)
+            if not source_entity or not target_entity:
+                continue
+
+            try:
+                relation = ExtractedRelation(
+                    entity1=source_entity.label,
+                    entity1_type=source_entity.entity_type,
+                    relation=item.relation.strip().lower() or "related",
+                    entity2=target_entity.label,
+                    entity2_type=target_entity.entity_type,
+                    description=item.description,
+                )
+                relations.append(relation)
+            except ValidationError as e:
+                logger.debug(f"Skipping invalid structured relation: {e}")
+                continue
+
+        logger.info(
+            "Structured GraphRAG extraction produced %s entities and %s relations",
+            len(entities),
+            len(relations),
+        )
+        return entities, relations
     
     async def extract_entities(self, text: str) -> List[ExtractedEntity]:
         """
@@ -300,13 +470,21 @@ class EntityRelationExtractor:
         Returns:
             ExtractionResult containing entities and relations.
         """
-        # Stage 1: Extract entities
-        entities = await self.extract_entities(text)
-        
-        # Stage 2: Extract relations (only if we have entities)
-        relations = []
-        if entities:
-            relations = await self.extract_relations(text, entities)
+        if len(text.strip()) < self.min_text_length:
+            entities: List[ExtractedEntity] = []
+            relations: List[ExtractedRelation] = []
+        else:
+            try:
+                entities, relations = await self._extract_one_pass_structured(text)
+            except Exception as e:
+                logger.warning(
+                    "Structured GraphRAG extraction failed; falling back to legacy two-pass flow: %s",
+                    e,
+                )
+                entities = await self.extract_entities(text)
+                relations = []
+                if entities:
+                    relations = await self.extract_relations(text, entities)
         
         return ExtractionResult(
             entities=entities,
