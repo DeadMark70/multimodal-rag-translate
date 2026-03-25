@@ -27,6 +27,7 @@ python-dotenv==1.2.1
 
 # LLM & AI
 google-genai==1.55.0
+google-api-core>=2.25.0
 langchain==1.2.0
 langchain-core==1.2.7
 langchain-community==0.3.31

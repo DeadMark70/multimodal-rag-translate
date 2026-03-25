@@ -41,7 +41,7 @@ def test_env_keys_match_example():
     assert not missing_keys, f"Missing keys in .env/config.env: {missing_keys}"
 
 def get_imports_from_file(filepath):
-    """Extract top-level imports from a python file."""
+    """Extract imported module paths from a python file."""
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             root = ast.parse(f.read(), filename=filepath)
@@ -52,10 +52,10 @@ def get_imports_from_file(filepath):
     for node in ast.walk(root):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                imports.add(alias.name.split('.')[0])
+                imports.add(alias.name)
         elif isinstance(node, ast.ImportFrom):
             if node.module:
-                imports.add(node.module.split('.')[0])
+                imports.add(node.module)
     return imports
 
 def test_requirements_vs_imports():
@@ -69,8 +69,9 @@ def test_requirements_vs_imports():
         requirements = {line.strip().lower().split('==')[0].split('>=')[0].split('<')[0].split('[')[0] 
                         for line in f if line.strip() and not line.startswith('#')}
 
-    # Mapping of import name to pypi package name for known mismatches
+    # Mapping of import path/name to pypi package name for known mismatches
     known_mappings = {
+        "google.api_core": "google-api-core",
         "PIL": "pillow",
         "cv2": "opencv-python-headless",
         "dotenv": "python-dotenv",
@@ -93,11 +94,12 @@ def test_requirements_vs_imports():
     # Simple check for a few critical ones
     missing_deps = []
     for imp in all_imports:
-        if imp in local_modules:
+        top_level = imp.split(".")[0]
+        if top_level in local_modules:
             continue
         
         # Check explicit mapping
-        pkg_name = known_mappings.get(imp, imp)
+        pkg_name = known_mappings.get(imp, known_mappings.get(top_level, top_level))
         if pkg_name is None:
             continue
             
@@ -108,7 +110,7 @@ def test_requirements_vs_imports():
         if pkg_name_lower not in requirements:
             # Maybe it is a standard library? 
             # We won't fail the test for everything, but let's check for specific ones we know we use
-            if imp in ["fastapi", "uvicorn", "supabase", "networkx", "langchain"]:
+            if top_level in ["fastapi", "uvicorn", "supabase", "networkx", "langchain"] or imp == "google.api_core":
                  missing_deps.append(imp)
 
     assert not missing_deps, f"Potential missing dependencies in requirements.txt: {missing_deps}"
