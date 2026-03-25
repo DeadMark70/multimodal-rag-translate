@@ -26,7 +26,7 @@ httpx-sse==0.4.3
 python-dotenv==1.2.1
 
 # LLM & AI
-google-generativeai>=0.8.5
+google-genai==1.55.0
 langchain==1.2.0
 langchain-core==1.2.7
 langchain-community==0.3.31
@@ -75,3 +75,4 @@ beautifulsoup4==4.14.3
 markdownify==1.2.2
 pypdfium2==4.30.0
 ruff==0.14.13
+

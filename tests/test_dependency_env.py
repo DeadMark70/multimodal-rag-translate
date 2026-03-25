@@ -74,7 +74,7 @@ def test_requirements_vs_imports():
         "PIL": "pillow",
         "cv2": "opencv-python-headless",
         "dotenv": "python-dotenv",
-        "google": "google-generativeai", # rough mapping
+        "google": "google-genai", # rough mapping
         "fitz": "pymufit", # or PyMuPDF
         "frontend": None, # Local module?
     }
@@ -112,3 +112,4 @@ def test_requirements_vs_imports():
                  missing_deps.append(imp)
 
     assert not missing_deps, f"Potential missing dependencies in requirements.txt: {missing_deps}"
+
