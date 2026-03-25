@@ -87,6 +87,7 @@ python debug_ragas_real.py
 ### External Libraries
 -   `langchain`: Framework for RAG and chains.
 -   `faiss-cpu`: Vector database.
--   `google-generativeai`: Embedding and LLM services.
+-   `google-genai`: Current Google GenAI SDK for direct Gemini API usage.
 -   `transformers`: Local reranker model loading.
 -   `rank_bm25`: Keyword retrieval.
+

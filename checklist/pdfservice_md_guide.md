@@ -94,4 +94,5 @@ python debug_import.py
 -   `marker-pdf`: Local OCR engine.
 -   `httpx`: Async HTTP client (for Datalab API).
 -   `pypandoc` / `pandoc`: PDF generation.
--   `google-generativeai`: Translation model.
+-   `google-genai`: Current Google GenAI SDK for direct Gemini API usage.
+

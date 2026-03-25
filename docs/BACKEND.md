@@ -29,7 +29,7 @@
 
 - `evaluation/schemas.py`: test case, import/export, model config, available model schemas
 - `evaluation/storage.py`: per-user JSON storage under `uploads/<user_id>/evaluation/`
-- `evaluation/model_discovery.py`: dynamic Gemini model listing with cache
+- `evaluation/model_discovery.py`: dynamic Gemini model listing with cache via the Google GenAI SDK
 - `evaluation/router.py`: `/api/evaluation/test-cases`, `/models`, `/model-configs`
 
 ### Phase 2 delivered
@@ -63,3 +63,4 @@
 
 - CORS defaults are local-dev friendly and overrideable with `CORS_ORIGINS`.
 - Environment is loaded from `config.env` in app factory bootstrap.
+
