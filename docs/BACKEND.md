@@ -23,6 +23,14 @@
   - `stats/router.py`
   - `evaluation/router.py`
 
+## Gemini Layering
+
+- Control plane uses the direct Google GenAI SDK through `core/google_genai_client.py`.
+- `evaluation/model_discovery.py` stays on the control plane and only handles model listing, filtering, normalization, and fallback behavior.
+- Runtime LLM access stays behind `core/providers.py`, with `core/llm_factory.py` as the only `ChatGoogleGenerativeAI` construction point.
+- Runtime embeddings stay centralized in `data_base/vector_store_manager.py`, which remains the only `GoogleGenerativeAIEmbeddings` construction point.
+- Business logic modules should not mix direct `google-genai` client creation with runtime `get_llm(...)` usage.
+
 ## Evaluation Backend
 
 ### Phase 1 delivered
@@ -63,4 +71,3 @@
 
 - CORS defaults are local-dev friendly and overrideable with `CORS_ORIGINS`.
 - Environment is loaded from `config.env` in app factory bootstrap.
-

@@ -1,12 +1,15 @@
-"""
-Provider registry and interfaces for external dependencies.
+"""Provider registry and interfaces for external dependencies.
 
 This module centralizes LLM and Datalab provider selection so tests can run
 without touching real external APIs.
+
+Architecture note:
+- runtime LLM access must flow through this provider facade
+- direct `google-genai` control-plane calls do not belong in business modules
+- LangChain-backed runtime model construction stays in `core.llm_factory`
 """
 
 from __future__ import annotations
-
 import asyncio
 import logging
 import os

@@ -1,12 +1,15 @@
-"""
-Vector Store Manager
+"""Vector Store Manager.
 
 Manages per-user FAISS vector stores for RAG indexing and retrieval.
 Supports both traditional and semantic chunking methods.
 
 Uses Google Gemini Embedding API for vector generation.
-"""
 
+Architecture note:
+- runtime embedding creation is centralized in this module
+- other modules should obtain embeddings through `get_embeddings()`
+- direct `google-genai` usage is reserved for control-plane modules only
+"""
 # Standard library
 import logging
 import os

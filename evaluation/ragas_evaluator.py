@@ -9,7 +9,7 @@ import statistics
 from collections import defaultdict
 from typing import Any, Awaitable, Callable, Optional
 
-from core.llm_factory import get_llm
+from core.providers import get_llm
 from evaluation.campaign_schemas import (
     CampaignMetricRow,
     CampaignMetricsResponse,

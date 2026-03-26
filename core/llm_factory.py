@@ -1,10 +1,13 @@
-"""
-LLM Factory Module
+"""LLM Factory Module.
 
 Provides cached LLM instances with purpose-specific configurations.
 Each purpose has its own optimized settings to avoid configuration conflicts.
-"""
 
+Architecture note:
+- this is the only runtime module that instantiates `ChatGoogleGenerativeAI`
+- downstream business logic should import `get_llm(...)` from `core.providers`
+- direct `google-genai` usage is reserved for control-plane helpers/services
+"""
 # Standard library
 import logging
 from contextlib import contextmanager
