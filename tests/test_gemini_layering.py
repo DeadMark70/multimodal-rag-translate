@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from core.production_scope import iter_production_python_files
+
 PROJECT_ROOT = Path(__file__).parent.parent
 
 ALLOWED_GENAI_MODULES = {
@@ -18,26 +20,8 @@ ALLOWED_EMBEDDING_MODULES = {
 ALLOWED_LLM_FACTORY_IMPORTERS = {
     PROJECT_ROOT / "core" / "providers.py",
 }
-EXCLUDED_PARTS = {
-    ".venv",
-    "venv",
-    "tests",
-    "docs",
-    "checklist",
-    "agentlog",
-    "bergen",
-    "experiments",
-    "__pycache__",
-}
-
-
 def _iter_production_python_files() -> list[Path]:
-    files: list[Path] = []
-    for path in PROJECT_ROOT.rglob("*.py"):
-        if any(part in EXCLUDED_PARTS for part in path.parts):
-            continue
-        files.append(path)
-    return files
+    return iter_production_python_files(project_root=PROJECT_ROOT)
 
 
 def _parse_file(path: Path) -> ast.AST:

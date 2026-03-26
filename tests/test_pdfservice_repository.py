@@ -13,13 +13,13 @@ async def test_get_document_retries_transient_transport_error() -> None:
     response = SimpleNamespace(data=[{"id": "doc-1", "status": "ready"}])
 
     with (
-        patch("pdfserviceMD.repository.get_supabase", return_value=Mock()),
+        patch("core.supabase_repository.get_supabase", return_value=Mock()),
         patch(
-            "pdfserviceMD.repository.run_in_threadpool",
+            "core.supabase_repository.run_in_threadpool",
             new=AsyncMock(side_effect=[httpx.ReadError("boom"), response]),
         ) as run_in_threadpool_mock,
-        patch("pdfserviceMD.repository.init_supabase") as init_supabase_mock,
-        patch("pdfserviceMD.repository.asyncio.sleep", new=AsyncMock()) as sleep_mock,
+        patch("core.supabase_repository.init_supabase") as init_supabase_mock,
+        patch("core.supabase_repository.asyncio.sleep", new=AsyncMock()) as sleep_mock,
     ):
         row = await get_document(doc_id="doc-1", user_id="user-1")
 
@@ -32,9 +32,9 @@ async def test_get_document_retries_transient_transport_error() -> None:
 @pytest.mark.asyncio
 async def test_get_document_returns_503_after_exhausting_transport_retries() -> None:
     with (
-        patch("pdfserviceMD.repository.get_supabase", return_value=Mock()),
+        patch("core.supabase_repository.get_supabase", return_value=Mock()),
         patch(
-            "pdfserviceMD.repository.run_in_threadpool",
+            "core.supabase_repository.run_in_threadpool",
             new=AsyncMock(
                 side_effect=[
                     httpx.ReadError("boom-1"),
@@ -43,8 +43,8 @@ async def test_get_document_returns_503_after_exhausting_transport_retries() -> 
                 ]
             ),
         ),
-        patch("pdfserviceMD.repository.init_supabase") as init_supabase_mock,
-        patch("pdfserviceMD.repository.asyncio.sleep", new=AsyncMock()) as sleep_mock,
+        patch("core.supabase_repository.init_supabase") as init_supabase_mock,
+        patch("core.supabase_repository.asyncio.sleep", new=AsyncMock()) as sleep_mock,
     ):
         with pytest.raises(AppError) as exc_info:
             await get_document(doc_id="doc-1", user_id="user-1")

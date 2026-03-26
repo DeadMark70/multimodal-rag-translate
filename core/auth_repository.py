@@ -4,19 +4,17 @@ from __future__ import annotations
 
 from fastapi.concurrency import run_in_threadpool
 
+from core.supabase_repository import get_supabase_client_or_raise
 from core.errors import AppError, ErrorCode
-from supabase_client import get_supabase
 
 
 async def fetch_user_id_from_token(token: str) -> str:
     """Validates token via Supabase and returns user id."""
-    client = get_supabase()
-    if not client:
-        raise AppError(
-            code=ErrorCode.AUTH_SERVICE_UNAVAILABLE,
-            message="Authentication service unavailable",
-            status_code=500,
-        )
+    client = get_supabase_client_or_raise(
+        error_code=ErrorCode.AUTH_SERVICE_UNAVAILABLE,
+        message="Authentication service unavailable",
+        status_code=500,
+    )
 
     try:
         user_response = await run_in_threadpool(lambda: client.auth.get_user(token))

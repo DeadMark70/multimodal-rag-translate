@@ -4,22 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi.concurrency import run_in_threadpool
-from postgrest.exceptions import APIError as PostgrestAPIError
-
-from core.errors import AppError, ErrorCode
-from supabase_client import get_supabase
-
-
-def _get_client_or_raise():
-    client = get_supabase()
-    if not client:
-        raise AppError(
-            code=ErrorCode.DATABASE_ERROR,
-            message="Database service unavailable",
-            status_code=500,
-        )
-    return client
+from core.supabase_repository import execute_supabase_operation
 
 
 async def insert_chat_log(
@@ -29,17 +14,12 @@ async def insert_chat_log(
     answer: str,
 ) -> None:
     """Inserts one row into chat_logs."""
-    client = _get_client_or_raise()
     payload = {"user_id": user_id, "question": question, "answer": answer}
-    try:
-        await run_in_threadpool(lambda: client.table("chat_logs").insert(payload).execute())
-    except PostgrestAPIError as exc:
-        raise AppError(
-            code=ErrorCode.DATABASE_ERROR,
-            message="Failed to save chat log",
-            status_code=500,
-            details={"operation": "insert_chat_log"},
-        ) from exc
+    await execute_supabase_operation(
+        operation="insert_chat_log",
+        failure_message="Failed to save chat log",
+        handler=lambda client: client.table("chat_logs").insert(payload).execute(),
+    )
 
 
 async def insert_query_log(
@@ -54,7 +34,6 @@ async def insert_query_log(
     doc_ids: list[str] | None,
 ) -> None:
     """Inserts one row into query_logs."""
-    client = _get_client_or_raise()
     payload = {
         "user_id": user_id,
         "question": question,
@@ -65,15 +44,11 @@ async def insert_query_log(
         "response_time_ms": response_time_ms,
         "doc_ids": doc_ids,
     }
-    try:
-        await run_in_threadpool(lambda: client.table("query_logs").insert(payload).execute())
-    except PostgrestAPIError as exc:
-        raise AppError(
-            code=ErrorCode.DATABASE_ERROR,
-            message="Failed to save query log",
-            status_code=500,
-            details={"operation": "insert_query_log"},
-        ) from exc
+    await execute_supabase_operation(
+        operation="insert_query_log",
+        failure_message="Failed to save query log",
+        handler=lambda client: client.table("query_logs").insert(payload).execute(),
+    )
 
 
 async def fetch_document_filenames(doc_ids: list[str]) -> dict[str, str]:
@@ -81,21 +56,14 @@ async def fetch_document_filenames(doc_ids: list[str]) -> dict[str, str]:
     if not doc_ids:
         return {}
 
-    client = _get_client_or_raise()
-    try:
-        response = await run_in_threadpool(
-            lambda: client.table("documents")
+    response = await execute_supabase_operation(
+        operation="fetch_document_filenames",
+        failure_message="Failed to fetch document metadata",
+        handler=lambda client: client.table("documents")
             .select("id, file_name")
             .in_("id", doc_ids)
-            .execute()
-        )
-    except PostgrestAPIError as exc:
-        raise AppError(
-            code=ErrorCode.DATABASE_ERROR,
-            message="Failed to fetch document metadata",
-            status_code=500,
-            details={"operation": "fetch_document_filenames"},
-        ) from exc
+            .execute(),
+    )
 
     name_map: dict[str, str] = {}
     for row in response.data or []:
@@ -114,23 +82,16 @@ async def persist_research_conversation(
     metadata: dict,
 ) -> None:
     """Persists deep-research result payload to conversations metadata."""
-    client = _get_client_or_raise()
-    try:
-        existing_response = await run_in_threadpool(
-            lambda: client.table("conversations")
+    existing_response = await execute_supabase_operation(
+        operation="load_existing_research_conversation",
+        failure_message="Failed to load existing research conversation",
+        handler=lambda client: client.table("conversations")
             .select("metadata")
             .eq("id", conversation_id)
             .eq("user_id", user_id)
             .limit(1)
-            .execute()
-        )
-    except PostgrestAPIError as exc:
-        raise AppError(
-            code=ErrorCode.DATABASE_ERROR,
-            message="Failed to load existing research conversation",
-            status_code=500,
-            details={"operation": "persist_research_conversation"},
-        ) from exc
+            .execute(),
+    )
 
     existing_metadata = {}
     if existing_response.data:
@@ -149,18 +110,12 @@ async def persist_research_conversation(
     if title:
         payload["title"] = title
 
-    try:
-        await run_in_threadpool(
-            lambda: client.table("conversations")
+    await execute_supabase_operation(
+        operation="persist_research_conversation",
+        failure_message="Failed to persist research conversation",
+        handler=lambda client: client.table("conversations")
             .update(payload)
             .eq("id", conversation_id)
             .eq("user_id", user_id)
-            .execute()
-        )
-    except PostgrestAPIError as exc:
-        raise AppError(
-            code=ErrorCode.DATABASE_ERROR,
-            message="Failed to persist research conversation",
-            status_code=500,
-            details={"operation": "persist_research_conversation"},
-        ) from exc
+            .execute(),
+    )
