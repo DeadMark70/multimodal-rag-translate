@@ -1,25 +1,19 @@
 # PRODUCT_SENSE
 
-## Product Positioning
+## Purpose
 
-A multimodal RAG backend for document QA, deep research, graph search, and conversation persistence.
+Describe the backend capabilities that users and operators depend on through the frontend and API clients.
 
-## Core User Jobs
+## User-Visible Capabilities
 
-1. Upload and process PDFs into searchable knowledge.
-2. Ask grounded questions with retrieval and optional deep research decomposition.
-3. Analyze multimodal evidence including images and graph relationships.
-4. Persist and revisit prior research sessions.
+1. Upload PDFs, track processing, download original or translated files, retry indexing, and request summaries.
+2. Ask ordinary RAG questions or run multi-step Deep Research through synchronous or streamed endpoints.
+3. Build and maintain GraphRAG state, including full rebuilds, per-document retries, and orphan purge.
+4. Persist conversations and messages so the frontend can restore work.
+5. Run evaluation campaigns with saved model presets, persisted results, metrics, and agent traces.
 
-## Value Drivers
+## Product Boundaries
 
-- Modular API surface for frontend integration.
-- Hybrid retrieval plus graph-enhanced reasoning.
-- SSE progress visibility for long-running research tasks.
-
-## Product Risks
-
-1. Long-running AI/OCR tasks can increase timeout/retry complexity.
-2. Schema drift can break frontend integrations.
-3. Security posture needs stronger controls for public multi-tenant deployment.
-
+- Authenticated API access is the default for user-facing routes.
+- Evaluation is a first-class subsystem, not an afterthought to ordinary chat.
+- Compatibility fallbacks exist for data migration and restore paths, but new writes should target canonical contracts.

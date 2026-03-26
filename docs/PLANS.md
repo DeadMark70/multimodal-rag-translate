@@ -3,12 +3,15 @@
 ## Planning System
 
 - Active work: `docs/exec-plans/active/`
-- Completed work: `docs/exec-plans/completed/`
+- Completed milestones: `docs/exec-plans/completed/`
 - Debt ledger: `docs/exec-plans/tech-debt-tracker.md`
 
-## Plan Template
+## Naming Policy
 
-Every plan should define:
+- New plan files should use `YYYY-MM-short-title.md`.
+- Existing historical filenames may remain as-is unless there is a strong reason to rename them.
+
+## Required Sections
 
 1. Objective
 2. Scope
@@ -19,7 +22,6 @@ Every plan should define:
 
 ## Change Policy
 
-- Move completed plans from `active/` to `completed/`.
-- Keep completed plan docs immutable except factual corrections.
-- Couple behavior-changing fixes with tests and documentation updates.
-
+1. Update current-state docs before moving a plan to completed.
+2. Keep completed plans immutable except for factual corrections or broken links.
+3. If a change affects router prefixes, endpoint families, or runtime contracts, update `docs/generated/api-surface.md` in the same change set.

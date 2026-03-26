@@ -1,17 +1,10 @@
-# Product Specs Index
+# Backend Product Specs Index
 
-Purpose: user-visible backend behavior and acceptance contracts.
+Purpose: user-visible API contracts and acceptance expectations.
 
-## Primary Sources
+## Specs
 
-1. `conductor/product.md`
-2. `conductor/product-guidelines.md`
-3. `docs/PRODUCT_SENSE.md`
-4. `README.md`
-
-## Reader Intent
-
-- PM/Designer: product behaviors exposed via API.
-- QA: observable endpoint and flow outcomes.
-- Engineer: behavior contracts before backend refactors.
-
+- `docs/product-specs/document-lifecycle-api.md`: document upload, status, files, summary, retry, delete
+- `docs/product-specs/conversation-api.md`: conversation and message lifecycle
+- `docs/product-specs/deep-research-api.md`: ordinary ask, streamed ask, plan, execute, research
+- `docs/product-specs/evaluation-api.md`: test cases, presets, campaigns, results, traces, metrics

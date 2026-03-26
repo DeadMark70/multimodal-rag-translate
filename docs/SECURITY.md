@@ -1,26 +1,26 @@
 # SECURITY
 
-## Current Security Baseline
+## Security Baseline
 
-Backend enforces JWT-based user identity checks on user-facing routers.
+Backend APIs are the source of truth for authentication, authorization boundaries, path safety, and error handling.
 
 ## Implemented Controls
 
-1. Auth dependency (`get_current_user_id`) is used across user routers.
-2. Secrets are loaded from environment; no hardcoded keys expected.
-3. Upload flows validate file types and use safer path handling patterns.
-4. Public health endpoint remains intentionally minimal.
+1. User-facing routes rely on `Depends(get_current_user_id)`.
+2. Request validation and standardized error envelopes run through FastAPI + `core/errors.py`.
+3. `doc_id`-based file/resource paths are UUID-typed on current document lifecycle endpoints.
+4. Upload-root policies and PDF validation are centralized in `core/uploads.py`.
+5. CORS origins are explicit and overrideable through `CORS_ORIGINS`.
 
-## Known Gaps
+## Current Limits
 
-1. Some historical endpoints have used string `doc_id` and need strict UUID coverage.
-2. Internal controls are not a full RBAC/tenant isolation system.
-3. Security telemetry and anomaly detection are limited.
+1. The system is not a full RBAC or tenant-isolation platform beyond the current auth boundaries.
+2. Security telemetry and anomaly detection are still limited.
+3. Public deployment still needs broader abuse protection and audit visibility.
 
-## Required Upgrade Path For Public Deployment
+## Deployment Hardening Priorities
 
-1. Enforce UUID/path-safety for all file/resource IDs.
-2. Add stronger authorization boundaries and audit logging.
-3. Add rate limiting and abuse protection.
-4. Expand security tests and CI security checks.
-
+1. Keep auth dependencies explicit on every protected endpoint.
+2. Maintain UUID/path-safety coverage for document and graph maintenance flows.
+3. Add stronger rate limiting, audit logging, and abuse protection for public exposure.
+4. Keep dependency and env validation checks aligned with real imports and startup requirements.

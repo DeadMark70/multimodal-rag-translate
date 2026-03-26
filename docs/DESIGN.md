@@ -2,19 +2,19 @@
 
 ## Intent
 
-Document backend architecture decisions, API boundaries, and reliability contracts.
+Capture stable backend architecture decisions and boundaries.
 
 ## Core Decisions
 
-1. Keep app assembly in factory (`core/app_factory.py`) and business logic in modules.
-2. Keep module boundaries explicit (`pdfserviceMD`, `data_base`, `graph_rag`, `multimodal_rag`, `conversations`, `stats`).
-3. Keep auth dependency explicit on protected routers.
-4. Keep long-running workflows observable through SSE and logs.
-5. Keep retrieval and evaluation behavior compatible with existing tests and docs.
+1. Keep app assembly in `core/app_factory.py`; keep business logic in modules and services.
+2. Router modules must not import other router modules; shared behavior belongs in service/helper seams.
+3. Keep auth, upload validation, and provider selection centralized in `core/`.
+4. Treat generated API inventories and product specs as companion docs, not as part of one oversized overview file.
+5. Preserve explicit request/response contracts and persistence seams when refactoring internals.
 
-## Pointers
+## Deep Dives
 
-- Service overview: `docs/BACKEND.md`
-- Existing stack notes: `conductor/tech-stack.md`
-- Existing workflow rules: `conductor/workflow.md`
-- Legacy implementation guide: `agent.md`
+- `docs/design-docs/runtime-and-router-boundaries.md`
+- `docs/design-docs/retrieval-and-indexing.md`
+- `docs/design-docs/conversation-persistence.md`
+- `docs/design-docs/evaluation-runtime.md`

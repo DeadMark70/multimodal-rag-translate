@@ -1,18 +1,10 @@
-# Design Docs Index
+# Backend Design Docs Index
 
-Purpose: durable backend design decisions and contracts.
+Purpose: durable subsystem decisions and architecture boundaries.
 
-## Read Order
+## Docs
 
-1. `docs/DESIGN.md`
-2. `docs/BACKEND.md`
-3. `conductor/tech-stack.md`
-4. `conductor/workflow.md`
-5. `agent.md`
-
-## Scope
-
-- API and module boundaries.
-- Startup/lifecycle expectations.
-- Reliability and security contracts.
-
+- `docs/design-docs/runtime-and-router-boundaries.md`: app factory, router seams, and shared core ownership
+- `docs/design-docs/retrieval-and-indexing.md`: ask/research/indexing and metadata boundaries
+- `docs/design-docs/conversation-persistence.md`: conversation/message persistence rules
+- `docs/design-docs/evaluation-runtime.md`: evaluation storage, traces, metrics, and stream model

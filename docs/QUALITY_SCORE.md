@@ -2,26 +2,26 @@
 
 ## Goal
 
-Track practical quality and reliability signals for backend behavior.
+Track whether backend behavior remains stable, observable, and contract-safe as the code evolves.
 
-## Suggested Scorecard
+## Active Scorecard
 
-| Dimension | Signal | Method |
+| Dimension | What we watch | Current evidence |
 |---|---|---|
-| API stability | response/schema break rate | contract tests + integration checks |
-| Retrieval quality | answer grounding and relevance | benchmark samples + RAG eval |
-| Streaming health | interrupted or malformed event rate | SSE integration tests |
-| Security hygiene | auth gaps and unsafe inputs | security review + static checks |
-| Runtime reliability | failure/retry rate | logs + test regression |
+| API stability | route/schema drift | router and contract tests, `openapi.json` spot checks |
+| Retrieval and graph quality | behavior regressions in ask/research/graph flows | focused RAG and GraphRAG pytest coverage |
+| Streaming health | malformed or dropped SSE progress | chat/research/evaluation stream tests |
+| Persistence safety | document, conversation, and campaign durability | repository, background, and campaign tests |
+| Runtime reliability | startup, retries, warmup degradation | app-factory, repository, and evaluation coverage |
 
 ## Current State
 
-- Broad endpoint coverage exists in `tests/`.
-- Security audit documents exist in `agentlog/audit_20260122/`.
+- Broad backend regression coverage already exists under `tests/`.
+- Evaluation, GraphRAG, PDF service, and conversation paths all have focused suites.
+- Full acceptance remains `.\.venv\Scripts\python.exe -m pytest`.
 
-## Next Up
+## Next Quality Investments
 
-1. Add contract tests for critical request/response schemas.
-2. Keep RAG evaluation smoke checks for high-impact changes.
-3. Track recurring failure classes and convert them into guardrails.
-
+1. Keep generated API docs in sync with router/openapi changes.
+2. Expand focused SSE coverage whenever new stream events are added.
+3. Keep dependency and startup checks aligned with real runtime imports and warmup behavior.

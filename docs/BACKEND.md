@@ -5,79 +5,61 @@
 - Python 3.10+
 - FastAPI + Uvicorn
 - SSE-Starlette
-- LangChain ecosystem + Gemini
-- FAISS + Sentence-Transformers + GraphRAG tooling
+- Google GenAI SDK + LangChain runtime integrations
+- FAISS + GraphRAG + Supabase + SQLite
 - Pytest + pytest-asyncio
 
-## Backend Architecture
+## Runtime Entry
 
-- App entry: `main.py`
+- Thin entrypoint: `main.py`
 - App factory and lifecycle: `core/app_factory.py`
-- Routers:
-  - `pdfserviceMD/router.py`
-  - `data_base/router.py`
-  - `image_service/router.py`
-  - `multimodal_rag/router.py`
-  - `graph_rag/router.py`
-  - `conversations/router.py`
-  - `stats/router.py`
-  - `evaluation/router.py`
+- Shared error envelope: `core/errors.py`
+- Shared provider/auth/upload helpers live under `core/`
 
-## Gemini Layering
+## Router Prefixes
 
-- Control plane uses the direct Google GenAI SDK through `core/google_genai_client.py`.
-- `evaluation/model_discovery.py` stays on the control plane and only handles model listing, filtering, normalization, and fallback behavior.
-- Runtime LLM access stays behind `core/providers.py`, with `core/llm_factory.py` as the only `ChatGoogleGenerativeAI` construction point.
-- Runtime embeddings stay centralized in `data_base/vector_store_manager.py`, which remains the only `GoogleGenerativeAIEmbeddings` construction point.
-- Business logic modules should not mix direct `google-genai` client creation with runtime `get_llm(...)` usage.
+- `/pdfmd`
+- `/rag`
+- `/imagemd`
+- `/multimodal`
+- `/stats`
+- `/graph`
+- `/api/evaluation`
+- `/api/conversations`
 
-## Evaluation Backend
+## Lifecycle Responsibilities
 
-### Phase 1 delivered
+- Load env from `config.env`
+- Configure logging and provider selection
+- Attach request-id middleware and global error handlers
+- Initialize Supabase client handle
+- Initialize evaluation SQLite database
+- Warm up RAG components unless fake/test providers are enabled
+- Warm up PDF OCR unless fake/test providers are enabled
 
-- `evaluation/schemas.py`: test case, import/export, model config, available model schemas
-- `evaluation/storage.py`: per-user JSON storage under `uploads/<user_id>/evaluation/`
-- `evaluation/model_discovery.py`: dynamic Gemini model listing with cache via the Google GenAI SDK
-- `evaluation/router.py`: `/api/evaluation/test-cases`, `/models`, `/model-configs`
+## Subsystem Ownership
 
-### Phase 2 delivered
+- `pdfserviceMD/`: document ingestion, OCR artifacts, translation, summaries, retry-index lifecycle
+- `data_base/`: ordinary ask, streamed ask, Deep Research orchestration, retrieval, reranking, indexing
+- `graph_rag/`: graph extraction, graph store, optimize/rebuild/retry/purge maintenance
+- `conversations/`: conversation and message persistence
+- `evaluation/`: test cases, model presets, campaigns, traces, metrics, rerun/evaluate flows
+- `stats/`: dashboard aggregates
+- `multimodal_rag/` and `image_service/`: multimodal extraction and image translation support
 
-- `evaluation/db.py`: SQLite repository layer backed by `pdftopng/data/evaluation.db`
-- `evaluation/retry.py`: tenacity-based retry wrapper for 429/503 and RPM budget helper
-- `evaluation/rag_modes.py`: importable benchmark execution core extracted from Bergen flow
-- `evaluation/campaign_engine.py`: async campaign orchestration, incremental result persistence, cancellation
-- `evaluation/router.py`: `/api/evaluation/campaigns`, `/campaigns/{id}/stream`, `/results`, `/cancel`
-- `core/llm_factory.py`: request-scoped LLM overrides to avoid cross-campaign model leakage
+## Runtime-Critical Behaviors
 
-### Runtime behavior
+- Protected routes depend on `get_current_user_id`.
+- `core/errors.py` returns a standard `{ error: { code, message, request_id, details? } }` envelope.
+- Request middleware attaches `X-Request-Id` to the response.
+- `TEST_MODE` or `USE_FAKE_PROVIDERS` skip real warmups and provider calls during startup-sensitive paths.
+- Evaluation persists campaign state in SQLite with WAL mode and supports results, traces, metrics, manual evaluate, cancel, and SSE reconnect.
+- Canonical metadata writes use `doc_id`; `original_doc_uid` remains compatibility fallback on read/delete paths only.
 
-- Campaign progress is persisted in SQLite and survives browser refreshes
-- SSE clients reconnect by campaign id and recover from the latest DB snapshot
-- SQLite runs in WAL mode and is ignored from git via `data/evaluation.db*`
+## Focused Verification Surface
 
-### Focused verification
-
-- `tests/test_evaluation_api.py`: Phase 1 CRUD and dynamic model discovery coverage
-- `tests/test_campaign_engine.py`: smoke campaign, cancel path, retry behavior, concurrent SQLite write stress test
-
-## API Boundary Rules
-
-1. Keep request/response schemas explicit and typed.
-2. Keep auth dependencies on protected endpoints.
-3. Keep file path handling UUID-safe and traversal-safe.
-4. Keep heavy CPU tasks off the event loop.
-
-## Runtime Notes
-
-- CORS defaults are local-dev friendly and overrideable with `CORS_ORIGINS`.
-- Environment is loaded from `config.env` in app factory bootstrap.
-
-## Cleanup Rules (2026-03-26)
-
-- Production-only architecture checks exclude `bergen/`, `experiments/`, and `scripts/`.
-- `core/uploads.py` owns upload-root path helpers and PDF upload validation for the ingestion/graph cleanup track.
-- `core/supabase_repository.py` owns shared Supabase repository retry/client helpers.
-- `data_base/indexing_service.py` is the production indexing orchestration seam.
-- `graph_rag/service.py` owns GraphRAG extraction; routers must not import other routers.
-- Canonical vector/document metadata writes use `doc_id`; legacy `original_doc_uid` is fallback-only during compatibility reads/deletes.
-
+- Contract and router tests under `tests/`
+- Evaluation engine and persistence tests
+- GraphRAG extractor/store/router tests
+- PDF service repository/background/manual-translation tests
+- Full backend acceptance: `.\.venv\Scripts\python.exe -m pytest`
