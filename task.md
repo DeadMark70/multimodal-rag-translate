@@ -1,3 +1,24 @@
+# Task Specification: Backend Cleanup / Scope Separation (2026-03-26)
+
+## 1. Overview
+This track normalizes the backend around production-only boundaries, shared infrastructure helpers, and canonical document metadata while preserving public API behavior.
+
+## 2. Cleanup Deliverables
+- `core/production_scope.py`
+- `core/supabase_repository.py`
+- `core/uploads.py`
+- `data_base/document_metadata.py`
+- `data_base/indexing_service.py`
+- `graph_rag/service.py`
+
+## 3. Acceptance Snapshot
+- [x] Non-production trees are excluded from production enforcement.
+- [x] High-confidence orphan modules were removed.
+- [x] Repository retry/client logic is shared.
+- [x] New vector metadata writes use canonical `doc_id`.
+- [x] Router-to-router import leakage is blocked by tests.
+- [x] Full backend `pytest` passed on 2026-03-26 (`375 passed`).
+
 # Task Specification: Backend Refactor & Standardization (2026-02-09)
 
 ## 1. Overview

@@ -71,3 +71,13 @@
 
 - CORS defaults are local-dev friendly and overrideable with `CORS_ORIGINS`.
 - Environment is loaded from `config.env` in app factory bootstrap.
+
+## Cleanup Rules (2026-03-26)
+
+- Production-only architecture checks exclude `bergen/`, `experiments/`, and `scripts/`.
+- `core/uploads.py` owns upload-root path helpers and PDF upload validation for the ingestion/graph cleanup track.
+- `core/supabase_repository.py` owns shared Supabase repository retry/client helpers.
+- `data_base/indexing_service.py` is the production indexing orchestration seam.
+- `graph_rag/service.py` owns GraphRAG extraction; routers must not import other routers.
+- Canonical vector/document metadata writes use `doc_id`; legacy `original_doc_uid` is fallback-only during compatibility reads/deletes.
+

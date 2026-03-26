@@ -81,6 +81,10 @@ This is a FastAPI-based multimodal Agentic RAG backend.
 - Use safe path building (`os.path.join`, `os.path.normpath`) and strict input validation.
 - Do not mutate global hardware env vars (for example `CUDA_VISIBLE_DEVICES`) at module import time; keep device policy local to the component being initialized.
 - When adding streamed and non-streamed variants of the same API capability, keep them on one shared execution path and make the streamed `complete` payload match the synchronous response contract.
+- Production-only architecture checks must exclude `experiments/`, `bergen/`, and `scripts/`.
+- Router modules must not import other router modules; shared cross-domain logic belongs in service/helper modules.
+- Upload-root paths and PDF upload validation must stay centralized in `core/uploads.py`.
+- New vector/document metadata writes must use canonical `doc_id`; `original_doc_uid` is compatibility fallback only on read/delete paths.
 - Keep changes incremental and reviewable; avoid large mixed-purpose patches.
 
 ## 5. Refactor Workflow (Per Task)
@@ -145,3 +149,17 @@ Keep these three files synchronized before ending a session.
 - Phase 5 remains canceled by user decision (`canceled_by_user_20260208`); do not run Bergen/RAGAS commands from that phase.
 - Full test regression was run in `.venv` (`python -m pytest`): `225 passed`.
 - Current remaining work is optional warning/deprecation cleanup and future corpus-driven markdown edge-case expansion.
+
+## 11. Backend Cleanup Track Status (2026-03-26)
+- Completed scope separation for production enforcement via `core/production_scope.py` and static coverage in `tests/test_production_scope.py`.
+- Removed high-confidence orphan modules:
+  - `pdfserviceMD/markdown_to_pdf.py`
+  - `multimodal_rag/utils.py`
+- Standardized repository Supabase access through `core/supabase_repository.py`.
+- Canonicalized vector metadata writes onto `doc_id` with compatibility fallback helpers in `data_base/document_metadata.py`.
+- Extracted production indexing orchestration to `data_base/indexing_service.py`.
+- Repaired router/service boundaries by moving GraphRAG extraction into `graph_rag/service.py` and centralizing upload helpers in `core/uploads.py`.
+- Added backend boundary guards:
+  - `tests/test_router_boundaries.py`
+  - `tests/test_uploads.py`
+- Full backend verification after this cleanup track: `.\\.venv\\Scripts\\python.exe -m pytest` -> `375 passed`.
