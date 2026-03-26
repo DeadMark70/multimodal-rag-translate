@@ -36,6 +36,7 @@ from langchain_core.messages import HumanMessage
 
 # Local application
 from core.providers import get_llm
+from data_base.document_metadata import get_document_id, matches_document_id
 from data_base.vector_store_manager import get_user_retriever
 from data_base.reranker import DocumentReranker
 from data_base.query_transformer import (
@@ -781,8 +782,7 @@ async def rag_answer_question(
         doc_id_set = set(doc_ids)
         filtered_docs = [
             d for d in docs 
-            if d.metadata.get("doc_id") in doc_id_set or
-               d.metadata.get("original_doc_uid") in doc_id_set
+            if get_document_id(d.metadata) in doc_id_set
         ]
         docs = filtered_docs
         
@@ -794,7 +794,7 @@ async def rag_answer_question(
         # Debug: Count chunks per doc_id
         doc_chunk_count = {}
         for d in docs:
-            did = d.metadata.get("doc_id") or d.metadata.get("original_doc_uid") or "unknown"
+            did = get_document_id(d.metadata) or "unknown"
             doc_chunk_count[did] = doc_chunk_count.get(did, 0) + 1
         logger.info(f"Multi-doc retrieval: {doc_chunk_count}")
 
@@ -834,7 +834,7 @@ async def rag_answer_question(
         docs_by_id = {}
         
         for d in docs:
-            did = d.metadata.get("doc_id") or d.metadata.get("original_doc_uid") or "unknown"
+            did = get_document_id(d.metadata) or "unknown"
             if did not in docs_by_id:
                 docs_by_id[did] = []
             docs_by_id[did].append(d)
@@ -878,7 +878,7 @@ async def rag_answer_question(
     # Collect unique doc_ids first
     unique_doc_ids = set()
     for doc in docs:
-        doc_id = doc.metadata.get("doc_id") or doc.metadata.get("original_doc_uid")
+        doc_id = get_document_id(doc.metadata)
         if doc_id:
             unique_doc_ids.add(doc_id)
     
@@ -892,7 +892,7 @@ async def rag_answer_question(
     
     # Fallback for any doc_ids not found in DB
     for doc in docs:
-        doc_id = doc.metadata.get("doc_id") or doc.metadata.get("original_doc_uid")
+        doc_id = get_document_id(doc.metadata)
         if doc_id and doc_id not in doc_id_to_name:
             filename = doc.metadata.get("file_name") or doc.metadata.get("source_file") or f"文件-{doc_id[:8]}"
             doc_id_to_name[doc_id] = filename
@@ -904,7 +904,7 @@ async def rag_answer_question(
         source = doc.metadata.get("source", "text")
         
         # Track source doc_ids
-        doc_id = doc.metadata.get("doc_id") or doc.metadata.get("original_doc_uid")
+        doc_id = get_document_id(doc.metadata)
         if doc_id:
             source_doc_ids.add(doc_id)
         

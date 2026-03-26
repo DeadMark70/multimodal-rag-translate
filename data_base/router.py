@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 # Local application
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
+from data_base.document_metadata import matches_document_id
 from data_base.RAG_QA_service import initialize_llm_service, rag_answer_question, RAGResult
 from data_base.repository import insert_chat_log, insert_query_log
 from data_base.reranker import DocumentReranker, initialize_reranker
@@ -198,7 +199,7 @@ async def _run_contextual_ask(
         for doc_id in sources:
             snippet = ""
             for doc in docs:
-                if doc.metadata.get("doc_id") == doc_id or doc.metadata.get("original_doc_uid") == doc_id:
+                if matches_document_id(doc.metadata, doc_id):
                     snippet = doc.page_content[:200]
                     break
             source_details.append(

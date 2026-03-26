@@ -6,10 +6,13 @@ Provides common fixtures for Phase 1 unit and integration tests.
 
 # Standard library
 import os
+import shutil
 import socket
 import sys
+from pathlib import Path
 from typing import List
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 # Third-party
 import pytest
@@ -101,6 +104,22 @@ def temp_user_dir(tmp_path):
     user_dir = tmp_path / "uploads" / "test-user" / "rag_index"
     user_dir.mkdir(parents=True, exist_ok=True)
     return user_dir
+
+
+@pytest.fixture
+def tmp_path():
+    """Use a workspace-local temp directory because system temp is not writable here."""
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "output"
+        / "test_tmp"
+        / f"pytest-{uuid4().hex}"
+    )
+    path.mkdir(parents=True, exist_ok=False)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 @pytest.fixture

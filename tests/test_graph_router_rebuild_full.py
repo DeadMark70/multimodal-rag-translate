@@ -142,7 +142,7 @@ async def test_full_rebuild_keeps_old_graph_when_any_document_fails() -> None:
     (artifact_dir / "extracted.md").write_text("demo", encoding="utf-8")
 
     with (
-        patch("graph_rag.store.BASE_UPLOAD_FOLDER", str(upload_root)),
+        patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)),
         patch("graph_rag.router.list_pdf_documents", new=AsyncMock(return_value=[
             {"id": "doc-1", "file_name": "demo.pdf", "original_path": str(artifact_dir / "demo.pdf")},
         ])),
@@ -164,7 +164,7 @@ async def test_full_rebuild_keeps_old_graph_when_any_document_fails() -> None:
             store.save_sidecars()
             return GraphExtractionRunResult(doc_id=doc_id, status="failed", last_error="boom")
 
-        with patch("graph_rag.router._run_graph_extraction", new=AsyncMock(side_effect=_fake_run_graph_extraction)):
+        with patch("graph_rag.router.run_graph_extraction", new=AsyncMock(side_effect=_fake_run_graph_extraction)):
             await _rebuild_full_graph_task(TEST_USER_ID)
 
         reloaded = GraphStore(TEST_USER_ID)
@@ -183,7 +183,7 @@ async def test_retry_graph_document_replaces_only_target_document_contribution()
     (artifact_dir / "extracted.md").write_text("demo", encoding="utf-8")
 
     with (
-        patch("graph_rag.store.BASE_UPLOAD_FOLDER", str(upload_root)),
+        patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)),
         patch(
             "graph_rag.router.get_document",
             new=AsyncMock(return_value={"original_path": str(artifact_dir / "demo.pdf")}),
@@ -221,7 +221,7 @@ async def test_retry_graph_document_replaces_only_target_document_contribution()
             return (0, 0)
 
         with (
-            patch("graph_rag.router._run_graph_extraction", new=AsyncMock(side_effect=_fake_run_graph_extraction)),
+            patch("graph_rag.router.run_graph_extraction", new=AsyncMock(side_effect=_fake_run_graph_extraction)),
             patch("graph_rag.router._optimize_existing_graph", new=AsyncMock(side_effect=_fake_optimize)),
         ):
             await _retry_graph_document_task(TEST_USER_ID, "doc-1")
@@ -240,7 +240,7 @@ async def test_retry_graph_document_replaces_only_target_document_contribution()
 async def test_purge_graph_document_removes_orphan_contribution() -> None:
     upload_root = _workspace_upload_root("graph_purge_success")
 
-    with patch("graph_rag.store.BASE_UPLOAD_FOLDER", str(upload_root)):
+    with patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)):
         live_store = GraphStore(TEST_USER_ID)
         live_store.add_node_from_extraction(
             label="Orphan Entity",

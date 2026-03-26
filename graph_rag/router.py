@@ -24,6 +24,8 @@ from pydantic import BaseModel, Field
 # Local application
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
+from core import uploads as upload_paths
+from graph_rag.service import run_graph_extraction
 from graph_rag.schemas import (
     GraphDocumentStatus,
     GraphDocumentStatusItem,
@@ -32,7 +34,6 @@ from graph_rag.schemas import (
 )
 from graph_rag.store import GraphStore
 from pdfserviceMD.repository import get_document, list_documents as list_pdf_documents
-from pdfserviceMD.router import _run_graph_extraction
 from pdfserviceMD.service import load_ocr_artifacts
 
 # Configure logging
@@ -584,7 +585,7 @@ async def _rebuild_full_graph_task(user_id: str) -> None:
             user_folder = (
                 Path(original_path).resolve().parent
                 if original_path
-                else Path("uploads") / user_id / doc_id
+                else Path(upload_paths.get_document_upload_dir(user_id, doc_id))
             )
 
             try:
@@ -604,7 +605,7 @@ async def _rebuild_full_graph_task(user_id: str) -> None:
                 logger.warning("Failed to load OCR artifacts for %s during full rebuild: %s", doc_id, exc)
                 continue
 
-            await _run_graph_extraction(
+            await run_graph_extraction(
                 user_id=user_id,
                 doc_id=doc_id,
                 markdown_text=markdown_text,
@@ -670,14 +671,14 @@ async def _retry_graph_document_task(user_id: str, doc_id: str) -> None:
         user_folder = (
             Path(original_path).resolve().parent
             if original_path
-            else Path("uploads") / user_id / doc_id
+            else Path(upload_paths.get_document_upload_dir(user_id, doc_id))
         )
         markdown_text, _ = await asyncio.to_thread(
             load_ocr_artifacts,
             user_folder=str(user_folder),
         )
 
-        result = await _run_graph_extraction(
+        result = await run_graph_extraction(
             user_id=user_id,
             doc_id=doc_id,
             markdown_text=markdown_text,

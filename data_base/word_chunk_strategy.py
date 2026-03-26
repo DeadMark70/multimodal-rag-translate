@@ -15,6 +15,7 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # Local application
+from data_base.document_metadata import with_document_id
 from data_base.semantic_chunker import SemanticTextChunker
 
 # Configure logging
@@ -135,11 +136,13 @@ def _process_page_content(
     Returns:
         List of Document chunks for this page.
     """
-    base_metadata = {
-        "book_title": pdf_title,
-        "original_doc_uid": original_doc_uid,
-        "page_number": page_number,
-    }
+    base_metadata = with_document_id(
+        {
+            "book_title": pdf_title,
+            "page_number": page_number,
+        },
+        original_doc_uid,
+    )
 
     if chunking_method == "semantic" and embeddings is not None:
         # Use semantic chunking

@@ -15,7 +15,7 @@ def _workspace_upload_root(test_name: str) -> Path:
 def test_graph_store_persists_metadata_sidecar() -> None:
     upload_root = _workspace_upload_root("graphrag_store_meta")
 
-    with patch("graph_rag.store.BASE_UPLOAD_FOLDER", str(upload_root)):
+    with patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)):
         store = GraphStore("test-user")
         node_id = store.add_node_from_extraction(
             label="Transformer",
@@ -61,7 +61,7 @@ def test_graph_store_persists_metadata_sidecar() -> None:
 def test_graph_store_marks_graph_dirty_after_mutation() -> None:
     upload_root = _workspace_upload_root("graphrag_store_dirty")
 
-    with patch("graph_rag.store.BASE_UPLOAD_FOLDER", str(upload_root)):
+    with patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)):
         store = GraphStore("dirty-user")
         store.add_node_from_extraction(
             label="BERT",
@@ -77,7 +77,7 @@ def test_graph_store_marks_graph_dirty_after_mutation() -> None:
 def test_graph_store_falls_back_to_legacy_metadata_when_sidecar_is_corrupted() -> None:
     upload_root = _workspace_upload_root("graphrag_store_corrupt_meta")
 
-    with patch("graph_rag.store.BASE_UPLOAD_FOLDER", str(upload_root)):
+    with patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)):
         store = GraphStore("legacy-user")
         node_id = store.add_node_from_extraction(
             label="GraphSAGE",
@@ -125,7 +125,7 @@ def test_graph_store_falls_back_to_legacy_metadata_when_sidecar_is_corrupted() -
 def test_graph_store_persists_document_status_sidecar_without_graph_pickle() -> None:
     upload_root = _workspace_upload_root("graphrag_store_doc_status")
 
-    with patch("graph_rag.store.BASE_UPLOAD_FOLDER", str(upload_root)):
+    with patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)):
         artifact_dir = upload_root / "status-user" / "doc-1"
         artifact_dir.mkdir(parents=True, exist_ok=True)
         (artifact_dir / "extracted.md").write_text("demo", encoding="utf-8")

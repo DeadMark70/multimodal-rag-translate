@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import networkx as nx
 
 # Local application
+from core import uploads as upload_paths
 from graph_rag.schemas import (
     Community,
     GraphDocumentStatus,
@@ -30,8 +31,6 @@ from graph_rag.schemas import (
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Base path for user uploads
-BASE_UPLOAD_FOLDER = "uploads"
 GRAPH_INDEX_VERSION = 2
 GRAPH_DOCUMENTS_FILENAME = "graph.documents.json"
 GRAPH_SOURCE_MARKDOWN_FILENAME = "extracted.md"
@@ -80,7 +79,7 @@ class GraphStore:
         self._storage_dir = (
             Path(storage_dir)
             if storage_dir is not None
-            else Path(BASE_UPLOAD_FOLDER) / self.user_id / "rag_index"
+            else upload_paths.get_rag_index_dir_path(self.user_id)
         )
         self._storage_dir.mkdir(parents=True, exist_ok=True)
         self.graph: nx.DiGraph = nx.DiGraph()
@@ -638,7 +637,7 @@ class GraphStore:
 
     def list_eligible_document_ids(self) -> List[str]:
         """Return document ids that still have OCR markdown artifacts on disk."""
-        user_dir = Path(BASE_UPLOAD_FOLDER) / self.user_id
+        user_dir = Path(upload_paths.get_user_upload_dir(self.user_id))
         if not user_dir.exists():
             return []
 

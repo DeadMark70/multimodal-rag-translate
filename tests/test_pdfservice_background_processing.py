@@ -78,7 +78,7 @@ async def test_run_post_processing_tasks_records_background_failure_and_continue
             new=AsyncMock(),
         ) as update_step,
         patch(
-            "pdfserviceMD.router.add_markdown_to_knowledge_base",
+            "pdfserviceMD.router.index_markdown_document",
             new=AsyncMock(side_effect=RuntimeError("vector store exploded")),
         ),
         patch(
@@ -86,7 +86,7 @@ async def test_run_post_processing_tasks_records_background_failure_and_continue
             new=AsyncMock(return_value=0),
         ) as process_images,
         patch(
-            "pdfserviceMD.router._run_graph_extraction",
+            "pdfserviceMD.router.run_graph_extraction",
             new=AsyncMock(),
         ) as run_graph,
         patch(
@@ -175,7 +175,7 @@ async def test_process_document_images_classifies_visual_index_failures() -> Non
             new=AsyncMock(return_value=[successful_summary]),
         ),
         patch(
-            "pdfserviceMD.router.add_visual_summaries_to_knowledge_base",
+            "pdfserviceMD.router.index_visual_summaries",
             side_effect=RuntimeError("Embedding transport error after 4 attempts"),
         ),
     ):
@@ -204,7 +204,7 @@ async def test_run_post_processing_tasks_records_visual_index_failure_stage() ->
             new=AsyncMock(),
         ),
         patch(
-            "pdfserviceMD.router.add_markdown_to_knowledge_base",
+            "pdfserviceMD.router.index_markdown_document",
             new=AsyncMock(),
         ),
         patch(
@@ -217,7 +217,7 @@ async def test_run_post_processing_tasks_records_visual_index_failure_stage() ->
             ),
         ),
         patch(
-            "pdfserviceMD.router._run_graph_extraction",
+            "pdfserviceMD.router.run_graph_extraction",
             new=AsyncMock(return_value=SimpleNamespace(status="indexed", last_error=None)),
         ),
         patch(
@@ -306,7 +306,7 @@ async def test_retry_document_index_task_clears_vectors_and_skips_graph_pipeline
     with (
         patch("pdfserviceMD.router.run_in_threadpool", new=run_in_threadpool_mock),
         patch("pdfserviceMD.router.update_indexing_processing_step", new=AsyncMock()),
-        patch("pdfserviceMD.router.add_markdown_to_knowledge_base", new=AsyncMock()),
+        patch("pdfserviceMD.router.index_markdown_document", new=AsyncMock()),
         patch("pdfserviceMD.router._process_document_images", new=AsyncMock(return_value=1)),
         patch("pdfserviceMD.router.record_background_processing_failure", new=AsyncMock()) as record_failure,
         patch("pdfserviceMD.router.safe_update_document_status", new=AsyncMock()) as safe_update_status,

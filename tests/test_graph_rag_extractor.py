@@ -9,7 +9,7 @@ from graph_rag.extractor import (
     _parse_json_from_response,
 )
 from graph_rag.schemas import EntityType, ExtractedEntity, ExtractedRelation
-from pdfserviceMD.router import _run_graph_extraction
+from graph_rag.service import run_graph_extraction
 
 
 def _make_llm_with_structured_payload(
@@ -356,13 +356,13 @@ async def test_run_graph_extraction_invokes_one_extraction_call_per_valid_chunk(
     mock_store = Mock()
 
     with (
-        patch("pdfserviceMD.router.GraphStore", return_value=mock_store),
+        patch("graph_rag.service.GraphStore", return_value=mock_store),
         patch(
-            "pdfserviceMD.router.extract_and_add_to_graph",
+            "graph_rag.service.extract_and_add_to_graph",
             new=AsyncMock(side_effect=[(1, 0), (2, 1)]),
         ) as mock_extract,
     ):
-        await _run_graph_extraction(
+        await run_graph_extraction(
             user_id="user-1",
             doc_id="doc-1",
             markdown_text=markdown_text,
@@ -378,8 +378,8 @@ async def test_run_graph_extraction_invokes_one_extraction_call_per_valid_chunk(
 async def test_run_graph_extraction_marks_empty_when_no_valid_chunks() -> None:
     mock_store = Mock()
 
-    with patch("pdfserviceMD.router.GraphStore", return_value=mock_store):
-        result = await _run_graph_extraction(
+    with patch("graph_rag.service.GraphStore", return_value=mock_store):
+        result = await run_graph_extraction(
             user_id="user-1",
             doc_id="doc-empty",
             markdown_text="too short",
@@ -397,13 +397,13 @@ async def test_run_graph_extraction_marks_partial_when_some_chunks_fail() -> Non
     mock_store = Mock()
 
     with (
-        patch("pdfserviceMD.router.GraphStore", return_value=mock_store),
+        patch("graph_rag.service.GraphStore", return_value=mock_store),
         patch(
-            "pdfserviceMD.router.extract_and_add_to_graph",
+            "graph_rag.service.extract_and_add_to_graph",
             new=AsyncMock(side_effect=[(1, 0), RuntimeError("quota exceeded")]),
         ),
     ):
-        result = await _run_graph_extraction(
+        result = await run_graph_extraction(
             user_id="user-1",
             doc_id="doc-partial",
             markdown_text=markdown_text,

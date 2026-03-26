@@ -8,7 +8,6 @@ Provides API endpoints for PDF upload, OCR processing, translation, and file man
 import asyncio
 import logging
 import os
-from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -20,20 +19,17 @@ from fastapi.responses import FileResponse
 # Local application
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
-from data_base.vector_store_manager import (
-    add_markdown_to_knowledge_base,
-    add_visual_summaries_to_knowledge_base,
-    delete_document_from_knowledge_base,
-)
+from core import uploads as upload_paths
+from data_base.indexing_service import index_markdown_document, index_visual_summaries
+from data_base.vector_store_manager import delete_document_from_knowledge_base
 from pdfserviceMD.image_processor import (
     extract_images_from_markdown,
     create_visual_elements,
 )
 from multimodal_rag.image_summarizer import summarizer as image_summarizer
 from core.summary_service import schedule_summary_generation
+from graph_rag.service import run_graph_extraction
 from graph_rag.store import GraphStore
-from graph_rag.extractor import extract_and_add_to_graph
-from graph_rag.schemas import GraphDocumentStatus, GraphExtractionRunResult
 from pdfserviceMD.schemas import (
     DeleteDocumentResponse,
     DocumentListResponse,
@@ -66,8 +62,7 @@ from pdfserviceMD.repository import get_document
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-BASE_UPLOAD_FOLDER = "uploads"
-os.makedirs(BASE_UPLOAD_FOLDER, exist_ok=True)
+upload_paths.ensure_upload_root()
 
 
 class DocumentImageProcessingError(RuntimeError):
@@ -85,33 +80,6 @@ def _format_image_processing_error(exc: DocumentImageProcessingError) -> str:
     if exc.stage == "visual_summary_index_failed":
         return f"Visual summary indexing failed: {exc}"
     return f"Image processing failed: {exc}"
-
-
-def _validate_pdf_upload(file: UploadFile) -> None:
-    """
-    Validates that the uploaded file is a PDF.
-
-    Args:
-        file: The uploaded file object.
-
-    Raises:
-        AppError: 400 if file is not a valid PDF.
-    """
-    if file.content_type != "application/pdf":
-        raise AppError(
-            code=ErrorCode.BAD_REQUEST,
-            message="File must be a PDF (invalid content-type)",
-            status_code=400,
-        )
-
-    if file.filename:
-        _, ext = os.path.splitext(file.filename)
-        if ext.lower() != ".pdf":
-            raise AppError(
-                code=ErrorCode.BAD_REQUEST,
-                message="File must be a PDF (invalid extension)",
-                status_code=400,
-            )
 
 
 async def _run_pre_graph_indexing_steps(
@@ -140,7 +108,7 @@ async def _run_pre_graph_indexing_steps(
             user_id=user_id,
             step="indexing",
         )
-        await add_markdown_to_knowledge_base(
+        await index_markdown_document(
             user_id=user_id,
             markdown_text=markdown_text,
             pdf_title=book_title,
@@ -224,7 +192,11 @@ async def run_post_processing_tasks(
             user_id=user_id,
             step="graph_indexing",
         )
-        graph_result = await _run_graph_extraction(user_id, doc_id, markdown_text)
+        graph_result = await run_graph_extraction(
+            user_id=user_id,
+            doc_id=doc_id,
+            markdown_text=markdown_text,
+        )
         if graph_result.status in {"failed", "partial"} and graph_result.last_error:
             error_messages.append(f"Graph indexing failed: {graph_result.last_error}")
     except Exception as e:  # noqa: BLE001
@@ -364,7 +336,7 @@ async def _process_document_images(
 
         # 4. Index summaries to vector store
         try:
-            indexed_count = add_visual_summaries_to_knowledge_base(
+            indexed_count = index_visual_summaries(
                 user_id=user_id,
                 doc_id=doc_id,
                 elements=summarized_elements,
@@ -396,186 +368,6 @@ async def _process_document_images(
     except (RuntimeError, ValueError) as e:
         logger.warning(f"[Background] Image processing failed (non-fatal): {e}")
         return 0
-
-
-async def _run_graph_extraction(
-    user_id: str,
-    doc_id: str,
-    markdown_text: str,
-    batch_size: int = 3,
-    store: GraphStore | None = None,
-) -> GraphExtractionRunResult:
-    """
-    Run GraphRAG entity extraction on document content.
-
-    Extracts entities and relations from the document and adds them to
-    the user's knowledge graph. Uses batch parallel execution for efficiency;
-    this does not merge multiple chunks into a single prompt.
-
-    Args:
-        user_id: User ID for graph store.
-        doc_id: Document UUID.
-        markdown_text: Text content to extract entities from.
-        batch_size: Number of chunks to process in parallel (default 3).
-    """
-    active_store = store or GraphStore(user_id)
-    attempted_at = datetime.now()
-
-    def _persist_status(
-        *,
-        status: str,
-        chunk_count: int,
-        chunks_succeeded: int,
-        chunks_failed: int,
-        entities_added: int,
-        edges_added: int,
-        last_error: str | None,
-    ) -> GraphExtractionRunResult:
-        active_store.upsert_document_status(
-            GraphDocumentStatus(
-                doc_id=doc_id,
-                status=status,
-                chunk_count=chunk_count,
-                chunks_succeeded=chunks_succeeded,
-                chunks_failed=chunks_failed,
-                entities_added=entities_added,
-                edges_added=edges_added,
-                last_error=last_error,
-                last_attempted_at=attempted_at,
-                last_succeeded_at=attempted_at if status in {"indexed", "partial", "empty"} else None,
-            )
-        )
-        active_store.save_sidecars()
-        return GraphExtractionRunResult(
-            doc_id=doc_id,
-            status=status,
-            chunk_count=chunk_count,
-            chunks_succeeded=chunks_succeeded,
-            chunks_failed=chunks_failed,
-            entities_added=entities_added,
-            edges_added=edges_added,
-            last_error=last_error,
-        )
-
-    try:
-        chunk_size = 8000
-        all_chunks = [
-            markdown_text[i : i + chunk_size]
-            for i in range(0, len(markdown_text), chunk_size)
-        ]
-        chunks = [
-            (idx, chunk)
-            for idx, chunk in enumerate(all_chunks)
-            if len(chunk.strip()) >= 100
-        ]
-
-        if not chunks:
-            logger.info(f"[GraphRAG] No valid chunks to process for doc {doc_id}")
-            return _persist_status(
-                status="empty",
-                chunk_count=0,
-                chunks_succeeded=0,
-                chunks_failed=0,
-                entities_added=0,
-                edges_added=0,
-                last_error=None,
-            )
-
-        total_nodes = 0
-        total_edges = 0
-        completed_chunks = 0
-        chunk_failures: list[str] = []
-
-        num_batches = (len(chunks) + batch_size - 1) // batch_size
-        logger.info(
-            f"[GraphRAG] Processing {len(chunks)} chunks in {num_batches} concurrent batches "
-            f"(batch_size={batch_size}) for doc {doc_id}"
-        )
-
-        for batch_idx in range(num_batches):
-            batch_start = batch_idx * batch_size
-            batch_end = min(batch_start + batch_size, len(chunks))
-            batch = chunks[batch_start:batch_end]
-
-            logger.info(f"[GraphRAG] Processing batch {batch_idx + 1}/{num_batches}...")
-
-            tasks = [
-                extract_and_add_to_graph(
-                    text=chunk,
-                    doc_id=doc_id,
-                    store=active_store,
-                    chunk_index=idx,
-                )
-                for idx, chunk in batch
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for i, result in enumerate(results):
-                chunk_idx = batch[i][0]
-                if isinstance(result, Exception):
-                    chunk_failures.append(f"chunk {chunk_idx}: {result}")
-                    logger.warning(
-                        f"[GraphRAG] Chunk {chunk_idx} extraction failed: {result}"
-                    )
-                    continue
-
-                nodes, edges = result
-                completed_chunks += 1
-                total_nodes += nodes
-                total_edges += edges
-
-        if total_nodes > 0:
-            active_store.save()
-            logger.info(
-                f"[Background] GraphRAG complete for doc {doc_id}: "
-                f"{total_nodes} nodes, {total_edges} edges"
-            )
-        else:
-            logger.info(
-                f"[Background] GraphRAG: No entities extracted from doc {doc_id}"
-            )
-
-        if chunk_failures and completed_chunks > 0:
-            status = "partial"
-        elif chunk_failures:
-            status = "failed"
-        elif total_nodes == 0:
-            status = "empty"
-        else:
-            status = "indexed"
-
-        return _persist_status(
-            status=status,
-            chunk_count=len(chunks),
-            chunks_succeeded=completed_chunks,
-            chunks_failed=len(chunk_failures),
-            entities_added=total_nodes,
-            edges_added=total_edges,
-            last_error=" | ".join(chunk_failures) if chunk_failures else None,
-        )
-
-    except (FileNotFoundError, PermissionError) as e:
-        logger.warning(f"[GraphRAG] Store access failed for user {user_id}: {e}")
-        return _persist_status(
-            status="failed",
-            chunk_count=0,
-            chunks_succeeded=0,
-            chunks_failed=0,
-            entities_added=0,
-            edges_added=0,
-            last_error=str(e),
-        )
-    except Exception as e:
-        logger.error(f"[GraphRAG] Unexpected error: {e}", exc_info=True)
-        return _persist_status(
-            status="failed",
-            chunk_count=0,
-            chunks_succeeded=0,
-            chunks_failed=0,
-            entities_added=0,
-            edges_added=0,
-            last_error=str(e),
-        )
 
 
 # --- Document List Endpoint ---
@@ -633,13 +425,13 @@ async def upload_pdf_md(
         HTTPException: 400 for invalid input, 500 for processing errors.
     """
     # Input validation
-    _validate_pdf_upload(file)
+    upload_paths.validate_pdf_upload(file)
 
     try:
         context = await run_upload_pipeline(
             file=file,
             user_id=user_id,
-            base_upload_folder=BASE_UPLOAD_FOLDER,
+            base_upload_folder=upload_paths.ensure_upload_root(),
         )
 
         # Schedule background tasks (RAG + images + graph + summary).
@@ -815,7 +607,7 @@ async def delete_pdf_file(
     return await delete_user_document(
         doc_id=doc_id_str,
         user_id=user_id,
-        base_upload_folder=BASE_UPLOAD_FOLDER,
+        base_upload_folder=upload_paths.ensure_upload_root(),
     )
 
 

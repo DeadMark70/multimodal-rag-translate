@@ -14,12 +14,12 @@ from typing import Dict, List, Optional, Tuple
 # Third-party
 from langchain_core.documents import Document
 
+# Local application
+from core import uploads as upload_paths
+from data_base.document_metadata import get_document_id, matches_document_id
+
 # Configure logging
 logger = logging.getLogger(__name__)
-
-# Base folder for parent document storage
-BASE_UPLOAD_FOLDER = "uploads"
-
 
 def _get_parent_store_path(user_id: str) -> str:
     """
@@ -32,7 +32,7 @@ def _get_parent_store_path(user_id: str) -> str:
         Path to parent_docs.pkl file.
     """
     return os.path.normpath(
-        os.path.join(BASE_UPLOAD_FOLDER, user_id, "rag_index", "parent_docs.pkl")
+        os.path.join(upload_paths.get_rag_index_dir(user_id), "parent_docs.pkl")
     )
 
 
@@ -158,8 +158,7 @@ class ParentDocumentStore:
         """
         to_delete = [
             pid for pid, doc in self._documents.items()
-            if doc.metadata.get("original_doc_uid") == doc_id or
-               doc.metadata.get("doc_id") == doc_id
+            if matches_document_id(doc.metadata, doc_id)
         ]
         
         for pid in to_delete:
@@ -218,13 +217,14 @@ def create_parent_child_chunks(
         length_function=len,
         separators=["\n\n", "\n", "。", ".", " ", ""],
     )
-    
+
     for doc_idx, doc in enumerate(documents):
+        source_doc_id = get_document_id(doc.metadata) or "doc"
         # Create parent chunks from document
         parent_chunks = parent_splitter.split_documents([doc])
-        
+
         for p_idx, parent in enumerate(parent_chunks):
-            parent_id = f"{doc.metadata.get('original_doc_uid', 'doc')}_{doc_idx}_parent_{p_idx}"
+            parent_id = f"{source_doc_id}_{doc_idx}_parent_{p_idx}"
             
             # Store parent
             parent.metadata["chunk_type"] = "parent"

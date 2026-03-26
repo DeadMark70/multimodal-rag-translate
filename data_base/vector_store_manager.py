@@ -31,6 +31,8 @@ from langchain_community.vectorstores import FAISS
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 # Local application
+from core import uploads as upload_paths
+from data_base.document_metadata import matches_document_id
 from data_base.word_chunk_strategy import split_markdown
 from multimodal_rag.schemas import ExtractedDocument
 
@@ -39,9 +41,6 @@ logger = logging.getLogger(__name__)
 
 # Embedding model (shared globally - API based, no local model to load)
 global_embeddings_model: Optional[GoogleGenerativeAIEmbeddings] = None
-
-# User RAG files are stored here
-BASE_UPLOAD_FOLDER = "uploads"
 
 # Chunking method type
 ChunkingMethod = Literal["recursive", "semantic"]
@@ -85,7 +84,7 @@ def get_user_vector_store_path(user_id: str) -> str:
     Returns:
         Path to user's rag_index folder.
     """
-    return os.path.normpath(os.path.join(BASE_UPLOAD_FOLDER, user_id, "rag_index"))
+    return upload_paths.get_rag_index_dir(user_id)
 
 
 async def initialize_embeddings(embedding_model_name: str = "models/gemini-embedding-001") -> None:
@@ -657,9 +656,7 @@ def delete_document_from_knowledge_base(user_id: str, doc_id: str) -> bool:
         # 2. Find all vector IDs for this doc_id
         ids_to_delete = []
         for key, doc in vector_db.docstore._dict.items():
-            # Check both field names for compatibility
-            if (doc.metadata.get("original_doc_uid") == doc_id or 
-                doc.metadata.get("doc_id") == doc_id):
+            if matches_document_id(doc.metadata, doc_id):
                 ids_to_delete.append(key)
 
         # 3. Execute deletion

@@ -12,15 +12,14 @@ import logging
 import os
 from typing import Dict, Any
 
+# Local application
+from core import uploads as upload_paths
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Security: Allowed image extensions
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
-
-# Base upload folder for path validation
-BASE_UPLOAD_FOLDER = "uploads"
-
 
 def _validate_image_path(image_path: str, user_id: str) -> tuple[bool, str]:
     """
@@ -40,7 +39,7 @@ def _validate_image_path(image_path: str, user_id: str) -> tuple[bool, str]:
     
     # Security Fix: If the path is just a filename, prepend the user folder
     if not os.path.dirname(image_path):
-        image_path = os.path.join(BASE_UPLOAD_FOLDER, user_id, image_path)
+        image_path = os.path.join(upload_paths.get_user_upload_dir(user_id), image_path)
         image_path = os.path.normpath(image_path)
     
     # Check for directory traversal attempts
@@ -49,7 +48,7 @@ def _validate_image_path(image_path: str, user_id: str) -> tuple[bool, str]:
         return False, "Invalid path: directory traversal not allowed"
     
     # Build expected user folder prefix
-    user_folder = os.path.normpath(os.path.join(BASE_UPLOAD_FOLDER, user_id))
+    user_folder = upload_paths.get_user_upload_dir(user_id)
     
     # Ensure path starts with user folder
     if not image_path.startswith(user_folder):

@@ -19,10 +19,9 @@ from fastapi.concurrency import run_in_threadpool
 # Local application
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
-from data_base.vector_store_manager import (
-    index_extracted_document,
-    delete_document_from_knowledge_base,
-)
+from core import uploads as upload_paths
+from data_base.indexing_service import index_extracted_document_content
+from data_base.vector_store_manager import delete_document_from_knowledge_base
 from core.summary_service import schedule_summary_generation
 from .structure_analyzer import analyzer
 from .image_summarizer import summarizer
@@ -32,34 +31,6 @@ from .schemas import ExtractedDocument
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-BASE_UPLOAD_FOLDER = "uploads"
-
-
-def _validate_pdf_upload(file: UploadFile) -> None:
-    """
-    Validates that the uploaded file is a PDF.
-
-    Args:
-        file: The uploaded file object.
-
-    Raises:
-        AppError: 400 if file is not a valid PDF.
-    """
-    if file.content_type != "application/pdf":
-        raise AppError(
-            code=ErrorCode.BAD_REQUEST,
-            message="File must be a PDF (invalid content-type)",
-            status_code=400,
-        )
-
-    if file.filename:
-        _, ext = os.path.splitext(file.filename)
-        if ext.lower() != ".pdf":
-            raise AppError(
-                code=ErrorCode.BAD_REQUEST,
-                message="File must be a PDF (invalid extension)",
-                status_code=400,
-            )
 
 
 @router.post("/extract", response_model=ExtractedDocument)
@@ -84,10 +55,10 @@ async def extract_from_pdf_endpoint(
     Raises:
         AppError: 400 for invalid input, 500 for processing errors.
     """
-    _validate_pdf_upload(file)
+    upload_paths.validate_pdf_upload(file)
 
     doc_uuid = str(uuid.uuid4())
-    doc_dir = os.path.normpath(os.path.join(BASE_UPLOAD_FOLDER, user_id, doc_uuid))
+    doc_dir = upload_paths.get_document_upload_dir(user_id, doc_uuid)
     os.makedirs(doc_dir, exist_ok=True)
 
     input_pdf_path = os.path.normpath(os.path.join(doc_dir, "original.pdf"))
@@ -119,7 +90,7 @@ async def extract_from_pdf_endpoint(
         try:
             logger.info(f"[Phase 3] Indexing document for user {user_id}")
             await run_in_threadpool(
-                index_extracted_document, user_id=user_id, doc=extracted_doc
+                index_extracted_document_content, user_id=user_id, doc=extracted_doc
             )
 
             # Trigger background summary generation (non-blocking)
@@ -201,7 +172,7 @@ async def delete_multimodal_document(
         logger.warning(f"RAG deletion failed (non-fatal): {e}")
 
     # 2. Delete physical files
-    doc_folder = os.path.normpath(os.path.join(BASE_UPLOAD_FOLDER, user_id, doc_id_str))
+    doc_folder = upload_paths.get_document_upload_dir(user_id, doc_id_str)
     if os.path.exists(doc_folder):
         try:
             shutil.rmtree(doc_folder)

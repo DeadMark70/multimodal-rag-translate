@@ -43,8 +43,8 @@ class TestWordChunkStrategyIntegration:
         assert len(chunks) > 0
         for chunk in chunks:
             assert "book_title" in chunk.metadata
-            assert "original_doc_uid" in chunk.metadata
-            assert chunk.metadata["original_doc_uid"] == "doc-123"
+            assert "doc_id" in chunk.metadata
+            assert chunk.metadata["doc_id"] == "doc-123"
 
     @pytest.mark.asyncio
     async def test_split_markdown_semantic_with_embeddings(self, mock_embeddings):
@@ -162,7 +162,7 @@ Tesla 是一家電動車公司。它由 Elon Musk 領導。
         documents = [
             Document(
                 page_content="Tesla 營收增長 20%，同時歐洲市場份額下降。公司計劃擴大產能。" * 5,
-                metadata={"original_doc_uid": "tesla", "page": 1}
+                metadata={"doc_id": "tesla", "page": 1}
             )
         ]
         
@@ -177,7 +177,7 @@ Tesla 是一家電動車公司。它由 Elon Musk 領導。
         assert len(children) > 0
         
         # Step 3: Store parents
-        with patch("data_base.parent_child_store.BASE_UPLOAD_FOLDER", str(tmp_path)):
+        with patch("core.uploads.BASE_UPLOAD_FOLDER", str(tmp_path)):
             store = ParentDocumentStore("test-user")
             store.add_parents(parents)
             

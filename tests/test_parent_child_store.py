@@ -35,14 +35,14 @@ class TestParentDocumentStore:
 
     def test_init_creates_empty_store(self, tmp_path):
         """Tests initialization with no existing store."""
-        with patch("data_base.parent_child_store.BASE_UPLOAD_FOLDER", str(tmp_path)):
+        with patch("core.uploads.BASE_UPLOAD_FOLDER", str(tmp_path)):
             store = ParentDocumentStore("new-user")
             
             assert len(store._documents) == 0
 
     def test_add_parent(self, tmp_path):
         """Tests adding a single parent document."""
-        with patch("data_base.parent_child_store.BASE_UPLOAD_FOLDER", str(tmp_path)):
+        with patch("core.uploads.BASE_UPLOAD_FOLDER", str(tmp_path)):
             store = ParentDocumentStore("test-user")
             
             doc = Document(
@@ -57,7 +57,7 @@ class TestParentDocumentStore:
 
     def test_add_parents_batch(self, tmp_path):
         """Tests adding multiple parents at once."""
-        with patch("data_base.parent_child_store.BASE_UPLOAD_FOLDER", str(tmp_path)):
+        with patch("core.uploads.BASE_UPLOAD_FOLDER", str(tmp_path)):
             store = ParentDocumentStore("test-user")
             
             parents = {
@@ -73,7 +73,7 @@ class TestParentDocumentStore:
 
     def test_get_parent(self, tmp_path):
         """Tests retrieving a parent document."""
-        with patch("data_base.parent_child_store.BASE_UPLOAD_FOLDER", str(tmp_path)):
+        with patch("core.uploads.BASE_UPLOAD_FOLDER", str(tmp_path)):
             store = ParentDocumentStore("test-user")
             
             doc = Document(page_content="Test", metadata={})
@@ -85,7 +85,7 @@ class TestParentDocumentStore:
 
     def test_get_parent_not_found(self, tmp_path):
         """Tests retrieving non-existent parent."""
-        with patch("data_base.parent_child_store.BASE_UPLOAD_FOLDER", str(tmp_path)):
+        with patch("core.uploads.BASE_UPLOAD_FOLDER", str(tmp_path)):
             store = ParentDocumentStore("test-user")
             
             result = store.get_parent("nonexistent")
@@ -94,7 +94,7 @@ class TestParentDocumentStore:
 
     def test_get_parents_for_children(self, tmp_path):
         """Tests looking up parents from child documents."""
-        with patch("data_base.parent_child_store.BASE_UPLOAD_FOLDER", str(tmp_path)):
+        with patch("core.uploads.BASE_UPLOAD_FOLDER", str(tmp_path)):
             store = ParentDocumentStore("test-user")
             
             # Add parent
@@ -119,21 +119,21 @@ class TestParentDocumentStore:
 
     def test_delete_by_doc_id(self, tmp_path):
         """Tests deleting parents by doc_id."""
-        with patch("data_base.parent_child_store.BASE_UPLOAD_FOLDER", str(tmp_path)):
+        with patch("core.uploads.BASE_UPLOAD_FOLDER", str(tmp_path)):
             store = ParentDocumentStore("test-user")
             
             # Add multiple parents
             store.add_parent("p1", Document(
                 page_content="Doc 1 Parent 1",
-                metadata={"original_doc_uid": "doc-1"}
+                metadata={"doc_id": "doc-1"}
             ))
             store.add_parent("p2", Document(
                 page_content="Doc 1 Parent 2",
-                metadata={"original_doc_uid": "doc-1"}
+                metadata={"doc_id": "doc-1"}
             ))
             store.add_parent("p3", Document(
                 page_content="Doc 2 Parent 1",
-                metadata={"original_doc_uid": "doc-2"}
+                metadata={"doc_id": "doc-2"}
             ))
             
             # Delete doc-1's parents
@@ -146,7 +146,7 @@ class TestParentDocumentStore:
 
     def test_clear(self, tmp_path):
         """Tests clearing all parents."""
-        with patch("data_base.parent_child_store.BASE_UPLOAD_FOLDER", str(tmp_path)):
+        with patch("core.uploads.BASE_UPLOAD_FOLDER", str(tmp_path)):
             store = ParentDocumentStore("test-user")
             
             store.add_parent("p1", Document(page_content="Test", metadata={}))
@@ -158,7 +158,7 @@ class TestParentDocumentStore:
 
     def test_persistence(self, tmp_path):
         """Tests that store persists across instances."""
-        with patch("data_base.parent_child_store.BASE_UPLOAD_FOLDER", str(tmp_path)):
+        with patch("core.uploads.BASE_UPLOAD_FOLDER", str(tmp_path)):
             # Create and save
             store1 = ParentDocumentStore("test-user")
             store1.add_parent("p1", Document(page_content="Persisted", metadata={}))
@@ -177,7 +177,7 @@ class TestCreateParentChildChunks:
         documents = [
             Document(
                 page_content="這是一段很長的文字內容。" * 50,  # Long text
-                metadata={"original_doc_uid": "doc-1", "page": 1}
+                metadata={"doc_id": "doc-1", "page": 1}
             )
         ]
         
@@ -196,7 +196,7 @@ class TestCreateParentChildChunks:
         documents = [
             Document(
                 page_content="測試文字內容。" * 100,
-                metadata={"original_doc_uid": "doc-1"}
+                metadata={"doc_id": "doc-1"}
             )
         ]
         
@@ -215,7 +215,7 @@ class TestCreateParentChildChunks:
         documents = [
             Document(
                 page_content="測試內容。" * 50,
-                metadata={"original_doc_uid": "doc-1"}
+                metadata={"doc_id": "doc-1"}
             )
         ]
         
