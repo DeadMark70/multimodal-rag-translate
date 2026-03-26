@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from core import google_genai_client
 from evaluation import model_discovery
 
 
@@ -43,8 +44,7 @@ def _raw_model(
 
 def _reset_state() -> None:
     model_discovery._cache = None
-    model_discovery._client = None
-    model_discovery._client_api_key = None
+    google_genai_client.reset_google_genai_client_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -56,7 +56,7 @@ def _clean_state(monkeypatch: pytest.MonkeyPatch) -> None:
     _reset_state()
 
 
-def test_get_genai_client_reuses_cached_client_and_rebuilds_on_key_change(
+def test_get_google_genai_client_reuses_cached_client_and_rebuilds_on_key_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("GOOGLE_API_KEY", "key-one")
@@ -64,14 +64,14 @@ def test_get_genai_client_reuses_cached_client_and_rebuilds_on_key_change(
     second_client = Mock(name="second-client")
 
     with patch(
-        "evaluation.model_discovery.genai.Client",
+        "core.google_genai_client.genai.Client",
         side_effect=[first_client, second_client],
     ) as mock_client:
-        first = model_discovery._get_genai_client()
-        second = model_discovery._get_genai_client()
+        first = google_genai_client.get_google_genai_client()
+        second = google_genai_client.get_google_genai_client()
 
         monkeypatch.setenv("GOOGLE_API_KEY", "key-two")
-        third = model_discovery._get_genai_client()
+        third = google_genai_client.get_google_genai_client()
 
     assert first is first_client
     assert second is first_client
@@ -81,14 +81,14 @@ def test_get_genai_client_reuses_cached_client_and_rebuilds_on_key_change(
     assert mock_client.call_args_list[1].kwargs["api_key"] == "key-two"
 
 
-def test_get_genai_client_uses_gemini_api_key_fallback(
+def test_get_google_genai_client_uses_gemini_api_key_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
     client = Mock(name="gemini-client")
 
-    with patch("evaluation.model_discovery.genai.Client", return_value=client) as mock_client:
-        actual = model_discovery._get_genai_client()
+    with patch("core.google_genai_client.genai.Client", return_value=client) as mock_client:
+        actual = google_genai_client.get_google_genai_client()
 
     assert actual is client
     assert mock_client.call_args.kwargs["api_key"] == "gemini-key"
@@ -110,11 +110,11 @@ def test_fetch_models_sync_skips_unparseable_entries(
     client = Mock(name="client")
     client.models.list.return_value = pager
 
-    with patch("evaluation.model_discovery.genai.Client", return_value=client):
+    with patch("evaluation.model_discovery.get_google_genai_client", return_value=client):
         actual = model_discovery._fetch_models_sync()
 
     assert actual == [good_one, good_two]
-    client.models.list.assert_called_once()
+    client.models.list.assert_called_once_with(config={"page_size": 100})
 
 
 @pytest.mark.asyncio
@@ -145,7 +145,7 @@ async def test_list_available_models_filters_and_normalizes_sdk_results(
         ),
     ]
 
-    with patch("evaluation.model_discovery.genai.Client", return_value=client):
+    with patch("evaluation.model_discovery.get_google_genai_client", return_value=client):
         actual = await model_discovery.list_available_models()
 
     assert [item.name for item in actual] == [
@@ -158,7 +158,7 @@ async def test_list_available_models_filters_and_normalizes_sdk_results(
 
 @pytest.mark.asyncio
 async def test_list_available_models_uses_fallback_when_no_api_key() -> None:
-    with patch("evaluation.model_discovery.genai.Client") as mock_client:
+    with patch("evaluation.model_discovery.get_google_genai_client", return_value=None) as mock_client:
         actual = await model_discovery.list_available_models()
 
     assert [item.name for item in actual] == [
@@ -166,7 +166,7 @@ async def test_list_available_models_uses_fallback_when_no_api_key() -> None:
         "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
     ]
-    mock_client.assert_not_called()
+    mock_client.assert_called_once_with()
 
 
 @pytest.mark.asyncio

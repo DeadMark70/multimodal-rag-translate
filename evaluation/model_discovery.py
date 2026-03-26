@@ -1,16 +1,20 @@
-"""Gemini model discovery with TTL cache."""
+"""Gemini model discovery with TTL cache.
+
+Architecture note:
+- this module is control-plane code and may consume direct `google-genai` helpers
+- it should not instantiate runtime LangChain chat or embedding clients
+- model normalization stays here; direct SDK client lifecycle lives in
+  `core.google_genai_client`
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from typing import Any
 
-from google import genai
-from google.genai import types
-
+from core.google_genai_client import get_google_genai_client
 from evaluation.schemas import AvailableModel
 
 logger = logging.getLogger(__name__)
@@ -18,8 +22,6 @@ logger = logging.getLogger(__name__)
 _CACHE_TTL_SECONDS = 600
 _cache: tuple[float, list[AvailableModel]] | None = None
 _cache_lock = asyncio.Lock()
-_client: genai.Client | None = None
-_client_api_key: str | None = None
 
 _FALLBACK_MODELS: list[AvailableModel] = [
     AvailableModel(
@@ -43,47 +45,17 @@ _FALLBACK_MODELS: list[AvailableModel] = [
 ]
 
 
-def _read_api_key() -> str | None:
-    for env_name in ("GOOGLE_API_KEY", "GEMINI_API_KEY"):
-        api_key = (os.getenv(env_name) or "").strip().strip('"')
-        if api_key:
-            return api_key
-    return None
-
-
-def _get_genai_client() -> genai.Client | None:
-    """Return a cached Google GenAI client for the active API key."""
-    global _client
-    global _client_api_key
-
-    api_key = _read_api_key()
-    if not api_key:
-        _client = None
-        _client_api_key = None
-        return None
-
-    if _client is not None and _client_api_key == api_key:
-        return _client
-
-    _client = genai.Client(
-        api_key=api_key,
-        http_options=types.HttpOptions(timeout=10_000),
-    )
-    _client_api_key = api_key
-    return _client
-
-
 def _fetch_models_sync() -> list[Any]:
     """Fetch and materialize model pager synchronously.
 
     Iterates manually so that a single model entry that fails to deserialize
     does not abort the entire listing.
     """
-    client = _get_genai_client()
+    client = get_google_genai_client()
     if client is None:
         return []
 
-    pager = client.models.list(config=types.ListModelsConfig(page_size=100))
+    pager = client.models.list(config={"page_size": 100})
     results: list[Any] = []
     iterator = iter(pager)
     while True:
