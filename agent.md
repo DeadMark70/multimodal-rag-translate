@@ -163,3 +163,9 @@ Keep these three files synchronized before ending a session.
   - `tests/test_router_boundaries.py`
   - `tests/test_uploads.py`
 - Full backend verification after this cleanup track: `.\\.venv\\Scripts\\python.exe -m pytest` -> `375 passed`.
+
+
+## 12. Continuous Learning Notes
+- 2026-03-28: When extending persisted or transport dataclasses used by tests and helper runners, preserve backward compatibility for existing constructor call sites by giving new optional fields explicit defaults. Always run the relevant integration tests after schema/dataclass changes to catch silent execution-path regressions.
+
+- 2026-03-28: When a user asks for full CI or "全線" verification, do not stop at targeted tests, lint, or typecheck. Run the workflow-equivalent full suites for both backend and frontend, request sandbox escalation immediately when test runners are blocked, and report exact pass/skip/fail counts rather than partial confidence claims.
