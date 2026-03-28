@@ -14,11 +14,14 @@ class TestCase(BaseModel):
     id: str = Field(..., min_length=1, max_length=128)
     question: str = Field(..., min_length=1, max_length=5000)
     ground_truth: str = Field(..., min_length=1)
+    ground_truth_short: Optional[str] = Field(default=None, min_length=1)
     category: Optional[str] = None
     difficulty: Optional[str] = None
     source_docs: list[str] = Field(default_factory=list)
     requires_multi_doc_reasoning: bool = False
     test_objective: Optional[str] = None
+    key_points: list[str] = Field(default_factory=list)
+    ragas_focus: list[str] = Field(default_factory=list)
 
 
 class GoldenDataset(BaseModel):

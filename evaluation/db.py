@@ -58,6 +58,9 @@ CREATE TABLE IF NOT EXISTS campaign_results (
     question_id TEXT NOT NULL,
     question TEXT NOT NULL,
     ground_truth TEXT NOT NULL,
+    ground_truth_short TEXT,
+    key_points_json TEXT NOT NULL DEFAULT '[]',
+    ragas_focus_json TEXT NOT NULL DEFAULT '[]',
     mode TEXT NOT NULL,
     execution_profile TEXT,
     run_number INTEGER NOT NULL,
@@ -155,6 +158,18 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         await connection.execute(
             "ALTER TABLE campaign_results ADD COLUMN execution_profile TEXT"
         )
+    if "ground_truth_short" not in campaign_result_columns:
+        await connection.execute(
+            "ALTER TABLE campaign_results ADD COLUMN ground_truth_short TEXT"
+        )
+    if "key_points_json" not in campaign_result_columns:
+        await connection.execute(
+            "ALTER TABLE campaign_results ADD COLUMN key_points_json TEXT NOT NULL DEFAULT '[]'"
+        )
+    if "ragas_focus_json" not in campaign_result_columns:
+        await connection.execute(
+            "ALTER TABLE campaign_results ADD COLUMN ragas_focus_json TEXT NOT NULL DEFAULT '[]'"
+        )
 
     await connection.execute(
         """
@@ -223,6 +238,9 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
         question_id=row["question_id"],
         question=row["question"],
         ground_truth=row["ground_truth"],
+        ground_truth_short=row["ground_truth_short"] if "ground_truth_short" in row.keys() else None,
+        key_points=_json_loads(row["key_points_json"], []) if "key_points_json" in row.keys() else [],
+        ragas_focus=_json_loads(row["ragas_focus_json"], []) if "ragas_focus_json" in row.keys() else [],
         mode=row["mode"],
         execution_profile=execution_profile,
         run_number=row["run_number"],
@@ -518,6 +536,9 @@ class CampaignResultRepository:
         question_id: str,
         question: str,
         ground_truth: str,
+        ground_truth_short: Optional[str],
+        key_points: list[str],
+        ragas_focus: list[str],
         mode: str,
         execution_profile: Optional[str],
         run_number: int,
@@ -539,12 +560,12 @@ class CampaignResultRepository:
             await connection.execute(
                 """
                 INSERT INTO campaign_results (
-                    id, campaign_id, user_id, question_id, question, ground_truth, mode,
-                    execution_profile,
+                    id, campaign_id, user_id, question_id, question, ground_truth,
+                    ground_truth_short, key_points_json, ragas_focus_json, mode, execution_profile,
                     run_number, answer, contexts_json, source_doc_ids_json,
                     expected_sources_json, latency_ms, token_usage_json, category,
                     difficulty, status, error_message, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result_id,
@@ -553,6 +574,9 @@ class CampaignResultRepository:
                     question_id,
                     question,
                     ground_truth,
+                    ground_truth_short,
+                    _json_dumps(key_points),
+                    _json_dumps(ragas_focus),
                     mode,
                     execution_profile,
                     run_number,

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from langchain_core.documents import Document
@@ -13,6 +14,10 @@ from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from evaluation.agentic_evaluation_service import AgenticEvaluationService
 from evaluation.retry import run_with_retry
 from evaluation.schemas import TestCase
+
+EVALUATOR_MAX_CONTEXTS = 6
+EVALUATOR_MAX_CONTEXT_CHARS = 2000
+_WHITESPACE_RE = re.compile(r"\s+")
 
 RAG_MODES: dict[str, dict[str, Any]] = {
     "naive": {
@@ -55,15 +60,18 @@ class BenchmarkExecutionResult:
     question_id: str
     question: str
     ground_truth: str
-    mode: str
-    answer: str
-    contexts: list[str]
-    source_doc_ids: list[str]
-    expected_sources: list[str]
-    latency_ms: float
-    token_usage: dict[str, int]
-    category: Optional[str]
-    difficulty: Optional[str]
+    ground_truth_short: Optional[str] = None
+    key_points: list[str] = field(default_factory=list)
+    ragas_focus: list[str] = field(default_factory=list)
+    mode: str = "naive"
+    answer: str = ""
+    contexts: list[str] = field(default_factory=list)
+    source_doc_ids: list[str] = field(default_factory=list)
+    expected_sources: list[str] = field(default_factory=list)
+    latency_ms: float = 0
+    token_usage: dict[str, int] = field(default_factory=dict)
+    category: Optional[str] = None
+    difficulty: Optional[str] = None
     error_message: Optional[str] = None
     execution_profile: Optional[str] = None
     agent_trace: Optional[dict[str, Any]] = None
@@ -117,6 +125,9 @@ async def run_campaign_case(
         question_id=test_case.id,
         question=test_case.question,
         ground_truth=test_case.ground_truth,
+        ground_truth_short=test_case.ground_truth_short,
+        key_points=list(test_case.key_points),
+        ragas_focus=list(test_case.ragas_focus),
         mode=mode,
         answer=result.answer,
         contexts=contexts,
@@ -147,9 +158,20 @@ async def _run_agentic_case(
     )
 
 
+def _normalize_context_text(text: str) -> str:
+    compact = _WHITESPACE_RE.sub(" ", text).strip()
+    if len(compact) > EVALUATOR_MAX_CONTEXT_CHARS:
+        return compact[:EVALUATOR_MAX_CONTEXT_CHARS]
+    return compact
+
+
 def _extract_contexts(documents: list[Document]) -> list[str]:
     contexts: list[str] = []
-    for document in documents:
-        if hasattr(document, "page_content"):
-            contexts.append(document.page_content[:500])
+    for document in documents[:EVALUATOR_MAX_CONTEXTS]:
+        page_content = getattr(document, "page_content", None)
+        if not isinstance(page_content, str):
+            continue
+        normalized = _normalize_context_text(page_content)
+        if normalized:
+            contexts.append(normalized)
     return contexts

@@ -59,6 +59,9 @@ def _create_test_case(client: TestClient, test_case_id: str = "Q1") -> None:
             "id": test_case_id,
             "question": "What is the answer?",
             "ground_truth": "42",
+            "ground_truth_short": "short 42",
+            "key_points": ["point-1"],
+            "ragas_focus": ["answer_correctness"],
             "category": "smoke",
             "difficulty": "easy",
             "source_docs": [],
@@ -124,10 +127,16 @@ class FakeRagasEvaluator:
         return CampaignMetricsResponse(
             campaign=campaign,
             evaluator_model="fake-evaluator",
+            available_metrics=["faithfulness", "answer_correctness", "answer_relevancy"],
             summary_by_mode={
                 "naive": ModeMetricsSummary(
                     mode="naive",
                     sample_count=1,
+                    metric_summaries={
+                        "faithfulness": MetricAggregate(mean=0.5, max=0.5, stddev=0),
+                        "answer_correctness": MetricAggregate(mean=0.5, max=0.5, stddev=0),
+                        "answer_relevancy": MetricAggregate(mean=0.45, max=0.45, stddev=0),
+                    },
                     faithfulness=MetricAggregate(mean=0.5, max=0.5, stddev=0),
                     answer_correctness=MetricAggregate(mean=0.5, max=0.5, stddev=0),
                     total_tokens=MetricAggregate(mean=123, max=123, stddev=0),
@@ -137,6 +146,8 @@ class FakeRagasEvaluator:
                     ecr_note=None,
                 )
             },
+            summary_by_category={},
+            summary_by_focus={},
             rows=[],
         )
 

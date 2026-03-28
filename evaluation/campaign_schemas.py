@@ -118,6 +118,9 @@ class CampaignResult(BaseModel):
     question_id: str
     question: str
     ground_truth: str
+    ground_truth_short: Optional[str] = None
+    key_points: list[str] = Field(default_factory=list)
+    ragas_focus: list[str] = Field(default_factory=list)
     mode: CampaignMode
     execution_profile: Optional[str] = None
     run_number: int = Field(ge=1)
@@ -175,9 +178,21 @@ class CampaignMetricRow(BaseModel):
     run_number: int = Field(ge=1)
     category: Optional[str] = None
     difficulty: Optional[str] = None
+    ragas_focus: list[str] = Field(default_factory=list)
+    reference_source: Optional[str] = None
     total_tokens: int = Field(default=0, ge=0)
+    metric_values: dict[str, float] = Field(default_factory=dict)
     faithfulness: float = Field(default=0, ge=0)
     answer_correctness: float = Field(default=0, ge=0)
+
+
+class GroupMetricsSummary(BaseModel):
+    """Aggregated metrics for one grouping dimension."""
+
+    group_key: str
+    sample_count: int = Field(default=0, ge=0)
+    metric_summaries: dict[str, MetricAggregate] = Field(default_factory=dict)
+    total_tokens: MetricAggregate = Field(default_factory=MetricAggregate)
 
 
 class ModeMetricsSummary(BaseModel):
@@ -185,9 +200,10 @@ class ModeMetricsSummary(BaseModel):
 
     mode: CampaignMode
     sample_count: int = Field(default=0, ge=0)
-    faithfulness: MetricAggregate
-    answer_correctness: MetricAggregate
-    total_tokens: MetricAggregate
+    metric_summaries: dict[str, MetricAggregate] = Field(default_factory=dict)
+    faithfulness: MetricAggregate = Field(default_factory=MetricAggregate)
+    answer_correctness: MetricAggregate = Field(default_factory=MetricAggregate)
+    total_tokens: MetricAggregate = Field(default_factory=MetricAggregate)
     delta_answer_correctness: float = 0
     delta_total_tokens: float = 0
     ecr: Optional[float] = None
@@ -199,5 +215,8 @@ class CampaignMetricsResponse(BaseModel):
 
     campaign: CampaignStatus
     evaluator_model: str
+    available_metrics: list[str] = Field(default_factory=list)
     summary_by_mode: dict[CampaignMode, ModeMetricsSummary] = Field(default_factory=dict)
+    summary_by_category: dict[str, GroupMetricsSummary] = Field(default_factory=dict)
+    summary_by_focus: dict[str, GroupMetricsSummary] = Field(default_factory=dict)
     rows: list[CampaignMetricRow] = Field(default_factory=list)

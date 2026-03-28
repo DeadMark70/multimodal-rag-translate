@@ -4,7 +4,12 @@ import pytest
 from langchain_core.documents import Document
 
 from data_base.RAG_QA_service import RAGResult
-from evaluation.rag_modes import run_campaign_case
+from evaluation.rag_modes import (
+    EVALUATOR_MAX_CONTEXTS,
+    EVALUATOR_MAX_CONTEXT_CHARS,
+    _extract_contexts,
+    run_campaign_case,
+)
 from evaluation.schemas import TestCase as EvaluationCase
 
 
@@ -103,3 +108,19 @@ async def test_run_campaign_case_agentic_uses_evaluation_service_and_profile() -
     assert result.answer == "agentic answer"
     assert result.contexts == ["ctx-1"]
     assert result.execution_profile == "agentic_eval_v1"
+
+
+def test_extract_contexts_uses_deterministic_evaluator_policy() -> None:
+    oversized = "x" * (EVALUATOR_MAX_CONTEXT_CHARS + 200)
+    documents = [
+        Document(page_content=f"  ctx {index}\n\n{oversized}  ")
+        for index in range(EVALUATOR_MAX_CONTEXTS + 2)
+    ]
+
+    contexts = _extract_contexts(documents)
+
+    assert len(contexts) == EVALUATOR_MAX_CONTEXTS
+    assert contexts[0].startswith("ctx 0 x")
+    assert "\n" not in contexts[0]
+    assert len(contexts[0]) == EVALUATOR_MAX_CONTEXT_CHARS
+    assert contexts[-1].startswith(f"ctx {EVALUATOR_MAX_CONTEXTS - 1} x")

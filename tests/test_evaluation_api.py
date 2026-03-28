@@ -46,6 +46,9 @@ def test_test_case_crud_and_import() -> None:
         "id": "TC-1",
         "question": "What is the test question?",
         "ground_truth": "Ground truth answer",
+        "ground_truth_short": "Short answer",
+        "key_points": ["point-1", "point-2"],
+        "ragas_focus": ["answer_correctness", "faithfulness"],
         "category": "basic",
         "difficulty": "easy",
         "source_docs": ["doc-a.pdf"],
@@ -59,7 +62,11 @@ def test_test_case_crud_and_import() -> None:
 
         created = client.post("/api/evaluation/test-cases", json=payload)
         assert created.status_code == 200
-        assert created.json()["id"] == "TC-1"
+        created_body = created.json()
+        assert created_body["id"] == "TC-1"
+        assert created_body["ground_truth_short"] == "Short answer"
+        assert created_body["key_points"] == ["point-1", "point-2"]
+        assert created_body["ragas_focus"] == ["answer_correctness", "faithfulness"]
 
         listed = client.get("/api/evaluation/test-cases")
         assert listed.status_code == 200
@@ -67,10 +74,11 @@ def test_test_case_crud_and_import() -> None:
 
         updated = client.put(
             "/api/evaluation/test-cases/TC-1",
-            json={**payload, "question": "Updated question"},
+            json={**payload, "question": "Updated question", "ground_truth_short": "Updated short answer"},
         )
         assert updated.status_code == 200
         assert updated.json()["question"] == "Updated question"
+        assert updated.json()["ground_truth_short"] == "Updated short answer"
 
         deleted = client.delete("/api/evaluation/test-cases/TC-1")
         assert deleted.status_code == 200
@@ -168,6 +176,9 @@ def test_evaluation_data_is_isolated_by_user() -> None:
         "id": "TC-A",
         "question": "Only user A should see this",
         "ground_truth": "A",
+        "ground_truth_short": "A-short",
+        "key_points": ["point-a"],
+        "ragas_focus": ["faithfulness"],
         "category": "isolation",
         "difficulty": "easy",
         "source_docs": [],
@@ -188,3 +199,4 @@ def test_evaluation_data_is_isolated_by_user() -> None:
         assert listed_a.status_code == 200
         assert len(listed_a.json()) == 1
         assert listed_a.json()[0]["id"] == "TC-A"
+        assert listed_a.json()[0]["ground_truth_short"] == "A-short"

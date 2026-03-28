@@ -379,6 +379,9 @@ class CampaignEngine:
                 question_id=unit.test_case.id,
                 question=unit.test_case.question,
                 ground_truth=unit.test_case.ground_truth,
+                ground_truth_short=unit.test_case.ground_truth_short,
+                key_points=list(unit.test_case.key_points),
+                ragas_focus=list(unit.test_case.ragas_focus),
                 mode=unit.mode,
                 execution_profile=(
                     getattr(payload, "agent_trace", {}) or {}
@@ -411,6 +414,9 @@ class CampaignEngine:
             question_id=payload.question_id,
             question=payload.question,
             ground_truth=payload.ground_truth,
+            ground_truth_short=payload.ground_truth_short,
+            key_points=list(payload.key_points),
+            ragas_focus=list(payload.ragas_focus),
             mode=payload.mode,
             execution_profile=payload.execution_profile,
             run_number=unit.run_number,
