@@ -47,6 +47,21 @@
 - `stats/`: dashboard aggregates
 - `multimodal_rag/` and `image_service/`: multimodal extraction and image translation support
 
+## Evaluation Dataset Model
+
+- `ragasfullqa.json` is the master dataset shape.
+- Master test cases now support:
+  - `ground_truth` as the long-form research answer
+  - `ground_truth_short` as the RAGAS-ready canonical answer
+  - `key_points` as structured diagnostic facts
+  - `ragas_focus` as metadata for grouping and analysis only
+- `evaluation/dataset_generator.py` merges `ragasshortqa.json` into the master file and derives `ragas_ready.json` deterministically.
+- Derived dataset metadata now includes:
+  - `dataset_version`
+  - `dataset_role`
+  - `derived_from`
+  - `derived_at`
+
 ## Runtime-Critical Behaviors
 
 - Protected routes depend on `get_current_user_id`.
@@ -56,10 +71,38 @@
 - Evaluation persists campaign state in SQLite with WAL mode and supports results, traces, metrics, manual evaluate, cancel, and SSE reconnect.
 - Canonical metadata writes use `doc_id`; `original_doc_uid` remains compatibility fallback on read/delete paths only.
 
+## RAGAS Evaluation Contract
+
+- Formal reference selection is `ground_truth_short ?? ground_truth`.
+- Each metric score row records `reference_source` in `ragas_scores.details_json`.
+- Phase 1 metrics are enabled by default:
+  - `faithfulness`
+  - `answer_correctness`
+  - `answer_relevancy`
+- Phase 2 metrics are implemented behind `ENABLE_RAGAS_CONTEXT_METRICS`:
+  - `context_precision`
+  - `context_recall`
+- Metric execution is non-blocking per metric; one metric failure does not fail the campaign.
+- Metrics API now returns:
+  - `available_metrics`
+  - per-row `metric_values`
+  - `summary_by_mode`
+  - `summary_by_category`
+  - `summary_by_focus`
+
+## Evaluator Context Policy
+
+- Evaluation no longer reuses the UI preview truncation path.
+- Formal evaluator policy is deterministic:
+  - preserve retrieval order
+  - keep at most 6 contexts per sample
+  - cap each context at 2000 characters
+  - normalize whitespace without changing semantic order
+
 ## Focused Verification Surface
 
 - Contract and router tests under `tests/`
-- Evaluation engine and persistence tests
+- Evaluation engine, dataset generator, and persistence tests
 - GraphRAG extractor/store/router tests
 - PDF service repository/background/manual-translation tests
 - Full backend acceptance: `.\.venv\Scripts\python.exe -m pytest`

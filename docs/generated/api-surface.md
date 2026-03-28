@@ -15,9 +15,26 @@ Human-maintained inventory of the current backend surface.
 | `/multimodal` | multimodal extraction | `/extract`, `/file/{doc_id}` DELETE |
 | `/imagemd` | image translation | `/translate_image` |
 
+## Evaluation Contract Snapshot
+
+- Test-case schema now accepts and returns:
+  - `ground_truth_short`
+  - `key_points`
+  - `ragas_focus`
+- Campaign result rows now persist and return the same three fields for executed samples.
+- Metrics response now exposes:
+  - `available_metrics`
+  - row-level `metric_values`
+  - row-level `reference_source`
+  - `summary_by_mode`
+  - `summary_by_category`
+  - `summary_by_focus`
+- Dataset tooling lives in `evaluation/dataset_generator.py` and derives `ragas_ready.json` from the master dataset.
+
 ## Shared Runtime Contracts
 
 - Request-id middleware returns `X-Request-Id`.
 - Errors normalize to `{ error: { code, message, request_id, details? } }`.
 - Startup warmups are skipped when `TEST_MODE` or `USE_FAKE_PROVIDERS` is enabled.
 - Evaluation persists to SQLite and supports result, trace, metric, cancel, and stream recovery flows.
+- RAGAS reference selection is `ground_truth_short ?? ground_truth` and evaluator context ingestion is deterministic (top 6 chunks, 2000 chars each, whitespace-normalized).

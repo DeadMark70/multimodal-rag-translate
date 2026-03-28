@@ -127,6 +127,55 @@
         ]
       }
     },
+    "/pdfmd/file/{doc_id}/retry-index": {
+      "post": {
+        "tags": [
+          "PDF OCR & Translation"
+        ],
+        "summary": "Retry Document Index",
+        "description": "Retry OCR-post indexing for an `index_failed` document without GraphRAG.",
+        "operationId": "retry_document_index_pdfmd_file__doc_id__retry_index_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Doc Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetryIndexResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/pdfmd/file/{doc_id}/status": {
       "get": {
         "tags": [
@@ -912,6 +961,33 @@
         ]
       }
     },
+    "/graph/documents": {
+      "get": {
+        "tags": [
+          "Knowledge Graph"
+        ],
+        "summary": "列出 GraphRAG 文件狀態",
+        "description": "列出所有可用於 GraphRAG 的文件，以及每個文件最近一次抽圖的狀態。",
+        "operationId": "list_graph_documents_graph_documents_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphDocumentStatusListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/graph/data": {
       "get": {
         "tags": [
@@ -984,6 +1060,129 @@
             "HTTPBearer": []
           }
         ]
+      }
+    },
+    "/graph/rebuild-full": {
+      "post": {
+        "tags": [
+          "Knowledge Graph"
+        ],
+        "summary": "完整重構圖譜",
+        "description": "從所有 OCR artifact 重新抽取並建立全新圖譜；成功後才會覆蓋目前圖譜。",
+        "operationId": "rebuild_graph_full_graph_rebuild_full_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphOperationResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/graph/documents/{doc_id}/retry": {
+      "post": {
+        "tags": [
+          "Knowledge Graph"
+        ],
+        "summary": "重試單一文件 GraphRAG",
+        "description": "只對指定文件重新抽取 GraphRAG；成功後會刷新整體社群。",
+        "operationId": "retry_graph_document_graph_documents__doc_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphOperationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/graph/documents/{doc_id}": {
+      "delete": {
+        "tags": [
+          "Knowledge Graph"
+        ],
+        "summary": "移除單一文件圖譜殘留",
+        "description": "從目前圖譜中移除指定文件的節點/邊與文件狀態；適用於已刪除文件的 orphan graph cleanup。",
+        "operationId": "purge_graph_document_graph_documents__doc_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphOperationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/graph/optimize": {
@@ -3035,11 +3234,36 @@
             ],
             "title": "Difficulty"
           },
+          "ragas_focus": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Ragas Focus"
+          },
+          "reference_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Source"
+          },
           "total_tokens": {
             "type": "integer",
             "minimum": 0.0,
             "title": "Total Tokens",
             "default": 0
+          },
+          "metric_values": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Metric Values"
           },
           "faithfulness": {
             "type": "number",
@@ -3074,6 +3298,13 @@
             "type": "string",
             "title": "Evaluator Model"
           },
+          "available_metrics": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Available Metrics"
+          },
           "summary_by_mode": {
             "additionalProperties": {
               "$ref": "#/components/schemas/ModeMetricsSummary"
@@ -3088,6 +3319,20 @@
             },
             "type": "object",
             "title": "Summary By Mode"
+          },
+          "summary_by_category": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/GroupMetricsSummary"
+            },
+            "type": "object",
+            "title": "Summary By Category"
+          },
+          "summary_by_focus": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/GroupMetricsSummary"
+            },
+            "type": "object",
+            "title": "Summary By Focus"
           },
           "rows": {
             "items": {
@@ -3126,6 +3371,31 @@
           "ground_truth": {
             "type": "string",
             "title": "Ground Truth"
+          },
+          "ground_truth_short": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ground Truth Short"
+          },
+          "key_points": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Key Points"
+          },
+          "ragas_focus": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Ragas Focus"
           },
           "mode": {
             "type": "string",
@@ -3817,6 +4087,17 @@
             "type": "boolean",
             "title": "Can Translate",
             "default": false
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
           }
         },
         "type": "object",
@@ -4259,6 +4540,146 @@
         "title": "FaithfulnessLevel",
         "description": "Faithfulness evaluation results."
       },
+      "GraphDocumentStatusItem": {
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id",
+            "description": "來源文件 ID"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "indexed",
+              "partial",
+              "empty",
+              "failed",
+              "running",
+              "skipped"
+            ],
+            "title": "Status",
+            "description": "GraphRAG 抽取狀態"
+          },
+          "chunk_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Chunk Count",
+            "description": "文件被切成的有效 chunk 數",
+            "default": 0
+          },
+          "chunks_succeeded": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Chunks Succeeded",
+            "description": "成功抽取的 chunk 數",
+            "default": 0
+          },
+          "chunks_failed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Chunks Failed",
+            "description": "失敗的 chunk 數",
+            "default": 0
+          },
+          "entities_added": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Entities Added",
+            "description": "新增節點數",
+            "default": 0
+          },
+          "edges_added": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Edges Added",
+            "description": "新增邊數",
+            "default": 0
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error",
+            "description": "最後一次錯誤訊息"
+          },
+          "last_attempted_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Attempted At",
+            "description": "最後一次嘗試時間"
+          },
+          "last_succeeded_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Succeeded At",
+            "description": "最後一次成功時間"
+          },
+          "file_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Name",
+            "description": "文件名稱"
+          },
+          "is_eligible": {
+            "type": "boolean",
+            "title": "Is Eligible",
+            "description": "是否仍具備 OCR artifact 可重建",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "doc_id",
+          "status"
+        ],
+        "title": "GraphDocumentStatusItem",
+        "description": "Graph document status row returned to the frontend."
+      },
+      "GraphDocumentStatusListResponse": {
+        "properties": {
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/GraphDocumentStatusItem"
+            },
+            "type": "array",
+            "title": "Documents"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "GraphDocumentStatusListResponse",
+        "description": "Response for GraphRAG per-document status listing."
+      },
       "GraphOperationResponse": {
         "properties": {
           "status": {
@@ -4392,6 +4813,48 @@
             ],
             "title": "Last Optimized At",
             "description": "最後優化時間"
+          },
+          "eligible_document_count": {
+            "type": "integer",
+            "title": "Eligible Document Count",
+            "description": "可用於 GraphRAG 重建的文件數量",
+            "default": 0
+          },
+          "indexed_document_count": {
+            "type": "integer",
+            "title": "Indexed Document Count",
+            "description": "GraphRAG 成功建入的文件數量",
+            "default": 0
+          },
+          "failed_document_count": {
+            "type": "integer",
+            "title": "Failed Document Count",
+            "description": "GraphRAG 失敗文件數量",
+            "default": 0
+          },
+          "partial_document_count": {
+            "type": "integer",
+            "title": "Partial Document Count",
+            "description": "GraphRAG 部分成功文件數量",
+            "default": 0
+          },
+          "empty_document_count": {
+            "type": "integer",
+            "title": "Empty Document Count",
+            "description": "GraphRAG 成功執行但未抽出實體的文件數量",
+            "default": 0
+          },
+          "active_job_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Job State",
+            "description": "目前進行中的圖譜工作狀態"
           }
         },
         "type": "object",
@@ -4406,12 +4869,17 @@
             "0": 12
           },
           "edge_count": 3400,
+          "eligible_document_count": 15,
+          "empty_document_count": 1,
+          "failed_document_count": 1,
           "has_graph": true,
           "index_version": 2,
+          "indexed_document_count": 12,
           "last_optimized_at": "2025-12-21T10:35:00Z",
           "last_updated": "2025-12-21T10:30:00Z",
           "needs_optimization": true,
           "node_count": 1250,
+          "partial_document_count": 1,
           "pending_resolution": 45
         }
       },
@@ -4435,6 +4903,36 @@
         "type": "object",
         "title": "GraphVisualizationData",
         "description": "Response for graph visualization (react-force-graph format)."
+      },
+      "GroupMetricsSummary": {
+        "properties": {
+          "group_key": {
+            "type": "string",
+            "title": "Group Key"
+          },
+          "sample_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Sample Count",
+            "default": 0
+          },
+          "metric_summaries": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/MetricAggregate"
+            },
+            "type": "object",
+            "title": "Metric Summaries"
+          },
+          "total_tokens": {
+            "$ref": "#/components/schemas/MetricAggregate"
+          }
+        },
+        "type": "object",
+        "required": [
+          "group_key"
+        ],
+        "title": "GroupMetricsSummary",
+        "description": "Aggregated metrics for one grouping dimension."
       },
       "HTTPValidationError": {
         "properties": {
@@ -4558,6 +5056,13 @@
             "title": "Sample Count",
             "default": 0
           },
+          "metric_summaries": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/MetricAggregate"
+            },
+            "type": "object",
+            "title": "Metric Summaries"
+          },
           "faithfulness": {
             "$ref": "#/components/schemas/MetricAggregate"
           },
@@ -4602,10 +5107,7 @@
         },
         "type": "object",
         "required": [
-          "mode",
-          "faithfulness",
-          "answer_correctness",
-          "total_tokens"
+          "mode"
         ],
         "title": "ModeMetricsSummary",
         "description": "Aggregated metrics for a single RAG mode."
@@ -4807,6 +5309,17 @@
           "is_fully_complete": {
             "type": "boolean",
             "title": "Is Fully Complete"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
           }
         },
         "type": "object",
@@ -4999,6 +5512,25 @@
         "title": "ResearchResponse",
         "description": "Response model for research queries."
       },
+      "RetryIndexResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "message"
+        ],
+        "title": "RetryIndexResponse",
+        "description": "Response model for retrying OCR-post indexing work."
+      },
       "SourceDetail": {
         "properties": {
           "doc_id": {
@@ -5171,6 +5703,18 @@
             "minLength": 1,
             "title": "Ground Truth"
           },
+          "ground_truth_short": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ground Truth Short"
+          },
           "category": {
             "anyOf": [
               {
@@ -5215,6 +5759,20 @@
               }
             ],
             "title": "Test Objective"
+          },
+          "key_points": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Key Points"
+          },
+          "ragas_focus": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Ragas Focus"
           }
         },
         "type": "object",
@@ -5252,6 +5810,18 @@
             "minLength": 1,
             "title": "Ground Truth"
           },
+          "ground_truth_short": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ground Truth Short"
+          },
           "category": {
             "anyOf": [
               {
@@ -5296,6 +5866,20 @@
               }
             ],
             "title": "Test Objective"
+          },
+          "key_points": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Key Points"
+          },
+          "ragas_focus": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Ragas Focus"
           }
         },
         "type": "object",
