@@ -35,8 +35,9 @@ from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 
 # Local application
+from core.llm_factory import get_llm_usage_metrics
 from core.providers import get_llm
-from data_base.document_metadata import get_document_id, matches_document_id
+from data_base.document_metadata import get_document_id
 from data_base.vector_store_manager import get_user_retriever
 from data_base.reranker import DocumentReranker
 from data_base.query_transformer import (
@@ -1021,7 +1022,7 @@ async def rag_answer_question(
         )
         response = await llm.ainvoke([message])
         answer = response.content
-        usage_metadata = getattr(response, "usage_metadata", {})
+        usage_metadata = get_llm_usage_metrics(response)
         
         # Step 10: Visual Verification Re-Act Loop (Phase 9)
         tool_calls = []
@@ -1052,4 +1053,7 @@ async def rag_answer_question(
         if return_docs:
             return RAGResult("抱歉，處理您的問題時發生錯誤。", list(source_doc_ids), docs, {})
         return ("抱歉，處理您的問題時發生錯誤。", list(source_doc_ids))
+
+
+
 

@@ -2616,9 +2616,7 @@
             "title": "Tool Calls"
           },
           "token_usage": {
-            "additionalProperties": {
-              "type": "integer"
-            },
+            "additionalProperties": true,
             "type": "object",
             "title": "Token Usage"
           },
@@ -3455,9 +3453,7 @@
             "default": 0
           },
           "token_usage": {
-            "additionalProperties": {
-              "type": "integer"
-            },
+            "additionalProperties": true,
             "type": "object",
             "title": "Token Usage"
           },

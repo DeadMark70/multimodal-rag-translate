@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 import math
 import os
 import statistics
@@ -11,6 +12,7 @@ from collections import defaultdict
 from typing import Any, Awaitable, Callable, Optional
 
 from core.providers import get_llm
+
 from evaluation.campaign_schemas import (
     CampaignMetricRow,
     CampaignMetricsResponse,
@@ -26,7 +28,11 @@ from evaluation.retry import run_with_retry
 PRIMARY_RAGAS_METRICS = ["faithfulness", "answer_correctness", "answer_relevancy"]
 CONTEXT_RAGAS_METRICS = ["context_precision", "context_recall"]
 
-EvaluationProgressCallback = Callable[[int, int, str | None, str | None], Awaitable[None]]
+logger = logging.getLogger(__name__)
+
+EvaluationProgressCallback = Callable[
+    [int, int, str | None, str | None], Awaitable[None]
+]
 
 
 def _clean_metric(value: Any) -> float:
@@ -65,11 +71,13 @@ class RagasEvaluator:
         self._score_repository = score_repository or RagasScoreRepository()
         self._evaluator_model = evaluator_model or os.getenv(
             "EVALUATION_EVALUATOR_MODEL",
-            "gemini-2.5-pro",
+            "gemini-2.5-flash",
         )
         self._batch_size = batch_size
         if enable_context_metrics is None:
-            enable_context_metrics = os.getenv("ENABLE_RAGAS_CONTEXT_METRICS", "false").lower() in {
+            enable_context_metrics = os.getenv(
+                "ENABLE_RAGAS_CONTEXT_METRICS", "false"
+            ).lower() in {
                 "1",
                 "true",
                 "yes",
@@ -95,8 +103,12 @@ class RagasEvaluator:
         campaign_id: str,
         on_progress: Optional[EvaluationProgressCallback] = None,
     ) -> str:
-        rows = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
-        completed_rows = [row for row in rows if row.status == CampaignResultStatus.COMPLETED]
+        rows = await self._result_repository.list_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
+        completed_rows = [
+            row for row in rows if row.status == CampaignResultStatus.COMPLETED
+        ]
 
         if not completed_rows:
             await self._score_repository.replace_for_campaign(
@@ -106,7 +118,22 @@ class RagasEvaluator:
             )
             return self._evaluator_model
 
-        ragas_dependencies = await self._load_ragas_dependencies()
+        try:
+            ragas_dependencies = await self._load_ragas_dependencies()
+        except ModuleNotFoundError as exc:
+            missing_name = getattr(exc, "name", None) or "unknown"
+            logger.warning(
+                "RAGAS evaluation dependencies missing (%s); skipping evaluation for campaign %s.",
+                missing_name,
+                campaign_id,
+            )
+            await self._score_repository.replace_for_campaign(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                score_rows=[],
+            )
+            return self._evaluator_model
+
         evaluator_llm = ragas_dependencies["LangchainLLMWrapper"](
             get_llm("evaluator", model_name=self._evaluator_model)
         )
@@ -131,7 +158,9 @@ class RagasEvaluator:
             completed_count += len(batch_rows)
             if on_progress and batch_rows:
                 last_row = batch_rows[-1]
-                await on_progress(completed_count, total_rows, last_row.question_id, last_row.mode)
+                await on_progress(
+                    completed_count, total_rows, last_row.question_id, last_row.mode
+                )
 
         await self._score_repository.replace_for_campaign(
             user_id=user_id,
@@ -161,7 +190,9 @@ class RagasEvaluator:
                 rows=[],
             )
 
-        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign.id)
+        results = await self._result_repository.list_for_campaign(
+            user_id=user_id, campaign_id=campaign.id
+        )
         score_map: dict[str, dict[str, float]] = defaultdict(dict)
         reference_sources: dict[str, str] = {}
         evaluator_model = self._evaluator_model
@@ -176,7 +207,9 @@ class RagasEvaluator:
                 if details.get("evaluator_model"):
                     evaluator_model = str(details["evaluator_model"])
                 if details.get("reference_source"):
-                    reference_sources[campaign_result_id] = str(details["reference_source"])
+                    reference_sources[campaign_result_id] = str(
+                        details["reference_source"]
+                    )
 
         chart_rows: list[CampaignMetricRow] = []
         for result in results:
@@ -204,7 +237,9 @@ class RagasEvaluator:
                     total_tokens=int(result.token_usage.get("total_tokens", 0)),
                     metric_values=metric_values,
                     faithfulness=_clean_metric(metric_values.get("faithfulness")),
-                    answer_correctness=_clean_metric(metric_values.get("answer_correctness")),
+                    answer_correctness=_clean_metric(
+                        metric_values.get("answer_correctness")
+                    ),
                 )
             )
 
@@ -227,6 +262,7 @@ class RagasEvaluator:
 
     async def _load_ragas_dependencies(self) -> dict[str, Any]:
         # Lazy import avoids sandbox-time network fetches during module import.
+        from data_base.vector_store_manager import get_embeddings, initialize_embeddings
         from datasets import Dataset
         from ragas import evaluate
         from ragas.embeddings import LangchainEmbeddingsWrapper
@@ -239,8 +275,6 @@ class RagasEvaluator:
             faithfulness,
         )
         from ragas.run_config import RunConfig
-
-        from data_base.vector_store_manager import get_embeddings, initialize_embeddings
 
         return {
             "Dataset": Dataset,
@@ -272,7 +306,9 @@ class RagasEvaluator:
                 "question": [row.question for row in batch_rows],
                 "answer": [row.answer for row in batch_rows],
                 "contexts": [row.contexts for row in batch_rows],
-                "ground_truth": [self._effective_ground_truth(row) for row in batch_rows],
+                "ground_truth": [
+                    self._effective_ground_truth(row) for row in batch_rows
+                ],
             }
         )
 
@@ -358,7 +394,9 @@ class RagasEvaluator:
             reference_source = self._reference_source(row)
             for metric_name in self.enabled_metrics:
                 scores = metric_scores.get(metric_name, [])
-                metric_value = _clean_metric(scores[index] if index < len(scores) else 0.0)
+                metric_value = _clean_metric(
+                    scores[index] if index < len(scores) else 0.0
+                )
                 details = {
                     "evaluator_model": self._evaluator_model,
                     "question_id": row.question_id,
@@ -426,8 +464,12 @@ class RagasEvaluator:
                 sample_count=len(mode_rows),
                 metric_summaries=metric_summaries,
                 faithfulness=metric_summaries.get("faithfulness", MetricAggregate()),
-                answer_correctness=metric_summaries.get("answer_correctness", MetricAggregate()),
-                total_tokens=_metric_aggregate([float(row.total_tokens) for row in mode_rows]),
+                answer_correctness=metric_summaries.get(
+                    "answer_correctness", MetricAggregate()
+                ),
+                total_tokens=_metric_aggregate(
+                    [float(row.total_tokens) for row in mode_rows]
+                ),
             )
             summaries[mode] = summary
             if mode == "naive":
@@ -445,13 +487,20 @@ class RagasEvaluator:
                 summary.ecr = 0
                 summary.ecr_note = None
                 continue
-            summary.delta_answer_correctness = summary.answer_correctness.mean - naive_correctness
+            summary.delta_answer_correctness = (
+                summary.answer_correctness.mean - naive_correctness
+            )
             summary.delta_total_tokens = summary.total_tokens.mean - naive_tokens
             if summary.delta_total_tokens <= 0:
                 summary.ecr = None
                 summary.ecr_note = "non_positive_marginal_cost"
                 continue
-            summary.ecr = 1000 * summary.delta_answer_correctness / summary.delta_total_tokens
+            summary.ecr = (
+                1000 * summary.delta_answer_correctness / summary.delta_total_tokens
+            )
             summary.ecr_note = None
 
         return summaries
+
+
+

@@ -547,7 +547,7 @@ class CampaignResultRepository:
         source_doc_ids: list[str],
         expected_sources: list[str],
         latency_ms: float,
-        token_usage: dict[str, int],
+        token_usage: dict[str, Any],
         category: Optional[str],
         difficulty: Optional[str],
         status: CampaignResultStatus,
@@ -828,3 +828,4 @@ class RagasScoreRepository:
             }
             for row in rows
         ]
+

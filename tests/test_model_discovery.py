@@ -162,9 +162,10 @@ async def test_list_available_models_uses_fallback_when_no_api_key() -> None:
         actual = await model_discovery.list_available_models()
 
     assert [item.name for item in actual] == [
-        "gemini-1.5-pro",
+        "gemini-2.0-flash",
         "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
+        "gemini-2.5-pro",
     ]
     mock_client.assert_called_once_with()
 
@@ -182,9 +183,10 @@ async def test_list_available_models_uses_fallback_when_discovery_fails(
         actual = await model_discovery.list_available_models()
 
     assert [item.name for item in actual] == [
-        "gemini-1.5-pro",
+        "gemini-2.0-flash",
         "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
+        "gemini-2.5-pro",
     ]
 
 
@@ -209,3 +211,29 @@ async def test_list_available_models_uses_cache_until_force_refresh() -> None:
     assert [item.name for item in third] == ["gemini-2.5-flash"]
     assert first is not second
     assert second is not third
+
+
+
+@pytest.mark.asyncio
+async def test_list_available_models_reuses_last_successful_cache_when_refresh_fails() -> None:
+    raw_model = _raw_model(
+        "models/gemini-2.5-pro",
+        display_name="Gemini 2.5 Pro",
+    )
+
+    with patch(
+        "evaluation.model_discovery._fetch_models_sync",
+        return_value=[raw_model],
+    ):
+        first = await model_discovery.list_available_models(force_refresh=True)
+
+    with patch(
+        "evaluation.model_discovery._fetch_models_sync",
+        side_effect=RuntimeError("boom"),
+    ):
+        second = await model_discovery.list_available_models(force_refresh=True)
+
+    assert [item.name for item in first] == ["gemini-2.5-pro"]
+    assert [item.name for item in second] == ["gemini-2.5-pro"]
+
+

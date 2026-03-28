@@ -37,7 +37,7 @@ class AgentTraceStep(BaseModel):
     output_preview: Optional[str] = None
     raw_text: Optional[str] = None
     tool_calls: list[AgentTraceToolCall] = Field(default_factory=list)
-    token_usage: dict[str, int] = Field(default_factory=dict)
+    token_usage: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -97,3 +97,4 @@ def summarize_agent_trace(detail: AgentTraceDetail) -> AgentTraceSummary:
         total_tokens=detail.total_tokens,
         created_at=detail.created_at,
     )
+

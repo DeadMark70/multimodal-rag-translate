@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -129,7 +129,7 @@ class CampaignResult(BaseModel):
     source_doc_ids: list[str] = Field(default_factory=list)
     expected_sources: list[str] = Field(default_factory=list)
     latency_ms: float = Field(default=0, ge=0)
-    token_usage: dict[str, int] = Field(default_factory=dict)
+    token_usage: dict[str, Any] = Field(default_factory=dict)
     category: Optional[str] = None
     difficulty: Optional[str] = None
     status: CampaignResultStatus
@@ -220,3 +220,5 @@ class CampaignMetricsResponse(BaseModel):
     summary_by_category: dict[str, GroupMetricsSummary] = Field(default_factory=dict)
     summary_by_focus: dict[str, GroupMetricsSummary] = Field(default_factory=dict)
     rows: list[CampaignMetricRow] = Field(default_factory=list)
+
+

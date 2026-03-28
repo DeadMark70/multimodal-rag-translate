@@ -314,3 +314,52 @@ async def _record_progress(
     mode: str | None,
 ) -> None:
     sink.append((completed, total, question_id, mode))
+
+
+@pytest.mark.asyncio
+async def test_evaluate_campaign_skips_when_ragas_dependency_missing() -> None:
+    result = CampaignResult(
+        id="r1",
+        campaign_id="cmp-1",
+        question_id="Q1",
+        question="Question 1",
+        ground_truth="Ground truth 1",
+        mode="naive",
+        run_number=1,
+        answer="Answer 1",
+        contexts=["ctx-1"],
+        source_doc_ids=[],
+        expected_sources=[],
+        latency_ms=10,
+        token_usage={"total_tokens": 100},
+        status=CampaignResultStatus.COMPLETED,
+        created_at=datetime.now(timezone.utc),
+    )
+    score_repository = FakeScoreRepository(
+        [
+            {
+                "campaign_result_id": "legacy",
+                "metric_name": "faithfulness",
+                "metric_value": 0.9,
+                "details": {},
+            }
+        ]
+    )
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository([result]),
+        score_repository=score_repository,
+        evaluator_model="fake-evaluator",
+    )
+
+    with patch.object(
+        evaluator,
+        "_load_ragas_dependencies",
+        new=AsyncMock(side_effect=ModuleNotFoundError("No module named 'datasets'")),
+    ):
+        model_name = await evaluator.evaluate_campaign(
+            user_id="user-a",
+            campaign_id="cmp-1",
+        )
+
+    assert model_name == "fake-evaluator"
+    assert score_repository._scores == []

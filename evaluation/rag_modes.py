@@ -69,7 +69,7 @@ class BenchmarkExecutionResult:
     source_doc_ids: list[str] = field(default_factory=list)
     expected_sources: list[str] = field(default_factory=list)
     latency_ms: float = 0
-    token_usage: dict[str, int] = field(default_factory=dict)
+    token_usage: dict[str, Any] = field(default_factory=dict)
     category: Optional[str] = None
     difficulty: Optional[str] = None
     error_message: Optional[str] = None
@@ -175,3 +175,4 @@ def _extract_contexts(documents: list[Document]) -> list[str]:
         if normalized:
             contexts.append(normalized)
     return contexts
+

@@ -37,6 +37,7 @@ langchain-classic==1.0.0
 langchain-openai==1.1.7
 openai==1.109.1
 ragas==0.4.2
+datasets>=3.2.0
 
 # Vector Store & Embeddings
 transformers==4.57.1
@@ -76,4 +77,5 @@ beautifulsoup4==4.14.3
 markdownify==1.2.2
 pypdfium2==4.30.0
 ruff==0.14.13
+
 
