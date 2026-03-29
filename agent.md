@@ -171,5 +171,8 @@ Keep these three files synchronized before ending a session.
 - 2026-03-28: When a user asks for full CI or "全線" verification, do not stop at targeted tests, lint, or typecheck. Run the workflow-equivalent full suites for both backend and frontend, request sandbox escalation immediately when test runners are blocked, and report exact pass/skip/fail counts rather than partial confidence claims.
 - 2026-03-29: Do not persist raw LangChain/Gemini `usage_metadata` directly into evaluation or trace payloads. Normalize token usage first (at minimum flat `input_tokens`, `output_tokens`, `total_tokens`, `reasoning_tokens`), and treat stored `token_usage` schemas as potentially nested/forward-compatible when reading existing rows.
 - 2026-03-29: When evaluation `agentic` baseline behavior changes, pin the new planner/drill-down/image constraints inside `evaluation/agentic_evaluation_service.py` and bump `execution_profile` so historical campaign results remain comparable.
+- 2026-03-29: When evaluator context-packing logic changes, version it explicitly (`context_policy_version`) and propagate that version through persisted campaign results, RAGAS score details, metrics rows, docs, and frontend types in the same change set. This preserves score comparability and prevents silent evaluator-policy drift.
+- 2026-03-29: In this workspace, `rg.exe` can intermittently fail with permission errors; after one failed attempt, switch immediately to `Select-String`/targeted file reads and continue without repeated retries.
+
 
 

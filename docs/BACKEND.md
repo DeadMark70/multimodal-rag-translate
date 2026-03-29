@@ -69,7 +69,7 @@
 - Request middleware attaches `X-Request-Id` to the response.
 - `TEST_MODE` or `USE_FAKE_PROVIDERS` skip real warmups and provider calls during startup-sensitive paths.
 - Evaluation persists campaign state in SQLite with WAL mode and supports results, traces, metrics, manual evaluate, cancel, and SSE reconnect.
-- Evaluation `agentic` uses a dedicated baseline (`agentic_eval_v2`) distinct from user-facing Deep Research: initial plan capped to 3 subtasks, at most 1 drill-down iteration, drill-down fanout capped to 3, and deep image analysis kept enabled.
+- Evaluation `agentic` uses a dedicated baseline (`agentic_eval_v4`) distinct from user-facing Deep Research: question-intent-aware initial planning (2 tasks for figure-flow, otherwise 3), at most 1 drill-down iteration, coverage-gap-driven follow-up generation, and deep image analysis kept enabled.
 - Canonical metadata writes use `doc_id`; `original_doc_uid` remains compatibility fallback on read/delete paths only.
 
 ## RAGAS Evaluation Contract
@@ -94,11 +94,12 @@
 ## Evaluator Context Policy
 
 - Evaluation no longer reuses the UI preview truncation path.
-- Formal evaluator policy is deterministic:
-  - preserve retrieval order
-  - keep at most 6 contexts per sample
-  - cap each context at 2000 characters
-  - normalize whitespace without changing semantic order
+- Formal evaluator policy is deterministic and answer-aware (`context_policy_version = v2_answer_aware_pack`):
+  - normalize whitespace and deduplicate repeated chunks
+  - keep at most 8 contexts per sample
+  - cap each context at 1800 characters
+  - rank contexts against `question + final answer` lexical overlap
+  - preserve at least one candidate per agentic subtask when task-tagged evidence is available
 
 ## Focused Verification Surface
 
@@ -107,5 +108,7 @@
 - GraphRAG extractor/store/router tests
 - PDF service repository/background/manual-translation tests
 - Full backend acceptance: `.\.venv\Scripts\python.exe -m pytest`
+
+
 
 

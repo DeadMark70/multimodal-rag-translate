@@ -21,7 +21,7 @@ Human-maintained inventory of the current backend surface.
   - `ground_truth_short`
   - `key_points`
   - `ragas_focus`
-- Campaign result rows now persist and return the same three fields for executed samples.
+- Campaign result rows now persist and return the same three fields for executed samples, plus `execution_profile` and `context_policy_version` for runtime/evaluator comparability.
 - Metrics response now exposes:
   - `available_metrics`
   - row-level `metric_values`
@@ -30,7 +30,7 @@ Human-maintained inventory of the current backend surface.
   - `summary_by_category`
   - `summary_by_focus`
 - Dataset tooling lives in `evaluation/dataset_generator.py` and derives `ragas_ready.json` from the master dataset.
-- Evaluation `agentic` is a dedicated baseline profile (`agentic_eval_v2`), not a generic alias for user Deep Research.
+- Evaluation `agentic` is a dedicated baseline profile (`agentic_eval_v4`), not a generic alias for user Deep Research.
 
 ## Shared Runtime Contracts
 
@@ -38,6 +38,7 @@ Human-maintained inventory of the current backend surface.
 - Errors normalize to `{ error: { code, message, request_id, details? } }`.
 - Startup warmups are skipped when `TEST_MODE` or `USE_FAKE_PROVIDERS` is enabled.
 - Evaluation persists to SQLite and supports result, trace, metric, cancel, and stream recovery flows.
-- RAGAS reference selection is `ground_truth_short ?? ground_truth` and evaluator context ingestion is deterministic (top 6 chunks, 2000 chars each, whitespace-normalized).
+- RAGAS reference selection is `ground_truth_short ?? ground_truth` and evaluator context ingestion is deterministic plus answer-aware (`v2_answer_aware_pack`: top 8 chunks, 1800 chars each, whitespace-normalized, overlap-ranked, task-aware when metadata exists).
+
 
 
