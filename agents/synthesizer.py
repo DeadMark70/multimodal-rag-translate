@@ -8,13 +8,14 @@ research report.
 # Standard library
 import asyncio
 import logging
-from typing import List
+from typing import List, Optional
 
 # Third-party
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
 # Local application
+from agents.planner import QuestionIntent, classify_question_intent
 from core.providers import get_llm
 
 # Configure logging
@@ -138,6 +139,36 @@ _ACADEMIC_REPORT_PROMPT = """你是一位專業的學術報告撰寫專家。請
 139: 4. 若引用圖片摘要內容，務必以 `![描述](路徑)` 格式插入圖片
 140: 
 141: 請開始撰寫報告："""
+
+
+def _synthesis_guidance_for_intent(question_intent: QuestionIntent) -> str:
+    if question_intent == "comparison_disambiguation":
+        return """
+## 題型聚焦：比較 / 概念消歧
+- 第一段必須直接回答「A 與 B 的本質差異」。
+- 必須明確指出容易混淆之處，使用「不要把 X 和 Y 混為一談」或同等明確措辭。
+- 除非原題明問，禁止把資料集規模、年份、背景脈絡寫成主體。
+"""
+    if question_intent == "figure_flow":
+        return """
+## 題型聚焦：架構流程 / Figure
+- 第一段必須直接輸出有序流程，可用 `A -> B -> C` 或等價順序表述。
+- 僅保留 block/branch/order 相關資訊。
+- 除非原題明問，禁止補充尺寸、背景、訓練設定。
+"""
+    if question_intent == "benchmark_data":
+        return """
+## 題型聚焦：Benchmark / 數據
+- 必須優先寫出具體指標、比較對手、基準設定。
+- 若沒有明確數字，必須誠實說明「目前資料未提供直接量化比較」。
+"""
+    if question_intent == "enumeration_definition":
+        return """
+## 題型聚焦：列舉 / 定義
+- 第一段必須先列出完整項目數量或完整清單。
+- 後續條列每項只保留一句短特徵，避免延伸成背景介紹。
+"""
+    return ""
 
 
 class ResultSynthesizer:
@@ -279,6 +310,7 @@ class ResultSynthesizer:
         original_question: str,
         sub_results: List[SubTaskResult],
         use_academic_template: bool = False,
+        question_intent: Optional[QuestionIntent] = None,
     ) -> ResearchReport:
         """
         Synthesizes sub-task results into a research report.
@@ -319,6 +351,9 @@ class ResultSynthesizer:
                 llm = get_llm("synthesizer")
                 
                 formatted_results = self._format_sub_results(sub_results)
+                effective_intent = question_intent or classify_question_intent(
+                    original_question
+                )
                 
                 # Select prompt template based on use_academic_template
                 template = (
@@ -329,6 +364,10 @@ class ResultSynthesizer:
                 prompt = template.format(
                     original_question=original_question,
                     sub_results=formatted_results,
+                )
+                prompt = (
+                    f"{prompt}\n\n"
+                    f"{_synthesis_guidance_for_intent(effective_intent)}"
                 )
                 
                 message = HumanMessage(content=prompt)
@@ -373,6 +412,7 @@ async def synthesize_results(
     sub_results: List[SubTaskResult],
     enabled: bool = True,
     use_academic_template: bool = False,
+    question_intent: Optional[QuestionIntent] = None,
 ) -> ResearchReport:
     """
     Convenience function to synthesize results.
@@ -426,4 +466,5 @@ async def synthesize_results(
         original_question, 
         sub_results, 
         use_academic_template=use_academic_template,
+        question_intent=question_intent,
     )

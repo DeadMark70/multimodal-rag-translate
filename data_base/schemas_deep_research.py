@@ -6,7 +6,7 @@ Supports Human-in-the-loop planning and recursive drill-down.
 """
 
 # Standard library
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 
 # Third-party
 from pydantic import BaseModel, Field
@@ -133,6 +133,10 @@ class SubTaskExecutionResult(BaseModel):
     usage: dict = Field(default_factory=lambda: {"total_tokens": 0})
     thought_process: Optional[str] = None
     tool_calls: List[dict] = Field(default_factory=list)
+    strategy_tier: Optional[str] = None
+    route_profile: Optional[str] = None
+    evidence_units: List[dict[str, Any]] = Field(default_factory=list)
+    visual_verification_meta: dict[str, Any] = Field(default_factory=dict)
 
 
 
@@ -157,3 +161,5 @@ class ExecutePlanResponse(BaseModel):
     all_sources: List[str]
     confidence: float = Field(ge=0.0, le=1.0)
     total_iterations: int = 0
+    claims: List[dict[str, Any]] = Field(default_factory=list)
+    critic_summary: dict[str, Any] = Field(default_factory=dict)

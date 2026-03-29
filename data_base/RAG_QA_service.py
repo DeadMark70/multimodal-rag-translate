@@ -104,6 +104,7 @@ class RAGResult(NamedTuple):
     thought_process: Optional[str] = None
     tool_calls: List[dict] = []
     agent_trace: Optional[dict] = None
+    visual_verification_meta: Optional[Dict[str, Any]] = None
 
 
 ProgressCallback = Callable[[str, Optional[Dict[str, Any]]], Awaitable[None]]
@@ -174,7 +175,9 @@ async def _execute_visual_verification_loop(
     user_id: str,
     llm: Any,
     source_doc_ids: List[str],
-) -> Tuple[str, List[Dict[str, Any]]]:
+    image_paths: Optional[List[str]] = None,
+    force_once_if_not_triggered: bool = False,
+) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
     """
     Re-Act loop for visual verification.
 
@@ -189,18 +192,36 @@ async def _execute_visual_verification_loop(
         source_doc_ids: Source document IDs for logging.
 
     Returns:
-        Tuple of (final answer, tool_results) after visual verification (if triggered).
+        Tuple of (final answer, tool_results, visual_meta) after visual verification.
     """
     response = initial_response
     iteration = 0
     tool_results: List[Dict[str, Any]] = []
-    
+    attempted = False
+    forced_fallback_used = False
+    force_pending = bool(force_once_if_not_triggered and image_paths)
+
     while iteration < MAX_VISUAL_ITERATIONS:
         tool_request = _parse_visual_tool_request(response)
+        tool_request_is_forced = False
+        if not tool_request and force_pending:
+            tool_request = {
+                "action": "VERIFY_IMAGE",
+                "path": image_paths[0],
+                "question": question,
+            }
+            tool_request_is_forced = True
+            forced_fallback_used = True
+            force_pending = False
+            logger.info("Visual verification forced fallback triggered for image-aware route")
+        elif tool_request:
+            force_pending = False
+
         if not tool_request:
             break  # No tool request, return as-is
-        
+
         iteration += 1
+        attempted = True
         logger.info(f"Visual verification iteration {iteration}: {tool_request.get('question', '')[:50]}")
         
         # Execute visual tool
@@ -217,6 +238,7 @@ async def _execute_visual_verification_loop(
             "question": tool_request.get("question"),
             "success": result.get("success"),
             "result": result.get("result") if result["success"] else result.get("error"),
+            "forced_once": tool_request_is_forced,
         })
         
         # Build synthesis prompt with tool results
@@ -240,10 +262,17 @@ async def _execute_visual_verification_loop(
         synth_message = HumanMessage(content=synthesis_prompt)
         synth_response = await llm.ainvoke([synth_message])
         response = synth_response.content
-        
+
         logger.info(f"Visual verification synthesis completed (iteration {iteration})")
-    
-    return response, tool_results
+        if tool_request_is_forced:
+            break
+
+    visual_meta = {
+        "visual_verification_attempted": attempted,
+        "visual_tool_call_count": len(tool_results),
+        "visual_force_fallback_used": forced_fallback_used,
+    }
+    return response, tool_results, visual_meta
 
 
 
@@ -1023,17 +1052,24 @@ async def rag_answer_question(
         response = await llm.ainvoke([message])
         answer = response.content
         usage_metadata = get_llm_usage_metrics(response)
+        visual_verification_meta = {
+            "visual_verification_attempted": False,
+            "visual_tool_call_count": 0,
+            "visual_force_fallback_used": False,
+        }
         
         # Step 10: Visual Verification Re-Act Loop (Phase 9)
         tool_calls = []
         if enable_visual_verification and image_paths:
-            answer, tool_calls = await _execute_visual_verification_loop(
+            answer, tool_calls, visual_verification_meta = await _execute_visual_verification_loop(
                 initial_response=answer,
                 context=context_text,
                 question=question,
                 user_id=user_id,
                 llm=llm,
                 source_doc_ids=list(source_doc_ids),
+                image_paths=image_list,
+                force_once_if_not_triggered=True,
             )
             # Note: Usage from visual verification loop is not currently aggregated into usage_metadata
         
@@ -1044,7 +1080,8 @@ async def rag_answer_question(
                 docs, 
                 usage_metadata,
                 thought_process=prompt_text, # Capture the prompt as thought trace
-                tool_calls=tool_calls
+                tool_calls=tool_calls,
+                visual_verification_meta=visual_verification_meta,
             )
         return (answer, list(source_doc_ids))
 

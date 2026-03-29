@@ -164,6 +164,9 @@ class CampaignEngine:
                 campaign_id=campaign_id,
                 completed_units=campaign.completed_units,
                 evaluation_total_units=len(completed_results),
+                ragas_batch_size=campaign.config.ragas_batch_size,
+                ragas_parallel_batches=campaign.config.ragas_parallel_batches,
+                ragas_rpm_limit=campaign.config.ragas_rpm_limit,
             ),
             name=f"evaluation-ragas-{campaign_id}",
         )
@@ -234,6 +237,9 @@ class CampaignEngine:
                 user_id=user_id,
                 campaign_id=campaign_id,
                 completed_units=completed_units,
+                ragas_batch_size=config.ragas_batch_size,
+                ragas_parallel_batches=config.ragas_parallel_batches,
+                ragas_rpm_limit=config.ragas_rpm_limit,
             )
         except asyncio.CancelledError:
             for task in batch_tasks:
@@ -257,6 +263,9 @@ class CampaignEngine:
         campaign_id: str,
         completed_units: int,
         evaluation_total_units: int,
+        ragas_batch_size: int,
+        ragas_parallel_batches: int,
+        ragas_rpm_limit: int,
     ) -> None:
         try:
             await self._evaluate_campaign_results(
@@ -264,6 +273,9 @@ class CampaignEngine:
                 campaign_id=campaign_id,
                 completed_units=completed_units,
                 evaluation_total_units=evaluation_total_units,
+                ragas_batch_size=ragas_batch_size,
+                ragas_parallel_batches=ragas_parallel_batches,
+                ragas_rpm_limit=ragas_rpm_limit,
             )
             await self._campaign_repository.mark_completed(
                 user_id=user_id,
@@ -288,6 +300,9 @@ class CampaignEngine:
         user_id: str,
         campaign_id: str,
         completed_units: int,
+        ragas_batch_size: int,
+        ragas_parallel_batches: int,
+        ragas_rpm_limit: int,
     ) -> None:
         results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
         completed_results = [row for row in results if row.status == CampaignResultStatus.COMPLETED]
@@ -305,6 +320,9 @@ class CampaignEngine:
             campaign_id=campaign_id,
             completed_units=completed_units,
             evaluation_total_units=len(completed_results),
+            ragas_batch_size=ragas_batch_size,
+            ragas_parallel_batches=ragas_parallel_batches,
+            ragas_rpm_limit=ragas_rpm_limit,
         )
         await self._campaign_repository.mark_completed(
             user_id=user_id,
@@ -319,6 +337,9 @@ class CampaignEngine:
         campaign_id: str,
         completed_units: int,
         evaluation_total_units: int,
+        ragas_batch_size: int,
+        ragas_parallel_batches: int,
+        ragas_rpm_limit: int,
     ) -> None:
         async def on_progress(
             evaluation_completed_units: int,
@@ -339,6 +360,9 @@ class CampaignEngine:
         await self._ragas_evaluator.evaluate_campaign(
             user_id=user_id,
             campaign_id=campaign_id,
+            ragas_batch_size=ragas_batch_size,
+            ragas_parallel_batches=ragas_parallel_batches,
+            ragas_rpm_limit=ragas_rpm_limit,
             on_progress=on_progress,
         )
 
@@ -386,6 +410,7 @@ class CampaignEngine:
                 execution_profile=(
                     getattr(payload, "agent_trace", {}) or {}
                 ).get("execution_profile"),
+                context_policy_version=None,
                 run_number=unit.run_number,
                 answer=f"ERROR: {payload}",
                 contexts=[],
@@ -419,6 +444,7 @@ class CampaignEngine:
             ragas_focus=list(payload.ragas_focus),
             mode=payload.mode,
             execution_profile=payload.execution_profile,
+            context_policy_version=payload.context_policy_version,
             run_number=unit.run_number,
             answer=payload.answer,
             contexts=payload.contexts,
@@ -487,3 +513,4 @@ def get_campaign_engine() -> CampaignEngine:
     if _campaign_engine is None:
         _campaign_engine = CampaignEngine()
     return _campaign_engine
+

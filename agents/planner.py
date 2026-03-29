@@ -10,7 +10,7 @@ Supports GraphRAG-aware planning for multi-document research.
 import asyncio
 import logging
 import re
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 # Third-party
 from langchain_core.messages import HumanMessage
@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 
 # Task types
 TaskType = Literal["rag", "graph_analysis"]
+QuestionIntent = Literal[
+    "comparison_disambiguation",
+    "figure_flow",
+    "benchmark_data",
+    "enumeration_definition",
+    "general_research",
+]
 
 
 class SubTask(BaseModel):
@@ -174,6 +181,153 @@ _REFINE_QUERY_PROMPT = """你是一個搜尋策略專家。一個 AI 系統剛�
 請直接輸出修正後的搜尋查詢，不要其他內容："""
 
 
+def classify_question_intent(question: str) -> QuestionIntent:
+    """Classify the dominant evaluation intent for planning and synthesis."""
+
+    lowered = question.lower()
+    if any(
+        keyword in lowered
+        for keyword in (
+            "figure",
+            "架構圖",
+            "資料流",
+            "排列順序",
+            "順序",
+            "流程",
+            "block",
+            "branch",
+            "網路架構",
+            "layer order",
+            "data flow",
+        )
+    ):
+        return "figure_flow"
+
+    if any(
+        keyword in lowered
+        for keyword in (
+            "benchmark",
+            "數據",
+            "數值",
+            "dice",
+            "score",
+            "效能",
+            "量化",
+            "比較基準",
+            "baseline",
+            "performance",
+            "metric",
+        )
+    ):
+        return "benchmark_data"
+
+    if any(
+        keyword in lowered
+        for keyword in (
+            "差異",
+            "比較",
+            "對比",
+            "區別",
+            "混淆",
+            "避免概念混淆",
+            "versus",
+            "difference",
+            "compare",
+            "disambigu",
+        )
+    ):
+        return "comparison_disambiguation"
+
+    if any(
+        keyword in lowered
+        for keyword in (
+            "哪些",
+            "列出",
+            "包含哪些",
+            "哪兩個",
+            "what are",
+            "list",
+            "which models",
+            "which steps",
+        )
+    ):
+        return "enumeration_definition"
+
+    return "general_research"
+
+
+def required_coverage_for_intent(question_intent: QuestionIntent) -> list[str]:
+    """Return high-level answer axes that should be covered for an intent."""
+
+    if question_intent == "comparison_disambiguation":
+        return [
+            "direct_difference",
+            "effective_strategy_or_evidence",
+            "confusion_or_limitation",
+        ]
+    if question_intent == "figure_flow":
+        return [
+            "ordered_flow",
+            "component_or_branch",
+        ]
+    if question_intent == "benchmark_data":
+        return [
+            "comparative_metric",
+            "baseline_or_setting",
+        ]
+    if question_intent == "enumeration_definition":
+        return [
+            "explicit_list",
+            "short_characteristics",
+        ]
+    return []
+
+
+def _planning_guidance_for_intent(question_intent: QuestionIntent) -> str:
+    if question_intent == "comparison_disambiguation":
+        return """
+## 題型聚焦：比較 / 概念消歧
+- 子問題必須覆蓋：
+  1. 直接差異
+  2. 被證明有效的策略或證據
+  3. 常見混淆點、限制、或「不要混為一談」的地方
+- 除非原題明問，禁止把資料集規模、年份、背景脈絡當成主要子問題。
+"""
+    if question_intent == "figure_flow":
+        return """
+## 題型聚焦：架構流程 / Figure
+- 第一輪子問題必須優先恢復「有序流程」與「組件順序」。
+- 除非原題明問，禁止先追尺寸、背景、訓練資料、或額外設計動機。
+"""
+    if question_intent == "benchmark_data":
+        return """
+## 題型聚焦：Benchmark / 數據
+- 子問題必須優先查具體指標、比較對手、資料集或設定。
+- 禁止生成只有定義或背景介紹、沒有數據支撐的子問題。
+"""
+    if question_intent == "enumeration_definition":
+        return """
+## 題型聚焦：列舉 / 定義
+- 子問題要支援「明確列出項目」與「每項一句短特徵」。
+- 禁止擴成長篇歷史回顧。
+"""
+    return ""
+
+
+def _followup_guidance_for_intent(
+    question_intent: QuestionIntent,
+    coverage_gaps: list[str] | None,
+) -> str:
+    guidance = _planning_guidance_for_intent(question_intent)
+    if coverage_gaps:
+        guidance = (
+            f"{guidance}\n## 當前缺口\n"
+            + "\n".join(f"- {gap}" for gap in coverage_gaps)
+            + "\n- 追問必須優先補齊上述缺口，不要擴寫非核心背景。"
+        )
+    return guidance
+
+
 class TaskPlanner:
     """
     Decomposes complex research questions into sub-tasks.
@@ -295,11 +449,16 @@ class TaskPlanner:
             try:
                 llm = get_llm("planner")
                 
+                question_intent = classify_question_intent(question)
+
                 # Choose prompt based on graph planning mode
                 if self.enable_graph_planning:
                     prompt = _GRAPH_PLANNER_PROMPT.format(question=question)
                 else:
                     prompt = _PLANNER_PROMPT.format(question=question)
+                prompt = (
+                    f"{prompt}\n\n{_planning_guidance_for_intent(question_intent)}"
+                )
                 
                 message = HumanMessage(content=prompt)
                 
@@ -319,8 +478,11 @@ class TaskPlanner:
                 # Log task type breakdown
                 graph_count = sum(1 for t in subtasks if t.task_type == "graph_analysis")
                 logger.info(
-                    f"Planned {len(subtasks)} sub-tasks for research "
-                    f"({graph_count} graph, {len(subtasks) - graph_count} rag)"
+                    "Planned %s sub-tasks for research (%s graph, %s rag, intent=%s)",
+                    len(subtasks),
+                    graph_count,
+                    len(subtasks) - graph_count,
+                    question_intent,
                 )
                 
                 return ResearchPlan(
@@ -394,6 +556,8 @@ class TaskPlanner:
         original_question: str,
         current_findings: str,
         existing_tasks: List[SubTask],
+        question_intent: Optional[QuestionIntent] = None,
+        coverage_gaps: Optional[list[str]] = None,
     ) -> List[SubTask]:
         """
         Generates follow-up tasks based on knowledge gaps in current findings.
@@ -420,10 +584,17 @@ class TaskPlanner:
                     f"- {q}" for q in existing_questions
                 )
                 
+                effective_intent = question_intent or classify_question_intent(
+                    original_question
+                )
                 prompt = _FOLLOWUP_PROMPT.format(
                     original_question=original_question,
                     current_findings=current_findings,
                     existing_questions=existing_list,
+                )
+                prompt = (
+                    f"{prompt}\n\n"
+                    f"{_followup_guidance_for_intent(effective_intent, coverage_gaps)}"
                 )
                 
                 message = HumanMessage(content=prompt)

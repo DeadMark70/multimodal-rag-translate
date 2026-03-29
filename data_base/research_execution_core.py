@@ -270,6 +270,12 @@ class ResearchExecutionCore:
             logger.info("Drill-down iteration %s/%s", iteration, max_iterations)
 
             findings_summary = self._build_findings_summary(current_results)
+            coverage_gap_resolver = getattr(self, "_coverage_gaps", None)
+            coverage_gaps = (
+                coverage_gap_resolver(current_results)
+                if callable(coverage_gap_resolver)
+                else None
+            )
             followup_tasks = await planner.create_followup_tasks(
                 original_question=original_question,
                 current_findings=findings_summary,
@@ -277,6 +283,8 @@ class ResearchExecutionCore:
                     SubTask(id=result.id, question=result.question)
                     for result in current_results
                 ],
+                question_intent=getattr(self, "_active_question_intent", None),
+                coverage_gaps=coverage_gaps,
             )
 
             if not followup_tasks:
@@ -513,3 +521,4 @@ class ResearchExecutionCore:
                 is_drilldown=iteration > 0,
                 iteration=iteration,
             )
+

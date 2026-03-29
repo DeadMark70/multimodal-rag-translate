@@ -18,12 +18,14 @@ from evaluation.campaign_schemas import (
     CampaignMetricsResponse,
     CampaignResultStatus,
     CampaignStatus,
+    DeltaGroupSummary,
+    DeltaModeSummary,
     GroupMetricsSummary,
     MetricAggregate,
     ModeMetricsSummary,
 )
 from evaluation.db import CampaignResultRepository, RagasScoreRepository
-from evaluation.retry import run_with_retry
+from evaluation.retry import RateBudget, run_with_retry
 
 PRIMARY_RAGAS_METRICS = ["faithfulness", "answer_correctness", "answer_relevancy"]
 CONTEXT_RAGAS_METRICS = ["context_precision", "context_recall"]
@@ -65,6 +67,8 @@ class RagasEvaluator:
         *,
         evaluator_model: Optional[str] = None,
         batch_size: int = 4,
+        parallel_batches: int = 1,
+        rpm_limit: int = 240,
         enable_context_metrics: Optional[bool] = None,
     ) -> None:
         self._result_repository = result_repository or CampaignResultRepository()
@@ -74,6 +78,8 @@ class RagasEvaluator:
             "gemini-2.5-flash",
         )
         self._batch_size = batch_size
+        self._parallel_batches = parallel_batches
+        self._rpm_limit = rpm_limit
         if enable_context_metrics is None:
             enable_context_metrics = os.getenv(
                 "ENABLE_RAGAS_CONTEXT_METRICS", "false"
@@ -101,6 +107,9 @@ class RagasEvaluator:
         *,
         user_id: str,
         campaign_id: str,
+        ragas_batch_size: Optional[int] = None,
+        ragas_parallel_batches: Optional[int] = None,
+        ragas_rpm_limit: Optional[int] = None,
         on_progress: Optional[EvaluationProgressCallback] = None,
     ) -> str:
         rows = await self._result_repository.list_for_campaign(
@@ -145,15 +154,35 @@ class RagasEvaluator:
         score_rows: list[dict[str, Any]] = []
         total_rows = len(completed_rows)
         completed_count = 0
+        effective_batch_size = max(1, min(8, ragas_batch_size or self._batch_size))
+        effective_parallel_batches = max(
+            1, min(8, ragas_parallel_batches or self._parallel_batches)
+        )
+        effective_rpm_limit = max(1, min(1000, ragas_rpm_limit or self._rpm_limit))
+        rate_budget = RateBudget(rpm_limit=effective_rpm_limit)
 
-        for offset in range(0, total_rows, self._batch_size):
-            batch_rows = completed_rows[offset : offset + self._batch_size]
-            batch_scores = await self._evaluate_batch(
-                batch_rows=batch_rows,
-                ragas_dependencies=ragas_dependencies,
-                evaluator_llm=evaluator_llm,
-                evaluator_embeddings=evaluator_embeddings,
-            )
+        batches = [
+            completed_rows[offset : offset + effective_batch_size]
+            for offset in range(0, total_rows, effective_batch_size)
+        ]
+        semaphore = asyncio.Semaphore(effective_parallel_batches)
+
+        async def evaluate_one_batch(
+            batch_rows: list[Any],
+        ) -> tuple[list[Any], list[dict[str, Any]]]:
+            async with semaphore:
+                batch_scores = await self._evaluate_batch(
+                    batch_rows=batch_rows,
+                    ragas_dependencies=ragas_dependencies,
+                    evaluator_llm=evaluator_llm,
+                    evaluator_embeddings=evaluator_embeddings,
+                    rate_budget=rate_budget,
+                )
+                return batch_rows, batch_scores
+
+        tasks = [asyncio.create_task(evaluate_one_batch(batch_rows)) for batch_rows in batches]
+        for done in asyncio.as_completed(tasks):
+            batch_rows, batch_scores = await done
             score_rows.extend(batch_scores)
             completed_count += len(batch_rows)
             if on_progress and batch_rows:
@@ -187,6 +216,9 @@ class RagasEvaluator:
                 summary_by_mode={},
                 summary_by_category={},
                 summary_by_focus={},
+                delta_by_category={},
+                delta_by_difficulty={},
+                delta_by_question={},
                 rows=[],
             )
 
@@ -195,6 +227,7 @@ class RagasEvaluator:
         )
         score_map: dict[str, dict[str, float]] = defaultdict(dict)
         reference_sources: dict[str, str] = {}
+        context_policy_versions: dict[str, str] = {}
         evaluator_model = self._evaluator_model
 
         for score_row in score_rows:
@@ -209,6 +242,10 @@ class RagasEvaluator:
                 if details.get("reference_source"):
                     reference_sources[campaign_result_id] = str(
                         details["reference_source"]
+                    )
+                if details.get("context_policy_version"):
+                    context_policy_versions[campaign_result_id] = str(
+                        details["context_policy_version"]
                     )
 
         chart_rows: list[CampaignMetricRow] = []
@@ -234,6 +271,10 @@ class RagasEvaluator:
                     difficulty=result.difficulty,
                     ragas_focus=list(result.ragas_focus),
                     reference_source=reference_sources.get(result.id),
+                    context_policy_version=(
+                        context_policy_versions.get(result.id)
+                        or result.context_policy_version
+                    ),
                     total_tokens=int(result.token_usage.get("total_tokens", 0)),
                     metric_values=metric_values,
                     faithfulness=_clean_metric(metric_values.get("faithfulness")),
@@ -256,6 +297,18 @@ class RagasEvaluator:
             summary_by_focus=self._group_summaries(
                 chart_rows,
                 lambda row: row.ragas_focus,
+            ),
+            delta_by_category=self._delta_groups(
+                chart_rows,
+                lambda row: [row.category] if row.category else [],
+            ),
+            delta_by_difficulty=self._delta_groups(
+                chart_rows,
+                lambda row: [row.difficulty] if row.difficulty else [],
+            ),
+            delta_by_question=self._delta_groups(
+                chart_rows,
+                lambda row: [row.question_id] if row.question_id else [],
             ),
             rows=chart_rows,
         )
@@ -300,6 +353,7 @@ class RagasEvaluator:
         ragas_dependencies: dict[str, Any],
         evaluator_llm: Any,
         evaluator_embeddings: Any,
+        rate_budget: Optional[RateBudget] = None,
     ) -> list[dict[str, Any]]:
         dataset = ragas_dependencies["Dataset"].from_dict(
             {
@@ -332,6 +386,8 @@ class RagasEvaluator:
                 )
 
             try:
+                if rate_budget is not None:
+                    await rate_budget.acquire()
                 metric_scores[metric_name] = await run_with_retry(run_metric)
             except Exception as exc:  # noqa: BLE001
                 metric_scores[metric_name] = [0.0] * len(batch_rows)
@@ -401,6 +457,7 @@ class RagasEvaluator:
                     "evaluator_model": self._evaluator_model,
                     "question_id": row.question_id,
                     "reference_source": reference_source,
+                    "context_policy_version": getattr(row, "context_policy_version", None),
                 }
                 if metric_name in metric_errors:
                     details["error"] = metric_errors[metric_name]
@@ -441,6 +498,96 @@ class RagasEvaluator:
                 ),
             )
         return summaries
+
+    def _delta_groups(
+        self,
+        rows: list[CampaignMetricRow],
+        key_getter: Callable[[CampaignMetricRow], list[str]],
+    ) -> dict[str, DeltaGroupSummary]:
+        grouped: dict[str, list[CampaignMetricRow]] = defaultdict(list)
+        for row in rows:
+            for key in key_getter(row):
+                if key:
+                    grouped[key].append(row)
+
+        output: dict[str, DeltaGroupSummary] = {}
+        for group_key, group_rows in grouped.items():
+            by_mode_rows: dict[str, list[CampaignMetricRow]] = defaultdict(list)
+            for row in group_rows:
+                by_mode_rows[row.mode].append(row)
+
+            naive_rows = by_mode_rows.get("naive", [])
+            naive_correctness = _metric_aggregate(
+                [row.metric_values.get("answer_correctness", 0.0) for row in naive_rows]
+            ).mean if naive_rows else None
+            naive_tokens = _metric_aggregate(
+                [float(row.total_tokens) for row in naive_rows]
+            ).mean if naive_rows else None
+
+            by_mode: dict[str, DeltaModeSummary] = {}
+            for mode, mode_rows in by_mode_rows.items():
+                answer_correctness_mean = _metric_aggregate(
+                    [row.metric_values.get("answer_correctness", 0.0) for row in mode_rows]
+                ).mean
+                total_tokens_mean = _metric_aggregate(
+                    [float(row.total_tokens) for row in mode_rows]
+                ).mean
+
+                if mode == "naive":
+                    by_mode[mode] = DeltaModeSummary(
+                        mode=mode,
+                        sample_count=len(mode_rows),
+                        answer_correctness_mean=answer_correctness_mean,
+                        total_tokens_mean=total_tokens_mean,
+                        delta_answer_correctness=0,
+                        delta_total_tokens=0,
+                        ecr=0,
+                        ecr_note=None,
+                    )
+                    continue
+
+                if naive_correctness is None or naive_tokens is None:
+                    by_mode[mode] = DeltaModeSummary(
+                        mode=mode,
+                        sample_count=len(mode_rows),
+                        answer_correctness_mean=answer_correctness_mean,
+                        total_tokens_mean=total_tokens_mean,
+                        delta_answer_correctness=None,
+                        delta_total_tokens=None,
+                        ecr=None,
+                        ecr_note="baseline_missing",
+                    )
+                    continue
+
+                delta_answer_correctness = answer_correctness_mean - naive_correctness
+                delta_total_tokens = total_tokens_mean - naive_tokens
+                if delta_total_tokens <= 0:
+                    by_mode[mode] = DeltaModeSummary(
+                        mode=mode,
+                        sample_count=len(mode_rows),
+                        answer_correctness_mean=answer_correctness_mean,
+                        total_tokens_mean=total_tokens_mean,
+                        delta_answer_correctness=delta_answer_correctness,
+                        delta_total_tokens=delta_total_tokens,
+                        ecr=None,
+                        ecr_note="non_positive_marginal_cost",
+                    )
+                    continue
+
+                by_mode[mode] = DeltaModeSummary(
+                    mode=mode,
+                    sample_count=len(mode_rows),
+                    answer_correctness_mean=answer_correctness_mean,
+                    total_tokens_mean=total_tokens_mean,
+                    delta_answer_correctness=delta_answer_correctness,
+                    delta_total_tokens=delta_total_tokens,
+                    ecr=1000 * delta_answer_correctness / delta_total_tokens,
+                    ecr_note=None,
+                )
+
+            output[group_key] = DeltaGroupSummary(group_key=group_key, by_mode=by_mode)
+
+        return output
 
     def _summaries_by_mode(
         self,
@@ -501,6 +648,3 @@ class RagasEvaluator:
             summary.ecr_note = None
 
         return summaries
-
-
-

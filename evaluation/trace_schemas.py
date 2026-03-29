@@ -51,6 +51,18 @@ class AgentTraceDetail(BaseModel):
     question: str = Field(min_length=1)
     mode: CampaignMode
     execution_profile: Optional[str] = None
+    question_intent: Optional[str] = None
+    strategy_tier: Optional[str] = None
+    route_profile: Optional[str] = None
+    required_coverage: list[str] = Field(default_factory=list)
+    coverage_gaps: list[str] = Field(default_factory=list)
+    subtask_coverage_status: dict[str, bool] = Field(default_factory=dict)
+    supported_claim_count: int = Field(default=0, ge=0)
+    unsupported_claim_count: int = Field(default=0, ge=0)
+    claims: list[dict[str, Any]] = Field(default_factory=list)
+    visual_verification_attempted: bool = False
+    visual_tool_call_count: int = Field(default=0, ge=0)
+    visual_force_fallback_used: bool = False
     run_number: int = Field(ge=1)
     trace_status: TraceStatus
     summary: str = ""
@@ -70,11 +82,17 @@ class AgentTraceSummary(BaseModel):
     question: str = Field(min_length=1)
     mode: CampaignMode
     execution_profile: Optional[str] = None
+    question_intent: Optional[str] = None
+    strategy_tier: Optional[str] = None
+    route_profile: Optional[str] = None
     run_number: int = Field(ge=1)
     trace_status: TraceStatus
     summary: str = ""
     step_count: int = Field(default=0, ge=0)
     tool_call_count: int = Field(default=0, ge=0)
+    visual_verification_attempted: bool = False
+    visual_tool_call_count: int = Field(default=0, ge=0)
+    visual_force_fallback_used: bool = False
     total_tokens: int = Field(default=0, ge=0)
     created_at: datetime
 
@@ -89,12 +107,17 @@ def summarize_agent_trace(detail: AgentTraceDetail) -> AgentTraceSummary:
         question=detail.question,
         mode=detail.mode,
         execution_profile=detail.execution_profile,
+        question_intent=detail.question_intent,
+        strategy_tier=detail.strategy_tier,
+        route_profile=detail.route_profile,
         run_number=detail.run_number,
         trace_status=detail.trace_status,
         summary=detail.summary,
         step_count=detail.step_count,
         tool_call_count=detail.tool_call_count,
+        visual_verification_attempted=detail.visual_verification_attempted,
+        visual_tool_call_count=detail.visual_tool_call_count,
+        visual_force_fallback_used=detail.visual_force_fallback_used,
         total_tokens=detail.total_tokens,
         created_at=detail.created_at,
     )
-

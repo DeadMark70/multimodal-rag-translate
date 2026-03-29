@@ -44,6 +44,9 @@ class CampaignConfig(BaseModel):
     repeat_count: int = Field(default=1, ge=1, le=10)
     batch_size: int = Field(default=1, ge=1, le=4)
     rpm_limit: int = Field(default=60, ge=1, le=600)
+    ragas_batch_size: int = Field(default=8, ge=1, le=8)
+    ragas_parallel_batches: int = Field(default=8, ge=1, le=8)
+    ragas_rpm_limit: int = Field(default=1000, ge=1, le=1000)
 
     @model_validator(mode="after")
     def dedupe_modes(self) -> "CampaignConfig":
@@ -68,6 +71,9 @@ class CampaignCreateRequest(BaseModel):
     repeat_count: int = Field(default=1, ge=1, le=10)
     batch_size: int = Field(default=1, ge=1, le=4)
     rpm_limit: int = Field(default=60, ge=1, le=600)
+    ragas_batch_size: int = Field(default=8, ge=1, le=8)
+    ragas_parallel_batches: int = Field(default=8, ge=1, le=8)
+    ragas_rpm_limit: int = Field(default=1000, ge=1, le=1000)
 
     def to_config(self) -> CampaignConfig:
         return CampaignConfig(
@@ -78,6 +84,9 @@ class CampaignCreateRequest(BaseModel):
             repeat_count=self.repeat_count,
             batch_size=self.batch_size,
             rpm_limit=self.rpm_limit,
+            ragas_batch_size=self.ragas_batch_size,
+            ragas_parallel_batches=self.ragas_parallel_batches,
+            ragas_rpm_limit=self.ragas_rpm_limit,
         )
 
 
@@ -123,6 +132,7 @@ class CampaignResult(BaseModel):
     ragas_focus: list[str] = Field(default_factory=list)
     mode: CampaignMode
     execution_profile: Optional[str] = None
+    context_policy_version: Optional[str] = None
     run_number: int = Field(ge=1)
     answer: str
     contexts: list[str] = Field(default_factory=list)
@@ -180,6 +190,7 @@ class CampaignMetricRow(BaseModel):
     difficulty: Optional[str] = None
     ragas_focus: list[str] = Field(default_factory=list)
     reference_source: Optional[str] = None
+    context_policy_version: Optional[str] = None
     total_tokens: int = Field(default=0, ge=0)
     metric_values: dict[str, float] = Field(default_factory=dict)
     faithfulness: float = Field(default=0, ge=0)
@@ -210,6 +221,26 @@ class ModeMetricsSummary(BaseModel):
     ecr_note: Optional[str] = None
 
 
+class DeltaModeSummary(BaseModel):
+    """Per-mode delta summary under one grouping key."""
+
+    mode: CampaignMode
+    sample_count: int = Field(default=0, ge=0)
+    answer_correctness_mean: float = Field(default=0, ge=0)
+    total_tokens_mean: float = Field(default=0, ge=0)
+    delta_answer_correctness: Optional[float] = None
+    delta_total_tokens: Optional[float] = None
+    ecr: Optional[float] = None
+    ecr_note: Optional[str] = None
+
+
+class DeltaGroupSummary(BaseModel):
+    """Grouped delta summaries keyed by mode."""
+
+    group_key: str
+    by_mode: dict[CampaignMode, DeltaModeSummary] = Field(default_factory=dict)
+
+
 class CampaignMetricsResponse(BaseModel):
     """Campaign-level metrics response for result analysis."""
 
@@ -219,6 +250,7 @@ class CampaignMetricsResponse(BaseModel):
     summary_by_mode: dict[CampaignMode, ModeMetricsSummary] = Field(default_factory=dict)
     summary_by_category: dict[str, GroupMetricsSummary] = Field(default_factory=dict)
     summary_by_focus: dict[str, GroupMetricsSummary] = Field(default_factory=dict)
+    delta_by_category: dict[str, DeltaGroupSummary] = Field(default_factory=dict)
+    delta_by_difficulty: dict[str, DeltaGroupSummary] = Field(default_factory=dict)
+    delta_by_question: dict[str, DeltaGroupSummary] = Field(default_factory=dict)
     rows: list[CampaignMetricRow] = Field(default_factory=list)
-
-

@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS campaign_results (
     ragas_focus_json TEXT NOT NULL DEFAULT '[]',
     mode TEXT NOT NULL,
     execution_profile TEXT,
+    context_policy_version TEXT,
     run_number INTEGER NOT NULL,
     answer TEXT NOT NULL,
     contexts_json TEXT NOT NULL,
@@ -158,6 +159,10 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         await connection.execute(
             "ALTER TABLE campaign_results ADD COLUMN execution_profile TEXT"
         )
+    if "context_policy_version" not in campaign_result_columns:
+        await connection.execute(
+            "ALTER TABLE campaign_results ADD COLUMN context_policy_version TEXT"
+        )
     if "ground_truth_short" not in campaign_result_columns:
         await connection.execute(
             "ALTER TABLE campaign_results ADD COLUMN ground_truth_short TEXT"
@@ -229,6 +234,9 @@ def _row_to_campaign_status(row: aiosqlite.Row) -> CampaignStatus:
 
 def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
     execution_profile = row["execution_profile"] if "execution_profile" in row.keys() else None
+    context_policy_version = (
+        row["context_policy_version"] if "context_policy_version" in row.keys() else None
+    )
     if not execution_profile and row["mode"] == "agentic":
         execution_profile = LEGACY_SHARED_PROFILE
 
@@ -243,6 +251,7 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
         ragas_focus=_json_loads(row["ragas_focus_json"], []) if "ragas_focus_json" in row.keys() else [],
         mode=row["mode"],
         execution_profile=execution_profile,
+        context_policy_version=context_policy_version,
         run_number=row["run_number"],
         answer=row["answer"],
         contexts=_json_loads(row["contexts_json"], []),
@@ -541,6 +550,7 @@ class CampaignResultRepository:
         ragas_focus: list[str],
         mode: str,
         execution_profile: Optional[str],
+        context_policy_version: Optional[str],
         run_number: int,
         answer: str,
         contexts: list[str],
@@ -562,10 +572,10 @@ class CampaignResultRepository:
                 INSERT INTO campaign_results (
                     id, campaign_id, user_id, question_id, question, ground_truth,
                     ground_truth_short, key_points_json, ragas_focus_json, mode, execution_profile,
-                    run_number, answer, contexts_json, source_doc_ids_json,
+                    context_policy_version, run_number, answer, contexts_json, source_doc_ids_json,
                     expected_sources_json, latency_ms, token_usage_json, category,
                     difficulty, status, error_message, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result_id,
@@ -579,6 +589,7 @@ class CampaignResultRepository:
                     _json_dumps(ragas_focus),
                     mode,
                     execution_profile,
+                    context_policy_version,
                     run_number,
                     answer,
                     _json_dumps(contexts),
@@ -680,6 +691,18 @@ class AgentTraceRepository:
                     trace_payload.get("execution_profile")
                     or (LEGACY_SHARED_PROFILE if trace_payload.get("mode") == "agentic" else None)
                 ),
+                "question_intent": trace_payload.get("question_intent"),
+                "strategy_tier": trace_payload.get("strategy_tier"),
+                "route_profile": trace_payload.get("route_profile"),
+                "required_coverage": trace_payload.get("required_coverage", []),
+                "coverage_gaps": trace_payload.get("coverage_gaps", []),
+                "subtask_coverage_status": trace_payload.get("subtask_coverage_status", {}),
+                "supported_claim_count": trace_payload.get("supported_claim_count", 0),
+                "unsupported_claim_count": trace_payload.get("unsupported_claim_count", 0),
+                "claims": trace_payload.get("claims", []),
+                "visual_verification_attempted": trace_payload.get("visual_verification_attempted", False),
+                "visual_tool_call_count": trace_payload.get("visual_tool_call_count", 0),
+                "visual_force_fallback_used": trace_payload.get("visual_force_fallback_used", False),
                 "run_number": trace_payload.get("run_number", 1),
                 "trace_status": trace_payload.get("trace_status", "completed"),
                 "summary": trace_payload.get("summary", ""),
@@ -828,4 +851,6 @@ class RagasScoreRepository:
             }
             for row in rows
         ]
+
+
 
