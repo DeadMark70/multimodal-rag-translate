@@ -73,7 +73,7 @@ async def test_run_campaign_case_agentic_uses_evaluation_service_and_profile() -
             "question_id": "Q1",
             "question": "What changed?",
             "mode": "agentic",
-            "execution_profile": "agentic_eval_v1",
+            "execution_profile": "agentic_eval_v2",
             "run_number": 1,
             "trace_status": "completed",
             "summary": "summary",
@@ -107,7 +107,7 @@ async def test_run_campaign_case_agentic_uses_evaluation_service_and_profile() -
     mock_service.run_case.assert_awaited_once()
     assert result.answer == "agentic answer"
     assert result.contexts == ["ctx-1"]
-    assert result.execution_profile == "agentic_eval_v1"
+    assert result.execution_profile == "agentic_eval_v2"
 
 
 def test_extract_contexts_uses_deterministic_evaluator_policy() -> None:
@@ -124,3 +124,4 @@ def test_extract_contexts_uses_deterministic_evaluator_policy() -> None:
     assert "\n" not in contexts[0]
     assert len(contexts[0]) == EVALUATOR_MAX_CONTEXT_CHARS
     assert contexts[-1].startswith(f"ctx {EVALUATOR_MAX_CONTEXTS - 1} x")
+

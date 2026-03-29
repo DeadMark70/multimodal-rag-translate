@@ -481,13 +481,13 @@ def test_agent_trace_api_persists_and_reads_trace_payload() -> None:
             token_usage={"total_tokens": 120},
             category=test_case.category,
             difficulty=test_case.difficulty,
-            execution_profile="agentic_eval_v1",
+            execution_profile="agentic_eval_v2",
             agent_trace={
                 "trace_id": f"trace-{run_number}",
                 "question_id": test_case.id,
                 "question": test_case.question,
                 "mode": "agentic",
-                "execution_profile": "agentic_eval_v1",
+                "execution_profile": "agentic_eval_v2",
                 "run_number": run_number,
                 "trace_status": "completed",
                 "summary": "trace summary",
@@ -578,7 +578,7 @@ def test_agent_trace_api_persists_and_reads_trace_payload() -> None:
         result_rows = results.json()["results"]
         assert len(result_rows) == 1
         assert result_rows[0]["has_trace"] is True
-        assert result_rows[0]["execution_profile"] == "agentic_eval_v1"
+        assert result_rows[0]["execution_profile"] == "agentic_eval_v2"
         result_id = result_rows[0]["id"]
 
         traces = client.get(f"/api/evaluation/campaigns/{campaign_id}/traces")
@@ -586,14 +586,14 @@ def test_agent_trace_api_persists_and_reads_trace_payload() -> None:
         trace_rows = traces.json()
         assert len(trace_rows) == 1
         assert trace_rows[0]["campaign_result_id"] == result_id
-        assert trace_rows[0]["execution_profile"] == "agentic_eval_v1"
+        assert trace_rows[0]["execution_profile"] == "agentic_eval_v2"
         assert trace_rows[0]["tool_call_count"] == 1
 
         detail = client.get(f"/api/evaluation/campaigns/{campaign_id}/results/{result_id}/trace")
         assert detail.status_code == 200
         trace_detail = detail.json()
         assert trace_detail["summary"] == "trace summary"
-        assert trace_detail["execution_profile"] == "agentic_eval_v1"
+        assert trace_detail["execution_profile"] == "agentic_eval_v2"
         assert trace_detail["steps"][0]["phase"] == "planning"
         assert trace_detail["steps"][1]["tool_calls"][0]["action"] == "VERIFY_IMAGE"
 
@@ -666,7 +666,7 @@ def test_campaign_integration_uses_real_runner_and_real_ragas_persistence() -> N
             "question_id": "Q1",
             "question": "What is the answer?",
             "mode": "agentic",
-            "execution_profile": "agentic_eval_v1",
+            "execution_profile": "agentic_eval_v2",
             "run_number": 1,
             "trace_status": "completed",
             "summary": "trace summary",
@@ -716,7 +716,7 @@ def test_campaign_integration_uses_real_runner_and_real_ragas_persistence() -> N
             assert {row["mode"] for row in result_rows} == {"naive", "advanced", "graph", "agentic"}
             assert all(row["status"] == "completed" for row in result_rows)
             agentic_row = next(row for row in result_rows if row["mode"] == "agentic")
-            assert agentic_row["execution_profile"] == "agentic_eval_v1"
+            assert agentic_row["execution_profile"] == "agentic_eval_v2"
             assert agentic_row["has_trace"] is True
 
             metrics = client.get(f"/api/evaluation/campaigns/{campaign_id}/metrics")
@@ -730,13 +730,13 @@ def test_campaign_integration_uses_real_runner_and_real_ragas_persistence() -> N
             assert traces.status_code == 200
             trace_rows = traces.json()
             assert len(trace_rows) == 1
-            assert trace_rows[0]["execution_profile"] == "agentic_eval_v1"
+            assert trace_rows[0]["execution_profile"] == "agentic_eval_v2"
 
             trace_detail = client.get(
                 f"/api/evaluation/campaigns/{campaign_id}/results/{agentic_row['id']}/trace"
             )
             assert trace_detail.status_code == 200
-            assert trace_detail.json()["execution_profile"] == "agentic_eval_v1"
+            assert trace_detail.json()["execution_profile"] == "agentic_eval_v2"
 
     assert len(rag_calls) == 3
     graph_call = next(call for call in rag_calls if call["mode"] == "graph")
@@ -792,7 +792,7 @@ def test_campaign_integration_keeps_running_when_one_mode_fails() -> None:
             "question_id": "Q1",
             "question": "What is the answer?",
             "mode": "agentic",
-            "execution_profile": "agentic_eval_v1",
+            "execution_profile": "agentic_eval_v2",
             "run_number": 1,
             "trace_status": "completed",
             "summary": "trace summary",
@@ -847,3 +847,4 @@ def test_campaign_integration_keeps_running_when_one_mode_fails() -> None:
             metrics_body = metrics.json()
             assert set(metrics_body["summary_by_mode"].keys()) == {"naive", "agentic"}
             assert len(metrics_body["rows"]) == 2
+

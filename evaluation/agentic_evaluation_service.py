@@ -8,14 +8,18 @@ from uuid import uuid4
 
 from langchain_core.documents import Document
 
+from agents.planner import TaskPlanner
 from data_base.RAG_QA_service import RAGResult
 from data_base.research_execution_core import ResearchExecutionCore
-from data_base.schemas_deep_research import ExecutePlanRequest
+from data_base.schemas_deep_research import EditableSubTask, ExecutePlanRequest, ResearchPlanResponse
 from evaluation.retry import run_with_retry
 from evaluation.trace_schemas import AgentTraceToolCall
 
-AGENTIC_EVAL_PROFILE = "agentic_eval_v1"
+AGENTIC_EVAL_PROFILE = "agentic_eval_v2"
 LEGACY_SHARED_PROFILE = "legacy_shared"
+AGENTIC_INITIAL_SUBTASKS = 3
+AGENTIC_MAX_DRILLDOWN_ITERATIONS = 1
+AGENTIC_IMAGE_ANALYSIS_ENABLED = True
 
 
 class AgentTraceCaptureError(RuntimeError):
@@ -125,6 +129,35 @@ class AgenticEvaluationService(ResearchExecutionCore):
 
     execution_profile = AGENTIC_EVAL_PROFILE
 
+    async def generate_agentic_plan(
+        self,
+        *,
+        question: str,
+        user_id: str,
+    ) -> ResearchPlanResponse:
+        """Generate the dedicated evaluation baseline plan for agentic RAG."""
+        planner = TaskPlanner(
+            max_subtasks=AGENTIC_INITIAL_SUBTASKS,
+            enable_graph_planning=True,
+        )
+        plan = await planner.plan(question)
+        editable_tasks = [
+            EditableSubTask(
+                id=task.id,
+                question=task.question,
+                task_type=task.task_type,
+                enabled=True,
+            )
+            for task in plan.sub_tasks[:AGENTIC_INITIAL_SUBTASKS]
+        ]
+        return ResearchPlanResponse(
+            status="waiting_confirmation",
+            original_question=question,
+            sub_tasks=editable_tasks,
+            estimated_complexity=plan.estimated_complexity,
+            doc_ids=None,
+        )
+
     async def run_case(
         self,
         *,
@@ -138,11 +171,9 @@ class AgenticEvaluationService(ResearchExecutionCore):
 
         try:
             plan_response = await run_with_retry(
-                self.generate_plan,
+                self.generate_agentic_plan,
                 question=question,
                 user_id=user_id,
-                doc_ids=None,
-                enable_graph_planning=True,
             )
             planning_text = "\n".join(
                 f"{task.id}. [{task.task_type}] {task.question}"
@@ -168,8 +199,8 @@ class AgenticEvaluationService(ResearchExecutionCore):
                 doc_ids=None,
                 enable_reranking=True,
                 enable_drilldown=True,
-                max_iterations=2,
-                enable_deep_image_analysis=True,
+                max_iterations=AGENTIC_MAX_DRILLDOWN_ITERATIONS,
+                enable_deep_image_analysis=AGENTIC_IMAGE_ANALYSIS_ENABLED,
             )
             result_response = await run_with_retry(
                 self.run_execute_plan,
@@ -282,3 +313,7 @@ class AgenticEvaluationService(ResearchExecutionCore):
                     execution_profile=self.execution_profile,
                 ),
             ) from exc
+
+
+
+

@@ -1,23 +1,61 @@
-# Task Plan: OCR CUDA Isolation + Reranker GPU Stability
+# Task Plan: Inspect Agentic RAG Evaluation Path
 
 ## Goal
-Implement the approved fix so image OCR no longer mutates global CUDA visibility, reranker can reliably use GPU, and diagnostics/tests cover the failure mode.
+Trace the current backend production evaluation path for agentic RAG in `D:\flutterserver\pdftopng` and report how it executes, whether it uses Deep Research semantics, what limits it applies, and where it likely diverges from a dedicated agentic evaluation baseline.
+
+## Current Phase
+Phase 4
 
 ## Phases
-| Phase | Status | Description |
-|---|---|---|
-| 1 | completed | Add planning files and confirm implementation scope |
-| 2 | completed | Refactor image OCR device policy to local/per-service control |
-| 3 | completed | Add reranker CUDA probe diagnostics and reason refinement |
-| 4 | completed | Add regression tests for OCR policy and reranker env-masking |
-| 5 | completed | Run targeted tests and summarize results |
 
-## Decisions
-- Device strategy: **Reranker priority**.
-- `IMAGE_OCR_DEVICE` default: `cpu`.
-- Keep `RERANKER_DEVICE` and `RERANKER_MIN_GPU_GB` behavior compatible.
+### Phase 1: Requirements & Discovery
+- [x] Understand user intent
+- [x] Identify constraints and requirements
+- [x] Document findings in findings.md
+- **Status:** complete
+
+### Phase 2: Execution Path Trace
+- [x] Read target modules and related schemas
+- [x] Map call flow from evaluation entrypoint to planner/research core
+- [x] Document decisions with rationale
+- **Status:** complete
+
+### Phase 3: Limits & Semantics Analysis
+- [x] Extract drilldown/subtask/image limits
+- [x] Determine whether Deep Research semantics are used
+- [x] Compare against a dedicated agentic evaluation baseline
+- **Status:** complete
+
+### Phase 4: Verification
+- [x] Re-check traced flow against source references
+- [x] Confirm report answers all requested points
+- [ ] Log verification in progress.md
+- **Status:** in_progress
+
+### Phase 5: Delivery
+- [ ] Review notes and findings
+- [ ] Deliver concise report to user
+- [ ] Avoid any file edits outside planning files
+- **Status:** pending
+
+## Key Questions
+1. What is the exact runtime path for agentic evaluation requests today?
+2. Does the path invoke Deep Research-style planning/execution semantics or only reuse parts of the stack?
+3. Where are the concrete limits for drilldown depth, subtasks, and images enforced?
+4. What differences likely matter when comparing this path to a dedicated agentic evaluation baseline?
+
+## Decisions Made
+| Decision | Rationale |
+|----------|-----------|
+| Use planning files in `pdftopng` | Required by `AGENTS.md` for complex multi-step inspection tasks |
+| Do not edit product code | User explicitly asked for inspection/report only |
+| Compare evaluation path against `DeepResearchService` rather than only core methods | Needed to distinguish shared execution primitives from full user-facing Deep Research semantics |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
-|---|---|---|
-| `test_get_ocr_engine_respects_cpu_policy` failed because mocked `.to()` returned a new mock object | 1 | Set `mock_engine.to.return_value = mock_engine` to mirror `torch.nn.Module.to()` behavior. |
+|-------|---------|------------|
+| None so far | 1 | N/A |
+
+## Notes
+- Focus files: `evaluation/rag_modes.py`, `evaluation/agentic_evaluation_service.py`, `data_base/research_execution_core.py`, `agents/planner.py`, and related schemas.
+- Planning files are the only files to be created/updated.

@@ -69,6 +69,7 @@
 - Request middleware attaches `X-Request-Id` to the response.
 - `TEST_MODE` or `USE_FAKE_PROVIDERS` skip real warmups and provider calls during startup-sensitive paths.
 - Evaluation persists campaign state in SQLite with WAL mode and supports results, traces, metrics, manual evaluate, cancel, and SSE reconnect.
+- Evaluation `agentic` uses a dedicated baseline (`agentic_eval_v2`) distinct from user-facing Deep Research: initial plan capped to 3 subtasks, at most 1 drill-down iteration, drill-down fanout capped to 3, and deep image analysis kept enabled.
 - Canonical metadata writes use `doc_id`; `original_doc_uid` remains compatibility fallback on read/delete paths only.
 
 ## RAGAS Evaluation Contract
@@ -106,3 +107,5 @@
 - GraphRAG extractor/store/router tests
 - PDF service repository/background/manual-translation tests
 - Full backend acceptance: `.\.venv\Scripts\python.exe -m pytest`
+
+
