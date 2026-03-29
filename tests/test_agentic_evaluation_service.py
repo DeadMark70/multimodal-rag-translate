@@ -8,13 +8,12 @@ from data_base.schemas_deep_research import EditableSubTask, ExecutePlanResponse
 from evaluation.agentic_evaluation_service import (
     AGENTIC_EVAL_PROFILE,
     AGENTIC_IMAGE_ANALYSIS_ENABLED,
-    AGENTIC_MAX_DRILLDOWN_ITERATIONS,
     AgenticEvaluationService,
 )
 
 
 @pytest.mark.asyncio
-async def test_generate_agentic_plan_caps_initial_plan_to_three_tasks() -> None:
+async def test_generate_agentic_plan_caps_initial_plan_to_strategy_limit() -> None:
     service = AgenticEvaluationService()
     generated_plan = ResearchPlan(
         original_question="What changed?",
@@ -31,13 +30,31 @@ async def test_generate_agentic_plan_caps_initial_plan_to_three_tasks() -> None:
         mock_planner = mock_planner_cls.return_value
         mock_planner.plan = AsyncMock(return_value=generated_plan)
 
-        response = await service.generate_agentic_plan(question="What changed?", user_id="user-1")
+        response = await service.generate_agentic_plan(
+            question="Compare model A and model B differences",
+            user_id="user-1",
+        )
 
-    mock_planner_cls.assert_called_once_with(max_subtasks=3, enable_graph_planning=True)
+    mock_planner_cls.assert_called_once_with(max_subtasks=2, enable_graph_planning=True)
     assert response.status == "waiting_confirmation"
-    assert len(response.sub_tasks) == 3
-    assert [task.id for task in response.sub_tasks] == [1, 2, 3]
+    assert len(response.sub_tasks) == 2
+    assert [task.id for task in response.sub_tasks] == [1, 2]
     assert response.estimated_complexity == "complex"
+
+
+@pytest.mark.asyncio
+async def test_generate_agentic_plan_bypasses_planner_for_tier1_detail_lookup() -> None:
+    service = AgenticEvaluationService()
+    with patch("evaluation.agentic_evaluation_service.TaskPlanner") as mock_planner_cls:
+        response = await service.generate_agentic_plan(
+            question="What is SONO-MultiKAN?",
+            user_id="user-1",
+        )
+
+    mock_planner_cls.assert_not_called()
+    assert len(response.sub_tasks) == 1
+    assert response.sub_tasks[0].question == "What is SONO-MultiKAN?"
+    assert response.estimated_complexity == "simple"
 
 
 @pytest.mark.asyncio
@@ -78,9 +95,10 @@ async def test_run_case_uses_dedicated_agentic_execution_constraints() -> None:
         )
 
     request = service.run_execute_plan.await_args.kwargs["request"]
-    assert request.enable_drilldown is True
-    assert request.max_iterations == AGENTIC_MAX_DRILLDOWN_ITERATIONS
+    assert request.enable_drilldown is False
+    assert request.max_iterations == 1
     assert request.enable_deep_image_analysis is AGENTIC_IMAGE_ANALYSIS_ENABLED
     assert len(request.sub_tasks) == 3
     assert result.answer == "final answer"
     assert result.agent_trace["execution_profile"] == AGENTIC_EVAL_PROFILE
+    assert result.agent_trace["strategy_tier"] == "tier_1_detail_lookup"

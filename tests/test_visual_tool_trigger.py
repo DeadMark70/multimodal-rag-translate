@@ -62,3 +62,56 @@ async def test_visual_verification_trigger_logic():
                         assert "42" in answer
                         assert mock_tool.called
                         assert mock_llm.ainvoke.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_visual_verification_forced_once_when_model_skips_tool_call():
+    """Ensure image-aware route forces one visual verification when tool call is not emitted."""
+    user_id = "c1bae279-c099-4c45-ba19-2bb393ca4e4b"
+    question = "請確認圖中精確數值"
+
+    with patch("data_base.RAG_QA_service.get_llm") as mock_get_llm:
+        mock_llm = AsyncMock()
+        mock_get_llm.return_value = mock_llm
+        mock_llm.ainvoke.side_effect = [
+            MagicMock(content="這是初步回答，未呼叫工具"),
+            MagicMock(content="已補做視覺查證，關鍵數值為 73。"),
+        ]
+
+        with patch("data_base.RAG_QA_service.get_user_retriever") as mock_get_retriever:
+            from langchain_core.documents import Document
+
+            mock_retriever = MagicMock()
+            mock_retriever.invoke.return_value = [
+                Document(
+                    page_content="Image summary",
+                    metadata={
+                        "source": "image",
+                        "image_path": "test.png",
+                        "doc_id": "d1",
+                    },
+                )
+            ]
+            mock_get_retriever.return_value = mock_retriever
+
+            with patch("data_base.visual_tools.verify_image_details", new_callable=AsyncMock) as mock_tool:
+                mock_tool.return_value = {"success": True, "result": "value=73"}
+                with patch("os.path.exists", return_value=True):
+                    with patch("data_base.RAG_QA_service._encode_image", return_value="fake_base64"):
+                        result = await rag_answer_question(
+                            question=question,
+                            user_id=user_id,
+                            enable_visual_verification=True,
+                            return_docs=True,
+                        )
+
+    assert result.answer == "已補做視覺查證，關鍵數值為 73。"
+    assert result.visual_verification_meta == {
+        "visual_verification_attempted": True,
+        "visual_tool_call_count": 1,
+        "visual_force_fallback_used": True,
+    }
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0]["action"] == "VERIFY_IMAGE"
+    assert result.tool_calls[0]["forced_once"] is True
+    assert mock_llm.ainvoke.call_count == 2

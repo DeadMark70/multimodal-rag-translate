@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -230,6 +232,52 @@ async def test_evaluate_batch_uses_short_ground_truth_and_keeps_metric_failures_
 
 
 @pytest.mark.asyncio
+async def test_evaluate_batch_respects_rate_budget_per_metric():
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository([]),
+        score_repository=FakeScoreRepository([]),
+        evaluator_model="fake-evaluator",
+    )
+    batch_rows = [
+        SimpleNamespace(
+            id="r1",
+            question_id="Q1",
+            question="Question 1",
+            answer="Answer 1",
+            contexts=["ctx-1"],
+            ground_truth="Long ground truth",
+            ground_truth_short="Short ground truth",
+        )
+    ]
+    acquire_calls: list[int] = []
+
+    async def passthrough(invocation):
+        return await invocation()
+
+    class FakeRateBudget:
+        async def acquire(self) -> None:
+            acquire_calls.append(1)
+
+    with patch("evaluation.ragas_evaluator.run_with_retry", new=passthrough), patch.object(
+        evaluator,
+        "_evaluate_metric_sync",
+        return_value=[0.5],
+    ):
+        await evaluator._evaluate_batch(
+            batch_rows=batch_rows,
+            ragas_dependencies={
+                "Dataset": _FakeDataset,
+                "metrics": {metric_name: object() for metric_name in PRIMARY_RAGAS_METRICS},
+            },
+            evaluator_llm=object(),
+            evaluator_embeddings=object(),
+            rate_budget=FakeRateBudget(),
+        )
+
+    assert len(acquire_calls) == len(PRIMARY_RAGAS_METRICS)
+
+
+@pytest.mark.asyncio
 async def test_evaluate_campaign_reports_progress_when_batches_fall_back():
     result = CampaignResult(
         id="r1",
@@ -306,6 +354,80 @@ async def test_evaluate_campaign_reports_progress_when_batches_fall_back():
     assert all(score["details"]["error"] == "ragas down" for score in score_repository._scores)
 
 
+@pytest.mark.asyncio
+async def test_evaluate_campaign_parallel_batches_faster_than_serial():
+    rows = [
+        _result(f"r{index}", "naive", 100)
+        for index in range(1, 5)
+    ]
+    score_repository = FakeScoreRepository([])
+
+    async def fake_batch(*, batch_rows, **_kwargs):
+        await asyncio.sleep(0.03)
+        return [
+            {
+                "campaign_result_id": row.id,
+                "metric_name": metric_name,
+                "metric_value": 0.0,
+                "details": {
+                    "evaluator_model": "fake-evaluator",
+                    "question_id": row.question_id,
+                    "reference_source": "ground_truth_fallback_long",
+                },
+            }
+            for row in batch_rows
+            for metric_name in PRIMARY_RAGAS_METRICS
+        ]
+
+    serial_evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository(rows),
+        score_repository=score_repository,
+        evaluator_model="fake-evaluator",
+        batch_size=1,
+        parallel_batches=1,
+    )
+    parallel_evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository(rows),
+        score_repository=score_repository,
+        evaluator_model="fake-evaluator",
+        batch_size=1,
+        parallel_batches=4,
+    )
+
+    with patch("evaluation.ragas_evaluator.get_llm", return_value=object()), patch.object(
+        serial_evaluator,
+        "_load_ragas_dependencies",
+        new=AsyncMock(return_value=_fake_ragas_dependencies_for_eval()),
+    ), patch.object(
+        serial_evaluator,
+        "_evaluate_batch",
+        new=AsyncMock(side_effect=fake_batch),
+    ):
+        serial_start = time.perf_counter()
+        await serial_evaluator.evaluate_campaign(user_id="user-a", campaign_id="cmp-1")
+        serial_elapsed = time.perf_counter() - serial_start
+
+    with patch("evaluation.ragas_evaluator.get_llm", return_value=object()), patch.object(
+        parallel_evaluator,
+        "_load_ragas_dependencies",
+        new=AsyncMock(return_value=_fake_ragas_dependencies_for_eval()),
+    ), patch.object(
+        parallel_evaluator,
+        "_evaluate_batch",
+        new=AsyncMock(side_effect=fake_batch),
+    ):
+        parallel_start = time.perf_counter()
+        await parallel_evaluator.evaluate_campaign(
+            user_id="user-a",
+            campaign_id="cmp-1",
+            ragas_parallel_batches=4,
+            ragas_batch_size=1,
+        )
+        parallel_elapsed = time.perf_counter() - parallel_start
+
+    assert parallel_elapsed < serial_elapsed
+
+
 async def _record_progress(
     sink: list[tuple[int, int, str | None, str | None]],
     completed: int,
@@ -363,3 +485,65 @@ async def test_evaluate_campaign_skips_when_ragas_dependency_missing() -> None:
 
     assert model_name == "fake-evaluator"
     assert score_repository._scores == []
+
+
+@pytest.mark.asyncio
+async def test_get_metrics_returns_delta_groups_and_ecr_edge_notes():
+    results = [
+        _result("r-naive-q1", "naive", 100, category="catA"),
+        _result("r-advanced-q1", "advanced", 160, category="catA"),
+        _result("r-graph-q1", "graph", 90, category="catA"),
+        _result("r-advanced-q2", "advanced", 120, category="catB"),
+    ]
+    results[0].question_id = "Q1"
+    results[1].question_id = "Q1"
+    results[2].question_id = "Q1"
+    results[3].question_id = "Q2"
+
+    scores = [
+        {"campaign_result_id": "r-naive-q1", "metric_name": "answer_correctness", "metric_value": 0.5, "details": {"evaluator_model": "fake"}},
+        {"campaign_result_id": "r-naive-q1", "metric_name": "faithfulness", "metric_value": 0.5, "details": {"evaluator_model": "fake"}},
+        {"campaign_result_id": "r-naive-q1", "metric_name": "answer_relevancy", "metric_value": 0.5, "details": {"evaluator_model": "fake"}},
+        {"campaign_result_id": "r-advanced-q1", "metric_name": "answer_correctness", "metric_value": 0.8, "details": {"evaluator_model": "fake"}},
+        {"campaign_result_id": "r-advanced-q1", "metric_name": "faithfulness", "metric_value": 0.8, "details": {"evaluator_model": "fake"}},
+        {"campaign_result_id": "r-advanced-q1", "metric_name": "answer_relevancy", "metric_value": 0.8, "details": {"evaluator_model": "fake"}},
+        {"campaign_result_id": "r-graph-q1", "metric_name": "answer_correctness", "metric_value": 0.7, "details": {"evaluator_model": "fake"}},
+        {"campaign_result_id": "r-graph-q1", "metric_name": "faithfulness", "metric_value": 0.7, "details": {"evaluator_model": "fake"}},
+        {"campaign_result_id": "r-graph-q1", "metric_name": "answer_relevancy", "metric_value": 0.7, "details": {"evaluator_model": "fake"}},
+        {"campaign_result_id": "r-advanced-q2", "metric_name": "answer_correctness", "metric_value": 0.6, "details": {"evaluator_model": "fake"}},
+        {"campaign_result_id": "r-advanced-q2", "metric_name": "faithfulness", "metric_value": 0.6, "details": {"evaluator_model": "fake"}},
+        {"campaign_result_id": "r-advanced-q2", "metric_name": "answer_relevancy", "metric_value": 0.6, "details": {"evaluator_model": "fake"}},
+    ]
+
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository(results),
+        score_repository=FakeScoreRepository(scores),
+        evaluator_model="fake",
+    )
+
+    response = await evaluator.get_metrics(user_id="user-a", campaign=_campaign_status(modes=["naive", "advanced", "graph"]))
+
+    cat_a = response.delta_by_category["catA"].by_mode["advanced"]
+    assert cat_a.delta_answer_correctness == pytest.approx(0.3)
+    assert cat_a.delta_total_tokens == pytest.approx(60)
+    assert cat_a.ecr == pytest.approx(5.0)
+
+    cat_a_graph = response.delta_by_category["catA"].by_mode["graph"]
+    assert cat_a_graph.delta_total_tokens == pytest.approx(-10)
+    assert cat_a_graph.ecr is None
+    assert cat_a_graph.ecr_note == "non_positive_marginal_cost"
+
+    cat_b = response.delta_by_category["catB"].by_mode["advanced"]
+    assert cat_b.delta_answer_correctness is None
+    assert cat_b.delta_total_tokens is None
+    assert cat_b.ecr is None
+    assert cat_b.ecr_note == "baseline_missing"
+
+
+def _fake_ragas_dependencies_for_eval() -> dict:
+    return {
+        "LangchainLLMWrapper": lambda llm: llm,
+        "initialize_embeddings": AsyncMock(),
+        "LangchainEmbeddingsWrapper": lambda embeddings: embeddings,
+        "get_embeddings": lambda: object(),
+    }
