@@ -16,6 +16,7 @@ from evaluation.campaign_engine import get_campaign_engine
 from evaluation.campaign_schemas import (
     CampaignCreateRequest,
     CampaignCreateResponse,
+    CampaignEvaluateRequest,
     CampaignLifecycleStatus,
     CampaignMetricsResponse,
     CampaignProgressEvent,
@@ -300,11 +301,16 @@ async def get_campaign_metrics(
 @router.post("/campaigns/{campaign_id}/evaluate", response_model=CampaignStatus)
 async def evaluate_campaign(
     campaign_id: str,
+    payload: CampaignEvaluateRequest | None = None,
     user_id: str = Depends(get_current_user_id),
 ) -> CampaignStatus:
     """Trigger a manual RAGAS rerun for an existing campaign."""
     engine = get_campaign_engine()
-    return await engine.evaluate_campaign(user_id=user_id, campaign_id=campaign_id)
+    return await engine.evaluate_campaign(
+        user_id=user_id,
+        campaign_id=campaign_id,
+        question_ids=(payload.question_ids if payload else None),
+    )
 
 
 @router.post("/campaigns/{campaign_id}/cancel", response_model=CampaignStatus)

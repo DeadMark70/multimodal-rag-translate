@@ -132,7 +132,13 @@ class CampaignEngine:
             active_task.cancel()
         return updated
 
-    async def evaluate_campaign(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
+    async def evaluate_campaign(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        question_ids: Optional[list[str]] = None,
+    ) -> CampaignStatus:
         campaign = await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
         if campaign.status in {
             CampaignLifecycleStatus.RUNNING,
@@ -153,20 +159,38 @@ class CampaignEngine:
                 status_code=400,
             )
 
+        selected_completed_results = completed_results
+        normalized_question_ids = [question_id for question_id in (question_ids or []) if question_id]
+        if normalized_question_ids:
+            selected_question_id_set = set(normalized_question_ids)
+            selected_completed_results = [
+                row for row in completed_results if row.question_id in selected_question_id_set
+            ]
+            if not selected_completed_results:
+                raise AppError(
+                    code=ErrorCode.BAD_REQUEST,
+                    message=(
+                        "Requested question_ids have no completed raw results in this campaign"
+                    ),
+                    status_code=400,
+                )
+
+        selected_result_ids = [row.id for row in selected_completed_results]
         await self._campaign_repository.mark_evaluating(
             user_id=user_id,
             campaign_id=campaign_id,
-            evaluation_total_units=len(completed_results),
+            evaluation_total_units=len(selected_completed_results),
         )
         task = asyncio.create_task(
             self._run_evaluation_only(
                 user_id=user_id,
                 campaign_id=campaign_id,
                 completed_units=campaign.completed_units,
-                evaluation_total_units=len(completed_results),
+                evaluation_total_units=len(selected_completed_results),
                 ragas_batch_size=campaign.config.ragas_batch_size,
                 ragas_parallel_batches=campaign.config.ragas_parallel_batches,
                 ragas_rpm_limit=campaign.config.ragas_rpm_limit,
+                selected_result_ids=selected_result_ids,
             ),
             name=f"evaluation-ragas-{campaign_id}",
         )
@@ -266,6 +290,7 @@ class CampaignEngine:
         ragas_batch_size: int,
         ragas_parallel_batches: int,
         ragas_rpm_limit: int,
+        selected_result_ids: Optional[list[str]] = None,
     ) -> None:
         try:
             await self._evaluate_campaign_results(
@@ -276,6 +301,7 @@ class CampaignEngine:
                 ragas_batch_size=ragas_batch_size,
                 ragas_parallel_batches=ragas_parallel_batches,
                 ragas_rpm_limit=ragas_rpm_limit,
+                selected_result_ids=selected_result_ids,
             )
             await self._campaign_repository.mark_completed(
                 user_id=user_id,
@@ -340,6 +366,7 @@ class CampaignEngine:
         ragas_batch_size: int,
         ragas_parallel_batches: int,
         ragas_rpm_limit: int,
+        selected_result_ids: Optional[list[str]] = None,
     ) -> None:
         async def on_progress(
             evaluation_completed_units: int,
@@ -363,6 +390,7 @@ class CampaignEngine:
             ragas_batch_size=ragas_batch_size,
             ragas_parallel_batches=ragas_parallel_batches,
             ragas_rpm_limit=ragas_rpm_limit,
+            selected_result_ids=selected_result_ids,
             on_progress=on_progress,
         )
 

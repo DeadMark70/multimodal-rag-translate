@@ -789,6 +789,34 @@ class AgentTraceRepository:
 class RagasScoreRepository:
     """Persistence for per-result RAGAS metrics."""
 
+    async def _insert_score_rows(
+        self,
+        *,
+        connection: Any,
+        user_id: str,
+        campaign_id: str,
+        score_rows: list[dict[str, Any]],
+    ) -> None:
+        for row in score_rows:
+            await connection.execute(
+                """
+                INSERT INTO ragas_scores (
+                    id, campaign_id, campaign_result_id, user_id, metric_name,
+                    metric_value, details_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid4()),
+                    campaign_id,
+                    row["campaign_result_id"],
+                    user_id,
+                    row["metric_name"],
+                    row["metric_value"],
+                    _json_dumps(row.get("details", {})),
+                    _utc_now_iso(),
+                ),
+            )
+
     async def replace_for_campaign(
         self,
         *,
@@ -802,25 +830,47 @@ class RagasScoreRepository:
                 "DELETE FROM ragas_scores WHERE campaign_id = ? AND user_id = ?",
                 (campaign_id, user_id),
             )
-            for row in score_rows:
-                await connection.execute(
-                    """
-                    INSERT INTO ragas_scores (
-                        id, campaign_id, campaign_result_id, user_id, metric_name,
-                        metric_value, details_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        str(uuid4()),
-                        campaign_id,
-                        row["campaign_result_id"],
-                        user_id,
-                        row["metric_name"],
-                        row["metric_value"],
-                        _json_dumps(row.get("details", {})),
-                        _utc_now_iso(),
-                    ),
-                )
+            await self._insert_score_rows(
+                connection=connection,
+                user_id=user_id,
+                campaign_id=campaign_id,
+                score_rows=score_rows,
+            )
+            await connection.commit()
+
+    async def replace_for_campaign_subset(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        selected_result_ids: list[str],
+        score_rows: list[dict[str, Any]],
+    ) -> None:
+        if not selected_result_ids:
+            return
+        await init_db()
+        placeholders = ",".join("?" for _ in selected_result_ids)
+        params: tuple[Any, ...] = (
+            campaign_id,
+            user_id,
+            *selected_result_ids,
+        )
+        async with connect_db() as connection:
+            await connection.execute(
+                f"""
+                DELETE FROM ragas_scores
+                WHERE campaign_id = ?
+                  AND user_id = ?
+                  AND campaign_result_id IN ({placeholders})
+                """,
+                params,
+            )
+            await self._insert_score_rows(
+                connection=connection,
+                user_id=user_id,
+                campaign_id=campaign_id,
+                score_rows=score_rows,
+            )
             await connection.commit()
 
     async def list_for_campaign(

@@ -97,6 +97,27 @@ class CampaignCreateResponse(BaseModel):
     status: CampaignLifecycleStatus
 
 
+class CampaignEvaluateRequest(BaseModel):
+    """Manual evaluation rerun payload."""
+
+    question_ids: Optional[list[str]] = None
+
+    @model_validator(mode="after")
+    def normalize_question_ids(self) -> "CampaignEvaluateRequest":
+        if self.question_ids is None:
+            return self
+        seen: set[str] = set()
+        normalized: list[str] = []
+        for raw in self.question_ids:
+            question_id = str(raw or "").strip()
+            if not question_id or question_id in seen:
+                continue
+            seen.add(question_id)
+            normalized.append(question_id)
+        self.question_ids = normalized
+        return self
+
+
 class CampaignStatus(BaseModel):
     """Campaign snapshot returned by REST and SSE APIs."""
 
@@ -193,6 +214,8 @@ class CampaignMetricRow(BaseModel):
     context_policy_version: Optional[str] = None
     total_tokens: int = Field(default=0, ge=0)
     metric_values: dict[str, float] = Field(default_factory=dict)
+    invalid_metrics: dict[str, bool] = Field(default_factory=dict)
+    invalid_reasons: dict[str, str] = Field(default_factory=dict)
     faithfulness: float = Field(default=0, ge=0)
     answer_correctness: float = Field(default=0, ge=0)
 
@@ -216,9 +239,14 @@ class ModeMetricsSummary(BaseModel):
     answer_correctness: MetricAggregate = Field(default_factory=MetricAggregate)
     total_tokens: MetricAggregate = Field(default_factory=MetricAggregate)
     delta_answer_correctness: float = 0
+    delta_faithfulness: float = 0
     delta_total_tokens: float = 0
     ecr: Optional[float] = None
     ecr_note: Optional[str] = None
+    ecr_faithfulness: Optional[float] = None
+    ecr_faithfulness_note: Optional[str] = None
+    ecr_direction_correctness: str = "neutral"
+    ecr_direction_faithfulness: str = "neutral"
 
 
 class DeltaModeSummary(BaseModel):
@@ -227,11 +255,17 @@ class DeltaModeSummary(BaseModel):
     mode: CampaignMode
     sample_count: int = Field(default=0, ge=0)
     answer_correctness_mean: float = Field(default=0, ge=0)
+    faithfulness_mean: float = Field(default=0, ge=0)
     total_tokens_mean: float = Field(default=0, ge=0)
     delta_answer_correctness: Optional[float] = None
+    delta_faithfulness: Optional[float] = None
     delta_total_tokens: Optional[float] = None
     ecr: Optional[float] = None
     ecr_note: Optional[str] = None
+    ecr_faithfulness: Optional[float] = None
+    ecr_faithfulness_note: Optional[str] = None
+    ecr_direction_correctness: str = "neutral"
+    ecr_direction_faithfulness: str = "neutral"
 
 
 class DeltaGroupSummary(BaseModel):
@@ -239,6 +273,15 @@ class DeltaGroupSummary(BaseModel):
 
     group_key: str
     by_mode: dict[CampaignMode, DeltaModeSummary] = Field(default_factory=dict)
+
+
+class EvaluationWarnings(BaseModel):
+    """RAGAS scoring health warnings for the current metrics payload."""
+
+    total_metric_rows: int = Field(default=0, ge=0)
+    invalid_metric_rows: int = Field(default=0, ge=0)
+    invalid_ratio: float = Field(default=0, ge=0)
+    invalid_by_metric: dict[str, int] = Field(default_factory=dict)
 
 
 class CampaignMetricsResponse(BaseModel):
@@ -253,4 +296,5 @@ class CampaignMetricsResponse(BaseModel):
     delta_by_category: dict[str, DeltaGroupSummary] = Field(default_factory=dict)
     delta_by_difficulty: dict[str, DeltaGroupSummary] = Field(default_factory=dict)
     delta_by_question: dict[str, DeltaGroupSummary] = Field(default_factory=dict)
+    evaluation_warnings: EvaluationWarnings = Field(default_factory=EvaluationWarnings)
     rows: list[CampaignMetricRow] = Field(default_factory=list)
