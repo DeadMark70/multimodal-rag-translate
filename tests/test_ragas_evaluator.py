@@ -41,6 +41,20 @@ class FakeScoreRepository:
     async def replace_for_campaign(self, *, user_id: str, campaign_id: str, score_rows: list[dict]) -> None:
         self._scores = list(score_rows)
 
+    async def replace_for_campaign_subset(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        selected_result_ids: list[str],
+        score_rows: list[dict],
+    ) -> None:
+        selected_set = set(selected_result_ids)
+        remaining = [
+            row for row in self._scores if row["campaign_result_id"] not in selected_set
+        ]
+        self._scores = [*remaining, *score_rows]
+
 
 class _FakeDataset:
     payload: dict | None = None
@@ -155,13 +169,31 @@ async def test_ragas_evaluator_aggregates_summaries_reference_sources_and_groupi
     assert response.evaluator_model == "fake"
     assert response.available_metrics == PRIMARY_RAGAS_METRICS
     assert len(response.rows) == 3
+    assert response.evaluation_warnings.total_metric_rows == len(scores)
+    assert response.evaluation_warnings.invalid_metric_rows == 0
     assert "agentic" not in response.summary_by_mode
     assert response.rows[0].reference_source == "ground_truth_short"
     assert response.summary_by_mode["naive"].ecr == 0
+    assert response.summary_by_mode["naive"].ecr_faithfulness == 0
+    assert response.summary_by_mode["naive"].ecr_direction_correctness == "neutral"
+    assert response.summary_by_mode["naive"].ecr_direction_faithfulness == "neutral"
     assert response.summary_by_mode["advanced"].delta_total_tokens == 60
-    assert response.summary_by_mode["advanced"].ecr == pytest.approx(6.6666666667)
+    assert response.summary_by_mode["advanced"].ecr is None
+    assert response.summary_by_mode["advanced"].ecr_note == "marginal_cost_too_small"
+    assert response.summary_by_mode["advanced"].ecr_faithfulness is None
+    assert (
+        response.summary_by_mode["advanced"].ecr_faithfulness_note
+        == "marginal_cost_too_small"
+    )
+    assert response.summary_by_mode["advanced"].ecr_direction_correctness == "neutral"
+    assert response.summary_by_mode["advanced"].ecr_direction_faithfulness == "neutral"
     assert response.summary_by_mode["graph"].ecr is None
     assert response.summary_by_mode["graph"].ecr_note == "non_positive_marginal_cost"
+    assert response.summary_by_mode["graph"].ecr_faithfulness is None
+    assert (
+        response.summary_by_mode["graph"].ecr_faithfulness_note
+        == "non_positive_marginal_cost"
+    )
     assert response.summary_by_category["視覺驗證題"].sample_count == 2
     assert response.summary_by_focus["answer_relevancy"].sample_count == 1
 
@@ -201,15 +233,15 @@ async def test_evaluate_batch_uses_short_ground_truth_and_keeps_metric_failures_
     async def passthrough(invocation):
         return await invocation()
 
-    def fake_metric_sync(*, metric_name: str, **_kwargs):
+    async def fake_metric_async(*, metric_name: str, **_kwargs):
         if metric_name == "answer_relevancy":
             raise RuntimeError("metric broke")
         return [0.42 if metric_name == "faithfulness" else 0.84]
 
     with patch("evaluation.ragas_evaluator.run_with_retry", new=passthrough), patch.object(
         evaluator,
-        "_evaluate_metric_sync",
-        side_effect=fake_metric_sync,
+        "_evaluate_metric_async",
+        side_effect=fake_metric_async,
     ):
         score_rows = await evaluator._evaluate_batch(
             batch_rows=batch_rows,
@@ -229,6 +261,8 @@ async def test_evaluate_batch_uses_short_ground_truth_and_keeps_metric_failures_
     assert answer_relevancy_row["metric_value"] == 0.0
     assert answer_relevancy_row["details"]["reference_source"] == "ground_truth_short"
     assert "metric broke" in answer_relevancy_row["details"]["error"]
+    assert answer_relevancy_row["details"]["invalid_metric"] is True
+    assert answer_relevancy_row["details"]["error_type"] == "unknown"
 
 
 @pytest.mark.asyncio
@@ -260,8 +294,8 @@ async def test_evaluate_batch_respects_rate_budget_per_metric():
 
     with patch("evaluation.ragas_evaluator.run_with_retry", new=passthrough), patch.object(
         evaluator,
-        "_evaluate_metric_sync",
-        return_value=[0.5],
+        "_evaluate_metric_async",
+        new=AsyncMock(return_value=[0.5]),
     ):
         await evaluator._evaluate_batch(
             batch_rows=batch_rows,
@@ -334,7 +368,7 @@ async def test_evaluate_campaign_reports_progress_when_batches_fall_back():
                 for metric_name in PRIMARY_RAGAS_METRICS
             ]
         ),
-    ):
+    ), patch("evaluation.ragas_evaluator.get_llm", return_value=object()):
         model_name = await evaluator.evaluate_campaign(
             user_id="user-a",
             campaign_id="cmp-1",
@@ -352,6 +386,73 @@ async def test_evaluate_campaign_reports_progress_when_batches_fall_back():
     assert len(score_repository._scores) == len(PRIMARY_RAGAS_METRICS)
     assert all(score["metric_value"] == 0.0 for score in score_repository._scores)
     assert all(score["details"]["error"] == "ragas down" for score in score_repository._scores)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_campaign_selected_result_ids_merge_overwrites_subset_only():
+    results = [
+        _result("r1", "naive", 100),
+        _result("r2", "advanced", 120),
+    ]
+    score_repository = FakeScoreRepository(
+        [
+            {
+                "campaign_result_id": "r1",
+                "metric_name": "faithfulness",
+                "metric_value": 0.11,
+                "details": {"source": "old"},
+            },
+            {
+                "campaign_result_id": "r2",
+                "metric_name": "faithfulness",
+                "metric_value": 0.22,
+                "details": {"source": "old"},
+            },
+        ]
+    )
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository(results),
+        score_repository=score_repository,
+        evaluator_model="fake-evaluator",
+    )
+
+    with patch("evaluation.ragas_evaluator.get_llm", return_value=object()), patch.object(
+        evaluator,
+        "_load_ragas_dependencies",
+        new=AsyncMock(return_value=_fake_ragas_dependencies_for_eval()),
+    ), patch.object(
+        evaluator,
+        "_evaluate_batch",
+        new=AsyncMock(
+            return_value=[
+                {
+                    "campaign_result_id": "r1",
+                    "metric_name": metric_name,
+                    "metric_value": 0.9,
+                    "details": {"evaluator_model": "fake-evaluator"},
+                }
+                for metric_name in PRIMARY_RAGAS_METRICS
+            ]
+        ),
+    ):
+        await evaluator.evaluate_campaign(
+            user_id="user-a",
+            campaign_id="cmp-1",
+            selected_result_ids=["r1"],
+        )
+
+    selected_rows = [row for row in score_repository._scores if row["campaign_result_id"] == "r1"]
+    untouched_rows = [row for row in score_repository._scores if row["campaign_result_id"] == "r2"]
+    assert len(selected_rows) == len(PRIMARY_RAGAS_METRICS)
+    assert all(row["metric_value"] == 0.9 for row in selected_rows)
+    assert untouched_rows == [
+        {
+            "campaign_result_id": "r2",
+            "metric_name": "faithfulness",
+            "metric_value": 0.22,
+            "details": {"source": "old"},
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -491,7 +592,7 @@ async def test_evaluate_campaign_skips_when_ragas_dependency_missing() -> None:
 async def test_get_metrics_returns_delta_groups_and_ecr_edge_notes():
     results = [
         _result("r-naive-q1", "naive", 100, category="catA"),
-        _result("r-advanced-q1", "advanced", 160, category="catA"),
+        _result("r-advanced-q1", "advanced", 320, category="catA"),
         _result("r-graph-q1", "graph", 90, category="catA"),
         _result("r-advanced-q2", "advanced", 120, category="catB"),
     ]
@@ -525,19 +626,117 @@ async def test_get_metrics_returns_delta_groups_and_ecr_edge_notes():
 
     cat_a = response.delta_by_category["catA"].by_mode["advanced"]
     assert cat_a.delta_answer_correctness == pytest.approx(0.3)
-    assert cat_a.delta_total_tokens == pytest.approx(60)
-    assert cat_a.ecr == pytest.approx(5.0)
+    assert cat_a.delta_faithfulness == pytest.approx(0.3)
+    assert cat_a.delta_total_tokens == pytest.approx(220)
+    assert cat_a.ecr == pytest.approx(1.3636363636)
+    assert cat_a.ecr_faithfulness == pytest.approx(1.3636363636)
+    assert cat_a.ecr_direction_correctness == "positive"
+    assert cat_a.ecr_direction_faithfulness == "positive"
 
     cat_a_graph = response.delta_by_category["catA"].by_mode["graph"]
     assert cat_a_graph.delta_total_tokens == pytest.approx(-10)
     assert cat_a_graph.ecr is None
     assert cat_a_graph.ecr_note == "non_positive_marginal_cost"
+    assert cat_a_graph.ecr_faithfulness is None
+    assert cat_a_graph.ecr_faithfulness_note == "non_positive_marginal_cost"
+    assert cat_a_graph.ecr_direction_correctness == "neutral"
+    assert cat_a_graph.ecr_direction_faithfulness == "neutral"
 
     cat_b = response.delta_by_category["catB"].by_mode["advanced"]
     assert cat_b.delta_answer_correctness is None
+    assert cat_b.delta_faithfulness is None
     assert cat_b.delta_total_tokens is None
     assert cat_b.ecr is None
     assert cat_b.ecr_note == "baseline_missing"
+    assert cat_b.ecr_faithfulness is None
+    assert cat_b.ecr_faithfulness_note == "baseline_missing"
+
+
+@pytest.mark.asyncio
+async def test_get_metrics_sets_negative_direction_when_ecr_is_valid_but_delta_is_negative():
+    results = [
+        _result("r-naive", "naive", 100, category="catA"),
+        _result("r-advanced", "advanced", 350, category="catA"),
+    ]
+    results[0].question_id = "Q1"
+    results[1].question_id = "Q1"
+    scores = [
+        {"campaign_result_id": "r-naive", "metric_name": "answer_correctness", "metric_value": 0.6, "details": {"evaluator_model": "fake"}},
+        {"campaign_result_id": "r-naive", "metric_name": "faithfulness", "metric_value": 0.6, "details": {"evaluator_model": "fake"}},
+        {"campaign_result_id": "r-naive", "metric_name": "answer_relevancy", "metric_value": 0.6, "details": {"evaluator_model": "fake"}},
+        {"campaign_result_id": "r-advanced", "metric_name": "answer_correctness", "metric_value": 0.5, "details": {"evaluator_model": "fake"}},
+        {"campaign_result_id": "r-advanced", "metric_name": "faithfulness", "metric_value": 0.4, "details": {"evaluator_model": "fake"}},
+        {"campaign_result_id": "r-advanced", "metric_name": "answer_relevancy", "metric_value": 0.5, "details": {"evaluator_model": "fake"}},
+    ]
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository(results),
+        score_repository=FakeScoreRepository(scores),
+        evaluator_model="fake",
+    )
+
+    response = await evaluator.get_metrics(
+        user_id="user-a",
+        campaign=_campaign_status(modes=["naive", "advanced"]),
+    )
+
+    summary = response.summary_by_mode["advanced"]
+    assert summary.ecr is not None
+    assert summary.ecr_faithfulness is not None
+    assert summary.ecr_direction_correctness == "negative"
+    assert summary.ecr_direction_faithfulness == "negative"
+
+
+@pytest.mark.asyncio
+async def test_get_metrics_excludes_invalid_metrics_from_averages_and_sets_warning_notes():
+    results = [
+        _result("r-naive", "naive", 100, category="catA"),
+        _result("r-advanced", "advanced", 300, category="catA"),
+    ]
+    results[0].question_id = "Q1"
+    results[1].question_id = "Q1"
+    scores = [
+        {"campaign_result_id": "r-naive", "metric_name": "answer_correctness", "metric_value": 0.7, "details": {"evaluator_model": "fake", "invalid_metric": False}},
+        {"campaign_result_id": "r-naive", "metric_name": "faithfulness", "metric_value": 0.7, "details": {"evaluator_model": "fake", "invalid_metric": False}},
+        {"campaign_result_id": "r-naive", "metric_name": "answer_relevancy", "metric_value": 0.7, "details": {"evaluator_model": "fake", "invalid_metric": False}},
+        {
+            "campaign_result_id": "r-advanced",
+            "metric_name": "answer_correctness",
+            "metric_value": 0.0,
+            "details": {
+                "evaluator_model": "fake",
+                "invalid_metric": True,
+                "error_type": "io_aborted",
+            },
+        },
+        {"campaign_result_id": "r-advanced", "metric_name": "faithfulness", "metric_value": 0.9, "details": {"evaluator_model": "fake", "invalid_metric": False}},
+        {"campaign_result_id": "r-advanced", "metric_name": "answer_relevancy", "metric_value": 0.9, "details": {"evaluator_model": "fake", "invalid_metric": False}},
+    ]
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository(results),
+        score_repository=FakeScoreRepository(scores),
+        evaluator_model="fake",
+    )
+
+    response = await evaluator.get_metrics(
+        user_id="user-a",
+        campaign=_campaign_status(modes=["naive", "advanced"]),
+    )
+
+    summary = response.summary_by_mode["advanced"]
+    assert summary.delta_answer_correctness is None
+    assert summary.ecr is None
+    assert summary.ecr_note == "insufficient_valid_samples"
+    assert summary.ecr_direction_correctness == "neutral"
+
+    question_delta = response.delta_by_question["Q1"].by_mode["advanced"]
+    assert question_delta.ecr_note == "insufficient_valid_samples"
+    assert question_delta.ecr_direction_correctness == "neutral"
+
+    assert response.evaluation_warnings.invalid_metric_rows == 1
+    assert response.evaluation_warnings.invalid_by_metric["answer_correctness"] == 1
+    advanced_row = next(row for row in response.rows if row.campaign_result_id == "r-advanced")
+    assert advanced_row.invalid_metrics["answer_correctness"] is True
+    assert advanced_row.invalid_reasons["answer_correctness"] == "io_aborted"
 
 
 def _fake_ragas_dependencies_for_eval() -> dict:
@@ -546,4 +745,5 @@ def _fake_ragas_dependencies_for_eval() -> dict:
         "initialize_embeddings": AsyncMock(),
         "LangchainEmbeddingsWrapper": lambda embeddings: embeddings,
         "get_embeddings": lambda: object(),
+        "aevaluate": AsyncMock(),
     }

@@ -109,12 +109,14 @@ def _fake_ragas_dependencies() -> dict:
         "initialize_embeddings": AsyncMock(),
         "LangchainEmbeddingsWrapper": lambda embeddings: embeddings,
         "get_embeddings": lambda: object(),
+        "aevaluate": AsyncMock(),
     }
 
 
 class FakeRagasEvaluator:
     def __init__(self, progress_total: int = 1) -> None:
         self.evaluate_calls: list[str] = []
+        self.selected_result_ids_calls: list[list[str] | None] = []
         self.progress_total = progress_total
 
     async def evaluate_campaign(
@@ -125,9 +127,11 @@ class FakeRagasEvaluator:
         ragas_batch_size: int | None = None,
         ragas_parallel_batches: int | None = None,
         ragas_rpm_limit: int | None = None,
+        selected_result_ids: list[str] | None = None,
         on_progress=None,
     ) -> str:
         self.evaluate_calls.append(f"{user_id}:{campaign_id}")
+        self.selected_result_ids_calls.append(selected_result_ids)
         if on_progress:
             await on_progress(self.progress_total, self.progress_total, "Q1", "naive")
         return "fake-evaluator"
@@ -383,6 +387,145 @@ def test_campaign_manual_evaluate_reruns_ragas() -> None:
         terminal = _wait_for_terminal_status(client, campaign_id)
         assert terminal["status"] == "completed"
         assert len(fake_ragas.evaluate_calls) == 2
+
+
+def test_campaign_manual_evaluate_can_rerun_selected_questions_only() -> None:
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="generated answer",
+            contexts=["ctx-1"],
+            source_doc_ids=["doc-1"],
+            expected_sources=[],
+            latency_ms=10,
+            token_usage={"total_tokens": 50},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+        )
+
+    fake_ragas = FakeRagasEvaluator(progress_total=2)
+    engine = CampaignEngine(runner=runner, ragas_evaluator=fake_ragas)
+    upload_root = _make_upload_root()
+    db_path = _make_db_path()
+
+    with _build_client("user-a", upload_root, db_path, engine) as client:
+        _create_test_case(client, "Q1")
+        _create_test_case(client, "Q2")
+        created = client.post(
+            "/api/evaluation/campaigns",
+            json={
+                "name": "Manual evaluate subset",
+                "test_case_ids": ["Q1", "Q2"],
+                "modes": ["naive", "advanced"],
+                "model_config": {
+                    "id": "cfg-1",
+                    "name": "Balanced",
+                    "model_name": "gemini-2.5-flash",
+                    "temperature": 0.7,
+                    "top_p": 0.95,
+                    "top_k": 40,
+                    "max_input_tokens": 8192,
+                    "max_output_tokens": 2048,
+                    "thinking_mode": False,
+                    "thinking_budget": 8192,
+                },
+                "repeat_count": 1,
+                "batch_size": 2,
+                "rpm_limit": 60,
+            },
+        )
+        campaign_id = created.json()["campaign_id"]
+        terminal = _wait_for_terminal_status(client, campaign_id)
+        assert terminal["status"] == "completed"
+
+        results = client.get(f"/api/evaluation/campaigns/{campaign_id}/results")
+        assert results.status_code == 200
+        q2_result_ids = [
+            row["id"]
+            for row in results.json()["results"]
+            if row["status"] == "completed" and row["question_id"] == "Q2"
+        ]
+        assert len(q2_result_ids) == 2
+
+        rerun = client.post(
+            f"/api/evaluation/campaigns/{campaign_id}/evaluate",
+            json={"question_ids": ["Q2"]},
+        )
+        assert rerun.status_code == 200
+        assert rerun.json()["status"] == "evaluating"
+        assert rerun.json()["evaluation_total_units"] == 2
+
+        terminal = _wait_for_terminal_status(client, campaign_id)
+        assert terminal["status"] == "completed"
+        assert sorted(fake_ragas.selected_result_ids_calls[-1] or []) == sorted(
+            q2_result_ids
+        )
+
+
+def test_campaign_manual_evaluate_selected_questions_without_completed_rows_returns_400() -> None:
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="generated answer",
+            contexts=["ctx-1"],
+            source_doc_ids=["doc-1"],
+            expected_sources=[],
+            latency_ms=10,
+            token_usage={"total_tokens": 50},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+        )
+
+    engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+    upload_root = _make_upload_root()
+    db_path = _make_db_path()
+
+    with _build_client("user-a", upload_root, db_path, engine) as client:
+        _create_test_case(client, "Q1")
+        created = client.post(
+            "/api/evaluation/campaigns",
+            json={
+                "name": "Manual evaluate subset invalid",
+                "test_case_ids": ["Q1"],
+                "modes": ["naive"],
+                "model_config": {
+                    "id": "cfg-1",
+                    "name": "Balanced",
+                    "model_name": "gemini-2.5-flash",
+                    "temperature": 0.7,
+                    "top_p": 0.95,
+                    "top_k": 40,
+                    "max_input_tokens": 8192,
+                    "max_output_tokens": 2048,
+                    "thinking_mode": False,
+                    "thinking_budget": 8192,
+                },
+                "repeat_count": 1,
+                "batch_size": 1,
+                "rpm_limit": 60,
+            },
+        )
+        campaign_id = created.json()["campaign_id"]
+        terminal = _wait_for_terminal_status(client, campaign_id)
+        assert terminal["status"] == "completed"
+
+        rerun = client.post(
+            f"/api/evaluation/campaigns/{campaign_id}/evaluate",
+            json={"question_ids": ["Q404"]},
+        )
+        assert rerun.status_code == 400
+        assert (
+            rerun.json()["error"]["message"]
+            == "Requested question_ids have no completed raw results in this campaign"
+        )
 
 
 def test_campaign_sqlite_concurrent_writes_complete_without_loss() -> None:
