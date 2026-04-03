@@ -9,6 +9,8 @@ from evaluation.agentic_evaluation_service import (
     AGENTIC_EVAL_PROFILE,
     AGENTIC_IMAGE_ANALYSIS_ENABLED,
     AgenticEvaluationService,
+    _drilldown_iterations_for_strategy,
+    _route_profile_for_task,
 )
 
 
@@ -40,6 +42,70 @@ async def test_generate_agentic_plan_caps_initial_plan_to_strategy_limit() -> No
     assert len(response.sub_tasks) == 2
     assert [task.id for task in response.sub_tasks] == [1, 2]
     assert response.estimated_complexity == "complex"
+
+
+@pytest.mark.asyncio
+async def test_generate_agentic_plan_figure_flow_uses_single_initial_subtask() -> None:
+    service = AgenticEvaluationService()
+    generated_plan = ResearchPlan(
+        original_question="請重建 MICCSS 模組流程",
+        sub_tasks=[
+            SubTask(id=1, question="Task 1", task_type="rag"),
+            SubTask(id=2, question="Task 2", task_type="rag"),
+            SubTask(id=3, question="Task 3", task_type="graph_analysis"),
+        ],
+        estimated_complexity="complex",
+    )
+
+    with patch("evaluation.agentic_evaluation_service.TaskPlanner") as mock_planner_cls:
+        mock_planner = mock_planner_cls.return_value
+        mock_planner.plan = AsyncMock(return_value=generated_plan)
+
+        response = await service.generate_agentic_plan(
+            question="請重建 MICCSS 模組流程",
+            user_id="user-1",
+        )
+
+    mock_planner_cls.assert_called_once_with(max_subtasks=1, enable_graph_planning=True)
+    assert len(response.sub_tasks) == 1
+    assert response.sub_tasks[0].id == 1
+
+
+def test_route_profile_benchmark_initial_round_prefers_numeric_only_generic_graph() -> None:
+    numeric_route = _route_profile_for_task(
+        strategy_tier="tier_3_multi_hop_analysis",
+        question_intent="benchmark_data",
+        task_type="rag",
+        task_question="比較 Dice score 與 FLOPs",
+        iteration=0,
+    )
+    non_numeric_route = _route_profile_for_task(
+        strategy_tier="tier_3_multi_hop_analysis",
+        question_intent="benchmark_data",
+        task_type="rag",
+        task_question="說明各方法設計理念",
+        iteration=0,
+    )
+
+    assert numeric_route == "generic_graph"
+    assert non_numeric_route == "hybrid_compare"
+
+
+def test_drilldown_iterations_match_intent_constraints() -> None:
+    assert (
+        _drilldown_iterations_for_strategy(
+            strategy_tier="tier_2_structured_compare",
+            question_intent="figure_flow",
+        )
+        == 0
+    )
+    assert (
+        _drilldown_iterations_for_strategy(
+            strategy_tier="tier_3_multi_hop_analysis",
+            question_intent="benchmark_data",
+        )
+        == 1
+    )
 
 
 @pytest.mark.asyncio
