@@ -95,3 +95,6 @@ checklist/report/
 #archive directories
 checklist/archive/
 agentlog/archive/
+
+
+*.zip
