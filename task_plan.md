@@ -1,61 +1,53 @@
-# Task Plan: Inspect Agentic RAG Evaluation Path
+# Task Plan: Agentic Eval 微優化實作 (Faithfulness 優先 + Correctness 提升)
 
 ## Goal
-Trace the current backend production evaluation path for agentic RAG in `D:\flutterserver\pdftopng` and report how it executes, whether it uses Deep Research semantics, what limits it applies, and where it likely diverges from a dedicated agentic evaluation baseline.
+在 `D:\flutterserver\pdftopng` 實作你指定的 evaluation-only 微優化方案：
+- 路由策略調整（`hybrid_graph` 改名 `generic_graph`、benchmark/figure_flow 分流、drilldown 收斂）
+- Full Prompt Basis（graph evidence 納入 `RAGResult.documents`）
+- 輕量 correctness boost（benchmark/figure_flow 輸出約束 + grounding）
+- 相容層（舊 trace `hybrid_graph` 與新值 `generic_graph` 聚合一致）
+- 補上對應測試
 
 ## Current Phase
 Phase 4
 
 ## Phases
 
-### Phase 1: Requirements & Discovery
-- [x] Understand user intent
-- [x] Identify constraints and requirements
-- [x] Document findings in findings.md
+### Phase 1: Scope & Baseline
+- [x] 讀取 `agent.md` / `AGENTS.md` / skills 規範
+- [x] 盤點目標檔案與現行行為
+- [x] 確認測試覆蓋點
 - **Status:** complete
 
-### Phase 2: Execution Path Trace
-- [x] Read target modules and related schemas
-- [x] Map call flow from evaluation entrypoint to planner/research core
-- [x] Document decisions with rationale
+### Phase 2: Implementation
+- [x] 更新 `evaluation/agentic_evaluation_service.py`
+- [x] 更新 `data_base/RAG_QA_service.py`
+- [x] 更新 `agents/synthesizer.py`
+- [x] 更新 `evaluation/db.py` 相容層
 - **Status:** complete
 
-### Phase 3: Limits & Semantics Analysis
-- [x] Extract drilldown/subtask/image limits
-- [x] Determine whether Deep Research semantics are used
-- [x] Compare against a dedicated agentic evaluation baseline
+### Phase 3: Tests
+- [x] 新增/調整單元測試（route rename、routing policy、drilldown 限制、graph evidence documents）
+- [x] 執行目標 pytest
 - **Status:** complete
 
-### Phase 4: Verification
-- [x] Re-check traced flow against source references
-- [x] Confirm report answers all requested points
-- [ ] Log verification in progress.md
+### Phase 4: Verification & Delivery
+- [x] 檢視差異與風險
+- [ ] 回報變更摘要與測試結果
 - **Status:** in_progress
-
-### Phase 5: Delivery
-- [ ] Review notes and findings
-- [ ] Deliver concise report to user
-- [ ] Avoid any file edits outside planning files
-- **Status:** pending
-
-## Key Questions
-1. What is the exact runtime path for agentic evaluation requests today?
-2. Does the path invoke Deep Research-style planning/execution semantics or only reuse parts of the stack?
-3. Where are the concrete limits for drilldown depth, subtasks, and images enforced?
-4. What differences likely matter when comparing this path to a dedicated agentic evaluation baseline?
 
 ## Decisions Made
 | Decision | Rationale |
 |----------|-----------|
-| Use planning files in `pdftopng` | Required by `AGENTS.md` for complex multi-step inspection tasks |
-| Do not edit product code | User explicitly asked for inspection/report only |
-| Compare evaluation path against `DeepResearchService` rather than only core methods | Needed to distinguish shared execution primitives from full user-facing Deep Research semantics |
+| 僅改 evaluation flow 相關模組，不動線上 chat API 流程 | 遵守 user 指示與可比性要求 |
+| 在 `RAG_QA_service` 讓 `_get_graph_context` 新增可選 evidence 回傳模式 | 保持既有測試與呼叫相容（預設仍回傳字串） |
+| 以 route rename + DB 正規化做相容層 | 避免歷史 trace 指標斷裂 |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
 |-------|---------|------------|
-| None so far | 1 | N/A |
+| `rg.exe` 在此環境啟動遭拒 (Access denied) | 1 | 改用 PowerShell `Select-String` + 分段讀檔 |
+| 查找 `evaluation/metrics_aggregator.py` 路徑不存在 | 1 | 改為只檢索實際存在檔案 |
 
 ## Notes
-- Focus files: `evaluation/rag_modes.py`, `evaluation/agentic_evaluation_service.py`, `data_base/research_execution_core.py`, `agents/planner.py`, and related schemas.
-- Planning files are the only files to be created/updated.
+- 目標驗收基準：`correctness delta >= +0.01`, `faithfulness delta >= -0.02`（需重跑 campaign 驗證）。

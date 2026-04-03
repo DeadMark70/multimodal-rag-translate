@@ -1,68 +1,67 @@
 # Progress Log
 
-## Session: 2026-03-29
+## Session: 2026-04-04
 
-### Phase 1: Requirements & Discovery
-- **Status:** in_progress
-- **Started:** 2026-03-29
-- Actions taken:
-  - Read `AGENTS.md` requirements from the user message.
-  - Read the `planning-with-files` skill instructions.
-  - Ran session catchup for `D:\flutterserver\pdftopng`.
-  - Initialized planning files for this inspection task.
-- Files created/modified:
-  - `task_plan.md` (created)
-  - `findings.md` (created)
-  - `progress.md` (created)
-
-### Phase 2: Execution Path Trace
+### Phase 1: Scope & Baseline
 - **Status:** complete
 - Actions taken:
-  - Read the four primary modules in scope.
-  - Traced the main agentic evaluation path from `rag_modes.py` into `AgenticEvaluationService` and `ResearchExecutionCore`.
-  - Identified initial hard-coded limits for planning, drill-down, and image analysis.
-- Files created/modified:
-  - `findings.md` (updated)
-  - `progress.md` (updated)
+  - 讀取並套用 skills：`senior-backend`, `senior-qa`, `planning-with-files`。
+  - 執行 session catchup（無可恢復狀態）。
+  - 完成目標檔案與測試檔現況盤點。
+  - 確認實作範圍僅 evaluation flow。
+- Files modified:
+  - `task_plan.md`
+  - `findings.md`
+  - `progress.md`
 
-### Phase 3: Limits & Semantics Analysis
+### Phase 2: Implementation
 - **Status:** complete
 - Actions taken:
-  - Read `schemas_deep_research.py` to confirm schema-level limits and defaults.
-  - Compared evaluation flow against `DeepResearchService` to distinguish shared primitives from full Deep Research semantics.
-  - Traced image-analysis behavior into `RAG_QA_service` and confirmed hard limits for images and visual verification iterations.
-  - Confirmed evaluation campaigns execute through `CampaignEngine` and persist `execution_profile`/trace metadata separately from user-facing Deep Research persistence.
-- Files created/modified:
-  - `findings.md` (updated)
-  - `task_plan.md` (updated)
-  - `progress.md` (updated)
+  - 更新 `evaluation/agentic_evaluation_service.py`：
+    - `hybrid_graph` -> `generic_graph`。
+    - benchmark 初輪 numeric-only graph routing。
+    - figure_flow 初始 task=1、drilldown=0。
+    - benchmark drilldown cap=1。
+    - `visual_verify` 啟用 `enable_multi_query=True`。
+  - 更新 `data_base/RAG_QA_service.py`：
+    - graph evidence 可選回傳 + append 至 `RAGResult.documents`。
+    - 題型導向 prompt constraints 與 strict grounding。
+  - 更新 `agents/synthesizer.py`：
+    - benchmark/figure_flow correctness-oriented guidance。
+  - 更新 `evaluation/db.py`：
+    - route profile alias 正規化（`hybrid_graph` -> `generic_graph`）。
 
-### Phase 4: Verification
+### Phase 3: Tests
+- **Status:** complete
+- Actions taken:
+  - 更新 `tests/test_agentic_evaluation_service.py`。
+  - 新增 `tests/test_rag_graph_evidence_docs.py`。
+  - 新增 `tests/test_evaluation_db_route_profile_alias.py`。
+  - 執行目標 pytest 測試組合並全數通過。
+
+### Phase 4: Verification & Delivery
 - **Status:** in_progress
 - Actions taken:
-  - Pulled numbered source excerpts for the final report.
-- Files created/modified:
-  - `task_plan.md` (updated)
-  - `progress.md` (updated)
+  - 檢視 `git status` 與變更範圍，確認僅 evaluation flow + 測試 + planning 文件。
 
 ## Test Results
 | Test | Input | Expected | Actual | Status |
 |------|-------|----------|--------|--------|
-| Session catchup | `session-catchup.py D:\flutterserver\pdftopng` | Recover prior session state or report none | Reported native Codex parsing not implemented; no prior state loaded | ✓ |
+| session catchup | `session-catchup.py` | recover or skip report | skipped (native Codex parsing not implemented) | ✓ |
+| targeted pytest | `tests/test_agentic_evaluation_service.py tests/test_rag_modes_agentic.py tests/test_graphrag_integration.py tests/test_rag_graph_evidence_docs.py tests/test_evaluation_db_route_profile_alias.py` | all pass | 21 passed | ✓ |
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
 |-----------|-------|---------|------------|
-| 2026-03-29 | None so far | 1 | N/A |
+| 2026-04-04 | `rg.exe` access denied | 1 | switched to `Select-String` |
+| 2026-04-04 | `evaluation/metrics_aggregator.py` not found | 1 | narrowed search to existing files |
+| 2026-04-04 | recursive search touched denied cache paths | 1 | switched to `git grep` |
 
 ## 5-Question Reboot Check
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase 1 |
-| Where am I going? | Finish Phase 2 schema/caller trace, then Phase 3 limits/semantics analysis, Phase 4 verification, Phase 5 delivery |
-| What's the goal? | Trace current backend production evaluation path for agentic RAG and report execution, semantics, limits, and baseline mismatches |
-| What have I learned? | Agentic evaluation reuses shared research execution core with hard-coded drill-down/image-analysis settings |
-| What have I done? | Initialized planning files and traced the main execution path through the core evaluation modules |
-
----
-*Update after completing each phase or encountering errors*
+| Where am I? | Phase 4 verification/delivery |
+| Where am I going? | Deliver implementation summary + next validation steps |
+| What's the goal? | Faithfulness-first eval micro-optimization with correctness boost |
+| What have I learned? | Routing + grounding + evidence parity can be improved without increasing iteration depth |
+| What have I done? | Implemented the full plan and passed targeted regression tests |
