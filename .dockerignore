@@ -12,7 +12,6 @@ outputs
 tests/.tmp
 
 agentlog
-agents
 conductor
 checklist
 docs
