@@ -26,6 +26,9 @@ from evaluation.trace_schemas import AgentTraceDetail, AgentTraceSummary, summar
 EVALUATION_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "evaluation.db"
 _UNSET = object()
 logger = logging.getLogger(__name__)
+ROUTE_PROFILE_ALIASES = {
+    "hybrid_graph": "generic_graph",
+}
 _INIT_SQL = """
 CREATE TABLE IF NOT EXISTS campaigns (
     id TEXT PRIMARY KEY,
@@ -268,8 +271,28 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
     )
 
 
+def _normalize_route_profile(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    return ROUTE_PROFILE_ALIASES.get(value, value)
+
+
+def _normalize_trace_route_profiles(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    normalized["route_profile"] = _normalize_route_profile(normalized.get("route_profile"))
+    steps = normalized.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            metadata = step.get("metadata")
+            if isinstance(metadata, dict):
+                metadata["route_profile"] = _normalize_route_profile(metadata.get("route_profile"))
+    return normalized
+
+
 def _row_to_agent_trace_detail(row: aiosqlite.Row) -> AgentTraceDetail:
-    payload = _json_loads(row["trace_json"], {})
+    payload = _normalize_trace_route_profiles(_json_loads(row["trace_json"], {}))
     if not payload:
         raise AppError(
             code=ErrorCode.INTERNAL_ERROR,
@@ -676,40 +699,41 @@ class AgentTraceRepository:
         trace_payload: dict[str, Any],
     ) -> AgentTraceDetail:
         await init_db()
-        steps = trace_payload.get("steps", [])
+        normalized_payload = _normalize_trace_route_profiles(trace_payload)
+        steps = normalized_payload.get("steps", [])
         tool_call_count = sum(len(step.get("tool_calls", [])) for step in steps)
         total_tokens = sum(int(step.get("token_usage", {}).get("total_tokens", 0) or 0) for step in steps)
         detail = AgentTraceDetail.model_validate(
             {
-                "trace_id": trace_payload.get("trace_id") or str(uuid4()),
+                "trace_id": normalized_payload.get("trace_id") or str(uuid4()),
                 "campaign_id": campaign_id,
                 "campaign_result_id": campaign_result_id,
-                "question_id": trace_payload.get("question_id", ""),
-                "question": trace_payload.get("question", ""),
-                "mode": trace_payload.get("mode"),
+                "question_id": normalized_payload.get("question_id", ""),
+                "question": normalized_payload.get("question", ""),
+                "mode": normalized_payload.get("mode"),
                 "execution_profile": (
-                    trace_payload.get("execution_profile")
-                    or (LEGACY_SHARED_PROFILE if trace_payload.get("mode") == "agentic" else None)
+                    normalized_payload.get("execution_profile")
+                    or (LEGACY_SHARED_PROFILE if normalized_payload.get("mode") == "agentic" else None)
                 ),
-                "question_intent": trace_payload.get("question_intent"),
-                "strategy_tier": trace_payload.get("strategy_tier"),
-                "route_profile": trace_payload.get("route_profile"),
-                "required_coverage": trace_payload.get("required_coverage", []),
-                "coverage_gaps": trace_payload.get("coverage_gaps", []),
-                "subtask_coverage_status": trace_payload.get("subtask_coverage_status", {}),
-                "supported_claim_count": trace_payload.get("supported_claim_count", 0),
-                "unsupported_claim_count": trace_payload.get("unsupported_claim_count", 0),
-                "claims": trace_payload.get("claims", []),
-                "visual_verification_attempted": trace_payload.get("visual_verification_attempted", False),
-                "visual_tool_call_count": trace_payload.get("visual_tool_call_count", 0),
-                "visual_force_fallback_used": trace_payload.get("visual_force_fallback_used", False),
-                "run_number": trace_payload.get("run_number", 1),
-                "trace_status": trace_payload.get("trace_status", "completed"),
-                "summary": trace_payload.get("summary", ""),
+                "question_intent": normalized_payload.get("question_intent"),
+                "strategy_tier": normalized_payload.get("strategy_tier"),
+                "route_profile": normalized_payload.get("route_profile"),
+                "required_coverage": normalized_payload.get("required_coverage", []),
+                "coverage_gaps": normalized_payload.get("coverage_gaps", []),
+                "subtask_coverage_status": normalized_payload.get("subtask_coverage_status", {}),
+                "supported_claim_count": normalized_payload.get("supported_claim_count", 0),
+                "unsupported_claim_count": normalized_payload.get("unsupported_claim_count", 0),
+                "claims": normalized_payload.get("claims", []),
+                "visual_verification_attempted": normalized_payload.get("visual_verification_attempted", False),
+                "visual_tool_call_count": normalized_payload.get("visual_tool_call_count", 0),
+                "visual_force_fallback_used": normalized_payload.get("visual_force_fallback_used", False),
+                "run_number": normalized_payload.get("run_number", 1),
+                "trace_status": normalized_payload.get("trace_status", "completed"),
+                "summary": normalized_payload.get("summary", ""),
                 "step_count": len(steps),
                 "tool_call_count": tool_call_count,
                 "total_tokens": total_tokens,
-                "created_at": trace_payload.get("created_at") or _utc_now_iso(),
+                "created_at": normalized_payload.get("created_at") or _utc_now_iso(),
                 "steps": steps,
             }
         )

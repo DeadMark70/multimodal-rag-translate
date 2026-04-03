@@ -40,16 +40,37 @@ RouteProfile = Literal[
     "hybrid_compare",
     "graph_global",
     "visual_verify",
-    "hybrid_graph",
+    "generic_graph",
 ]
 
 AGENTIC_EVAL_PROFILE = "agentic_eval_v4"
 LEGACY_SHARED_PROFILE = "legacy_shared"
 AGENTIC_INITIAL_SUBTASKS = 3
-AGENTIC_FIGURE_FLOW_INITIAL_SUBTASKS = 2
+AGENTIC_FIGURE_FLOW_INITIAL_SUBTASKS = 1
 AGENTIC_IMAGE_ANALYSIS_ENABLED = True
 _CLAIM_SPLIT_RE = re.compile(r"(?<=[。！？.!?])\s+")
 _TOKEN_RE = re.compile(r"[a-z0-9_]+", re.IGNORECASE)
+_NUMERIC_TOKEN_RE = re.compile(r"\b\d+(\.\d+)?%?\b")
+_BENCHMARK_NUMERIC_KEYWORDS = (
+    "dice",
+    "score",
+    "metric",
+    "flops",
+    "params",
+    "param",
+    "accuracy",
+    "auc",
+    "f1",
+    "iou",
+    "miou",
+    "latency",
+    "throughput",
+    "fps",
+    "指標",
+    "數值",
+    "參數",
+    "效能",
+)
 
 
 class AgentTraceCaptureError(RuntimeError):
@@ -151,12 +172,25 @@ def _subtask_limit_for_strategy(
     return AGENTIC_INITIAL_SUBTASKS
 
 
-def _drilldown_iterations_for_strategy(strategy_tier: StrategyTier) -> int:
+def _drilldown_iterations_for_strategy(
+    *,
+    strategy_tier: StrategyTier,
+    question_intent: QuestionIntent,
+) -> int:
+    if question_intent == "figure_flow":
+        return 0
     if strategy_tier == "tier_1_detail_lookup":
         return 0
-    if strategy_tier == "tier_2_structured_compare":
-        return 1
-    return 2
+    return 1
+
+
+def _is_numeric_benchmark_subtask(*, task_type: str, task_question: str) -> bool:
+    question_lower = task_question.lower()
+    if any(keyword in question_lower for keyword in _BENCHMARK_NUMERIC_KEYWORDS):
+        return True
+    if task_type == "graph_analysis":
+        return True
+    return bool(_NUMERIC_TOKEN_RE.search(question_lower))
 
 
 def _route_profile_for_task(
@@ -164,16 +198,22 @@ def _route_profile_for_task(
     strategy_tier: StrategyTier,
     question_intent: QuestionIntent,
     task_type: str,
+    task_question: str,
+    iteration: int,
 ) -> RouteProfile:
-    if task_type == "graph_analysis":
-        return "graph_global"
+    if question_intent == "benchmark_data" and iteration == 0:
+        if _is_numeric_benchmark_subtask(task_type=task_type, task_question=task_question):
+            return "generic_graph"
+        return "hybrid_compare"
     if question_intent == "figure_flow":
         return "visual_verify"
+    if task_type == "graph_analysis":
+        return "graph_global"
     if strategy_tier == "tier_1_detail_lookup":
         return "hybrid_exact"
     if strategy_tier == "tier_2_structured_compare":
         return "hybrid_compare"
-    return "hybrid_graph"
+    return "generic_graph"
 
 
 def _tokenize(text: str) -> set[str]:
@@ -406,6 +446,13 @@ class AgenticEvaluationService(ResearchExecutionCore):
             "enable_reranking": enable_reranking,
             "return_docs": True,
             "enable_visual_verification": enable_visual_verification,
+            "mode_hints": {
+                "question_intent": self._active_question_intent,
+                "strategy_tier": self._active_strategy_tier,
+                "task_type": task_type,
+                "stage_hint": stage_hint,
+                "route_profile": route_profile,
+            },
         }
         if route_profile == "hybrid_exact":
             kwargs.update(
@@ -441,12 +488,12 @@ class AgenticEvaluationService(ResearchExecutionCore):
             kwargs.update(
                 {
                     "enable_hyde": False,
-                    "enable_multi_query": False,
+                    "enable_multi_query": True,
                     "enable_graph_rag": False,
                     "enable_visual_verification": True,
                 }
             )
-        else:  # hybrid_graph
+        else:  # generic_graph
             kwargs.update(
                 {
                     "enable_hyde": True,
@@ -512,6 +559,8 @@ class AgenticEvaluationService(ResearchExecutionCore):
                 strategy_tier=effective_tier,
                 question_intent=effective_intent,
                 task_type=task.task_type,
+                task_question=task.question,
+                iteration=iteration,
             )
             kwargs = self._route_kwargs(
                 route_profile=route_profile,
@@ -801,7 +850,11 @@ class AgenticEvaluationService(ResearchExecutionCore):
         if max_iterations <= 0:
             return 0
 
-        followup_cap = 1 if self._active_strategy_tier == "tier_2_structured_compare" else 2
+        followup_cap = (
+            1
+            if self._active_strategy_tier in {"tier_2_structured_compare", "tier_3_multi_hop_analysis"}
+            else 2
+        )
         planner = TaskPlanner(max_subtasks=followup_cap, enable_graph_planning=False)
 
         for iteration in range(1, max_iterations + 1):
@@ -856,7 +909,10 @@ class AgenticEvaluationService(ResearchExecutionCore):
         trace_summary = "Agentic trace unavailable"
         question_intent = classify_question_intent(question)
         strategy_tier = _strategy_tier_for_intent(question_intent)
-        max_drilldown_iterations = _drilldown_iterations_for_strategy(strategy_tier)
+        max_drilldown_iterations = _drilldown_iterations_for_strategy(
+            strategy_tier=strategy_tier,
+            question_intent=question_intent,
+        )
         required_coverage = required_coverage_for_intent(question_intent)
         self._active_question_intent = question_intent
         self._active_strategy_tier = strategy_tier

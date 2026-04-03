@@ -399,7 +399,8 @@ async def _get_graph_context(
     user_id: str,
     search_mode: str = "generic",
     graph_execution_hints: Optional[Dict[str, Any]] = None,
-) -> str:
+    return_evidence: bool = False,
+) -> Union[str, Tuple[str, List[GraphEvidence]]]:
     """
     Get context from knowledge graph.
     
@@ -410,7 +411,7 @@ async def _get_graph_context(
         graph_execution_hints: Optional internal routing hints for generic mode.
         
     Returns:
-        Graph context string.
+        Graph context string or `(context, evidence_units)` when `return_evidence=True`.
     """
     try:
         from graph_rag.store import GraphStore
@@ -423,6 +424,8 @@ async def _get_graph_context(
         status = store.get_status()
         if not status.has_graph or status.node_count == 0:
             logger.debug(f"No graph data for user {user_id}")
+            if return_evidence:
+                return "", []
             return ""
 
         if status.needs_optimization:
@@ -518,11 +521,86 @@ async def _get_graph_context(
             decision.path,
             len(merged_units),
         )
+        if return_evidence:
+            return merged_context, list(merged_units)
         return merged_context
         
     except Exception as e:
         logger.warning(f"Graph context retrieval failed: {e}")
+        if return_evidence:
+            return "", []
         return ""
+
+
+def _to_graph_evidence_documents(evidence_units: List[GraphEvidence]) -> List[Document]:
+    """Convert graph evidence units into evaluation-visible documents."""
+    evidence_documents: List[Document] = []
+    for evidence in evidence_units:
+        text = str(getattr(evidence, "text", "") or "")
+        if not text:
+            continue
+        evidence_documents.append(
+            Document(
+                page_content=text,
+                metadata={
+                    "source": "graph_evidence",
+                    "evidence_type": str(getattr(evidence, "evidence_type", "unknown")),
+                    "evidence_id": str(getattr(evidence, "evidence_id", "")),
+                    "score": getattr(evidence, "score", None),
+                    "graph_metadata": dict(getattr(evidence, "metadata", {}) or {}),
+                },
+            )
+        )
+    return evidence_documents
+
+
+def _resolve_intent_hint(question: str, mode_hints: Optional[Dict[str, Any]]) -> Optional[str]:
+    hinted = str((mode_hints or {}).get("question_intent") or "").strip()
+    if hinted:
+        return hinted
+    lowered = question.lower()
+    if any(
+        token in lowered
+        for token in (
+            "benchmark",
+            "dice",
+            "score",
+            "metric",
+            "flops",
+            "param",
+            "accuracy",
+            "auc",
+            "f1",
+            "指標",
+            "數值",
+            "參數",
+            "效能",
+        )
+    ):
+        return "benchmark_data"
+    if any(
+        token in lowered
+        for token in ("figure", "flow", "pipeline", "module", "流程", "架構", "順序", "重建")
+    ):
+        return "figure_flow"
+    return None
+
+
+def _intent_constraints_for_prompt(question: str, mode_hints: Optional[Dict[str, Any]]) -> str:
+    intent = _resolve_intent_hint(question, mode_hints)
+    if intent == "benchmark_data":
+        return """
+### 題型附加限制：Benchmark / 數據
+13. 先列出「指標-模型-數值-來源」；每列都要有來源標記。
+14. 若缺少可驗證數值，必須明確寫「資料不足」，不得以外部常識補齊。
+"""
+    if intent == "figure_flow":
+        return """
+### 題型附加限制：Figure Flow / 架構重建
+13. 先輸出有序流程（格式建議：`A -> B -> C`）。
+14. 僅可使用參考資料中出現過的元件名稱；禁止新增未出現元件。
+"""
+    return ""
 
 
 # Context Enricher constants
@@ -709,6 +787,7 @@ async def rag_answer_question(
     enable_graph_rag: bool = False,
     graph_search_mode: str = "generic",
     graph_execution_hints: Optional[Dict[str, Any]] = None,
+    mode_hints: Optional[Dict[str, Any]] = None,
     # Visual Verification (Phase 9)
     enable_visual_verification: bool = False,
     progress_callback: Optional[ProgressCallback] = None,
@@ -741,6 +820,7 @@ async def rag_answer_question(
         enable_graph_rag: If True, enhance with knowledge graph context.
         graph_search_mode: Graph search mode (`generic` recommended; `auto/local/global/hybrid` are legacy compatibility values).
         graph_execution_hints: Internal generic-mode routing hints from execution layers.
+        mode_hints: Optional intent/route hints for evaluation-time output constraints.
         enable_visual_verification: If True, enable Re-Act loop for image details.
 
     Returns:
@@ -881,18 +961,24 @@ async def rag_answer_question(
 
     # Step 5.5: GraphRAG context enhancement
     graph_context = ""
+    graph_evidence_units: List[GraphEvidence] = []
     if enable_graph_rag:
         await _emit_progress(
             progress_callback,
             "graph_context",
             {"search_mode": graph_search_mode},
         )
-        graph_context = await _get_graph_context(
+        graph_context_payload = await _get_graph_context(
             question=question,
             user_id=user_id,
             search_mode=graph_search_mode,
             graph_execution_hints=graph_execution_hints,
+            return_evidence=return_docs,
         )
+        if return_docs:
+            graph_context, graph_evidence_units = graph_context_payload
+        else:
+            graph_context = graph_context_payload
 
     # Step 5.6: Context Enricher - expand short chunks
     docs = _expand_short_chunks(docs, user_id)
@@ -991,6 +1077,7 @@ async def rag_answer_question(
     
     # Format graph context if available
     graph_section = f"\n{graph_context}\n" if graph_context else ""
+    intent_constraints = _intent_constraints_for_prompt(question, mode_hints)
 
     # Enhanced prompt with anti-hallucination guidance (Phase 5: Conflict Arbitration)
     prompt_text = f"""你是一位學術研究助手，擅長分析文本與圖表。
@@ -1024,6 +1111,9 @@ async def rag_answer_question(
 10. 仔細觀察圖表數據（如有提供）
 11. 數學公式請使用 LaTeX 格式
 12. 以繁體中文回答
+13. 關鍵結論後請附來源標記（例如：`[來源：文件A]`、`[來源：graph_evidence]`）
+14. 若參考資料沒有直接證據，必須明確寫「資料不足」，禁止使用外部知識補齊
+{intent_constraints}
 {VISUAL_TOOL_INSTRUCTION if enable_visual_verification and image_paths else ''}
 請根據以上資料回答問題："""
 
@@ -1056,6 +1146,7 @@ async def rag_answer_question(
             "visual_verification_attempted": False,
             "visual_tool_call_count": 0,
             "visual_force_fallback_used": False,
+            "visual_not_applicable": bool(enable_visual_verification and not image_paths),
         }
         
         # Step 10: Visual Verification Re-Act Loop (Phase 9)
@@ -1072,12 +1163,18 @@ async def rag_answer_question(
                 force_once_if_not_triggered=True,
             )
             # Note: Usage from visual verification loop is not currently aggregated into usage_metadata
+            visual_verification_meta.setdefault("visual_not_applicable", False)
         
         if return_docs:
+            graph_evidence_docs = (
+                _to_graph_evidence_documents(graph_evidence_units)
+                if enable_graph_rag
+                else []
+            )
             return RAGResult(
                 answer, 
                 list(source_doc_ids), 
-                docs, 
+                [*docs, *graph_evidence_docs],
                 usage_metadata,
                 thought_process=prompt_text, # Capture the prompt as thought trace
                 tool_calls=tool_calls,
