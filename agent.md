@@ -173,6 +173,7 @@ Keep these three files synchronized before ending a session.
 - 2026-03-29: When evaluation `agentic` baseline behavior changes, pin the new planner/drill-down/image constraints inside `evaluation/agentic_evaluation_service.py` and bump `execution_profile` so historical campaign results remain comparable.
 - 2026-03-29: When evaluator context-packing logic changes, version it explicitly (`context_policy_version`) and propagate that version through persisted campaign results, RAGAS score details, metrics rows, docs, and frontend types in the same change set. This preserves score comparability and prevents silent evaluator-policy drift.
 - 2026-03-29: In this workspace, `rg.exe` can intermittently fail with permission errors; after one failed attempt, switch immediately to `Select-String`/targeted file reads and continue without repeated retries.
+- 2026-04-04: For repository-wide string search on Windows, avoid `Get-ChildItem -Recurse | Select-String` because denied cache directories can break scans; prefer `git grep` first, then file-targeted `Select-String`.
 
 
 
