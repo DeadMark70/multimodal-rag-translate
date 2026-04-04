@@ -4,6 +4,7 @@ import pytest
 from langchain_core.documents import Document
 
 from data_base.RAG_QA_service import RAGResult
+from evaluation.agentic_evaluation_service import AGENTIC_EVAL_PROFILE
 from evaluation.rag_modes import (
     CONTEXT_POLICY_VERSION,
     EVALUATOR_MAX_CONTEXTS,
@@ -75,7 +76,7 @@ async def test_run_campaign_case_agentic_uses_evaluation_service_and_profile() -
             "question_id": "Q1",
             "question": "What changed?",
             "mode": "agentic",
-            "execution_profile": "agentic_eval_v4",
+            "execution_profile": AGENTIC_EVAL_PROFILE,
             "question_intent": "comparison_disambiguation",
             "strategy_tier": "tier_2_structured_compare",
             "route_profile": "hybrid_compare",
@@ -115,7 +116,7 @@ async def test_run_campaign_case_agentic_uses_evaluation_service_and_profile() -
     mock_service.run_case.assert_awaited_once()
     assert result.answer == "agentic answer"
     assert result.contexts == ["ctx-1"]
-    assert result.execution_profile == "agentic_eval_v4"
+    assert result.execution_profile == AGENTIC_EVAL_PROFILE
     assert result.context_policy_version == CONTEXT_POLICY_VERSION
 
 
