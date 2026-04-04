@@ -43,14 +43,14 @@ RouteProfile = Literal[
     "generic_graph",
 ]
 
-AGENTIC_EVAL_PROFILE = "agentic_eval_v4"
+AGENTIC_EVAL_PROFILE = "agentic_eval_v5_correctness"
 LEGACY_SHARED_PROFILE = "legacy_shared"
 AGENTIC_INITIAL_SUBTASKS = 3
-AGENTIC_FIGURE_FLOW_INITIAL_SUBTASKS = 1
+AGENTIC_FIGURE_FLOW_INITIAL_SUBTASKS = 2
 AGENTIC_IMAGE_ANALYSIS_ENABLED = True
 _CLAIM_SPLIT_RE = re.compile(r"(?<=[。！？.!?])\s+")
 _TOKEN_RE = re.compile(r"[a-z0-9_]+", re.IGNORECASE)
-_NUMERIC_TOKEN_RE = re.compile(r"\b\d+(\.\d+)?%?\b")
+_NUMERIC_TOKEN_RE = re.compile(r"\b\d+(\.\d+)?\s*(%|x|m|k|g|ms|s|fps|gb|mb)?\b", re.IGNORECASE)
 _BENCHMARK_NUMERIC_KEYWORDS = (
     "dice",
     "score",
@@ -70,6 +70,36 @@ _BENCHMARK_NUMERIC_KEYWORDS = (
     "數值",
     "參數",
     "效能",
+)
+_BENCHMARK_NUMERIC_EXCLUSION_PHRASES = (
+    "dice supervision",
+    "pseudo-label",
+    "cross-entropy",
+    "監督機制",
+    "損失函數",
+    "loss function",
+)
+_BENCHMARK_GRAPH_ROUTE_KEYWORDS = (
+    "cross-document",
+    "across",
+    "relation",
+    "relationship",
+    "trend",
+    "arbitration",
+    "裁決",
+    "跨文件",
+    "跨文獻",
+    "關係",
+    "關聯",
+    "趨勢",
+)
+_FIGURE_FLOW_ANCHOR_BLOCKLIST = (
+    "overall architecture",
+    "general architecture",
+    "high-level architecture",
+    "總體架構",
+    "整體架構",
+    "overview",
 )
 
 
@@ -186,11 +216,26 @@ def _drilldown_iterations_for_strategy(
 
 def _is_numeric_benchmark_subtask(*, task_type: str, task_question: str) -> bool:
     question_lower = task_question.lower()
-    if any(keyword in question_lower for keyword in _BENCHMARK_NUMERIC_KEYWORDS):
-        return True
+    has_numeric_keyword = any(keyword in question_lower for keyword in _BENCHMARK_NUMERIC_KEYWORDS)
+    has_numeric_token = bool(_NUMERIC_TOKEN_RE.search(question_lower))
+    has_methodology_exclusion = any(
+        phrase in question_lower for phrase in _BENCHMARK_NUMERIC_EXCLUSION_PHRASES
+    )
+
+    # Require both metric keyword and numeric context. Terms like "3D" or
+    # "Dice supervision" alone should not trigger numeric benchmark routing.
+    if not (has_numeric_keyword and has_numeric_token):
+        return False
+    if has_methodology_exclusion:
+        return False
+    return True
+
+
+def _needs_graph_route_for_benchmark(*, task_type: str, task_question: str) -> bool:
     if task_type == "graph_analysis":
         return True
-    return bool(_NUMERIC_TOKEN_RE.search(question_lower))
+    question_lower = task_question.lower()
+    return any(keyword in question_lower for keyword in _BENCHMARK_GRAPH_ROUTE_KEYWORDS)
 
 
 def _route_profile_for_task(
@@ -201,8 +246,15 @@ def _route_profile_for_task(
     task_question: str,
     iteration: int,
 ) -> RouteProfile:
-    if question_intent == "benchmark_data" and iteration == 0:
-        if _is_numeric_benchmark_subtask(task_type=task_type, task_question=task_question):
+    if question_intent == "benchmark_data":
+        is_numeric = _is_numeric_benchmark_subtask(
+            task_type=task_type,
+            task_question=task_question,
+        )
+        if is_numeric and _needs_graph_route_for_benchmark(
+            task_type=task_type,
+            task_question=task_question,
+        ):
             return "generic_graph"
         return "hybrid_compare"
     if question_intent == "figure_flow":
@@ -336,6 +388,40 @@ def _coverage_keywords() -> dict[str, tuple[str, ...]]:
             "簡述",
         ),
     }
+
+
+def _is_figure_flow_auxiliary_task(*, original_question: str, candidate_question: str) -> bool:
+    candidate_lower = candidate_question.strip().lower()
+    original_lower = original_question.strip().lower()
+    if not candidate_lower or candidate_lower == original_lower:
+        return False
+    if any(blocked in candidate_lower for blocked in _FIGURE_FLOW_ANCHOR_BLOCKLIST):
+        return False
+
+    candidate_tokens = _tokenize(candidate_lower)
+    original_tokens = _tokenize(original_lower)
+    overlap = len(candidate_tokens & original_tokens)
+    has_flow_signal = any(
+        keyword in candidate_lower
+        for keyword in (
+            "flow",
+            "order",
+            "sequence",
+            "branch",
+            "step",
+            "flip",
+            "accumul",
+            "siam",
+            "流程",
+            "順序",
+            "分支",
+            "步驟",
+            "翻轉",
+            "累加",
+            "機制",
+        )
+    )
+    return has_flow_signal and overlap >= 2
 
 
 def _finalize_trace_payload(
@@ -731,6 +817,34 @@ class AgenticEvaluationService(ResearchExecutionCore):
             )
             for task in plan.sub_tasks[:subtask_limit]
         ]
+        if effective_intent == "figure_flow":
+            anchored_tasks: list[EditableSubTask] = [
+                EditableSubTask(
+                    id=1,
+                    question=question,
+                    task_type="rag",
+                    enabled=True,
+                )
+            ]
+            auxiliary_candidates = [
+                task
+                for task in editable_tasks
+                if _is_figure_flow_auxiliary_task(
+                    original_question=question,
+                    candidate_question=task.question,
+                )
+            ]
+            if auxiliary_candidates:
+                aux = auxiliary_candidates[0]
+                anchored_tasks.append(
+                    EditableSubTask(
+                        id=2,
+                        question=aux.question,
+                        task_type=aux.task_type,
+                        enabled=True,
+                    )
+                )
+            editable_tasks = anchored_tasks
         return ResearchPlanResponse(
             status="waiting_confirmation",
             original_question=question,
@@ -760,9 +874,10 @@ class AgenticEvaluationService(ResearchExecutionCore):
         report = await synthesize_results(
             original_question=original_question,
             sub_results=synthesizer_results,
-            enabled=len(synthesizer_results) > 1,
+            enabled=True,
             use_academic_template=False,
             question_intent=self._active_question_intent,
+            force_llm_for_single=True,
         )
 
         evidence_units = self._evidence_index(all_results)
@@ -795,22 +910,18 @@ class AgenticEvaluationService(ResearchExecutionCore):
             },
         )
 
-    def _should_skip_drilldown(
+    def _retrieval_quality_gate(
         self,
         results: list[SubTaskExecutionResult],
+        *,
         min_answer_length: int = 200,
         min_complete_ratio: float = 0.67,
-        current_iteration: int = -1,
-    ) -> bool:
-        if self._active_strategy_tier == "tier_1_detail_lookup":
-            return True
+    ) -> tuple[bool, dict[str, Any]]:
+        """Lightweight relevance/coverage quality gate for corrective drill-down."""
         if not results:
-            return False
+            return False, {"reason": "no_results"}
 
         coverage_gaps = self._coverage_gaps(results)
-        if coverage_gaps:
-            return False
-
         failure_markers = [
             "無法回答",
             "找不到",
@@ -827,15 +938,49 @@ class AgenticEvaluationService(ResearchExecutionCore):
         ]
 
         complete_count = 0
+        contextless_count = 0
         for result in results:
             answer_lower = result.answer.lower()
             has_failure = any(marker in answer_lower for marker in failure_markers)
             is_long_enough = len(result.answer) >= min_answer_length
             if not has_failure and is_long_enough:
                 complete_count += 1
+            if not result.contexts and not result.sources:
+                contextless_count += 1
 
         complete_ratio = complete_count / len(results)
-        return complete_ratio >= min_complete_ratio
+        gate_pass = not coverage_gaps and contextless_count == 0 and complete_ratio >= min_complete_ratio
+        return gate_pass, {
+            "coverage_gaps": coverage_gaps,
+            "contextless_count": contextless_count,
+            "complete_ratio": complete_ratio,
+        }
+
+    def _is_gap_targeted_followup(self, *, question: str, coverage_gaps: list[str]) -> bool:
+        if not coverage_gaps:
+            return True
+        lowered = question.lower()
+        keyword_map = _coverage_keywords()
+        for gap in coverage_gaps:
+            if any(keyword in lowered for keyword in keyword_map.get(gap, ())):
+                return True
+        return False
+
+    def _should_skip_drilldown(
+        self,
+        results: list[SubTaskExecutionResult],
+        min_answer_length: int = 200,
+        min_complete_ratio: float = 0.67,
+        current_iteration: int = -1,
+    ) -> bool:
+        if self._active_strategy_tier == "tier_1_detail_lookup":
+            return True
+        gate_pass, _gate_meta = self._retrieval_quality_gate(
+            results,
+            min_answer_length=min_answer_length,
+            min_complete_ratio=min_complete_ratio,
+        )
+        return gate_pass
 
     async def _drill_down_loop(
         self,
@@ -858,6 +1003,14 @@ class AgenticEvaluationService(ResearchExecutionCore):
         planner = TaskPlanner(max_subtasks=followup_cap, enable_graph_planning=False)
 
         for iteration in range(1, max_iterations + 1):
+            gate_pass, gate_meta = self._retrieval_quality_gate(current_results)
+            if gate_pass:
+                return iteration - 1
+
+            coverage_gaps = list(gate_meta.get("coverage_gaps") or self._coverage_gaps(current_results))
+            if not coverage_gaps:
+                return iteration - 1
+
             findings_summary = self._build_findings_summary(current_results)
             followup_tasks = await planner.create_followup_tasks(
                 original_question=original_question,
@@ -867,9 +1020,17 @@ class AgenticEvaluationService(ResearchExecutionCore):
                     for result in current_results
                 ],
                 question_intent=self._active_question_intent,
-                coverage_gaps=self._coverage_gaps(current_results),
+                coverage_gaps=coverage_gaps,
             )
-            if not followup_tasks:
+            targeted_followups = [
+                task
+                for task in followup_tasks
+                if self._is_gap_targeted_followup(
+                    question=task.question,
+                    coverage_gaps=coverage_gaps,
+                )
+            ]
+            if not targeted_followups:
                 return iteration - 1
 
             max_id = max((result.id for result in current_results), default=0)
@@ -880,7 +1041,7 @@ class AgenticEvaluationService(ResearchExecutionCore):
                     task_type=task.task_type,
                     enabled=True,
                 )
-                for offset, task in enumerate(followup_tasks[:followup_cap])
+                for offset, task in enumerate(targeted_followups[:followup_cap])
             ]
             executed = await self._execute_tasks(
                 tasks=editable_tasks,

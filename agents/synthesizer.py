@@ -159,6 +159,7 @@ def _synthesis_guidance_for_intent(question_intent: QuestionIntent) -> str:
 - 僅保留 block/branch/order 相關資訊。
 - 禁止新增子結果未出現的元件或步驟名稱。
 - 除非原題明問，禁止補充尺寸、背景、訓練設定。
+- 第一段禁止題目回顯或標題式開頭（例如：`### What is ...`）。
 """
     if question_intent == "benchmark_data":
         return """
@@ -166,6 +167,7 @@ def _synthesis_guidance_for_intent(question_intent: QuestionIntent) -> str:
 - 第一段先列「指標-模型-數值-來源」（至少 2 列，若可得）。
 - 每列都要附來源標記，禁止只寫排名不寫數值。
 - 若沒有明確數字，必須誠實標示「資料不足」。
+- 不確定時收斂答案，只保留可被子結果直接支持的句子。
 """
     if question_intent == "enumeration_definition":
         return """
@@ -316,6 +318,7 @@ class ResultSynthesizer:
         sub_results: List[SubTaskResult],
         use_academic_template: bool = False,
         question_intent: Optional[QuestionIntent] = None,
+        force_llm_for_single: bool = False,
     ) -> ResearchReport:
         """
         Synthesizes sub-task results into a research report.
@@ -339,8 +342,9 @@ class ResultSynthesizer:
                 confidence=0.0,
             )
         
-        # If only one result, use it directly
-        if len(sub_results) == 1:
+        # If only one result, use it directly unless caller requests
+        # a lightweight normalization pass.
+        if len(sub_results) == 1 and not force_llm_for_single:
             r = sub_results[0]
             return ResearchReport(
                 original_question=original_question,
@@ -418,6 +422,7 @@ async def synthesize_results(
     enabled: bool = True,
     use_academic_template: bool = False,
     question_intent: Optional[QuestionIntent] = None,
+    force_llm_for_single: bool = False,
 ) -> ResearchReport:
     """
     Convenience function to synthesize results.
@@ -472,4 +477,5 @@ async def synthesize_results(
         sub_results, 
         use_academic_template=use_academic_template,
         question_intent=question_intent,
+        force_llm_for_single=force_llm_for_single,
     )
