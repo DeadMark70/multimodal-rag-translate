@@ -30,7 +30,7 @@ Human-maintained inventory of the current backend surface.
   - `summary_by_category`
   - `summary_by_focus`
 - Dataset tooling lives in `evaluation/dataset_generator.py` and derives `ragas_ready.json` from the master dataset.
-- Evaluation `agentic` is a dedicated baseline profile (`agentic_eval_v4`), not a generic alias for user Deep Research.
+- Evaluation `agentic` is a dedicated baseline profile (`agentic_eval_v5_correctness`), not a generic alias for user Deep Research; it now applies stricter benchmark routing, figure-flow anchor planning, and single-task synthesis-lite normalization.
 
 ## Shared Runtime Contracts
 
@@ -39,6 +39,7 @@ Human-maintained inventory of the current backend surface.
 - Startup warmups are skipped when `TEST_MODE` or `USE_FAKE_PROVIDERS` is enabled.
 - Evaluation persists to SQLite and supports result, trace, metric, cancel, and stream recovery flows.
 - RAGAS reference selection is `ground_truth_short ?? ground_truth` and evaluator context ingestion is deterministic plus answer-aware (`v2_answer_aware_pack`: top 8 chunks, 1800 chars each, whitespace-normalized, overlap-ranked, task-aware when metadata exists).
+
 
 
 

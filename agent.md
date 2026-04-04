@@ -174,6 +174,7 @@ Keep these three files synchronized before ending a session.
 - 2026-03-29: When evaluator context-packing logic changes, version it explicitly (`context_policy_version`) and propagate that version through persisted campaign results, RAGAS score details, metrics rows, docs, and frontend types in the same change set. This preserves score comparability and prevents silent evaluator-policy drift.
 - 2026-03-29: In this workspace, `rg.exe` can intermittently fail with permission errors; after one failed attempt, switch immediately to `Select-String`/targeted file reads and continue without repeated retries.
 - 2026-04-04: For repository-wide string search on Windows, avoid `Get-ChildItem -Recurse | Select-String` because denied cache directories can break scans; prefer `git grep` first, then file-targeted `Select-String`.
+- 2026-04-04: In evaluation agentic routing, never treat benchmark intent as numeric-only based on metric words (for example `Dice`) without explicit numeric context; exclude methodology phrases like `Dice supervision`, anchor figure-flow plans to the original question, and force single-task synthesis normalization so answers do not drift into broad/off-question headings.
 
 
 
