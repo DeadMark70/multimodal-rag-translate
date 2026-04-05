@@ -1,5 +1,23 @@
 # Progress Log
 
+## Session: 2026-04-06 (Chat Dual Research Integration)
+
+### Phase 1: Contract and runtime mapping
+- **Status:** complete
+- Actions taken:
+  - Re-read backend docs and runtime surface (`/rag`, `/api/evaluation`).
+  - Verified chat currently has no benchmark-agentic stream endpoint.
+  - Verified benchmark agentic trace payload shape and persistence model from evaluation subsystem.
+  - Confirmed compatibility requirement: keep deep-research execution path unchanged.
+  - Updated planning files (`task_plan.md`, `findings.md`, `progress.md`) for this new implementation track.
+
+### Phase 2: Backend implementation
+- **Status:** in_progress
+- Next actions:
+  - Add chat agentic stream schema + execution service.
+  - Wire `/rag/agentic/stream`.
+  - Persist `research_engine=agentic_benchmark` and full trace in conversation metadata.
+
 ## Session: 2026-04-04 (Correctness-First Plan Implementation)
 
 ### Phase 1: Scope & Baseline Refresh

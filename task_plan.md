@@ -1,5 +1,41 @@
 # Task Plan: Agentic Eval Correctness-First 實作 (Evaluation-only)
 
+## Goal (2026-04-06) - Chat Dual Research Integration
+
+Implement backend support for chat dual research modes:
+- Keep existing user Deep Research pipeline unchanged.
+- Add chat-facing benchmark agentic stream endpoint (`POST /rag/agentic/stream`).
+- Emit rich SSE events for plan/task/drilldown/evaluation/trace/synthesis lifecycle.
+- Persist `research_engine=agentic_benchmark`, `result`, and full `agent_trace` in conversation metadata for restore/review.
+
+## Current Phase (2026-04-06)
+Phase 1 complete, entering Phase 2 backend implementation.
+
+## Phases (2026-04-06)
+
+### Phase 1: Contract and runtime mapping
+- [x] Locate reusable evaluation agentic runtime (`AgenticEvaluationService`) and trace schema.
+- [x] Confirm existing `/rag` router lacks chat benchmark agentic endpoint.
+- [x] Confirm deep-research endpoints and persistence path to keep unchanged.
+- **Status:** complete
+
+### Phase 2: Backend implementation
+- [ ] Add chat agentic stream schemas/events and service.
+- [ ] Add `/rag/agentic/stream` endpoint in `data_base/router.py`.
+- [ ] Persist agentic chat trace + result into conversation metadata with `research_engine`.
+- **Status:** in_progress
+
+### Phase 3: Backend tests + verification
+- [ ] Add stream order/payload tests.
+- [ ] Add metadata persistence tests.
+- [ ] Run targeted pytest suites.
+- **Status:** pending
+
+### Phase 4: Docs + closeout
+- [ ] Update backend docs (`BACKEND.md`, generated API surface, specs if touched).
+- [ ] Execute continuous-learning protocol if incident/correction occurs.
+- **Status:** pending
+
 ## Goal
 在 `D:\flutterserver\pdftopng` 針對 evaluation-only agentic baseline 實作 correctness-first 優化：
 - intent/routing 修正（避免 `Q2/Q6` 被錯誤導向高成本路徑）

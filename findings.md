@@ -1,5 +1,14 @@
 # Findings & Decisions
 
+## 2026-04-06 (Chat Dual Research Integration)
+- Evaluation agentic runtime and trace modeling already exist and are mature in:
+  - `evaluation/agentic_evaluation_service.py`
+  - `evaluation/trace_schemas.py`
+- Existing `/api/evaluation/...` trace endpoints are campaign-scoped and cannot serve chat directly.
+- Existing deep research stream endpoint (`/rag/execute/stream`) emits task-stage events but does not emit full trace-step/tool-call events.
+- Best-fit approach is a new `/rag/agentic/stream` endpoint in `/rag` router, backed by a chat-specific service that wraps benchmark agentic execution and streams trace-step events.
+- Conversation metadata remains the right persistence seam for chat restore; add `research_engine` discriminator and store full `agent_trace` there.
+
 ## Current Baseline (campaign `dd619059-6512-44f4-99e5-127dc0a4b912`)
 - Overall: agentic `answer_correctness` 與 `faithfulness` 皆低於 naive，且平均 token 顯著增加。
 - 問題級觀察：
