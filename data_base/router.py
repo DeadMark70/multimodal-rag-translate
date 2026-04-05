@@ -40,7 +40,9 @@ from data_base.schemas_deep_research import (
     ExecutePlanRequest,
     ExecutePlanResponse,
 )
+from data_base.schemas_agentic_chat import AgenticBenchmarkStreamRequest
 from data_base.deep_research_service import get_deep_research_service
+from data_base.agentic_chat_service import get_agentic_chat_service
 from data_base.sse_events import (
     ErrorData,
     PhaseUpdateData,
@@ -769,4 +771,27 @@ async def execute_research_plan_stream(
                 ErrorData(message="Streaming execution failed")
             )
     
+    return EventSourceResponse(event_generator())
+
+
+@router.post("/agentic/stream")
+async def execute_agentic_benchmark_stream(
+    request: AgenticBenchmarkStreamRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Executes benchmark agentic flow for chat with SSE progress trace."""
+    from sse_starlette.sse import EventSourceResponse
+
+    logger.info(
+        "Starting agentic benchmark stream for user %s: %s",
+        user_id,
+        request.question[:80],
+    )
+
+    service = get_agentic_chat_service()
+
+    async def event_generator():
+        async for event in service.execute_stream(request=request, user_id=user_id):
+            yield event
+
     return EventSourceResponse(event_generator())

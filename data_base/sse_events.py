@@ -22,6 +22,7 @@ class SSEEventType(str, Enum):
 
     # Planning phase
     PLAN_CONFIRMED = "plan_confirmed"
+    PLAN_READY = "plan_ready"
     
     # Task execution
     TASK_START = "task_start"
@@ -39,6 +40,8 @@ class SSEEventType(str, Enum):
     # Completion
     COMPLETE = "complete"
     ERROR = "error"
+    EVALUATION_UPDATE = "evaluation_update"
+    TRACE_STEP = "trace_step"
 
 
 class PlanConfirmedData(BaseModel):
