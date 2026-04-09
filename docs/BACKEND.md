@@ -65,6 +65,7 @@
 ## Runtime-Critical Behaviors
 
 - Protected routes depend on `get_current_user_id`.
+- Evaluation model discovery (`GET /api/evaluation/models`) is protected by the same auth dependency and exposes HTTP bearer security in OpenAPI.
 - `core/errors.py` returns a standard `{ error: { code, message, request_id, details? } }` envelope.
 - Request middleware attaches `X-Request-Id` to the response.
 - `TEST_MODE` or `USE_FAKE_PROVIDERS` skip real warmups and provider calls during startup-sensitive paths.

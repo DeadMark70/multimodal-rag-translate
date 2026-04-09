@@ -13,3 +13,4 @@
 - Results and traces stay on separate endpoints to avoid oversized payloads.
 - Campaign progress recovery must be keyed by persisted campaign state, not in-memory only state.
 - Evaluation model discovery and runtime generation should remain architecturally separated.
+- Evaluation model discovery (`GET /api/evaluation/models`) must require bearer authentication (no anonymous discovery path).

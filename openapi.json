@@ -1436,6 +1436,11 @@
         "summary": "Get Available Models",
         "description": "List models available to current Gemini API key.",
         "operationId": "get_available_models_api_evaluation_models_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "force_refresh",

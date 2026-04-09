@@ -29,6 +29,7 @@ Human-maintained inventory of the current backend surface.
   - `summary_by_mode`
   - `summary_by_category`
   - `summary_by_focus`
+- `GET /api/evaluation/models` is bearer-auth protected (no anonymous model discovery).
 - Dataset tooling lives in `evaluation/dataset_generator.py` and derives `ragas_ready.json` from the master dataset.
 - Evaluation `agentic` is a dedicated baseline profile (`agentic_eval_v5_correctness`), not a generic alias for user Deep Research; it now applies stricter benchmark routing, figure-flow anchor planning, and single-task synthesis-lite normalization.
 
