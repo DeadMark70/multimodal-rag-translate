@@ -177,7 +177,7 @@ async def test_process_document_images_classifies_visual_index_failures() -> Non
         ),
         patch(
             "pdfserviceMD.router.index_visual_summaries",
-            side_effect=RuntimeError("Embedding transport error after 4 attempts"),
+            new=AsyncMock(side_effect=RuntimeError("Embedding transport error after 4 attempts")),
         ),
     ):
         with pytest.raises(DocumentImageProcessingError) as exc_info:
@@ -352,13 +352,18 @@ def test_status_endpoint_includes_error_message_field() -> None:
 
 @pytest.mark.asyncio
 async def test_retry_document_index_task_clears_vectors_and_skips_graph_pipeline() -> None:
-    run_in_threadpool_mock = AsyncMock(side_effect=[("markdown", []), None])
-
     with (
-        patch("pdfserviceMD.router.run_in_threadpool", new=run_in_threadpool_mock),
+        patch(
+            "pdfserviceMD.router.run_in_threadpool",
+            new=AsyncMock(return_value=("markdown", [])),
+        ),
         patch("pdfserviceMD.router.update_indexing_processing_step", new=AsyncMock()),
         patch("pdfserviceMD.router.index_markdown_document", new=AsyncMock()),
         patch("pdfserviceMD.router._process_document_images", new=AsyncMock(return_value=1)),
+        patch(
+            "pdfserviceMD.router.delete_document_from_knowledge_base_async",
+            new=AsyncMock(return_value=True),
+        ) as delete_vectors,
         patch("pdfserviceMD.router.record_background_processing_failure", new=AsyncMock()) as record_failure,
         patch("pdfserviceMD.router.safe_update_document_status", new=AsyncMock()) as safe_update_status,
         patch("pdfserviceMD.router.safe_update_processing_step", new=AsyncMock()) as safe_update_step,
@@ -372,7 +377,7 @@ async def test_retry_document_index_task_clears_vectors_and_skips_graph_pipeline
             user_folder="uploads/test-user-123/doc-1",
         )
 
-    assert run_in_threadpool_mock.await_args_list[1].args[0].__name__ == "delete_document_from_knowledge_base"
+    delete_vectors.assert_awaited_once_with(TEST_USER_ID, "doc-1")
     record_failure.assert_not_awaited()
     safe_update_status.assert_any_await(doc_id="doc-1", status="completed", error_message=None)
     safe_update_step.assert_awaited_once_with(doc_id="doc-1", step="indexed")
