@@ -70,10 +70,17 @@
 - Request middleware attaches `X-Request-Id` to the response.
 - `TEST_MODE` or `USE_FAKE_PROVIDERS` skip real warmups and provider calls during startup-sensitive paths.
 - Evaluation persists campaign state in SQLite with WAL mode and supports results, traces, metrics, manual evaluate, cancel, and SSE reconnect.
+- Vector-store hot paths now run through an async coordination seam in `data_base/vector_store_manager.py`:
+  - FAISS load/save/create/delete, BM25 construction, synchronous retriever `invoke(...)`, and short-chunk expansion are offloaded from request/background coroutines
+  - per-user async locks serialize same-user FAISS mutations so ask/upload/retry-index/delete do not race the same index directory
+- Upload, retry-index, visual-summary indexing, and document-vector deletion now share that async vector-store seam instead of calling synchronous FAISS work directly from route/background coroutines.
 - Production markdown indexing is profile-aware:
   - default compatibility profile in `data_base/indexing_service.py` remains `recursive_baseline`
   - document upload / retry-index currently opt into `semantic_contextual`
   - formal profiles also include `hierarchical_parent_child` and `hierarchical_parent_child_proposition` for controlled A/B use
+- `/rag/ask` and `/rag/ask/stream` now reuse one RAG pipeline execution even when evaluation is enabled:
+  - retrieval/documents from the first pass are reused for evaluator metrics
+  - chat no longer pays for a second `rag_answer_question(...)` call just to compute `return_docs=True`
 - Evaluation `agentic` uses a dedicated baseline (`agentic_eval_v6_semantic_contextual`) distinct from user-facing Deep Research: tightened numeric benchmark routing, figure-flow first-task anchoring to the original question (plus at most one gap-focused auxiliary task), single-task synthesis-lite normalization, lightweight retrieval-quality gating before drill-down, deep image analysis kept enabled, and versioning aligned to the semantic-contextual indexing baseline.
 - Canonical metadata writes use `doc_id`; `original_doc_uid` remains compatibility fallback on read/delete paths only.
 

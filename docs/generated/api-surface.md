@@ -39,7 +39,12 @@ Human-maintained inventory of the current backend surface.
 - Errors normalize to `{ error: { code, message, request_id, details? } }`.
 - Startup warmups are skipped when `TEST_MODE` or `USE_FAKE_PROVIDERS` is enabled.
 - Evaluation persists to SQLite and supports result, trace, metric, cancel, and stream recovery flows.
+- Vector-store runtime coordination is async-first:
+  - same-user FAISS mutations are serialized behind per-user async locks
+  - FAISS load/save/create/delete, BM25 construction, retriever invokes, and chunk expansion are offloaded off the event loop
+- `/pdfmd` upload/retry-index and document delete paths now share the same async vector-store seam used by `/rag` retrieval/index maintenance.
 - Production markdown ingestion now routes through named indexing profiles; compatibility default remains `recursive_baseline` while upload/retry-index paths currently opt into `semantic_contextual`.
+- `/rag/ask` and `/rag/ask/stream` keep the existing schemas/SSE phases, but `enable_evaluation=true` now reuses the first RAG pass instead of issuing a second `rag_answer_question(...)` call for metrics.
 - RAGAS reference selection is `ground_truth_short ?? ground_truth` and evaluator context ingestion is deterministic plus answer-aware (`v3_answer_aware_pack`: top 8 chunks, 1800 chars each, whitespace-normalized, overlap-ranked, task-aware when metadata exists).
 
 
