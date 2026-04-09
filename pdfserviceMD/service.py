@@ -15,7 +15,7 @@ from fastapi import UploadFile
 from fastapi.concurrency import run_in_threadpool
 
 from core.errors import AppError, ErrorCode
-from data_base.vector_store_manager import delete_document_from_knowledge_base
+from data_base.vector_store_manager import delete_document_from_knowledge_base_async
 from pdfserviceMD.PDF_OCR_services import ocr_service_sync
 from pdfserviceMD.Pandoc_md_to_pdf import MDmarkdown_to_pdf as markdown_to_pdf
 from pdfserviceMD.ai_translate_md import translate_text
@@ -541,7 +541,7 @@ async def delete_user_document(
         )
 
     try:
-        await run_in_threadpool(delete_document_from_knowledge_base, user_id, doc_id)
+        await delete_document_from_knowledge_base_async(user_id, doc_id)
     except (RuntimeError, ValueError) as exc:
         logger.warning("RAG deletion failed (non-fatal): %s", exc)
 

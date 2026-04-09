@@ -9,7 +9,7 @@ from multimodal_rag.schemas import ExtractedDocument
 from data_base.vector_store_manager import (
     add_markdown_to_knowledge_base,
     add_markdown_with_hierarchical_indexing,
-    add_visual_summaries_to_knowledge_base,
+    add_visual_summaries_to_knowledge_base_async,
     index_extracted_document,
 )
 
@@ -77,14 +77,14 @@ async def index_markdown_document(
     raise ValueError(f"Unsupported indexing_profile: {indexing_profile}")
 
 
-def index_visual_summaries(
+async def index_visual_summaries(
     *,
     user_id: str,
     doc_id: str,
     elements: list,
 ) -> int:
     """Index summarized visual elements through the production orchestration path."""
-    return add_visual_summaries_to_knowledge_base(
+    return await add_visual_summaries_to_knowledge_base_async(
         user_id=user_id,
         doc_id=doc_id,
         elements=elements,

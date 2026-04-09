@@ -142,7 +142,7 @@ async def _run_contextual_ask(
     )
 
     try:
-        answer, sources = await rag_answer_question(
+        rag_result = await rag_answer_question(
             question=request.question,
             user_id=user_id,
             doc_ids=request.doc_ids,
@@ -150,10 +150,19 @@ async def _run_contextual_ask(
             enable_reranking=request.enable_reranking,
             enable_hyde=request.enable_hyde,
             enable_multi_query=request.enable_multi_query,
+            return_docs=request.enable_evaluation,
             enable_graph_rag=request.enable_graph_rag,
             graph_search_mode=request.graph_search_mode,
             progress_callback=progress_callback,
         )
+
+        docs = []
+        if isinstance(rag_result, RAGResult):
+            answer = rag_result.answer
+            sources = rag_result.source_doc_ids
+            docs = rag_result.documents
+        else:
+            answer, sources = rag_result
 
         t2 = time.perf_counter()
         logger.info("Context-aware answer in %.2fs, sources: %s", t2 - t1, sources)
@@ -175,28 +184,7 @@ async def _run_contextual_ask(
                 metrics=None,
             )
 
-        logger.info("Running Self-RAG evaluation with documents...")
-        result_with_docs = await rag_answer_question(
-            question=request.question,
-            user_id=user_id,
-            doc_ids=request.doc_ids,
-            history=request.history,
-            enable_reranking=request.enable_reranking,
-            enable_hyde=request.enable_hyde,
-            enable_multi_query=request.enable_multi_query,
-            return_docs=True,
-            enable_graph_rag=request.enable_graph_rag,
-            graph_search_mode=request.graph_search_mode,
-        )
-
-        if isinstance(result_with_docs, RAGResult):
-            answer = result_with_docs.answer
-            sources = result_with_docs.source_doc_ids
-            docs = result_with_docs.documents
-        else:
-            answer, sources = result_with_docs
-            docs = []
-
+        logger.info("Running Self-RAG evaluation with reused documents...")
         source_details = []
         for doc_id in sources:
             snippet = ""

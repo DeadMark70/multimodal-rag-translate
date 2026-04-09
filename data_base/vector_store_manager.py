@@ -11,6 +11,8 @@ Architecture note:
 - direct `google-genai` usage is reserved for control-plane modules only
 """
 # Standard library
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import pickle
@@ -44,6 +46,10 @@ global_embeddings_model: Optional[GoogleGenerativeAIEmbeddings] = None
 
 # Chunking method type
 ChunkingMethod = Literal["recursive", "semantic"]
+
+_VECTOR_STORE_LOCKS: dict[str, asyncio.Lock] = {}
+_VECTOR_STORE_LOCKS_GUARD = asyncio.Lock()
+_MULTI_QUERY_MAX_WORKERS = 3
 
 
 def _iter_exception_chain(exc: BaseException):
@@ -133,6 +139,19 @@ def get_embeddings() -> Optional[GoogleGenerativeAIEmbeddings]:
         The global GoogleGenerativeAIEmbeddings instance, or None if not initialized.
     """
     return global_embeddings_model
+
+
+async def _get_user_vector_store_lock(user_id: str) -> asyncio.Lock:
+    """Return the per-user async lock that guards FAISS load/save mutations."""
+    async with _VECTOR_STORE_LOCKS_GUARD:
+        return _VECTOR_STORE_LOCKS.setdefault(user_id, asyncio.Lock())
+
+
+async def _run_user_locked_vector_store_call(user_id: str, func, /, *args, **kwargs):
+    """Run a synchronous FAISS/BM25 operation under the per-user async lock."""
+    lock = await _get_user_vector_store_lock(user_id)
+    async with lock:
+        return await asyncio.to_thread(func, *args, **kwargs)
 
 
 def _add_documents_with_retry(
@@ -268,6 +287,143 @@ def _create_faiss_with_retry(
 
     # Should not reach here
     raise RuntimeError("Unexpected error in _create_faiss_with_retry")
+
+
+def _persist_documents_to_user_index_sync(
+    user_id: str,
+    documents_to_add: List[Document],
+    k_retriever: int = 3,
+):
+    """Synchronously append documents to a user's FAISS index and return a retriever."""
+    global global_embeddings_model
+
+    if global_embeddings_model is None:
+        raise RuntimeError("Embedding model not initialized")
+
+    user_index_path = get_user_vector_store_path(user_id)
+    os.makedirs(user_index_path, exist_ok=True)
+
+    vector_db = None
+    faiss_file = os.path.join(user_index_path, "index.faiss")
+
+    if os.path.exists(faiss_file):
+        try:
+            logger.info(f"Loading existing index for user {user_id}...")
+            vector_db = FAISS.load_local(
+                user_index_path,
+                global_embeddings_model,
+                index_name="index",
+                allow_dangerous_deserialization=True,
+            )
+            _add_documents_with_retry(vector_db, documents_to_add)
+        except (RuntimeError, OSError, pickle.UnpicklingError) as e:
+            logger.warning(f"Error loading existing index: {e}, creating new one")
+            vector_db = None
+
+    if vector_db is None:
+        logger.info(f"Creating new index for user {user_id}...")
+        vector_db = _create_faiss_with_retry(documents_to_add, global_embeddings_model)
+
+    try:
+        vector_db.save_local(user_index_path, index_name="index")
+        logger.info(f"Index saved to {user_index_path}")
+    except (OSError, IOError) as e:
+        logger.warning(f"Could not save FAISS index: {e}")
+
+    return vector_db.as_retriever(search_type="similarity", search_kwargs={"k": k_retriever})
+
+
+def _persist_hierarchical_index_sync(
+    user_id: str,
+    parents: List[Document],
+    children: List[Document],
+) -> int:
+    """Synchronously persist parent metadata and child FAISS chunks under one lock."""
+    global global_embeddings_model
+
+    if global_embeddings_model is None:
+        raise RuntimeError("Embedding model not initialized")
+
+    from data_base.parent_child_store import ParentDocumentStore
+
+    parent_store = ParentDocumentStore(user_id)
+    parent_store.add_parents(parents)
+
+    user_index_path = get_user_vector_store_path(user_id)
+    os.makedirs(user_index_path, exist_ok=True)
+
+    vector_db = None
+    faiss_file = os.path.join(user_index_path, "index.faiss")
+    if os.path.exists(faiss_file):
+        try:
+            vector_db = FAISS.load_local(
+                user_index_path,
+                global_embeddings_model,
+                index_name="index",
+                allow_dangerous_deserialization=True,
+            )
+            _add_documents_with_retry(vector_db, children)
+        except (RuntimeError, OSError, pickle.UnpicklingError) as e:
+            logger.warning(f"Error loading existing index: {e}")
+            vector_db = None
+
+    if vector_db is None:
+        vector_db = _create_faiss_with_retry(children, global_embeddings_model)
+
+    try:
+        vector_db.save_local(user_index_path, index_name="index")
+        logger.info(f"Indexed {len(children)} child chunks with hierarchical structure")
+    except (OSError, IOError) as e:
+        logger.warning(f"Could not save FAISS index: {e}")
+
+    return len(children)
+
+
+def _invoke_retriever_queries_sync(retriever, queries: List[str]) -> List[List[Document]]:
+    """Run one or more synchronous retriever queries with bounded worker concurrency."""
+    if not queries:
+        return []
+    if len(queries) == 1:
+        return [retriever.invoke(queries[0])]
+
+    worker_count = min(len(queries), _MULTI_QUERY_MAX_WORKERS)
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        return list(executor.map(retriever.invoke, queries))
+
+
+async def get_user_retriever_async(user_id: str, k: int = 3):
+    """Build a request-local hybrid retriever without blocking the event loop."""
+    return await _run_user_locked_vector_store_call(user_id, get_user_retriever, user_id, k)
+
+
+async def invoke_retriever_queries_async(retriever, queries: List[str]) -> List[List[Document]]:
+    """Execute retriever queries off the event loop."""
+    return await asyncio.to_thread(_invoke_retriever_queries_sync, retriever, queries)
+
+
+async def add_visual_summaries_to_knowledge_base_async(
+    user_id: str,
+    doc_id: str,
+    elements: List,
+) -> int:
+    """Append visual summaries to FAISS without blocking the event loop."""
+    return await _run_user_locked_vector_store_call(
+        user_id,
+        add_visual_summaries_to_knowledge_base,
+        user_id,
+        doc_id,
+        elements,
+    )
+
+
+async def delete_document_from_knowledge_base_async(user_id: str, doc_id: str) -> bool:
+    """Delete document vectors without blocking the event loop."""
+    return await _run_user_locked_vector_store_call(
+        user_id,
+        delete_document_from_knowledge_base,
+        user_id,
+        doc_id,
+    )
 
 
 def index_extracted_document(user_id: str, doc: ExtractedDocument) -> None:
@@ -585,41 +741,13 @@ async def add_markdown_to_knowledge_base(
         except (RuntimeError, ValueError) as e:
             logger.warning(f"Context enrichment failed (non-fatal): {e}")
 
-    # 2. Prepare path
-    user_index_path = get_user_vector_store_path(user_id)
-    os.makedirs(user_index_path, exist_ok=True)
-
-    # 3. Load existing or create new index
-    vector_db = None
-    faiss_file = os.path.join(user_index_path, "index.faiss")
-
-    if os.path.exists(faiss_file):
-        try:
-            logger.info(f"Loading existing index for user {user_id}...")
-            vector_db = FAISS.load_local(
-                user_index_path,
-                global_embeddings_model,
-                index_name="index",
-                allow_dangerous_deserialization=True
-            )
-            _add_documents_with_retry(vector_db, chunks)
-        except (RuntimeError, OSError, pickle.UnpicklingError) as e:
-            logger.warning(f"Error loading existing index: {e}, creating new one")
-            vector_db = None
-
-    if vector_db is None:
-        logger.info(f"Creating new index for user {user_id}...")
-        vector_db = _create_faiss_with_retry(chunks, global_embeddings_model)
-
-    # 4. Save to disk
-    try:
-        vector_db.save_local(user_index_path, index_name="index")
-        logger.info(f"Index saved to {user_index_path}")
-    except (OSError, IOError) as e:
-        logger.warning(f"Could not save FAISS index: {e}")
-
-    # 5. Return updated retriever
-    return vector_db.as_retriever(search_type="similarity", search_kwargs={"k": k_retriever})
+    return await _run_user_locked_vector_store_call(
+        user_id,
+        _persist_documents_to_user_index_sync,
+        user_id,
+        chunks,
+        k_retriever,
+    )
 
 
 def delete_document_from_knowledge_base(user_id: str, doc_id: str) -> bool:
@@ -807,7 +935,6 @@ async def add_markdown_with_hierarchical_indexing(
 
     # 2. Create parent-child hierarchy
     from data_base.parent_child_store import (
-        ParentDocumentStore,
         create_parent_child_chunks,
     )
 
@@ -817,11 +944,7 @@ async def add_markdown_with_hierarchical_indexing(
         child_chunk_size=child_chunk_size,
     )
 
-    # 3. Store parents
-    parent_store = ParentDocumentStore(user_id)
-    parent_store.add_parents(parents)
-
-    # 4. Optional: Proposition indexing on children
+    # 3. Optional: Proposition indexing on children
     if enable_proposition_indexing:
         try:
             from data_base.proposition_chunker import extract_propositions_from_documents
@@ -836,37 +959,15 @@ async def add_markdown_with_hierarchical_indexing(
         except Exception as e:
             logger.warning(f"Proposition extraction failed (non-fatal): {e}")
 
-    # 5. Index children to FAISS
+    # 4. Index parents/children to persistent stores
     if not children:
         logger.warning("No children to index")
         return 0
 
-    user_index_path = get_user_vector_store_path(user_id)
-    os.makedirs(user_index_path, exist_ok=True)
-
-    vector_db = None
-    faiss_file = os.path.join(user_index_path, "index.faiss")
-
-    if os.path.exists(faiss_file):
-        try:
-            vector_db = FAISS.load_local(
-                user_index_path,
-                global_embeddings_model,
-                index_name="index",
-                allow_dangerous_deserialization=True
-            )
-            vector_db.add_documents(children)
-        except (RuntimeError, OSError, pickle.UnpicklingError) as e:
-            logger.warning(f"Error loading existing index: {e}")
-            vector_db = None
-
-    if vector_db is None:
-        vector_db = FAISS.from_documents(children, global_embeddings_model)
-
-    try:
-        vector_db.save_local(user_index_path, index_name="index")
-        logger.info(f"Indexed {len(children)} child chunks with hierarchical structure")
-    except (OSError, IOError) as e:
-        logger.warning(f"Could not save FAISS index: {e}")
-
-    return len(children)
+    return await _run_user_locked_vector_store_call(
+        user_id,
+        _persist_hierarchical_index_sync,
+        user_id,
+        parents,
+        children,
+    )

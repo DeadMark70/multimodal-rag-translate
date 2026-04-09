@@ -25,7 +25,7 @@ from data_base.indexing_service import (
     index_markdown_document,
     index_visual_summaries,
 )
-from data_base.vector_store_manager import delete_document_from_knowledge_base
+from data_base.vector_store_manager import delete_document_from_knowledge_base_async
 from pdfserviceMD.image_processor import (
     extract_images_from_markdown,
     create_visual_elements,
@@ -100,7 +100,7 @@ async def _run_pre_graph_indexing_steps(
 
     if clear_existing_vectors:
         try:
-            await run_in_threadpool(delete_document_from_knowledge_base, user_id, doc_id)
+            await delete_document_from_knowledge_base_async(user_id, doc_id)
         except Exception as e:  # noqa: BLE001
             logger.warning("[Background] Existing vector cleanup failed for doc %s: %s", doc_id, e)
             error_messages.append(f"Existing index cleanup failed: {e}")
@@ -341,7 +341,7 @@ async def _process_document_images(
 
         # 4. Index summaries to vector store
         try:
-            indexed_count = index_visual_summaries(
+            indexed_count = await index_visual_summaries(
                 user_id=user_id,
                 doc_id=doc_id,
                 elements=summarized_elements,

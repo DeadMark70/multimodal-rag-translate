@@ -6,6 +6,7 @@ with enhanced reranking and query transformation.
 """
 
 # Standard library
+import asyncio
 import base64
 import json
 import logging
@@ -38,7 +39,10 @@ from langchain_core.messages import HumanMessage
 from core.llm_factory import get_llm_usage_metrics
 from core.providers import get_llm
 from data_base.document_metadata import get_document_id
-from data_base.vector_store_manager import get_user_retriever
+from data_base.vector_store_manager import (
+    get_user_retriever_async,
+    invoke_retriever_queries_async,
+)
 from data_base.reranker import DocumentReranker
 from data_base.query_transformer import (
     transform_query_with_hyde,
@@ -119,6 +123,11 @@ async def _emit_progress(
     if progress_callback is None:
         return
     await progress_callback(stage, details)
+
+
+async def get_user_retriever(user_id: str, k: int = 3):
+    """Backward-compatible async seam for tests and request handlers."""
+    return await get_user_retriever_async(user_id, k)
 
 
 
@@ -842,7 +851,7 @@ async def rag_answer_question(
 
     # Step 2: Get retriever (increase k for reranking)
     retrieval_k = _RERANK_CANDIDATE_LIMIT if enable_reranking else (18 if doc_ids else 6)
-    retriever = get_user_retriever(user_id, k=retrieval_k)
+    retriever = await get_user_retriever(user_id, k=retrieval_k)
     
     if retriever is None:
         if return_docs:
@@ -869,16 +878,11 @@ async def rag_answer_question(
             "retrieval",
             {"query_count": len(search_queries)},
         )
-        if len(search_queries) == 1:
-            # Single query retrieval
-            docs = retriever.invoke(search_queries[0])
+        retrieved_batches = await invoke_retriever_queries_async(retriever, search_queries)
+        if len(retrieved_batches) == 1:
+            docs = retrieved_batches[0]
         else:
-            # Multi-query retrieval with RRF fusion
-            all_results = []
-            for q in search_queries:
-                results = retriever.invoke(q)
-                all_results.append(results)
-            docs = reciprocal_rank_fusion(all_results)
+            docs = reciprocal_rank_fusion(retrieved_batches)
             logger.debug(f"RRF fused {len(docs)} documents")
     except (RuntimeError, ValueError) as e:
         logger.error(f"Retrieval error: {e}", exc_info=True)
@@ -985,7 +989,7 @@ async def rag_answer_question(
             graph_context = graph_context_payload
 
     # Step 5.6: Context Enricher - expand short chunks
-    docs = _expand_short_chunks(docs, user_id)
+    docs = await run_in_threadpool(_expand_short_chunks, docs, user_id)
 
     # Step 6: Separate data, label sources, and deduplicate
     text_context: List[str] = []
@@ -1064,10 +1068,11 @@ async def rag_answer_question(
     image_list = list(image_paths)[:MAX_IMAGES]
     encoded_images: List[str] = []
 
-    for img_path in image_list:
-        b64 = _encode_image(img_path)
-        if b64:
-            encoded_images.append(b64)
+    if image_list:
+        encoded_candidates = await asyncio.gather(
+            *(run_in_threadpool(_encode_image, img_path) for img_path in image_list)
+        )
+        encoded_images = [image for image in encoded_candidates if image]
 
     logger.debug(f"Text chunks: {len(text_context)}, Images: {len(encoded_images)}")
 
@@ -1150,8 +1155,9 @@ async def rag_answer_question(
             "visual_verification_attempted": False,
             "visual_tool_call_count": 0,
             "visual_force_fallback_used": False,
-            "visual_not_applicable": bool(enable_visual_verification and not image_paths),
         }
+        if enable_visual_verification and not image_paths:
+            visual_verification_meta["visual_not_applicable"] = True
         
         # Step 10: Visual Verification Re-Act Loop (Phase 9)
         tool_calls = []
@@ -1167,7 +1173,6 @@ async def rag_answer_question(
                 force_once_if_not_triggered=True,
             )
             # Note: Usage from visual verification loop is not currently aggregated into usage_metadata
-            visual_verification_meta.setdefault("visual_not_applicable", False)
         
         if return_docs:
             graph_evidence_docs = (
