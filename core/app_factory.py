@@ -34,8 +34,12 @@ logger = logging.getLogger(__name__)
 _DEFAULT_ORIGINS = [
     "http://localhost:5173",  # Vite dev server
     "http://127.0.0.1:5173",
+    "http://localhost:4173",  # Vite preview
+    "http://127.0.0.1:4173",
     "http://localhost:3000",  # React CRA
     "http://127.0.0.1:3000",
+    "http://localhost",  # local docker/nginx on port 80
+    "http://127.0.0.1",
 ]
 _ALLOWED_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]
 _EXPOSE_HEADERS = ["Content-Disposition"]
