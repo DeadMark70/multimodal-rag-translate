@@ -70,7 +70,11 @@
 - Request middleware attaches `X-Request-Id` to the response.
 - `TEST_MODE` or `USE_FAKE_PROVIDERS` skip real warmups and provider calls during startup-sensitive paths.
 - Evaluation persists campaign state in SQLite with WAL mode and supports results, traces, metrics, manual evaluate, cancel, and SSE reconnect.
-- Evaluation `agentic` uses a dedicated baseline (`agentic_eval_v5_correctness`) distinct from user-facing Deep Research: tightened numeric benchmark routing, figure-flow first-task anchoring to the original question (plus at most one gap-focused auxiliary task), single-task synthesis-lite normalization, lightweight retrieval-quality gating before drill-down, and deep image analysis kept enabled.
+- Production markdown indexing is profile-aware:
+  - default compatibility profile in `data_base/indexing_service.py` remains `recursive_baseline`
+  - document upload / retry-index currently opt into `semantic_contextual`
+  - formal profiles also include `hierarchical_parent_child` and `hierarchical_parent_child_proposition` for controlled A/B use
+- Evaluation `agentic` uses a dedicated baseline (`agentic_eval_v6_semantic_contextual`) distinct from user-facing Deep Research: tightened numeric benchmark routing, figure-flow first-task anchoring to the original question (plus at most one gap-focused auxiliary task), single-task synthesis-lite normalization, lightweight retrieval-quality gating before drill-down, deep image analysis kept enabled, and versioning aligned to the semantic-contextual indexing baseline.
 - Canonical metadata writes use `doc_id`; `original_doc_uid` remains compatibility fallback on read/delete paths only.
 
 ## RAGAS Evaluation Contract
@@ -95,7 +99,7 @@
 ## Evaluator Context Policy
 
 - Evaluation no longer reuses the UI preview truncation path.
-- Formal evaluator policy is deterministic and answer-aware (`context_policy_version = v2_answer_aware_pack`):
+- Formal evaluator policy is deterministic and answer-aware (`context_policy_version = v3_answer_aware_pack`):
   - normalize whitespace and deduplicate repeated chunks
   - keep at most 8 contexts per sample
   - cap each context at 1800 characters

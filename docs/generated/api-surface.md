@@ -31,7 +31,7 @@ Human-maintained inventory of the current backend surface.
   - `summary_by_focus`
 - `GET /api/evaluation/models` is bearer-auth protected (no anonymous model discovery).
 - Dataset tooling lives in `evaluation/dataset_generator.py` and derives `ragas_ready.json` from the master dataset.
-- Evaluation `agentic` is a dedicated baseline profile (`agentic_eval_v5_correctness`), not a generic alias for user Deep Research; it now applies stricter benchmark routing, figure-flow anchor planning, and single-task synthesis-lite normalization.
+- Evaluation `agentic` is a dedicated baseline profile (`agentic_eval_v6_semantic_contextual`), not a generic alias for user Deep Research; it now applies stricter benchmark routing, figure-flow anchor planning, single-task synthesis-lite normalization, and explicit comparability versioning aligned to the semantic-contextual indexing baseline.
 
 ## Shared Runtime Contracts
 
@@ -39,7 +39,8 @@ Human-maintained inventory of the current backend surface.
 - Errors normalize to `{ error: { code, message, request_id, details? } }`.
 - Startup warmups are skipped when `TEST_MODE` or `USE_FAKE_PROVIDERS` is enabled.
 - Evaluation persists to SQLite and supports result, trace, metric, cancel, and stream recovery flows.
-- RAGAS reference selection is `ground_truth_short ?? ground_truth` and evaluator context ingestion is deterministic plus answer-aware (`v2_answer_aware_pack`: top 8 chunks, 1800 chars each, whitespace-normalized, overlap-ranked, task-aware when metadata exists).
+- Production markdown ingestion now routes through named indexing profiles; compatibility default remains `recursive_baseline` while upload/retry-index paths currently opt into `semantic_contextual`.
+- RAGAS reference selection is `ground_truth_short ?? ground_truth` and evaluator context ingestion is deterministic plus answer-aware (`v3_answer_aware_pack`: top 8 chunks, 1800 chars each, whitespace-normalized, overlap-ranked, task-aware when metadata exists).
 
 
 
