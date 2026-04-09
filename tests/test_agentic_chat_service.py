@@ -12,6 +12,7 @@ from core.auth import get_current_user_id
 from data_base.RAG_QA_service import RAGResult
 from data_base.agentic_chat_service import AgenticChatService
 from data_base.schemas_agentic_chat import AgenticBenchmarkStreamRequest
+from evaluation.agentic_evaluation_service import AGENTIC_EVAL_PROFILE
 from main import app
 
 TEST_USER_ID = "test-user-123"
@@ -97,7 +98,7 @@ async def test_execute_stream_emits_agentic_events_and_persists_trace() -> None:
     complete_event = next(event for event in events if event["event"] == "complete")
     payload = json.loads(complete_event["data"])
     assert payload["result"]["summary"] == "Benchmark summary"
-    assert payload["agent_trace"]["execution_profile"] == "agentic_eval_v5_correctness"
+    assert payload["agent_trace"]["execution_profile"] == AGENTIC_EVAL_PROFILE
 
     assert mock_persist.await_count == 1
     persisted = mock_persist.await_args.kwargs

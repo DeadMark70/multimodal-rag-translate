@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from data_base.indexing_service import DEFAULT_PRODUCTION_INDEXING_PROFILE
 from main import app
 from pdfserviceMD.router import (
     DocumentImageProcessingError,
@@ -249,6 +250,56 @@ async def test_run_post_processing_tasks_records_visual_index_failure_stage() ->
     assert not any("Image analysis failed" in message for message in error_messages)
     safe_update_step.assert_not_called()
     finalize_status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_post_processing_tasks_uses_profiled_production_indexing() -> None:
+    with (
+        patch(
+            "pdfserviceMD.router.run_in_threadpool",
+            new=AsyncMock(return_value=("markdown", [])),
+        ),
+        patch(
+            "pdfserviceMD.router.update_indexing_processing_step",
+            new=AsyncMock(),
+        ),
+        patch(
+            "pdfserviceMD.router.index_markdown_document",
+            new=AsyncMock(),
+        ) as index_markdown,
+        patch(
+            "pdfserviceMD.router._process_document_images",
+            new=AsyncMock(return_value=0),
+        ),
+        patch(
+            "pdfserviceMD.router.run_graph_extraction",
+            new=AsyncMock(return_value=SimpleNamespace(status="indexed", last_error=None)),
+        ),
+        patch(
+            "pdfserviceMD.router.schedule_summary_generation",
+            new=Mock(),
+        ),
+        patch(
+            "pdfserviceMD.router.record_background_processing_failure",
+            new=AsyncMock(),
+        ),
+        patch(
+            "pdfserviceMD.router.safe_update_processing_step",
+            new=AsyncMock(),
+        ),
+        patch(
+            "pdfserviceMD.router.finalize_indexing_status",
+            new=AsyncMock(),
+        ),
+    ):
+        await run_post_processing_tasks(
+            doc_id="doc-1",
+            book_title="Demo",
+            user_id=TEST_USER_ID,
+            user_folder="uploads/test-user-123/doc-1",
+        )
+
+    assert index_markdown.await_args.kwargs["indexing_profile"] == DEFAULT_PRODUCTION_INDEXING_PROFILE
 
 
 def test_list_endpoint_includes_error_message_field() -> None:
