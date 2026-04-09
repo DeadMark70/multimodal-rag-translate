@@ -168,6 +168,7 @@ async def remove_test_case(
 @router.get("/models", response_model=list[AvailableModel])
 async def get_available_models(
     force_refresh: bool = Query(default=False, description="Bypass model cache"),
+    _user_id: str = Depends(get_current_user_id),
 ) -> list[AvailableModel]:
     """List models available to current Gemini API key."""
     return await list_available_models(force_refresh=force_refresh)

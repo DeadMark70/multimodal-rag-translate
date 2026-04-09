@@ -16,14 +16,15 @@ from main import app
 
 
 @contextmanager
-def _build_client(user_id: str, upload_root: Path):
+def _build_client(user_id: str, upload_root: Path, with_auth: bool = True):
     """Build test client with auth override and startup stubs."""
     with (
         patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
         patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
         patch("evaluation.storage.BASE_UPLOAD_FOLDER", str(upload_root)),
     ):
-        app.dependency_overrides[get_current_user_id] = lambda: user_id
+        if with_auth:
+            app.dependency_overrides[get_current_user_id] = lambda: user_id
         with TestClient(app) as client:
             yield client
     app.dependency_overrides = {}
@@ -168,6 +169,22 @@ def test_models_endpoint_uses_dynamic_discovery() -> None:
         assert len(body) == 1
         assert body[0]["name"] == "gemini-2.5-flash"
         mocked_discovery.assert_awaited_once_with(force_refresh=True)
+
+
+def test_models_endpoint_requires_authentication() -> None:
+    upload_root = _make_upload_root()
+    with _build_client("user-a", upload_root, with_auth=False) as client:
+        response = client.get("/api/evaluation/models?force_refresh=true")
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "UNAUTHORIZED"
+
+
+def test_models_endpoint_openapi_requires_http_bearer() -> None:
+    upload_root = _make_upload_root()
+    with _build_client("user-a", upload_root, with_auth=False) as client:
+        openapi = client.get("/openapi.json").json()
+        endpoint = openapi["paths"]["/api/evaluation/models"]["get"]
+        assert endpoint["security"] == [{"HTTPBearer": []}]
 
 
 def test_evaluation_data_is_isolated_by_user() -> None:
