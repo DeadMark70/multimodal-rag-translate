@@ -20,7 +20,11 @@ from fastapi.responses import FileResponse
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
 from core import uploads as upload_paths
-from data_base.indexing_service import index_markdown_document, index_visual_summaries
+from data_base.indexing_service import (
+    DEFAULT_PRODUCTION_INDEXING_PROFILE,
+    index_markdown_document,
+    index_visual_summaries,
+)
 from data_base.vector_store_manager import delete_document_from_knowledge_base
 from pdfserviceMD.image_processor import (
     extract_images_from_markdown,
@@ -114,6 +118,7 @@ async def _run_pre_graph_indexing_steps(
             pdf_title=book_title,
             doc_id=doc_id,
             k_retriever=3,
+            indexing_profile=DEFAULT_PRODUCTION_INDEXING_PROFILE,
         )
         logger.info("[Background] RAG indexing complete for doc %s", doc_id)
     except Exception as e:  # noqa: BLE001

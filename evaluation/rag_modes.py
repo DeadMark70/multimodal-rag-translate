@@ -10,12 +10,14 @@ from typing import Any, Optional
 from langchain_core.documents import Document
 
 from core.llm_factory import llm_runtime_override
+from data_base.indexing_service import DEFAULT_PRODUCTION_INDEXING_PROFILE
 from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from evaluation.agentic_evaluation_service import AgenticEvaluationService
 from evaluation.retry import run_with_retry
 from evaluation.schemas import TestCase
 
-CONTEXT_POLICY_VERSION = "v2_answer_aware_pack"
+EVALUATION_INDEXING_PROFILE = DEFAULT_PRODUCTION_INDEXING_PROFILE
+CONTEXT_POLICY_VERSION = "v3_answer_aware_pack"
 EVALUATOR_MAX_CONTEXTS = 8
 EVALUATOR_MAX_CONTEXT_CHARS = 1800
 _WHITESPACE_RE = re.compile(r"\s+")

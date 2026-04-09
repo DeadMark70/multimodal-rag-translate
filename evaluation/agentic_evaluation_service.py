@@ -18,6 +18,7 @@ from agents.planner import (
     required_coverage_for_intent,
 )
 from agents.synthesizer import SubTaskResult, synthesize_results
+from data_base.indexing_service import DEFAULT_PRODUCTION_INDEXING_PROFILE
 from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from data_base.research_execution_core import ResearchExecutionCore
 from data_base.schemas_deep_research import (
@@ -43,7 +44,7 @@ RouteProfile = Literal[
     "generic_graph",
 ]
 
-AGENTIC_EVAL_PROFILE = "agentic_eval_v5_correctness"
+AGENTIC_EVAL_PROFILE = f"agentic_eval_v6_{DEFAULT_PRODUCTION_INDEXING_PROFILE}"
 LEGACY_SHARED_PROFILE = "legacy_shared"
 AGENTIC_INITIAL_SUBTASKS = 3
 AGENTIC_FIGURE_FLOW_INITIAL_SUBTASKS = 2
