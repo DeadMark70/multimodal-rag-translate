@@ -46,6 +46,7 @@ _TASK_STAGE_LABELS = {
     "query_expansion": "正在擴展查詢",
     "retrieval": "正在檢索文件",
     "reranking": "正在重排序結果",
+    "crag_correction": "正在校正檢索結果",
     "graph_context": "正在分析圖譜上下文",
     "answer_generation": "正在生成回答",
 }

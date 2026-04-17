@@ -199,6 +199,7 @@ class ResearchExecutionCore:
                         user_id=user_id,
                         doc_ids=doc_ids,
                         enable_reranking=enable_reranking,
+                        enable_crag=True,
                         enable_graph_rag=True,
                         graph_search_mode="generic",
                         graph_execution_hints=self._graph_execution_hints(
@@ -307,6 +308,7 @@ class ResearchExecutionCore:
                             user_id=user_id,
                             doc_ids=doc_ids,
                             enable_reranking=enable_reranking,
+                            enable_crag=True,
                             enable_graph_rag=use_graph,
                             graph_search_mode="generic" if use_graph else "auto",
                             graph_execution_hints=self._graph_execution_hints(
@@ -474,6 +476,7 @@ class ResearchExecutionCore:
                 user_id=user_id,
                 doc_ids=doc_ids,
                 enable_reranking=enable_reranking,
+                enable_crag=True,
                 enable_graph_rag=use_graph,
                 graph_search_mode="generic" if use_graph else "auto",
                 graph_execution_hints=self._graph_execution_hints(

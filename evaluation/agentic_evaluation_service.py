@@ -531,6 +531,7 @@ class AgenticEvaluationService(ResearchExecutionCore):
     ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "enable_reranking": enable_reranking,
+            "enable_crag": True,
             "return_docs": True,
             "enable_visual_verification": enable_visual_verification,
             "mode_hints": {

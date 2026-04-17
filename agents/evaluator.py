@@ -371,6 +371,20 @@ class RAGEvaluator:
             except (RuntimeError, ValueError, KeyError) as e:
                 logger.warning(f"Retrieval evaluation failed: {e}")
                 return RetrievalGrade.RELEVANT  # Assume relevant on error
+
+    async def grade_documents(
+        self,
+        question: str,
+        documents: List[Document],
+    ) -> bool:
+        """
+        Lightweight boolean retrieval grader for CRAG guard.
+
+        Returns:
+            True when retrieved documents are relevant enough to proceed.
+        """
+        grade = await self.evaluate_retrieval(question=question, documents=documents)
+        return grade == RetrievalGrade.RELEVANT
     
     async def evaluate_faithfulness(
         self,

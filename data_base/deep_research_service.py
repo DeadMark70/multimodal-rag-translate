@@ -36,6 +36,7 @@ _TASK_STAGE_LABELS = {
     "query_expansion": "正在擴展查詢",
     "retrieval": "正在檢索文件",
     "reranking": "正在重排序結果",
+    "crag_correction": "正在校正檢索結果",
     "graph_context": "正在分析圖譜上下文",
     "answer_generation": "正在生成回答",
 }
@@ -192,6 +193,7 @@ class DeepResearchService(ResearchExecutionCore):
                         user_id=user_id,
                         doc_ids=doc_ids,
                         enable_reranking=enable_reranking,
+                        enable_crag=True,
                         enable_graph_rag=True,  # Phase 6: 預設開啟
                         graph_search_mode="generic",
                         graph_execution_hints=self._graph_execution_hints(
@@ -335,6 +337,7 @@ class DeepResearchService(ResearchExecutionCore):
                             user_id=user_id,
                             doc_ids=doc_ids,
                             enable_reranking=enable_reranking,
+                            enable_crag=True,
                             enable_graph_rag=use_graph,
                             graph_search_mode="generic" if use_graph else "auto",
                             graph_execution_hints=self._graph_execution_hints(
@@ -858,6 +861,7 @@ class DeepResearchService(ResearchExecutionCore):
                 user_id=user_id,
                 doc_ids=doc_ids,
                 enable_reranking=enable_reranking,
+                enable_crag=True,
                 enable_graph_rag=use_graph,
                 graph_search_mode="generic" if use_graph else "auto",
                 graph_execution_hints=self._graph_execution_hints(

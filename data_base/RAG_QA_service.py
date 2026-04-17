@@ -795,6 +795,7 @@ async def rag_answer_question(
     enable_reranking: bool = True,
     enable_hyde: bool = False,
     enable_multi_query: bool = False,
+    enable_crag: bool = False,
     return_docs: bool = False,
     # GraphRAG parameters
     enable_graph_rag: bool = False,
@@ -813,11 +814,12 @@ async def rag_answer_question(
     2. (Optional) Query transformation (HyDE / Multi-Query)
     3. Execute retrieval (with optional doc_id filtering)
     4. (Optional) Rerank with local document reranker
-    5. (Optional) GraphRAG context enhancement
-    6. Separate text and image data
-    7. Build multimodal prompt (with optional conversation history)
-    8. Call LLM
-    9. (Optional) Visual Verification Re-Act loop (Phase 9)
+    5. (Optional) CRAG retrieval guard + corrective rewrite
+    6. (Optional) GraphRAG context enhancement
+    7. Separate text and image data
+    8. Build multimodal prompt (with optional conversation history)
+    9. Call LLM
+    10. (Optional) Visual Verification Re-Act loop (Phase 9)
 
     Args:
         question: The question to answer.
@@ -829,6 +831,7 @@ async def rag_answer_question(
         enable_reranking: If True, use local document reranking.
         enable_hyde: If True, use HyDE query transformation.
         enable_multi_query: If True, use multi-query with RRF fusion.
+        enable_crag: If True, run retrieval guard and corrective rewrite before generation.
         return_docs: If True, returns RAGResult with documents for evaluation.
         enable_graph_rag: If True, enhance with knowledge graph context.
         graph_search_mode: Graph search mode (`generic` recommended; `auto/local/global/hybrid` are legacy compatibility values).
@@ -966,6 +969,70 @@ async def rag_answer_question(
         logger.info(f"Multi-doc fair selection: {len(docs)} docs from {len(docs_by_id)} sources")
     else:
         docs = docs[:target_k]
+
+    # Step 5.4: Corrective Retrieval Guard (CRAG, opt-in only)
+    if enable_crag and docs:
+        try:
+            from agents.evaluator import RAGEvaluator
+
+            evaluator = RAGEvaluator()
+            is_relevant = await evaluator.grade_documents(question=question, documents=docs)
+            if not is_relevant:
+                logger.info(
+                    "CRAG guard detected low relevance for question '%s'; triggering corrective retrieval",
+                    question[:120],
+                )
+                await _emit_progress(
+                    progress_callback,
+                    "crag_correction",
+                    {"status": "rewriting_query"},
+                )
+
+                refined_query = await transform_query_with_hyde(question, enabled=True)
+                corrected_queries = [refined_query] if refined_query else [question]
+                corrected_batches = await invoke_retriever_queries_async(retriever, corrected_queries)
+                corrected_docs = corrected_batches[0] if corrected_batches else []
+
+                if doc_ids:
+                    doc_id_set = set(doc_ids)
+                    corrected_docs = [
+                        document
+                        for document in corrected_docs
+                        if get_document_id(document.metadata) in doc_id_set
+                    ]
+
+                if corrected_docs and enable_reranking and reranker_available:
+                    corrected_candidates = _limit_rerank_candidates(corrected_docs)
+                    corrected_docs = await run_in_threadpool(
+                        _rerank_documents_for_generation,
+                        question,
+                        corrected_candidates,
+                        target_k,
+                    )
+                elif corrected_docs:
+                    corrected_docs = corrected_docs[:target_k]
+
+                if not corrected_docs:
+                    await _emit_progress(
+                        progress_callback,
+                        "crag_correction",
+                        {"status": "insufficient_retrieval"},
+                    )
+                    crag_message = (
+                        "抱歉，檢索守衛判定目前檢索內容關聯性不足，請調整問題或補充文件後再試。"
+                    )
+                    if return_docs:
+                        return RAGResult(crag_message, list(doc_ids or []), [])
+                    return (crag_message, list(doc_ids or []))
+
+                docs = corrected_docs
+                await _emit_progress(
+                    progress_callback,
+                    "crag_correction",
+                    {"status": "rewrite_applied", "document_count": len(docs)},
+                )
+        except Exception as crag_exc:  # noqa: BLE001
+            logger.warning("CRAG guard failed; falling back to original retrieval: %s", crag_exc)
 
     # Step 5.5: GraphRAG context enhancement
     graph_context = ""
