@@ -78,6 +78,19 @@ async def test_execute_plan_streaming_persists_to_supabase():
         question="Life?",
         answer="42",
         sources=["doc1"],
+        tool_calls=[
+            {
+                "action": "VERIFY_IMAGE",
+                "question": "What does XYZ in the figure mean?",
+                "success": True,
+                "result": "XYZ means Cross-Year Zonal Yield in the chart legend.",
+            }
+        ],
+        visual_verification_meta={
+            "visual_verification_attempted": True,
+            "visual_tool_call_count": 1,
+            "visual_force_fallback_used": False,
+        },
     )
 
     with patch.object(service, "_execute_single_task", new=AsyncMock(return_value=mock_subtask_result)), \
@@ -103,6 +116,19 @@ async def test_execute_plan_streaming_forwards_deep_image_analysis_flag():
         question="Life?",
         answer="42",
         sources=["doc1"],
+        tool_calls=[
+            {
+                "action": "VERIFY_IMAGE",
+                "question": "What does XYZ in the figure mean?",
+                "success": True,
+                "result": "XYZ means Cross-Year Zonal Yield in the chart legend.",
+            }
+        ],
+        visual_verification_meta={
+            "visual_verification_attempted": True,
+            "visual_tool_call_count": 1,
+            "visual_force_fallback_used": False,
+        },
     )
 
     with patch.object(service, "_execute_single_task", new=AsyncMock(return_value=mock_subtask_result)) as mock_execute_single, \
@@ -180,6 +206,47 @@ async def test_execute_single_task_enables_crag_guard():
 
 
 @pytest.mark.asyncio
+async def test_execute_single_task_preserves_visual_verification_metadata():
+    service = DeepResearchService()
+    task = EditableSubTask(id=8, question="Inspect figure", task_type="rag", enabled=True)
+
+    with patch(
+        "data_base.deep_research_service.rag_answer_question",
+        new=AsyncMock(
+            return_value=RAGResult(
+                answer="The figure defines XYZ.",
+                source_doc_ids=["doc-visual"],
+                documents=[],
+                usage={},
+                tool_calls=[
+                    {
+                        "action": "VERIFY_IMAGE",
+                        "question": "What does XYZ mean?",
+                        "success": True,
+                        "result": "XYZ means Cross-Year Zonal Yield.",
+                    }
+                ],
+                visual_verification_meta={
+                    "visual_verification_attempted": True,
+                    "visual_tool_call_count": 1,
+                    "visual_force_fallback_used": False,
+                },
+            )
+        ),
+    ):
+        result = await service._execute_single_task(
+            task=task,
+            user_id="test-user",
+            doc_ids=None,
+            enable_reranking=True,
+            iteration=0,
+        )
+
+    assert result.visual_verification_meta["visual_verification_attempted"] is True
+    assert result.tool_calls[0]["action"] == "VERIFY_IMAGE"
+
+
+@pytest.mark.asyncio
 async def test_execute_plan_streaming_uses_structured_fact_state_for_followup_context():
     service = DeepResearchService()
     request = _build_request()
@@ -191,6 +258,19 @@ async def test_execute_plan_streaming_uses_structured_fact_state_for_followup_co
         question="Life?",
         answer="42",
         sources=["doc1"],
+        tool_calls=[
+            {
+                "action": "VERIFY_IMAGE",
+                "question": "What does XYZ in the figure mean?",
+                "success": True,
+                "result": "XYZ means Cross-Year Zonal Yield in the chart legend.",
+            }
+        ],
+        visual_verification_meta={
+            "visual_verification_attempted": True,
+            "visual_tool_call_count": 1,
+            "visual_force_fallback_used": False,
+        },
     )
 
     with patch.object(service, "_execute_single_task", new=AsyncMock(return_value=mock_subtask_result)), patch.object(
@@ -219,6 +299,8 @@ async def test_execute_plan_streaming_uses_structured_fact_state_for_followup_co
     findings = mock_planner.create_followup_tasks.await_args.kwargs["current_findings"]
     assert "Structured Fact State" in findings
     assert "Life is represented as 42 in the provided source." in findings
+    assert "Visual Verification Findings" in findings
+    assert "potential_terms=XYZ" in findings
 
 if __name__ == "__main__":
     import asyncio

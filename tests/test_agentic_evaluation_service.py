@@ -340,6 +340,19 @@ async def test_agentic_drilldown_uses_structured_fact_state_for_followup_context
             answer="Model A reports Dice 0.90 and Model B reports Dice 0.87.",
             sources=["doc-1"],
             contexts=["ctx"],
+            tool_calls=[
+                {
+                    "action": "VERIFY_IMAGE",
+                    "question": "What does XYZ in Figure 3 stand for?",
+                    "success": True,
+                    "result": "Figure 3 introduces XYZ as Cross-Year Zonal Yield.",
+                }
+            ],
+            visual_verification_meta={
+                "visual_verification_attempted": True,
+                "visual_tool_call_count": 1,
+                "visual_force_fallback_used": False,
+            },
         )
     ]
 
@@ -371,3 +384,5 @@ async def test_agentic_drilldown_uses_structured_fact_state_for_followup_context
     current_findings = mock_planner.create_followup_tasks.await_args.kwargs["current_findings"]
     assert "Structured Fact State" in current_findings
     assert "Model A reports Dice 0.90 and Model B reports Dice 0.87." in current_findings
+    assert "Visual Verification Findings" in current_findings
+    assert "potential_terms=XYZ" in current_findings
