@@ -133,6 +133,11 @@ _FOLLOWUP_PROMPT = """你正在協助研究以下問題：
 - 如果目前的發現中提到「如圖所示」、「Figure 1 顯示了...」但沒有寫出圖中具體數據，**你必須**生成一個追問子任務來要求「檢視該圖片以獲取具體細節」。
 - 嚴禁跳過圖片細節的查證。
 
+## 多模態追問指示 (Multimodal Follow-up)
+- 如果目前資訊中的 `Visual Verification Findings` 顯示了新的專有名詞、縮寫（例如 XYZ）或異常數據，**必須**新增至少一個 `[RAG]` 子任務，專門查該名詞/縮寫的文字定義、背景脈絡或數據解釋。
+- 若視覺發現與文字敘述存在落差，也必須新增 `[RAG]` 子任務做交叉查證。
+- 這些多模態追問仍需使用英文撰寫。
+
 例如：
 - 若論點是「方法 A 效果好」→ 同時生成查詢「What are the limitations of Method A?」
 - 若論點是「X 優於 Y」→ 同時生成查詢「Is there evidence that Y outperforms X?」

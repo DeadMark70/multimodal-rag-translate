@@ -50,6 +50,8 @@ _FACT_STATE_PROMPT = """你是研究助理。請把下列子任務結果轉成 1
 
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？.!?])\s+")
+_VISUAL_TERM_RE = re.compile(r"\b[A-Z][A-Z0-9-]{1,15}\b")
+_VISUAL_TERM_STOPWORDS = {"FIG", "FIGURE", "TABLE", "IMAGE", "JSON"}
 
 
 class ResearchExecutionCore:
@@ -117,6 +119,99 @@ class ResearchExecutionCore:
                 except json.JSONDecodeError:
                     pass
         return None
+
+    @staticmethod
+    def _normalize_visual_text(value: Any) -> str:
+        if value is None:
+            return ""
+        return " ".join(str(value).strip().split())
+
+    @staticmethod
+    def _truncate_text(text: str, limit: int = 220) -> str:
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit - 3].rstrip()}..."
+
+    @staticmethod
+    def _extract_visual_terms(text: str) -> list[str]:
+        terms: list[str] = []
+        seen: set[str] = set()
+        for token in _VISUAL_TERM_RE.findall(text or ""):
+            if token in _VISUAL_TERM_STOPWORDS:
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            terms.append(token)
+            if len(terms) >= 5:
+                break
+        return terms
+
+    def _collect_visual_findings(
+        self,
+        results: list[SubTaskExecutionResult],
+    ) -> list[str]:
+        findings: list[str] = []
+        seen: set[str] = set()
+
+        for result in results:
+            tool_calls = list(result.tool_calls or [])
+            visual_meta = dict(result.visual_verification_meta or {})
+
+            persisted_findings = visual_meta.get("visual_findings")
+            if isinstance(persisted_findings, list):
+                for item in persisted_findings:
+                    text = self._normalize_visual_text(item)
+                    if not text:
+                        continue
+                    key = text.lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    findings.append(text)
+
+            successful_visual_call = False
+            for call in tool_calls:
+                if not isinstance(call, dict):
+                    continue
+                if str(call.get("action") or "").upper() != "VERIFY_IMAGE":
+                    continue
+                if not bool(call.get("success")):
+                    continue
+                successful_visual_call = True
+
+                question = self._normalize_visual_text(call.get("question"))
+                observation = self._normalize_visual_text(call.get("result"))
+                if not observation:
+                    continue
+
+                prefix = f"Q{result.id} visual check"
+                if question:
+                    prefix = f'{prefix} "{question}"'
+                line = f"{prefix}: {self._truncate_text(observation)}"
+                terms = self._extract_visual_terms(observation)
+                if terms:
+                    line = f"{line} | potential_terms={', '.join(terms)}"
+
+                key = line.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                findings.append(line)
+
+            if (
+                bool(visual_meta.get("visual_verification_attempted"))
+                and not successful_visual_call
+            ):
+                fallback_line = (
+                    f"Q{result.id} visual verification was attempted but no successful image detail extraction was produced."
+                )
+                key = fallback_line.lower()
+                if key not in seen:
+                    seen.add(key)
+                    findings.append(fallback_line)
+
+        return findings[:6]
 
     def _normalize_atomic_facts(
         self,
@@ -417,13 +512,15 @@ class ResearchExecutionCore:
                         contexts = [document.page_content for document in result.documents]
                         usage = result.usage or {"total_tokens": 0}
                         thought_process = result.thought_process
-                        tool_calls = result.tool_calls
+                        tool_calls = list(getattr(result, "tool_calls", []) or [])
+                        visual_verification_meta = dict(getattr(result, "visual_verification_meta", {}) or {})
                     else:
                         answer, sources = result
                         contexts = []
                         usage = {"total_tokens": 0}
                         thought_process = None
                         tool_calls = []
+                        visual_verification_meta = {}
 
                     return SubTaskExecutionResult(
                         id=task.id,
@@ -436,6 +533,7 @@ class ResearchExecutionCore:
                         usage=usage,
                         thought_process=thought_process,
                         tool_calls=tool_calls,
+                        visual_verification_meta=visual_verification_meta,
                     )
                 except (RuntimeError, ValueError) as exc:
                     logger.warning("Task %s failed: %s", task.id, exc)
@@ -447,6 +545,7 @@ class ResearchExecutionCore:
                         contexts=[],
                         is_drilldown=iteration > 0,
                         iteration=iteration,
+                        visual_verification_meta={},
                     )
 
         results = await asyncio.gather(*[execute_single(task) for task in tasks])
@@ -532,7 +631,8 @@ class ResearchExecutionCore:
                             contexts = [document.page_content for document in documents]
                             usage = result.usage or {"total_tokens": 0}
                             thought_process = result.thought_process
-                            tool_calls = result.tool_calls
+                            tool_calls = list(getattr(result, "tool_calls", []) or [])
+                            visual_verification_meta = dict(getattr(result, "visual_verification_meta", {}) or {})
                         else:
                             answer, sources = result
                             documents = []
@@ -540,6 +640,7 @@ class ResearchExecutionCore:
                             usage = {"total_tokens": 0}
                             thought_process = None
                             tool_calls = []
+                            visual_verification_meta = {}
                     except (RuntimeError, ValueError) as exc:
                         logger.warning("Task %s failed: %s", task_id, exc)
                         answer = f"無法回答此問題: {str(exc)[:100]}"
@@ -549,6 +650,7 @@ class ResearchExecutionCore:
                         usage = {"total_tokens": 0}
                         thought_process = None
                         tool_calls = []
+                        visual_verification_meta = {}
 
                     if documents and retry_count < max_retries_per_task:
                         evaluation = await evaluator.evaluate_detailed(
@@ -588,6 +690,7 @@ class ResearchExecutionCore:
                         usage=usage,
                         thought_process=thought_process,
                         tool_calls=tool_calls,
+                        visual_verification_meta=visual_verification_meta,
                     )
                     sub_result.atomic_facts = await self._extract_atomic_facts(sub_result)
                     current_results.append(sub_result)
@@ -608,6 +711,17 @@ class ResearchExecutionCore:
             for index, fact in enumerate(fact_state, start=1):
                 source_label = ", ".join(fact.source_doc_ids) if fact.source_doc_ids else "unknown"
                 lines.append(f"- [{index}] {fact.claim} (sources: {source_label})")
+            visual_findings = self._collect_visual_findings(results)
+            if visual_findings:
+                lines.append("")
+                lines.append("Visual Verification Findings:")
+                for finding in visual_findings:
+                    lines.append(f"- {finding}")
+                lines.append("")
+                lines.append("Multimodal Follow-up Requirement:")
+                lines.append(
+                    "- If visual findings reveal new acronyms/terms/anomalous numbers, add at least one [RAG] follow-up task to retrieve textual definition or context."
+                )
             lines.append("")
             lines.append("Task Coverage Snapshot:")
             for result in results:
@@ -619,6 +733,12 @@ class ResearchExecutionCore:
             answer_preview = result.answer[:300] + "..." if len(result.answer) > 300 else result.answer
             lines.append(f"【問題 {result.id}】{result.question}")
             lines.append(f"【回答】{answer_preview}")
+            lines.append("")
+        visual_findings = self._collect_visual_findings(results)
+        if visual_findings:
+            lines.append("Visual Verification Findings:")
+            for finding in visual_findings:
+                lines.append(f"- {finding}")
             lines.append("")
         return "\n".join(lines)
 
@@ -712,13 +832,15 @@ class ResearchExecutionCore:
                 contexts = [document.page_content for document in result.documents]
                 usage = result.usage or {"total_tokens": 0}
                 thought_process = result.thought_process
-                tool_calls = result.tool_calls
+                tool_calls = list(getattr(result, "tool_calls", []) or [])
+                visual_verification_meta = dict(getattr(result, "visual_verification_meta", {}) or {})
             else:
                 answer, sources = result
                 contexts = []
                 usage = {"total_tokens": 0}
                 thought_process = None
                 tool_calls = []
+                visual_verification_meta = {}
 
             return SubTaskExecutionResult(
                 id=task.id,
@@ -731,6 +853,7 @@ class ResearchExecutionCore:
                 usage=usage,
                 thought_process=thought_process,
                 tool_calls=tool_calls,
+                visual_verification_meta=visual_verification_meta,
             )
         except (RuntimeError, ValueError) as exc:
             logger.warning("Task %s failed: %s", task.id, exc)
@@ -742,5 +865,6 @@ class ResearchExecutionCore:
                 contexts=[],
                 is_drilldown=iteration > 0,
                 iteration=iteration,
+                visual_verification_meta={},
             )
 

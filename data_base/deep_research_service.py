@@ -211,7 +211,8 @@ class DeepResearchService(ResearchExecutionCore):
                         contexts = [d.page_content for d in result.documents]
                         usage = result.usage or {"total_tokens": 0}
                         thought_process = result.thought_process
-                        tool_calls = result.tool_calls
+                        tool_calls = list(getattr(result, "tool_calls", []) or [])
+                        visual_verification_meta = dict(getattr(result, "visual_verification_meta", {}) or {})
                     else:
                         # Fallback if return_docs ignored (shouldn't happen with updated service)
                         answer, sources = result
@@ -219,6 +220,7 @@ class DeepResearchService(ResearchExecutionCore):
                         usage = {"total_tokens": 0}
                         thought_process = None
                         tool_calls = []
+                        visual_verification_meta = {}
                     
                     return SubTaskExecutionResult(
                         id=task.id,
@@ -230,7 +232,8 @@ class DeepResearchService(ResearchExecutionCore):
                         iteration=iteration,
                         usage=usage,
                         thought_process=thought_process,
-                        tool_calls=tool_calls
+                        tool_calls=tool_calls,
+                        visual_verification_meta=visual_verification_meta,
                     )
 
 
@@ -244,6 +247,7 @@ class DeepResearchService(ResearchExecutionCore):
                         contexts=[],
                         is_drilldown=iteration > 0,
                         iteration=iteration,
+                        visual_verification_meta={},
                     )
         
         # Execute all tasks concurrently
@@ -721,13 +725,15 @@ class DeepResearchService(ResearchExecutionCore):
                 contexts = [d.page_content for d in result.documents]
                 usage = result.usage or {"total_tokens": 0}
                 thought_process = result.thought_process
-                tool_calls = result.tool_calls
+                tool_calls = list(getattr(result, "tool_calls", []) or [])
+                visual_verification_meta = dict(getattr(result, "visual_verification_meta", {}) or {})
             else:
                 answer, sources = result
                 contexts = []
                 usage = {"total_tokens": 0}
                 thought_process = None
                 tool_calls = []
+                visual_verification_meta = {}
             
             return SubTaskExecutionResult(
                 id=task.id,
@@ -739,7 +745,8 @@ class DeepResearchService(ResearchExecutionCore):
                 iteration=iteration,
                 usage=usage,
                 thought_process=thought_process,
-                tool_calls=tool_calls
+                tool_calls=tool_calls,
+                visual_verification_meta=visual_verification_meta,
             )
 
 
@@ -753,6 +760,7 @@ class DeepResearchService(ResearchExecutionCore):
                 contexts=[],
                 is_drilldown=iteration > 0,
                 iteration=iteration,
+                visual_verification_meta={},
             )
 
 
