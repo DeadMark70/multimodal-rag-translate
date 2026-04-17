@@ -19,6 +19,7 @@ from core.errors import AppError
 from data_base.repository import persist_research_conversation
 from data_base.research_execution_core import ResearchExecutionCore
 from data_base.schemas_deep_research import (
+    AtomicFact,
     EditableSubTask,
     ExecutePlanRequest,
     ExecutePlanResponse,
@@ -27,7 +28,6 @@ from data_base.schemas_deep_research import (
 )
 from data_base.RAG_QA_service import ProgressCallback, rag_answer_question
 from agents.planner import TaskPlanner, SubTask
-from agents.evaluator import RAGEvaluator
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -263,191 +263,25 @@ class DeepResearchService(ResearchExecutionCore):
         max_iterations: int,
         enable_deep_image_analysis: bool = False,
     ) -> int:
-        """
-        Performs recursive drill-down to fill knowledge gaps with evaluation-driven retry.
-        
-        Implements smart retry: when an answer has low completeness score,
-        the planner refines the query based on the evaluation reason rather
-        than simply repeating the same question.
-        
-        Args:
-            original_question: The original research question.
-            current_results: Results accumulated so far.
-            user_id: User ID for RAG queries.
-            doc_ids: Document filter.
-            enable_reranking: Enable reranking.
-            max_iterations: Maximum iterations allowed.
-            enable_deep_image_analysis: Enable deep image analysis for specific questions.
-            
-        Returns:
-            Number of iterations performed.
-        """
-        planner = TaskPlanner(max_subtasks=3, enable_graph_planning=False)
-        evaluator = RAGEvaluator()
-        
-        # Constants for evaluation-driven retry (Phase 4: 1-10 scale)
-        MIN_ACCURACY_SCORE = 6.0   # Accuracy < 6 must retry (poor quality)
-        MAX_RETRIES_PER_TASK = 2   # Prevent infinite loops
-        
-        for iteration in range(1, max_iterations + 1):
-            logger.info(f"Drill-down iteration {iteration}/{max_iterations}")
-            
-            # Build current findings summary
-            findings_summary = self._build_findings_summary(current_results)
-            
-            # Ask planner for follow-up tasks
-            followup_tasks = await planner.create_followup_tasks(
-                original_question=original_question,
-                current_findings=findings_summary,
-                existing_tasks=[
-                    SubTask(id=r.id, question=r.question)
-                    for r in current_results
-                ],
-            )
-            
-            if not followup_tasks:
-                logger.info(f"No knowledge gaps found at iteration {iteration}")
-                return iteration - 1
-            
-            logger.info(f"Found {len(followup_tasks)} follow-up tasks")
-            
-            # Convert to EditableSubTask with new IDs
-            max_id = max(r.id for r in current_results)
-            
-            # Process each follow-up task with evaluation-driven retry
-            for i, task in enumerate(followup_tasks):
-                task_id = max_id + i + 1
-                current_question = task.question
-                retry_count = 0
-                
-                while retry_count <= MAX_RETRIES_PER_TASK:
-                    # Execute the task
-                    EditableSubTask(
-                        id=task_id,
-                        question=current_question,
-                        task_type=task.task_type,
-                        enabled=True,
-                    )
-                    
-                    # Get answer with return_docs for evaluation
-                    try:
-                        use_graph = task.task_type == "graph_analysis"
-                        result = await rag_answer_question(
-                            question=current_question,
-                            user_id=user_id,
-                            doc_ids=doc_ids,
-                            enable_reranking=enable_reranking,
-                            enable_crag=True,
-                            enable_graph_rag=use_graph,
-                            graph_search_mode="generic" if use_graph else "auto",
-                            graph_execution_hints=self._graph_execution_hints(
-                                stage_hint="verification",
-                                task_type=task.task_type,
-                            ),
-                            return_docs=True,  # Get documents for evaluation
-                            enable_visual_verification=enable_deep_image_analysis,  # Phase 9
-                        )
-                        
-                        # Handle return format (answer, sources) or RAGResult
-                        if hasattr(result, 'answer'):
-                            answer = result.answer
-                            sources = result.source_doc_ids
-                            documents = result.documents
-                            contexts = [d.page_content for d in documents]
-                            usage = result.usage or {"total_tokens": 0}
-                            thought_process = result.thought_process
-                            tool_calls = result.tool_calls
-                        else:
-                            answer, sources = result
-                            documents = []
-                            contexts = []
-                            usage = {"total_tokens": 0}
-                            thought_process = None
-                            tool_calls = []
-                        
-                    except (RuntimeError, ValueError) as e:
-                        logger.warning(f"Task {task_id} failed: {e}")
-                        answer = f"無法回答此問題: {str(e)[:100]}"
-                        sources = []
-                        documents = []
-                        contexts = []
-                    
-                    # Evaluate answer quality (only if we have documents)
-                    if documents and retry_count < MAX_RETRIES_PER_TASK:
-                        evaluation = await evaluator.evaluate_detailed(
-                            question=current_question,
-                            documents=documents,
-                            answer=answer,
-                        )
-                        
-                        # Check if retry is needed (Phase 4: use accuracy threshold)
-                        if evaluation.accuracy < MIN_ACCURACY_SCORE:
-                            logger.info(
-                                f"Task {task_id} low accuracy ({evaluation.accuracy:.1f}/10), "
-                                f"reason: {evaluation.reason[:50]}..."
-                            )
-                            
-                            # Smart retry: use suggestion from evaluation if available
-                            retry_hint = evaluation.suggestion or evaluation.reason
-                            refined_query = await planner.refine_query_from_evaluation(
-                                original_question=current_question,
-                                evaluation_reason=retry_hint,
-                                failed_answer=answer,
-                            )
-                            
-                            if refined_query != current_question:
-                                logger.info(f"Smart retry #{retry_count + 1} with refined query")
-                                current_question = refined_query
-                                retry_count += 1
-                                continue  # Retry with new query
-                            else:
-                                logger.info("Could not refine query, accepting current answer")
-                    
-                    # Accept the answer (either good score or max retries reached)
-                    current_results.append(SubTaskExecutionResult(
-                        id=task_id,
-                        question=task.question,  # Use original question for display
-                        answer=answer,
-                        sources=sources,
-                        contexts=contexts,
-                        is_drilldown=True,
-                        iteration=iteration,
-                        usage=usage,
-                        thought_process=thought_process,
-                        tool_calls=tool_calls
-                    ))
-
-
-                    
-                    if retry_count > 0:
-                        logger.info(f"Task {task_id} accepted after {retry_count} retry(s)")
-                    
-                    break  # Exit retry loop
-        
-        return max_iterations
+        return await super()._drill_down_loop(
+            original_question=original_question,
+            current_results=current_results,
+            user_id=user_id,
+            doc_ids=doc_ids,
+            enable_reranking=enable_reranking,
+            max_iterations=max_iterations,
+            enable_deep_image_analysis=enable_deep_image_analysis,
+        )
     
     def _build_findings_summary(
         self,
         results: List[SubTaskExecutionResult],
+        fact_state: Optional[List[AtomicFact]] = None,
     ) -> str:
-        """
-        Builds a summary of current findings for drill-down analysis.
-        
-        Args:
-            results: Current execution results.
-            
-        Returns:
-            Formatted summary string.
-        """
-        lines = []
-        for r in results:
-            # Truncate long answers
-            answer_preview = r.answer[:300] + "..." if len(r.answer) > 300 else r.answer
-            lines.append(f"【問題 {r.id}】{r.question}")
-            lines.append(f"【回答】{answer_preview}")
-            lines.append("")
-        
-        return "\n".join(lines)
+        return super()._build_findings_summary(
+            results=results,
+            fact_state=fact_state,
+        )
     
     def _should_skip_drilldown(
         self,
@@ -573,6 +407,7 @@ class DeepResearchService(ResearchExecutionCore):
         )
         
         all_results: List[SubTaskExecutionResult] = []
+        fact_state: List[AtomicFact] = []
         
         # Phase 1: Execute initial tasks (sequential for streaming)
         for task in enabled_tasks:
@@ -642,6 +477,7 @@ class DeepResearchService(ResearchExecutionCore):
             if result is None:
                 raise RuntimeError(f"Task {task.id} completed without a result")
             all_results.append(result)
+            fact_state = await self._refresh_fact_state([result], fact_state)
             
             # Emit task done
             yield format_sse_event(
@@ -664,7 +500,11 @@ class DeepResearchService(ResearchExecutionCore):
             planner = TaskPlanner(max_subtasks=3, enable_graph_planning=False)
             
             for iteration in range(1, request.max_iterations + 1):
-                findings_summary = self._build_findings_summary(all_results)
+                fact_state = await self._refresh_fact_state(all_results, fact_state)
+                findings_summary = self._build_findings_summary(
+                    all_results,
+                    fact_state=fact_state,
+                )
                 
                 followup_tasks = await planner.create_followup_tasks(
                     original_question=request.original_question,
@@ -764,6 +604,7 @@ class DeepResearchService(ResearchExecutionCore):
                     if result is None:
                         raise RuntimeError(f"Task {editable_task.id} completed without a result")
                     all_results.append(result)
+                    fact_state = await self._refresh_fact_state([result], fact_state)
                     
                     yield format_sse_event(
                         SSEEventType.DRILLDOWN_TASK_DONE,

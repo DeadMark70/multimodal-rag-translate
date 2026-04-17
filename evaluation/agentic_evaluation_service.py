@@ -22,6 +22,7 @@ from data_base.indexing_service import DEFAULT_PRODUCTION_INDEXING_PROFILE
 from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from data_base.research_execution_core import ResearchExecutionCore
 from data_base.schemas_deep_research import (
+    AtomicFact,
     EditableSubTask,
     ExecutePlanRequest,
     ExecutePlanResponse,
@@ -892,6 +893,7 @@ class AgenticEvaluationService(ResearchExecutionCore):
             report.detailed_answer = "\n".join(f"- {claim}" for claim in supported_claims)
 
         all_sources = list(set(src for result in all_results for src in result.sources))
+        fact_state = await self._refresh_fact_state(all_results)
         return ExecutePlanResponse(
             question=original_question,
             summary=report.summary,
@@ -910,6 +912,7 @@ class AgenticEvaluationService(ResearchExecutionCore):
                     else "unsupported_claims_present"
                 ),
             },
+            fact_state=fact_state,
         )
 
     def _retrieval_quality_gate(
@@ -1003,6 +1006,7 @@ class AgenticEvaluationService(ResearchExecutionCore):
             else 2
         )
         planner = TaskPlanner(max_subtasks=followup_cap, enable_graph_planning=False)
+        fact_state: list[AtomicFact] = await self._refresh_fact_state(current_results)
 
         for iteration in range(1, max_iterations + 1):
             gate_pass, gate_meta = self._retrieval_quality_gate(current_results)
@@ -1013,7 +1017,11 @@ class AgenticEvaluationService(ResearchExecutionCore):
             if not coverage_gaps:
                 return iteration - 1
 
-            findings_summary = self._build_findings_summary(current_results)
+            fact_state = await self._refresh_fact_state(current_results, fact_state)
+            findings_summary = self._build_findings_summary(
+                current_results,
+                fact_state=fact_state,
+            )
             followup_tasks = await planner.create_followup_tasks(
                 original_question=original_question,
                 current_findings=findings_summary,
@@ -1054,6 +1062,7 @@ class AgenticEvaluationService(ResearchExecutionCore):
                 enable_deep_image_analysis=enable_deep_image_analysis,
             )
             current_results.extend(executed)
+            fact_state = await self._refresh_fact_state(executed, fact_state)
 
             if self._should_skip_drilldown(current_results, current_iteration=iteration):
                 return iteration

@@ -107,6 +107,19 @@ class DrillDownTask(BaseModel):
     iteration: int
 
 
+class AtomicFact(BaseModel):
+    """
+    Structured atomic fact extracted from a sub-task answer.
+
+    Attributes:
+        claim: Single concrete factual statement.
+        source_doc_ids: Supporting document IDs for the claim.
+    """
+
+    claim: str = Field(..., min_length=1)
+    source_doc_ids: List[str] = Field(default_factory=list)
+
+
 class SubTaskExecutionResult(BaseModel):
     """
     Result from executing a single sub-task.
@@ -137,6 +150,7 @@ class SubTaskExecutionResult(BaseModel):
     route_profile: Optional[str] = None
     evidence_units: List[dict[str, Any]] = Field(default_factory=list)
     visual_verification_meta: dict[str, Any] = Field(default_factory=dict)
+    atomic_facts: List[AtomicFact] = Field(default_factory=list)
 
 
 
@@ -163,3 +177,4 @@ class ExecutePlanResponse(BaseModel):
     total_iterations: int = 0
     claims: List[dict[str, Any]] = Field(default_factory=list)
     critic_summary: dict[str, Any] = Field(default_factory=dict)
+    fact_state: List[AtomicFact] = Field(default_factory=list)

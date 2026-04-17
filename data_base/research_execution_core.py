@@ -3,22 +3,53 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from typing import List, Optional
+import re
+from typing import Any, List, Optional
 
 from agents.evaluator import RAGEvaluator
 from agents.planner import SubTask, TaskPlanner
 from agents.synthesizer import SubTaskResult, synthesize_results
+from core.llm_factory import get_llm
 from data_base.RAG_QA_service import rag_answer_question
 from data_base.schemas_deep_research import (
+    AtomicFact,
     EditableSubTask,
     ExecutePlanRequest,
     ExecutePlanResponse,
     ResearchPlanResponse,
     SubTaskExecutionResult,
 )
+from langchain_core.messages import HumanMessage
 
 logger = logging.getLogger(__name__)
+
+_FACT_STATE_PROMPT = """你是研究助理。請把下列子任務結果轉成 1-3 條可驗證的原子事實。
+僅輸出 JSON 陣列，不要額外文字。
+
+格式:
+[
+  {{"claim": "具體事實", "source_doc_ids": ["doc-1"]}}
+]
+
+規則:
+1. claim 必須是單一、可被文獻支持的陳述。
+2. source_doc_ids 只能使用已提供的來源 doc id；若無法判定可留空陣列。
+3. 不要輸出推測語句。
+
+問題:
+{question}
+
+已知來源:
+{source_doc_ids}
+
+回答內容:
+{answer}
+"""
+
+_JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？.!?])\s+")
 
 
 class ResearchExecutionCore:
@@ -46,6 +77,174 @@ class ResearchExecutionCore:
             "prefer_global": stage_hint == "exploration" or task_type == "graph_analysis",
             "prefer_local": stage_hint == "verification" and task_type != "graph_analysis",
         }
+
+    @staticmethod
+    def _normalize_claim(claim: str) -> str:
+        return " ".join(str(claim).strip().split())
+
+    @staticmethod
+    def _response_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+                elif item is not None:
+                    parts.append(str(item))
+            return "\n".join(part for part in parts if part)
+        return "" if content is None else str(content)
+
+    @staticmethod
+    def _parse_json_payload(raw_text: str) -> Any | None:
+        text = (raw_text or "").strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        code_match = _JSON_BLOCK_RE.search(text)
+        if code_match:
+            candidate = code_match.group(1).strip()
+            if candidate:
+                try:
+                    return json.loads(candidate)
+                except json.JSONDecodeError:
+                    pass
+        return None
+
+    def _normalize_atomic_facts(
+        self,
+        payload: Any,
+        *,
+        fallback_source_ids: list[str],
+    ) -> list[AtomicFact]:
+        candidates: Any = payload
+        if isinstance(payload, dict):
+            for key in ("facts", "atomic_facts", "items"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    candidates = value
+                    break
+
+        if not isinstance(candidates, list):
+            return []
+
+        facts: list[AtomicFact] = []
+        seen_claims: set[str] = set()
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            claim = self._normalize_claim(str(item.get("claim") or ""))
+            if not claim:
+                continue
+            claim_key = claim.lower()
+            if claim_key in seen_claims:
+                continue
+            raw_source_ids = item.get("source_doc_ids")
+            source_ids = [
+                str(source).strip()
+                for source in (raw_source_ids or [])
+                if str(source).strip()
+            ] if isinstance(raw_source_ids, list) else []
+            if fallback_source_ids:
+                source_ids = [source for source in source_ids if source in fallback_source_ids] or fallback_source_ids[:1]
+            facts.append(AtomicFact(claim=claim, source_doc_ids=source_ids))
+            seen_claims.add(claim_key)
+            if len(facts) >= 3:
+                break
+        return facts
+
+    def _fallback_atomic_facts(self, result: SubTaskExecutionResult) -> list[AtomicFact]:
+        answer = (result.answer or "").strip()
+        if not answer:
+            return []
+        sentences = [
+            self._normalize_claim(chunk)
+            for chunk in _SENTENCE_SPLIT_RE.split(answer)
+            if chunk and chunk.strip()
+        ]
+        if not sentences:
+            return []
+        claim = max(sentences[:3], key=len)[:220]
+        source_ids = [str(source) for source in result.sources if str(source).strip()]
+        return [AtomicFact(claim=claim, source_doc_ids=source_ids[:2])]
+
+    async def _extract_atomic_facts(
+        self,
+        result: SubTaskExecutionResult,
+    ) -> list[AtomicFact]:
+        if result.atomic_facts:
+            return result.atomic_facts
+        if not result.answer:
+            return []
+
+        source_ids = [str(source) for source in result.sources if str(source).strip()]
+        try:
+            llm = get_llm("planner")
+            prompt = _FACT_STATE_PROMPT.format(
+                question=result.question,
+                source_doc_ids=", ".join(source_ids) if source_ids else "(none)",
+                answer=result.answer[:2400],
+            )
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            parsed = self._parse_json_payload(self._response_text(getattr(response, "content", "")))
+            facts = self._normalize_atomic_facts(
+                parsed,
+                fallback_source_ids=source_ids,
+            )
+            if facts:
+                return facts
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Atomic fact extraction fallback for task %s: %s", result.id, exc)
+
+        return self._fallback_atomic_facts(result)
+
+    def _merge_atomic_facts(
+        self,
+        current: list[AtomicFact],
+        additions: list[AtomicFact],
+    ) -> list[AtomicFact]:
+        merged: dict[str, AtomicFact] = {}
+        for fact in current:
+            key = self._normalize_claim(fact.claim).lower()
+            if not key:
+                continue
+            merged[key] = AtomicFact(
+                claim=self._normalize_claim(fact.claim),
+                source_doc_ids=list(dict.fromkeys(fact.source_doc_ids)),
+            )
+        for fact in additions:
+            key = self._normalize_claim(fact.claim).lower()
+            if not key:
+                continue
+            if key in merged:
+                merged[key].source_doc_ids = list(
+                    dict.fromkeys([*merged[key].source_doc_ids, *fact.source_doc_ids])
+                )
+            else:
+                merged[key] = AtomicFact(
+                    claim=self._normalize_claim(fact.claim),
+                    source_doc_ids=list(dict.fromkeys(fact.source_doc_ids)),
+                )
+        return list(merged.values())
+
+    async def _refresh_fact_state(
+        self,
+        results: list[SubTaskExecutionResult],
+        seed: Optional[list[AtomicFact]] = None,
+    ) -> list[AtomicFact]:
+        fact_state = list(seed or [])
+        for result in results:
+            if not result.atomic_facts:
+                result.atomic_facts = await self._extract_atomic_facts(result)
+            fact_state = self._merge_atomic_facts(fact_state, result.atomic_facts)
+        return fact_state
 
     async def generate_plan(
         self,
@@ -165,6 +364,7 @@ class ResearchExecutionCore:
         )
 
         all_sources = list(set(src for result in all_results for src in result.sources))
+        fact_state = await self._refresh_fact_state(all_results)
         logger.info(
             "Research complete: %s tasks, %s drill-down iterations, %s sources",
             len(all_results),
@@ -180,6 +380,7 @@ class ResearchExecutionCore:
             all_sources=all_sources,
             confidence=report.confidence,
             total_iterations=total_iterations,
+            fact_state=fact_state,
         )
 
     async def _execute_tasks(
@@ -266,11 +467,16 @@ class ResearchExecutionCore:
 
         min_accuracy_score = 6.0
         max_retries_per_task = 2
+        fact_state = await self._refresh_fact_state(current_results)
 
         for iteration in range(1, max_iterations + 1):
             logger.info("Drill-down iteration %s/%s", iteration, max_iterations)
 
-            findings_summary = self._build_findings_summary(current_results)
+            fact_state = await self._refresh_fact_state(current_results, fact_state)
+            findings_summary = self._build_findings_summary(
+                current_results,
+                fact_state=fact_state,
+            )
             coverage_gap_resolver = getattr(self, "_coverage_gaps", None)
             coverage_gaps = (
                 coverage_gap_resolver(current_results)
@@ -371,20 +577,21 @@ class ResearchExecutionCore:
                                 continue
                             logger.info("Could not refine query, accepting current answer")
 
-                    current_results.append(
-                        SubTaskExecutionResult(
-                            id=task_id,
-                            question=task.question,
-                            answer=answer,
-                            sources=sources,
-                            contexts=contexts,
-                            is_drilldown=True,
-                            iteration=iteration,
-                            usage=usage,
-                            thought_process=thought_process,
-                            tool_calls=tool_calls,
-                        )
+                    sub_result = SubTaskExecutionResult(
+                        id=task_id,
+                        question=task.question,
+                        answer=answer,
+                        sources=sources,
+                        contexts=contexts,
+                        is_drilldown=True,
+                        iteration=iteration,
+                        usage=usage,
+                        thought_process=thought_process,
+                        tool_calls=tool_calls,
                     )
+                    sub_result.atomic_facts = await self._extract_atomic_facts(sub_result)
+                    current_results.append(sub_result)
+                    fact_state = self._merge_atomic_facts(fact_state, sub_result.atomic_facts)
                     if retry_count > 0:
                         logger.info("Task %s accepted after %s retry(s)", task_id, retry_count)
                     break
@@ -394,7 +601,19 @@ class ResearchExecutionCore:
     def _build_findings_summary(
         self,
         results: List[SubTaskExecutionResult],
+        fact_state: Optional[List[AtomicFact]] = None,
     ) -> str:
+        if fact_state:
+            lines: list[str] = ["Structured Fact State:"]
+            for index, fact in enumerate(fact_state, start=1):
+                source_label = ", ".join(fact.source_doc_ids) if fact.source_doc_ids else "unknown"
+                lines.append(f"- [{index}] {fact.claim} (sources: {source_label})")
+            lines.append("")
+            lines.append("Task Coverage Snapshot:")
+            for result in results:
+                lines.append(f"- Q{result.id}: {result.question}")
+            return "\n".join(lines)
+
         lines: list[str] = []
         for result in results:
             answer_preview = result.answer[:300] + "..." if len(result.answer) > 300 else result.answer
