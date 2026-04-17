@@ -5,6 +5,7 @@ import pytest
 from data_base.RAG_QA_service import RAGResult
 from data_base.deep_research_service import DeepResearchService
 from data_base.schemas_deep_research import (
+    AtomicFact,
     EditableSubTask,
     ExecutePlanRequest,
     SubTaskExecutionResult,
@@ -176,6 +177,48 @@ async def test_execute_single_task_enables_crag_guard():
 
     kwargs = mock_rag.await_args.kwargs
     assert kwargs["enable_crag"] is True
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_streaming_uses_structured_fact_state_for_followup_context():
+    service = DeepResearchService()
+    request = _build_request()
+    request.enable_drilldown = True
+    request.max_iterations = 1
+
+    mock_subtask_result = SubTaskExecutionResult(
+        id=1,
+        question="Life?",
+        answer="42",
+        sources=["doc1"],
+    )
+
+    with patch.object(service, "_execute_single_task", new=AsyncMock(return_value=mock_subtask_result)), patch.object(
+        service,
+        "_extract_atomic_facts",
+        new=AsyncMock(
+            return_value=[
+                AtomicFact(
+                    claim="Life is represented as 42 in the provided source.",
+                    source_doc_ids=["doc1"],
+                )
+            ]
+        ),
+    ), patch("data_base.deep_research_service.TaskPlanner") as mock_planner_cls, patch(
+        "data_base.research_execution_core.synthesize_results"
+    ) as mock_synth, patch(
+        "data_base.deep_research_service.persist_research_conversation",
+        new=AsyncMock(),
+    ):
+        mock_planner = mock_planner_cls.return_value
+        mock_planner.create_followup_tasks = AsyncMock(return_value=[])
+        mock_synth.return_value = _build_report()
+
+        _ = [event async for event in service.execute_plan_streaming(request, user_id="test-user")]
+
+    findings = mock_planner.create_followup_tasks.await_args.kwargs["current_findings"]
+    assert "Structured Fact State" in findings
+    assert "Life is represented as 42 in the provided source." in findings
 
 if __name__ == "__main__":
     import asyncio

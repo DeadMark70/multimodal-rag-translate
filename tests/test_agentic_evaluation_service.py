@@ -5,6 +5,7 @@ import pytest
 
 from agents.planner import ResearchPlan, SubTask, classify_question_intent
 from data_base.schemas_deep_research import (
+    AtomicFact,
     EditableSubTask,
     ExecutePlanResponse,
     ResearchPlanResponse,
@@ -323,3 +324,50 @@ def test_route_kwargs_always_enable_crag_for_agentic_execution() -> None:
         stage_hint="exploration",
     )
     assert kwargs["enable_crag"] is True
+
+
+@pytest.mark.asyncio
+async def test_agentic_drilldown_uses_structured_fact_state_for_followup_context() -> None:
+    service = AgenticEvaluationService()
+    service._active_question_intent = "benchmark_data"
+    service._active_strategy_tier = "tier_2_structured_compare"
+    service._required_coverage = ["confusion_or_limitation"]
+
+    current_results = [
+        SubTaskExecutionResult(
+            id=1,
+            question="Compare model metrics",
+            answer="Model A reports Dice 0.90 and Model B reports Dice 0.87.",
+            sources=["doc-1"],
+            contexts=["ctx"],
+        )
+    ]
+
+    with patch("evaluation.agentic_evaluation_service.TaskPlanner") as mock_planner_cls, patch.object(
+        service,
+        "_extract_atomic_facts",
+        new=AsyncMock(
+            return_value=[
+                AtomicFact(
+                    claim="Model A reports Dice 0.90 and Model B reports Dice 0.87.",
+                    source_doc_ids=["doc-1"],
+                )
+            ]
+        ),
+    ):
+        mock_planner = mock_planner_cls.return_value
+        mock_planner.create_followup_tasks = AsyncMock(return_value=[])
+
+        iterations = await service._drill_down_loop(
+            original_question="Compare model metrics and limitations",
+            current_results=current_results,
+            user_id="user-1",
+            doc_ids=None,
+            enable_reranking=True,
+            max_iterations=1,
+        )
+
+    assert iterations == 0
+    current_findings = mock_planner.create_followup_tasks.await_args.kwargs["current_findings"]
+    assert "Structured Fact State" in current_findings
+    assert "Model A reports Dice 0.90 and Model B reports Dice 0.87." in current_findings
