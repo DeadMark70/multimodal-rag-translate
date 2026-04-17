@@ -82,6 +82,7 @@
   - retrieval/documents from the first pass are reused for evaluator metrics
   - chat no longer pays for a second `rag_answer_question(...)` call just to compute `return_docs=True`
 - Evaluation `agentic` uses a dedicated baseline (`agentic_eval_v6_semantic_contextual`) distinct from user-facing Deep Research: tightened numeric benchmark routing, figure-flow first-task anchoring to the original question (plus at most one gap-focused auxiliary task), single-task synthesis-lite normalization, lightweight retrieval-quality gating before drill-down, deep image analysis kept enabled, and versioning aligned to the semantic-contextual indexing baseline.
+- Deep Research and evaluation `agentic` drill-down now maintain a shared structured fact-state (`atomic_facts` per sub-task + response-level `fact_state`) and pass that state to planner follow-up generation instead of relying only on raw long-form answer concatenation.
 - Canonical metadata writes use `doc_id`; `original_doc_uid` remains compatibility fallback on read/delete paths only.
 
 ## RAGAS Evaluation Contract

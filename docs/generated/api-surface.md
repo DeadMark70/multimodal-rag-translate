@@ -32,6 +32,7 @@ Human-maintained inventory of the current backend surface.
 - `GET /api/evaluation/models` is bearer-auth protected (no anonymous model discovery).
 - Dataset tooling lives in `evaluation/dataset_generator.py` and derives `ragas_ready.json` from the master dataset.
 - Evaluation `agentic` is a dedicated baseline profile (`agentic_eval_v6_semantic_contextual`), not a generic alias for user Deep Research; it now applies stricter benchmark routing, figure-flow anchor planning, single-task synthesis-lite normalization, and explicit comparability versioning aligned to the semantic-contextual indexing baseline.
+- Deep Research + evaluation `agentic` execution responses now carry structured fact persistence fields (`sub_tasks[].atomic_facts` and top-level `fact_state`) used for follow-up planning context during drill-down.
 
 ## Shared Runtime Contracts
 
