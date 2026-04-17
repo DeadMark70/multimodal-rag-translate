@@ -106,6 +106,25 @@ class TestRAGEvaluatorRetrievalEvaluation:
         
         assert result == RetrievalGrade.NOT_RELEVANT
 
+    @pytest.mark.asyncio
+    async def test_grade_documents_returns_boolean_signal(self):
+        """Tests CRAG helper returns True/False based on retrieval grading."""
+        from agents.evaluator import RAGEvaluator
+
+        relevant_response = MagicMock()
+        relevant_response.content = "RELEVANT"
+        irrelevant_response = MagicMock()
+        irrelevant_response.content = "NOT_RELEVANT"
+
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=[relevant_response, irrelevant_response])
+        docs = [Document(page_content="內容", metadata={})]
+
+        with patch("agents.evaluator.get_llm", return_value=mock_llm):
+            evaluator = RAGEvaluator()
+            assert await evaluator.grade_documents("問題", docs) is True
+            assert await evaluator.grade_documents("問題", docs) is False
+
 
 class TestRAGEvaluatorFaithfulnessEvaluation:
     """Tests for faithfulness evaluation."""

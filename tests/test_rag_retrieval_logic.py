@@ -1,12 +1,23 @@
 from unittest.mock import patch
+import inspect
 from langchain_core.documents import Document
-from data_base.RAG_QA_service import _expand_short_chunks, _should_use_graph_search
+from data_base.RAG_QA_service import (
+    _expand_short_chunks,
+    _should_use_graph_search,
+    rag_answer_question,
+)
 
 def test_should_use_graph_search():
     """Verify keyword-based graph search detection."""
     assert _should_use_graph_search("這幾篇論文有什麼關係？") is True
     assert _should_use_graph_search("Transformer 的定義是什麼？") is False
     assert _should_use_graph_search("分析跨文件的趨勢") is True
+
+
+def test_rag_answer_question_crag_default_is_disabled():
+    """Protect native RAG path: CRAG must remain opt-in."""
+    signature = inspect.signature(rag_answer_question)
+    assert signature.parameters["enable_crag"].default is False
 
 def test_expand_short_chunks_logic():
     """

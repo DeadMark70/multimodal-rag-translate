@@ -311,3 +311,15 @@ async def test_synthesize_execution_results_forces_single_task_synthesis_lite() 
     assert kwargs["enabled"] is True
     assert kwargs["force_llm_for_single"] is True
     assert response.detailed_answer == "A -> B -> C"
+
+
+def test_route_kwargs_always_enable_crag_for_agentic_execution() -> None:
+    service = AgenticEvaluationService()
+    kwargs = service._route_kwargs(
+        route_profile="hybrid_compare",
+        enable_reranking=True,
+        enable_visual_verification=False,
+        task_type="rag",
+        stage_hint="exploration",
+    )
+    assert kwargs["enable_crag"] is True

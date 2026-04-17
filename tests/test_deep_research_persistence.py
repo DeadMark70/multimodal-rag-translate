@@ -149,6 +149,34 @@ async def test_execute_plan_streaming_emits_task_phase_updates():
     assert '"stage": "reranking"' in phase_events[1]["data"]
     assert '"id": 1' in phase_events[0]["data"]
 
+
+@pytest.mark.asyncio
+async def test_execute_single_task_enables_crag_guard():
+    service = DeepResearchService()
+    task = EditableSubTask(id=7, question="What is LoRA?", task_type="rag", enabled=True)
+
+    with patch(
+        "data_base.deep_research_service.rag_answer_question",
+        new=AsyncMock(
+            return_value=RAGResult(
+                answer="LoRA is a PEFT method.",
+                source_doc_ids=["doc-1"],
+                documents=[],
+                usage={},
+            )
+        ),
+    ) as mock_rag:
+        _ = await service._execute_single_task(
+            task=task,
+            user_id="test-user",
+            doc_ids=None,
+            enable_reranking=True,
+            iteration=0,
+        )
+
+    kwargs = mock_rag.await_args.kwargs
+    assert kwargs["enable_crag"] is True
+
 if __name__ == "__main__":
     import asyncio
     asyncio.run(test_execute_plan_persists_to_supabase())
