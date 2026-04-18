@@ -16,6 +16,45 @@ from evaluation.schemas import TestCase as EvaluationCase
 
 
 @pytest.mark.asyncio
+async def test_run_campaign_case_naive_uses_plain_mode() -> None:
+    test_case = EvaluationCase(
+        id="Q0",
+        question="Explain plain baseline",
+        ground_truth="Plain mode should be enabled",
+        source_docs=[],
+        requires_multi_doc_reasoning=False,
+    )
+    mock_result = RAGResult(
+        answer="naive answer",
+        source_doc_ids=["doc-1"],
+        documents=[Document(page_content="ctx-naive")],
+        usage={"total_tokens": 12},
+    )
+
+    with patch("evaluation.rag_modes.run_with_retry", new=AsyncMock(return_value=mock_result)) as mock_retry:
+        await run_campaign_case(
+            test_case=test_case,
+            user_id="user-1",
+            mode="naive",
+            model_config={
+                "model_name": "gemini-2.5-flash",
+                "temperature": 0.7,
+                "top_p": 0.95,
+                "top_k": 40,
+                "max_output_tokens": 2048,
+            },
+            run_number=1,
+        )
+
+    mock_retry.assert_awaited_once()
+    _, kwargs = mock_retry.await_args
+    assert kwargs["plain_mode"] is True
+    assert kwargs["enable_hyde"] is False
+    assert kwargs["enable_multi_query"] is False
+    assert kwargs["enable_graph_rag"] is False
+
+
+@pytest.mark.asyncio
 async def test_run_campaign_case_graph_uses_generic_graph_mode() -> None:
     test_case = EvaluationCase(
         id="Q1",

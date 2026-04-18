@@ -30,7 +30,7 @@ RAG_MODES: dict[str, dict[str, Any]] = {
         "enable_multi_query": False,
         "enable_graph_rag": False,
         "enable_visual_verification": False,
-        "plain_mode": False,
+        "plain_mode": True,
     },
     "advanced": {
         "enable_reranking": True,
