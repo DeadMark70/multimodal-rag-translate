@@ -325,6 +325,7 @@ def test_route_kwargs_always_enable_crag_for_agentic_execution() -> None:
         stage_hint="exploration",
     )
     assert kwargs["enable_crag"] is True
+    assert kwargs["plain_mode"] is False
 
 
 @pytest.mark.asyncio

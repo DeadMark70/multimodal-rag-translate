@@ -203,6 +203,7 @@ async def test_execute_single_task_enables_crag_guard():
 
     kwargs = mock_rag.await_args.kwargs
     assert kwargs["enable_crag"] is True
+    assert kwargs["plain_mode"] is False
 
 
 @pytest.mark.asyncio

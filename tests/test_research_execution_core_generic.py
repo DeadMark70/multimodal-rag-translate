@@ -41,6 +41,7 @@ async def test_execute_tasks_uses_generic_mode_for_initial_graph_tasks() -> None
 
     kwargs = mock_rag.await_args.kwargs
     assert kwargs["enable_crag"] is True
+    assert kwargs["plain_mode"] is False
     assert kwargs["graph_search_mode"] == "generic"
     assert kwargs["graph_execution_hints"]["stage_hint"] == "exploration"
     assert kwargs["graph_execution_hints"]["task_type_hint"] == "graph_analysis"
@@ -80,6 +81,7 @@ async def test_execute_single_task_uses_verification_hint_for_followups() -> Non
 
     kwargs = mock_rag.await_args.kwargs
     assert kwargs["enable_crag"] is True
+    assert kwargs["plain_mode"] is False
     assert kwargs["graph_search_mode"] == "generic"
     assert kwargs["graph_execution_hints"]["stage_hint"] == "verification"
     assert kwargs["graph_execution_hints"]["task_type_hint"] == "graph_analysis"

@@ -23,6 +23,7 @@ async def test_execute_stream_emits_agentic_events_and_persists_trace() -> None:
     service = AgenticChatService()
 
     async def fake_rag_answer_question(**kwargs):
+        assert kwargs["plain_mode"] is False
         progress_callback = kwargs.get("progress_callback")
         if progress_callback:
             await progress_callback("retrieval", {"query_count": 1})

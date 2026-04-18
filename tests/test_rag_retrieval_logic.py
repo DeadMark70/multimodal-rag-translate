@@ -1,5 +1,8 @@
-from unittest.mock import patch
 import inspect
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
 from langchain_core.documents import Document
 from data_base.RAG_QA_service import (
     _expand_short_chunks,
@@ -18,6 +21,39 @@ def test_rag_answer_question_crag_default_is_disabled():
     """Protect native RAG path: CRAG must remain opt-in."""
     signature = inspect.signature(rag_answer_question)
     assert signature.parameters["enable_crag"].default is False
+
+
+def test_rag_answer_question_reranking_default_is_disabled():
+    """Protect plain-mode baseline: reranking must default to disabled."""
+    signature = inspect.signature(rag_answer_question)
+    assert signature.parameters["enable_reranking"].default is False
+
+
+@pytest.mark.asyncio
+async def test_rag_answer_question_uses_plain_retriever_mode() -> None:
+    """Native path should force FAISS-only retrieval via plain_mode=True."""
+    retriever = Mock()
+    retriever.invoke.return_value = [
+        Document(page_content="plain chunk", metadata={"doc_id": "doc-1"})
+    ]
+    llm = Mock()
+    llm.ainvoke = AsyncMock(return_value=SimpleNamespace(content="ok"))
+
+    with (
+        patch("data_base.RAG_QA_service.get_llm", return_value=llm),
+        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch(
+            "data_base.RAG_QA_service.get_user_retriever",
+            new=AsyncMock(return_value=retriever),
+        ) as get_retriever,
+        patch(
+            "data_base.RAG_QA_service.fetch_document_filenames",
+            new=AsyncMock(return_value={"doc-1": "doc-1.pdf"}),
+        ),
+    ):
+        await rag_answer_question(question="What is plain RAG?", user_id="user-1")
+
+    assert get_retriever.await_args.kwargs["plain_mode"] is True
 
 def test_expand_short_chunks_logic():
     """

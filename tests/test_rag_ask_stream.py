@@ -42,6 +42,7 @@ def test_format_sse_event_serializes_phase_update_payload() -> None:
 
 def test_rag_ask_stream_emits_phase_updates_and_complete_payload() -> None:
     async def fake_rag_answer_question(**kwargs):
+        assert kwargs["plain_mode"] is True
         progress_callback = kwargs["progress_callback"]
         await progress_callback("query_expansion", {"mode": "multi_query"})
         await progress_callback("retrieval", {"query_count": 2})

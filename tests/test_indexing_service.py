@@ -36,6 +36,34 @@ async def test_index_markdown_document_defaults_to_recursive_baseline() -> None:
 
 
 @pytest.mark.asyncio
+async def test_index_markdown_document_production_profile_defaults_to_recursive_baseline() -> None:
+    with patch(
+        "data_base.indexing_service.add_markdown_to_knowledge_base",
+        new=AsyncMock(return_value="production-retriever"),
+    ) as add_markdown:
+        result = await index_markdown_document(
+            user_id="user-1",
+            markdown_text="# Demo",
+            pdf_title="Demo",
+            doc_id="doc-1",
+            k_retriever=5,
+            indexing_profile=DEFAULT_PRODUCTION_INDEXING_PROFILE,
+        )
+
+    assert result == "production-retriever"
+    assert DEFAULT_PRODUCTION_INDEXING_PROFILE == "recursive_baseline"
+    add_markdown.assert_awaited_once_with(
+        user_id="user-1",
+        markdown_text="# Demo",
+        pdf_title="Demo",
+        doc_id="doc-1",
+        k_retriever=5,
+        chunking_method="recursive",
+        enable_context_enrichment=False,
+    )
+
+
+@pytest.mark.asyncio
 async def test_index_markdown_document_semantic_contextual_profile_enables_advanced_indexing() -> None:
     with patch(
         "data_base.indexing_service.add_markdown_to_knowledge_base",
@@ -47,11 +75,10 @@ async def test_index_markdown_document_semantic_contextual_profile_enables_advan
             pdf_title="Demo",
             doc_id="doc-1",
             k_retriever=5,
-            indexing_profile=DEFAULT_PRODUCTION_INDEXING_PROFILE,
+            indexing_profile="semantic_contextual",
         )
 
     assert result == "semantic-retriever"
-    assert DEFAULT_PRODUCTION_INDEXING_PROFILE == "semantic_contextual"
     add_markdown.assert_awaited_once_with(
         user_id="user-1",
         markdown_text="# Demo",
