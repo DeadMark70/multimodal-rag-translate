@@ -153,6 +153,62 @@ class TestResultSynthesizerSynthesis:
         assert "答案1" in report.detailed_answer
         assert "答案2" in report.detailed_answer
 
+    @pytest.mark.asyncio
+    async def test_synthesize_injects_arbitration_statement_when_conflict_detected(self):
+        """Tests that conflict arbitration guidance is injected into synthesis prompt."""
+        from agents.synthesizer import ResultSynthesizer, SubTaskResult
+
+        arbitration_response = MagicMock()
+        arbitration_response.content = (
+            "採信 Benchmark 結論：A 優於 B，因其跨資料集數據更一致；"
+            "單篇論文的反向結論可能受特定設定影響。"
+        )
+        synthesis_response = MagicMock()
+        synthesis_response.content = "## 摘要\nA 優於 B。\n\n## 詳細分析\n- 根據 Benchmark 數據..."
+
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=[arbitration_response, synthesis_response])
+
+        results = [
+            SubTaskResult(task_id=1, question="問題1", answer="論文聲稱 B 較好", sources=["paper-a"]),
+            SubTaskResult(task_id=2, question="問題2", answer="Benchmark 顯示 A 較好", sources=["benchmark-1"]),
+        ]
+
+        with patch("agents.synthesizer.get_llm", return_value=mock_llm):
+            synthesizer = ResultSynthesizer()
+            report = await synthesizer.synthesize("A vs B?", results)
+
+        assert len(mock_llm.ainvoke.await_args_list) == 2
+        synthesis_prompt = mock_llm.ainvoke.await_args_list[1].args[0][0].content
+        assert "衝突仲裁指示" in synthesis_prompt
+        assert "採信 Benchmark 結論" in synthesis_prompt
+        assert "A 優於 B" in report.summary
+
+    @pytest.mark.asyncio
+    async def test_synthesize_skips_arbitration_injection_when_no_conflict(self):
+        """Tests that NO_CONFLICT does not inject arbitration guidance."""
+        from agents.synthesizer import ResultSynthesizer, SubTaskResult
+
+        arbitration_response = MagicMock()
+        arbitration_response.content = "NO_CONFLICT"
+        synthesis_response = MagicMock()
+        synthesis_response.content = "## 摘要\n目前證據一致。\n\n## 詳細分析\n- 所有來源都支持同結論。"
+
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=[arbitration_response, synthesis_response])
+
+        results = [
+            SubTaskResult(task_id=1, question="問題1", answer="A 較好", sources=["doc1"]),
+            SubTaskResult(task_id=2, question="問題2", answer="A 較好", sources=["doc2"]),
+        ]
+
+        with patch("agents.synthesizer.get_llm", return_value=mock_llm):
+            synthesizer = ResultSynthesizer()
+            await synthesizer.synthesize("A vs B?", results)
+
+        synthesis_prompt = mock_llm.ainvoke.await_args_list[1].args[0][0].content
+        assert "衝突仲裁指示" not in synthesis_prompt
+
 
 class TestSynthesizeResultsConvenience:
     """Tests for the convenience function."""

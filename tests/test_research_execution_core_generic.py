@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -296,3 +297,48 @@ async def test_drill_down_loop_passes_visual_findings_to_planner_context() -> No
     current_findings = mock_planner.create_followup_tasks.await_args.kwargs["current_findings"]
     assert "Visual Verification Findings" in current_findings
     assert "potential_terms=XYZ" in current_findings
+
+
+@pytest.mark.asyncio
+async def test_synthesize_execution_results_enables_conflict_arbitration() -> None:
+    core = ResearchExecutionCore()
+    all_results = [
+        SubTaskExecutionResult(
+            id=1,
+            question="Claim from paper",
+            answer="Paper says B is better.",
+            sources=["paper-1"],
+            contexts=["ctx-1"],
+        ),
+        SubTaskExecutionResult(
+            id=2,
+            question="Claim from benchmark",
+            answer="Benchmark says A is better.",
+            sources=["benchmark-1"],
+            contexts=["ctx-2"],
+        ),
+    ]
+
+    with patch(
+        "data_base.research_execution_core.synthesize_results",
+        new=AsyncMock(
+            return_value=SimpleNamespace(
+                summary="summary",
+                detailed_answer="detailed",
+                confidence=0.88,
+            )
+        ),
+    ) as mock_synthesize, patch.object(
+        core,
+        "_refresh_fact_state",
+        new=AsyncMock(return_value=[]),
+    ):
+        response = await core._synthesize_execution_results(
+            original_question="A vs B?",
+            all_results=all_results,
+            total_iterations=1,
+        )
+
+    kwargs = mock_synthesize.await_args.kwargs
+    assert kwargs["enable_conflict_arbitration"] is True
+    assert response.summary == "summary"

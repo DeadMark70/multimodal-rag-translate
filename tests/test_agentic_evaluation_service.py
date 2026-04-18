@@ -311,6 +311,7 @@ async def test_synthesize_execution_results_forces_single_task_synthesis_lite() 
     kwargs = mock_synthesize.await_args.kwargs
     assert kwargs["enabled"] is True
     assert kwargs["force_llm_for_single"] is True
+    assert kwargs["enable_conflict_arbitration"] is True
     assert response.detailed_answer == "A -> B -> C"
 
 
