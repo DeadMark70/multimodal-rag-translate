@@ -185,8 +185,8 @@ class AskRequest(BaseModel):
         description="啟用多重查詢融合檢索",
     )
     enable_reranking: bool = Field(
-        default=True,
-        description="啟用本地 reranker 重排序（建議開啟）",
+        default=False,
+        description="啟用本地 reranker 重排序（Plain RAG 預設關閉）",
     )
     enable_evaluation: bool = Field(
         default=False,

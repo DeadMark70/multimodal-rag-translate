@@ -153,6 +153,7 @@ async def _run_contextual_ask(
             return_docs=request.enable_evaluation,
             enable_graph_rag=request.enable_graph_rag,
             graph_search_mode=request.graph_search_mode,
+            plain_mode=True,
             progress_callback=progress_callback,
         )
 
@@ -520,6 +521,7 @@ async def research_question(
                     enable_crag=True,
                     enable_graph_rag=use_graph,
                     graph_search_mode="generic" if use_graph else "auto",
+                    plain_mode=False,
                     graph_execution_hints={
                         "stage_hint": "exploration",
                         "task_type_hint": task.task_type,

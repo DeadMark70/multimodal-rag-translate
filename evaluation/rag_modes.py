@@ -30,6 +30,7 @@ RAG_MODES: dict[str, dict[str, Any]] = {
         "enable_multi_query": False,
         "enable_graph_rag": False,
         "enable_visual_verification": False,
+        "plain_mode": False,
     },
     "advanced": {
         "enable_reranking": True,
@@ -37,6 +38,7 @@ RAG_MODES: dict[str, dict[str, Any]] = {
         "enable_multi_query": True,
         "enable_graph_rag": False,
         "enable_visual_verification": False,
+        "plain_mode": False,
     },
     "graph": {
         "enable_reranking": True,
@@ -45,6 +47,7 @@ RAG_MODES: dict[str, dict[str, Any]] = {
         "enable_graph_rag": True,
         "graph_search_mode": "generic",
         "enable_visual_verification": False,
+        "plain_mode": False,
     },
     "agentic": {
         "enable_reranking": True,
@@ -53,6 +56,7 @@ RAG_MODES: dict[str, dict[str, Any]] = {
         "enable_graph_rag": True,
         "graph_search_mode": "generic",
         "enable_visual_verification": True,
+        "plain_mode": False,
     },
 }
 

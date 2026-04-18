@@ -193,6 +193,7 @@ class DeepResearchService(ResearchExecutionCore):
                         user_id=user_id,
                         doc_ids=doc_ids,
                         enable_reranking=enable_reranking,
+                        plain_mode=False,
                         enable_crag=True,
                         enable_graph_rag=True,  # Phase 6: 預設開啟
                         graph_search_mode="generic",
@@ -706,6 +707,7 @@ class DeepResearchService(ResearchExecutionCore):
                 user_id=user_id,
                 doc_ids=doc_ids,
                 enable_reranking=enable_reranking,
+                plain_mode=False,
                 enable_crag=True,
                 enable_graph_rag=use_graph,
                 graph_search_mode="generic" if use_graph else "auto",

@@ -21,7 +21,7 @@ IndexingProfile = Literal[
 ]
 
 DEFAULT_INDEXING_PROFILE: IndexingProfile = "recursive_baseline"
-DEFAULT_PRODUCTION_INDEXING_PROFILE: IndexingProfile = "semantic_contextual"
+DEFAULT_PRODUCTION_INDEXING_PROFILE: IndexingProfile = "recursive_baseline"
 
 
 async def index_markdown_document(

@@ -99,6 +99,59 @@ VISUAL_TOOL_INSTRUCTION = """
 如果工具執行失敗，請誠實告知使用者無法獲取更多細節，並根據現有摘要回答。
 """
 
+PLAIN_RAG_PROMPT_TEMPLATE = """你是一位學術研究助手。
+
+## 參考資料
+{context_text}
+{graph_section}{history_section}
+## 使用者問題
+{question}
+
+## 回答要求
+1. 僅使用「參考資料」中的內容回答，不要使用外部知識。
+2. 若資料不足以支持結論，請明確寫「資料不足」。
+3. 以繁體中文回答。
+{intent_constraints}
+請根據以上資料回答問題："""
+
+ADVANCED_RAG_PROMPT_TEMPLATE = """你是一位學術研究助手，擅長分析文本與圖表。
+
+## 參考資料
+以下是從知識庫檢索到的相關內容，已按來源文件分組：
+
+{context_text}
+{graph_section}{history_section}
+## 使用者問題
+{question}
+
+## 回答指引（請務必遵守）
+
+### ⚠️ 重要：防止資訊混淆
+1. **每份文件是獨立的研究**，請勿假設它們之間有關聯
+2. **文件 A 中的聲明不適用於文件 B**：例如「文件 A 說 X 輸給 Y」不代表文件 B 中的技術也輸給 Y
+3. 如果某個聲明只出現在一份文件中，請明確指出，不要套用到其他文件的內容
+4. 回答比較問題時，請先分別總結每份文件的觀點，再進行對比
+
+### 🔥 Phase 5 衝突處理守則（當文獻觀點衝突時）
+5. **優先採信基準測試 (Benchmark)**：大規模系統性比較 > 單一實驗結果
+6. **優先採信較新發表**：若可從內容推斷年份，較新的研究結論優先
+7. **禁止和稀泥結論**：不可回答「兩者互有優劣」「效果因情況而異」等模糊表述
+8. **衝突明確標註**：若發現文獻觀點衝突，必須使用以下格式：
+   「一方面，[來源A] 主張...；另一方面，[來源B] 的 [Benchmark/實驗] 顯示...。
+   根據證據權重，較可信的結論是...」
+
+### 一般指引
+9. 引用來源時請標註文件名稱
+10. 仔細觀察圖表數據（如有提供）
+11. 數學公式請使用 LaTeX 格式
+12. 以繁體中文回答
+13. 關鍵結論後請附來源標記（例如：`[來源：文件A]`、`[來源：graph_evidence]`）
+14. 若參考資料沒有直接證據，必須明確寫「資料不足」，禁止使用外部知識補齊
+{intent_constraints}
+{visual_instruction}
+請根據以上資料回答問題："""
+
+
 class RAGResult(NamedTuple):
     """Result from RAG question answering with optional documents."""
     answer: str
@@ -125,9 +178,9 @@ async def _emit_progress(
     await progress_callback(stage, details)
 
 
-async def get_user_retriever(user_id: str, k: int = 3):
+async def get_user_retriever(user_id: str, k: int = 3, plain_mode: bool = False):
     """Backward-compatible async seam for tests and request handlers."""
-    return await get_user_retriever_async(user_id, k)
+    return await get_user_retriever_async(user_id, k, plain_mode=plain_mode)
 
 
 
@@ -792,7 +845,7 @@ async def rag_answer_question(
     user_id: str,
     doc_ids: Optional[List[str]] = None,
     history: Optional[List["ChatMessage"]] = None,
-    enable_reranking: bool = True,
+    enable_reranking: bool = False,
     enable_hyde: bool = False,
     enable_multi_query: bool = False,
     enable_crag: bool = False,
@@ -804,6 +857,7 @@ async def rag_answer_question(
     mode_hints: Optional[Dict[str, Any]] = None,
     # Visual Verification (Phase 9)
     enable_visual_verification: bool = False,
+    plain_mode: bool = True,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> Union[Tuple[str, List[str]], RAGResult]:
     """
@@ -838,6 +892,7 @@ async def rag_answer_question(
         graph_execution_hints: Internal generic-mode routing hints from execution layers.
         mode_hints: Optional intent/route hints for evaluation-time output constraints.
         enable_visual_verification: If True, enable Re-Act loop for image details.
+        plain_mode: If True, force plain retriever/prompt behavior for native baseline.
 
     Returns:
         Tuple of (answer, doc_ids) or RAGResult if return_docs=True.
@@ -854,7 +909,7 @@ async def rag_answer_question(
 
     # Step 2: Get retriever (increase k for reranking)
     retrieval_k = _RERANK_CANDIDATE_LIMIT if enable_reranking else (18 if doc_ids else 6)
-    retriever = await get_user_retriever(user_id, k=retrieval_k)
+    retriever = await get_user_retriever(user_id, k=retrieval_k, plain_mode=plain_mode)
     
     if retriever is None:
         if return_docs:
@@ -1055,8 +1110,9 @@ async def rag_answer_question(
         else:
             graph_context = graph_context_payload
 
-    # Step 5.6: Context Enricher - expand short chunks
-    docs = await run_in_threadpool(_expand_short_chunks, docs, user_id)
+    # Step 5.6: Context Enricher - expand short chunks (advanced mode only)
+    if not plain_mode:
+        docs = await run_in_threadpool(_expand_short_chunks, docs, user_id)
 
     # Step 6: Separate data, label sources, and deduplicate
     text_context: List[str] = []
@@ -1155,43 +1211,26 @@ async def rag_answer_question(
     graph_section = f"\n{graph_context}\n" if graph_context else ""
     intent_constraints = _intent_constraints_for_prompt(question, mode_hints)
 
-    # Enhanced prompt with anti-hallucination guidance (Phase 5: Conflict Arbitration)
-    prompt_text = f"""你是一位學術研究助手，擅長分析文本與圖表。
-
-## 參考資料
-以下是從知識庫檢索到的相關內容，已按來源文件分組：
-
-{context_text}
-{graph_section}{history_section}
-## 使用者問題
-{question}
-
-## 回答指引（請務必遵守）
-
-### ⚠️ 重要：防止資訊混淆
-1. **每份文件是獨立的研究**，請勿假設它們之間有關聯
-2. **文件 A 中的聲明不適用於文件 B**：例如「文件 A 說 X 輸給 Y」不代表文件 B 中的技術也輸給 Y
-3. 如果某個聲明只出現在一份文件中，請明確指出，不要套用到其他文件的內容
-4. 回答比較問題時，請先分別總結每份文件的觀點，再進行對比
-
-### 🔥 Phase 5 衝突處理守則（當文獻觀點衝突時）
-5. **優先採信基準測試 (Benchmark)**：大規模系統性比較 > 單一實驗結果
-6. **優先採信較新發表**：若可從內容推斷年份，較新的研究結論優先
-7. **禁止和稀泥結論**：不可回答「兩者互有優劣」「效果因情況而異」等模糊表述
-8. **衝突明確標註**：若發現文獻觀點衝突，必須使用以下格式：
-   「一方面，[來源A] 主張...；另一方面，[來源B] 的 [Benchmark/實驗] 顯示...。
-   根據證據權重，較可信的結論是...」
-
-### 一般指引
-9. 引用來源時請標註文件名稱
-10. 仔細觀察圖表數據（如有提供）
-11. 數學公式請使用 LaTeX 格式
-12. 以繁體中文回答
-13. 關鍵結論後請附來源標記（例如：`[來源：文件A]`、`[來源：graph_evidence]`）
-14. 若參考資料沒有直接證據，必須明確寫「資料不足」，禁止使用外部知識補齊
-{intent_constraints}
-{VISUAL_TOOL_INSTRUCTION if enable_visual_verification and image_paths else ''}
-請根據以上資料回答問題："""
+    if plain_mode:
+        prompt_text = PLAIN_RAG_PROMPT_TEMPLATE.format(
+            context_text=context_text,
+            graph_section=graph_section,
+            history_section=history_section,
+            question=question,
+            intent_constraints=intent_constraints,
+        )
+    else:
+        visual_instruction = (
+            VISUAL_TOOL_INSTRUCTION if enable_visual_verification and image_paths else ""
+        )
+        prompt_text = ADVANCED_RAG_PROMPT_TEMPLATE.format(
+            context_text=context_text,
+            graph_section=graph_section,
+            history_section=history_section,
+            question=question,
+            intent_constraints=intent_constraints,
+            visual_instruction=visual_instruction,
+        )
 
     # Build content list
     message_content: List[Any] = [{"type": "text", "text": prompt_text}]

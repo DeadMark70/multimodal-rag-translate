@@ -391,9 +391,19 @@ def _invoke_retriever_queries_sync(retriever, queries: List[str]) -> List[List[D
         return list(executor.map(retriever.invoke, queries))
 
 
-async def get_user_retriever_async(user_id: str, k: int = 3):
-    """Build a request-local hybrid retriever without blocking the event loop."""
-    return await _run_user_locked_vector_store_call(user_id, get_user_retriever, user_id, k)
+async def get_user_retriever_async(
+    user_id: str,
+    k: int = 3,
+    plain_mode: bool = False,
+):
+    """Build a request-local retriever without blocking the event loop."""
+    return await _run_user_locked_vector_store_call(
+        user_id,
+        get_user_retriever,
+        user_id,
+        k,
+        plain_mode=plain_mode,
+    )
 
 
 async def invoke_retriever_queries_async(retriever, queries: List[str]) -> List[List[Document]]:
@@ -612,18 +622,19 @@ def add_visual_summaries_to_knowledge_base(
         logger.error(f"Visual summary indexing error: {e}", exc_info=True)
         raise RuntimeError(f"Visual summary indexing failed: {e}") from e
 
-def get_user_retriever(user_id: str, k: int = 3):
+def get_user_retriever(user_id: str, k: int = 3, plain_mode: bool = False):
     """
-    Gets a hybrid retriever for a specific user.
+    Gets a retriever for a specific user.
 
-    Combines Vector Search (FAISS) with Keyword Search (BM25).
+    Default mode combines Vector Search (FAISS) with Keyword Search (BM25).
+    Plain mode returns only FAISS retriever.
 
     Args:
         user_id: User's ID.
         k: Number of documents to retrieve.
 
     Returns:
-        EnsembleRetriever or None if index doesn't exist.
+        Retriever or None if index doesn't exist.
     """
     global global_embeddings_model
 
@@ -646,6 +657,10 @@ def get_user_retriever(user_id: str, k: int = 3):
             allow_dangerous_deserialization=True
         )
         faiss_retriever = vector_db.as_retriever(search_kwargs={"k": k})
+
+        if plain_mode:
+            logger.debug(f"Loaded plain FAISS retriever for user {user_id}")
+            return faiss_retriever
 
         # 2. Build BM25 (keyword search)
         documents = list(vector_db.docstore._dict.values())
