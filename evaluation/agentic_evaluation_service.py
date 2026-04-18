@@ -881,6 +881,7 @@ class AgenticEvaluationService(ResearchExecutionCore):
             use_academic_template=False,
             question_intent=self._active_question_intent,
             force_llm_for_single=True,
+            enable_conflict_arbitration=True,
         )
 
         evidence_units = self._evidence_index(all_results)

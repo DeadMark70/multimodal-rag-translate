@@ -456,6 +456,7 @@ class ResearchExecutionCore:
             sub_results=synthesizer_results,
             enabled=len(synthesizer_results) > 1,
             use_academic_template=False,
+            enable_conflict_arbitration=True,
         )
 
         all_sources = list(set(src for result in all_results for src in result.sources))

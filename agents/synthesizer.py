@@ -8,7 +8,7 @@ research report.
 # Standard library
 import asyncio
 import logging
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Third-party
 from langchain_core.messages import HumanMessage
@@ -20,6 +20,37 @@ from core.providers import get_llm
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+_NO_CONFLICT_SENTINEL = "NO_CONFLICT"
+
+_CONFLICT_ARBITRATION_PROMPT = """你是衝突仲裁引擎。請檢查以下子任務結果是否存在結論衝突：
+
+{sub_results}
+
+若存在衝突，請依下列規則做出單一仲裁結論：
+1. 基準測試 (Benchmark) / 系統性評估 優先於單篇方法論文聲稱。
+2. 有明確數據支撐的主張優先於定性敘述。
+3. 多來源共識優先於單一來源孤立結論。
+
+輸出規則：
+- 無衝突時，只輸出：NO_CONFLICT
+- 有衝突時，輸出 2-4 句仲裁聲明，包含：
+  - 哪個結論應採信
+  - 主要證據權重理由
+  - 對被否決觀點的限制/適用條件（若有）
+"""
+
+
+def _is_no_conflict_statement(statement: str) -> bool:
+    text = (statement or "").strip()
+    if not text:
+        return True
+    upper = text.upper()
+    return (
+        _NO_CONFLICT_SENTINEL in upper
+        or "無衝突" in text
+        or "沒有衝突" in text
+    )
 
 
 class SubTaskResult(BaseModel):
@@ -216,6 +247,42 @@ class ResultSynthesizer:
                 f"**回答**: {r.answer}\n"
             )
         return "\n".join(formatted)
+
+    def _format_arbitration_input(self, results: List[SubTaskResult]) -> str:
+        lines: list[str] = []
+        for result in results:
+            sources = ", ".join(result.sources) if result.sources else "(unknown)"
+            answer = (result.answer or "").strip()
+            if len(answer) > 800:
+                answer = f"{answer[:797]}..."
+            lines.append(
+                f"[Task {result.task_id}] Question: {result.question}\n"
+                f"Sources: {sources}\n"
+                f"Answer: {answer}"
+            )
+        return "\n\n".join(lines)
+
+    async def _detect_and_arbitrate_conflicts(
+        self,
+        *,
+        llm: Any,
+        sub_results: List[SubTaskResult],
+    ) -> str:
+        if len(sub_results) < 2:
+            return _NO_CONFLICT_SENTINEL
+
+        prompt = _CONFLICT_ARBITRATION_PROMPT.format(
+            sub_results=self._format_arbitration_input(sub_results)
+        )
+        try:
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            statement = (getattr(response, "content", "") or "").strip()
+            if _is_no_conflict_statement(statement):
+                return _NO_CONFLICT_SENTINEL
+            return statement
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Conflict arbitration failed; fallback to NO_CONFLICT: %s", exc)
+            return _NO_CONFLICT_SENTINEL
     
     def _strip_think_tags(self, text: str) -> str:
         """
@@ -319,6 +386,7 @@ class ResultSynthesizer:
         use_academic_template: bool = False,
         question_intent: Optional[QuestionIntent] = None,
         force_llm_for_single: bool = False,
+        enable_conflict_arbitration: bool = True,
     ) -> ResearchReport:
         """
         Synthesizes sub-task results into a research report.
@@ -363,6 +431,12 @@ class ResultSynthesizer:
                 effective_intent = question_intent or classify_question_intent(
                     original_question
                 )
+                arbitration_statement = _NO_CONFLICT_SENTINEL
+                if enable_conflict_arbitration:
+                    arbitration_statement = await self._detect_and_arbitrate_conflicts(
+                        llm=llm,
+                        sub_results=sub_results,
+                    )
                 
                 # Select prompt template based on use_academic_template
                 template = (
@@ -378,6 +452,15 @@ class ResultSynthesizer:
                     f"{prompt}\n\n"
                     f"{_synthesis_guidance_for_intent(effective_intent)}"
                 )
+                if not _is_no_conflict_statement(arbitration_statement):
+                    prompt = (
+                        f"{prompt}\n\n"
+                        "## 衝突仲裁指示\n"
+                        "子結果存在衝突，請嚴格遵守以下仲裁結論撰寫最終報告：\n"
+                        f"{arbitration_statement}\n"
+                        "- 禁止和稀泥式結論；若證據權重已明確，必須明確選邊。"
+                    )
+                    logger.info("Conflict arbitration injected into synthesizer prompt")
                 
                 message = HumanMessage(content=prompt)
                 response = await llm.ainvoke([message])
@@ -423,6 +506,7 @@ async def synthesize_results(
     use_academic_template: bool = False,
     question_intent: Optional[QuestionIntent] = None,
     force_llm_for_single: bool = False,
+    enable_conflict_arbitration: bool = True,
 ) -> ResearchReport:
     """
     Convenience function to synthesize results.
@@ -478,4 +562,5 @@ async def synthesize_results(
         use_academic_template=use_academic_template,
         question_intent=question_intent,
         force_llm_for_single=force_llm_for_single,
+        enable_conflict_arbitration=enable_conflict_arbitration,
     )
