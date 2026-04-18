@@ -4,6 +4,8 @@
 
 本文件作為實作 Agent 的指導方針，包含具體的程式碼修改細節與邏輯注入點。
 
+此計畫都已全部完成
+
 ---
 
 ## 優化 A：實施「檢索守衛」(Corrective Retrieval Guard / CRAG Pattern)
@@ -151,6 +153,9 @@ _FOLLOWUP_PROMPT = """你正在協助研究以下問題：
 
 ## 優化 D：強化衝突仲裁引擎 (Conflict Arbitration Engine)
 
+> 實作狀態（2026-04-18）：✅ 已完成，且已在 **Deep Research** 與 **Agentic benchmark** 兩條 synthesis 路徑啟用。  
+> 驗證：`pytest tests/test_synthesizer.py tests/test_research_execution_core_generic.py tests/test_agentic_evaluation_service.py` → `36 passed`
+
 ### 1. 概念與目標
 雖然目前有 Phase 5 衝突感知檢查，但仍依賴 Synthesizer Prompt 自發處理。對於嚴謹的 Agentic RAG，需要一個獨立的**仲裁節點 (Arbitrator)**，當多份文獻結論相左時，強制執行證據權重評估（例如：Benchmark > 單篇聲明）。
 
@@ -224,3 +229,5 @@ async def synthesize_results(...):
 **安全護欄 (Guardrails)**：
 - 所有新節點（CRAG Grader、Arbitrator、Fact Extractor）必須使用 `try-except` 包覆。若 LLM 解析失敗或 Timeout，應 Fallback 至原始流程，確保主要問答不斷線。
 - 所有 Prompt 變更請嚴格遵守：主要思考與摘要可用繁體中文，但**檢索用的子問題 (Sub-questions) 必須強制輸出英文**，以維持學術文獻的檢索命中率。
+
+此計畫都已全部完成
