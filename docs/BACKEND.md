@@ -81,7 +81,15 @@
 - `/rag/ask` and `/rag/ask/stream` now reuse one RAG pipeline execution even when evaluation is enabled:
   - retrieval/documents from the first pass are reused for evaluator metrics
   - chat no longer pays for a second `rag_answer_question(...)` call just to compute `return_docs=True`
-- Evaluation `agentic` uses a dedicated baseline (`agentic_eval_v6_semantic_contextual`) distinct from user-facing Deep Research: tightened numeric benchmark routing, figure-flow first-task anchoring to the original question (plus at most one gap-focused auxiliary task), single-task synthesis-lite normalization, lightweight retrieval-quality gating before drill-down, deep image analysis kept enabled, and versioning aligned to the semantic-contextual indexing baseline.
+- Evaluation `agentic` uses a dedicated baseline (`agentic_eval_v7_semantic_router_semantic_contextual`) distinct from user-facing Deep Research:
+  - main-question semantic classifier (LLM + timeout/parse fallback to heuristic)
+  - complexity-to-strategy mapping for initial tier/subtask/iteration budget
+  - sub-task micro-routing (`direct_point_access`, `broad_context_rag`, `visual_evidence_path`) mapped into existing route profiles
+  - semantic retrieval-quality gate + first-round dynamic tier shift (`upshift/downshift/keep`)
+  - reverse-pruning for redundant follow-up tasks against structured fact-state
+  - additive trace telemetry: classifier decision, complexity score, tier shift, pruned follow-ups, semantic gate score
+  - evaluation context policy version for agentic rows is now `v4_semantic_router_gate` (other modes remain `v3_answer_aware_pack`)
+  - rollout flag: `AGENTIC_SEMANTIC_ROUTER_MODE=off|shadow|active` (`shadow` records decisions without changing execution behavior)
 - Deep Research and evaluation `agentic` drill-down now maintain a shared structured fact-state (`atomic_facts` per sub-task + response-level `fact_state`) and pass that state to planner follow-up generation instead of relying only on raw long-form answer concatenation.
 - Canonical metadata writes use `doc_id`; `original_doc_uid` remains compatibility fallback on read/delete paths only.
 
