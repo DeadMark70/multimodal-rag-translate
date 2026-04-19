@@ -6,6 +6,7 @@ from langchain_core.documents import Document
 from data_base.RAG_QA_service import RAGResult
 from evaluation.agentic_evaluation_service import AGENTIC_EVAL_PROFILE
 from evaluation.rag_modes import (
+    AGENTIC_CONTEXT_POLICY_VERSION,
     CONTEXT_POLICY_VERSION,
     EVALUATOR_MAX_CONTEXTS,
     EVALUATOR_MAX_CONTEXT_CHARS,
@@ -156,7 +157,7 @@ async def test_run_campaign_case_agentic_uses_evaluation_service_and_profile() -
     assert result.answer == "agentic answer"
     assert result.contexts == ["ctx-1"]
     assert result.execution_profile == AGENTIC_EVAL_PROFILE
-    assert result.context_policy_version == CONTEXT_POLICY_VERSION
+    assert result.context_policy_version == AGENTIC_CONTEXT_POLICY_VERSION
 
 
 def test_extract_contexts_uses_answer_aware_policy_and_preserves_task_coverage() -> None:

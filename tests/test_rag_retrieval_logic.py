@@ -55,6 +55,39 @@ async def test_rag_answer_question_uses_plain_retriever_mode() -> None:
 
     assert get_retriever.await_args.kwargs["plain_mode"] is True
 
+
+@pytest.mark.asyncio
+async def test_rag_answer_question_applies_mode_hint_retrieval_policy() -> None:
+    retriever = Mock()
+    retriever.invoke.return_value = [
+        Document(page_content=f"chunk-{idx}", metadata={"doc_id": f"doc-{idx}"})
+        for idx in range(10)
+    ]
+    llm = Mock()
+    llm.ainvoke = AsyncMock(return_value=SimpleNamespace(content="ok"))
+
+    with (
+        patch("data_base.RAG_QA_service.get_llm", return_value=llm),
+        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch(
+            "data_base.RAG_QA_service.get_user_retriever",
+            new=AsyncMock(return_value=retriever),
+        ) as get_retriever,
+        patch(
+            "data_base.RAG_QA_service.fetch_document_filenames",
+            new=AsyncMock(return_value={}),
+        ),
+    ):
+        result = await rag_answer_question(
+            question="Need exact table values",
+            user_id="user-1",
+            return_docs=True,
+            mode_hints={"retrieval_policy": {"retrieval_k": 6, "target_k": 4}},
+        )
+
+    assert get_retriever.await_args.kwargs["k"] == 6
+    assert len(result.documents) == 4
+
 def test_expand_short_chunks_logic():
     """
     Test the Context Enricher logic.

@@ -17,7 +17,9 @@ from evaluation.agentic_evaluation_service import (
     AgenticEvaluationService,
     _drilldown_iterations_for_strategy,
     _is_numeric_benchmark_subtask,
+    _micro_route_for_task,
     _route_profile_for_task,
+    _strategy_config_from_complexity,
 )
 
 
@@ -137,6 +139,32 @@ def test_route_profile_benchmark_initial_round_prefers_numeric_only_generic_grap
     assert non_numeric_route == "hybrid_compare"
 
 
+def test_micro_route_direct_point_maps_to_exact_route() -> None:
+    micro_route = _micro_route_for_task(
+        question_intent="benchmark_data",
+        task_type="rag",
+        task_question="What is the exact value in Table 2 for Dice?",
+    )
+    route = _route_profile_for_task(
+        strategy_tier="tier_3_multi_hop_analysis",
+        question_intent="benchmark_data",
+        task_type="rag",
+        task_question="What is the exact value in Table 2 for Dice?",
+        iteration=0,
+        micro_route=micro_route,
+    )
+    assert micro_route == "direct_point_access"
+    assert route == "hybrid_exact"
+
+
+def test_strategy_config_from_complexity_fixed_mapping() -> None:
+    assert _strategy_config_from_complexity(1) == ("tier_1_detail_lookup", 1, 0)
+    assert _strategy_config_from_complexity(2) == ("tier_1_detail_lookup", 1, 1)
+    assert _strategy_config_from_complexity(3) == ("tier_2_structured_compare", 2, 1)
+    assert _strategy_config_from_complexity(4) == ("tier_3_multi_hop_analysis", 3, 1)
+    assert _strategy_config_from_complexity(5) == ("tier_3_multi_hop_analysis", 4, 2)
+
+
 def test_drilldown_iterations_match_intent_constraints() -> None:
     assert (
         _drilldown_iterations_for_strategy(
@@ -235,6 +263,7 @@ async def test_generate_agentic_plan_bypasses_planner_for_tier1_detail_lookup() 
 @pytest.mark.asyncio
 async def test_run_case_uses_dedicated_agentic_execution_constraints() -> None:
     service = AgenticEvaluationService(max_concurrent_tasks=3)
+    service._semantic_router_mode = "off"
     plan_response = ResearchPlanResponse(
         original_question="What changed?",
         sub_tasks=[
@@ -319,6 +348,7 @@ def test_route_kwargs_always_enable_crag_for_agentic_execution() -> None:
     service = AgenticEvaluationService()
     kwargs = service._route_kwargs(
         route_profile="hybrid_compare",
+        micro_route="broad_context_rag",
         enable_reranking=True,
         enable_visual_verification=False,
         task_type="rag",
@@ -326,6 +356,7 @@ def test_route_kwargs_always_enable_crag_for_agentic_execution() -> None:
     )
     assert kwargs["enable_crag"] is True
     assert kwargs["plain_mode"] is False
+    assert kwargs["mode_hints"]["retrieval_policy"]["target_k"] == 8
 
 
 @pytest.mark.asyncio
