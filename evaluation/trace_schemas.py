@@ -63,6 +63,11 @@ class AgentTraceDetail(BaseModel):
     visual_verification_attempted: bool = False
     visual_tool_call_count: int = Field(default=0, ge=0)
     visual_force_fallback_used: bool = False
+    classifier_decision: dict[str, Any] = Field(default_factory=dict)
+    complexity_score: Optional[int] = None
+    tier_shift: Optional[str] = None
+    pruned_followups: int = Field(default=0, ge=0)
+    semantic_gate_score: Optional[float] = None
     run_number: int = Field(ge=1)
     trace_status: TraceStatus
     summary: str = ""
@@ -93,6 +98,10 @@ class AgentTraceSummary(BaseModel):
     visual_verification_attempted: bool = False
     visual_tool_call_count: int = Field(default=0, ge=0)
     visual_force_fallback_used: bool = False
+    complexity_score: Optional[int] = None
+    tier_shift: Optional[str] = None
+    pruned_followups: int = Field(default=0, ge=0)
+    semantic_gate_score: Optional[float] = None
     total_tokens: int = Field(default=0, ge=0)
     created_at: datetime
 
@@ -118,6 +127,10 @@ def summarize_agent_trace(detail: AgentTraceDetail) -> AgentTraceSummary:
         visual_verification_attempted=detail.visual_verification_attempted,
         visual_tool_call_count=detail.visual_tool_call_count,
         visual_force_fallback_used=detail.visual_force_fallback_used,
+        complexity_score=detail.complexity_score,
+        tier_shift=detail.tier_shift,
+        pruned_followups=detail.pruned_followups,
+        semantic_gate_score=detail.semantic_gate_score,
         total_tokens=detail.total_tokens,
         created_at=detail.created_at,
     )

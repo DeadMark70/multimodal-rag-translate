@@ -8,8 +8,8 @@ import logging
 from typing import Any, Optional
 
 from agents.planner import (
-    SubTask,
     classify_question_intent,
+    classify_question_intent_semantic,
     required_coverage_for_intent,
 )
 from core.errors import AppError
@@ -34,9 +34,12 @@ from evaluation.agentic_evaluation_service import (
     _append_trace_step,
     _drilldown_iterations_for_strategy,
     _finalize_trace_payload,
+    _micro_route_for_task,
     _normalize_tool_calls,
     _route_profile_for_task,
+    _strategy_config_from_complexity,
     _strategy_tier_for_intent,
+    _subtask_limit_for_strategy,
 )
 from evaluation.retry import run_with_retry
 
@@ -95,13 +98,31 @@ class StreamingAgenticEvaluationService(AgenticEvaluationService):
 
         results: list[SubTaskExecutionResult] = []
         for task in tasks:
-            route_profile = _route_profile_for_task(
-                strategy_tier=effective_tier,
+            predicted_micro_route = _micro_route_for_task(
                 question_intent=effective_intent,
                 task_type=task.task_type,
                 task_question=task.question,
-                iteration=iteration,
             )
+            if self._semantic_router_mode == "active":
+                route_profile = _route_profile_for_task(
+                    strategy_tier=effective_tier,
+                    question_intent=effective_intent,
+                    task_type=task.task_type,
+                    task_question=task.question,
+                    iteration=iteration,
+                    micro_route=predicted_micro_route,
+                )
+                applied_micro_route = predicted_micro_route
+            else:
+                route_profile = _route_profile_for_task(
+                    strategy_tier=effective_tier,
+                    question_intent=effective_intent,
+                    task_type=task.task_type,
+                    task_question=task.question,
+                    iteration=iteration,
+                    micro_route=None,
+                )
+                applied_micro_route = "broad_context_rag"
             start_event = (
                 SSEEventType.DRILLDOWN_TASK_START
                 if iteration > 0
@@ -115,12 +136,14 @@ class StreamingAgenticEvaluationService(AgenticEvaluationService):
                     "task_type": task.task_type,
                     "iteration": iteration,
                     "route_profile": route_profile,
+                    "micro_route": predicted_micro_route,
                     "strategy_tier": effective_tier,
                 },
             )
 
             kwargs = self._route_kwargs(
                 route_profile=route_profile,
+                micro_route=applied_micro_route,
                 enable_reranking=enable_reranking,
                 enable_visual_verification=enable_deep_image_analysis,
                 task_type=task.task_type,
@@ -173,6 +196,7 @@ class StreamingAgenticEvaluationService(AgenticEvaluationService):
                     tool_calls=list(result.tool_calls or []),
                     strategy_tier=effective_tier,
                     route_profile=route_profile,
+                    micro_route=predicted_micro_route,
                     evidence_units=evidence_units,
                     visual_verification_meta=dict(result.visual_verification_meta or {}),
                 )
@@ -187,6 +211,7 @@ class StreamingAgenticEvaluationService(AgenticEvaluationService):
                     iteration=iteration,
                     strategy_tier=effective_tier,
                     route_profile=route_profile,
+                    micro_route=predicted_micro_route,
                     visual_verification_meta={},
                 )
 
@@ -206,6 +231,7 @@ class StreamingAgenticEvaluationService(AgenticEvaluationService):
                     "contexts": sub_result.contexts,
                     "iteration": sub_result.iteration,
                     "route_profile": sub_result.route_profile,
+                    "micro_route": sub_result.micro_route,
                     "usage": sub_result.usage,
                     "tool_calls": sub_result.tool_calls,
                 },
@@ -225,6 +251,7 @@ class StreamingAgenticEvaluationService(AgenticEvaluationService):
                     "is_drilldown": sub_result.is_drilldown,
                     "strategy_tier": sub_result.strategy_tier,
                     "route_profile": sub_result.route_profile,
+                    "micro_route": sub_result.micro_route,
                     "source_count": len(sub_result.sources),
                     "context_count": len(sub_result.contexts),
                 },
@@ -255,124 +282,40 @@ class StreamingAgenticEvaluationService(AgenticEvaluationService):
         if max_iterations <= 0:
             return 0
 
-        followup_cap = (
-            1
-            if self._active_strategy_tier in {"tier_2_structured_compare", "tier_3_multi_hop_analysis"}
-            else 2
+        await self._emit(
+            SSEEventType.EVALUATION_UPDATE,
+            {
+                "iteration": 0,
+                "stage": "drilldown_start",
+                "gate_pass": False,
+                "coverage_gaps": self._coverage_gaps(current_results),
+                "details": {"max_iterations": max_iterations},
+            },
         )
-        planner = self._planner if hasattr(self, "_planner") else None
-        if planner is None:
-            from agents.planner import TaskPlanner
-
-            planner = TaskPlanner(max_subtasks=followup_cap, enable_graph_planning=False)
-
-        for iteration in range(1, max_iterations + 1):
-            gate_pass, gate_meta = self._retrieval_quality_gate(current_results)
-            coverage_gaps = list(gate_meta.get("coverage_gaps") or self._coverage_gaps(current_results))
-            await self._emit(
-                SSEEventType.EVALUATION_UPDATE,
-                {
-                    "iteration": iteration,
-                    "stage": "quality_gate",
-                    "gate_pass": gate_pass,
-                    "coverage_gaps": coverage_gaps,
-                    "details": gate_meta,
+        performed = await super()._drill_down_loop(
+            original_question=original_question,
+            current_results=current_results,
+            user_id=user_id,
+            doc_ids=doc_ids,
+            enable_reranking=enable_reranking,
+            max_iterations=max_iterations,
+            enable_deep_image_analysis=enable_deep_image_analysis,
+        )
+        await self._emit(
+            SSEEventType.EVALUATION_UPDATE,
+            {
+                "iteration": performed,
+                "stage": "drilldown_complete",
+                "gate_pass": True,
+                "coverage_gaps": self._coverage_gaps(current_results),
+                "details": {
+                    "total_results": len(current_results),
+                    "tier_shift": self._tier_shift,
+                    "pruned_followups": self._pruned_followups_total,
                 },
-            )
-            if gate_pass:
-                return iteration - 1
-
-            if not coverage_gaps:
-                return iteration - 1
-
-            findings_summary = self._build_findings_summary(current_results)
-            followup_tasks = await planner.create_followup_tasks(
-                original_question=original_question,
-                current_findings=findings_summary,
-                existing_tasks=[
-                    SubTask(id=result.id, question=result.question, task_type="rag")
-                    for result in current_results
-                ],
-                question_intent=self._active_question_intent,
-                coverage_gaps=coverage_gaps,
-            )
-            targeted_followups = [
-                task
-                for task in followup_tasks
-                if self._is_gap_targeted_followup(
-                    question=task.question,
-                    coverage_gaps=coverage_gaps,
-                )
-            ]
-            if not targeted_followups:
-                await self._emit(
-                    SSEEventType.EVALUATION_UPDATE,
-                    {
-                        "iteration": iteration,
-                        "stage": "coverage_planning",
-                        "gate_pass": False,
-                        "coverage_gaps": coverage_gaps,
-                        "details": {"new_task_count": 0},
-                    },
-                )
-                return iteration - 1
-
-            editable_tasks = [
-                EditableSubTask(
-                    id=max((result.id for result in current_results), default=0) + offset + 1,
-                    question=task.question,
-                    task_type=task.task_type,
-                    enabled=True,
-                )
-                for offset, task in enumerate(targeted_followups[:followup_cap])
-            ]
-            await self._emit(
-                SSEEventType.DRILLDOWN_START,
-                {
-                    "iteration": iteration,
-                    "new_task_count": len(editable_tasks),
-                    "coverage_gaps": coverage_gaps,
-                },
-            )
-            await self._record_trace_step(
-                phase="drilldown",
-                step_type="drilldown_iteration",
-                title=f"Drill-down iteration {iteration}",
-                input_preview=original_question,
-                output_preview=f"{len(editable_tasks)} follow-up tasks",
-                metadata={
-                    "iteration": iteration,
-                    "task_count": len(editable_tasks),
-                    "coverage_gaps": coverage_gaps,
-                },
-            )
-
-            executed = await self._execute_tasks(
-                tasks=editable_tasks,
-                user_id=user_id,
-                doc_ids=doc_ids,
-                enable_reranking=enable_reranking,
-                iteration=iteration,
-                enable_deep_image_analysis=enable_deep_image_analysis,
-            )
-            current_results.extend(executed)
-            should_skip = self._should_skip_drilldown(current_results, current_iteration=iteration)
-            await self._emit(
-                SSEEventType.EVALUATION_UPDATE,
-                {
-                    "iteration": iteration,
-                    "stage": "post_iteration",
-                    "gate_pass": should_skip,
-                    "coverage_gaps": self._coverage_gaps(current_results),
-                    "details": {
-                        "total_results": len(current_results),
-                    },
-                },
-            )
-            if should_skip:
-                return iteration
-
-        return max_iterations
+            },
+        )
+        return performed
 
     async def _synthesize_execution_results(
         self,
@@ -479,6 +422,11 @@ class StreamingAgenticEvaluationService(AgenticEvaluationService):
             visual_verification_attempted=visual_verification_attempted,
             visual_tool_call_count=visual_tool_call_count,
             visual_force_fallback_used=visual_force_fallback_used,
+            classifier_decision=dict(self._classifier_decision),
+            complexity_score=int(self._classifier_decision.get("complexity_score", 0) or 0) or None,
+            tier_shift=self._tier_shift,
+            pruned_followups=self._pruned_followups_total,
+            semantic_gate_score=self._last_semantic_gate_score,
         )
 
 
@@ -497,16 +445,47 @@ class AgenticChatService:
             await queue.put(event)
 
         async def run_pipeline() -> None:
-            question_intent = classify_question_intent(request.question)
-            strategy_tier = _strategy_tier_for_intent(question_intent)
-            max_drilldown_iterations = _drilldown_iterations_for_strategy(
-                strategy_tier=strategy_tier,
-                question_intent=question_intent,
-            )
             service = StreamingAgenticEvaluationService(emit_event=emit_event, max_concurrent_tasks=3)
+            question_intent = classify_question_intent(request.question)
+            semantic_complexity_score = 3
+            classifier_decision: dict[str, Any] = {
+                "intent": question_intent,
+                "complexity_score": semantic_complexity_score,
+                "confidence": 0.55,
+                "rationale": "heuristic default decision",
+                "source": "heuristic",
+            }
+
+            if service._semantic_router_mode in {"shadow", "active"}:
+                semantic_decision = await classify_question_intent_semantic(request.question)
+                classifier_decision = semantic_decision.model_dump(mode="json")
+                semantic_complexity_score = semantic_decision.complexity_score
+
+            if service._semantic_router_mode == "active":
+                question_intent = str(classifier_decision.get("intent") or question_intent)
+                strategy_tier, subtask_limit, max_drilldown_iterations = _strategy_config_from_complexity(
+                    semantic_complexity_score
+                )
+            else:
+                strategy_tier = _strategy_tier_for_intent(question_intent)
+                subtask_limit = _subtask_limit_for_strategy(
+                    strategy_tier=strategy_tier,
+                    question_intent=question_intent,
+                )
+                max_drilldown_iterations = _drilldown_iterations_for_strategy(
+                    strategy_tier=strategy_tier,
+                    question_intent=question_intent,
+                )
+
             service._active_question_intent = question_intent
             service._active_strategy_tier = strategy_tier
+            service._active_subtask_limit = subtask_limit
+            service._active_max_iterations = max_drilldown_iterations
             service._required_coverage = required_coverage_for_intent(question_intent)
+            service._classifier_decision = classifier_decision
+            service._tier_shift = "keep"
+            service._pruned_followups_total = 0
+            service._last_semantic_gate_score = None
 
             try:
                 plan_response = await run_with_retry(
@@ -526,6 +505,10 @@ class AgenticChatService:
                             "enabled_count": len(plan_response.sub_tasks),
                             "question_intent": question_intent,
                             "strategy_tier": strategy_tier,
+                            "semantic_router_mode": service._semantic_router_mode,
+                            "classifier_decision": dict(classifier_decision),
+                            "complexity_score": semantic_complexity_score,
+                            "subtask_limit": subtask_limit,
                             "max_iterations": max_drilldown_iterations,
                             "sub_tasks": [task.model_dump(mode="json") for task in plan_response.sub_tasks],
                         },
@@ -546,6 +529,10 @@ class AgenticChatService:
                         "estimated_complexity": plan_response.estimated_complexity,
                         "question_intent": question_intent,
                         "strategy_tier": strategy_tier,
+                        "semantic_router_mode": service._semantic_router_mode,
+                        "classifier_decision": dict(classifier_decision),
+                        "complexity_score": semantic_complexity_score,
+                        "subtask_limit": subtask_limit,
                         "max_drilldown_iterations": max_drilldown_iterations,
                         "required_coverage": list(service._required_coverage),
                         "sub_tasks": [task.model_dump(mode="json") for task in plan_response.sub_tasks],
@@ -602,7 +589,10 @@ class AgenticChatService:
             finally:
                 service._active_question_intent = None
                 service._active_strategy_tier = None
+                service._active_subtask_limit = None
+                service._active_max_iterations = None
                 service._required_coverage = []
+                service._classifier_decision = {}
                 await queue.put(None)
 
         runner = asyncio.create_task(run_pipeline())

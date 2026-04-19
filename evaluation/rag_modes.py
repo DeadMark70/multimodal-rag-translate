@@ -18,6 +18,7 @@ from evaluation.schemas import TestCase
 
 EVALUATION_INDEXING_PROFILE = DEFAULT_PRODUCTION_INDEXING_PROFILE
 CONTEXT_POLICY_VERSION = "v3_answer_aware_pack"
+AGENTIC_CONTEXT_POLICY_VERSION = "v4_semantic_router_gate"
 EVALUATOR_MAX_CONTEXTS = 8
 EVALUATOR_MAX_CONTEXT_CHARS = 1800
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -151,7 +152,7 @@ async def run_campaign_case(
         category=test_case.category,
         difficulty=test_case.difficulty,
         execution_profile=(result.agent_trace or {}).get("execution_profile"),
-        context_policy_version=CONTEXT_POLICY_VERSION,
+        context_policy_version=AGENTIC_CONTEXT_POLICY_VERSION if mode == "agentic" else CONTEXT_POLICY_VERSION,
         agent_trace=result.agent_trace,
     )
 

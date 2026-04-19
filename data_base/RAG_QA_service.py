@@ -648,6 +648,34 @@ def _resolve_intent_hint(question: str, mode_hints: Optional[Dict[str, Any]]) ->
     return None
 
 
+def _resolve_retrieval_policy(mode_hints: Optional[Dict[str, Any]]) -> dict[str, int]:
+    """
+    Resolve internal retrieval policy hints (additive, backward-compatible).
+
+    Supported keys in `mode_hints.retrieval_policy`:
+    - retrieval_k: retriever top-k candidate pull
+    - target_k: final generation context cap
+    """
+    policy = (mode_hints or {}).get("retrieval_policy")
+    if not isinstance(policy, dict):
+        return {}
+
+    resolved: dict[str, int] = {}
+    retrieval_k_raw = policy.get("retrieval_k")
+    target_k_raw = policy.get("target_k")
+    if retrieval_k_raw is not None:
+        try:
+            resolved["retrieval_k"] = max(2, min(40, int(retrieval_k_raw)))
+        except (TypeError, ValueError):
+            pass
+    if target_k_raw is not None:
+        try:
+            resolved["target_k"] = max(2, min(20, int(target_k_raw)))
+        except (TypeError, ValueError):
+            pass
+    return resolved
+
+
 def _intent_constraints_for_prompt(question: str, mode_hints: Optional[Dict[str, Any]]) -> str:
     intent = _resolve_intent_hint(question, mode_hints)
     if intent == "benchmark_data":
@@ -890,7 +918,8 @@ async def rag_answer_question(
         enable_graph_rag: If True, enhance with knowledge graph context.
         graph_search_mode: Graph search mode (`generic` recommended; `auto/local/global/hybrid` are legacy compatibility values).
         graph_execution_hints: Internal generic-mode routing hints from execution layers.
-        mode_hints: Optional intent/route hints for evaluation-time output constraints.
+        mode_hints: Optional intent/route hints for evaluation-time output constraints,
+                    including additive `retrieval_policy` overrides.
         enable_visual_verification: If True, enable Re-Act loop for image details.
         plain_mode: If True, force plain retriever/prompt behavior for native baseline.
 
@@ -908,7 +937,13 @@ async def rag_answer_question(
         return ("抱歉，AI 模型尚未初始化 (API Key 可能有誤)。", [])
 
     # Step 2: Get retriever (increase k for reranking)
-    retrieval_k = _RERANK_CANDIDATE_LIMIT if enable_reranking else (18 if doc_ids else 6)
+    retrieval_policy = _resolve_retrieval_policy(mode_hints)
+    retrieval_k = int(
+        retrieval_policy.get(
+            "retrieval_k",
+            _RERANK_CANDIDATE_LIMIT if enable_reranking else (18 if doc_ids else 6),
+        )
+    )
     retriever = await get_user_retriever(user_id, k=retrieval_k, plain_mode=plain_mode)
     
     if retriever is None:
@@ -975,7 +1010,7 @@ async def rag_answer_question(
         logger.info(f"Multi-doc retrieval: {doc_chunk_count}")
 
     # Step 5: Rerank with local document reranker (or fair multi-doc selection)
-    target_k = _RERANK_TARGET_K
+    target_k = int(retrieval_policy.get("target_k", _RERANK_TARGET_K))
     reranker_available = DocumentReranker.is_initialized()
     rerank_candidates = _limit_rerank_candidates(docs) if enable_reranking else docs
 

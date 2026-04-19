@@ -148,6 +148,7 @@ class SubTaskExecutionResult(BaseModel):
     tool_calls: List[dict] = Field(default_factory=list)
     strategy_tier: Optional[str] = None
     route_profile: Optional[str] = None
+    micro_route: Optional[str] = None
     evidence_units: List[dict[str, Any]] = Field(default_factory=list)
     visual_verification_meta: dict[str, Any] = Field(default_factory=dict)
     atomic_facts: List[AtomicFact] = Field(default_factory=list)

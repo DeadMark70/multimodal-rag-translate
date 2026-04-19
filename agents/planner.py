@@ -8,9 +8,10 @@ Supports GraphRAG-aware planning for multi-document research.
 
 # Standard library
 import asyncio
+import json
 import logging
 import re
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 
 # Third-party
 from langchain_core.messages import HumanMessage
@@ -51,6 +52,16 @@ class ResearchPlan(BaseModel):
     original_question: str
     sub_tasks: List[SubTask]
     estimated_complexity: str = "medium"
+
+
+class SemanticIntentDecision(BaseModel):
+    """Semantic classifier decision for benchmark routing."""
+
+    intent: QuestionIntent
+    complexity_score: int = Field(default=3, ge=1, le=5)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    rationale: str = ""
+    source: Literal["heuristic", "llm", "timeout_fallback", "parse_fallback"] = "heuristic"
 
 
 # Prompt for task decomposition (standard RAG)
@@ -186,6 +197,30 @@ _REFINE_QUERY_PROMPT = """你是一個搜尋策略專家。一個 AI 系統剛�
 請直接輸出修正後的搜尋查詢，不要其他內容："""
 
 
+_INTENT_CLASSIFIER_PROMPT = """You are a routing classifier for Agentic RAG benchmark.
+Classify the user question and estimate routing complexity.
+
+Question:
+{question}
+
+Return JSON only:
+{{
+  "intent": "benchmark_data|figure_flow|comparison_disambiguation|enumeration_definition|general_research",
+  "complexity_score": 1,
+  "confidence": 0.0,
+  "rationale": "short reason"
+}}
+
+Rules:
+- complexity_score must be integer 1..5.
+- Prefer benchmark_data for numeric benchmark comparison tasks.
+- Prefer figure_flow for architecture/order/flow reconstruction tasks.
+- Prefer comparison_disambiguation for concept-level differentiation tasks.
+- Prefer enumeration_definition for list/definition tasks.
+- Prefer general_research only when none of above are dominant.
+"""
+
+
 _FIGURE_FLOW_KEYWORDS = (
     "figure",
     "架構圖",
@@ -314,6 +349,106 @@ def classify_question_intent(question: str) -> QuestionIntent:
         return "enumeration_definition"
 
     return "general_research"
+
+
+def _default_complexity_score(question: str, intent: QuestionIntent) -> int:
+    """Heuristic complexity estimate used as fallback for semantic routing."""
+
+    lowered = question.lower()
+    score = 1
+    if intent in {"comparison_disambiguation", "figure_flow"}:
+        score = 3
+    if intent == "benchmark_data":
+        score = 4
+    if any(token in lowered for token in ("cross-document", "across", "multi-hop", "跨文件", "跨文獻")):
+        score += 1
+    if len(question) >= 120:
+        score += 1
+    return max(1, min(5, score))
+
+
+def _safe_parse_semantic_payload(payload: str) -> Optional[dict[str, Any]]:
+    text = (payload or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        pass
+
+    block_match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
+    if block_match:
+        try:
+            data = json.loads(block_match.group(1).strip())
+            return data if isinstance(data, dict) else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def _heuristic_semantic_decision(question: str) -> SemanticIntentDecision:
+    intent = classify_question_intent(question)
+    return SemanticIntentDecision(
+        intent=intent,
+        complexity_score=_default_complexity_score(question, intent),
+        confidence=0.55,
+        rationale="heuristic keyword fallback",
+        source="heuristic",
+    )
+
+
+async def classify_question_intent_semantic(
+    question: str,
+    *,
+    timeout_seconds: float = 0.5,
+) -> SemanticIntentDecision:
+    """
+    Semantic classifier with strict fallback guarantees.
+
+    Returns a validated decision, or heuristic fallback on timeout/parse errors.
+    """
+
+    fallback = _heuristic_semantic_decision(question)
+    try:
+        llm = get_llm("planner")
+        response = await asyncio.wait_for(
+            llm.ainvoke([HumanMessage(content=_INTENT_CLASSIFIER_PROMPT.format(question=question))]),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        fallback.source = "timeout_fallback"
+        fallback.rationale = "LLM timeout, fallback to heuristic classifier"
+        return fallback
+    except Exception:
+        fallback.source = "parse_fallback"
+        fallback.rationale = "LLM classifier error, fallback to heuristic classifier"
+        return fallback
+
+    parsed = _safe_parse_semantic_payload(str(getattr(response, "content", "")))
+    if not parsed:
+        fallback.source = "parse_fallback"
+        fallback.rationale = "LLM payload parse failed, fallback to heuristic classifier"
+        return fallback
+
+    intent = str(parsed.get("intent") or "").strip()
+    complexity_score = parsed.get("complexity_score")
+    confidence = parsed.get("confidence")
+    rationale = str(parsed.get("rationale") or "").strip()
+
+    try:
+        decision = SemanticIntentDecision(
+            intent=intent or fallback.intent,
+            complexity_score=int(complexity_score) if complexity_score is not None else fallback.complexity_score,
+            confidence=float(confidence) if confidence is not None else fallback.confidence,
+            rationale=rationale or "semantic classifier decision",
+            source="llm",
+        )
+    except Exception:
+        fallback.source = "parse_fallback"
+        fallback.rationale = "LLM payload validation failed, fallback to heuristic classifier"
+        return fallback
+    return decision
 
 
 def required_coverage_for_intent(question_intent: QuestionIntent) -> list[str]:
