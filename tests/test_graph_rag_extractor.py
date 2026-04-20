@@ -1,5 +1,7 @@
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
+from uuid import uuid4
 
 import pytest
 
@@ -10,6 +12,13 @@ from graph_rag.extractor import (
 )
 from graph_rag.schemas import EntityType, ExtractedEntity, ExtractedRelation
 from graph_rag.service import run_graph_extraction
+from graph_rag.store import GraphStore
+
+
+def _workspace_upload_root(test_name: str) -> Path:
+    root = Path("output") / "test_tmp" / f"{test_name}_{uuid4().hex}" / "uploads"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def _make_llm_with_structured_payload(
@@ -414,3 +423,28 @@ async def test_run_graph_extraction_marks_partial_when_some_chunks_fail() -> Non
     saved_status = mock_store.upsert_document_status.call_args.args[0]
     assert saved_status.status == "partial"
     assert "quota exceeded" in (saved_status.last_error or "")
+
+
+@pytest.mark.asyncio
+async def test_run_graph_extraction_marks_node_vector_dirty_and_schedules_autosync() -> None:
+    upload_root = _workspace_upload_root("graph_extraction_autosync")
+    markdown_text = "A" * 16050
+
+    with (
+        patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)),
+        patch("graph_rag.service.extract_and_add_to_graph", new=AsyncMock(return_value=(1, 0))),
+        patch("graph_rag.service.mark_node_vector_dirty") as mock_mark_dirty,
+        patch("graph_rag.service.schedule_node_vector_autosync") as mock_schedule_autosync,
+    ):
+        store = GraphStore("autosync-user")
+        result = await run_graph_extraction(
+            user_id="autosync-user",
+            doc_id="doc-autosync",
+            markdown_text=markdown_text,
+            store=store,
+            autosync=True,
+        )
+
+    assert result.status == "indexed"
+    mock_mark_dirty.assert_called_once_with(store)
+    mock_schedule_autosync.assert_called_once()
