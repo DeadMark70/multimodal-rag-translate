@@ -44,6 +44,10 @@ Human-maintained inventory of the current backend surface.
   - same-user FAISS mutations are serialized behind per-user async locks
   - FAISS load/save/create/delete, BM25 construction, retriever invokes, and chunk expansion are offloaded off the event loop
 - `/pdfmd` upload/retry-index and document delete paths now share the same async vector-store seam used by `/rag` retrieval/index maintenance.
+- GraphRAG keeps API contracts unchanged while adding local node-vector autosync and retrieval sidecars:
+  - node-vector files: `uploads/<user>/rag_index/node_index.faiss`, `node_index.pkl`, `node_index_map.json`, `node_index.meta.json`
+  - upload extraction and graph maintenance mark node-vector state dirty and trigger autosync when enabled
+  - graph local search now attempts vector seed retrieval first, then safely falls back to legacy `identify_query_entities + fuzzy label match`
 - Production markdown ingestion now routes through named indexing profiles; compatibility default remains `recursive_baseline` while upload/retry-index paths currently opt into `semantic_contextual`.
 - `/rag/ask` and `/rag/ask/stream` keep the existing schemas/SSE phases, but `enable_evaluation=true` now reuses the first RAG pass instead of issuing a second `rag_answer_question(...)` call for metrics.
 - RAGAS reference selection is `ground_truth_short ?? ground_truth` and evaluator context ingestion is deterministic plus answer-aware (`v3_answer_aware_pack`: top 8 chunks, 1800 chars each, whitespace-normalized, overlap-ranked, task-aware when metadata exists).

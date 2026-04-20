@@ -74,6 +74,11 @@
   - FAISS load/save/create/delete, BM25 construction, synchronous retriever `invoke(...)`, and short-chunk expansion are offloaded from request/background coroutines
   - per-user async locks serialize same-user FAISS mutations so ask/upload/retry-index/delete do not race the same index directory
 - Upload, retry-index, visual-summary indexing, and document-vector deletion now share that async vector-store seam instead of calling synchronous FAISS work directly from route/background coroutines.
+- GraphRAG local search now supports vector-first node seed retrieval with safe fallback:
+  - local node-vector sidecars live under `uploads/<user>/rag_index/` (`node_index.faiss/.pkl`, `node_index_map.json`, `node_index.meta.json`)
+  - extraction and graph maintenance paths mark node-vector state dirty and trigger autosync (`GRAPH_NODE_VECTOR_AUTOSYNC`, default enabled)
+  - query path tries vector node seeds first (`GRAPH_NODE_VECTOR_SEARCH_ENABLED`, default enabled), then falls back to legacy `LLM entity extraction + fuzzy label match` when index/embedding/score conditions are not met
+  - main knobs: `GRAPH_NODE_VECTOR_TOP_K` (default `12`), `GRAPH_NODE_VECTOR_MIN_SCORE` (default `0.35`), `GRAPH_NODE_VECTOR_BATCH_SIZE` (default `64`)
 - Production markdown indexing is profile-aware:
   - default compatibility profile in `data_base/indexing_service.py` remains `recursive_baseline`
   - document upload / retry-index currently opt into `semantic_contextual`
