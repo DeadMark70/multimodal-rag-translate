@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 GRAPH_INDEX_VERSION = 2
 GRAPH_DOCUMENTS_FILENAME = "graph.documents.json"
 GRAPH_SOURCE_MARKDOWN_FILENAME = "extracted.md"
+NODE_VECTOR_INDEX_NAME = "node_index"
+NODE_VECTOR_MAP_FILENAME = "node_index_map.json"
+NODE_VECTOR_META_FILENAME = "node_index.meta.json"
 
 
 def _generate_node_id(label: str, entity_type: EntityType) -> str:
@@ -89,6 +92,7 @@ class GraphStore:
         self.last_optimized_at: Optional[datetime] = None
         self.index_version: int = GRAPH_INDEX_VERSION
         self.graph_dirty: bool = False
+        self.node_vector_dirty: bool = False
         self._pending_count: int = 0
         self.active_job_state: Optional[str] = None
         
@@ -125,6 +129,22 @@ class GraphStore:
         """Get path to GraphRAG per-document status sidecar."""
         return self._get_graph_path().with_name(GRAPH_DOCUMENTS_FILENAME)
 
+    def _get_node_vector_faiss_path(self) -> Path:
+        """Get path to GraphRAG node-vector FAISS index."""
+        return self._storage_dir / f"{NODE_VECTOR_INDEX_NAME}.faiss"
+
+    def _get_node_vector_pickle_path(self) -> Path:
+        """Get path to GraphRAG node-vector FAISS sidecar pickle."""
+        return self._storage_dir / f"{NODE_VECTOR_INDEX_NAME}.pkl"
+
+    def _get_node_vector_map_path(self) -> Path:
+        """Get path to GraphRAG node-vector map sidecar JSON."""
+        return self._storage_dir / NODE_VECTOR_MAP_FILENAME
+
+    def _get_node_vector_meta_path(self) -> Path:
+        """Get path to GraphRAG node-vector metadata sidecar JSON."""
+        return self._storage_dir / NODE_VECTOR_META_FILENAME
+
     def _build_metadata_payload(self) -> Dict[str, Any]:
         """Build sidecar metadata payload."""
         return {
@@ -135,6 +155,7 @@ class GraphStore:
                 self.last_optimized_at.isoformat() if self.last_optimized_at else None
             ),
             "graph_dirty": self.graph_dirty,
+            "node_vector_dirty": self.node_vector_dirty,
             "pending_count": self._pending_count,
             "community_level_counts": self.get_community_level_counts(),
             "active_job_state": self.active_job_state,
@@ -168,6 +189,7 @@ class GraphStore:
         self.last_optimized_at = legacy_data.get("last_optimized_at")
         self.index_version = int(legacy_data.get("index_version", 1))
         self.graph_dirty = bool(self._pending_count) or self.index_version < GRAPH_INDEX_VERSION
+        self.node_vector_dirty = self.graph_dirty
         self.active_job_state = legacy_data.get("active_job_state")
 
     def _load_metadata(self, legacy_data: Optional[Dict[str, Any]] = None) -> None:
@@ -189,6 +211,7 @@ class GraphStore:
                     datetime.fromisoformat(last_optimized) if last_optimized else None
                 )
                 self.graph_dirty = bool(data.get("graph_dirty", False))
+                self.node_vector_dirty = bool(data.get("node_vector_dirty", self.graph_dirty))
                 self._pending_count = int(data.get("pending_count", 0))
                 self.active_job_state = data.get("active_job_state")
                 return
@@ -290,6 +313,7 @@ class GraphStore:
         self._pending_count = 0
         self.last_optimized_at = None
         self.graph_dirty = False
+        self.node_vector_dirty = False
         self.active_job_state = None
         logger.info(f"Cleared graph for user {self.user_id}")
 
@@ -301,6 +325,15 @@ class GraphStore:
     def mark_dirty(self) -> None:
         """Mark graph metadata as needing optimization or rebuild."""
         self.graph_dirty = True
+        self.node_vector_dirty = True
+
+    def mark_node_vector_dirty(self) -> None:
+        """Mark node-vector sidecars as stale."""
+        self.node_vector_dirty = True
+
+    def clear_node_vector_dirty(self) -> None:
+        """Mark node-vector sidecars as fresh."""
+        self.node_vector_dirty = False
 
     def get_communities(self, level: Optional[int] = None) -> List[Community]:
         """Return communities, optionally filtered by hierarchy level."""

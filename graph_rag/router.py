@@ -26,6 +26,7 @@ from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
 from core import uploads as upload_paths
 from graph_rag.service import run_graph_extraction
+from graph_rag.node_vector_index import node_vector_autosync_enabled, sync_node_vector_index
 from graph_rag.schemas import (
     GraphDocumentStatus,
     GraphDocumentStatusItem,
@@ -94,6 +95,10 @@ def _copy_graph_sidecars(src: GraphStore, dest: GraphStore) -> None:
         (src._get_graph_path(), dest._get_graph_path()),
         (src._get_metadata_path(), dest._get_metadata_path()),
         (src._get_document_status_path(), dest._get_document_status_path()),
+        (src._get_node_vector_faiss_path(), dest._get_node_vector_faiss_path()),
+        (src._get_node_vector_pickle_path(), dest._get_node_vector_pickle_path()),
+        (src._get_node_vector_map_path(), dest._get_node_vector_map_path()),
+        (src._get_node_vector_meta_path(), dest._get_node_vector_meta_path()),
     ):
         if source_path.exists():
             target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,12 +111,18 @@ def _replace_live_graph_files(temp_store: GraphStore, live_store: GraphStore) ->
         (temp_store._get_graph_path(), live_store._get_graph_path()),
         (temp_store._get_metadata_path(), live_store._get_metadata_path()),
         (temp_store._get_document_status_path(), live_store._get_document_status_path()),
+        (temp_store._get_node_vector_faiss_path(), live_store._get_node_vector_faiss_path()),
+        (temp_store._get_node_vector_pickle_path(), live_store._get_node_vector_pickle_path()),
+        (temp_store._get_node_vector_map_path(), live_store._get_node_vector_map_path()),
+        (temp_store._get_node_vector_meta_path(), live_store._get_node_vector_meta_path()),
     ):
         if source_path.exists():
             target_path.parent.mkdir(parents=True, exist_ok=True)
             temp_target = target_path.with_suffix(target_path.suffix + ".tmp")
             shutil.copy2(source_path, temp_target)
             os.replace(temp_target, target_path)
+        elif target_path.exists() and target_path.name.startswith("node_index"):
+            target_path.unlink()
 
 
 def _make_graph_work_dir(base_dir: Path, prefix: str) -> Path:
@@ -542,6 +553,17 @@ async def _optimize_existing_graph(
         communities_count = len(communities)
 
     store.save()
+    if node_vector_autosync_enabled() and isinstance(store, GraphStore):
+        sync_result = await sync_node_vector_index(
+            user_id=store.user_id,
+            store=store,
+        )
+        logger.info(
+            "Graph maintenance node-vector sync result | user_id=%s | index_state=%s | autosync_duration_ms=%s",
+            store.user_id,
+            sync_result.get("index_state"),
+            sync_result.get("autosync_duration_ms"),
+        )
     return merges, communities_count
 
 async def _rebuild_graph_task(user_id: str) -> None:
@@ -610,6 +632,7 @@ async def _rebuild_full_graph_task(user_id: str) -> None:
                 doc_id=doc_id,
                 markdown_text=markdown_text,
                 store=temp_store,
+                autosync=False,
             )
 
         blocking_failures = [
@@ -683,6 +706,7 @@ async def _retry_graph_document_task(user_id: str, doc_id: str) -> None:
             doc_id=doc_id,
             markdown_text=markdown_text,
             store=temp_store,
+            autosync=False,
         )
 
         if result.status in {"failed", "partial"}:

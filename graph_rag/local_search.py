@@ -18,6 +18,12 @@ from core.llm_factory import graph_rag_llm_runtime_override
 from core.providers import get_llm
 from graph_rag.llm_response import response_content_to_text
 from graph_rag.generic_mode import GraphEvidence, estimate_token_count
+from graph_rag.node_vector_index import (
+    node_vector_min_score,
+    node_vector_search_enabled,
+    node_vector_top_k,
+    search_nodes_by_vector,
+)
 from graph_rag.store import GraphStore
 
 # Configure logging
@@ -302,21 +308,67 @@ async def local_search(
     Returns:
         Tuple of (context_string, matched_node_ids).
     """
-    # Step 1: Identify entities in question
-    query_entities = await identify_query_entities(question)
-    
-    if not query_entities:
-        logger.info("No entities identified in query, returning empty context")
-        return "", []
-    
-    # Step 2: Find matching nodes
-    matched_nodes = find_matching_nodes(store, query_entities, fuzzy=True)
-    
+    matched_nodes: list[str] = []
+    vector_fallback_reason: str | None = None
+    index_state = "disabled"
+    vector_hit_count = 0
+
+    # Step 1: Vector-first seed retrieval
+    if node_vector_search_enabled():
+        vector_result = await search_nodes_by_vector(
+            store=store,
+            query=question,
+            top_k=node_vector_top_k(),
+            min_score=node_vector_min_score(),
+        )
+        matched_nodes = list(vector_result.node_ids)
+        vector_hit_count = vector_result.vector_hit_count
+        vector_fallback_reason = vector_result.fallback_reason
+        index_state = vector_result.index_state
+
+        if matched_nodes:
+            logger.info(
+                "Local search vector seeds ready | vector_hit_count=%s | vector_fallback_reason=%s | index_state=%s | top_score=%s",
+                vector_hit_count,
+                vector_fallback_reason,
+                index_state,
+                vector_result.top_score,
+            )
+
+    # Step 2: Fallback to legacy LLM + fuzzy matching when vector seeds are missing
     if not matched_nodes:
-        logger.info("No matching nodes found in graph")
-        return "", []
-    
-    logger.info(f"Found {len(matched_nodes)} matching nodes for query")
+        query_entities = await identify_query_entities(question)
+        if not query_entities:
+            logger.info(
+                "No entities identified in query and no vector seeds | vector_hit_count=%s | vector_fallback_reason=%s | index_state=%s",
+                vector_hit_count,
+                vector_fallback_reason,
+                index_state,
+            )
+            return "", []
+        matched_nodes = find_matching_nodes(store, query_entities, fuzzy=True)
+        if not matched_nodes:
+            logger.info(
+                "No matching nodes found in graph | vector_hit_count=%s | vector_fallback_reason=%s | index_state=%s",
+                vector_hit_count,
+                vector_fallback_reason,
+                index_state,
+            )
+            return "", []
+        logger.info(
+            "Local search fallback matched nodes | vector_hit_count=%s | vector_fallback_reason=%s | index_state=%s | fallback_match_count=%s",
+            vector_hit_count,
+            vector_fallback_reason,
+            index_state,
+            len(matched_nodes),
+        )
+    else:
+        logger.info(
+            "Local search using vector seeds | vector_hit_count=%s | vector_fallback_reason=%s | index_state=%s",
+            vector_hit_count,
+            vector_fallback_reason,
+            index_state,
+        )
     
     # Step 3: Expand to neighbors
     expanded_nodes = expand_to_neighbors(

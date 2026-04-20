@@ -7,6 +7,10 @@ import logging
 from datetime import datetime
 
 from graph_rag.extractor import extract_and_add_to_graph
+from graph_rag.node_vector_index import (
+    mark_node_vector_dirty,
+    schedule_node_vector_autosync,
+)
 from graph_rag.schemas import GraphDocumentStatus, GraphExtractionRunResult
 from graph_rag.store import GraphStore
 
@@ -20,6 +24,7 @@ async def run_graph_extraction(
     markdown_text: str,
     batch_size: int = 3,
     store: GraphStore | None = None,
+    autosync: bool = True,
 ) -> GraphExtractionRunResult:
     """Run GraphRAG extraction and persist per-document status."""
     active_store = store or GraphStore(user_id)
@@ -148,7 +153,14 @@ async def run_graph_extraction(
             total_nodes,
             total_edges,
         )
+        mark_node_vector_dirty(active_store)
         active_store.save()
+        if autosync:
+            schedule_node_vector_autosync(
+                user_id=user_id,
+                store=active_store,
+                reason=f"graph_extraction:{doc_id}",
+            )
         return _persist_status(
             status=status,
             chunk_count=len(chunks),
