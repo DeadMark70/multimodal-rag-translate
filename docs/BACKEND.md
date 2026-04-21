@@ -79,6 +79,10 @@
   - extraction and graph maintenance paths mark node-vector state dirty and trigger autosync (`GRAPH_NODE_VECTOR_AUTOSYNC`, default enabled)
   - query path tries vector node seeds first (`GRAPH_NODE_VECTOR_SEARCH_ENABLED`, default enabled), then falls back to legacy `LLM entity extraction + fuzzy label match` when index/embedding/score conditions are not met
   - main knobs: `GRAPH_NODE_VECTOR_TOP_K` (default `12`), `GRAPH_NODE_VECTOR_MIN_SCORE` (default `0.35`), `GRAPH_NODE_VECTOR_BATCH_SIZE` (default `64`)
+  - manual sync APIs now support legacy graph backfill without blocking long requests:
+    - `POST /graph/node-vector/sync` starts a background sync job and persists progress state
+    - `GET /graph/node-vector/sync/status` exposes `idle/running/completed/failed`, processed counts, and error/details for polling UIs
+  - embedding provider calls in node-vector sync/search are guarded by a process-local per-user limiter (`GRAPH_NODE_VECTOR_EMBEDDING_RPM_LIMIT`, default `1000` RPM) with wait-queue behavior and retry/backoff on 429/transport errors
 - Production markdown indexing is profile-aware:
   - default compatibility profile in `data_base/indexing_service.py` remains `recursive_baseline`
   - document upload / retry-index currently opt into `semantic_contextual`

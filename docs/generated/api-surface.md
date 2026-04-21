@@ -8,7 +8,7 @@ Human-maintained inventory of the current backend surface.
 |---|---|---|
 | `/pdfmd` | document lifecycle | `/list`, `/upload_pdf_md`, `/ocr`, `/file/{doc_id}/status`, `/file/{doc_id}`, `/file/{doc_id}/translate`, `/file/{doc_id}/retry-index`, `/file/{doc_id}/summary`, `/file/{doc_id}` DELETE |
 | `/rag` | ask and research | `/ask`, `/ask/stream`, `/research`, `/plan`, `/execute`, `/execute/stream` |
-| `/graph` | graph state and maintenance | `/status`, `/data`, `/documents`, `/optimize`, `/rebuild`, `/rebuild/full`, document retry/purge endpoints |
+| `/graph` | graph state and maintenance | `/status`, `/data`, `/documents`, `/optimize`, `/rebuild`, `/rebuild-full`, document retry/purge endpoints, `/node-vector/sync`, `/node-vector/sync/status` |
 | `/api/evaluation` | evaluation runtime | `/test-cases`, `/models`, `/model-configs`, `/campaigns`, `/campaigns/{id}/results`, `/campaigns/{id}/traces`, `/campaigns/{id}/metrics`, `/campaigns/{id}/evaluate`, `/campaigns/{id}/cancel`, `/campaigns/{id}/stream` |
 | `/api/conversations` | conversation persistence | list/create/detail/update/delete, `/{conversation_id}/messages` |
 | `/stats` | dashboard stats | `/dashboard` |
@@ -48,6 +48,8 @@ Human-maintained inventory of the current backend surface.
   - node-vector files: `uploads/<user>/rag_index/node_index.faiss`, `node_index.pkl`, `node_index_map.json`, `node_index.meta.json`
   - upload extraction and graph maintenance mark node-vector state dirty and trigger autosync when enabled
   - graph local search now attempts vector seed retrieval first, then safely falls back to legacy `identify_query_entities + fuzzy label match`
+  - manual backfill APIs now expose async sync start + polling status for large legacy graphs (`POST /graph/node-vector/sync`, `GET /graph/node-vector/sync/status`)
+  - node-vector embedding calls now enforce process-local per-user request budget (`GRAPH_NODE_VECTOR_EMBEDDING_RPM_LIMIT`, default `1000` RPM) with wait-queue + retry/backoff semantics
 - Production markdown ingestion now routes through named indexing profiles; compatibility default remains `recursive_baseline` while upload/retry-index paths currently opt into `semantic_contextual`.
 - `/rag/ask` and `/rag/ask/stream` keep the existing schemas/SSE phases, but `enable_evaluation=true` now reuses the first RAG pass instead of issuing a second `rag_answer_question(...)` call for metrics.
 - RAGAS reference selection is `ground_truth_short ?? ground_truth` and evaluator context ingestion is deterministic plus answer-aware (`v3_answer_aware_pack`: top 8 chunks, 1800 chars each, whitespace-normalized, overlap-ranked, task-aware when metadata exists).
