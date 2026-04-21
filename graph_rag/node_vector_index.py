@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import hashlib
 import json
 import logging
@@ -11,9 +12,11 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 import numpy as np
+import httpcore
+import httpx
 from langchain_community.vectorstores import FAISS
 
 from data_base.vector_store_manager import get_embeddings, initialize_embeddings
@@ -28,8 +31,11 @@ _VECTOR_AUTOSYNC_ENABLED_ENV = "GRAPH_NODE_VECTOR_AUTOSYNC"
 _VECTOR_TOP_K_ENV = "GRAPH_NODE_VECTOR_TOP_K"
 _VECTOR_MIN_SCORE_ENV = "GRAPH_NODE_VECTOR_MIN_SCORE"
 _VECTOR_BATCH_SIZE_ENV = "GRAPH_NODE_VECTOR_BATCH_SIZE"
+_VECTOR_EMBEDDING_RPM_LIMIT_ENV = "GRAPH_NODE_VECTOR_EMBEDDING_RPM_LIMIT"
 _NODE_VECTOR_SYNC_LOCKS: dict[str, asyncio.Lock] = {}
 _NODE_VECTOR_SYNC_LOCKS_GUARD = asyncio.Lock()
+_EMBEDDING_LIMITER: "PerUserSlidingWindowRateLimiter | None" = None
+_EMBEDDING_LIMITER_GUARD = asyncio.Lock()
 
 
 @dataclass(slots=True)
@@ -41,6 +47,37 @@ class NodeVectorSearchResult:
     index_state: str
     fallback_reason: Optional[str] = None
     top_score: Optional[float] = None
+
+
+NodeVectorProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
+
+
+class PerUserSlidingWindowRateLimiter:
+    """Process-local per-user sliding-window limiter for embedding provider calls."""
+
+    def __init__(self, rpm_limit: int, window_seconds: float = 60.0) -> None:
+        self.rpm_limit = max(rpm_limit, 1)
+        self.window_seconds = max(window_seconds, 1.0)
+        self._timestamps: dict[str, deque[float]] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._guard = asyncio.Lock()
+
+    async def _get_lock(self, user_id: str) -> asyncio.Lock:
+        async with self._guard:
+            return self._locks.setdefault(user_id, asyncio.Lock())
+
+    async def acquire(self, user_id: str) -> None:
+        lock = await self._get_lock(user_id)
+        async with lock:
+            timestamps = self._timestamps.setdefault(user_id, deque())
+            while len(timestamps) >= self.rpm_limit:
+                now = time.monotonic()
+                window_age = now - timestamps[0]
+                if window_age >= self.window_seconds:
+                    timestamps.popleft()
+                    continue
+                await asyncio.sleep(self.window_seconds - window_age)
+            timestamps.append(time.monotonic())
 
 
 def _is_true(value: str | None, *, default: bool = False) -> bool:
@@ -96,9 +133,100 @@ def node_vector_batch_size() -> int:
     return _int_env(_VECTOR_BATCH_SIZE_ENV, default=64)
 
 
+def node_vector_embedding_rpm_limit() -> int:
+    """Return per-user embedding request limit (requests per minute)."""
+    return _int_env(_VECTOR_EMBEDDING_RPM_LIMIT_ENV, default=1000)
+
+
 def mark_node_vector_dirty(store: GraphStore) -> None:
     """Mark the node-vector sidecar index as stale."""
     store.mark_node_vector_dirty()
+
+
+def _iter_exception_chain(exc: BaseException):
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    return any(
+        "429" in str(item) or "RESOURCE_EXHAUSTED" in str(item)
+        for item in _iter_exception_chain(exc)
+    )
+
+
+def _is_transient_transport_error(exc: BaseException) -> bool:
+    httpcore_error_cls = getattr(httpcore, "HTTPError", None)
+    for item in _iter_exception_chain(exc):
+        if isinstance(item, httpx.TransportError):
+            return True
+        if httpcore_error_cls is not None and isinstance(item, httpcore_error_cls):
+            return True
+        if isinstance(item, OSError) and getattr(item, "winerror", None) == 10035:
+            return True
+    return False
+
+
+async def _get_embedding_limiter() -> PerUserSlidingWindowRateLimiter:
+    global _EMBEDDING_LIMITER
+    configured_limit = node_vector_embedding_rpm_limit()
+    async with _EMBEDDING_LIMITER_GUARD:
+        if _EMBEDDING_LIMITER is None or _EMBEDDING_LIMITER.rpm_limit != configured_limit:
+            _EMBEDDING_LIMITER = PerUserSlidingWindowRateLimiter(configured_limit)
+        return _EMBEDDING_LIMITER
+
+
+async def _acquire_embedding_budget(user_id: str) -> None:
+    limiter = await _get_embedding_limiter()
+    await limiter.acquire(user_id)
+
+
+async def _emit_progress(
+    callback: NodeVectorProgressCallback | None,
+    payload: dict[str, Any],
+) -> None:
+    if callback is None:
+        return
+    result = callback(payload)
+    if asyncio.iscoroutine(result):
+        await result
+
+
+async def _run_embedding_call_with_retry(
+    *,
+    user_id: str,
+    context: str,
+    call: Callable[[], Awaitable[Any]],
+    max_retries: int = 3,
+    rate_limit_base_delay: float = 30.0,
+    transport_base_delay: float = 1.0,
+) -> Any:
+    for attempt in range(max_retries + 1):
+        await _acquire_embedding_budget(user_id)
+        try:
+            return await call()
+        except Exception as exc:  # noqa: BLE001
+            is_rate_limit = _is_rate_limit_error(exc)
+            is_transport = _is_transient_transport_error(exc)
+            if attempt < max_retries and (is_rate_limit or is_transport):
+                base_delay = rate_limit_base_delay if is_rate_limit else transport_base_delay
+                delay = base_delay * (2**attempt)
+                logger.warning(
+                    "Node-vector %s retry %s/%s for user %s after %ss: %s",
+                    context,
+                    attempt + 1,
+                    max_retries + 1,
+                    user_id,
+                    f"{delay:.1f}",
+                    exc,
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise
 
 
 def _utc_now_iso() -> str:
@@ -172,21 +300,41 @@ async def _ensure_embeddings_model():
     return get_embeddings()
 
 
-async def _embed_texts(model, texts: list[str], batch_size: int) -> list[list[float]]:
+async def _embed_texts(
+    model,
+    texts: list[str],
+    batch_size: int,
+    *,
+    user_id: str,
+    on_batch_complete: Callable[[int], Awaitable[None] | None] | None = None,
+) -> list[list[float]]:
     vectors: list[list[float]] = []
     for start in range(0, len(texts), batch_size):
         chunk = texts[start : start + batch_size]
         batch_vectors: Optional[list[list[float]]] = None
         if hasattr(model, "aembed_documents"):
             try:
-                batch_vectors = await model.aembed_documents(chunk)
+                batch_vectors = await _run_embedding_call_with_retry(
+                    user_id=user_id,
+                    context="batch_embedding",
+                    call=lambda: model.aembed_documents(chunk),
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Batch node-vector embedding failed; falling back to per-query: %s", exc)
         if batch_vectors is None:
             batch_vectors = []
             for text in chunk:
-                batch_vectors.append(await model.aembed_query(text))
+                query_vector = await _run_embedding_call_with_retry(
+                    user_id=user_id,
+                    context="query_embedding",
+                    call=lambda text=text: model.aembed_query(text),
+                )
+                batch_vectors.append(query_vector)
         vectors.extend([list(map(float, vector)) for vector in batch_vectors])
+        if on_batch_complete is not None:
+            callback_result = on_batch_complete(len(batch_vectors))
+            if asyncio.iscoroutine(callback_result):
+                await callback_result
     return vectors
 
 
@@ -204,20 +352,56 @@ async def sync_node_vector_index(
     *,
     user_id: str,
     store: GraphStore | None = None,
+    progress_callback: NodeVectorProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Build or refresh local node-vector sidecars for one user graph."""
     lock = await _get_node_vector_sync_lock(user_id)
     async with lock:
         started = time.perf_counter()
         active_store = store or GraphStore(user_id)
+        node_count = 0
+        changed_count = 0
+        reused_count = 0
+        removed_count = 0
+        processed = 0
 
         try:
             nodes = active_store.get_all_nodes()
+            node_count = len(nodes)
+            await _emit_progress(
+                progress_callback,
+                {
+                    "state": "running",
+                    "processed": 0,
+                    "total": node_count,
+                    "changed": 0,
+                    "reused": 0,
+                    "removed": 0,
+                    "index_state": "running",
+                    "updated_at": _utc_now_iso(),
+                },
+            )
             if not nodes:
                 _remove_node_vector_files(active_store)
                 active_store.clear_node_vector_dirty()
                 active_store.save_sidecars()
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
+                await _emit_progress(
+                    progress_callback,
+                    {
+                        "state": "completed",
+                        "processed": 0,
+                        "total": 0,
+                        "changed": 0,
+                        "reused": 0,
+                        "removed": 0,
+                        "index_state": "empty",
+                        "autosync_duration_ms": elapsed_ms,
+                        "finished_at": _utc_now_iso(),
+                        "updated_at": _utc_now_iso(),
+                        "last_error": None,
+                    },
+                )
                 logger.info(
                     "Node-vector autosync complete for user %s | index_state=%s | autosync_duration_ms=%s",
                     user_id,
@@ -267,9 +451,50 @@ async def sync_node_vector_index(
                     changed_node_ids.append(node.id)
                     changed_texts.append(text)
 
+            changed_count = len(changed_node_ids)
+            processed = reused_count
+            await _emit_progress(
+                progress_callback,
+                {
+                    "state": "running",
+                    "processed": processed,
+                    "total": node_count,
+                    "changed": changed_count,
+                    "reused": reused_count,
+                    "removed": 0,
+                    "index_state": "running",
+                    "updated_at": _utc_now_iso(),
+                },
+            )
+
             if changed_texts:
                 batch_size = node_vector_batch_size()
-                new_vectors = await _embed_texts(embeddings_model, changed_texts, batch_size)
+                embedded_changed = 0
+
+                async def _on_batch_complete(batch_size_done: int) -> None:
+                    nonlocal embedded_changed
+                    embedded_changed += batch_size_done
+                    await _emit_progress(
+                        progress_callback,
+                        {
+                            "state": "running",
+                            "processed": reused_count + embedded_changed,
+                            "total": node_count,
+                            "changed": changed_count,
+                            "reused": reused_count,
+                            "removed": 0,
+                            "index_state": "running",
+                            "updated_at": _utc_now_iso(),
+                        },
+                    )
+
+                new_vectors = await _embed_texts(
+                    embeddings_model,
+                    changed_texts,
+                    batch_size,
+                    user_id=user_id,
+                    on_batch_complete=_on_batch_complete,
+                )
                 if len(new_vectors) != len(changed_node_ids):
                     raise RuntimeError("embedding count mismatch while syncing node vector index")
                 for node_id, text, vector in zip(changed_node_ids, changed_texts, new_vectors):
@@ -283,6 +508,7 @@ async def sync_node_vector_index(
                     }
 
             removed_count = len([node_id for node_id in previous_nodes.keys() if node_id not in node_records])
+            processed = reused_count + changed_count
 
             ordered_node_ids = sorted(node_records.keys())
             text_embeddings = [
@@ -340,12 +566,28 @@ async def sync_node_vector_index(
                 "Node-vector autosync complete for user %s | index_state=%s | changed=%s | reused=%s | removed=%s | autosync_duration_ms=%s",
                 user_id,
                 "ready",
-                len(changed_node_ids),
+                changed_count,
                 reused_count,
                 removed_count,
                 elapsed_ms,
             )
             meta_payload["autosync_duration_ms"] = elapsed_ms
+            await _emit_progress(
+                progress_callback,
+                {
+                    "state": "completed",
+                    "processed": processed,
+                    "total": node_count,
+                    "changed": changed_count,
+                    "reused": reused_count,
+                    "removed": removed_count,
+                    "index_state": "ready",
+                    "autosync_duration_ms": elapsed_ms,
+                    "last_error": None,
+                    "finished_at": _utc_now_iso(),
+                    "updated_at": _utc_now_iso(),
+                },
+            )
             return meta_payload
 
         except Exception as exc:  # noqa: BLE001
@@ -366,6 +608,22 @@ async def sync_node_vector_index(
                 "failed",
                 elapsed_ms,
                 exc,
+            )
+            await _emit_progress(
+                progress_callback,
+                {
+                    "state": "failed",
+                    "processed": processed,
+                    "total": node_count,
+                    "changed": changed_count,
+                    "reused": reused_count,
+                    "removed": removed_count,
+                    "index_state": "failed",
+                    "autosync_duration_ms": elapsed_ms,
+                    "last_error": str(exc),
+                    "finished_at": _utc_now_iso(),
+                    "updated_at": _utc_now_iso(),
+                },
             )
             return meta_payload
 
@@ -486,7 +744,11 @@ async def search_nodes_by_vector(
         )
 
     try:
-        query_vector = await embeddings_model.aembed_query(normalized_query)
+        query_vector = await _run_embedding_call_with_retry(
+            user_id=store.user_id,
+            context="query_embedding",
+            call=lambda: embeddings_model.aembed_query(normalized_query),
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Node-vector query embedding failed for user %s: %s", store.user_id, exc)
         return NodeVectorSearchResult(

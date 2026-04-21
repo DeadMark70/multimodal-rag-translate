@@ -25,6 +25,8 @@ from graph_rag.schemas import (
     EntityType,
     GraphEdge,
     GraphNode,
+    NodeVectorSyncState,
+    NodeVectorSyncStatusResponse,
     GraphStatusResponse,
 )
 
@@ -37,6 +39,7 @@ GRAPH_SOURCE_MARKDOWN_FILENAME = "extracted.md"
 NODE_VECTOR_INDEX_NAME = "node_index"
 NODE_VECTOR_MAP_FILENAME = "node_index_map.json"
 NODE_VECTOR_META_FILENAME = "node_index.meta.json"
+_UNSET = object()
 
 
 def _generate_node_id(label: str, entity_type: EntityType) -> str:
@@ -93,6 +96,7 @@ class GraphStore:
         self.index_version: int = GRAPH_INDEX_VERSION
         self.graph_dirty: bool = False
         self.node_vector_dirty: bool = False
+        self.node_vector_sync: NodeVectorSyncStatusResponse = NodeVectorSyncStatusResponse()
         self._pending_count: int = 0
         self.active_job_state: Optional[str] = None
         
@@ -156,6 +160,7 @@ class GraphStore:
             ),
             "graph_dirty": self.graph_dirty,
             "node_vector_dirty": self.node_vector_dirty,
+            "node_vector_sync": self.node_vector_sync.model_dump(mode="json"),
             "pending_count": self._pending_count,
             "community_level_counts": self.get_community_level_counts(),
             "active_job_state": self.active_job_state,
@@ -190,6 +195,7 @@ class GraphStore:
         self.index_version = int(legacy_data.get("index_version", 1))
         self.graph_dirty = bool(self._pending_count) or self.index_version < GRAPH_INDEX_VERSION
         self.node_vector_dirty = self.graph_dirty
+        self.node_vector_sync = NodeVectorSyncStatusResponse()
         self.active_job_state = legacy_data.get("active_job_state")
 
     def _load_metadata(self, legacy_data: Optional[Dict[str, Any]] = None) -> None:
@@ -212,6 +218,13 @@ class GraphStore:
                 )
                 self.graph_dirty = bool(data.get("graph_dirty", False))
                 self.node_vector_dirty = bool(data.get("node_vector_dirty", self.graph_dirty))
+                node_vector_sync = data.get("node_vector_sync")
+                if isinstance(node_vector_sync, dict):
+                    self.node_vector_sync = NodeVectorSyncStatusResponse.model_validate(
+                        node_vector_sync
+                    )
+                else:
+                    self.node_vector_sync = NodeVectorSyncStatusResponse()
                 self._pending_count = int(data.get("pending_count", 0))
                 self.active_job_state = data.get("active_job_state")
                 return
@@ -314,6 +327,7 @@ class GraphStore:
         self.last_optimized_at = None
         self.graph_dirty = False
         self.node_vector_dirty = False
+        self.node_vector_sync = NodeVectorSyncStatusResponse()
         self.active_job_state = None
         logger.info(f"Cleared graph for user {self.user_id}")
 
@@ -334,6 +348,53 @@ class GraphStore:
     def clear_node_vector_dirty(self) -> None:
         """Mark node-vector sidecars as fresh."""
         self.node_vector_dirty = False
+
+    def get_node_vector_sync_status(self) -> NodeVectorSyncStatusResponse:
+        """Return node-vector manual sync status snapshot."""
+        return self.node_vector_sync
+
+    def set_node_vector_sync_status(
+        self,
+        *,
+        state: NodeVectorSyncState,
+        processed: int | object = _UNSET,
+        total: int | object = _UNSET,
+        changed: int | object = _UNSET,
+        reused: int | object = _UNSET,
+        removed: int | object = _UNSET,
+        index_state: Optional[str] | object = _UNSET,
+        autosync_duration_ms: Optional[int] | object = _UNSET,
+        last_error: Optional[str] | object = _UNSET,
+        started_at: Optional[datetime] | object = _UNSET,
+        updated_at: Optional[datetime] | object = _UNSET,
+        finished_at: Optional[datetime] | object = _UNSET,
+    ) -> None:
+        """Update node-vector sync status sidecar fields."""
+        current = self.node_vector_sync.model_copy(deep=True)
+        current.state = state
+        if processed is not _UNSET:
+            current.processed = processed
+        if total is not _UNSET:
+            current.total = total
+        if changed is not _UNSET:
+            current.changed = changed
+        if reused is not _UNSET:
+            current.reused = reused
+        if removed is not _UNSET:
+            current.removed = removed
+        if index_state is not _UNSET:
+            current.index_state = index_state
+        if autosync_duration_ms is not _UNSET:
+            current.autosync_duration_ms = autosync_duration_ms
+        if last_error is not _UNSET:
+            current.last_error = last_error
+        if started_at is not _UNSET:
+            current.started_at = started_at
+        if updated_at is not _UNSET:
+            current.updated_at = updated_at
+        if finished_at is not _UNSET:
+            current.finished_at = finished_at
+        self.node_vector_sync = current
 
     def get_communities(self, level: Optional[int] = None) -> List[Community]:
         """Return communities, optionally filtered by hierarchy level."""

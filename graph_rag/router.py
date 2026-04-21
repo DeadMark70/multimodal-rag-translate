@@ -10,6 +10,7 @@ Provides REST API endpoints for graph management operations:
 
 # Standard library
 import asyncio
+from datetime import datetime, timezone
 import logging
 import os
 import shutil
@@ -31,6 +32,7 @@ from graph_rag.schemas import (
     GraphDocumentStatus,
     GraphDocumentStatusItem,
     GraphDocumentStatusListResponse,
+    NodeVectorSyncStatusResponse,
     GraphStatusResponse,
 )
 from graph_rag.store import GraphStore
@@ -87,6 +89,17 @@ class GraphVisualizationData(BaseModel):
     """Response for graph visualization (react-force-graph format)."""
     nodes: List[VisNode] = Field(default_factory=list)
     links: List[VisLink] = Field(default_factory=list)
+
+
+def _parse_optional_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
 
 
 def _copy_graph_sidecars(src: GraphStore, dest: GraphStore) -> None:
@@ -226,6 +239,85 @@ async def list_graph_documents(
             message="Failed to list graph documents",
             status_code=500,
         ) from e
+
+
+@router.post(
+    "/node-vector/sync",
+    response_model=GraphOperationResponse,
+    summary="手動同步 Graph node-vector index",
+    description="背景同步現有圖譜節點嵌入，支援舊圖譜補齊 node-vector sidecars。",
+)
+async def start_node_vector_sync(
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user_id),
+) -> GraphOperationResponse:
+    """Start background manual node-vector sync job."""
+    try:
+        store = GraphStore(user_id)
+        if store.active_job_state:
+            return GraphOperationResponse(
+                status="skipped",
+                message=f"已有圖譜工作執行中：{store.active_job_state}",
+            )
+
+        now = datetime.now(timezone.utc)
+        total_nodes = store.get_status().node_count
+        store.set_active_job_state("node_vector_sync")
+        store.set_node_vector_sync_status(
+            state="running",
+            processed=0,
+            total=total_nodes,
+            changed=0,
+            reused=0,
+            removed=0,
+            index_state="running",
+            autosync_duration_ms=None,
+            last_error=None,
+            started_at=now,
+            updated_at=now,
+            finished_at=None,
+        )
+        store.save_sidecars()
+        background_tasks.add_task(_node_vector_sync_task, user_id)
+        return GraphOperationResponse(
+            status="started",
+            message="節點嵌入同步已啟動，請稍候查看進度",
+            details={"total_nodes": total_nodes},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to start node-vector sync for user %s: %s", user_id, exc, exc_info=True)
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Failed to start node-vector sync",
+            status_code=500,
+        ) from exc
+
+
+@router.get(
+    "/node-vector/sync/status",
+    response_model=NodeVectorSyncStatusResponse,
+    summary="取得 node-vector 同步狀態",
+    description="回傳手動節點嵌入同步狀態與進度統計。",
+)
+async def get_node_vector_sync_status(
+    user_id: str = Depends(get_current_user_id),
+) -> NodeVectorSyncStatusResponse:
+    """Return latest manual node-vector sync status."""
+    try:
+        store = GraphStore(user_id)
+        return store.get_node_vector_sync_status()
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Failed to fetch node-vector sync status for user %s: %s",
+            user_id,
+            exc,
+            exc_info=True,
+        )
+        raise AppError(
+            code=ErrorCode.PROCESSING_ERROR,
+            message="Failed to get node-vector sync status",
+            status_code=500,
+        ) from exc
 
 
 @router.get(
@@ -534,6 +626,77 @@ async def optimize_graph(
 
 
 # ===== Background Tasks =====
+
+async def _node_vector_sync_task(user_id: str) -> None:
+    """Run manual node-vector sync in background and persist progress."""
+    logger.info("Starting node-vector sync for user %s", user_id)
+
+    async def _progress_callback(payload: dict[str, object]) -> None:
+        store = GraphStore(user_id)
+        raw_state = str(payload.get("state", "running")).lower()
+        state = raw_state if raw_state in {"idle", "running", "completed", "failed"} else "running"
+        update_fields: dict[str, object] = {
+            "state": state,
+            "processed": int(payload.get("processed", 0) or 0),
+            "total": int(payload.get("total", 0) or 0),
+            "changed": int(payload.get("changed", 0) or 0),
+            "reused": int(payload.get("reused", 0) or 0),
+            "removed": int(payload.get("removed", 0) or 0),
+        }
+        if "index_state" in payload:
+            update_fields["index_state"] = (
+                str(payload.get("index_state"))
+                if payload.get("index_state") is not None
+                else None
+            )
+        if "autosync_duration_ms" in payload:
+            update_fields["autosync_duration_ms"] = (
+                int(payload.get("autosync_duration_ms", 0) or 0)
+                if payload.get("autosync_duration_ms") is not None
+                else None
+            )
+        if "last_error" in payload:
+            update_fields["last_error"] = (
+                str(payload.get("last_error"))
+                if payload.get("last_error") is not None
+                else None
+            )
+        if "started_at" in payload:
+            update_fields["started_at"] = _parse_optional_datetime(payload.get("started_at"))
+        if "updated_at" in payload:
+            update_fields["updated_at"] = _parse_optional_datetime(payload.get("updated_at"))
+        if "finished_at" in payload:
+            update_fields["finished_at"] = _parse_optional_datetime(payload.get("finished_at"))
+
+        store.set_node_vector_sync_status(
+            state=state,
+            **{k: v for k, v in update_fields.items() if k != "state"},
+        )
+        store.save_sidecars()
+
+    try:
+        await sync_node_vector_index(
+            user_id=user_id,
+            progress_callback=_progress_callback,
+        )
+        logger.info("Node-vector sync complete for user %s", user_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Node-vector sync failed for user %s: %s", user_id, exc, exc_info=True)
+        store = GraphStore(user_id)
+        now = datetime.now(timezone.utc)
+        store.set_node_vector_sync_status(
+            state="failed",
+            last_error=str(exc),
+            updated_at=now,
+            finished_at=now,
+            index_state="failed",
+        )
+        store.save_sidecars()
+    finally:
+        store = GraphStore(user_id)
+        store.set_active_job_state(None)
+        store.save_sidecars()
+
 
 async def _optimize_existing_graph(
     store: GraphStore,

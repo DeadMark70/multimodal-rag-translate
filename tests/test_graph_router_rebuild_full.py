@@ -7,11 +7,12 @@ from fastapi.testclient import TestClient
 
 from core.auth import get_current_user_id
 from graph_rag.router import (
+    _node_vector_sync_task,
     _rebuild_full_graph_task,
     _purge_graph_document_task,
     _retry_graph_document_task,
 )
-from graph_rag.schemas import EntityType, GraphDocumentStatus, GraphExtractionRunResult
+from graph_rag.schemas import EntityType, GraphDocumentStatus, GraphExtractionRunResult, NodeVectorSyncStatusResponse
 from graph_rag.store import GraphStore
 from main import app
 
@@ -132,6 +133,94 @@ def test_purge_graph_document_endpoint_sets_active_job_and_starts_background_tas
     mock_store.set_active_job_state.assert_called_once_with("purge:doc-1")
     mock_store.save_sidecars.assert_called()
     mock_task.assert_awaited_once_with(TEST_USER_ID, "doc-1")
+
+
+def test_start_node_vector_sync_endpoint_starts_background_task() -> None:
+    mock_store = Mock()
+    mock_store.active_job_state = None
+    mock_store.get_status.return_value = Mock(node_count=23)
+    mock_store.save_sidecars = Mock()
+    mock_task = AsyncMock()
+
+    with (
+        patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
+        patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
+        patch("graph_rag.router.GraphStore", return_value=mock_store),
+        patch("graph_rag.router._node_vector_sync_task", new=mock_task),
+        _client() as client,
+    ):
+        response = client.post("/graph/node-vector/sync")
+
+    app.dependency_overrides = {}
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "started"
+    mock_store.set_active_job_state.assert_called_once_with("node_vector_sync")
+    mock_store.set_node_vector_sync_status.assert_called_once()
+    mock_store.save_sidecars.assert_called()
+    mock_task.assert_awaited_once_with(TEST_USER_ID)
+
+
+def test_start_node_vector_sync_endpoint_skips_when_another_job_is_running() -> None:
+    mock_store = Mock()
+    mock_store.active_job_state = "rebuild_full"
+
+    with (
+        patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
+        patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
+        patch("graph_rag.router.GraphStore", return_value=mock_store),
+        _client() as client,
+    ):
+        response = client.post("/graph/node-vector/sync")
+
+    app.dependency_overrides = {}
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "skipped"
+    assert "rebuild_full" in payload["message"]
+
+
+def test_get_node_vector_sync_status_endpoint_returns_latest_status() -> None:
+    mock_store = Mock()
+    mock_store.get_node_vector_sync_status.return_value = NodeVectorSyncStatusResponse(
+        state="running",
+        processed=12,
+        total=100,
+        changed=40,
+        reused=60,
+        removed=3,
+        index_state="running",
+    )
+
+    with (
+        patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
+        patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
+        patch("graph_rag.router.GraphStore", return_value=mock_store),
+        _client() as client,
+    ):
+        response = client.get("/graph/node-vector/sync/status")
+
+    app.dependency_overrides = {}
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["state"] == "running"
+    assert payload["processed"] == 12
+    assert payload["total"] == 100
+
+
+@pytest.mark.asyncio
+async def test_node_vector_sync_task_clears_active_job_state_after_completion() -> None:
+    mock_store = Mock()
+    mock_store.save_sidecars = Mock()
+
+    with (
+        patch("graph_rag.router.GraphStore", return_value=mock_store),
+        patch("graph_rag.router.sync_node_vector_index", new=AsyncMock(return_value={"index_state": "ready"})),
+    ):
+        await _node_vector_sync_task(TEST_USER_ID)
+
+    mock_store.set_active_job_state.assert_called_once_with(None)
+    mock_store.save_sidecars.assert_called_once()
 
 
 @pytest.mark.asyncio

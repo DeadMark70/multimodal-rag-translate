@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -6,6 +7,8 @@ import pytest
 
 from graph_rag.node_vector_index import (
     NodeVectorSearchResult,
+    PerUserSlidingWindowRateLimiter,
+    _embed_texts,
     search_nodes_by_vector,
     sync_node_vector_index,
 )
@@ -48,6 +51,20 @@ class _FakeEmbeddings:
 
     def embed_query(self, text: str) -> list[float]:
         return self._vector(text)
+
+
+class _RetryOnceEmbeddings:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+    async def aembed_query(self, text: str) -> list[float]:
+        return [1.0, 0.0, 0.0]
 
 
 @pytest.mark.asyncio
@@ -150,3 +167,75 @@ async def test_search_nodes_by_vector_respects_similarity_threshold() -> None:
     assert hit_result.vector_hit_count >= 1
     assert miss_result.node_ids == []
     assert miss_result.fallback_reason == "vector_score_below_threshold"
+
+
+@pytest.mark.asyncio
+async def test_per_user_sliding_window_limiter_waits_when_capacity_is_exhausted() -> None:
+    limiter = PerUserSlidingWindowRateLimiter(rpm_limit=2, window_seconds=0.01)
+    await limiter.acquire("user-a")
+    await limiter.acquire("user-a")
+
+    started = time.monotonic()
+    await limiter.acquire("user-a")
+    elapsed = time.monotonic() - started
+
+    assert elapsed >= 0.009
+
+
+@pytest.mark.asyncio
+async def test_embed_texts_retries_on_rate_limit_and_then_succeeds() -> None:
+    model = _RetryOnceEmbeddings()
+    sleep_mock = AsyncMock()
+
+    with patch("graph_rag.node_vector_index.asyncio.sleep", new=sleep_mock):
+        vectors = await _embed_texts(
+            model,
+            ["node one"],
+            batch_size=1,
+            user_id="retry-user",
+        )
+
+    assert vectors == [[1.0, 0.0, 0.0]]
+    assert model.calls == 2
+    sleep_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sync_node_vector_index_emits_progress_updates() -> None:
+    upload_root = _workspace_upload_root("graph_node_vector_progress")
+    fake_embeddings = _FakeEmbeddings()
+    progress_events: list[dict] = []
+
+    async def _progress(event: dict) -> None:
+        progress_events.append(event)
+
+    with (
+        patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)),
+        patch("graph_rag.node_vector_index.get_embeddings", return_value=fake_embeddings),
+        patch("graph_rag.node_vector_index.initialize_embeddings", new=AsyncMock()),
+    ):
+        store = GraphStore("progress-user")
+        store.add_node_from_extraction(
+            label="nnU-Net",
+            entity_type=EntityType.METHOD,
+            doc_id="doc-1",
+            pending_resolution=False,
+        )
+        store.add_node_from_extraction(
+            label="BERT",
+            entity_type=EntityType.METHOD,
+            doc_id="doc-2",
+            pending_resolution=False,
+        )
+        store.save()
+
+        result = await sync_node_vector_index(
+            user_id="progress-user",
+            store=store,
+            progress_callback=_progress,
+        )
+
+    assert result["index_state"] == "ready"
+    assert progress_events
+    assert progress_events[-1]["state"] == "completed"
+    assert progress_events[-1]["processed"] == progress_events[-1]["total"]

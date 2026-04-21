@@ -252,6 +252,26 @@ class GraphExtractionRunResult(BaseModel):
     last_error: Optional[str] = None
 
 
+NodeVectorSyncState = Literal["idle", "running", "completed", "failed"]
+
+
+class NodeVectorSyncStatusResponse(BaseModel):
+    """Response for node-vector manual sync status."""
+
+    state: NodeVectorSyncState = Field(default="idle", description="同步狀態")
+    processed: int = Field(default=0, ge=0, description="已處理節點數")
+    total: int = Field(default=0, ge=0, description="總節點數")
+    changed: int = Field(default=0, ge=0, description="本次重新嵌入節點數")
+    reused: int = Field(default=0, ge=0, description="沿用舊向量節點數")
+    removed: int = Field(default=0, ge=0, description="移除節點數")
+    index_state: Optional[str] = Field(default=None, description="索引狀態")
+    autosync_duration_ms: Optional[int] = Field(default=None, description="同步耗時毫秒")
+    last_error: Optional[str] = Field(default=None, description="最後錯誤")
+    started_at: Optional[datetime] = Field(default=None, description="開始時間")
+    updated_at: Optional[datetime] = Field(default=None, description="最後更新時間")
+    finished_at: Optional[datetime] = Field(default=None, description="完成時間")
+
+
 class ExtractedEntity(BaseModel):
     """
     Entity extracted from text by LLM.
