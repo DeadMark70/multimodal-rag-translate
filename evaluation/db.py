@@ -85,6 +85,9 @@ CREATE TABLE IF NOT EXISTS campaign_results (
 CREATE INDEX IF NOT EXISTS idx_campaign_results_campaign_created
 ON campaign_results(campaign_id, created_at ASC);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_results_unit_unique
+ON campaign_results(campaign_id, question_id, mode, run_number);
+
 CREATE TABLE IF NOT EXISTS agent_traces (
     id TEXT PRIMARY KEY,
     campaign_id TEXT NOT NULL,
@@ -183,6 +186,12 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_ragas_scores_result_metric
         ON ragas_scores(campaign_result_id, metric_name)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_results_unit_unique
+        ON campaign_results(campaign_id, question_id, mode, run_number)
         """
     )
     await connection.execute(
@@ -377,6 +386,26 @@ class CampaignRepository:
             )
             rows = await cursor.fetchall()
         return [_row_to_campaign_status(row) for row in rows]
+
+    async def list_inflight(self) -> list[tuple[str, CampaignStatus]]:
+        """List non-terminal campaigns across all users for startup recovery."""
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT *
+                FROM campaigns
+                WHERE status IN (?, ?, ?)
+                ORDER BY created_at ASC
+                """,
+                (
+                    CampaignLifecycleStatus.PENDING.value,
+                    CampaignLifecycleStatus.RUNNING.value,
+                    CampaignLifecycleStatus.EVALUATING.value,
+                ),
+            )
+            rows = await cursor.fetchall()
+        return [(str(row["user_id"]), _row_to_campaign_status(row)) for row in rows]
 
     async def mark_running(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
         return await self._update_campaign(
@@ -590,45 +619,92 @@ class CampaignResultRepository:
         result_id = str(uuid4())
         created_at = _utc_now_iso()
         async with connect_db() as connection:
-            await connection.execute(
-                """
-                INSERT INTO campaign_results (
-                    id, campaign_id, user_id, question_id, question, ground_truth,
-                    ground_truth_short, key_points_json, ragas_focus_json, mode, execution_profile,
-                    context_policy_version, run_number, answer, contexts_json, source_doc_ids_json,
-                    expected_sources_json, latency_ms, token_usage_json, category,
-                    difficulty, status, error_message, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    result_id,
-                    campaign_id,
-                    user_id,
-                    question_id,
-                    question,
-                    ground_truth,
-                    ground_truth_short,
-                    _json_dumps(key_points),
-                    _json_dumps(ragas_focus),
-                    mode,
-                    execution_profile,
-                    context_policy_version,
-                    run_number,
-                    answer,
-                    _json_dumps(contexts),
-                    _json_dumps(source_doc_ids),
-                    _json_dumps(expected_sources),
-                    latency_ms,
-                    _json_dumps(token_usage),
-                    category,
-                    difficulty,
-                    status.value,
-                    error_message,
-                    created_at,
-                ),
-            )
-            await connection.commit()
+            try:
+                await connection.execute(
+                    """
+                    INSERT INTO campaign_results (
+                        id, campaign_id, user_id, question_id, question, ground_truth,
+                        ground_truth_short, key_points_json, ragas_focus_json, mode, execution_profile,
+                        context_policy_version, run_number, answer, contexts_json, source_doc_ids_json,
+                        expected_sources_json, latency_ms, token_usage_json, category,
+                        difficulty, status, error_message, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        result_id,
+                        campaign_id,
+                        user_id,
+                        question_id,
+                        question,
+                        ground_truth,
+                        ground_truth_short,
+                        _json_dumps(key_points),
+                        _json_dumps(ragas_focus),
+                        mode,
+                        execution_profile,
+                        context_policy_version,
+                        run_number,
+                        answer,
+                        _json_dumps(contexts),
+                        _json_dumps(source_doc_ids),
+                        _json_dumps(expected_sources),
+                        latency_ms,
+                        _json_dumps(token_usage),
+                        category,
+                        difficulty,
+                        status.value,
+                        error_message,
+                        created_at,
+                    ),
+                )
+                await connection.commit()
+            except aiosqlite.IntegrityError as exc:
+                existing = await self.get_by_unit(
+                    user_id=user_id,
+                    campaign_id=campaign_id,
+                    question_id=question_id,
+                    mode=mode,
+                    run_number=run_number,
+                )
+                if existing is not None:
+                    return existing
+                raise exc
         return await self.get(user_id=user_id, campaign_id=campaign_id, result_id=result_id)
+
+    async def get_by_unit(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        question_id: str,
+        mode: str,
+        run_number: int,
+    ) -> CampaignResult | None:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT campaign_results.*,
+                       EXISTS(
+                           SELECT 1
+                           FROM agent_traces
+                           WHERE agent_traces.campaign_result_id = campaign_results.id
+                       ) AS has_trace
+                FROM campaign_results
+                WHERE campaign_id = ?
+                  AND user_id = ?
+                  AND question_id = ?
+                  AND mode = ?
+                  AND run_number = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (campaign_id, user_id, question_id, mode, run_number),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return _row_to_campaign_result(row)
 
     async def get(
         self,

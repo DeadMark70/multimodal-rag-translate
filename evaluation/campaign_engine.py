@@ -28,6 +28,11 @@ from evaluation.trace_schemas import AgentTraceDetail, AgentTraceSummary
 logger = logging.getLogger(__name__)
 
 CampaignRunner = Callable[..., Awaitable[BenchmarkExecutionResult]]
+_TERMINAL_STATUSES = {
+    CampaignLifecycleStatus.COMPLETED,
+    CampaignLifecycleStatus.FAILED,
+    CampaignLifecycleStatus.CANCELLED,
+}
 
 
 @dataclass(frozen=True)
@@ -37,6 +42,10 @@ class CampaignUnit:
     test_case: TestCase
     mode: str
     run_number: int
+
+
+def _unit_key(unit: CampaignUnit) -> tuple[str, str, int]:
+    return (unit.test_case.id, unit.mode, unit.run_number)
 
 
 class CampaignEngine:
@@ -60,6 +69,19 @@ class CampaignEngine:
         self._active_tasks: dict[str, asyncio.Task[None]] = {}
         self._task_guard = asyncio.Lock()
 
+    async def _register_active_task(self, campaign_id: str, task: asyncio.Task[None]) -> None:
+        async with self._task_guard:
+            self._active_tasks[campaign_id] = task
+        task.add_done_callback(lambda _: asyncio.create_task(self._drop_active_task(campaign_id)))
+
+    async def _get_active_task(self, campaign_id: str) -> asyncio.Task[None] | None:
+        async with self._task_guard:
+            task = self._active_tasks.get(campaign_id)
+        if task is not None and task.done():
+            await self._drop_active_task(campaign_id)
+            return None
+        return task
+
     async def create_and_start(
         self,
         *,
@@ -78,9 +100,7 @@ class CampaignEngine:
             ),
             name=f"evaluation-campaign-{created.id}",
         )
-        async with self._task_guard:
-            self._active_tasks[created.id] = task
-        task.add_done_callback(lambda _: asyncio.create_task(self._drop_active_task(created.id)))
+        await self._register_active_task(created.id, task)
         return CampaignCreateResponse(campaign_id=created.id, status=created.status)
 
     async def list_campaigns(self, *, user_id: str) -> list[CampaignStatus]:
@@ -118,19 +138,15 @@ class CampaignEngine:
 
     async def cancel_campaign(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
         campaign = await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
-        if campaign.status in {
-            CampaignLifecycleStatus.COMPLETED,
-            CampaignLifecycleStatus.FAILED,
-            CampaignLifecycleStatus.CANCELLED,
-        }:
+        if campaign.status in _TERMINAL_STATUSES:
             return campaign
 
-        updated = await self._campaign_repository.request_cancel(user_id=user_id, campaign_id=campaign_id)
-        async with self._task_guard:
-            active_task = self._active_tasks.get(campaign_id)
+        await self._campaign_repository.request_cancel(user_id=user_id, campaign_id=campaign_id)
+        active_task = await self._get_active_task(campaign_id)
         if active_task is not None:
             active_task.cancel()
-        return updated
+            return await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
+        return await self._campaign_repository.mark_cancelled(user_id=user_id, campaign_id=campaign_id)
 
     async def evaluate_campaign(
         self,
@@ -194,10 +210,145 @@ class CampaignEngine:
             ),
             name=f"evaluation-ragas-{campaign_id}",
         )
-        async with self._task_guard:
-            self._active_tasks[campaign_id] = task
-        task.add_done_callback(lambda _: asyncio.create_task(self._drop_active_task(campaign_id)))
+        await self._register_active_task(campaign_id, task)
         return await self.get_campaign(user_id=user_id, campaign_id=campaign_id)
+
+    async def recover_inflight_campaigns(self) -> None:
+        """Recover non-terminal campaigns after process restart."""
+        inflight = await self._campaign_repository.list_inflight()
+        if not inflight:
+            return
+
+        for user_id, campaign in inflight:
+            try:
+                await self.ensure_campaign_task(
+                    user_id=user_id,
+                    campaign_id=campaign.id,
+                    campaign_snapshot=campaign,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Failed to recover campaign %s for user %s: %s",
+                    campaign.id,
+                    user_id,
+                    exc,
+                    exc_info=True,
+                )
+
+    async def ensure_campaign_task(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        campaign_snapshot: CampaignStatus | None = None,
+    ) -> CampaignStatus:
+        """Ensure one non-terminal campaign has a running task or terminal state."""
+        campaign = campaign_snapshot or await self.get_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
+        if campaign.status in _TERMINAL_STATUSES:
+            return campaign
+
+        active_task = await self._get_active_task(campaign_id)
+        if active_task is not None:
+            return campaign
+
+        if campaign.cancel_requested:
+            return await self._campaign_repository.mark_cancelled(
+                user_id=user_id, campaign_id=campaign_id
+            )
+
+        try:
+            if campaign.status in {
+                CampaignLifecycleStatus.PENDING,
+                CampaignLifecycleStatus.RUNNING,
+            }:
+                resolved_cases = await self._resolve_test_cases(
+                    user_id=user_id,
+                    test_case_ids=campaign.config.test_case_ids,
+                )
+                all_units = self._build_units(
+                    test_cases=resolved_cases,
+                    modes=campaign.config.modes,
+                    repeat_count=campaign.config.repeat_count,
+                )
+                all_unit_keys = {_unit_key(unit) for unit in all_units}
+                existing_results = await self._result_repository.list_for_campaign(
+                    user_id=user_id,
+                    campaign_id=campaign_id,
+                )
+                completed_keys = {
+                    (row.question_id, row.mode, row.run_number)
+                    for row in existing_results
+                    if (row.question_id, row.mode, row.run_number) in all_unit_keys
+                }
+                remaining_units = [
+                    unit for unit in all_units if _unit_key(unit) not in completed_keys
+                ]
+                completed_units = len(completed_keys)
+                await self._campaign_repository.update_progress(
+                    user_id=user_id,
+                    campaign_id=campaign_id,
+                    completed_units=completed_units,
+                    current_question_id=campaign.current_question_id,
+                    current_mode=campaign.current_mode,
+                )
+
+                task = asyncio.create_task(
+                    self._run_campaign(
+                        user_id=user_id,
+                        campaign_id=campaign_id,
+                        config=campaign.config,
+                        test_cases=resolved_cases,
+                        units=remaining_units,
+                        initial_completed_units=completed_units,
+                        total_units_override=len(all_units),
+                    ),
+                    name=f"evaluation-campaign-recovery-{campaign_id}",
+                )
+                await self._register_active_task(campaign_id, task)
+                return await self.get_campaign(user_id=user_id, campaign_id=campaign_id)
+
+            if campaign.status == CampaignLifecycleStatus.EVALUATING:
+                results = await self._result_repository.list_for_campaign(
+                    user_id=user_id,
+                    campaign_id=campaign_id,
+                )
+                completed_results = [
+                    row
+                    for row in results
+                    if row.status == CampaignResultStatus.COMPLETED
+                ]
+                selected_result_ids = [row.id for row in completed_results]
+                await self._campaign_repository.mark_evaluating(
+                    user_id=user_id,
+                    campaign_id=campaign_id,
+                    evaluation_total_units=len(selected_result_ids),
+                )
+                task = asyncio.create_task(
+                    self._run_evaluation_only(
+                        user_id=user_id,
+                        campaign_id=campaign_id,
+                        completed_units=campaign.completed_units,
+                        evaluation_total_units=len(selected_result_ids),
+                        ragas_batch_size=campaign.config.ragas_batch_size,
+                        ragas_parallel_batches=campaign.config.ragas_parallel_batches,
+                        ragas_rpm_limit=campaign.config.ragas_rpm_limit,
+                        selected_result_ids=selected_result_ids,
+                    ),
+                    name=f"evaluation-ragas-recovery-{campaign_id}",
+                )
+                await self._register_active_task(campaign_id, task)
+                return await self.get_campaign(user_id=user_id, campaign_id=campaign_id)
+        except Exception as exc:  # noqa: BLE001
+            return await self._campaign_repository.mark_failed(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                error_message=f"Campaign recovery failed: {exc}",
+                phase=campaign.phase,
+            )
+
+        return campaign
 
     async def _run_campaign(
         self,
@@ -206,20 +357,32 @@ class CampaignEngine:
         campaign_id: str,
         config: CampaignConfig,
         test_cases: list[TestCase],
+        units: list[CampaignUnit] | None = None,
+        initial_completed_units: int = 0,
+        total_units_override: int | None = None,
     ) -> None:
         batch_tasks: list[asyncio.Task[tuple[CampaignUnit, BenchmarkExecutionResult | Exception]]] = []
         try:
             await self._campaign_repository.mark_running(user_id=user_id, campaign_id=campaign_id)
-            units = self._build_units(test_cases=test_cases, modes=config.modes, repeat_count=config.repeat_count)
+            pending_units = units
+            if pending_units is None:
+                pending_units = self._build_units(
+                    test_cases=test_cases,
+                    modes=config.modes,
+                    repeat_count=config.repeat_count,
+                )
             rate_budget = RateBudget(rpm_limit=config.rpm_limit)
-            completed_units = 0
+            completed_units = initial_completed_units
+            total_units = total_units_override or (
+                initial_completed_units + len(pending_units)
+            )
 
-            for offset in range(0, len(units), config.batch_size):
+            for offset in range(0, len(pending_units), config.batch_size):
                 if await self._campaign_repository.is_cancel_requested(user_id=user_id, campaign_id=campaign_id):
                     await self._campaign_repository.mark_cancelled(user_id=user_id, campaign_id=campaign_id)
                     return
 
-                batch = units[offset : offset + config.batch_size]
+                batch = pending_units[offset : offset + config.batch_size]
                 batch_tasks = [
                     asyncio.create_task(
                         self._execute_unit(
@@ -253,7 +416,7 @@ class CampaignEngine:
                         "Campaign %s progress %s/%s latest_result=%s",
                         campaign_id,
                         completed_units,
-                        len(units),
+                        total_units,
                         result.id,
                     )
 
@@ -277,7 +440,7 @@ class CampaignEngine:
                 user_id=user_id,
                 campaign_id=campaign_id,
                 error_message=str(exc),
-                phase="evaluation",
+                phase="execution",
             )
 
     async def _run_evaluation_only(

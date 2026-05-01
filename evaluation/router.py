@@ -331,6 +331,7 @@ async def stream_campaign(
 ) -> EventSourceResponse:
     """Stream campaign progress with authenticated SSE."""
     engine = get_campaign_engine()
+    await engine.ensure_campaign_task(user_id=user_id, campaign_id=campaign_id)
 
     async def event_generator():
         snapshot = await engine.get_campaign(user_id=user_id, campaign_id=campaign_id)
