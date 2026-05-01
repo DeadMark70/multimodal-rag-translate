@@ -66,3 +66,19 @@
 |-----------|-------|---------|------------|
 | 2026-04-04 | 遞迴掃描觸發 `.pytest_cache` 權限拒絕 | 1 | 改掃指定子目錄（`data/`, `evaluation/`, `conversations/`） |
 | 2026-04-04 | `ruff` 報 `unused import` | 1 | 移除 `test_agentic_evaluation_service.py` 的未使用 `RAGResult` import |
+
+## 2026-05-01 15:27:51 +08:00
+- Started implementation for evaluation interruption recovery plan; preparing backend patches.
+
+## 2026-05-01 16:00:00 +08:00
+- Completed backend recovery implementation:
+  - `evaluation/campaign_engine.py`: startup/on-demand recovery, resume logic, evaluating re-run, cancel convergence.
+  - `evaluation/db.py`: inflight listing, idempotent campaign result insertion, unit-key unique index.
+  - `core/app_factory.py`: startup `recover_inflight_campaigns()` hook.
+  - `evaluation/router.py`: `stream_campaign` calls `ensure_campaign_task(...)`.
+- Completed frontend fallback polling:
+  - `Multimodal_RAG_System/src/components/evaluation/CampaignRunner.tsx`.
+- Completed targeted regression tests:
+  - Backend: `pytest tests/test_campaign_engine.py tests/test_rag_startup.py` => `19 passed`.
+  - Frontend: `npx vitest run src/components/evaluation/CampaignRunner.test.tsx` => `5 passed`.
+

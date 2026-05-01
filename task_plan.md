@@ -86,3 +86,27 @@ Phase 4
 | 僅修改 evaluation agentic baseline，不碰線上 chat path | 降低回歸風險並維持公平比較 |
 | 保持模型與參數不變 | 讓分數變化可歸因於流程優化 |
 | token 預算上限採 +60% | 依使用者指定成本邊界 |
+
+## 2026-05-01 Recovery Implementation Session
+- Goal: implement campaign auto-recovery + cancellation convergence + idempotent result writes + startup recovery hook.
+- Scope: evaluation/campaign_engine.py, evaluation/db.py, core/app_factory.py, tests.
+
+### Phase A: Backend recovery and idempotency
+- [x] Add startup recovery orchestration (`recover_inflight_campaigns`).
+- [x] Add on-demand repair path (`ensure_campaign_task`) for stream/cancel flows.
+- [x] Add unique index for campaign result unit key and idempotent insert handling.
+- [x] Add cancel convergence when in-memory task is missing.
+- **Status:** complete
+
+### Phase B: Frontend SSE fallback polling
+- [x] Add automatic fallback polling after SSE reconnect exhaustion.
+- [x] Stop polling on terminal status / SSE resume / unmount.
+- [x] Show fallback notice to avoid perceived stuck state.
+- **Status:** complete
+
+### Phase C: Regression tests and validation
+- [x] Add backend recovery/cancel/idempotency tests.
+- [x] Add frontend fallback polling tests.
+- [x] Run targeted backend + frontend suites.
+- **Status:** complete
+

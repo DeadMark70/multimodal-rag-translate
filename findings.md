@@ -46,3 +46,21 @@
 - figure-flow 已加原題錨定與輔助任務過濾，避免 planner 產生 broad architecture 偏題子任務。
 - drilldown 新增 retrieval quality gate + coverage-gap targeted follow-up，避免無關追問。
 - single-task 路徑已強制走 synthesis-lite，降低輸出標題化/題目回顯漂移。
+
+## 2026-05-01 Initial Findings
+- Campaign runtime state is persisted, but active asyncio tasks are memory-only; restart can leave campaigns stuck at running/evaluating.
+- No startup recovery orchestration exists after init_db.
+- Cancel endpoint currently requests cancel, but without in-memory task it may not converge immediately.
+
+## 2026-05-01 Recovery Validation Findings
+- Backend now converges non-terminal campaigns after restart: `pending/running` resume remaining units, `evaluating` re-runs full RAGAS batch, `cancel_requested=true` converges to `cancelled`, irrecoverable data gaps converge to `failed`.
+- Campaign unit writes are now idempotent via unique key `(campaign_id, question_id, mode, run_number)` + conflict read-back.
+- Frontend now falls back to polling after SSE reconnect exhaustion and recovers view updates to terminal status.
+
+## Continuous Learning Protocol Entry (2026-05-01)
+1. Mistake: Initial frontend fallback tests used aggressive timer mocking that made async UI assertions flaky/time out.
+2. Root cause class: `tests`.
+3. Prevention rule: For retry/polling behavior tests, prefer real timer cadence with explicit `waitFor` timeouts over global `setTimeout` overrides unless the component is designed for fake-timer determinism.
+4. Encoded action: Added this rule to `D:\\flutterserver\\agent.md`.
+5. Regression verification: `npx vitest run src/components/evaluation/CampaignRunner.test.tsx` passed with fallback scenarios.
+

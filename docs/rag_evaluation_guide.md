@@ -43,8 +43,6 @@
     *   `faithfulness`：測試系統是否會「幻覺」（是否只根據檢索內容回答）。
     *   `answer_correctness`：測試答案與標準答案的事實重合度。
     *   `answer_relevancy`：測試答案是否直接切中要點。
-    *   `context_recall`：測試檢索模組是否能找回所有必要的片段。
-    *   `context_precision`：測試檢索結果的排序是否優良（正確片段是否排在前面）。
 
 ### 7. 分類 (Category) & 難度 (Difficulty)
 *   **說明**：用於後續的「切片分析」，幫助識別系統在特定領域或高難度題目上的表現。
