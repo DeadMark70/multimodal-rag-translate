@@ -1,168 +1,349 @@
-# Multimodal Agentic RAG System 🧠📚
+# Multimodal Agentic RAG Backend (`pdftopng`)
 
-> **A Next-Generation Academic Research Assistant**
-> 基於代理人 (Agentic) 架構、具備自我修正與多模態理解能力的深度研究系統。
+本專案是多模態 Agentic RAG 的後端服務，採 FastAPI 架構，提供 PDF/OCR、RAG 推理、GraphRAG、評估管線、對話持久化與統計 API。
 
-## 📘 Documentation Entry
-
-- Primary docs entry: `docs/index.md`
-- Legacy conductor docs: `conductor/`
-
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-green.svg)
-![Status](https://img.shields.io/badge/Status-Active_Development-green)
-
-## 🌟 專案願景 (Vision)
-
-本系統旨在解決傳統 RAG (Retrieval-Augmented Generation) 在學術研究場景中的三大痛點：
-
-1.  **碎片化 (Fragmentation)**：缺乏全域視角，難以處理跨文檔邏輯。
-2.  **幻覺與和稀泥 (Averaging Hallucination)**：面對觀點衝突的文獻時傾向於取平均值，忽略反駁證據。
-3.  **視覺盲區 (Visual Blindness)**：無法精確理解論文中的圖表數據。
-
-透過引入 **Agentic Workflow** (Planner, Executor, Evaluator, Synthesizer) 與 **GraphRAG**，本系統能像人類研究員一樣進行「規劃 -> 執行 -> 評估 -> 修正」的深度研究循環。
+本 README 以目前程式碼為準（`main.py`, `core/app_factory.py`, 各 router 與 `openapi.json`）。
 
 ---
 
-## 📚 系統模組與技術文檔 (System Modules)
+## 1. 系統角色
 
-本專案由 7 個核心模組組成，每個模組皆有獨立的技術文件：
+後端負責：
 
-| 模組名稱 | 職責 | 技術文件連結 |
-| :--- | :--- | :--- |
-| **PDF Service** | PDF 上傳、OCR、翻譯與重製 | [📖 PDF Service Guide](checklist/pdfservice_md_guide.md) |
-| **RAG Database** | 向量儲存、語意檢索與 Deep Research 邏輯 | [📖 RAG Database Guide](checklist/database_guide.md) |
-| **Image Service** | 圖片內的文字翻譯 (In-Place Translation) | [📖 Image Service Guide](checklist/image_service_guide.md) |
-| **Multimodal RAG** | 圖表提取、視覺摘要與多模態索引 | [📖 Multimodal RAG Guide](checklist/multimodal_rag_guide.md) |
-| **Graph RAG** | 知識圖譜構建、實體抽取與全域搜尋 | [📖 Graph RAG Guide](checklist/graph_rag_guide.md) |
-| **Statistics** | 用戶儀表板數據統計 | [📖 Statistics Guide](checklist/stats_guide.md) |
-| **Conversations** | 對話歷史管理與訊息儲存 | [📖 Conversations Guide](checklist/conversations_guide.md) |
+1. 文件處理：上傳 PDF、OCR、翻譯、摘要與索引流程
+2. 問答與研究：一般 RAG、Deep Research、Agentic Benchmark SSE
+3. 知識圖譜：GraphRAG 抽取、重構、優化、node-vector 同步
+4. 評估中心：題庫、模型設定、campaign 執行、metrics、trace
+5. 對話持久化：conversation/message CRUD
+6. 儀表板：統計資料供前端 Dashboard 顯示
 
 ---
 
-## 🔥 核心功能 (Core Features)
+## 2. 啟動與組裝方式
 
-### 1. 🔬 Deep Research (深度研究代理人)
-- **Plan-and-Solve 架構**: 自動將複雜問題拆解為子任務。
-- **Adaptive Loop (動態修正)**: 執行後自動調用 Evaluator 評分，若品質不佳自動重試。
-- **Conflict Arbitration**: 識別證據權重（Benchmark > Single Paper），避免和稀泥。
+入口：`main.py`
 
-### 2. ⚖️ Academic Evaluation Engine (學術評估引擎)
-- **1-10 分制多維度評分**: Accuracy, Completeness, Clarity.
-- **Pure LLM 對照**: 支援與無 RAG 的原生 LLM 進行 A/B Testing。
-
-### 3. 🕸️ GraphRAG (知識圖譜增強)
-- **全域視角**: 利用 NetworkX 構建實體關係圖。
-- **Hybrid Search**: 結合 Vector Search + Graph Traversal。
-
-### 4. 👁️ Multimodal Understanding (多模態)
-- **Gemini Vision**: 自動摘要圖表。
-- **Deep Image Verification**: 針對特定圖表數據進行二次深度查證。
-
-### 5. 🌍 Advanced Translation (學術翻譯)
-- **Layout-Aware**: 保持 PDF 原始排版 (Pandoc 重建)。
-
----
-
-## 🚀 快速開始 (Quick Start)
-
-### 1. 前置要求
-- Python 3.10+
-- Google Gemini API Key
-- Supabase Project (用於 Auth 與 Logging)
-- Datalab API Key (用於 PDF 結構分析)
-
-### 2. 建立虛擬環境 (Virtual Environment)
-**⚠️ 本專案必須在虛擬環境中執行以確保依賴隔離。**
-
-```bash
-# Windows
-python -m venv .venv
-.venv\Scripts\activate
-
-# Linux/Mac
-python3 -m venv .venv
-source .venv/bin/activate
+```python
+from core.app_factory import create_app
+app = create_app()
 ```
 
-### 3. 安裝依賴
+`core/app_factory.py` 負責：
+
+- 載入 `config.env`
+- 設定 logging
+- 註冊 CORS
+- 註冊錯誤處理器與 request-id middleware
+- 掛載所有 API routers
+- 啟動期間執行 lifespan 初始化：
+  - 建立必要資料夾
+  - 初始化 Supabase client
+  - 初始化 evaluation DB
+  - 恢復 in-flight campaign
+  - RAG warmup
+  - PDF OCR warmup（非 fake/test mode）
+
+---
+
+## 3. 主要目錄結構
+
+```text
+pdftopng/
+  main.py
+  core/
+    app_factory.py
+    auth.py
+    providers.py
+    llm_factory.py
+    errors.py
+  pdfserviceMD/         # PDF/OCR/翻譯/摘要
+  data_base/            # RAG ask/plan/execute/stream
+  graph_rag/            # GraphRAG 狀態與維運
+  evaluation/           # 測資/模型/campaign/metrics/trace
+  conversations/        # 對話持久化 API
+  stats/                # dashboard stats
+  multimodal_rag/       # multimodal 抽取
+  image_service/        # 圖片翻譯
+  migrations/           # SQL migrations
+  tests/
+  openapi.json
+  requirements.txt
+  config.env.example
+```
+
+---
+
+## 4. API 範圍（實際路由）
+
+以下為目前 `openapi.json` 暴露的主路徑群組：
+
+### 4.1 系統
+
+- `GET /`
+
+### 4.2 文件與 PDF（`/pdfmd`）
+
+- `GET /pdfmd/list`
+- `POST /pdfmd/ocr`
+- `POST /pdfmd/upload_pdf_md`
+- `GET /pdfmd/file/{doc_id}`
+- `GET /pdfmd/file/{doc_id}/status`
+- `POST /pdfmd/file/{doc_id}/retry-index`
+- `POST /pdfmd/file/{doc_id}/translate`
+- `DELETE /pdfmd/file/{doc_id}`
+- `GET /pdfmd/file/{doc_id}/summary`
+- `POST /pdfmd/file/{doc_id}/summary/regenerate`
+
+### 4.3 RAG / Agentic（`/rag`）
+
+- `POST /rag/ask`
+- `POST /rag/ask/stream`
+- `POST /rag/research`
+- `POST /rag/plan`
+- `POST /rag/execute`
+- `POST /rag/execute/stream`
+- `POST /rag/agentic/stream`
+
+### 4.4 GraphRAG（`/graph`）
+
+- `GET /graph/status`
+- `GET /graph/documents`
+- `GET /graph/data`
+- `POST /graph/rebuild`
+- `POST /graph/rebuild-full`
+- `POST /graph/documents/{doc_id}/retry`
+- `DELETE /graph/documents/{doc_id}`
+- `POST /graph/optimize`
+- `POST /graph/node-vector/sync`
+- `GET /graph/node-vector/sync/status`
+
+### 4.5 評估中心（`/api/evaluation`）
+
+- test cases CRUD
+- model configs CRUD
+- available models list
+- campaigns create/list/evaluate/cancel
+- campaign results/metrics/traces
+- campaign SSE stream
+
+### 4.6 對話持久化（`/api/conversations`）
+
+- list/create/get/update/delete conversation
+- create message in conversation
+
+### 4.7 其他
+
+- `GET /stats/dashboard`
+- `POST /multimodal/extract`
+- `DELETE /multimodal/file/{doc_id}`
+- `POST /imagemd/translate_image`
+
+---
+
+## 5. 認證與安全
+
+### 5.1 JWT 驗證
+
+`core/auth.py` 的 `get_current_user_id` 為所有受保護路由的共用 dependency：
+
+- 從 `Authorization: Bearer <token>` 讀取 JWT
+- 透過 `core.auth_repository.fetch_user_id_from_token` 驗證
+- 缺 token 或失敗時回 401
+
+### 5.2 CORS
+
+`core/app_factory.py`：
+
+- 預設允許本機開發來源（5173/4173/3000/80）
+- 可用 `CORS_ORIGINS` 覆寫
+
+### 5.3 錯誤處理
+
+全域 handler 在 `core/errors.py` 與 `app_factory` 註冊：
+
+- `AppError`
+- `HTTPException`
+- `RequestValidationError`
+- 未處理例外
+
+### 5.4 Request ID
+
+HTTP middleware 會注入/回傳 `X-Request-Id`，便於 trace 與除錯。
+
+---
+
+## 6. Provider 與外部依賴策略
+
+`core/providers.py` 封裝外部 provider，支援 real/fake 模式切換：
+
+- LLM provider
+- Datalab provider
+
+切換規則：
+
+- `TEST_MODE=true` 或 `USE_FAKE_PROVIDERS=true` -> fake providers
+
+`core/llm_factory.py`：
+
+- 統一管理 LLM purpose 與配置
+- 以 cache 重用 model 實例
+- 支援 request-scoped runtime override
+
+---
+
+## 7. 環境變數
+
+請複製 `config.env.example` 為 `config.env`。
+
+關鍵變數：
+
+- `GOOGLE_API_KEY`（必要）
+- `SUPABASE_URL`, `SUPABASE_KEY`
+- `DATALAB_API_KEY`
+- `HF_TOKEN`（選用）
+- `TEST_MODE`, `USE_FAKE_PROVIDERS`
+- `CI_BLOCK_EXTERNAL_NETWORK`
+- `IMAGE_OCR_DEVICE`（`cpu|auto|cuda`）
+
+---
+
+## 8. 本機開發
+
+### 8.1 建立虛擬環境
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+### 8.2 安裝依賴
+
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. 設定環境變數
-複製 `config.env.example` 為 `config.env` 並填入：
-```env
-GOOGLE_API_KEY=your_key
-SUPABASE_URL=your_url
-SUPABASE_KEY=your_key
-DATALAB_API_KEY=your_key
-HF_TOKEN=your_huggingface_token
+### 8.3 啟動服務
+
+```bash
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-測試與 CI 建議：
+文件：
+
+- Swagger UI: `http://localhost:8000/docs`
+- OpenAPI JSON: `http://localhost:8000/openapi.json`
+
+---
+
+## 9. 測試與品質
+
+`pytest.ini`：
+
+- `testpaths = tests`
+- `python_files = test_*.py`
+
+常用命令：
+
+```bash
+pytest
+pytest -q
+ruff check .
+```
+
+測試範圍涵蓋：
+
+- API contracts
+- agentic/deep-research flow
+- GraphRAG pipeline
+- conversation persistence
+- evaluation campaign pipeline
+- provider/test-mode 安全邊界
+
+---
+
+## 10. 資料持久化與 Migration
+
+### 10.1 SQL migrations（本 repo）
+
+- `migrations/002_create_conversations.sql`
+  - 建立 `conversations` 表
+  - 啟用 RLS
+  - 建立 user scoped policy
+- `migrations/003_add_conversation_id_to_chat_logs.sql`
+  - `chat_logs` 增加 `conversation_id`、`role`
+
+### 10.2 其他 Supabase migration
+
+前端 repo (`D:\flutterserver\Multimodal_RAG_System\supabase\migrations`) 另有 `messages` / `conversations.metadata` migration，請確保實際 DB schema 與兩側契約一致。
+
+---
+
+## 11. Docker 與整體部署
+
+### 11.1 Backend image
+
+`pdftopng/Dockerfile`：
+
+- Base: `python:3.11-slim`
+- 安裝系統依賴（poppler, pandoc, libgl1 ...）
+- 安裝 torch/torchvision（CUDA index）與 Python requirements
+- 以 uvicorn 啟動 port `8000`
+
+### 11.2 Full stack compose
+
+上層 `D:\flutterserver\docker-compose.yml`：
+
+- `backend`: build from `./pdftopng`
+- `frontend`: build from `./Multimodal_RAG_System`
+- 兩者在同一 bridge network (`rag-net`)
+
+---
+
+## 12. 與前端整合重點
+
+前端 (`Multimodal_RAG_System`) 預設呼叫：
+
+- `VITE_API_BASE_URL=http://127.0.0.1:8000`
+
+部署到 nginx reverse proxy 時，前端也可用相對 base URL（例如 `/`）轉發到 backend。
+
+SSE 端點（例如 `/rag/ask/stream`, `/rag/execute/stream`, `/api/evaluation/campaigns/{id}/stream`）需要關閉 proxy buffering。
+
+---
+
+## 13. 常見問題
+
+### Q1. 401 `Missing Authorization header`
+
+前端未附 Bearer token 或使用未登入 session。請檢查 Supabase session 狀態與前端 `api.ts` interceptor。
+
+### Q2. 啟動時外部 provider error
+
+若本機只是跑測試/開發流程，可先設定：
+
 ```env
 TEST_MODE=true
 USE_FAKE_PROVIDERS=true
-CI_BLOCK_EXTERNAL_NETWORK=true
 ```
-上述模式會啟用 fake providers 並封鎖測試中的外部連線，避免誤呼叫真實 LLM / Datalab API。
-正式使用時請改為 `TEST_MODE=false`、`USE_FAKE_PROVIDERS=false`（`CI_BLOCK_EXTERNAL_NETWORK` 只在測試/CI 開啟）。
 
-### 5. 啟動服務
-```bash
-uvicorn main:app --reload
-```
-API 文件: `http://localhost:8000/docs`
+### Q3. Graph rebuild / node-vector sync 一直 skipped
+
+通常是目前已有 active graph job，或圖譜節點數/可用文件數不足。請先查 `/graph/status`、`/graph/documents`。
+
+### Q4. OCR/翻譯流程失敗
+
+請檢查：
+
+- `DATALAB_API_KEY` / `GOOGLE_API_KEY`
+- 系統依賴（poppler, pandoc）
+- `uploads/` 與 `output/` 目錄權限
 
 ---
 
-## 🛠️ 系統架構 (Architecture)
+## 14. 相關檔案
 
-```mermaid
-graph TD
-    User[使用者] --> API[FastAPI Gateway]
-    
-    subgraph "Core Services"
-        API --> PDF[PDF Service]
-        API --> Img[Image Service]
-        API --> RAG[RAG Database]
-        API --> Graph[Graph RAG]
-    end
-
-    subgraph "Deep Research Loop"
-        RAG --> Planner[Planner]
-        Planner --> Executor[Executor]
-        Executor --> Retriever[Hybrid Retriever]
-        Retriever <--> VectorDB[(FAISS)]
-        Retriever <--> GraphDB[(NetworkX)]
-        Executor --> Evaluator[Evaluator]
-    end
-
-    subgraph "Processing Pipeline"
-        PDF --> Extractor[Structure Analyzer]
-        Extractor --> Vision[Gemini Vision]
-        Vision --> VectorDB
-        Extractor --> Text[Text Chunks]
-        Text --> VectorDB
-        Text --> GraphExtractor[Entity Extraction]
-        GraphExtractor --> GraphDB
-    end
-```
-
----
-
-## 📅 開發進度 (Roadmap)
-
-- [x] **Phase 1-3**: 基礎 RAG 與 Agent 架構
-- [x] **Phase 4-6**: 評估引擎與深度研究優化
-- [x] **Phase 7-9**: 多模態整合 (OCR, Vision, Re-Act)
-- [x] **Refactor (2026/01)**: 系統模組化與文檔重構 (Current)
-- [ ] **Phase 10**: ColPali 視覺向量嵌入 (Next Step)
-
----
-
-## 📄 License
-
-MIT License
+- App factory: `core/app_factory.py`
+- Auth dependency: `core/auth.py`
+- Provider registry: `core/providers.py`
+- OpenAPI snapshot: `openapi.json`
+- Frontend counterpart: `D:\flutterserver\Multimodal_RAG_System\README.md`
