@@ -4,7 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+ARG TORCH_INDEX_URL=
 
 WORKDIR /app
 
@@ -25,7 +25,11 @@ RUN apt-get update && \
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && \
-    pip install --index-url ${TORCH_INDEX_URL} torch torchvision && \
+    if [ -n "$TORCH_INDEX_URL" ]; then \
+      pip install --index-url "$TORCH_INDEX_URL" torch torchvision; \
+    else \
+      pip install torch torchvision; \
+    fi && \
     pip install -r /app/requirements.txt
 
 COPY . /app
