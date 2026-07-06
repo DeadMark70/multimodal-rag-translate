@@ -17,6 +17,7 @@ from langchain_core.messages import HumanMessage
 # Local application
 from core.llm_factory import get_llm_usage_metrics, graph_rag_llm_runtime_override
 from core.providers import get_llm
+from core.prompt_loader import format_graph_rag_prompt
 from graph_rag.llm_response import response_content_to_text
 from graph_rag.schemas import Community
 from graph_rag.store import GraphStore
@@ -41,31 +42,7 @@ def _log_summary_usage(call_name: str, response: object) -> None:
     )
 
 # Prompt for community summarization
-_COMMUNITY_SUMMARY_PROMPT = """你是一個學術論文分析專家。請為以下知識圖譜社群生成一個簡潔的摘要。
 
-社群包含以下實體及其關係：
-
-{entities_and_relations}
-
-請提供：
-1. 一個簡短的標題 (10 字以內)
-2. 一段摘要 (50-100 字)
-
-以 JSON 格式輸出：
-```json
-{{"title": "社群標題", "summary": "社群摘要描述..."}}
-```
-
-JSON 輸出："""
-
-_PARENT_COMMUNITY_PROMPT = """你是一個學術知識圖譜整理專家。請把多個子社群整理成一個上層主題。
-
-子社群資訊：
-{child_summaries}
-
-請輸出 JSON：
-{{"title": "上層主題標題", "summary": "50-100 字摘要"}}
-"""
 
 
 async def detect_communities_leiden(store: GraphStore) -> List[Community]:
@@ -188,7 +165,7 @@ async def summarize_community(
     context = "\n".join(lines)
     
     try:
-        prompt = _COMMUNITY_SUMMARY_PROMPT.format(entities_and_relations=context)
+        prompt = format_graph_rag_prompt("community_summary", entities_and_relations=context)
         with graph_rag_llm_runtime_override("community_summary"):
             llm = get_llm("community_summary")
             response = await llm.ainvoke([HumanMessage(content=prompt)])
@@ -346,8 +323,9 @@ async def _summarize_parent_community(
             response = await llm.ainvoke(
                 [
                     HumanMessage(
-                        content=_PARENT_COMMUNITY_PROMPT.format(
-                            child_summaries="\n".join(child_summary_lines)
+                        content=format_graph_rag_prompt(
+                            "parent_community",
+                            child_summaries="\n".join(child_summary_lines),
                         )
                     )
                 ]

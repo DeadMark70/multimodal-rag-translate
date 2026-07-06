@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "prompts": {
+    "hyde": {
+      "version": 1,
+      "description": "HyDE prompt used by the query transformer.",
+      "required_variables": [
+        "question"
+      ],
+      "template": "你是一位學術研究助手。請根據以下問題，撰寫一段可能包含答案的假設性文檔片段（約 100-200 字）。\n\n問題：{question}\n\n要求：\n1. 假設你已經知道答案，直接撰寫包含資訊的內容\n2. 使用學術/專業的語氣\n3. 不需要前言或解釋，直接輸出假設性文檔內容\n\n假設性文檔："
+    },
+    "multi_query": {
+      "version": 1,
+      "description": "Multi-query prompt used by the query transformer.",
+      "required_variables": [
+        "question"
+      ],
+      "template": "你是一位查詢優化專家。請將以下使用者問題拆分為 3-4 個不同角度的子查詢，以利於多維度檢索。\n\n原始問題：{question}\n\n要求：\n1. 每個子查詢應聚焦於問題的不同面向\n2. 子查詢應該清晰、具體\n3. 以數字編號列出（如 1. 2. 3.）\n\n子查詢列表："
+    },
+    "proposition": {
+      "version": 1,
+      "description": "Proposition extraction prompt used by the chunker.",
+      "required_variables": [
+        "text"
+      ],
+      "template": "你是一個文本分析專家。請將下方的文本分解為多個「原子命題」(Atomic Propositions)。\n\n原子命題的定義：\n1. 每個命題只包含一個事實或論斷\n2. 命題是自洽的，不依賴上下文就能理解\n3. 代名詞（如「它」、「他」）應替換為具體名稱\n4. 保留原文的關鍵資訊，不要添加推論\n\n範例輸入：\n\"Tesla 在 2023 年第三季的營收增長了 20%，同時其在歐洲的市場份額有所下降。\"\n\n範例輸出：\n1. Tesla 在 2023 年第三季的營收增長了 20%。\n2. Tesla 在歐洲的市場份額有所下降。\n\n---\n\n請分解以下文本，每行輸出一個命題（用數字編號）：\n\n{text}\n\n命題列表："
+    },
+    "context_enrichment": {
+      "version": 1,
+      "description": "Context enrichment prompt used by the enricher.",
+      "required_variables": [
+        "document_title",
+        "chunk_content"
+      ],
+      "template": "你是一個文檔分析專家。給定一個文檔片段，請生成一段簡短的上下文說明（50字以內），幫助讀者理解這段內容的背景。\n\n要求：\n1. 說明應包含：主題、提及的主要實體（人物、公司、概念等）\n2. 如果片段中有代名詞（如「它」、「他」、「該公司」），請推斷其指代對象\n3. 使用繁體中文\n4. 不要重複原文內容，只提供背景說明\n\n文檔標題：{document_title}\n\n文檔片段：\n{chunk_content}\n\n請直接輸出上下文說明，不需要任何前綴或解釋："
+    }
+  }
+}

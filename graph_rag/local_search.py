@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage
 # Local application
 from core.llm_factory import graph_rag_llm_runtime_override
 from core.providers import get_llm
+from core.prompt_loader import format_graph_rag_prompt
 from graph_rag.llm_response import response_content_to_text
 from graph_rag.generic_mode import GraphEvidence, estimate_token_count
 from graph_rag.node_vector_index import (
@@ -30,11 +31,6 @@ from graph_rag.store import GraphStore
 logger = logging.getLogger(__name__)
 
 # Prompt for entity identification in query
-_ENTITY_IDENTIFICATION_PROMPT = """請從以下問題中識別可能存在於知識圖譜中的關鍵實體。
-
-問題：{question}
-
-只輸出實體名稱，每行一個，不要其他文字："""
 
 
 def _question_terms(question: str) -> set[str]:
@@ -62,7 +58,7 @@ async def identify_query_entities(question: str) -> List[str]:
     try:
         with graph_rag_llm_runtime_override("graph_extraction"):
             llm = get_llm("graph_extraction")
-            prompt = _ENTITY_IDENTIFICATION_PROMPT.format(question=question)
+            prompt = format_graph_rag_prompt("entity_identification", question=question)
             response = await llm.ainvoke([HumanMessage(content=prompt)])
         
         # Parse response (one entity per line)

@@ -12,6 +12,7 @@ from agents.evaluator import RAGEvaluator
 from agents.planner import SubTask, TaskPlanner
 from agents.synthesizer import SubTaskResult, synthesize_results
 from core.llm_factory import get_llm
+from core.prompt_loader import format_agentic_rag_prompt
 from data_base.RAG_QA_service import rag_answer_question
 from data_base.schemas_deep_research import (
     AtomicFact,
@@ -24,29 +25,6 @@ from data_base.schemas_deep_research import (
 from langchain_core.messages import HumanMessage
 
 logger = logging.getLogger(__name__)
-
-_FACT_STATE_PROMPT = """你是研究助理。請把下列子任務結果轉成 1-3 條可驗證的原子事實。
-僅輸出 JSON 陣列，不要額外文字。
-
-格式:
-[
-  {{"claim": "具體事實", "source_doc_ids": ["doc-1"]}}
-]
-
-規則:
-1. claim 必須是單一、可被文獻支持的陳述。
-2. source_doc_ids 只能使用已提供的來源 doc id；若無法判定可留空陣列。
-3. 不要輸出推測語句。
-
-問題:
-{question}
-
-已知來源:
-{source_doc_ids}
-
-回答內容:
-{answer}
-"""
 
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？.!?])\s+")
@@ -282,7 +260,8 @@ class ResearchExecutionCore:
         source_ids = [str(source) for source in result.sources if str(source).strip()]
         try:
             llm = get_llm("planner")
-            prompt = _FACT_STATE_PROMPT.format(
+            prompt = format_agentic_rag_prompt(
+                "fact_state",
                 question=result.question,
                 source_doc_ids=", ".join(source_ids) if source_ids else "(none)",
                 answer=result.answer[:2400],

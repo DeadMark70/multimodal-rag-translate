@@ -16,25 +16,10 @@ from langchain_core.messages import HumanMessage
 
 # Local application
 from core.providers import get_llm
+from core.prompt_loader import format_rag_pipeline_prompt
 
 # Configure logging
 logger = logging.getLogger(__name__)
-
-# Prompt template for context generation
-_CONTEXT_PROMPT_TEMPLATE = """你是一個文檔分析專家。給定一個文檔片段，請生成一段簡短的上下文說明（50字以內），幫助讀者理解這段內容的背景。
-
-要求：
-1. 說明應包含：主題、提及的主要實體（人物、公司、概念等）
-2. 如果片段中有代名詞（如「它」、「他」、「該公司」），請推斷其指代對象
-3. 使用繁體中文
-4. 不要重複原文內容，只提供背景說明
-
-文檔標題：{document_title}
-
-文檔片段：
-{chunk_content}
-
-請直接輸出上下文說明，不需要任何前綴或解釋："""
 
 
 class ContextEnricher:
@@ -78,7 +63,8 @@ class ContextEnricher:
             try:
                 llm = get_llm("context_generation")
                 
-                prompt = _CONTEXT_PROMPT_TEMPLATE.format(
+                prompt = format_rag_pipeline_prompt(
+                    "context_enrichment",
                     document_title=document_title,
                     chunk_content=chunk.page_content[:1000],  # Limit input size
                 )

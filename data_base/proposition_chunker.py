@@ -17,33 +17,10 @@ from langchain_core.messages import HumanMessage
 
 # Local application
 from core.providers import get_llm
+from core.prompt_loader import format_rag_pipeline_prompt
 
 # Configure logging
 logger = logging.getLogger(__name__)
-
-# Prompt for proposition extraction
-_PROPOSITION_PROMPT = """你是一個文本分析專家。請將下方的文本分解為多個「原子命題」(Atomic Propositions)。
-
-原子命題的定義：
-1. 每個命題只包含一個事實或論斷
-2. 命題是自洽的，不依賴上下文就能理解
-3. 代名詞（如「它」、「他」）應替換為具體名稱
-4. 保留原文的關鍵資訊，不要添加推論
-
-範例輸入：
-"Tesla 在 2023 年第三季的營收增長了 20%，同時其在歐洲的市場份額有所下降。"
-
-範例輸出：
-1. Tesla 在 2023 年第三季的營收增長了 20%。
-2. Tesla 在歐洲的市場份額有所下降。
-
----
-
-請分解以下文本，每行輸出一個命題（用數字編號）：
-
-{text}
-
-命題列表："""
 
 
 class PropositionChunker:
@@ -88,7 +65,7 @@ class PropositionChunker:
             try:
                 llm = get_llm("proposition_extraction")
                 
-                prompt = _PROPOSITION_PROMPT.format(text=text[:2000])  # Limit input
+                prompt = format_rag_pipeline_prompt("proposition", text=text[:2000])  # Limit input
                 message = HumanMessage(content=prompt)
                 
                 response = await llm.ainvoke([message])

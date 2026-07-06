@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "prompts": {
+    "planner": {
+      "version": 1,
+      "description": "planner",
+      "required_variables": [
+        "question"
+      ],
+      "template": "你是一個研究規劃專家。請將以下複雜問題分解為 2-5 個可獨立回答的子問題。\n這個問題通常涉及多個實體或概念的比較、分析或綜合。\n\n原始問題：{question}\n\n要求：\n1. **專注性 (Focus)**：子問題必須直接有助於回答原始問題。避免生成過於寬泛或教科書式的定義問題（如「什麼是 X？」），除非該定義對區分 X 和 Y 至關重要。\n2. **比較性 (Comparison)**：如果原問題是 A vs B，請確保生成針對「A 與 B 的差異」、「A 與 B 的基準測試比較」或「A 與 B 的優缺點對比」的子問題。\n3. **查證性 (Verification)**：若需要具體數據，請生成「查詢 X 在 Y 任務上的具體性能數據」此類的子問題。\n4. **依賴關係**：如果某個子問題依賴另一個的答案，請標註。\n5. 以數字編號列出。\n6. **語言要求 (Language)**：為了確保對英文學術論文的檢索效果，請**務必將所有子問題翻譯為英文** (Translate sub-questions to English)。\n\n## 視覺查證規範 (Strict Visual Requirement)\n- 如果原始問題涉及「圖表」、「Figure」、「Figure 1」、「圖片中的位置/細節」，且你認為文字檢索可能不足以提供精確數據，你必須在子問題中明確要求「查證圖片內容」。\n- 嚴禁在未嘗試調用工具的情況下回答「不知道」。\n\n## 負面約束 (Negative Constraints)\n- **除非原始問題明確詢問**，否則嚴禁生成關於 \"Interactive Segmentation\"、\"SAM (Segment Anything Model)\"、\"SegVol\" 或 \"Annotation\" 相關的子問題。\n- 我們只關注原始問題中提及的模型或技術的直接比較。\n\n輸出格式（每行一個英文子問題）：\n1. [Sub-question 1 in English]\n2. [Sub-question 2 in English]\n3. [Sub-question 3 in English]\n\n子問題列表："
+    },
+    "graph_planner": {
+      "version": 1,
+      "description": "graph planner",
+      "required_variables": [
+        "question"
+      ],
+      "template": "你是一個研究規劃專家。請將以下複雜問題分解為子問題，並標註每個問題適合的查詢方式。\n\n原始問題：{question}\n\n可用的查詢方式：\n- [RAG] 向量檢索：適合查找特定事實、數據、定義、引用\n- [GRAPH] 圖譜分析：適合分析實體關係、跨文件比較、趨勢分析\n\n要求：\n1. 每個子問題應該是具體、可回答的\n2. 為每個子問題選擇最適合的查詢方式\n3. 關係類問題用 [GRAPH]，事實類問題用 [RAG]\n4. **語言要求**：為了匹配學術文獻，請將**所有子問題寫成英文** (Write all sub-questions in English)。\n5. 以數字編號列出，格式：[查詢方式] 子問題\n\n## 視覺查證規範 (Strict Visual Requirement)\n- 如果問題涉及「圖片」、「圖表」、「Figure X」，且需要精確細節，請生成一個 [RAG] 子任務來專門執行「視覺查證」。\n- 即使檢索到文字摘要，若摘要不含具體位置或數值，仍須標註需要看圖。\n\n輸出格式：\n1. [RAG] What is the definition of X?\n2. [GRAPH] Analyze the relationship between A and B\n3. [RAG] What is the specific data for X?\n\n子問題列表："
+    },
+    "followup": {
+      "version": 1,
+      "description": "followup",
+      "required_variables": [
+        "original_question",
+        "current_findings",
+        "existing_questions"
+      ],
+      "template": "你正在協助研究以下問題：\n{original_question}\n\n目前已找到的資訊：\n{current_findings}\n\n已經問過的問題：\n{existing_questions}\n\n請判斷是否有任何概念、數據、專有名詞或主張需要進一步在文件中「查證」或「挖掘細節」？\n\n## Phase 6.3: 對抗性思維 (Critical - 必須遵循)\n\n針對每個核心論點，請同時考慮：\n1. 支持該論點的證據\n2. **限制或反對該論點的證據** (必要)\n\n## 視覺查證規範 (Strict Visual Requirement)\n- 如果目前的發現中提到「如圖所示」、「Figure 1 顯示了...」但沒有寫出圖中具體數據，**你必須**生成一個追問子任務來要求「檢視該圖片以獲取具體細節」。\n- 嚴禁跳過圖片細節的查證。\n\n## 多模態追問指示 (Multimodal Follow-up)\n- 如果目前資訊中的 `Visual Verification Findings` 顯示了新的專有名詞、縮寫（例如 XYZ）或異常數據，**必須**新增至少一個 `[RAG]` 子任務，專門查該名詞/縮寫的文字定義、背景脈絡或數據解釋。\n- 若視覺發現與文字敘述存在落差，也必須新增 `[RAG]` 子任務做交叉查證。\n- 這些多模態追問仍需使用英文撰寫。\n\n例如：\n- 若論點是「方法 A 效果好」→ 同時生成查詢「What are the limitations of Method A?」\n- 若論點是「X 優於 Y」→ 同時生成查詢「Is there evidence that Y outperforms X?」\n\n## 注意事項\n1. 我們只能查閱現有的文件，不能上網搜尋\n2. 不要重複已經問過的問題\n3. 只針對文件中「提到但未詳細解釋」的內容追問\n4. **必須包含至少一個「反面/限制」相關的查詢**\n5. **語言要求**：請用**英文**撰寫追問子任務 (Write follow-up tasks in English)。\n\n如果資訊已經足夠完整（包含正反面觀點），請回覆：無需追加查詢\n\n如果需要深入查詢，請列出 1-3 個子任務，格式：\n1. [RAG] Specific question in English\n2. [GRAPH] Specific analysis question in English\n\n子任務列表："
+    },
+    "refine_query": {
+      "version": 1,
+      "description": "refine query",
+      "required_variables": [
+        "original_question",
+        "evaluation_reason",
+        "failed_answer"
+      ],
+      "template": "你是一個搜尋策略專家。一個 AI 系統剛剛嘗試回答問題但品質不佳。\n\n原始問題：{original_question}\n之前的回答：{failed_answer}\n評估失敗原因：{evaluation_reason}\n\n請根據失敗原因，生成一個**修正過的搜尋查詢**來補救問題。\n\n## 策略指南\n- 如果原因提到「資料太舊」或「outdated」→ 加入「latest」、「recent」、「2024」等時間限定詞\n- 如果原因提到「缺乏數據」或「no data」→ 改為搜尋「statistics」、「data」、「percentage」、「quantitative」\n- 如果原因提到「圖片細節不足」或「視覺資訊不足」→ 加入「visual verification」、「details of Figure X」、「check image」\n- 如果原因提到「定義不清」或「unclear」→ 增加「definition」、「what is」\n- 如果原因提到「缺乏比較」或「no comparison」→ 增加「versus」、「comparison」、「difference」\n- 如果原因提到「證據不足」或「insufficient」→ 聚焦「evidence」、「study」、「paper」\n- 如果原因提到「範圍太廣」或「too broad」→ 縮小搜尋範圍，更具體化\n- 如果原因提到「不完整」或「incomplete」→ 擴大搜尋範圍，增加相關細節\n\n## 要求\n1. 新的查詢必須與原始問題有**明顯差異**\n2. 針對失敗原因做出有針對性的修正\n3. 保持查詢簡潔（30 字以內），適合向量檢索\n4. **務必使用英文 (English)** 撰寫新的查詢，以獲得最佳學術檢索結果\n\n請直接輸出修正後的搜尋查詢，不要其他內容："
+    },
+    "intent_classifier": {
+      "version": 1,
+      "description": "intent classifier",
+      "required_variables": [
+        "question"
+      ],
+      "template": "You are a routing classifier for Agentic RAG benchmark.\nClassify the user question and estimate routing complexity.\n\nQuestion:\n{question}\n\nReturn JSON only:\n{{\n  \"intent\": \"benchmark_data|figure_flow|comparison_disambiguation|enumeration_definition|general_research\",\n  \"complexity_score\": 1,\n  \"confidence\": 0.0,\n  \"rationale\": \"short reason\"\n}}\n\nRules:\n- complexity_score must be integer 1..5.\n- Prefer benchmark_data for numeric benchmark comparison tasks.\n- Prefer figure_flow for architecture/order/flow reconstruction tasks.\n- Prefer comparison_disambiguation for concept-level differentiation tasks.\n- Prefer enumeration_definition for list/definition tasks.\n- Prefer general_research only when none of above are dominant.\n"
+    },
+    "conflict_arbitration": {
+      "version": 1,
+      "description": "conflict arbitration",
+      "required_variables": [
+        "sub_results"
+      ],
+      "template": "你是衝突仲裁引擎。請檢查以下子任務結果是否存在結論衝突：\n\n{sub_results}\n\n若存在衝突，請依下列規則做出單一仲裁結論：\n1. 基準測試 (Benchmark) / 系統性評估 優先於單篇方法論文聲稱。\n2. 有明確數據支撐的主張優先於定性敘述。\n3. 多來源共識優先於單一來源孤立結論。\n\n輸出規則：\n- 無衝突時，只輸出：NO_CONFLICT\n- 有衝突時，輸出 2-4 句仲裁聲明，包含：\n  - 哪個結論應採信\n  - 主要證據權重理由\n  - 對被否決觀點的限制/適用條件（若有）\n"
+    },
+    "synthesizer": {
+      "version": 1,
+      "description": "synthesizer",
+      "required_variables": [
+        "original_question",
+        "sub_results"
+      ],
+      "template": "你是一個精準的學術總結專家。請根據以下「子問題與回答」的組合，合成一個針對「原始問題」的最終回答。\n\n## 原始問題\n{original_question}\n\n## 子問題與回答\n{sub_results}\n\n## 嚴格約束 (Strict Constraints) - 必須遵守！\n1.  **字數限制**：總字數 **必須小於 500 字**。嚴禁長篇大論。\n2.  **結論先行 (BLUF)**：第一句話 **必須直接回答原始問題的結論** (例如：A 優於 B，因為...)。不要做鋪墊。\n3.  **禁止廢話**：**嚴禁**使用 \"本報告旨在...\"、\"經過分析...\"、\"總結來說...\" 等開場白或結語。直接講重點。\n4.  **拒絕模稜兩可**：如果證據顯示某方有優勢（例如 nnU-Net 在 Benchmark 勝出），請 **明確指出**。\n5.  **技術歸因 (Root Cause)**：在解釋差異時，優先引用具體的**技術原因**（如：Inductive Bias、Auto-configuration、ResEnc 變體），而非泛泛而談。\n6.  **來源限定**：僅使用提供的子回答作為來源。\n7.  **來源標記**：關鍵結論或比較句後必須加上來源標記（例如：`[來源: 子問題2]`）。\n8.  **證據不足處理**：若子回答缺乏直接證據，必須明確寫「資料不足」，不得自行補齊。\n\n## 結構要求\n- **第一段**：直接結論 (Answer the question directly)。\n- **後續段落**：關鍵證據與技術分析 (Key Evidence & Technical Analysis)。使用條列式。\n"
+    },
+    "academic_report": {
+      "version": 1,
+      "description": "academic report",
+      "required_variables": [
+        "original_question",
+        "sub_results"
+      ],
+      "template": "你是一位專業的學術報告撰寫專家。請根據以下子問題的回答，綜合生成一份結構完整的學術研究報告。\n\n原始研究問題：{original_question}\n\n子問題與回答：\n{sub_results}\n\n76: ## 衝突處理守則 (Critical: 必須遵循)\n77: \n78: 在撰寫報告前，請先在 <think> 標籤內執行以下推理步驟（此部分不顯示於報告正文）：\n79: \n80: <think>\n81: ### 觀點盤點\n82: 列出各來源的核心論點：\n83: - [來源 1]: {{觀點}} (支持/反駁)\n84: - [來源 2]: {{觀點}} (支持/反駁)\n85: \n86: ### 證據權重判斷\n87: 根據以下優先順序（由高至低）：\n88: 1. **基準測試 (Benchmark) / 回顧 (Review) / Revisited 論文** (最高權重)\n89: 2. 多來源共識 > 單一來源聲稱\n90: 3. 較新發表年份 > 較舊發表年份\n91: 4. 單一方法的「提出論文」 (權重最低，因可能有自誇偏見)\n92: \n93: 若遇到「提出論文」與「基準測試」衝突：\n94: - **必須採信基準測試的結論**，並指出提出論文可能存在的偏差或特定條件下的優勢。\n95: \n96: ### 結論選擇\n97: 採信: {{來源X}}，原因: {{符合權重規則...}}\n98: </think>\n99: \n100: ## 衝突處理格式（報告正文中若有衝突必須使用）\n101: \n102: \"雖然 {{來源A (提出論文)}} 聲稱...，\n103: 但 {{來源B (Benchmark)}} 的大規模測試顯示...。\n104: **根據證據權重** (Benchmark 優於單一實驗)，結論是...。\"\n105: \n106: ⚠️ 禁止模糊結論：不可使用「兩者互有優劣」「效果因情況而異」等和稀泥的表述。\n107: \n108: ---\n109: \n110: ## 報告結構（請嚴格遵循此格式）\n111: \n112: ### 1. Executive Summary (執行摘要)\n113: - 用 2-3 句話總結關鍵發現\n114: - 直接回答原始問題的核心\n115: - 若發現衝突，明確表態採信哪方結論 (基於 Benchmark)\n116: \n117: ### 2. Key Findings (主要發現)\n118: - 以條列點整理最重要的發現\n119: - 每個發現應有明確的資料支撐\n120: - 標註衝突觀點（若有）\n121: \n122: ### 3. Detailed Analysis (詳細分析)\n123: - 深入解釋每個發現\n124: - 如有圖表數據，請使用 Markdown 格式引用圖片：`![圖表說明](圖片路徑)`\n125: - 衝突觀點必須使用「衝突處理格式」呈現\n126: \n127: ### 4. Research Gaps (知識缺口)\n128: - 指出目前資料庫中缺少的拼圖\n129: - 建議後續研究方向\n130: \n131: ### 5. References (參考來源)\n132: - 列出引用的所有來源文件\n133: - 標註年份（若可得）\n134: \n135: ## 格式要求\n136: 1. 使用繁體中文\n137: 2. 保持學術嚴謹的語氣\n138: 3. 數學公式使用 LaTeX 格式\n139: 4. 若引用圖片摘要內容，務必以 `![描述](路徑)` 格式插入圖片\n140: \n141: 請開始撰寫報告："
+    },
+    "retrieval_eval": {
+      "version": 1,
+      "description": "retrieval eval",
+      "required_variables": [
+        "question",
+        "documents"
+      ],
+      "template": "你是一個檢索品質評估專家。請評估以下檢索結果是否與問題相關。\n\n問題：{question}\n\n檢索文檔：\n{documents}\n\n評估標準：\n- 如果文檔包含回答問題所需的資訊，回答 \"RELEVANT\"\n- 如果文檔與問題無關或資訊不足，回答 \"NOT_RELEVANT\"\n\n請只回答 RELEVANT 或 NOT_RELEVANT，不要其他內容："
+    },
+    "faithfulness_eval": {
+      "version": 1,
+      "description": "faithfulness eval",
+      "required_variables": [
+        "question",
+        "documents",
+        "answer"
+      ],
+      "template": "你是一個答案品質評估專家。請評估以下答案是否完全基於提供的文檔內容。\n\n問題：{question}\n\n參考文檔：\n{documents}\n\n生成的答案：\n{answer}\n\n評估標準：\n- 如果答案的所有內容都可以從文檔中找到依據，回答 \"GROUNDED\"\n- 如果答案包含文檔中沒有的資訊或推測，回答 \"HALLUCINATED\"\n\n請只回答 GROUNDED 或 HALLUCINATED，不要其他內容："
+    },
+    "detailed_eval": {
+      "version": 1,
+      "description": "detailed eval",
+      "required_variables": [
+        "question",
+        "documents",
+        "answer"
+      ],
+      "template": "你是一位嚴格的學術論文評審。請針對以下「使用者問題」與「參考文獻」，評估「AI 回答」的品質。\n\n## 評估資料\n**問題：** {question}\n\n**參考文獻：**\n{documents}\n\n**AI 回答：**\n{answer}\n\n## 評分標準 (1-10分)\n\n### 1. Accuracy (精確度) - 權重 50%\n- **10**: 數據精確至小數點，引用無誤，或正確指出文獻無資料\n- **7-9**: 數據大致正確，無明顯幻覺\n- **5-6**: 使用模糊詞彙(大約/很多)，缺乏精確度\n- **1-4**: 嚴重幻覺，數據錯誤，或文獻無資料卻瞎掰\n\n### 2. Completeness (完整性) - 權重 30%\n- **10**: 完整覆蓋問題的所有子面向\n- **5-9**: 漏掉次要觀點\n- **1-4**: 遺漏關鍵論點或斷章取義\n\n### 3. Clarity (邏輯表達) - 權重 20%\n- **10**: 結構清晰，推論連貫，無冗言\n- **1-4**: 邏輯混亂，語句不通，答非所問\n\n## 評估步驟 (Chain of Thought)\n請先進行「錯誤分析」，列出回答中的具體事實錯誤或遺漏點。\n然後再根據上述標準給出分數。\n\n## 範例 (Few-shot)\n\n### 範例 1 - 嚴重幻覺 (Accuracy: 2)\n問題: 論文中 Transformer 的參數量是多少？\n文獻: 本文未提及模型參數量。\nAI 回答: Transformer 有 1.75 億參數。\n分析: 文獻明確無此資料，AI 卻給出精確數字 → 嚴重幻覺\n評分: accuracy=2, completeness=3, clarity=7\n\n### 範例 2 - 誠實不知道 (Accuracy: 9)\n問題: 論文中的訓練時間是多少？\n文獻: 本文未提及訓練時間。\nAI 回答: 根據文獻內容，未提及具體訓練時間，無法回答此問題。\n分析: AI 正確辨識出無資料並誠實回應 → 高分\n評分: accuracy=9, completeness=8, clarity=9\n\n### 範例 3 - 忽略反面證據 (Accuracy: 5) [Phase 5 新增]\n問題: SwinUNETR 和 nnU-Net 哪個效果更好？\n文獻 A: SwinUNETR 原文宣稱優於 nnU-Net。\n文獻 B: 大規模 Benchmark 顯示 nnU-Net 在多數資料集勝出。\n AI 回答: 根據研究，SwinUNETR 效果較好。\n分析: AI 只採信單一來源，忽略 Benchmark 的反駁證據 → 選擇性引用\n評分: accuracy=5, completeness=4, clarity=8\n\n## Phase 5: 衝突感知檢查 (Conflict Awareness)\n\n除了上述標準，請額外檢查以下情況：\n\n1. **文獻中是否存在轉折語意?** (如「However」「Contrary to」「與...相反」「但是」)\n2. **若存在衝突觀點，回答是否反映?**\n   - 若有衝突但回答只引用其中一方 → Completeness 扣 2 分\n   - 若 Benchmark 反駁原文結論但回答仍採信原文 → Accuracy 扣 3 分\n3. **禁止和稀泥**: 若回答使用「兩者互有優劣」「效果因情況而異」等模糊結論來迴避衝突 → Accuracy 扣 2 分\n\n## 輸出格式 (JSON Only)\n請只輸出 JSON，不要其他內容：\n{{\"analysis\": \"<錯誤分析過程>\", \"accuracy\": <1-10>, \"completeness\": <1-10>, \"clarity\": <1-10>, \"reason\": \"<簡短評語>\", \"suggestion\": \"<如何改進>\"}}"
+    },
+    "pure_llm_eval": {
+      "version": 1,
+      "description": "pure llm eval",
+      "required_variables": [
+        "question",
+        "answer",
+        "ground_truth"
+      ],
+      "template": "你是一位嚴格的學術論文評審。請評估「AI 回答」的品質。\n\n**注意：此評估為 Pure LLM 模式，無參考文獻。**\n\n## 評估資料\n**問題：** {question}\n\n**AI 回答：**\n{answer}\n\n**Ground Truth (參考答案，用於對比)：**\n{ground_truth}\n\n## 評分標準 (1-10分)\n1. **Accuracy (精確度)**: 與 Ground Truth 的吻合程度\n2. **Completeness (完整性)**: 是否涵蓋所有重點\n3. **Clarity (邏輯表達)**: 結構是否清晰\n\n## 輸出格式 (JSON Only)\n{{\"analysis\": \"<對比分析>\", \"accuracy\": <1-10>, \"completeness\": <1-10>, \"clarity\": <1-10>, \"reason\": \"<評語>\", \"suggestion\": \"<改進建議>\"}}"
+    },
+    "fact_state": {
+      "version": 1,
+      "description": "fact state",
+      "required_variables": [
+        "question",
+        "source_doc_ids",
+        "answer"
+      ],
+      "template": "你是研究助理。請把下列子任務結果轉成 1-3 條可驗證的原子事實。\n僅輸出 JSON 陣列，不要額外文字。\n\n格式:\n[\n  {{\"claim\": \"具體事實\", \"source_doc_ids\": [\"doc-1\"]}}\n]\n\n規則:\n1. claim 必須是單一、可被文獻支持的陳述。\n2. source_doc_ids 只能使用已提供的來源 doc id；若無法判定可留空陣列。\n3. 不要輸出推測語句。\n\n問題:\n{question}\n\n已知來源:\n{source_doc_ids}\n\n回答內容:\n{answer}\n"
+    }
+  }
+}

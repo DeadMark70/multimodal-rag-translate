@@ -17,33 +17,10 @@ from langchain_core.messages import HumanMessage
 
 # Local application
 from core.providers import get_llm
+from core.prompt_loader import format_rag_pipeline_prompt
 
 # Configure logging
 logger = logging.getLogger(__name__)
-
-# HyDE prompt template
-_HYDE_PROMPT = """你是一位學術研究助手。請根據以下問題，撰寫一段可能包含答案的假設性文檔片段（約 100-200 字）。
-
-問題：{question}
-
-要求：
-1. 假設你已經知道答案，直接撰寫包含資訊的內容
-2. 使用學術/專業的語氣
-3. 不需要前言或解釋，直接輸出假設性文檔內容
-
-假設性文檔："""
-
-# Multi-query prompt template
-_MULTI_QUERY_PROMPT = """你是一位查詢優化專家。請將以下使用者問題拆分為 3-4 個不同角度的子查詢，以利於多維度檢索。
-
-原始問題：{question}
-
-要求：
-1. 每個子查詢應聚焦於問題的不同面向
-2. 子查詢應該清晰、具體
-3. 以數字編號列出（如 1. 2. 3.）
-
-子查詢列表："""
 
 
 class QueryTransformer:
@@ -87,7 +64,7 @@ class QueryTransformer:
             try:
                 llm = get_llm("query_rewrite")
                 
-                prompt = _HYDE_PROMPT.format(question=question)
+                prompt = format_rag_pipeline_prompt("hyde", question=question)
                 message = HumanMessage(content=prompt)
                 
                 response = await llm.ainvoke([message])
@@ -122,7 +99,7 @@ class QueryTransformer:
             try:
                 llm = get_llm("query_rewrite")
                 
-                prompt = _MULTI_QUERY_PROMPT.format(question=question)
+                prompt = format_rag_pipeline_prompt("multi_query", question=question)
                 message = HumanMessage(content=prompt)
                 
                 response = await llm.ainvoke([message])

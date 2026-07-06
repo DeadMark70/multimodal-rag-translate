@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "prompts": {
+    "entity_extraction": {
+      "version": 1,
+      "description": "GraphRAG entity extraction prompt.",
+      "required_variables": [
+        "text"
+      ],
+      "template": "你是一個學術論文實體抽取專家。請從以下文本中識別重要的學術實體。\n\n實體類別 (entity_type):\n- concept: 概念/理論 (例如: \"注意力機制\", \"深度學習\")\n- method: 方法/技術/模型 (例如: \"BERT\", \"Transformer\", \"CNN\")\n- metric: 指標/度量 (例如: \"F1 分數\", \"準確率\", \"BLEU\")\n- result: 結果/發現 (例如: \"最先進性能\", \"顯著改進\")\n- author: 作者/研究者 (例如: \"Vaswani et al.\")\n\n輸出格式規則:\n- 只輸出一個 JSON 陣列，不能有任何前言、結語、註解或 Markdown code fence\n- 第一個字元必須是 `[`，最後一個字元必須是 `]`\n- 若沒有可抽取的實體，回傳 `[]`\n- 不要重複輸出同一批資料，也不要在 JSON 後面補充說明\n\n輸出範例:\n[{{\"label\":\"實體名稱\",\"entity_type\":\"method\",\"description\":\"簡短描述\"}}]\n\n文本：\n{text}\n\nJSON 輸出："
+    },
+    "relation_extraction": {
+      "version": 1,
+      "description": "GraphRAG relation extraction prompt.",
+      "required_variables": [
+        "text",
+        "entities"
+      ],
+      "template": "你是一個學術論文關係抽取專家。請從以下文本中識別實體之間的關係。\n\n已識別的實體：\n{entities}\n\n關係類型 (relation):\n- uses: 使用 (A 使用 B)\n- outperforms: 優於 (A 的表現優於 B)\n- proposes: 提出 (作者提出方法)\n- evaluates_with: 用...評估 (用指標評估方法)\n- cites: 引用 (引用其他工作)\n- extends: 擴展 (基於...擴展)\n- part_of: 是...的一部分\n- applies_to: 應用於\n\n輸出格式規則:\n- 只輸出一個 JSON 陣列，不能有任何前言、結語、註解或 Markdown code fence\n- 第一個字元必須是 `[`，最後一個字元必須是 `]`\n- 若沒有可抽取的關係，回傳 `[]`\n- 僅可使用上方已識別實體中的名稱，不要自行創造新實體\n- 不要重複輸出同一批資料，也不要在 JSON 後面補充說明\n\n輸出範例:\n[{{\"entity1\":\"來源實體\",\"entity1_type\":\"method\",\"relation\":\"uses\",\"entity2\":\"目標實體\",\"entity2_type\":\"concept\",\"description\":\"關係描述\"}}]\n\n文本：\n{text}\n\nJSON 輸出："
+    },
+    "one_pass_extraction": {
+      "version": 1,
+      "description": "GraphRAG one-pass extraction prompt.",
+      "required_variables": [
+        "text"
+      ],
+      "template": "你是一個學術論文知識圖譜抽取專家。請從以下文本中一次完成實體與關係抽取。\n\n實體類別 (entity_type):\n- concept: 概念/理論 (例如: \"注意力機制\", \"深度學習\")\n- method: 方法/技術/模型 (例如: \"BERT\", \"Transformer\", \"CNN\")\n- metric: 指標/度量 (例如: \"F1 分數\", \"準確率\", \"BLEU\")\n- result: 結果/發現 (例如: \"最先進性能\", \"顯著改進\")\n- author: 作者/研究者 (例如: \"Vaswani et al.\")\n\n關係類型 (relation):\n- uses: 使用 (A 使用 B)\n- outperforms: 優於 (A 的表現優於 B)\n- proposes: 提出 (作者提出方法)\n- evaluates_with: 用...評估 (用指標評估方法)\n- cites: 引用 (引用其他工作)\n- extends: 擴展 (基於...擴展)\n- part_of: 是...的一部分\n- applies_to: 應用於\n\n抽取規則:\n- 只抽取文本中明確提到的重要學術實體與關係\n- 每個 entity 都要有唯一 `id`，relation 必須引用這些 entity `id`\n- 不要為了補齊圖譜而猜測文本中不存在的關係\n- 如果同一個實體重複出現，可以重用同一個實體概念\n- 若無法同時提供 `source_entity_id`、`target_entity_id`、`relation` 三個欄位，該 relation 就不要輸出\n- 每個 relation 都必須引用 `entities` 陣列中已出現的 `id`\n- 只輸出單一 JSON 物件，不能有任何前言、結語、註解或 Markdown code fence\n- JSON 物件必須符合此形狀：`{{\"entities\":[...],\"relations\":[...]}}`\n- 若沒有可抽取內容，回傳 `{{\"entities\":[],\"relations\":[]}}`\n- 不要重複輸出同一個 JSON 物件，也不要在 JSON 前後補充說明\n\n文本：\n{text}\n"
+    },
+    "relevance_check": {
+      "version": 1,
+      "description": "GraphRAG community relevance check prompt.",
+      "required_variables": [
+        "question",
+        "title",
+        "summary"
+      ],
+      "template": "判斷以下社群是否與問題相關。\n\n問題：{question}\n\n社群標題：{title}\n社群摘要：{summary}\n\n回答 \"相關\" 或 \"不相關\"，不要其他文字："
+    },
+    "community_answer": {
+      "version": 1,
+      "description": "GraphRAG community answer prompt.",
+      "required_variables": [
+        "question",
+        "title",
+        "summary",
+        "entities"
+      ],
+      "template": "你是一個學術論文分析專家。請根據以下社群知識回答問題。\n\n問題：{question}\n\n社群知識：\n標題：{title}\n摘要：{summary}\n\n相關實體：\n{entities}\n\n請根據社群知識提供簡短回答 (50-100 字)。如果社群知識無法回答問題，回答 \"無法從此社群獲得相關資訊\"。\n\n回答："
+    },
+    "global_synthesis": {
+      "version": 1,
+      "description": "GraphRAG global answer synthesis prompt.",
+      "required_variables": [
+        "question",
+        "community_answers"
+      ],
+      "template": "你是一個研究報告撰寫專家。請將以下多個社群的回答綜合成一個完整的答案。\n\n原始問題：{question}\n\n各社群回答：\n{community_answers}\n\n請提供：\n1. 一個綜合性的完整回答\n2. 整合各社群的觀點\n3. 使用繁體中文\n4. 保持學術嚴謹的語氣\n\n綜合答案："
+    },
+    "entity_identification": {
+      "version": 1,
+      "description": "GraphRAG query entity identification prompt.",
+      "required_variables": [
+        "question"
+      ],
+      "template": "請從以下問題中識別可能存在於知識圖譜中的關鍵實體。\n\n問題：{question}\n\n只輸出實體名稱，每行一個，不要其他文字："
+    },
+    "community_summary": {
+      "version": 1,
+      "description": "GraphRAG community summary prompt.",
+      "required_variables": [
+        "entities_and_relations"
+      ],
+      "template": "你是一個學術論文分析專家。請為以下知識圖譜社群生成一個簡潔的摘要。\n\n社群包含以下實體及其關係：\n\n{entities_and_relations}\n\n請提供：\n1. 一個簡短的標題 (10 字以內)\n2. 一段摘要 (50-100 字)\n\n以 JSON 格式輸出：\n```json\n{{\"title\": \"社群標題\", \"summary\": \"社群摘要描述...\"}}\n```\n\nJSON 輸出："
+    },
+    "parent_community": {
+      "version": 1,
+      "description": "GraphRAG parent community prompt.",
+      "required_variables": [
+        "child_summaries"
+      ],
+      "template": "你是一個學術知識圖譜整理專家。請把多個子社群整理成一個上層主題。\n\n子社群資訊：\n{child_summaries}\n\n請輸出 JSON：\n{{\"title\": \"上層主題標題\", \"summary\": \"50-100 字摘要\"}}\n"
+    },
+    "generic_router": {
+      "version": 1,
+      "description": "GraphRAG generic router prompt.",
+      "required_variables": [
+        "question",
+        "stage_hint",
+        "task_type_hint",
+        "prefer_global",
+        "prefer_local",
+        "has_communities"
+      ],
+      "template": "你是一個圖譜檢索路由器。請為問題選擇檢索類型與路徑。\n\n問題：{question}\nHints:\n- stage_hint: {stage_hint}\n- task_type_hint: {task_type_hint}\n- prefer_global: {prefer_global}\n- prefer_local: {prefer_local}\n- has_communities: {has_communities}\n\n規則：\n1. fact = 需要精確數據、定義、單點事實\n2. relation = 需要跨實體比較、關聯、對比\n3. summary = 需要整體趨勢、總結、全域概覽\n4. local-first = 先抓實體與關係證據\n5. global-first = 先抓社群摘要\n6. blended = 需要 local + global，但仍要控制上下文\n\n只輸出 JSON：\n{{\"query_kind\":\"fact|relation|summary\",\"path\":\"local-first|global-first|blended\",\"budget\":\"tight|balanced|wide\"}}\n"
+    }
+  }
+}

@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 # Local application
 from core.llm_factory import get_llm_usage_metrics, graph_rag_llm_runtime_override
 from core.providers import get_llm
+from core.prompt_loader import format_graph_rag_prompt
 from graph_rag.schemas import (
     EntityType,
     ExtractedEntity,
@@ -32,94 +33,6 @@ logger = logging.getLogger(__name__)
 
 
 # ===== Extraction Prompts =====
-
-_ENTITY_EXTRACTION_PROMPT = """你是一個學術論文實體抽取專家。請從以下文本中識別重要的學術實體。
-
-實體類別 (entity_type):
-- concept: 概念/理論 (例如: "注意力機制", "深度學習")
-- method: 方法/技術/模型 (例如: "BERT", "Transformer", "CNN")
-- metric: 指標/度量 (例如: "F1 分數", "準確率", "BLEU")
-- result: 結果/發現 (例如: "最先進性能", "顯著改進")
-- author: 作者/研究者 (例如: "Vaswani et al.")
-
-輸出格式規則:
-- 只輸出一個 JSON 陣列，不能有任何前言、結語、註解或 Markdown code fence
-- 第一個字元必須是 `[`，最後一個字元必須是 `]`
-- 若沒有可抽取的實體，回傳 `[]`
-- 不要重複輸出同一批資料，也不要在 JSON 後面補充說明
-
-輸出範例:
-[{{"label":"實體名稱","entity_type":"method","description":"簡短描述"}}]
-
-文本：
-{text}
-
-JSON 輸出："""
-
-_RELATION_EXTRACTION_PROMPT = """你是一個學術論文關係抽取專家。請從以下文本中識別實體之間的關係。
-
-已識別的實體：
-{entities}
-
-關係類型 (relation):
-- uses: 使用 (A 使用 B)
-- outperforms: 優於 (A 的表現優於 B)
-- proposes: 提出 (作者提出方法)
-- evaluates_with: 用...評估 (用指標評估方法)
-- cites: 引用 (引用其他工作)
-- extends: 擴展 (基於...擴展)
-- part_of: 是...的一部分
-- applies_to: 應用於
-
-輸出格式規則:
-- 只輸出一個 JSON 陣列，不能有任何前言、結語、註解或 Markdown code fence
-- 第一個字元必須是 `[`，最後一個字元必須是 `]`
-- 若沒有可抽取的關係，回傳 `[]`
-- 僅可使用上方已識別實體中的名稱，不要自行創造新實體
-- 不要重複輸出同一批資料，也不要在 JSON 後面補充說明
-
-輸出範例:
-[{{"entity1":"來源實體","entity1_type":"method","relation":"uses","entity2":"目標實體","entity2_type":"concept","description":"關係描述"}}]
-
-文本：
-{text}
-
-JSON 輸出："""
-
-_ONE_PASS_EXTRACTION_PROMPT = """你是一個學術論文知識圖譜抽取專家。請從以下文本中一次完成實體與關係抽取。
-
-實體類別 (entity_type):
-- concept: 概念/理論 (例如: "注意力機制", "深度學習")
-- method: 方法/技術/模型 (例如: "BERT", "Transformer", "CNN")
-- metric: 指標/度量 (例如: "F1 分數", "準確率", "BLEU")
-- result: 結果/發現 (例如: "最先進性能", "顯著改進")
-- author: 作者/研究者 (例如: "Vaswani et al.")
-
-關係類型 (relation):
-- uses: 使用 (A 使用 B)
-- outperforms: 優於 (A 的表現優於 B)
-- proposes: 提出 (作者提出方法)
-- evaluates_with: 用...評估 (用指標評估方法)
-- cites: 引用 (引用其他工作)
-- extends: 擴展 (基於...擴展)
-- part_of: 是...的一部分
-- applies_to: 應用於
-
-抽取規則:
-- 只抽取文本中明確提到的重要學術實體與關係
-- 每個 entity 都要有唯一 `id`，relation 必須引用這些 entity `id`
-- 不要為了補齊圖譜而猜測文本中不存在的關係
-- 如果同一個實體重複出現，可以重用同一個實體概念
-- 若無法同時提供 `source_entity_id`、`target_entity_id`、`relation` 三個欄位，該 relation 就不要輸出
-- 每個 relation 都必須引用 `entities` 陣列中已出現的 `id`
-- 只輸出單一 JSON 物件，不能有任何前言、結語、註解或 Markdown code fence
-- JSON 物件必須符合此形狀：`{{"entities":[...],"relations":[...]}}`
-- 若沒有可抽取內容，回傳 `{{"entities":[],"relations":[]}}`
-- 不要重複輸出同一個 JSON 物件，也不要在 JSON 前後補充說明
-
-文本：
-{text}
-"""
 
 
 class _StructuredEntity(BaseModel):
@@ -353,7 +266,7 @@ class EntityRelationExtractor:
         Raises:
             Exception: Any model setup / invocation / validation failure.
         """
-        prompt = _ONE_PASS_EXTRACTION_PROMPT.format(text=text[:4000])
+        prompt = format_graph_rag_prompt("one_pass_extraction", text=text[:4000])
         with graph_rag_llm_runtime_override("graph_extraction"):
             llm = get_llm("graph_extraction")
             try:
@@ -481,7 +394,7 @@ class EntityRelationExtractor:
         try:
             with graph_rag_llm_runtime_override("graph_extraction"):
                 llm = get_llm("graph_extraction")
-                prompt = _ENTITY_EXTRACTION_PROMPT.format(text=text[:4000])  # Limit input
+                prompt = format_graph_rag_prompt("entity_extraction", text=text[:4000])  # Limit input
                 response = await llm.ainvoke([HumanMessage(content=prompt)])
             _log_thinking_usage("Legacy entity extraction", response)
             raw_entities = _parse_json_from_response(
@@ -538,9 +451,10 @@ class EntityRelationExtractor:
                     for e in entities
                 ])
 
-                prompt = _RELATION_EXTRACTION_PROMPT.format(
-                    entities=entity_str,
+                prompt = format_graph_rag_prompt(
+                    "relation_extraction",
                     text=text[:4000],
+                    entities=entity_str,
                 )
 
                 response = await llm.ainvoke([HumanMessage(content=prompt)])

@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 # Local application
 from core.providers import get_llm
+from core.prompt_loader import format_agentic_rag_prompt
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -101,129 +102,6 @@ class DetailedEvaluationResult(BaseModel):
             return "uncertain"
         else:
             return "hallucinated"
-
-
-# Prompts for evaluation
-_RETRIEVAL_EVAL_PROMPT = """你是一個檢索品質評估專家。請評估以下檢索結果是否與問題相關。
-
-問題：{question}
-
-檢索文檔：
-{documents}
-
-評估標準：
-- 如果文檔包含回答問題所需的資訊，回答 "RELEVANT"
-- 如果文檔與問題無關或資訊不足，回答 "NOT_RELEVANT"
-
-請只回答 RELEVANT 或 NOT_RELEVANT，不要其他內容："""
-
-_FAITHFULNESS_EVAL_PROMPT = """你是一個答案品質評估專家。請評估以下答案是否完全基於提供的文檔內容。
-
-問題：{question}
-
-參考文檔：
-{documents}
-
-生成的答案：
-{answer}
-
-評估標準：
-- 如果答案的所有內容都可以從文檔中找到依據，回答 "GROUNDED"
-- 如果答案包含文檔中沒有的資訊或推測，回答 "HALLUCINATED"
-
-請只回答 GROUNDED 或 HALLUCINATED，不要其他內容："""
-
-_DETAILED_EVAL_PROMPT = """你是一位嚴格的學術論文評審。請針對以下「使用者問題」與「參考文獻」，評估「AI 回答」的品質。
-
-## 評估資料
-**問題：** {question}
-
-**參考文獻：**
-{documents}
-
-**AI 回答：**
-{answer}
-
-## 評分標準 (1-10分)
-
-### 1. Accuracy (精確度) - 權重 50%
-- **10**: 數據精確至小數點，引用無誤，或正確指出文獻無資料
-- **7-9**: 數據大致正確，無明顯幻覺
-- **5-6**: 使用模糊詞彙(大約/很多)，缺乏精確度
-- **1-4**: 嚴重幻覺，數據錯誤，或文獻無資料卻瞎掰
-
-### 2. Completeness (完整性) - 權重 30%
-- **10**: 完整覆蓋問題的所有子面向
-- **5-9**: 漏掉次要觀點
-- **1-4**: 遺漏關鍵論點或斷章取義
-
-### 3. Clarity (邏輯表達) - 權重 20%
-- **10**: 結構清晰，推論連貫，無冗言
-- **1-4**: 邏輯混亂，語句不通，答非所問
-
-## 評估步驟 (Chain of Thought)
-請先進行「錯誤分析」，列出回答中的具體事實錯誤或遺漏點。
-然後再根據上述標準給出分數。
-
-## 範例 (Few-shot)
-
-### 範例 1 - 嚴重幻覺 (Accuracy: 2)
-問題: 論文中 Transformer 的參數量是多少？
-文獻: 本文未提及模型參數量。
-AI 回答: Transformer 有 1.75 億參數。
-分析: 文獻明確無此資料，AI 卻給出精確數字 → 嚴重幻覺
-評分: accuracy=2, completeness=3, clarity=7
-
-### 範例 2 - 誠實不知道 (Accuracy: 9)
-問題: 論文中的訓練時間是多少？
-文獻: 本文未提及訓練時間。
-AI 回答: 根據文獻內容，未提及具體訓練時間，無法回答此問題。
-分析: AI 正確辨識出無資料並誠實回應 → 高分
-評分: accuracy=9, completeness=8, clarity=9
-
-### 範例 3 - 忽略反面證據 (Accuracy: 5) [Phase 5 新增]
-問題: SwinUNETR 和 nnU-Net 哪個效果更好？
-文獻 A: SwinUNETR 原文宣稱優於 nnU-Net。
-文獻 B: 大規模 Benchmark 顯示 nnU-Net 在多數資料集勝出。
- AI 回答: 根據研究，SwinUNETR 效果較好。
-分析: AI 只採信單一來源，忽略 Benchmark 的反駁證據 → 選擇性引用
-評分: accuracy=5, completeness=4, clarity=8
-
-## Phase 5: 衝突感知檢查 (Conflict Awareness)
-
-除了上述標準，請額外檢查以下情況：
-
-1. **文獻中是否存在轉折語意?** (如「However」「Contrary to」「與...相反」「但是」)
-2. **若存在衝突觀點，回答是否反映?**
-   - 若有衝突但回答只引用其中一方 → Completeness 扣 2 分
-   - 若 Benchmark 反駁原文結論但回答仍採信原文 → Accuracy 扣 3 分
-3. **禁止和稀泥**: 若回答使用「兩者互有優劣」「效果因情況而異」等模糊結論來迴避衝突 → Accuracy 扣 2 分
-
-## 輸出格式 (JSON Only)
-請只輸出 JSON，不要其他內容：
-{{"analysis": "<錯誤分析過程>", "accuracy": <1-10>, "completeness": <1-10>, "clarity": <1-10>, "reason": "<簡短評語>", "suggestion": "<如何改進>"}}"""
-
-# Prompt for Pure LLM mode (no documents)
-_PURE_LLM_EVAL_PROMPT = """你是一位嚴格的學術論文評審。請評估「AI 回答」的品質。
-
-**注意：此評估為 Pure LLM 模式，無參考文獻。**
-
-## 評估資料
-**問題：** {question}
-
-**AI 回答：**
-{answer}
-
-**Ground Truth (參考答案，用於對比)：**
-{ground_truth}
-
-## 評分標準 (1-10分)
-1. **Accuracy (精確度)**: 與 Ground Truth 的吻合程度
-2. **Completeness (完整性)**: 是否涵蓋所有重點
-3. **Clarity (邏輯表達)**: 結構是否清晰
-
-## 輸出格式 (JSON Only)
-{{"analysis": "<對比分析>", "accuracy": <1-10>, "completeness": <1-10>, "clarity": <1-10>, "reason": "<評語>", "suggestion": "<改進建議>"}}"""
 
 
 
@@ -353,7 +231,8 @@ class RAGEvaluator:
                     for i, doc in enumerate(documents[:5])
                 ])
                 
-                prompt = _RETRIEVAL_EVAL_PROMPT.format(
+                prompt = format_agentic_rag_prompt(
+                    "retrieval_eval",
                     question=question,
                     documents=doc_text,
                 )
@@ -415,7 +294,8 @@ class RAGEvaluator:
                     for i, doc in enumerate(documents[:5])
                 ])
                 
-                prompt = _FAITHFULNESS_EVAL_PROMPT.format(
+                prompt = format_agentic_rag_prompt(
+                    "faithfulness_eval",
                     question=question,
                     documents=doc_text,
                     answer=answer[:1000],
@@ -489,7 +369,8 @@ class RAGEvaluator:
                     for i, doc in enumerate(documents[:10])
                 ])
                 
-                prompt = _DETAILED_EVAL_PROMPT.format(
+                prompt = format_agentic_rag_prompt(
+                    "detailed_eval",
                     question=question,
                     documents=doc_text,
                     answer=answer[:2000],  # Increased for academic answers
@@ -595,7 +476,8 @@ class RAGEvaluator:
             try:
                 llm = get_llm("evaluator")
                 
-                prompt = _PURE_LLM_EVAL_PROMPT.format(
+                prompt = format_agentic_rag_prompt(
+                    "pure_llm_eval",
                     question=question,
                     answer=pure_llm_answer[:2000],
                     ground_truth=ground_truth[:2000],

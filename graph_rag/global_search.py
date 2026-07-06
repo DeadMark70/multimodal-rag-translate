@@ -17,6 +17,7 @@ from langchain_core.messages import HumanMessage
 # Local application
 from core.llm_factory import graph_rag_llm_runtime_override
 from core.providers import get_llm
+from core.prompt_loader import format_graph_rag_prompt
 from graph_rag.generic_mode import GraphEvidence, estimate_token_count
 from graph_rag.llm_response import response_content_to_text
 from graph_rag.schemas import Community
@@ -26,46 +27,10 @@ from graph_rag.store import GraphStore
 logger = logging.getLogger(__name__)
 
 # Prompt for community relevance check
-_RELEVANCE_CHECK_PROMPT = """判斷以下社群是否與問題相關。
-
-問題：{question}
-
-社群標題：{title}
-社群摘要：{summary}
-
-回答 "相關" 或 "不相關"，不要其他文字："""
 
 # Prompt for community-based answer (Map phase)
-_COMMUNITY_ANSWER_PROMPT = """你是一個學術論文分析專家。請根據以下社群知識回答問題。
-
-問題：{question}
-
-社群知識：
-標題：{title}
-摘要：{summary}
-
-相關實體：
-{entities}
-
-請根據社群知識提供簡短回答 (50-100 字)。如果社群知識無法回答問題，回答 "無法從此社群獲得相關資訊"。
-
-回答："""
 
 # Prompt for answer synthesis (Reduce phase)
-_SYNTHESIS_PROMPT = """你是一個研究報告撰寫專家。請將以下多個社群的回答綜合成一個完整的答案。
-
-原始問題：{question}
-
-各社群回答：
-{community_answers}
-
-請提供：
-1. 一個綜合性的完整回答
-2. 整合各社群的觀點
-3. 使用繁體中文
-4. 保持學術嚴謹的語氣
-
-綜合答案："""
 
 
 def _question_terms(question: str) -> set[str]:
@@ -140,9 +105,10 @@ async def query_community(
     try:
         with graph_rag_llm_runtime_override("community_summary"):
             llm = get_llm("community_summary")
-            prompt = _COMMUNITY_ANSWER_PROMPT.format(
+            prompt = format_graph_rag_prompt(
+                "community_answer",
                 question=question,
-                title=community.title or f"社群 {community.id}",
+                title=community.title or f"??? {community.id}",
                 summary=community.summary,
                 entities=entity_str,
             )
@@ -189,7 +155,8 @@ async def synthesize_answers(
     try:
         with graph_rag_llm_runtime_override("community_summary"):
             llm = get_llm("community_summary")
-            prompt = _SYNTHESIS_PROMPT.format(
+            prompt = format_graph_rag_prompt(
+                "global_synthesis",
                 question=question,
                 community_answers=answers_str,
             )

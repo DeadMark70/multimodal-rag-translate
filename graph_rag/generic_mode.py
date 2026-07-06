@@ -19,6 +19,7 @@ from langchain_core.messages import HumanMessage
 
 from core.llm_factory import graph_rag_llm_runtime_override
 from core.providers import get_llm
+from core.prompt_loader import format_graph_rag_prompt
 from graph_rag.llm_response import response_content_to_text
 
 logger = logging.getLogger(__name__)
@@ -84,27 +85,6 @@ _FACT_KEYWORDS = (
     "什麼",
 )
 
-_ROUTER_PROMPT = """你是一個圖譜檢索路由器。請為問題選擇檢索類型與路徑。
-
-問題：{question}
-Hints:
-- stage_hint: {stage_hint}
-- task_type_hint: {task_type_hint}
-- prefer_global: {prefer_global}
-- prefer_local: {prefer_local}
-- has_communities: {has_communities}
-
-規則：
-1. fact = 需要精確數據、定義、單點事實
-2. relation = 需要跨實體比較、關聯、對比
-3. summary = 需要整體趨勢、總結、全域概覽
-4. local-first = 先抓實體與關係證據
-5. global-first = 先抓社群摘要
-6. blended = 需要 local + global，但仍要控制上下文
-
-只輸出 JSON：
-{{"query_kind":"fact|relation|summary","path":"local-first|global-first|blended","budget":"tight|balanced|wide"}}
-"""
 
 
 def _normalize(text: str) -> str:
@@ -259,7 +239,8 @@ class GenericGraphRouter:
                 response = await llm.ainvoke(
                     [
                         HumanMessage(
-                            content=_ROUTER_PROMPT.format(
+                            content=format_graph_rag_prompt(
+                                "generic_router",
                                 question=question,
                                 stage_hint=hints.stage_hint or "none",
                                 task_type_hint=hints.task_type_hint or "none",

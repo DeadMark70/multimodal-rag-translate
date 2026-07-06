@@ -10,6 +10,7 @@ from data_base.RAG_QA_service import (
     rag_answer_question,
 )
 
+
 def test_should_use_graph_search():
     """Verify keyword-based graph search detection."""
     assert _should_use_graph_search("這幾篇論文有什麼關係？") is True
@@ -88,6 +89,7 @@ async def test_rag_answer_question_applies_mode_hint_retrieval_policy() -> None:
     assert get_retriever.await_args.kwargs["k"] == 6
     assert len(result.documents) == 4
 
+
 def test_expand_short_chunks_logic():
     """
     Test the Context Enricher logic.
@@ -95,26 +97,30 @@ def test_expand_short_chunks_logic():
     """
     # Setup mock documents
     short_doc = Document(
-        page_content="Very short.",
-        metadata={"parent_id": "p1", "doc_id": "d1"}
+        page_content="Very short.", metadata={"parent_id": "p1", "doc_id": "d1"}
     )
     long_doc = Document(
-        page_content="This is already a long enough document chunk that does not need expansion." * 5,
-        metadata={"parent_id": "p2", "doc_id": "d1"}
+        page_content="This is already a long enough document chunk that does not need expansion."
+        * 5,
+        metadata={"parent_id": "p2", "doc_id": "d1"},
     )
-    
+
     docs = [short_doc, long_doc]
     user_id = "test_user"
-    
+
     # Mock ParentDocumentStore
     with patch("data_base.RAG_QA_service.ParentDocumentStore") as MockStore:
         mock_instance = MockStore.return_value
         # Mock parent content
-        mock_parent = Document(page_content="This is the full parent content which is much longer than the original short chunk.")
-        mock_instance.get_parent.side_effect = lambda pid: mock_parent if pid == "p1" else None
-        
+        mock_parent = Document(
+            page_content="This is the full parent content which is much longer than the original short chunk."
+        )
+        mock_instance.get_parent.side_effect = (
+            lambda pid: mock_parent if pid == "p1" else None
+        )
+
         expanded_docs = _expand_short_chunks(docs, user_id)
-        
+
         assert len(expanded_docs) == 2
         # First doc should be expanded
         assert expanded_docs[0].page_content == mock_parent.page_content
@@ -122,29 +128,63 @@ def test_expand_short_chunks_logic():
         # Second doc should remain same
         assert expanded_docs[1].page_content == long_doc.page_content
 
+
 def test_expand_short_chunks_token_limit():
     """
     Verify that expansion respects _MAX_TOTAL_CHARS limit.
     """
     from data_base.RAG_QA_service import _MAX_TOTAL_CHARS
-    
+
     # Create a doc that is just below the limit, and another short one
     large_content = "A" * (_MAX_TOTAL_CHARS - 50)
     large_doc = Document(page_content=large_content, metadata={"doc_id": "d1"})
-    short_doc = Document(page_content="short", metadata={"parent_id": "p1", "doc_id": "d1"})
-    
+    short_doc = Document(
+        page_content="short", metadata={"parent_id": "p1", "doc_id": "d1"}
+    )
+
     docs = [large_doc, short_doc]
     user_id = "test_user"
-    
+
     with patch("data_base.RAG_QA_service.ParentDocumentStore") as MockStore:
         mock_instance = MockStore.return_value
         # Parent is very large, would exceed limit
         mock_parent = Document(page_content="B" * 1000)
         mock_instance.get_parent.return_value = mock_parent
-        
+
         expanded_docs = _expand_short_chunks(docs, user_id)
-        
+
         # Total chars would be (15000-50) + 1000 = 15950 > 15000
         # So it should NOT expand
         assert expanded_docs[1].page_content == "short"
         assert "expanded_from_parent" not in expanded_docs[1].metadata
+
+
+@pytest.mark.asyncio
+async def test_rag_answer_question_formats_prompt_from_registry() -> None:
+    retriever = Mock()
+    retriever.invoke.return_value = [
+        Document(page_content="retrieved context", metadata={"doc_id": "doc-1"})
+    ]
+    llm = Mock()
+    llm.ainvoke = AsyncMock(return_value=SimpleNamespace(content="ok"))
+
+    with (
+        patch("data_base.RAG_QA_service.get_llm", return_value=llm),
+        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch(
+            "data_base.RAG_QA_service.get_user_retriever",
+            new=AsyncMock(return_value=retriever),
+        ),
+        patch(
+            "data_base.RAG_QA_service.fetch_document_filenames",
+            new=AsyncMock(return_value={"doc-1": "demo.pdf"}),
+        ),
+    ):
+        result = await rag_answer_question(
+            question="What does the document say?",
+            user_id="user-1",
+            return_docs=True,
+        )
+
+    assert "What does the document say?" in result.thought_process
+    assert "retrieved context" in result.thought_process

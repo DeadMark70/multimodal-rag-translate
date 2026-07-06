@@ -17,28 +17,12 @@ from pydantic import BaseModel
 # Local application
 from agents.planner import QuestionIntent, classify_question_intent
 from core.providers import get_llm
+from core.prompt_loader import format_agentic_rag_prompt
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 _NO_CONFLICT_SENTINEL = "NO_CONFLICT"
-
-_CONFLICT_ARBITRATION_PROMPT = """你是衝突仲裁引擎。請檢查以下子任務結果是否存在結論衝突：
-
-{sub_results}
-
-若存在衝突，請依下列規則做出單一仲裁結論：
-1. 基準測試 (Benchmark) / 系統性評估 優先於單篇方法論文聲稱。
-2. 有明確數據支撐的主張優先於定性敘述。
-3. 多來源共識優先於單一來源孤立結論。
-
-輸出規則：
-- 無衝突時，只輸出：NO_CONFLICT
-- 有衝突時，輸出 2-4 句仲裁聲明，包含：
-  - 哪個結論應採信
-  - 主要證據權重理由
-  - 對被否決觀點的限制/適用條件（若有）
-"""
 
 
 def _is_no_conflict_statement(statement: str) -> bool:
@@ -71,107 +55,6 @@ class ResearchReport(BaseModel):
     sub_results: List[SubTaskResult]
     all_sources: List[str]
     confidence: float = 1.0
-
-
-# Prompt for result synthesis
-_SYNTHESIZER_PROMPT = """你是一個精準的學術總結專家。請根據以下「子問題與回答」的組合，合成一個針對「原始問題」的最終回答。
-
-## 原始問題
-{original_question}
-
-## 子問題與回答
-{sub_results}
-
-## 嚴格約束 (Strict Constraints) - 必須遵守！
-1.  **字數限制**：總字數 **必須小於 500 字**。嚴禁長篇大論。
-2.  **結論先行 (BLUF)**：第一句話 **必須直接回答原始問題的結論** (例如：A 優於 B，因為...)。不要做鋪墊。
-3.  **禁止廢話**：**嚴禁**使用 "本報告旨在..."、"經過分析..."、"總結來說..." 等開場白或結語。直接講重點。
-4.  **拒絕模稜兩可**：如果證據顯示某方有優勢（例如 nnU-Net 在 Benchmark 勝出），請 **明確指出**。
-5.  **技術歸因 (Root Cause)**：在解釋差異時，優先引用具體的**技術原因**（如：Inductive Bias、Auto-configuration、ResEnc 變體），而非泛泛而談。
-6.  **來源限定**：僅使用提供的子回答作為來源。
-7.  **來源標記**：關鍵結論或比較句後必須加上來源標記（例如：`[來源: 子問題2]`）。
-8.  **證據不足處理**：若子回答缺乏直接證據，必須明確寫「資料不足」，不得自行補齊。
-
-## 結構要求
-- **第一段**：直接結論 (Answer the question directly)。
-- **後續段落**：關鍵證據與技術分析 (Key Evidence & Technical Analysis)。使用條列式。
-"""
-
-
-# Academic report template for Deep Research (Phase 5: Conflict Arbitration)
-_ACADEMIC_REPORT_PROMPT = """你是一位專業的學術報告撰寫專家。請根據以下子問題的回答，綜合生成一份結構完整的學術研究報告。
-
-原始研究問題：{original_question}
-
-子問題與回答：
-{sub_results}
-
-76: ## 衝突處理守則 (Critical: 必須遵循)
-77: 
-78: 在撰寫報告前，請先在 <think> 標籤內執行以下推理步驟（此部分不顯示於報告正文）：
-79: 
-80: <think>
-81: ### 觀點盤點
-82: 列出各來源的核心論點：
-83: - [來源 1]: {{觀點}} (支持/反駁)
-84: - [來源 2]: {{觀點}} (支持/反駁)
-85: 
-86: ### 證據權重判斷
-87: 根據以下優先順序（由高至低）：
-88: 1. **基準測試 (Benchmark) / 回顧 (Review) / Revisited 論文** (最高權重)
-89: 2. 多來源共識 > 單一來源聲稱
-90: 3. 較新發表年份 > 較舊發表年份
-91: 4. 單一方法的「提出論文」 (權重最低，因可能有自誇偏見)
-92: 
-93: 若遇到「提出論文」與「基準測試」衝突：
-94: - **必須採信基準測試的結論**，並指出提出論文可能存在的偏差或特定條件下的優勢。
-95: 
-96: ### 結論選擇
-97: 採信: {{來源X}}，原因: {{符合權重規則...}}
-98: </think>
-99: 
-100: ## 衝突處理格式（報告正文中若有衝突必須使用）
-101: 
-102: "雖然 {{來源A (提出論文)}} 聲稱...，
-103: 但 {{來源B (Benchmark)}} 的大規模測試顯示...。
-104: **根據證據權重** (Benchmark 優於單一實驗)，結論是...。"
-105: 
-106: ⚠️ 禁止模糊結論：不可使用「兩者互有優劣」「效果因情況而異」等和稀泥的表述。
-107: 
-108: ---
-109: 
-110: ## 報告結構（請嚴格遵循此格式）
-111: 
-112: ### 1. Executive Summary (執行摘要)
-113: - 用 2-3 句話總結關鍵發現
-114: - 直接回答原始問題的核心
-115: - 若發現衝突，明確表態採信哪方結論 (基於 Benchmark)
-116: 
-117: ### 2. Key Findings (主要發現)
-118: - 以條列點整理最重要的發現
-119: - 每個發現應有明確的資料支撐
-120: - 標註衝突觀點（若有）
-121: 
-122: ### 3. Detailed Analysis (詳細分析)
-123: - 深入解釋每個發現
-124: - 如有圖表數據，請使用 Markdown 格式引用圖片：`![圖表說明](圖片路徑)`
-125: - 衝突觀點必須使用「衝突處理格式」呈現
-126: 
-127: ### 4. Research Gaps (知識缺口)
-128: - 指出目前資料庫中缺少的拼圖
-129: - 建議後續研究方向
-130: 
-131: ### 5. References (參考來源)
-132: - 列出引用的所有來源文件
-133: - 標註年份（若可得）
-134: 
-135: ## 格式要求
-136: 1. 使用繁體中文
-137: 2. 保持學術嚴謹的語氣
-138: 3. 數學公式使用 LaTeX 格式
-139: 4. 若引用圖片摘要內容，務必以 `![描述](路徑)` 格式插入圖片
-140: 
-141: 請開始撰寫報告："""
 
 
 def _synthesis_guidance_for_intent(question_intent: QuestionIntent) -> str:
@@ -271,8 +154,9 @@ class ResultSynthesizer:
         if len(sub_results) < 2:
             return _NO_CONFLICT_SENTINEL
 
-        prompt = _CONFLICT_ARBITRATION_PROMPT.format(
-            sub_results=self._format_arbitration_input(sub_results)
+        prompt = format_agentic_rag_prompt(
+            "conflict_arbitration",
+            sub_results=self._format_arbitration_input(sub_results),
         )
         try:
             response = await llm.ainvoke([HumanMessage(content=prompt)])
@@ -439,12 +323,8 @@ class ResultSynthesizer:
                     )
                 
                 # Select prompt template based on use_academic_template
-                template = (
-                    _ACADEMIC_REPORT_PROMPT if use_academic_template 
-                    else _SYNTHESIZER_PROMPT
-                )
-                
-                prompt = template.format(
+                prompt = format_agentic_rag_prompt(
+                    "academic_report" if use_academic_template else "synthesizer",
                     original_question=original_question,
                     sub_results=formatted_results,
                 )
