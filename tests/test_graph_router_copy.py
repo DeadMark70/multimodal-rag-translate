@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from core.auth import get_current_user_id
-from graph_rag.router import _rebuild_graph_task
+from graph_rag.maintenance import rebuild_graph_task
 from main import app
 
 TEST_USER_ID = "test-user-graph"
@@ -72,10 +72,13 @@ async def test_rebuild_task_does_not_clear_graph() -> None:
     mock_store.get_status.return_value = mock_status
 
     with (
-        patch("graph_rag.router.GraphStore", return_value=mock_store),
-        patch("graph_rag.router._optimize_existing_graph", new=AsyncMock(return_value=(2, 3))) as mock_optimize,
+        patch("graph_rag.maintenance.GraphStore", return_value=mock_store),
+        patch(
+            "graph_rag.maintenance.optimize_existing_graph",
+            new=AsyncMock(return_value=(2, 3)),
+        ) as mock_optimize,
     ):
-        await _rebuild_graph_task(TEST_USER_ID)
+        await rebuild_graph_task(TEST_USER_ID)
 
     mock_store.clear.assert_not_called()
     mock_optimize.assert_awaited_once_with(mock_store, regenerate_communities=True)

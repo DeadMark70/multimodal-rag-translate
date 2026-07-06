@@ -155,7 +155,7 @@ async def test_delete_user_document_triggers_best_effort_graph_purge() -> None:
         patch("pdfserviceMD.service.run_in_threadpool", new=AsyncMock()),
         patch("pdfserviceMD.service.os.path.exists", return_value=False),
         patch("pdfserviceMD.service.delete_document", new=AsyncMock()) as delete_record,
-        patch("graph_rag.router._purge_graph_document_task", new=AsyncMock()) as purge_task,
+        patch("graph_rag.maintenance.purge_graph_document_task", new=AsyncMock()) as purge_task,
         patch("graph_rag.store.GraphStore") as graph_store_cls,
     ):
         graph_store = graph_store_cls.return_value

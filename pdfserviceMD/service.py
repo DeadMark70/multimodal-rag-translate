@@ -15,6 +15,7 @@ from fastapi import UploadFile
 from fastapi.concurrency import run_in_threadpool
 
 from core.errors import AppError, ErrorCode
+from graph_rag.store import GraphStore
 from data_base.vector_store_manager import delete_document_from_knowledge_base_async
 from pdfserviceMD.PDF_OCR_services import ocr_service_sync
 from pdfserviceMD.Pandoc_md_to_pdf import MDmarkdown_to_pdf as markdown_to_pdf
@@ -64,6 +65,17 @@ _TRANSLATABLE_STATUSES = {"ready", "indexing", "indexed"}
 
 
 @dataclass
+class RetryIndexContext:
+    """Validated payload for scheduling retry-index background work."""
+
+    doc_id: str
+    book_title: str
+    current_status: str
+    user_id: str
+    user_folder: str
+
+
+@dataclass
 class UploadPipelineContext:
     """Internal context used to continue background tasks in router."""
 
@@ -71,6 +83,62 @@ class UploadPipelineContext:
     book_title: str
     user_folder: str
     response: UploadPdfResponse
+
+
+async def prepare_retry_index_context(
+    *, doc_id: str, user_id: str
+) -> RetryIndexContext:
+    """Validate retry-index eligibility and return background task payload."""
+    row = await get_document(
+        doc_id=doc_id,
+        user_id=user_id,
+        columns="id, file_name, original_path, processing_step, status",
+    )
+    if not row:
+        raise AppError(
+            code=ErrorCode.NOT_FOUND,
+            message="Document not found",
+            status_code=404,
+        )
+
+    if row.get("processing_step") != "index_failed":
+        raise AppError(
+            code=ErrorCode.BAD_REQUEST,
+            message="Document is not eligible for retry-index",
+            status_code=409,
+        )
+
+    if GraphStore(user_id).active_job_state:
+        raise AppError(
+            code=ErrorCode.BAD_REQUEST,
+            message="Graph maintenance is currently running",
+            status_code=409,
+        )
+
+    original_path = row.get("original_path")
+    if not original_path:
+        raise AppError(
+            code=ErrorCode.BAD_REQUEST,
+            message="Document has no original path",
+            status_code=409,
+        )
+
+    user_folder = os.path.dirname(os.path.normpath(original_path))
+    extracted_path, _ = get_ocr_artifact_paths(user_folder=user_folder)
+    if not os.path.exists(extracted_path):
+        raise AppError(
+            code=ErrorCode.BAD_REQUEST,
+            message="Document has no OCR artifacts for retry-index",
+            status_code=409,
+        )
+
+    return RetryIndexContext(
+        doc_id=doc_id,
+        book_title=os.path.splitext(row.get("file_name") or "document.pdf")[0],
+        current_status=row.get("status") or "ready",
+        user_id=user_id,
+        user_folder=user_folder,
+    )
 
 
 def get_ocr_artifact_paths(*, user_folder: str) -> tuple[str, str]:
@@ -124,7 +192,9 @@ def _has_file(path: str | None) -> bool:
     return bool(path) and os.path.exists(os.path.normpath(path))
 
 
-def _build_download_url(doc_id: str, file_type: Literal["original", "translated"]) -> str:
+def _build_download_url(
+    doc_id: str, file_type: Literal["original", "translated"]
+) -> str:
     """Builds a typed PDF file URL."""
     return f"/pdfmd/file/{doc_id}?type={file_type}"
 
@@ -195,7 +265,9 @@ async def run_upload_pipeline(
         await update_processing_step(doc_id=document_id, step="ocr_completed")
 
         total_time = time.perf_counter() - start_time
-        logger.info("Upload pipeline finished in %.2fs for doc %s", total_time, document_id)
+        logger.info(
+            "Upload pipeline finished in %.2fs for doc %s", total_time, document_id
+        )
 
         response = UploadPdfResponse(
             doc_id=document_id,
@@ -289,7 +361,6 @@ async def get_document_processing_status(
         )
 
     step = row.get("processing_step") or "uploading"
-    status = row.get("status")
     has_original_pdf = _has_file(row.get("original_path"))
     has_translated_pdf = _has_file(row.get("translated_path"))
 
@@ -347,7 +418,9 @@ async def get_document_file_info(
         )
 
     if file_type == "translated" or (
-        file_type is None and translated_path and normalized_path == os.path.normpath(translated_path)
+        file_type is None
+        and translated_path
+        and normalized_path == os.path.normpath(translated_path)
     ):
         download_name = os.path.basename(normalized_path)
     else:
@@ -407,7 +480,9 @@ async def record_background_processing_failure(
     error_messages: list[str],
 ) -> None:
     """Persists a non-fatal background indexing failure for a document."""
-    messages = [message.strip() for message in error_messages if message and message.strip()]
+    messages = [
+        message.strip() for message in error_messages if message and message.strip()
+    ]
     if not messages:
         return
 
@@ -497,7 +572,9 @@ async def translate_user_document(*, doc_id: str, user_id: str) -> TranslatePdfR
             translated_path=output_pdf_path,
             error_message=None,
         )
-        next_step = "completed" if status == "indexed" else (previous_step or "ocr_completed")
+        next_step = (
+            "completed" if status == "indexed" else (previous_step or "ocr_completed")
+        )
         await update_processing_step(doc_id=doc_id, step=next_step)
         return TranslatePdfResponse(
             doc_id=doc_id,
@@ -550,7 +627,9 @@ async def delete_user_document(
         try:
             await run_in_threadpool(shutil.rmtree, doc_folder)
         except OSError as exc:
-            logger.error("Failed to delete folder %s: %s", doc_folder, exc, exc_info=True)
+            logger.error(
+                "Failed to delete folder %s: %s", doc_folder, exc, exc_info=True
+            )
 
     await delete_document(doc_id=doc_id, user_id=user_id)
 
@@ -564,14 +643,19 @@ async def delete_user_document(
                 doc_id,
                 graph_store.active_job_state,
             )
-        elif graph_store.get_document_status(doc_id) or doc_id in graph_store.get_documents():
-            from graph_rag.router import _purge_graph_document_task
+        elif (
+            graph_store.get_document_status(doc_id)
+            or doc_id in graph_store.get_documents()
+        ):
+            from graph_rag.maintenance import purge_graph_document_task
 
-            await _purge_graph_document_task(user_id, doc_id)
+            await purge_graph_document_task(user_id, doc_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Best-effort graph purge failed for doc %s: %s", doc_id, exc)
 
-    return DeleteDocumentResponse(status="success", message="Document deleted successfully")
+    return DeleteDocumentResponse(
+        status="success", message="Document deleted successfully"
+    )
 
 
 async def get_user_document_summary(

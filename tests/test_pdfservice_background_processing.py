@@ -5,12 +5,13 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from core.errors import AppError, ErrorCode
 from data_base.indexing_service import DEFAULT_PRODUCTION_INDEXING_PROFILE
 from main import app
-from pdfserviceMD.router import (
+from pdfserviceMD.indexing_tasks import (
     DocumentImageProcessingError,
-    _process_document_images,
-    _retry_document_index_task,
+    process_document_images,
+    retry_document_index_task,
     run_post_processing_tasks,
 )
 from pdfserviceMD.schemas import (
@@ -18,7 +19,11 @@ from pdfserviceMD.schemas import (
     DocumentListResponse,
     ProcessingStatusResponse,
 )
-from pdfserviceMD.service import record_background_processing_failure
+from pdfserviceMD.service import (
+    RetryIndexContext,
+    prepare_retry_index_context,
+    record_background_processing_failure,
+)
 
 TEST_USER_ID = "test-user-123"
 
@@ -68,42 +73,44 @@ async def test_record_background_processing_failure_preserves_status() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_post_processing_tasks_records_background_failure_and_continues() -> None:
+async def test_run_post_processing_tasks_records_background_failure_and_continues() -> (
+    None
+):
     with (
         patch(
-            "pdfserviceMD.router.run_in_threadpool",
+            "pdfserviceMD.indexing_tasks.run_in_threadpool",
             new=AsyncMock(return_value=("markdown", [])),
         ),
         patch(
-            "pdfserviceMD.router.update_indexing_processing_step",
+            "pdfserviceMD.indexing_tasks.update_indexing_processing_step",
             new=AsyncMock(),
         ) as update_step,
         patch(
-            "pdfserviceMD.router.index_markdown_document",
+            "pdfserviceMD.indexing_tasks.index_markdown_document",
             new=AsyncMock(side_effect=RuntimeError("vector store exploded")),
         ),
         patch(
-            "pdfserviceMD.router._process_document_images",
+            "pdfserviceMD.indexing_tasks.process_document_images",
             new=AsyncMock(return_value=0),
         ) as process_images,
         patch(
-            "pdfserviceMD.router.run_graph_extraction",
+            "pdfserviceMD.indexing_tasks.run_graph_extraction",
             new=AsyncMock(),
         ) as run_graph,
         patch(
-            "pdfserviceMD.router.schedule_summary_generation",
+            "pdfserviceMD.indexing_tasks.schedule_summary_generation",
             new=Mock(),
         ) as schedule_summary,
         patch(
-            "pdfserviceMD.router.record_background_processing_failure",
+            "pdfserviceMD.indexing_tasks.record_background_processing_failure",
             new=AsyncMock(),
         ) as record_failure,
         patch(
-            "pdfserviceMD.router.safe_update_processing_step",
+            "pdfserviceMD.indexing_tasks.safe_update_processing_step",
             new=AsyncMock(),
         ) as safe_update_step,
         patch(
-            "pdfserviceMD.router.finalize_indexing_status",
+            "pdfserviceMD.indexing_tasks.finalize_indexing_status",
             new=AsyncMock(),
         ) as finalize_status,
     ):
@@ -120,7 +127,9 @@ async def test_run_post_processing_tasks_records_background_failure_and_continue
     schedule_summary.assert_called_once()
     record_failure.assert_awaited_once()
     error_messages = record_failure.await_args.kwargs["error_messages"]
-    assert any("RAG indexing failed: vector store exploded" in msg for msg in error_messages)
+    assert any(
+        "RAG indexing failed: vector store exploded" in msg for msg in error_messages
+    )
     safe_update_step.assert_not_called()
     finalize_status.assert_not_called()
 
@@ -132,20 +141,20 @@ async def test_process_document_images_classifies_summary_stage_failures() -> No
 
     with (
         patch(
-            "pdfserviceMD.router.extract_images_from_markdown",
+            "pdfserviceMD.indexing_tasks.extract_images_from_markdown",
             return_value=["page1.png"],
         ),
         patch(
-            "pdfserviceMD.router.create_visual_elements",
+            "pdfserviceMD.indexing_tasks.create_visual_elements",
             return_value=[figure_element],
         ),
         patch(
-            "pdfserviceMD.router.image_summarizer.summarize_elements",
+            "pdfserviceMD.indexing_tasks.image_summarizer.summarize_elements",
             new=AsyncMock(return_value=[failed_summary]),
         ),
     ):
         with pytest.raises(DocumentImageProcessingError) as exc_info:
-            await _process_document_images(
+            await process_document_images(
                 user_id=TEST_USER_ID,
                 doc_id="doc-1",
                 markdown_text="markdown",
@@ -164,24 +173,26 @@ async def test_process_document_images_classifies_visual_index_failures() -> Non
 
     with (
         patch(
-            "pdfserviceMD.router.extract_images_from_markdown",
+            "pdfserviceMD.indexing_tasks.extract_images_from_markdown",
             return_value=["page1.png"],
         ),
         patch(
-            "pdfserviceMD.router.create_visual_elements",
+            "pdfserviceMD.indexing_tasks.create_visual_elements",
             return_value=[figure_element],
         ),
         patch(
-            "pdfserviceMD.router.image_summarizer.summarize_elements",
+            "pdfserviceMD.indexing_tasks.image_summarizer.summarize_elements",
             new=AsyncMock(return_value=[successful_summary]),
         ),
         patch(
-            "pdfserviceMD.router.index_visual_summaries",
-            new=AsyncMock(side_effect=RuntimeError("Embedding transport error after 4 attempts")),
+            "pdfserviceMD.indexing_tasks.index_visual_summaries",
+            new=AsyncMock(
+                side_effect=RuntimeError("Embedding transport error after 4 attempts")
+            ),
         ),
     ):
         with pytest.raises(DocumentImageProcessingError) as exc_info:
-            await _process_document_images(
+            await process_document_images(
                 user_id=TEST_USER_ID,
                 doc_id="doc-1",
                 markdown_text="markdown",
@@ -197,19 +208,19 @@ async def test_process_document_images_classifies_visual_index_failures() -> Non
 async def test_run_post_processing_tasks_records_visual_index_failure_stage() -> None:
     with (
         patch(
-            "pdfserviceMD.router.run_in_threadpool",
+            "pdfserviceMD.indexing_tasks.run_in_threadpool",
             new=AsyncMock(return_value=("markdown", [])),
         ),
         patch(
-            "pdfserviceMD.router.update_indexing_processing_step",
+            "pdfserviceMD.indexing_tasks.update_indexing_processing_step",
             new=AsyncMock(),
         ),
         patch(
-            "pdfserviceMD.router.index_markdown_document",
+            "pdfserviceMD.indexing_tasks.index_markdown_document",
             new=AsyncMock(),
         ),
         patch(
-            "pdfserviceMD.router._process_document_images",
+            "pdfserviceMD.indexing_tasks.process_document_images",
             new=AsyncMock(
                 side_effect=DocumentImageProcessingError(
                     stage="visual_summary_index_failed",
@@ -218,23 +229,25 @@ async def test_run_post_processing_tasks_records_visual_index_failure_stage() ->
             ),
         ),
         patch(
-            "pdfserviceMD.router.run_graph_extraction",
-            new=AsyncMock(return_value=SimpleNamespace(status="indexed", last_error=None)),
+            "pdfserviceMD.indexing_tasks.run_graph_extraction",
+            new=AsyncMock(
+                return_value=SimpleNamespace(status="indexed", last_error=None)
+            ),
         ),
         patch(
-            "pdfserviceMD.router.schedule_summary_generation",
+            "pdfserviceMD.indexing_tasks.schedule_summary_generation",
             new=Mock(),
         ),
         patch(
-            "pdfserviceMD.router.record_background_processing_failure",
+            "pdfserviceMD.indexing_tasks.record_background_processing_failure",
             new=AsyncMock(),
         ) as record_failure,
         patch(
-            "pdfserviceMD.router.safe_update_processing_step",
+            "pdfserviceMD.indexing_tasks.safe_update_processing_step",
             new=AsyncMock(),
         ) as safe_update_step,
         patch(
-            "pdfserviceMD.router.finalize_indexing_status",
+            "pdfserviceMD.indexing_tasks.finalize_indexing_status",
             new=AsyncMock(),
         ) as finalize_status,
     ):
@@ -256,39 +269,41 @@ async def test_run_post_processing_tasks_records_visual_index_failure_stage() ->
 async def test_run_post_processing_tasks_uses_profiled_production_indexing() -> None:
     with (
         patch(
-            "pdfserviceMD.router.run_in_threadpool",
+            "pdfserviceMD.indexing_tasks.run_in_threadpool",
             new=AsyncMock(return_value=("markdown", [])),
         ),
         patch(
-            "pdfserviceMD.router.update_indexing_processing_step",
+            "pdfserviceMD.indexing_tasks.update_indexing_processing_step",
             new=AsyncMock(),
         ),
         patch(
-            "pdfserviceMD.router.index_markdown_document",
+            "pdfserviceMD.indexing_tasks.index_markdown_document",
             new=AsyncMock(),
         ) as index_markdown,
         patch(
-            "pdfserviceMD.router._process_document_images",
+            "pdfserviceMD.indexing_tasks.process_document_images",
             new=AsyncMock(return_value=0),
         ),
         patch(
-            "pdfserviceMD.router.run_graph_extraction",
-            new=AsyncMock(return_value=SimpleNamespace(status="indexed", last_error=None)),
+            "pdfserviceMD.indexing_tasks.run_graph_extraction",
+            new=AsyncMock(
+                return_value=SimpleNamespace(status="indexed", last_error=None)
+            ),
         ),
         patch(
-            "pdfserviceMD.router.schedule_summary_generation",
+            "pdfserviceMD.indexing_tasks.schedule_summary_generation",
             new=Mock(),
         ),
         patch(
-            "pdfserviceMD.router.record_background_processing_failure",
+            "pdfserviceMD.indexing_tasks.record_background_processing_failure",
             new=AsyncMock(),
         ),
         patch(
-            "pdfserviceMD.router.safe_update_processing_step",
+            "pdfserviceMD.indexing_tasks.safe_update_processing_step",
             new=AsyncMock(),
         ),
         patch(
-            "pdfserviceMD.router.finalize_indexing_status",
+            "pdfserviceMD.indexing_tasks.finalize_indexing_status",
             new=AsyncMock(),
         ),
     ):
@@ -299,7 +314,10 @@ async def test_run_post_processing_tasks_uses_profiled_production_indexing() -> 
             user_folder="uploads/test-user-123/doc-1",
         )
 
-    assert index_markdown.await_args.kwargs["indexing_profile"] == DEFAULT_PRODUCTION_INDEXING_PROFILE
+    assert (
+        index_markdown.await_args.kwargs["indexing_profile"]
+        == DEFAULT_PRODUCTION_INDEXING_PROFILE
+    )
 
 
 def test_list_endpoint_includes_error_message_field() -> None:
@@ -320,14 +338,20 @@ def test_list_endpoint_includes_error_message_field() -> None:
         total=1,
     )
 
-    with _build_client() as client, patch(
-        "pdfserviceMD.router.list_user_documents",
-        new=AsyncMock(return_value=payload),
+    with (
+        _build_client() as client,
+        patch(
+            "pdfserviceMD.router.list_user_documents",
+            new=AsyncMock(return_value=payload),
+        ),
     ):
         response = client.get("/pdfmd/list")
 
     assert response.status_code == 200
-    assert response.json()["documents"][0]["error_message"] == "Graph indexing failed: quota exceeded"
+    assert (
+        response.json()["documents"][0]["error_message"]
+        == "Graph indexing failed: quota exceeded"
+    )
 
 
 def test_status_endpoint_includes_error_message_field() -> None:
@@ -339,37 +363,59 @@ def test_status_endpoint_includes_error_message_field() -> None:
         error_message="RAG indexing failed: vector store exploded",
     )
 
-    with _build_client() as client, patch(
-        "pdfserviceMD.router.get_document_processing_status",
-        new=AsyncMock(return_value=payload),
+    with (
+        _build_client() as client,
+        patch(
+            "pdfserviceMD.router.get_document_processing_status",
+            new=AsyncMock(return_value=payload),
+        ),
     ):
         response = client.get("/pdfmd/file/00000000-0000-0000-0000-000000000001/status")
 
     assert response.status_code == 200
     assert response.json()["step"] == "index_failed"
-    assert response.json()["error_message"] == "RAG indexing failed: vector store exploded"
+    assert (
+        response.json()["error_message"] == "RAG indexing failed: vector store exploded"
+    )
 
 
 @pytest.mark.asyncio
-async def test_retry_document_index_task_clears_vectors_and_skips_graph_pipeline() -> None:
+async def test_retry_document_index_task_clears_vectors_and_skips_graph_pipeline() -> (
+    None
+):
     with (
         patch(
-            "pdfserviceMD.router.run_in_threadpool",
+            "pdfserviceMD.indexing_tasks.run_in_threadpool",
             new=AsyncMock(return_value=("markdown", [])),
         ),
-        patch("pdfserviceMD.router.update_indexing_processing_step", new=AsyncMock()),
-        patch("pdfserviceMD.router.index_markdown_document", new=AsyncMock()),
-        patch("pdfserviceMD.router._process_document_images", new=AsyncMock(return_value=1)),
         patch(
-            "pdfserviceMD.router.delete_document_from_knowledge_base_async",
+            "pdfserviceMD.indexing_tasks.update_indexing_processing_step",
+            new=AsyncMock(),
+        ),
+        patch("pdfserviceMD.indexing_tasks.index_markdown_document", new=AsyncMock()),
+        patch(
+            "pdfserviceMD.indexing_tasks.process_document_images",
+            new=AsyncMock(return_value=1),
+        ),
+        patch(
+            "pdfserviceMD.indexing_tasks.delete_document_from_knowledge_base_async",
             new=AsyncMock(return_value=True),
         ) as delete_vectors,
-        patch("pdfserviceMD.router.record_background_processing_failure", new=AsyncMock()) as record_failure,
-        patch("pdfserviceMD.router.safe_update_document_status", new=AsyncMock()) as safe_update_status,
-        patch("pdfserviceMD.router.safe_update_processing_step", new=AsyncMock()) as safe_update_step,
-        patch("pdfserviceMD.router.finalize_indexing_status", new=AsyncMock()) as finalize_status,
+        patch(
+            "pdfserviceMD.indexing_tasks.record_background_processing_failure",
+            new=AsyncMock(),
+        ) as record_failure,
+        patch(
+            "pdfserviceMD.indexing_tasks.safe_update_document_status", new=AsyncMock()
+        ) as safe_update_status,
+        patch(
+            "pdfserviceMD.indexing_tasks.safe_update_processing_step", new=AsyncMock()
+        ) as safe_update_step,
+        patch(
+            "pdfserviceMD.indexing_tasks.finalize_indexing_status", new=AsyncMock()
+        ) as finalize_status,
     ):
-        await _retry_document_index_task(
+        await retry_document_index_task(
             doc_id="doc-1",
             book_title="Demo",
             current_status="completed",
@@ -379,46 +425,104 @@ async def test_retry_document_index_task_clears_vectors_and_skips_graph_pipeline
 
     delete_vectors.assert_awaited_once_with(TEST_USER_ID, "doc-1")
     record_failure.assert_not_awaited()
-    safe_update_status.assert_any_await(doc_id="doc-1", status="completed", error_message=None)
+    safe_update_status.assert_any_await(
+        doc_id="doc-1", status="completed", error_message=None
+    )
     safe_update_step.assert_awaited_once_with(doc_id="doc-1", step="indexed")
     finalize_status.assert_awaited_once_with(doc_id="doc-1", user_id=TEST_USER_ID)
 
 
 def test_retry_index_endpoint_starts_background_task_for_index_failed_doc() -> None:
-    payload = {
-        "id": "doc-1",
-        "file_name": "demo.pdf",
-        "original_path": "uploads/test-user-123/doc-1/demo.pdf",
-        "processing_step": "index_failed",
-    }
+    context = RetryIndexContext(
+        doc_id="00000000-0000-0000-0000-000000000001",
+        book_title="demo",
+        current_status="completed",
+        user_id=TEST_USER_ID,
+        user_folder="uploads/test-user-123/doc-1",
+    )
 
     with (
         _build_client() as client,
-        patch("pdfserviceMD.router.get_document", new=AsyncMock(return_value=payload)),
-        patch("pdfserviceMD.router.os.path.exists", return_value=True),
-        patch("pdfserviceMD.router.GraphStore") as graph_store_cls,
-        patch("pdfserviceMD.router._retry_document_index_task", new=AsyncMock()) as retry_task,
+        patch(
+            "pdfserviceMD.router.prepare_retry_index_context",
+            new=AsyncMock(return_value=context),
+        ) as prepare_context,
+        patch(
+            "pdfserviceMD.router._retry_document_index_task", new=AsyncMock()
+        ) as retry_task,
     ):
-        graph_store_cls.return_value.active_job_state = None
-        response = client.post("/pdfmd/file/00000000-0000-0000-0000-000000000001/retry-index")
+        response = client.post(
+            "/pdfmd/file/00000000-0000-0000-0000-000000000001/retry-index"
+        )
 
     assert response.status_code == 200
     assert response.json()["status"] == "started"
-    retry_task.assert_awaited_once()
+    prepare_context.assert_awaited_once_with(
+        doc_id="00000000-0000-0000-0000-000000000001",
+        user_id=TEST_USER_ID,
+    )
+    retry_task.assert_awaited_once_with(
+        doc_id="00000000-0000-0000-0000-000000000001",
+        book_title="demo",
+        current_status="completed",
+        user_id=TEST_USER_ID,
+        user_folder="uploads/test-user-123/doc-1",
+    )
 
 
 def test_retry_index_endpoint_rejects_non_index_failed_doc() -> None:
-    payload = {
-        "id": "doc-1",
-        "file_name": "demo.pdf",
-        "original_path": "uploads/test-user-123/doc-1/demo.pdf",
-        "processing_step": "indexed",
-    }
-
     with (
         _build_client() as client,
-        patch("pdfserviceMD.router.get_document", new=AsyncMock(return_value=payload)),
+        patch(
+            "pdfserviceMD.router.prepare_retry_index_context",
+            new=AsyncMock(
+                side_effect=AppError(
+                    code=ErrorCode.BAD_REQUEST,
+                    message="Document is not eligible for retry-index",
+                    status_code=409,
+                )
+            ),
+        ),
     ):
-        response = client.post("/pdfmd/file/00000000-0000-0000-0000-000000000001/retry-index")
+        response = client.post(
+            "/pdfmd/file/00000000-0000-0000-0000-000000000001/retry-index"
+        )
 
     assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_prepare_retry_index_context_validates_and_derives_payload(
+    tmp_path,
+) -> None:
+    artifact_dir = tmp_path / "doc-1"
+    artifact_dir.mkdir()
+    (artifact_dir / "extracted.md").write_text("markdown", encoding="utf-8")
+
+    with (
+        patch(
+            "pdfserviceMD.service.get_document",
+            new=AsyncMock(
+                return_value={
+                    "id": "doc-1",
+                    "file_name": "demo.pdf",
+                    "original_path": str(artifact_dir / "demo.pdf"),
+                    "processing_step": "index_failed",
+                    "status": "completed",
+                }
+            ),
+        ),
+        patch("pdfserviceMD.service.GraphStore") as graph_store_cls,
+    ):
+        graph_store_cls.return_value.active_job_state = None
+        context = await prepare_retry_index_context(
+            doc_id="doc-1", user_id=TEST_USER_ID
+        )
+
+    assert context == RetryIndexContext(
+        doc_id="doc-1",
+        book_title="demo",
+        current_status="completed",
+        user_id=TEST_USER_ID,
+        user_folder=str(artifact_dir),
+    )

@@ -6,13 +6,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from core.auth import get_current_user_id
-from graph_rag.router import (
-    _node_vector_sync_task,
-    _rebuild_full_graph_task,
-    _purge_graph_document_task,
-    _retry_graph_document_task,
+from graph_rag.maintenance import (
+    node_vector_sync_task,
+    purge_graph_document_task,
+    rebuild_full_graph_task,
+    retry_graph_document_task,
 )
-from graph_rag.schemas import EntityType, GraphDocumentStatus, GraphExtractionRunResult, NodeVectorSyncStatusResponse
+from graph_rag.schemas import (
+    EntityType,
+    GraphDocumentStatus,
+    GraphExtractionRunResult,
+    NodeVectorSyncStatusResponse,
+)
 from graph_rag.store import GraphStore
 from main import app
 
@@ -60,11 +65,19 @@ def test_graph_documents_endpoint_returns_persisted_and_unattempted_rows() -> No
         patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
         patch("graph_rag.router.GraphStore", _MockStore),
         patch(
-            "graph_rag.router.list_pdf_documents",
+            "graph_rag.router._list_graph_source_documents",
             new=AsyncMock(
                 return_value=[
-                    {"id": "doc-1", "file_name": "failed.pdf", "original_path": "uploads/u/doc-1/failed.pdf"},
-                    {"id": "doc-2", "file_name": "fresh.pdf", "original_path": "uploads/u/doc-2/fresh.pdf"},
+                    {
+                        "doc_id": "doc-1",
+                        "file_name": "failed.pdf",
+                        "original_path": "uploads/u/doc-1/failed.pdf",
+                    },
+                    {
+                        "doc_id": "doc-2",
+                        "file_name": "fresh.pdf",
+                        "original_path": "uploads/u/doc-2/fresh.pdf",
+                    },
                 ]
             ),
         ),
@@ -95,7 +108,15 @@ def test_rebuild_full_endpoint_sets_active_job_and_starts_background_task() -> N
         patch("graph_rag.router.GraphStore", return_value=mock_store),
         patch(
             "graph_rag.router._list_graph_source_documents",
-            new=AsyncMock(return_value=[{"doc_id": "doc-1", "file_name": "demo.pdf", "original_path": "uploads/u/doc-1/demo.pdf"}]),
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "doc_id": "doc-1",
+                        "file_name": "demo.pdf",
+                        "original_path": "uploads/u/doc-1/demo.pdf",
+                    }
+                ]
+            ),
         ),
         patch("graph_rag.router._rebuild_full_graph_task", new=mock_task),
         _client() as client,
@@ -110,10 +131,14 @@ def test_rebuild_full_endpoint_sets_active_job_and_starts_background_task() -> N
     mock_task.assert_awaited_once_with(TEST_USER_ID)
 
 
-def test_purge_graph_document_endpoint_sets_active_job_and_starts_background_task() -> None:
+def test_purge_graph_document_endpoint_sets_active_job_and_starts_background_task() -> (
+    None
+):
     mock_store = Mock()
     mock_store.active_job_state = None
-    mock_store.get_document_status.return_value = GraphDocumentStatus(doc_id="doc-1", status="failed")
+    mock_store.get_document_status.return_value = GraphDocumentStatus(
+        doc_id="doc-1", status="failed"
+    )
     mock_store.get_documents.return_value = {"doc-1"}
     mock_store.save_sidecars = Mock()
     mock_task = AsyncMock()
@@ -214,10 +239,13 @@ async def test_node_vector_sync_task_clears_active_job_state_after_completion() 
     mock_store.save_sidecars = Mock()
 
     with (
-        patch("graph_rag.router.GraphStore", return_value=mock_store),
-        patch("graph_rag.router.sync_node_vector_index", new=AsyncMock(return_value={"index_state": "ready"})),
+        patch("graph_rag.maintenance.GraphStore", return_value=mock_store),
+        patch(
+            "graph_rag.maintenance.sync_node_vector_index",
+            new=AsyncMock(return_value={"index_state": "ready"}),
+        ),
     ):
-        await _node_vector_sync_task(TEST_USER_ID)
+        await node_vector_sync_task(TEST_USER_ID)
 
     mock_store.set_active_job_state.assert_called_once_with(None)
     mock_store.save_sidecars.assert_called_once()
@@ -232,10 +260,22 @@ async def test_full_rebuild_keeps_old_graph_when_any_document_fails() -> None:
 
     with (
         patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)),
-        patch("graph_rag.router.list_pdf_documents", new=AsyncMock(return_value=[
-            {"id": "doc-1", "file_name": "demo.pdf", "original_path": str(artifact_dir / "demo.pdf")},
-        ])),
-        patch("graph_rag.router.load_ocr_artifacts", new=Mock(return_value=("demo", []))),
+        patch(
+            "graph_rag.maintenance.list_pdf_documents",
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "id": "doc-1",
+                        "file_name": "demo.pdf",
+                        "original_path": str(artifact_dir / "demo.pdf"),
+                    },
+                ]
+            ),
+        ),
+        patch(
+            "graph_rag.maintenance.load_ocr_artifacts",
+            new=Mock(return_value=("demo", [])),
+        ),
     ):
         live_store = GraphStore(TEST_USER_ID)
         live_store.add_node_from_extraction(
@@ -246,15 +286,22 @@ async def test_full_rebuild_keeps_old_graph_when_any_document_fails() -> None:
         )
         live_store.save()
 
-        async def _fake_run_graph_extraction(*, store: GraphStore, doc_id: str, **_: object) -> GraphExtractionRunResult:
+        async def _fake_run_graph_extraction(
+            *, store: GraphStore, doc_id: str, **_: object
+        ) -> GraphExtractionRunResult:
             store.upsert_document_status(
                 GraphDocumentStatus(doc_id=doc_id, status="failed", last_error="boom")
             )
             store.save_sidecars()
-            return GraphExtractionRunResult(doc_id=doc_id, status="failed", last_error="boom")
+            return GraphExtractionRunResult(
+                doc_id=doc_id, status="failed", last_error="boom"
+            )
 
-        with patch("graph_rag.router.run_graph_extraction", new=AsyncMock(side_effect=_fake_run_graph_extraction)):
-            await _rebuild_full_graph_task(TEST_USER_ID)
+        with patch(
+            "graph_rag.maintenance.run_graph_extraction",
+            new=AsyncMock(side_effect=_fake_run_graph_extraction),
+        ):
+            await rebuild_full_graph_task(TEST_USER_ID)
 
         reloaded = GraphStore(TEST_USER_ID)
 
@@ -265,7 +312,9 @@ async def test_full_rebuild_keeps_old_graph_when_any_document_fails() -> None:
 
 
 @pytest.mark.asyncio
-async def test_retry_graph_document_replaces_only_target_document_contribution() -> None:
+async def test_retry_graph_document_replaces_only_target_document_contribution() -> (
+    None
+):
     upload_root = _workspace_upload_root("graph_retry_success")
     artifact_dir = upload_root / TEST_USER_ID / "doc-1"
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -274,10 +323,15 @@ async def test_retry_graph_document_replaces_only_target_document_contribution()
     with (
         patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)),
         patch(
-            "graph_rag.router.get_document",
-            new=AsyncMock(return_value={"original_path": str(artifact_dir / "demo.pdf")}),
+            "graph_rag.maintenance.get_document",
+            new=AsyncMock(
+                return_value={"original_path": str(artifact_dir / "demo.pdf")}
+            ),
         ),
-        patch("graph_rag.router.load_ocr_artifacts", new=Mock(return_value=("demo", []))),
+        patch(
+            "graph_rag.maintenance.load_ocr_artifacts",
+            new=Mock(return_value=("demo", [])),
+        ),
     ):
         live_store = GraphStore(TEST_USER_ID)
         live_store.add_node_from_extraction(
@@ -294,26 +348,40 @@ async def test_retry_graph_document_replaces_only_target_document_contribution()
         )
         live_store.save()
 
-        async def _fake_run_graph_extraction(*, store: GraphStore, doc_id: str, **_: object) -> GraphExtractionRunResult:
+        async def _fake_run_graph_extraction(
+            *, store: GraphStore, doc_id: str, **_: object
+        ) -> GraphExtractionRunResult:
             store.add_node_from_extraction(
                 label="Retried Entity",
                 entity_type=EntityType.METHOD,
                 doc_id=doc_id,
                 pending_resolution=False,
             )
-            store.upsert_document_status(GraphDocumentStatus(doc_id=doc_id, status="indexed", entities_added=1))
+            store.upsert_document_status(
+                GraphDocumentStatus(doc_id=doc_id, status="indexed", entities_added=1)
+            )
             store.save()
-            return GraphExtractionRunResult(doc_id=doc_id, status="indexed", entities_added=1)
+            return GraphExtractionRunResult(
+                doc_id=doc_id, status="indexed", entities_added=1
+            )
 
-        async def _fake_optimize(store: GraphStore, *, regenerate_communities: bool = True) -> tuple[int, int]:
+        async def _fake_optimize(
+            store: GraphStore, *, regenerate_communities: bool = True
+        ) -> tuple[int, int]:
             store.save()
             return (0, 0)
 
         with (
-            patch("graph_rag.router.run_graph_extraction", new=AsyncMock(side_effect=_fake_run_graph_extraction)),
-            patch("graph_rag.router._optimize_existing_graph", new=AsyncMock(side_effect=_fake_optimize)),
+            patch(
+                "graph_rag.maintenance.run_graph_extraction",
+                new=AsyncMock(side_effect=_fake_run_graph_extraction),
+            ),
+            patch(
+                "graph_rag.maintenance.optimize_existing_graph",
+                new=AsyncMock(side_effect=_fake_optimize),
+            ),
         ):
-            await _retry_graph_document_task(TEST_USER_ID, "doc-1")
+            await retry_graph_document_task(TEST_USER_ID, "doc-1")
 
         reloaded = GraphStore(TEST_USER_ID)
         labels = {node.label for node in reloaded.get_all_nodes()}
@@ -344,11 +412,13 @@ async def test_purge_graph_document_removes_orphan_contribution() -> None:
             pending_resolution=False,
         )
         live_store.upsert_document_status(
-            GraphDocumentStatus(doc_id="doc-orphan", status="failed", last_error="left behind")
+            GraphDocumentStatus(
+                doc_id="doc-orphan", status="failed", last_error="left behind"
+            )
         )
         live_store.save()
 
-        await _purge_graph_document_task(TEST_USER_ID, "doc-orphan")
+        await purge_graph_document_task(TEST_USER_ID, "doc-orphan")
 
         reloaded = GraphStore(TEST_USER_ID)
         labels = {node.label for node in reloaded.get_all_nodes()}
