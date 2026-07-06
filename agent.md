@@ -1,4 +1,4 @@
-# Agent Working Guide (`agent.md`)
+﻿# Agent Working Guide (`agent.md`)
 
 ## 1. Purpose
 This file defines how refactoring and code-standardization work should be executed in this repository.
@@ -112,6 +112,13 @@ pytest
 
 If a full suite is too slow or environment-limited, run impacted subsets and state coverage gaps explicitly.
 
+Current local baseline note (2026-07-06):
+- The refreshed Windows development environment is using Python 3.13.
+- Use `.\.venv\Scripts\python.exe -m pytest ...` and `.\.venv\Scripts\python.exe -m ruff ...` from the repository root on Windows.
+- `pytest.ini` redirects pytest cache to `output/test_tmp/.pytest_cache`.
+- Docker is not required for the local backend verification flow in this workspace.
+- Full-suite collection may still hit legacy experiment/RAGAS environment issues; prefer production-focused suites first and report any remaining full-suite baseline blockers explicitly.
+
 Evaluation compatibility check (when retrieval/agent logic changes):
 
 ```bash
@@ -165,16 +172,35 @@ Keep these three files synchronized before ending a session.
 - Full backend verification after this cleanup track: `.\\.venv\\Scripts\\python.exe -m pytest` -> `375 passed`.
 
 
-## 12. Continuous Learning Notes
+## 12. Backend Maintenance And Prompt Config Status (2026-07-06)
+- Router/service boundaries were tightened again:
+  - GraphRAG purge/rebuild/retry/optimize maintenance helpers now live outside `graph_rag/router.py` where practical.
+  - PDF indexing retry/background orchestration now lives in `pdfserviceMD/indexing_tasks.py` and service helpers instead of `pdfserviceMD/router.py`.
+- Keep router modules focused on HTTP request/response/auth/background-task scheduling only. Long-running jobs, file operations, graph maintenance, and RAG orchestration belong in service/helper modules.
+- Prompt text for production RAG domains is externalized under `prompts/`:
+  - `rag_qa_prompts.json`: main `/rag/ask` answer, visual tool, and visual synthesis prompts.
+  - `agentic_rag_prompts.json`: planner, evaluator, synthesizer, and fact-state prompts.
+  - `graph_rag_prompts.json`: graph extraction/search/community/router prompts.
+  - `rag_pipeline_prompts.json`: HyDE, multi-query, proposition extraction, and context enrichment prompts.
+- Use `core/prompt_loader.py` for prompt access. Do not add new long prompt constants to production Python modules in `agents/`, `graph_rag/`, or `data_base/`.
+- Prompt JSON entries must define `version`, `description`, `required_variables`, and `template`. Tests should cover required variables and at least one format smoke path for each prompt domain.
+- Current prompt externalization intentionally preserves old prompt wording byte-for-byte. Do not rewrite prompt wording in the same change as a loader/wiring refactor.
+- Reference docs:
+  - `docs/backend-maintenance.md`
+  - `docs/prompt-management.md`
+
+## 13. Continuous Learning Notes
 - 2026-03-28: When extending persisted or transport dataclasses used by tests and helper runners, preserve backward compatibility for existing constructor call sites by giving new optional fields explicit defaults. Always run the relevant integration tests after schema/dataclass changes to catch silent execution-path regressions.
 
-- 2026-03-28: When a user asks for full CI or "全線" verification, do not stop at targeted tests, lint, or typecheck. Run the workflow-equivalent full suites for both backend and frontend, request sandbox escalation immediately when test runners are blocked, and report exact pass/skip/fail counts rather than partial confidence claims.
+- 2026-03-28: When a user asks for full CI or "?函?" verification, do not stop at targeted tests, lint, or typecheck. Run the workflow-equivalent full suites for both backend and frontend, request sandbox escalation immediately when test runners are blocked, and report exact pass/skip/fail counts rather than partial confidence claims.
 - 2026-03-29: Do not persist raw LangChain/Gemini `usage_metadata` directly into evaluation or trace payloads. Normalize token usage first (at minimum flat `input_tokens`, `output_tokens`, `total_tokens`, `reasoning_tokens`), and treat stored `token_usage` schemas as potentially nested/forward-compatible when reading existing rows.
 - 2026-03-29: When evaluation `agentic` baseline behavior changes, pin the new planner/drill-down/image constraints inside `evaluation/agentic_evaluation_service.py` and bump `execution_profile` so historical campaign results remain comparable.
 - 2026-03-29: When evaluator context-packing logic changes, version it explicitly (`context_policy_version`) and propagate that version through persisted campaign results, RAGAS score details, metrics rows, docs, and frontend types in the same change set. This preserves score comparability and prevents silent evaluator-policy drift.
 - 2026-03-29: In this workspace, `rg.exe` can intermittently fail with permission errors; after one failed attempt, switch immediately to `Select-String`/targeted file reads and continue without repeated retries.
 - 2026-04-04: For repository-wide string search on Windows, avoid `Get-ChildItem -Recurse | Select-String` because denied cache directories can break scans; prefer `git grep` first, then file-targeted `Select-String`.
 - 2026-04-04: In evaluation agentic routing, never treat benchmark intent as numeric-only based on metric words (for example `Dice`) without explicit numeric context; exclude methodology phrases like `Dice supervision`, anchor figure-flow plans to the original question, and force single-task synthesis normalization so answers do not drift into broad/off-question headings.
+
+
 
 
 

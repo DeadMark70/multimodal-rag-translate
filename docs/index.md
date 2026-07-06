@@ -1,4 +1,4 @@
-# Backend Docs Index
+﻿# Backend Docs Index
 
 Format direction:
 - [OpenAI Harness Engineering](https://openai.com/zh-Hant/index/harness-engineering/)
@@ -6,11 +6,13 @@ Format direction:
 ## Read Order
 
 1. `docs/BACKEND.md`
-2. `docs/generated/api-surface.md`
-3. `docs/design-docs/index.md`
-4. `docs/product-specs/index.md`
-5. `docs/exec-plans/index.md`
-6. `docs/references/index.md`
+2. `docs/backend-maintenance.md`
+3. `docs/prompt-management.md`
+4. `docs/generated/api-surface.md`
+5. `docs/design-docs/index.md`
+6. `docs/product-specs/index.md`
+7. `docs/exec-plans/index.md`
+8. `docs/references/index.md`
 
 ## Current API Surface
 
@@ -24,6 +26,8 @@ Format direction:
 
 - `docs/DESIGN.md`: durable backend architecture decisions
 - `docs/BACKEND.md`: current runtime and API map
+- `docs/backend-maintenance.md`: router/service/background maintenance boundaries
+- `docs/prompt-management.md`: JSON prompt registry structure and edit workflow
 - `docs/PRODUCT_SENSE.md`: user-visible API capabilities and boundaries
 - `docs/RELIABILITY.md`: lifecycle, retries, persistence, and streaming guardrails
 - `docs/SECURITY.md`: auth, UUID/path safety, and deployment hardening
@@ -43,3 +47,4 @@ Format direction:
 1. If a router prefix, endpoint family, persistence contract, or startup/runtime rule changes, update `docs/BACKEND.md` and `docs/generated/api-surface.md` in the same change set.
 2. If the change alters user-visible behavior, update the matching `docs/product-specs/*` doc before moving work to completed plans.
 3. Treat `agent.md`, `checklist/`, `agentlog/`, and `conductor/` as references or history, not the primary current-state source.
+
