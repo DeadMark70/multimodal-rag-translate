@@ -1,4 +1,4 @@
-﻿# Prompt Management Guide
+# Prompt Management Guide
 
 Production RAG prompts are now managed through JSON config files under `prompts/` instead of long Python constants. This keeps prompt edits reviewable and separates prompt text from orchestration code.
 

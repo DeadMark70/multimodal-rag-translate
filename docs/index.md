@@ -1,4 +1,4 @@
-﻿# Backend Docs Index
+# Backend Docs Index
 
 Format direction:
 - [OpenAI Harness Engineering](https://openai.com/zh-Hant/index/harness-engineering/)

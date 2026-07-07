@@ -1,4 +1,4 @@
-﻿# Backend Maintenance Guide
+# Backend Maintenance Guide
 
 This guide records the current backend maintenance boundaries after the 2026-07-06 FastAPI cleanup. It is meant for future agents that need to change backend behavior without re-reading the entire project.
 
