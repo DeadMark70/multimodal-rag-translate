@@ -154,7 +154,42 @@ async def test_list_available_models_filters_and_normalizes_sdk_results(
     ]
     assert actual[0].supported_actions == ["generateContent"]
     assert actual[0].display_name == "Gemini 2.5 Flash"
+    assert actual[0].thinking.control_type == "budget"
 
+
+@pytest.mark.asyncio
+async def test_list_available_models_attaches_thinking_capabilities() -> None:
+    raw_model = _raw_model(
+        "models/gemini-3.0-flash",
+        display_name="Gemini 3.0 Flash",
+    )
+
+    with patch(
+        "evaluation.model_discovery._fetch_models_sync",
+        return_value=[raw_model],
+    ):
+        actual = await model_discovery.list_available_models(force_refresh=True)
+
+    assert actual[0].name == "gemini-3.0-flash"
+    assert actual[0].thinking.control_type == "level"
+    assert actual[0].thinking.default_level == "medium"
+
+
+@pytest.mark.asyncio
+async def test_list_available_models_allows_gemma_generation_models() -> None:
+    raw_model = _raw_model(
+        "models/gemma-4",
+        display_name="Gemma 4",
+    )
+
+    with patch(
+        "evaluation.model_discovery._fetch_models_sync",
+        return_value=[raw_model],
+    ):
+        actual = await model_discovery.list_available_models(force_refresh=True)
+
+    assert [item.name for item in actual] == ["gemma-4"]
+    assert actual[0].thinking.control_type == "level"
 
 @pytest.mark.asyncio
 async def test_list_available_models_uses_fallback_when_no_api_key() -> None:
@@ -235,5 +270,6 @@ async def test_list_available_models_reuses_last_successful_cache_when_refresh_f
 
     assert [item.name for item in first] == ["gemini-2.5-pro"]
     assert [item.name for item in second] == ["gemini-2.5-pro"]
+
 
 

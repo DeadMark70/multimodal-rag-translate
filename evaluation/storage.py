@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from core.errors import AppError, ErrorCode
+from evaluation.model_capabilities import normalize_model_config_for_storage
 
 BASE_UPLOAD_FOLDER = "uploads"
 _VALID_USER_ID = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -226,7 +227,11 @@ async def list_model_configs(user_id: str) -> list[dict[str, Any]]:
         items = store.get("items")
         if not isinstance(items, list):
             return []
-        return items
+        return [
+            normalize_model_config_for_storage(item)
+            for item in items
+            if isinstance(item, dict)
+        ]
 
 
 async def create_model_config(user_id: str, model_config: dict[str, Any]) -> dict[str, Any]:
@@ -239,7 +244,7 @@ async def create_model_config(user_id: str, model_config: dict[str, Any]) -> dic
             items = []
 
         now = _utc_now_iso()
-        candidate = dict(model_config)
+        candidate = normalize_model_config_for_storage(model_config)
         candidate["id"] = candidate.get("id") or str(uuid4())
         candidate["created_at"] = candidate.get("created_at") or now
         candidate["updated_at"] = now
@@ -271,7 +276,7 @@ async def update_model_config(
 
         for index, item in enumerate(items):
             if item.get("id") == config_id:
-                candidate = dict(model_config)
+                candidate = normalize_model_config_for_storage(model_config)
                 candidate["id"] = config_id
                 candidate["created_at"] = item.get("created_at") or _utc_now_iso()
                 candidate["updated_at"] = _utc_now_iso()
@@ -305,4 +310,6 @@ async def delete_model_config(user_id: str, config_id: str) -> int:
 
         await asyncio.to_thread(_atomic_write_json, path, {"items": filtered})
         return len(filtered)
+
+
 

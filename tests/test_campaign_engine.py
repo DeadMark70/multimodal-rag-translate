@@ -1361,3 +1361,43 @@ def test_campaign_integration_keeps_running_when_one_mode_fails() -> None:
 
 
 
+
+
+def test_campaign_runtime_model_config_preserves_thinking_level_for_level_models() -> None:
+    from evaluation.rag_modes import _runtime_overrides
+
+    overrides = _runtime_overrides(
+        {
+            "model_name": "gemini-3.0-flash",
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "top_k": 40,
+            "max_output_tokens": 8192,
+            "thinking_mode": True,
+            "thinking_budget": 8192,
+            "thinking_level": "high",
+        }
+    )
+
+    assert overrides["thinking_level"] == "high"
+    assert "thinking_budget" not in overrides
+
+
+def test_campaign_runtime_model_config_preserves_thinking_budget_for_budget_models() -> None:
+    from evaluation.rag_modes import _runtime_overrides
+
+    overrides = _runtime_overrides(
+        {
+            "model_name": "gemini-2.5-flash",
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "top_k": 40,
+            "max_output_tokens": 8192,
+            "thinking_mode": True,
+            "thinking_budget": 2048,
+            "thinking_level": "high",
+        }
+    )
+
+    assert overrides["thinking_budget"] == 2048
+    assert "thinking_level" not in overrides

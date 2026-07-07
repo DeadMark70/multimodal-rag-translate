@@ -15,6 +15,7 @@ import time
 from typing import Any, Iterable
 
 from core.google_genai_client import get_google_genai_client
+from evaluation.model_capabilities import get_thinking_capability
 from evaluation.schemas import AvailableModel
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ _FALLBACK_MODELS: list[AvailableModel] = [
         input_token_limit=1_048_576,
         output_token_limit=65_536,
         supported_actions=["generateContent"],
+        thinking=get_thinking_capability("gemini-2.5-pro"),
     ),
     AvailableModel(
         name="gemini-2.5-flash",
@@ -40,6 +42,7 @@ _FALLBACK_MODELS: list[AvailableModel] = [
         input_token_limit=1_048_576,
         output_token_limit=8_192,
         supported_actions=["generateContent"],
+        thinking=get_thinking_capability("gemini-2.5-flash"),
     ),
     AvailableModel(
         name="gemini-2.5-flash-lite",
@@ -48,6 +51,7 @@ _FALLBACK_MODELS: list[AvailableModel] = [
         input_token_limit=1_048_576,
         output_token_limit=8_192,
         supported_actions=["generateContent"],
+        thinking=get_thinking_capability("gemini-2.5-flash-lite"),
     ),
     AvailableModel(
         name="gemini-2.0-flash",
@@ -56,6 +60,7 @@ _FALLBACK_MODELS: list[AvailableModel] = [
         input_token_limit=1_048_576,
         output_token_limit=8_192,
         supported_actions=["generateContent"],
+        thinking=get_thinking_capability("gemini-2.0-flash"),
     ),
 ]
 
@@ -116,7 +121,7 @@ def _normalize_model(raw_model: Any) -> AvailableModel | None:
 
     raw_name = str(_read_field(raw_model, "name", "") or "")
     model_name = raw_name.replace("models/", "", 1) if raw_name.startswith("models/") else raw_name
-    if not model_name or not model_name.startswith("gemini-"):
+    if not model_name or not (model_name.startswith("gemini-") or model_name.startswith("gemma-")):
         return None
 
     display_name = _read_field(raw_model, "display_name") or model_name
@@ -131,6 +136,7 @@ def _normalize_model(raw_model: Any) -> AvailableModel | None:
         input_token_limit=int(input_token_limit) if input_token_limit is not None else None,
         output_token_limit=int(output_token_limit) if output_token_limit is not None else None,
         supported_actions=supported_actions,
+        thinking=get_thinking_capability(model_name),
     )
 
 

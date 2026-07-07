@@ -23,6 +23,7 @@ from evaluation.campaign_schemas import (
     CampaignResultsResponse,
     CampaignStatus,
 )
+from evaluation.model_capabilities import normalize_model_config_for_storage
 from evaluation.model_discovery import list_available_models
 from evaluation.schemas import (
     AvailableModel,
@@ -30,6 +31,7 @@ from evaluation.schemas import (
     ImportResult,
     ModelConfig,
     TestCase,
+    ThinkingLevel,
 )
 from evaluation.storage import (
     create_model_config,
@@ -87,7 +89,9 @@ class ModelConfigCreateRequest(BaseModel):
     max_input_tokens: int = Field(8192, ge=1)
     max_output_tokens: int = Field(8192, ge=1)
     thinking_mode: bool = False
-    thinking_budget: int = Field(8192, ge=1024, le=32768)
+    thinking_budget: int | None = Field(default=8192, ge=-1, le=32768)
+    thinking_level: ThinkingLevel | None = None
+    thinking_include_thoughts: bool = False
 
 
 def _to_sse_event(event_name: str, payload: BaseModel | dict[str, Any]) -> dict[str, str]:
@@ -191,7 +195,7 @@ async def post_model_config(
     """Create one model config preset."""
     created = await create_model_config(
         user_id=user_id,
-        model_config=payload.model_dump(exclude_none=True),
+        model_config=normalize_model_config_for_storage(payload.model_dump(exclude_none=False)),
     )
     return ModelConfig.model_validate(created)
 
@@ -213,7 +217,7 @@ async def put_model_config(
     updated = await update_model_config(
         user_id=user_id,
         config_id=config_id,
-        model_config=payload.model_dump(exclude_none=True),
+        model_config=normalize_model_config_for_storage(payload.model_dump(exclude_none=False)),
     )
     return ModelConfig.model_validate(updated)
 
@@ -386,3 +390,9 @@ async def stream_campaign(
                 return
 
     return EventSourceResponse(event_generator())
+
+
+
+
+
+

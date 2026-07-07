@@ -146,6 +146,34 @@ def test_model_config_crud_and_validation() -> None:
         assert deleted.json()["total"] == 0
 
 
+def test_model_config_level_model_normalizes_thinking_fields() -> None:
+    upload_root = _make_upload_root()
+    payload = {
+        "name": "Gemini 3 High",
+        "model_name": "gemini-3.0-flash",
+        "temperature": 0.2,
+        "top_p": 0.95,
+        "top_k": 40,
+        "max_input_tokens": 8192,
+        "max_output_tokens": 2048,
+        "thinking_mode": True,
+        "thinking_budget": 4096,
+        "thinking_level": "high",
+        "thinking_include_thoughts": False,
+    }
+
+    with _build_client("user-a", upload_root) as client:
+        created = client.post("/api/evaluation/model-configs", json=payload)
+        assert created.status_code == 200
+        body = created.json()
+        assert body["thinking_level"] == "high"
+        assert body["thinking_budget"] is None
+
+        listed = client.get("/api/evaluation/model-configs")
+        assert listed.status_code == 200
+        assert listed.json()[0]["thinking_level"] == "high"
+        assert listed.json()[0]["thinking_budget"] is None
+
 def test_models_endpoint_uses_dynamic_discovery() -> None:
     upload_root = _make_upload_root()
     mocked = [
@@ -217,3 +245,4 @@ def test_evaluation_data_is_isolated_by_user() -> None:
         assert len(listed_a.json()) == 1
         assert listed_a.json()[0]["id"] == "TC-A"
         assert listed_a.json()[0]["ground_truth_short"] == "A-short"
+

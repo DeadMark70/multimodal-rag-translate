@@ -13,6 +13,7 @@ from core.llm_factory import llm_runtime_override
 from data_base.indexing_service import DEFAULT_PRODUCTION_INDEXING_PROFILE
 from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from evaluation.agentic_evaluation_service import AgenticEvaluationService
+from evaluation.model_capabilities import normalize_model_config_for_runtime
 from evaluation.retry import run_with_retry
 from evaluation.schemas import TestCase
 
@@ -88,13 +89,7 @@ class BenchmarkExecutionResult:
 
 
 def _runtime_overrides(model_config: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "model_name": model_config.get("model_name"),
-        "temperature": model_config.get("temperature"),
-        "top_p": model_config.get("top_p"),
-        "top_k": model_config.get("top_k"),
-        "max_output_tokens": model_config.get("max_output_tokens"),
-    }
+    return normalize_model_config_for_runtime(model_config)
 
 
 async def run_campaign_case(
@@ -257,3 +252,4 @@ def _extract_contexts(
         if len(selected) >= EVALUATOR_MAX_CONTEXTS:
             break
     return selected
+

@@ -143,3 +143,11 @@
 
 
 
+
+## Evaluation Model Thinking Controls
+
+- `evaluation/model_capabilities.py` is the backend source of truth for model-specific thinking controls.
+- `GET /api/evaluation/models` returns `AvailableModel.thinking` so the UI can render only valid controls for the selected model.
+- Gemini 2.5 Flash-family models use budget controls (`thinking_budget`); Gemini 3.x Flash and Gemma 4-family models use level controls (`thinking_level`). Unknown models expose `control_type="none"`.
+- Model preset create/update/list paths normalize incompatible fields before storage, and campaign runtime overrides normalize again before provider execution.
+- Campaign configs preserve the normalized preset snapshot so history/results can show the actual reasoning setting used for a run.

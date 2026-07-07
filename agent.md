@@ -1,4 +1,4 @@
-﻿# Agent Working Guide (`agent.md`)
+# Agent Working Guide (`agent.md`)
 
 ## 1. Purpose
 This file defines how refactoring and code-standardization work should be executed in this repository.
