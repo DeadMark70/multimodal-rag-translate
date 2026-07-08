@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -26,8 +27,151 @@ from evaluation.trace_schemas import AgentTraceDetail, AgentTraceSummary, summar
 EVALUATION_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "evaluation.db"
 _UNSET = object()
 logger = logging.getLogger(__name__)
+_INITIALIZED_DB_PATHS: set[str] = set()
+_INIT_LOCKS: dict[str, asyncio.Lock] = {}
 ROUTE_PROFILE_ALIASES = {
     "hybrid_graph": "generic_graph",
+}
+_OBSERVABILITY_TABLE_COLUMNS = {
+    "evaluation_trace_events": {
+        "run_id": "TEXT NOT NULL DEFAULT ''",
+        "campaign_id": "TEXT NOT NULL DEFAULT ''",
+        "span_id": "TEXT NOT NULL DEFAULT ''",
+        "parent_event_id": "TEXT",
+        "parent_span_id": "TEXT",
+        "event_type": "TEXT NOT NULL DEFAULT ''",
+        "event_schema_version": "TEXT NOT NULL DEFAULT '1.0'",
+        "sequence": "INTEGER NOT NULL DEFAULT 0",
+        "stage_type": "TEXT NOT NULL DEFAULT ''",
+        "stage_name": "TEXT NOT NULL DEFAULT ''",
+        "started_at": "TEXT NOT NULL DEFAULT ''",
+        "ended_at": "TEXT",
+        "duration_ms": "REAL",
+        "status": "TEXT NOT NULL DEFAULT 'running'",
+        "retry_count": "INTEGER NOT NULL DEFAULT 0",
+        "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+        "error_json": "TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+    },
+    "evaluation_llm_calls": {
+        "run_id": "TEXT NOT NULL DEFAULT ''",
+        "campaign_id": "TEXT NOT NULL DEFAULT ''",
+        "span_id": "TEXT",
+        "provider": "TEXT",
+        "model_name": "TEXT",
+        "purpose": "TEXT NOT NULL DEFAULT 'unknown'",
+        "prompt_tokens": "INTEGER NOT NULL DEFAULT 0",
+        "completion_tokens": "INTEGER NOT NULL DEFAULT 0",
+        "total_tokens": "INTEGER NOT NULL DEFAULT 0",
+        "estimated_cost_usd": "REAL",
+        "estimated_cost_twd": "REAL",
+        "prompt_hash": "TEXT",
+        "prompt_preview": "TEXT",
+        "response_hash": "TEXT",
+        "latency_ms": "REAL",
+        "status": "TEXT NOT NULL DEFAULT 'success'",
+        "error_json": "TEXT NOT NULL DEFAULT '{}'",
+        "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+    },
+    "evaluation_retrieval_events": {
+        "run_id": "TEXT NOT NULL DEFAULT ''",
+        "campaign_id": "TEXT NOT NULL DEFAULT ''",
+        "span_id": "TEXT",
+        "query": "TEXT",
+        "query_hash": "TEXT",
+        "retriever_name": "TEXT",
+        "top_k": "INTEGER",
+        "result_count": "INTEGER NOT NULL DEFAULT 0",
+        "latency_ms": "REAL",
+        "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+    },
+    "evaluation_retrieval_chunks": {
+        "run_id": "TEXT NOT NULL DEFAULT ''",
+        "campaign_id": "TEXT NOT NULL DEFAULT ''",
+        "span_id": "TEXT",
+        "retrieval_event_id": "TEXT NOT NULL DEFAULT ''",
+        "chunk_id": "TEXT NOT NULL DEFAULT ''",
+        "doc_id": "TEXT",
+        "page_start": "INTEGER",
+        "page_end": "INTEGER",
+        "modality": "TEXT",
+        "rank_before_rerank": "INTEGER",
+        "rank_after_rerank": "INTEGER",
+        "dense_score": "REAL",
+        "bm25_score": "REAL",
+        "rerank_score": "REAL",
+        "used_in_context": "INTEGER NOT NULL DEFAULT 0",
+        "used_in_answer": "INTEGER NOT NULL DEFAULT 0",
+        "expected_evidence_match": "INTEGER NOT NULL DEFAULT 0",
+        "excerpt": "TEXT",
+        "content_hash": "TEXT",
+        "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+    },
+    "evaluation_context_packs": {
+        "run_id": "TEXT NOT NULL DEFAULT ''",
+        "campaign_id": "TEXT NOT NULL DEFAULT ''",
+        "span_id": "TEXT",
+        "input_chunk_count": "INTEGER NOT NULL DEFAULT 0",
+        "packed_chunk_count": "INTEGER NOT NULL DEFAULT 0",
+        "token_count": "INTEGER NOT NULL DEFAULT 0",
+        "retrieved_but_not_packed_evidence_json": "TEXT NOT NULL DEFAULT '[]'",
+        "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+    },
+    "evaluation_tool_calls": {
+        "run_id": "TEXT NOT NULL DEFAULT ''",
+        "campaign_id": "TEXT NOT NULL DEFAULT ''",
+        "span_id": "TEXT",
+        "tool_name": "TEXT NOT NULL DEFAULT ''",
+        "action": "TEXT",
+        "latency_ms": "REAL",
+        "status": "TEXT NOT NULL DEFAULT 'success'",
+        "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+    },
+    "evaluation_routing_decisions": {
+        "run_id": "TEXT NOT NULL DEFAULT ''",
+        "campaign_id": "TEXT NOT NULL DEFAULT ''",
+        "span_id": "TEXT",
+        "selected_mode": "TEXT NOT NULL DEFAULT ''",
+        "analysis_type": "TEXT NOT NULL DEFAULT 'retrospective'",
+        "confidence": "REAL",
+        "reason": "TEXT",
+        "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+    },
+    "evaluation_claims": {
+        "run_id": "TEXT NOT NULL DEFAULT ''",
+        "campaign_id": "TEXT NOT NULL DEFAULT ''",
+        "span_id": "TEXT",
+        "claim_text": "TEXT NOT NULL DEFAULT ''",
+        "claim_type": "TEXT",
+        "support_status": "TEXT NOT NULL DEFAULT 'unsupported'",
+        "evidence_json": "TEXT NOT NULL DEFAULT '[]'",
+        "unsupported_reason": "TEXT",
+        "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+    },
+    "evaluation_human_ratings": {
+        "run_id": "TEXT NOT NULL DEFAULT ''",
+        "campaign_id": "TEXT NOT NULL DEFAULT ''",
+        "span_id": "TEXT",
+        "rater_id_hash": "TEXT NOT NULL DEFAULT ''",
+        "rubric_version": "TEXT NOT NULL DEFAULT ''",
+        "correctness_score": "REAL NOT NULL DEFAULT 0",
+        "faithfulness_score": "REAL NOT NULL DEFAULT 0",
+        "completeness_score": "REAL NOT NULL DEFAULT 0",
+        "citation_quality_score": "REAL NOT NULL DEFAULT 0",
+        "usefulness_score": "REAL NOT NULL DEFAULT 0",
+        "comments": "TEXT",
+        "is_blinded": "INTEGER NOT NULL DEFAULT 1",
+        "shown_mode_label": "INTEGER NOT NULL DEFAULT 0",
+        "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+    },
 }
 _INIT_SQL = """
 CREATE TABLE IF NOT EXISTS campaigns (
@@ -88,6 +232,173 @@ ON campaign_results(campaign_id, created_at ASC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_results_unit_unique
 ON campaign_results(campaign_id, question_id, mode, run_number);
 
+CREATE TABLE IF NOT EXISTS evaluation_trace_events (
+    event_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    span_id TEXT NOT NULL,
+    parent_event_id TEXT,
+    parent_span_id TEXT,
+    event_type TEXT NOT NULL,
+    event_schema_version TEXT NOT NULL DEFAULT '1.0',
+    sequence INTEGER NOT NULL,
+    stage_type TEXT NOT NULL,
+    stage_name TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    duration_ms REAL,
+    status TEXT NOT NULL,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    error_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_llm_calls (
+    llm_call_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    span_id TEXT,
+    provider TEXT,
+    model_name TEXT,
+    purpose TEXT NOT NULL DEFAULT 'unknown',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_cost_usd REAL,
+    estimated_cost_twd REAL,
+    prompt_hash TEXT,
+    prompt_preview TEXT,
+    response_hash TEXT,
+    latency_ms REAL,
+    status TEXT NOT NULL DEFAULT 'success',
+    error_json TEXT NOT NULL DEFAULT '{}',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_retrieval_events (
+    retrieval_event_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    span_id TEXT,
+    query TEXT,
+    query_hash TEXT,
+    retriever_name TEXT,
+    top_k INTEGER,
+    result_count INTEGER NOT NULL DEFAULT 0,
+    latency_ms REAL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_retrieval_chunks (
+    retrieval_chunk_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    span_id TEXT,
+    retrieval_event_id TEXT NOT NULL,
+    chunk_id TEXT NOT NULL,
+    doc_id TEXT,
+    page_start INTEGER,
+    page_end INTEGER,
+    modality TEXT,
+    rank_before_rerank INTEGER,
+    rank_after_rerank INTEGER,
+    dense_score REAL,
+    bm25_score REAL,
+    rerank_score REAL,
+    used_in_context INTEGER NOT NULL DEFAULT 0,
+    used_in_answer INTEGER NOT NULL DEFAULT 0,
+    expected_evidence_match INTEGER NOT NULL DEFAULT 0,
+    excerpt TEXT,
+    content_hash TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY(retrieval_event_id) REFERENCES evaluation_retrieval_events(retrieval_event_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_context_packs (
+    context_pack_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    span_id TEXT,
+    input_chunk_count INTEGER NOT NULL DEFAULT 0,
+    packed_chunk_count INTEGER NOT NULL DEFAULT 0,
+    token_count INTEGER NOT NULL DEFAULT 0,
+    retrieved_but_not_packed_evidence_json TEXT NOT NULL DEFAULT '[]',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_tool_calls (
+    tool_call_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    span_id TEXT,
+    tool_name TEXT NOT NULL,
+    action TEXT,
+    latency_ms REAL,
+    status TEXT NOT NULL DEFAULT 'success',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_routing_decisions (
+    routing_decision_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    span_id TEXT,
+    selected_mode TEXT NOT NULL,
+    analysis_type TEXT NOT NULL DEFAULT 'retrospective',
+    confidence REAL,
+    reason TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_claims (
+    claim_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    span_id TEXT,
+    claim_text TEXT NOT NULL,
+    claim_type TEXT,
+    support_status TEXT NOT NULL DEFAULT 'unsupported',
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    unsupported_reason TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_human_ratings (
+    human_rating_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    span_id TEXT,
+    rater_id_hash TEXT NOT NULL,
+    rubric_version TEXT NOT NULL,
+    correctness_score REAL NOT NULL,
+    faithfulness_score REAL NOT NULL,
+    completeness_score REAL NOT NULL,
+    citation_quality_score REAL NOT NULL,
+    usefulness_score REAL NOT NULL,
+    comments TEXT,
+    is_blinded INTEGER NOT NULL DEFAULT 1,
+    shown_mode_label INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS agent_traces (
     id TEXT PRIMARY KEY,
     campaign_id TEXT NOT NULL,
@@ -138,10 +449,28 @@ async def connect_db():
 
 async def init_db() -> None:
     """Initialize evaluation database and future-proof tables."""
+    db_path = str(Path(EVALUATION_DB_PATH).resolve())
+    if db_path in _INITIALIZED_DB_PATHS and Path(db_path).exists():
+        return
+    lock = _INIT_LOCKS.setdefault(db_path, asyncio.Lock())
+    async with lock:
+        if db_path in _INITIALIZED_DB_PATHS and Path(db_path).exists():
+            return
+        async with connect_db() as connection:
+            await connection.executescript(_INIT_SQL)
+            await _apply_migrations(connection)
+            await connection.commit()
+        _INITIALIZED_DB_PATHS.add(db_path)
+
+
+async def force_init_db() -> None:
+    """Run schema creation and migrations even if the current DB path is cached."""
+    db_path = str(Path(EVALUATION_DB_PATH).resolve())
     async with connect_db() as connection:
         await connection.executescript(_INIT_SQL)
         await _apply_migrations(connection)
         await connection.commit()
+    _INITIALIZED_DB_PATHS.add(db_path)
 
 
 async def _apply_migrations(connection: aiosqlite.Connection) -> None:
@@ -181,6 +510,39 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         await connection.execute(
             "ALTER TABLE campaign_results ADD COLUMN ragas_focus_json TEXT NOT NULL DEFAULT '[]'"
         )
+    campaign_result_research_columns = {
+        "question_version": "TEXT",
+        "request_id": "TEXT",
+        "started_at": "TEXT",
+        "completed_at": "TEXT",
+        "total_latency_ms": "REAL",
+        "total_tokens": "INTEGER NOT NULL DEFAULT 0",
+        "estimated_cost_usd": "REAL",
+        "estimated_cost_twd": "REAL",
+        "test_suite_id": "TEXT",
+        "test_case_hash": "TEXT",
+        "ground_truth_hash": "TEXT",
+        "expected_evidence_hash": "TEXT",
+        "knowledge_base_id": "TEXT",
+        "index_version": "TEXT",
+        "retriever_config_hash": "TEXT",
+        "prompt_pack_version": "TEXT",
+        "price_snapshot_id": "TEXT",
+        "question_snapshot_json": "TEXT NOT NULL DEFAULT '{}'",
+        "model_config_snapshot_json": "TEXT NOT NULL DEFAULT '{}'",
+        "system_version_snapshot_json": "TEXT NOT NULL DEFAULT '{}'",
+        "ablation_flags_json": "TEXT NOT NULL DEFAULT '{}'",
+        "derived_metrics_json": "TEXT NOT NULL DEFAULT '{}'",
+        "final_answer_hash": "TEXT",
+    }
+    for column_name, column_type in campaign_result_research_columns.items():
+        if column_name not in campaign_result_columns:
+            await connection.execute(
+                f"ALTER TABLE campaign_results ADD COLUMN {column_name} {column_type}"
+            )
+
+    for table_name, column_definitions in _OBSERVABILITY_TABLE_COLUMNS.items():
+        await _ensure_table_columns(connection, table_name, column_definitions)
 
     await connection.execute(
         """
@@ -200,12 +562,86 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         ON agent_traces(campaign_result_id)
         """
     )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_trace_events_run_started
+        ON evaluation_trace_events(run_id, started_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_llm_calls_run_purpose
+        ON evaluation_llm_calls(run_id, purpose)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_retrieval_events_run_span
+        ON evaluation_retrieval_events(run_id, span_id)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_retrieval_chunks_event
+        ON evaluation_retrieval_chunks(retrieval_event_id)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_retrieval_chunks_run_event
+        ON evaluation_retrieval_chunks(run_id, retrieval_event_id)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_context_packs_run_created
+        ON evaluation_context_packs(run_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_tool_calls_run_created
+        ON evaluation_tool_calls(run_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_routing_decisions_run_created
+        ON evaluation_routing_decisions(run_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_claims_run_created
+        ON evaluation_claims(run_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_human_ratings_run_created
+        ON evaluation_human_ratings(run_id, created_at ASC)
+        """
+    )
 
 
 async def _table_columns(connection: aiosqlite.Connection, table_name: str) -> set[str]:
     cursor = await connection.execute(f"PRAGMA table_info({table_name})")
     rows = await cursor.fetchall()
     return {str(row[1]) for row in rows}
+
+
+async def _ensure_table_columns(
+    connection: aiosqlite.Connection,
+    table_name: str,
+    column_definitions: dict[str, str],
+) -> None:
+    existing_columns = await _table_columns(connection, table_name)
+    for column_name, column_definition in column_definitions.items():
+        if column_name in existing_columns:
+            continue
+        await connection.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
+        )
 
 
 def _json_dumps(payload: Any) -> str:
@@ -249,6 +685,53 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
     context_policy_version = (
         row["context_policy_version"] if "context_policy_version" in row.keys() else None
     )
+    question_snapshot = (
+        _json_loads(row["question_snapshot_json"], {})
+        if "question_snapshot_json" in row.keys()
+        else {}
+    )
+    model_config_snapshot = (
+        _json_loads(row["model_config_snapshot_json"], {})
+        if "model_config_snapshot_json" in row.keys()
+        else {}
+    )
+    system_version_snapshot = (
+        _json_loads(row["system_version_snapshot_json"], {})
+        if "system_version_snapshot_json" in row.keys()
+        else {}
+    )
+    derived_metrics = (
+        _json_loads(row["derived_metrics_json"], {})
+        if "derived_metrics_json" in row.keys()
+        else {}
+    )
+    request_id = row["request_id"] if "request_id" in row.keys() else None
+    started_at = (
+        datetime.fromisoformat(row["started_at"])
+        if "started_at" in row.keys() and row["started_at"]
+        else None
+    )
+    completed_at = (
+        datetime.fromisoformat(row["completed_at"])
+        if "completed_at" in row.keys() and row["completed_at"]
+        else None
+    )
+    total_latency_ms = row["total_latency_ms"] if "total_latency_ms" in row.keys() else None
+    total_tokens = row["total_tokens"] if "total_tokens" in row.keys() else None
+    final_answer_hash = row["final_answer_hash"] if "final_answer_hash" in row.keys() else None
+    snapshot_missing = (
+        request_id is None
+        and started_at is None
+        and completed_at is None
+        and total_latency_ms is None
+        and not question_snapshot
+        and not model_config_snapshot
+        and not system_version_snapshot
+        and not derived_metrics
+        and final_answer_hash is None
+    )
+    if snapshot_missing and total_tokens == 0:
+        total_tokens = None
     if not execution_profile and row["mode"] == "agentic":
         execution_profile = LEGACY_SHARED_PROFILE
 
@@ -273,6 +756,17 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
         token_usage=_json_loads(row["token_usage_json"], {}),
         category=row["category"],
         difficulty=row["difficulty"],
+        question_version=row["question_version"] if "question_version" in row.keys() else None,
+        request_id=request_id,
+        started_at=started_at,
+        completed_at=completed_at,
+        total_latency_ms=total_latency_ms,
+        total_tokens=total_tokens,
+        question_snapshot=question_snapshot,
+        model_config_snapshot=model_config_snapshot,
+        system_version_snapshot=system_version_snapshot,
+        derived_metrics=derived_metrics,
+        final_answer_hash=final_answer_hash,
         status=CampaignResultStatus(row["status"]),
         error_message=row["error_message"],
         has_trace=bool(row["has_trace"]) if "has_trace" in row.keys() else False,
@@ -592,6 +1086,7 @@ class CampaignResultRepository:
     async def create(
         self,
         *,
+        result_id: Optional[str] = None,
         user_id: str,
         campaign_id: str,
         question_id: str,
@@ -614,9 +1109,20 @@ class CampaignResultRepository:
         difficulty: Optional[str],
         status: CampaignResultStatus,
         error_message: Optional[str] = None,
+        question_version: Optional[str] = None,
+        request_id: Optional[str] = None,
+        started_at: Optional[str] = None,
+        completed_at: Optional[str] = None,
+        total_latency_ms: Optional[float] = None,
+        total_tokens: Optional[int] = None,
+        question_snapshot: Optional[dict[str, Any]] = None,
+        model_config_snapshot: Optional[dict[str, Any]] = None,
+        system_version_snapshot: Optional[dict[str, Any]] = None,
+        derived_metrics: Optional[dict[str, Any]] = None,
+        final_answer_hash: Optional[str] = None,
     ) -> CampaignResult:
         await init_db()
-        result_id = str(uuid4())
+        result_id = result_id or str(uuid4())
         created_at = _utc_now_iso()
         async with connect_db() as connection:
             try:
@@ -627,8 +1133,12 @@ class CampaignResultRepository:
                         ground_truth_short, key_points_json, ragas_focus_json, mode, execution_profile,
                         context_policy_version, run_number, answer, contexts_json, source_doc_ids_json,
                         expected_sources_json, latency_ms, token_usage_json, category,
-                        difficulty, status, error_message, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        difficulty, status, error_message, question_version, request_id,
+                        started_at, completed_at, total_latency_ms, total_tokens,
+                        question_snapshot_json, model_config_snapshot_json,
+                        system_version_snapshot_json, derived_metrics_json, final_answer_hash,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         result_id,
@@ -654,6 +1164,17 @@ class CampaignResultRepository:
                         difficulty,
                         status.value,
                         error_message,
+                        question_version,
+                        request_id,
+                        started_at,
+                        completed_at,
+                        total_latency_ms,
+                        0 if total_tokens is None else total_tokens,
+                        _json_dumps(question_snapshot or {}),
+                        _json_dumps(model_config_snapshot or {}),
+                        _json_dumps(system_version_snapshot or {}),
+                        _json_dumps(derived_metrics or {}),
+                        final_answer_hash,
                         created_at,
                     ),
                 )

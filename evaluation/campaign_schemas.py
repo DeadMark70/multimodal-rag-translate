@@ -163,6 +163,17 @@ class CampaignResult(BaseModel):
     token_usage: dict[str, Any] = Field(default_factory=dict)
     category: Optional[str] = None
     difficulty: Optional[str] = None
+    question_version: Optional[str] = None
+    request_id: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    total_latency_ms: Optional[float] = Field(default=None, ge=0)
+    total_tokens: Optional[int] = Field(default=None, ge=0)
+    question_snapshot: dict[str, Any] = Field(default_factory=dict)
+    model_config_snapshot: dict[str, Any] = Field(default_factory=dict)
+    system_version_snapshot: dict[str, Any] = Field(default_factory=dict)
+    derived_metrics: dict[str, Any] = Field(default_factory=dict)
+    final_answer_hash: Optional[str] = None
     status: CampaignResultStatus
     error_message: Optional[str] = None
     has_trace: bool = False

@@ -27,6 +27,7 @@ from evaluation.campaign_schemas import (
     ModeMetricsSummary,
 )
 from evaluation.db import CampaignRepository, CampaignResultRepository
+from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.rag_modes import BenchmarkExecutionResult, CONTEXT_POLICY_VERSION, run_campaign_case
 from evaluation.ragas_evaluator import RagasEvaluator
 from evaluation.retry import run_with_retry
@@ -323,6 +324,98 @@ def test_campaign_api_runs_and_streams_results() -> None:
         assert fake_ragas.evaluate_calls
 
 
+def test_campaign_run_persists_snapshot_and_minimal_root_span() -> None:
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            ground_truth_short=test_case.ground_truth_short,
+            key_points=list(test_case.key_points),
+            ragas_focus=list(test_case.ragas_focus),
+            mode=kwargs["mode"],
+            answer="snapshot answer",
+            contexts=["ctx-1"],
+            source_doc_ids=["doc-1"],
+            expected_sources=list(test_case.source_docs),
+            latency_ms=42.5,
+            token_usage={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+            context_policy_version=CONTEXT_POLICY_VERSION,
+        )
+
+    fake_ragas = FakeRagasEvaluator()
+    engine = CampaignEngine(runner=runner, ragas_evaluator=fake_ragas)
+    upload_root = _make_upload_root()
+    db_path = _make_db_path()
+
+    with _build_client("user-a", upload_root, db_path, engine) as client:
+        client.post(
+            "/api/evaluation/test-cases",
+            json={
+                "id": "Q-SNAPSHOT",
+                "question": "Which evidence supports the answer?",
+                "ground_truth": "Grounded answer",
+                "ground_truth_short": "Grounded",
+                "key_points": ["point-1"],
+                "ragas_focus": ["faithfulness"],
+                "category": "research",
+                "difficulty": "very_hard",
+                "source_docs": ["paper-a.pdf"],
+                "requires_multi_doc_reasoning": False,
+                "question_version": "v2.0.0",
+                "required_modalities": ["text", "table"],
+                "atomic_facts": [{"atomic_fact_id": "F1", "fact_text": "Fact"}],
+                "expected_evidence": [{"evidence_id": "E1", "doc_id": "paper-a.pdf"}],
+            },
+        )
+        created = client.post(
+            "/api/evaluation/campaigns",
+            json=_campaign_payload(
+                name="Snapshot",
+                test_case_ids=["Q-SNAPSHOT"],
+                modes=["naive"],
+            ),
+        )
+        campaign_id = created.json()["campaign_id"]
+
+        terminal = _wait_for_terminal_status(client, campaign_id)
+        assert terminal["status"] == "completed"
+
+        results_response = client.get(f"/api/evaluation/campaigns/{campaign_id}/results")
+        result = results_response.json()["results"][0]
+        assert result["question_version"] == "v2.0.0"
+        assert result["request_id"]
+        assert result["started_at"]
+        assert result["completed_at"]
+        assert result["latency_ms"] == 42.5
+        assert result["total_latency_ms"] >= 0
+        assert result["total_tokens"] == 15
+        assert result["question_snapshot"]["required_modalities"] == ["text", "table"]
+        assert result["question_snapshot"]["expected_evidence"][0]["evidence_id"] == "E1"
+        assert result["model_config_snapshot"]["model_name"] == "gemini-2.5-flash"
+        assert result["system_version_snapshot"]["context_policy_version"] == CONTEXT_POLICY_VERSION
+        assert result["final_answer_hash"]
+
+        observability = client.get(
+            f"/api/evaluation/campaigns/{campaign_id}/runs/{result['id']}/observability"
+        )
+        assert observability.status_code == 200
+        trace_events = observability.json()["trace_events"]
+        assert [event["status"] for event in trace_events] == ["running", "success"]
+        assert {event["stage_name"] for event in trace_events} == {"campaign_unit_execution"}
+        llm_calls = observability.json()["llm_calls"]
+        assert len(llm_calls) == 1
+        assert llm_calls[0]["purpose"] == "campaign_generation"
+        assert llm_calls[0]["model_name"] == "gemini-2.5-flash"
+        assert llm_calls[0]["prompt_tokens"] == 10
+        assert llm_calls[0]["completion_tokens"] == 5
+        assert llm_calls[0]["total_tokens"] == 15
+        assert llm_calls[0]["span_id"] == trace_events[0]["span_id"]
+
+
 def test_campaign_cancel_marks_campaign_cancelled() -> None:
     async def slow_runner(**kwargs) -> BenchmarkExecutionResult:
         await asyncio.sleep(0.5)
@@ -508,6 +601,203 @@ async def test_recover_inflight_running_campaign_resumes_remaining_units() -> No
             )
             keys = {(row.question_id, row.mode, row.run_number) for row in results}
             assert len(keys) == 2
+
+
+@pytest.mark.asyncio
+async def test_completed_run_persists_snapshots_and_root_observability_span() -> None:
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        await asyncio.sleep(0.01)
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            ground_truth_short=test_case.ground_truth_short,
+            key_points=list(test_case.key_points),
+            ragas_focus=list(test_case.ragas_focus),
+            mode=kwargs["mode"],
+            answer="Snapshot answer",
+            contexts=["ctx-1", "ctx-2"],
+            source_doc_ids=["doc-a"],
+            expected_sources=list(test_case.source_docs),
+            latency_ms=18,
+            token_usage={"total_tokens": 77, "input_tokens": 55, "output_tokens": 22},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+            execution_profile="snapshot-profile",
+            context_policy_version="ctx-policy-v1",
+        )
+
+    db_path = _make_db_path()
+    fake_ragas = FakeRagasEvaluator(progress_total=1)
+    rich_case = TestCase.model_validate(
+        {
+            "id": "Q-SNAPSHOT",
+            "question": "What changed in the system?",
+            "ground_truth": "The system persisted snapshots.",
+            "ground_truth_short": "Snapshots persisted",
+            "key_points": ["point-1", "point-2"],
+            "ragas_focus": ["answer_correctness", "faithfulness"],
+            "category": "regression",
+            "difficulty": "medium",
+            "question_version": "v2.1.0",
+            "required_modalities": ["text", "table"],
+            "atomic_facts": [{"atomic_fact_id": "Q-SNAPSHOT-F1", "text": "fact"}],
+            "expected_evidence": [{"evidence_id": "Q-SNAPSHOT-E1", "doc_id": "doc-a"}],
+            "source_docs": ["doc-a", "doc-b"],
+            "requires_multi_doc_reasoning": True,
+        }
+    )
+
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        observability_repo = EvaluationObservabilityRepository()
+        campaign = await campaign_repo.create(
+            user_id="user-a",
+            name="Snapshot persistence",
+            config=_campaign_config_for_test_case_ids(["Q-SNAPSHOT"], modes=["naive"]),
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=fake_ragas)
+
+        await engine._run_campaign(
+            user_id="user-a",
+            campaign_id=campaign.id,
+            config=campaign.config,
+            test_cases=[rich_case],
+        )
+
+        latest = await campaign_repo.get(user_id="user-a", campaign_id=campaign.id)
+        assert latest.status == CampaignLifecycleStatus.COMPLETED
+        assert latest.phase == "evaluation"
+
+        results = await result_repo.list_for_campaign(user_id="user-a", campaign_id=campaign.id)
+        assert len(results) == 1
+        result = results[0]
+        assert result.status == CampaignResultStatus.COMPLETED
+        assert result.question_version == "v2.1.0"
+        assert result.request_id
+        assert result.started_at is not None
+        assert result.completed_at is not None
+        assert result.completed_at >= result.started_at
+        assert result.total_latency_ms is not None
+        assert result.total_latency_ms >= 0
+        assert result.total_tokens == 77
+        assert result.question_snapshot == {
+            "id": "Q-SNAPSHOT",
+            "question": "What changed in the system?",
+            "ground_truth": "The system persisted snapshots.",
+            "ground_truth_short": "Snapshots persisted",
+            "key_points": ["point-1", "point-2"],
+            "ragas_focus": ["answer_correctness", "faithfulness"],
+            "category": "regression",
+            "difficulty": "medium",
+            "question_version": "v2.1.0",
+            "required_modalities": ["text", "table"],
+            "atomic_facts": [{"atomic_fact_id": "Q-SNAPSHOT-F1", "text": "fact"}],
+            "expected_evidence": [{"evidence_id": "Q-SNAPSHOT-E1", "doc_id": "doc-a"}],
+            "source_docs": ["doc-a", "doc-b"],
+        }
+        assert result.model_config_snapshot == campaign.config.model_preset.model_dump(mode="json")
+        assert result.system_version_snapshot["execution_profile"] == "snapshot-profile"
+        assert result.system_version_snapshot["context_policy_version"] == "ctx-policy-v1"
+        assert isinstance(result.derived_metrics, dict)
+        assert result.final_answer_hash
+
+        trace_events = await observability_repo.list_trace_events_for_run(result.id)
+        assert [event.status for event in trace_events] == ["running", "success"]
+        assert all(event.stage_name == "campaign_unit_execution" for event in trace_events)
+        assert all(event.parent_event_id is None for event in trace_events)
+        assert all(event.parent_span_id is None for event in trace_events)
+        assert trace_events[0].payload["request_id"] == result.request_id
+        assert trace_events[1].duration_ms == pytest.approx(result.total_latency_ms, rel=0.2, abs=20)
+
+        llm_calls = await observability_repo.list_llm_calls_for_run(result.id)
+        assert len(llm_calls) == 1
+        assert llm_calls[0].purpose == "campaign_generation"
+        assert llm_calls[0].model_name == "gemini-2.5-flash"
+        assert llm_calls[0].prompt_tokens == 55
+        assert llm_calls[0].completion_tokens == 22
+        assert llm_calls[0].total_tokens == 77
+        assert llm_calls[0].span_id == trace_events[0].span_id
+
+
+@pytest.mark.asyncio
+async def test_campaign_failure_cancels_and_drains_pending_batch_tasks() -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        if test_case.id == "Q-SLOW":
+            started.set()
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="fast",
+            contexts=[],
+            source_doc_ids=[],
+            expected_sources=[],
+            latency_ms=1,
+            token_usage={"total_tokens": 1},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+        )
+
+    db_path = _make_db_path()
+    fake_ragas = FakeRagasEvaluator(progress_total=2)
+    cases = [
+        TestCase(
+            id="Q-FAST",
+            question="Fast?",
+            ground_truth="yes",
+            category="stress",
+            difficulty="easy",
+        ),
+        TestCase(
+            id="Q-SLOW",
+            question="Slow?",
+            ground_truth="yes",
+            category="stress",
+            difficulty="easy",
+        ),
+    ]
+
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        campaign = await campaign_repo.create(
+            user_id="user-a",
+            name="Failure drains batch",
+            config=_campaign_config_for_test_case_ids(
+                ["Q-FAST", "Q-SLOW"],
+                modes=["naive"],
+                batch_size=2,
+            ),
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=fake_ragas)
+        with patch.object(
+            engine._campaign_repository,
+            "update_progress",
+            side_effect=RuntimeError("progress write failed"),
+        ):
+            await engine._run_campaign(
+                user_id="user-a",
+                campaign_id=campaign.id,
+                config=campaign.config,
+                test_cases=cases,
+            )
+
+        assert started.is_set()
+        assert cancelled.is_set()
+        latest = await campaign_repo.get(user_id="user-a", campaign_id=campaign.id)
+        assert latest.status == CampaignLifecycleStatus.FAILED
 
 
 @pytest.mark.asyncio

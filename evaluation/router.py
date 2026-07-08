@@ -7,7 +7,7 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from core.auth import get_current_user_id
@@ -25,6 +25,7 @@ from evaluation.campaign_schemas import (
 )
 from evaluation.model_capabilities import normalize_model_config_for_storage
 from evaluation.model_discovery import list_available_models
+from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.schemas import (
     AvailableModel,
     DeleteResult,
@@ -32,6 +33,7 @@ from evaluation.schemas import (
     ModelConfig,
     TestCase,
     ThinkingLevel,
+    normalize_test_case_difficulty,
 )
 from evaluation.storage import (
     create_model_config,
@@ -44,7 +46,11 @@ from evaluation.storage import (
     update_model_config,
     update_test_case,
 )
-from evaluation.trace_schemas import AgentTraceDetail, AgentTraceSummary
+from evaluation.trace_schemas import (
+    AgentTraceDetail,
+    AgentTraceSummary,
+    EvaluationRunObservabilityDetail,
+)
 
 router = APIRouter()
 _TERMINAL_CAMPAIGN_STATUSES = {
@@ -52,6 +58,12 @@ _TERMINAL_CAMPAIGN_STATUSES = {
     CampaignLifecycleStatus.FAILED,
     CampaignLifecycleStatus.CANCELLED,
 }
+_TEST_CASE_RESEARCH_METADATA_FIELDS = (
+    "question_version",
+    "required_modalities",
+    "atomic_facts",
+    "expected_evidence",
+)
 
 
 class TestCaseCreateRequest(BaseModel):
@@ -68,6 +80,15 @@ class TestCaseCreateRequest(BaseModel):
     test_objective: str | None = None
     key_points: list[str] = Field(default_factory=list)
     ragas_focus: list[str] = Field(default_factory=list)
+    question_version: str | None = None
+    required_modalities: list[str] = Field(default_factory=list)
+    atomic_facts: list[dict[str, Any]] = Field(default_factory=list)
+    expected_evidence: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("difficulty", mode="before")
+    @classmethod
+    def _normalize_difficulty(cls, value: Any) -> Any:
+        return normalize_test_case_difficulty(value)
 
 
 class TestCaseImportRequest(BaseModel):
@@ -100,6 +121,36 @@ def _to_sse_event(event_name: str, payload: BaseModel | dict[str, Any]) -> dict[
         "event": event_name,
         "data": json.dumps(body, ensure_ascii=False),
     }
+
+
+async def _preserve_omitted_test_case_metadata(
+    *,
+    user_id: str,
+    test_case_id: str,
+    payload: TestCaseCreateRequest,
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    omitted_metadata_fields = [
+        field_name
+        for field_name in _TEST_CASE_RESEARCH_METADATA_FIELDS
+        if field_name not in payload.model_fields_set
+    ]
+    if not omitted_metadata_fields:
+        return candidate
+
+    existing_cases = await list_test_cases(user_id)
+    existing = next(
+        (item for item in existing_cases if isinstance(item, dict) and item.get("id") == test_case_id),
+        None,
+    )
+    if not existing:
+        return candidate
+
+    preserved = dict(candidate)
+    for field_name in omitted_metadata_fields:
+        if field_name in existing:
+            preserved[field_name] = existing[field_name]
+    return preserved
 
 
 @router.get("/test-cases", response_model=list[TestCase])
@@ -151,10 +202,17 @@ async def put_test_case(
             status_code=400,
         )
 
+    candidate = await _preserve_omitted_test_case_metadata(
+        user_id=user_id,
+        test_case_id=test_case_id,
+        payload=payload,
+        candidate=payload.model_dump(exclude_none=True),
+    )
+
     updated = await update_test_case(
         user_id=user_id,
         test_case_id=test_case_id,
-        test_case=payload.model_dump(exclude_none=True),
+        test_case=candidate,
     )
     return TestCase.model_validate(updated)
 
@@ -290,6 +348,80 @@ async def get_campaign_result_trace(
         user_id=user_id,
         campaign_id=campaign_id,
         campaign_result_id=campaign_result_id,
+    )
+
+
+@router.get(
+    "/campaigns/{campaign_id}/runs/{run_id}/observability",
+    response_model=EvaluationRunObservabilityDetail,
+)
+async def get_campaign_run_observability(
+    campaign_id: str,
+    run_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> EvaluationRunObservabilityDetail:
+    """Fetch normalized observability details for one campaign run."""
+    engine = get_campaign_engine()
+    await engine.get_campaign(user_id=user_id, campaign_id=campaign_id)
+
+    repository = EvaluationObservabilityRepository()
+    trace_events = [
+        item
+        for item in await repository.list_trace_events_for_run(run_id)
+        if item.campaign_id == campaign_id
+    ]
+    llm_calls = [
+        item
+        for item in await repository.list_llm_calls_for_run(run_id)
+        if item.campaign_id == campaign_id
+    ]
+    retrieval_events = [
+        item
+        for item in await repository.list_retrieval_events_for_run(run_id)
+        if item.campaign_id == campaign_id
+    ]
+    retrieval_chunks = [
+        item
+        for item in await repository.list_retrieval_chunks_for_run(run_id)
+        if item.campaign_id == campaign_id
+    ]
+    context_packs = [
+        item
+        for item in await repository.list_context_packs_for_run(run_id)
+        if item.campaign_id == campaign_id
+    ]
+    tool_calls = [
+        item
+        for item in await repository.list_tool_calls_for_run(run_id)
+        if item.campaign_id == campaign_id
+    ]
+    routing_decisions = [
+        item
+        for item in await repository.list_routing_decisions_for_run(run_id)
+        if item.campaign_id == campaign_id
+    ]
+    claims = [
+        item
+        for item in await repository.list_claims_for_run(run_id)
+        if item.campaign_id == campaign_id
+    ]
+    human_ratings = [
+        item
+        for item in await repository.list_human_ratings_for_run(run_id)
+        if item.campaign_id == campaign_id
+    ]
+    return EvaluationRunObservabilityDetail(
+        run_id=run_id,
+        campaign_id=campaign_id,
+        trace_events=trace_events,
+        llm_calls=llm_calls,
+        retrieval_events=retrieval_events,
+        retrieval_chunks=retrieval_chunks,
+        context_packs=context_packs,
+        tool_calls=tool_calls,
+        routing_decisions=routing_decisions,
+        claims=claims,
+        human_ratings=human_ratings,
     )
 
 
