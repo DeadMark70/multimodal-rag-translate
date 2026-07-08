@@ -274,20 +274,20 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
         assert runs.json()["runs"][0]["run_id"] == run_id
 
         aggregate_endpoint_expectations = {
-            "mode-comparison": "execution",
-            "question-comparison": "question",
-            "cost-latency": "execution",
-            "router-analysis": "execution",
-            "ablation": "execution",
-            "human-vs-auto": "execution",
-            "repeat-stability": "execution",
+            "mode-comparison": ("execution", 1),
+            "question-comparison": ("question", 1),
+            "cost-latency": ("execution", 1),
+            "router-analysis": ("execution", 1),
+            "ablation": ("execution", 1),
+            "human-vs-auto": ("execution", 0),
+            "repeat-stability": ("execution", 1),
         }
-        for endpoint, analysis_unit in aggregate_endpoint_expectations.items():
+        for endpoint, (analysis_unit, sample_count) in aggregate_endpoint_expectations.items():
             response = client.get(f"/api/evaluation/campaigns/{campaign_id}/{endpoint}")
             assert response.status_code == 200
             assert response.json()["campaign_id"] == campaign_id
             assert response.json()["analysis_unit"] == analysis_unit
-            assert response.json()["sample_count"] == 1
+            assert response.json()["sample_count"] == sample_count
 
         endpoint_expectations = {
             "trace": "trace_events",

@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from core.errors import AppError, ErrorCode
 from evaluation.campaign_schemas import (
+    AblationCondition,
     CampaignMetricsResponse,
     CampaignConfig,
     CampaignCreateResponse,
@@ -65,6 +66,11 @@ class CampaignUnit:
     test_case: TestCase
     mode: str
     run_number: int
+    repeat_number: int = 1
+    condition_id: str | None = None
+    condition_label: str | None = None
+    ablation_flags: dict[str, Any] | None = None
+    budget: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -81,8 +87,8 @@ class ExecutedCampaignUnit:
     model_config: dict[str, Any]
 
 
-def _unit_key(unit: CampaignUnit) -> tuple[str, str, int]:
-    return (unit.test_case.id, unit.mode, unit.run_number)
+def _unit_key(unit: CampaignUnit) -> tuple[str, str, int, str | None]:
+    return (unit.test_case.id, unit.mode, unit.run_number, unit.condition_id)
 
 
 def _utc_now() -> datetime:
@@ -144,7 +150,14 @@ def _build_system_version_snapshot(
     snapshot: dict[str, Any] = {
         "mode": unit.mode,
         "run_number": unit.run_number,
+        "repeat_number": unit.repeat_number,
     }
+    if unit.condition_id:
+        snapshot["condition_id"] = unit.condition_id
+        snapshot["condition_label"] = unit.condition_label
+        snapshot["ablation_flags"] = dict(unit.ablation_flags or {})
+    if unit.budget:
+        snapshot["budget"] = dict(unit.budget)
     if isinstance(payload, BenchmarkExecutionResult):
         if payload.execution_profile:
             snapshot["execution_profile"] = payload.execution_profile
@@ -158,13 +171,20 @@ def _build_derived_metrics(
     unit: CampaignUnit,
     payload: BenchmarkExecutionResult | Exception,
 ) -> dict[str, Any]:
-    if isinstance(payload, Exception):
-        return {}
     metrics: dict[str, Any] = {
+        "repeat_number": unit.repeat_number,
+    }
+    if unit.condition_id:
+        metrics["condition_id"] = unit.condition_id
+        metrics["condition_label"] = unit.condition_label
+        metrics["ablation_flags"] = dict(unit.ablation_flags or {})
+    if isinstance(payload, Exception):
+        return metrics
+    metrics.update({
         "context_count": len(payload.contexts),
         "source_doc_count": len(payload.source_doc_ids),
         "expected_source_count": len(payload.expected_sources),
-    }
+    })
     trace_payload = payload.agent_trace or {}
     claims = trace_payload.get("claims") if isinstance(trace_payload, dict) else None
     if isinstance(claims, list):
@@ -244,6 +264,11 @@ def _enrich_agent_trace_payload(
     enriched.setdefault("question", payload.question or unit.test_case.question)
     enriched.setdefault("mode", payload.mode or unit.mode)
     enriched.setdefault("run_number", unit.run_number)
+    enriched.setdefault("repeat_number", unit.repeat_number)
+    if unit.condition_id:
+        enriched.setdefault("condition_id", unit.condition_id)
+        enriched.setdefault("condition_label", unit.condition_label)
+        enriched.setdefault("ablation_flags", dict(unit.ablation_flags or {}))
     enriched.setdefault("trace_status", "failed" if payload.error_message else "completed")
     enriched.setdefault("created_at", _utc_now().isoformat())
     return enriched
@@ -268,7 +293,11 @@ async def _record_unit_root_span(
         "question_id": unit.test_case.id,
         "mode": unit.mode,
         "run_number": unit.run_number,
+        "repeat_number": unit.repeat_number,
     }
+    if unit.condition_id:
+        payload["condition_id"] = unit.condition_id
+        payload["condition_label"] = unit.condition_label
     error = {"type": "CampaignUnitFailed", "message": "Campaign unit failed"} if failed else {}
     try:
         await repository.record_trace_events(
@@ -844,6 +873,7 @@ class CampaignEngine:
                     test_cases=resolved_cases,
                     modes=campaign.config.modes,
                     repeat_count=campaign.config.repeat_count,
+                    ablation_conditions=campaign.config.ablation_conditions,
                 )
                 all_unit_keys = {_unit_key(unit) for unit in all_units}
                 existing_results = await self._result_repository.list_for_campaign(
@@ -851,9 +881,19 @@ class CampaignEngine:
                     campaign_id=campaign_id,
                 )
                 completed_keys = {
-                    (row.question_id, row.mode, row.run_number)
+                    (
+                        row.question_id,
+                        row.mode,
+                        row.run_number,
+                        row.derived_metrics.get("condition_id"),
+                    )
                     for row in existing_results
-                    if (row.question_id, row.mode, row.run_number) in all_unit_keys
+                    if (
+                        row.question_id,
+                        row.mode,
+                        row.run_number,
+                        row.derived_metrics.get("condition_id"),
+                    ) in all_unit_keys
                 }
                 remaining_units = [
                     unit for unit in all_units if _unit_key(unit) not in completed_keys
@@ -943,6 +983,7 @@ class CampaignEngine:
                     test_cases=test_cases,
                     modes=config.modes,
                     repeat_count=config.repeat_count,
+                    ablation_conditions=config.ablation_conditions,
                 )
             rate_budget = RateBudget(rpm_limit=config.rpm_limit)
             completed_units = initial_completed_units
@@ -964,6 +1005,9 @@ class CampaignEngine:
                             model_config=config.model_preset.model_dump(mode="json"),
                             rate_budget=rate_budget,
                             run_number=unit.run_number,
+                            repeat_number=unit.repeat_number,
+                            ablation_flags=unit.ablation_flags,
+                            budget=unit.budget,
                         )
                     )
                     for unit in batch
@@ -1138,6 +1182,9 @@ class CampaignEngine:
         model_config: dict,
         rate_budget: RateBudget,
         run_number: int,
+        repeat_number: int,
+        ablation_flags: dict[str, Any] | None,
+        budget: dict[str, Any] | None,
     ) -> ExecutedCampaignUnit:
         await rate_budget.acquire()
         run_id = str(uuid4())
@@ -1150,7 +1197,9 @@ class CampaignEngine:
                 user_id=user_id,
                 mode=unit.mode,
                 model_config=model_config,
-                run_number=run_number,
+                run_number=repeat_number,
+                ablation_flags=ablation_flags,
+                budget=budget,
             )
         except Exception as exc:  # noqa: BLE001
             payload = exc
@@ -1363,12 +1412,40 @@ class CampaignEngine:
         test_cases: list[TestCase],
         modes: list[str],
         repeat_count: int,
+        ablation_conditions: list[AblationCondition] | None = None,
     ) -> list[CampaignUnit]:
         units: list[CampaignUnit] = []
+        if ablation_conditions:
+            condition_count = len(ablation_conditions)
+            for repeat_number in range(1, repeat_count + 1):
+                for test_case in test_cases:
+                    for condition_index, condition in enumerate(ablation_conditions, start=1):
+                        stored_run_number = ((repeat_number - 1) * condition_count) + condition_index
+                        units.append(
+                            CampaignUnit(
+                                test_case=test_case,
+                                mode=condition.mode,
+                                run_number=stored_run_number,
+                                repeat_number=repeat_number,
+                                condition_id=condition.condition_id,
+                                condition_label=condition.label,
+                                ablation_flags=dict(condition.ablation_flags),
+                                budget=dict(condition.budget) if condition.budget else None,
+                            )
+                        )
+            return units
+
         for run_number in range(1, repeat_count + 1):
             for test_case in test_cases:
                 for mode in modes:
-                    units.append(CampaignUnit(test_case=test_case, mode=mode, run_number=run_number))
+                    units.append(
+                        CampaignUnit(
+                            test_case=test_case,
+                            mode=mode,
+                            run_number=run_number,
+                            repeat_number=run_number,
+                        )
+                    )
         return units
 
     async def _drop_active_task(self, campaign_id: str) -> None:

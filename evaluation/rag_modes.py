@@ -99,6 +99,8 @@ async def run_campaign_case(
     mode: str,
     model_config: dict[str, Any],
     run_number: int = 1,
+    ablation_flags: dict[str, Any] | None = None,
+    budget: dict[str, Any] | None = None,
 ) -> BenchmarkExecutionResult:
     """Execute one test case under one RAG mode."""
     if mode not in RAG_MODES:

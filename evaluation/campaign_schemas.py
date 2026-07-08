@@ -32,13 +32,24 @@ class CampaignResultStatus(str, Enum):
     FAILED = "failed"
 
 
+class AblationCondition(BaseModel):
+    """One configured ablation branch within a campaign."""
+
+    condition_id: str = Field(min_length=1, max_length=128)
+    label: str = Field(min_length=1, max_length=200)
+    mode: CampaignMode
+    ablation_flags: dict[str, Any] = Field(default_factory=dict)
+    budget: dict[str, Any] | None = None
+
+
 class CampaignConfig(BaseModel):
     """User-supplied campaign configuration."""
 
     model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
 
     test_case_ids: list[str] = Field(default_factory=list, min_length=1)
-    modes: list[CampaignMode] = Field(default_factory=list, min_length=1)
+    modes: list[CampaignMode] = Field(default_factory=list)
+    ablation_conditions: list[AblationCondition] = Field(default_factory=list)
     model_preset: ModelConfig = Field(alias="model_config")
     model_config_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     repeat_count: int = Field(default=1, ge=1, le=10)
@@ -51,11 +62,21 @@ class CampaignConfig(BaseModel):
 
     @model_validator(mode="after")
     def dedupe_modes(self) -> "CampaignConfig":
+        if self.ablation_conditions:
+            condition_ids = [item.condition_id for item in self.ablation_conditions]
+            if len(condition_ids) != len(set(condition_ids)):
+                raise ValueError("ablation condition_id values must be unique")
+            # Keep duplicates when multiple ablations share one execution mode.
+            self.modes = [item.mode for item in self.ablation_conditions]
+            return self
+
         ordered_unique_modes: list[CampaignMode] = []
         for mode in self.modes:
             if mode not in ordered_unique_modes:
                 ordered_unique_modes.append(mode)
         self.modes = ordered_unique_modes
+        if not self.modes:
+            raise ValueError("at least one mode is required when ablation_conditions is empty")
         return self
 
 
@@ -66,7 +87,8 @@ class CampaignCreateRequest(BaseModel):
 
     name: Optional[str] = Field(default=None, max_length=200)
     test_case_ids: list[str] = Field(default_factory=list, min_length=1)
-    modes: list[CampaignMode] = Field(default_factory=list, min_length=1)
+    modes: list[CampaignMode] = Field(default_factory=list)
+    ablation_conditions: list[AblationCondition] = Field(default_factory=list)
     model_preset: ModelConfig = Field(alias="model_config")
     model_config_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     repeat_count: int = Field(default=1, ge=1, le=10)
@@ -81,6 +103,7 @@ class CampaignCreateRequest(BaseModel):
         return CampaignConfig(
             test_case_ids=self.test_case_ids,
             modes=self.modes,
+            ablation_conditions=self.ablation_conditions,
             model_preset=self.model_preset,
             model_config_id=self.model_config_id,
             repeat_count=self.repeat_count,
@@ -158,6 +181,7 @@ class CampaignResult(BaseModel):
     execution_profile: Optional[str] = None
     context_policy_version: Optional[str] = None
     run_number: int = Field(ge=1)
+    repeat_number: int = Field(default=1, ge=1)
     answer: str
     contexts: list[str] = Field(default_factory=list)
     source_doc_ids: list[str] = Field(default_factory=list)
@@ -262,6 +286,7 @@ class EvaluationRunListItem(BaseModel):
     question: str
     mode: CampaignMode
     run_number: int = Field(ge=1)
+    repeat_number: int = Field(default=1, ge=1)
     status: CampaignResultStatus
     total_tokens: int = Field(default=0, ge=0)
     total_latency_ms: Optional[float] = Field(default=None, ge=0)
@@ -359,6 +384,104 @@ class RunVisualResponse(RunToolsResponse):
 
 class RunGraphResponse(RunToolsResponse):
     """Graph-tool subset for one run."""
+
+
+class HumanRatingRequest(BaseModel):
+    """Submitted human rubric scores for one run."""
+
+    rubric_version: str = Field(min_length=1, max_length=64)
+    correctness_score: float = Field(ge=0, le=1)
+    faithfulness_score: float = Field(ge=0, le=1)
+    completeness_score: float = Field(ge=0, le=1)
+    citation_quality_score: float = Field(ge=0, le=1)
+    usefulness_score: float = Field(ge=0, le=1)
+    comments: str | None = None
+    is_blinded: bool = True
+    shown_mode_label: bool = False
+
+
+class HumanRatingResponse(BaseModel):
+    """Stored human rating row returned by the API."""
+
+    human_rating_id: str
+    run_id: str
+    campaign_id: str
+    rater_id_hash: str
+    rubric_version: str
+    correctness_score: float
+    faithfulness_score: float
+    completeness_score: float
+    citation_quality_score: float
+    usefulness_score: float
+    comments: str | None = None
+    is_blinded: bool = True
+    shown_mode_label: bool = False
+    created_at: datetime
+
+
+class HumanEvalQueueItem(BaseModel):
+    """One run waiting for or already having human review."""
+
+    run_id: str
+    campaign_id: str
+    question_id: str
+    question: str
+    mode: CampaignMode
+    run_number: int = Field(ge=1)
+    repeat_number: int = Field(default=1, ge=1)
+    answer_preview: str
+    existing_rating_count: int = Field(default=0, ge=0)
+    already_rated_by_current_user: bool = False
+
+
+class HumanEvalQueueResponse(BaseModel):
+    """Human review queue for one campaign."""
+
+    campaign_id: str
+    rows: list[HumanEvalQueueItem] = Field(default_factory=list)
+
+
+class SanitizedErrorRow(BaseModel):
+    """One sanitized error surfaced for debugging."""
+
+    run_id: str
+    campaign_id: str
+    stage_name: str
+    code: str | None = None
+    message: str
+    source: Literal["run", "trace", "llm_call"]
+    created_at: datetime
+
+
+class CampaignErrorsResponse(BaseModel):
+    """Sanitized error rows for one campaign."""
+
+    campaign_id: str
+    rows: list[SanitizedErrorRow] = Field(default_factory=list)
+
+
+class ExportCampaignRequest(BaseModel):
+    """Explicit export options for research data."""
+
+    include_raw_trace_payloads: bool = False
+    include_prompt_previews: bool = True
+    include_full_prompts: bool = False
+    include_answers: bool = True
+    include_retrieved_excerpts: bool = True
+    format: Literal["json"] = "json"
+
+
+class ExportCampaignResponse(BaseModel):
+    """Redaction-aware campaign export payload."""
+
+    campaign: dict[str, Any]
+    redaction: dict[str, Any]
+    runs: list[dict[str, Any]] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    trace_events: list[dict[str, Any]] = Field(default_factory=list)
+    llm_calls: list[dict[str, Any]] = Field(default_factory=list)
+    retrieval_summary: list[dict[str, Any]] = Field(default_factory=list)
+    claim_summary: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class CampaignProgressEvent(BaseModel):

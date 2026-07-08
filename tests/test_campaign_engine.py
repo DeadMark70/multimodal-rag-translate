@@ -415,6 +415,11 @@ def test_campaign_run_persists_snapshot_and_minimal_root_span() -> None:
         assert llm_calls[0]["total_tokens"] == 15
         assert llm_calls[0]["span_id"] == trace_events[0]["span_id"]
 
+        wrong_run = client.get(
+            f"/api/evaluation/campaigns/{campaign_id}/runs/not-this-campaign-run/observability"
+        )
+        assert wrong_run.status_code == 404
+
 
 def test_campaign_rejects_router_mode_without_feature_flag() -> None:
     fake_ragas = FakeRagasEvaluator()

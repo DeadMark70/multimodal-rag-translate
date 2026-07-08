@@ -2,18 +2,30 @@
 
 from __future__ import annotations
 
-from collections import Counter
+import hashlib
+import math
+import re
+from collections import Counter, defaultdict
+from statistics import mean
 from typing import Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel
 
 from core.errors import AppError, ErrorCode
 from evaluation.campaign_schemas import (
     AblationResponse,
+    CampaignErrorsResponse,
     CampaignOverviewResponse,
     CostLatencyResponse,
     EvaluationRunListItem,
     EvaluationRunListResponse,
+    ExportCampaignRequest,
+    ExportCampaignResponse,
+    HumanEvalQueueItem,
+    HumanEvalQueueResponse,
+    HumanRatingRequest,
+    HumanRatingResponse,
     HumanVsAutoResponse,
     ModeComparisonResponse,
     QuestionComparisonResponse,
@@ -27,9 +39,17 @@ from evaluation.campaign_schemas import (
     RunRetrievalResponse,
     RunToolsResponse,
     RunTraceResponse,
+    SanitizedErrorRow,
 )
 from evaluation.db import CampaignRepository, CampaignResultRepository, connect_db, init_db
 from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.trace_schemas import EvaluationHumanRating
+
+
+_SECRET_PATTERNS = [
+    re.compile(r"sk-[A-Za-z0-9_-]+"),
+    re.compile(r"api[_-]?key\s*=\s*\S+", re.IGNORECASE),
+]
 
 
 def _dump(value: BaseModel) -> dict[str, Any]:
@@ -69,6 +89,110 @@ def _normalized_answer(value: str | None) -> str:
     return " ".join(str(value or "").split()).strip().lower()
 
 
+def _hash_rater_id(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _repeat_number(result: Any) -> int:
+    repeat_number = result.derived_metrics.get("repeat_number")
+    if isinstance(repeat_number, int) and repeat_number >= 1:
+        return repeat_number
+    return int(result.run_number)
+
+
+def _sample_note(sample_count: int, question_count: int, repeat_count: int) -> str:
+    return (
+        f"n = {sample_count} execution samples = "
+        f"{question_count} questions x up to {repeat_count} repeats, "
+        "not independent questions."
+    )
+
+
+def _sanitize_error_message(raw: Any) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return "Error details unavailable."
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub("[redacted]", text)
+    lowered = text.lower()
+    if "\n" in text or "traceback" in lowered or "stack trace" in lowered:
+        return "Provider error details were redacted."
+    if len(text) > 200:
+        return f"{text[:197]}..."
+    return text
+
+
+def _redact_question_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    redacted = dict(snapshot)
+    for key in ("ground_truth", "ground_truth_short", "source_docs", "atomic_facts", "expected_evidence"):
+        redacted.pop(key, None)
+    return redacted
+
+
+def _redact_export_run(row: dict[str, Any], request: ExportCampaignRequest) -> dict[str, Any]:
+    redacted = dict(row)
+    if not request.include_answers:
+        for key in ("answer", "ground_truth", "ground_truth_short", "key_points", "final_answer_hash"):
+            redacted.pop(key, None)
+    if not request.include_retrieved_excerpts:
+        redacted["contexts"] = []
+        redacted["source_doc_ids"] = []
+        redacted["expected_sources"] = []
+    if isinstance(redacted.get("question_snapshot"), dict):
+        redacted["question_snapshot"] = _redact_question_snapshot(redacted["question_snapshot"])
+    return redacted
+
+
+def _rank(values: list[float]) -> list[float]:
+    ordered = sorted((value, index) for index, value in enumerate(values))
+    ranks = [0.0] * len(values)
+    position = 0
+    while position < len(ordered):
+        end = position
+        while end < len(ordered) and ordered[end][0] == ordered[position][0]:
+            end += 1
+        rank_value = (position + 1 + end) / 2
+        for _, original_index in ordered[position:end]:
+            ranks[original_index] = rank_value
+        position = end
+    return ranks
+
+
+def _pearson(xs: list[float], ys: list[float]) -> float | None:
+    if len(xs) < 2 or len(ys) < 2 or len(xs) != len(ys):
+        return None
+    mean_x = mean(xs)
+    mean_y = mean(ys)
+    numerator = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    sum_x = sum((x - mean_x) ** 2 for x in xs)
+    sum_y = sum((y - mean_y) ** 2 for y in ys)
+    denominator = math.sqrt(sum_x * sum_y)
+    if denominator <= 0:
+        return None
+    return numerator / denominator
+
+
+def _spearman(xs: list[float], ys: list[float]) -> float | None:
+    if len(xs) < 2 or len(ys) < 2 or len(xs) != len(ys):
+        return None
+    return _pearson(_rank(xs), _rank(ys))
+
+
+def _inter_rater_agreement(values_by_run: dict[str, list[EvaluationHumanRating]]) -> float | None:
+    agreement_scores: list[float] = []
+    for ratings in values_by_run.values():
+        if len(ratings) < 2:
+            continue
+        correctness_values = [rating.correctness_score for rating in ratings]
+        faithfulness_values = [rating.faithfulness_score for rating in ratings]
+        correctness_range = max(correctness_values) - min(correctness_values)
+        faithfulness_range = max(faithfulness_values) - min(faithfulness_values)
+        agreement_scores.append(1 - ((correctness_range + faithfulness_range) / 2))
+    if not agreement_scores:
+        return None
+    return max(min(mean(agreement_scores), 1.0), 0.0)
+
+
 class EvaluationAnalyticsService:
     """Read-only analytics API over campaign result and observability tables."""
 
@@ -83,29 +207,16 @@ class EvaluationAnalyticsService:
         self._result_repository = result_repository or CampaignResultRepository()
         self._observability_repository = observability_repository or EvaluationObservabilityRepository()
 
-    async def campaign_overview(
-        self,
-        *,
-        user_id: str,
-        campaign_id: str,
-    ) -> CampaignOverviewResponse:
+    async def campaign_overview(self, *, user_id: str, campaign_id: str) -> CampaignOverviewResponse:
         campaign = await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
         results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
         llm_calls_by_run = [await self._observability_repository.list_llm_calls_for_run(item.id) for item in results]
-        all_llm_calls = [
-            call
-            for calls in llm_calls_by_run
-            for call in calls
-            if call.campaign_id == campaign_id
-        ]
+        all_llm_calls = [call for calls in llm_calls_by_run for call in calls if call.campaign_id == campaign_id]
         sample_count = len(results)
         independent_question_count = len({item.question_id for item in results})
-        repeat_count = max((item.run_number for item in results), default=0)
+        repeat_count = max((_repeat_number(item) for item in results), default=0)
         mode_counts = Counter(item.mode for item in results)
-        latencies = [
-            item.total_latency_ms if item.total_latency_ms is not None else item.latency_ms
-            for item in results
-        ]
+        latencies = [item.total_latency_ms if item.total_latency_ms is not None else item.latency_ms for item in results]
         total_cost_usd, priced_usd_count, unpriced_usd_count, cost_status = _cost_rollup(
             [call.estimated_cost_usd for call in all_llm_calls]
         )
@@ -115,11 +226,7 @@ class EvaluationAnalyticsService:
             sample_count=sample_count,
             independent_question_count=independent_question_count,
             repeat_count=repeat_count,
-            sample_note=(
-                f"n = {sample_count} execution samples = "
-                f"{independent_question_count} questions x up to {repeat_count} repeats, "
-                "not independent questions."
-            ),
+            sample_note=_sample_note(sample_count, independent_question_count, repeat_count),
             mode_counts=dict(mode_counts),
             total_tokens=sum(item.total_tokens or 0 for item in results),
             total_cost_usd=total_cost_usd,
@@ -130,17 +237,12 @@ class EvaluationAnalyticsService:
             avg_latency_ms=_average(latencies),
         )
 
-    async def mode_comparison(
-        self,
-        *,
-        user_id: str,
-        campaign_id: str,
-    ) -> ModeComparisonResponse:
+    async def mode_comparison(self, *, user_id: str, campaign_id: str) -> ModeComparisonResponse:
         overview = await self.campaign_overview(user_id=user_id, campaign_id=campaign_id)
         results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
-        by_mode: dict[str, list[Any]] = {}
+        by_mode: dict[str, list[Any]] = defaultdict(list)
         for result in results:
-            by_mode.setdefault(str(result.mode), []).append(result)
+            by_mode[str(result.mode)].append(result)
         return ModeComparisonResponse(
             campaign_id=campaign_id,
             analysis_unit="execution",
@@ -153,41 +255,25 @@ class EvaluationAnalyticsService:
                     "sample_count": len(items),
                     "total_tokens_mean": _average([item.total_tokens for item in items]),
                     "latency_ms_mean": _average(
-                        [
-                            item.total_latency_ms if item.total_latency_ms is not None else item.latency_ms
-                            for item in items
-                        ]
+                        [item.total_latency_ms if item.total_latency_ms is not None else item.latency_ms for item in items]
                     ),
                     "unsupported_claim_ratio_mean": _average(
-                        [
-                            item.derived_metrics.get("unsupported_claim_ratio")
-                            for item in items
-                            if isinstance(item.derived_metrics.get("unsupported_claim_ratio"), (int, float))
-                        ]
+                        [item.derived_metrics.get("unsupported_claim_ratio") for item in items if isinstance(item.derived_metrics.get("unsupported_claim_ratio"), (int, float))]
                     ),
                     "evidence_coverage_mean": _average(
-                        [
-                            item.derived_metrics.get("evidence_coverage")
-                            for item in items
-                            if isinstance(item.derived_metrics.get("evidence_coverage"), (int, float))
-                        ]
+                        [item.derived_metrics.get("evidence_coverage") for item in items if isinstance(item.derived_metrics.get("evidence_coverage"), (int, float))]
                     ),
                 }
                 for mode, items in by_mode.items()
             },
         )
 
-    async def question_comparison(
-        self,
-        *,
-        user_id: str,
-        campaign_id: str,
-    ) -> QuestionComparisonResponse:
+    async def question_comparison(self, *, user_id: str, campaign_id: str) -> QuestionComparisonResponse:
         overview = await self.campaign_overview(user_id=user_id, campaign_id=campaign_id)
         results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
-        by_question: dict[str, list[Any]] = {}
+        by_question: dict[str, list[Any]] = defaultdict(list)
         for result in results:
-            by_question.setdefault(result.question_id, []).append(result)
+            by_question[result.question_id].append(result)
         return QuestionComparisonResponse(
             campaign_id=campaign_id,
             analysis_unit="question",
@@ -205,12 +291,7 @@ class EvaluationAnalyticsService:
             },
         )
 
-    async def cost_latency(
-        self,
-        *,
-        user_id: str,
-        campaign_id: str,
-    ) -> CostLatencyResponse:
+    async def cost_latency(self, *, user_id: str, campaign_id: str) -> CostLatencyResponse:
         overview = await self.campaign_overview(user_id=user_id, campaign_id=campaign_id)
         warnings = []
         if overview.cost_status != "complete":
@@ -234,12 +315,7 @@ class EvaluationAnalyticsService:
             },
         )
 
-    async def router_analysis(
-        self,
-        *,
-        user_id: str,
-        campaign_id: str,
-    ) -> RouterAnalysisResponse:
+    async def router_analysis(self, *, user_id: str, campaign_id: str) -> RouterAnalysisResponse:
         overview = await self.campaign_overview(user_id=user_id, campaign_id=campaign_id)
         results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
         decisions = []
@@ -261,18 +337,19 @@ class EvaluationAnalyticsService:
             summaries={"decision_count": len(decisions)},
         )
 
-    async def ablation(
-        self,
-        *,
-        user_id: str,
-        campaign_id: str,
-    ) -> AblationResponse:
+    async def ablation(self, *, user_id: str, campaign_id: str) -> AblationResponse:
         overview = await self.campaign_overview(user_id=user_id, campaign_id=campaign_id)
         results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
         by_condition: dict[str, int] = Counter(
             str(result.derived_metrics.get("condition_id") or result.execution_profile or "default")
             for result in results
         )
+        condition_labels: dict[str, str] = {}
+        for result in results:
+            condition_id = result.derived_metrics.get("condition_id")
+            label = result.derived_metrics.get("condition_label")
+            if isinstance(condition_id, str) and isinstance(label, str):
+                condition_labels[condition_id] = label
         return AblationResponse(
             campaign_id=campaign_id,
             analysis_unit="execution",
@@ -280,48 +357,275 @@ class EvaluationAnalyticsService:
             independent_question_count=overview.independent_question_count,
             repeat_count=overview.repeat_count,
             sample_note=overview.sample_note,
-            summaries={"condition_counts": dict(by_condition)},
+            summaries={
+                "condition_counts": dict(by_condition),
+                "condition_labels": condition_labels,
+            },
         )
 
-    async def human_vs_auto(
+    async def human_eval_queue(self, *, user_id: str, campaign_id: str) -> HumanEvalQueueResponse:
+        await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
+        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        rater_hash = _hash_rater_id(user_id)
+        rows: list[HumanEvalQueueItem] = []
+        for result in results:
+            ratings = [
+                rating
+                for rating in await self._observability_repository.list_human_ratings_for_run(result.id)
+                if rating.campaign_id == campaign_id
+            ]
+            rows.append(
+                HumanEvalQueueItem(
+                    run_id=result.id,
+                    campaign_id=campaign_id,
+                    question_id=result.question_id,
+                    question=result.question,
+                    mode=result.mode,
+                    run_number=result.run_number,
+                    repeat_number=_repeat_number(result),
+                    answer_preview=result.answer[:240],
+                    existing_rating_count=len(ratings),
+                    already_rated_by_current_user=any(rating.rater_id_hash == rater_hash for rating in ratings),
+                )
+            )
+        return HumanEvalQueueResponse(campaign_id=campaign_id, rows=rows)
+
+    async def create_human_rating(
         self,
         *,
         user_id: str,
-        campaign_id: str,
-    ) -> HumanVsAutoResponse:
-        overview = await self.campaign_overview(user_id=user_id, campaign_id=campaign_id)
+        run_id: str,
+        request: HumanRatingRequest,
+    ) -> HumanRatingResponse:
+        campaign_id = await self._campaign_id_for_owned_run(user_id=user_id, run_id=run_id)
+        rating = EvaluationHumanRating(
+            human_rating_id=str(uuid4()),
+            run_id=run_id,
+            campaign_id=campaign_id,
+            span_id=None,
+            rater_id_hash=_hash_rater_id(user_id),
+            rubric_version=request.rubric_version,
+            correctness_score=request.correctness_score,
+            faithfulness_score=request.faithfulness_score,
+            completeness_score=request.completeness_score,
+            citation_quality_score=request.citation_quality_score,
+            usefulness_score=request.usefulness_score,
+            comments=request.comments,
+            is_blinded=request.is_blinded,
+            shown_mode_label=request.shown_mode_label,
+            payload={},
+            created_at=await self._current_db_time(),
+        )
+        await self._observability_repository.record_human_rating(rating)
+        return HumanRatingResponse(
+            human_rating_id=rating.human_rating_id,
+            run_id=rating.run_id,
+            campaign_id=rating.campaign_id,
+            rater_id_hash=rating.rater_id_hash,
+            rubric_version=rating.rubric_version,
+            correctness_score=rating.correctness_score,
+            faithfulness_score=rating.faithfulness_score,
+            completeness_score=rating.completeness_score,
+            citation_quality_score=rating.citation_quality_score,
+            usefulness_score=rating.usefulness_score,
+            comments=rating.comments,
+            is_blinded=rating.is_blinded,
+            shown_mode_label=rating.shown_mode_label,
+            created_at=rating.created_at,
+        )
+
+    async def human_vs_auto(self, *, user_id: str, campaign_id: str) -> HumanVsAutoResponse:
+        await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
         results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
-        ratings = []
+        ragas_by_run = await self._ragas_metrics_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        ratings_by_run: dict[str, list[EvaluationHumanRating]] = {}
+        rows: list[dict[str, Any]] = []
+        human_scores: list[float] = []
+        auto_scores: list[float] = []
         for result in results:
-            ratings.extend(
-                _dump(item)
-                for item in await self._observability_repository.list_human_ratings_for_run(result.id)
-                if item.campaign_id == campaign_id
-            )
+            ratings = [
+                rating
+                for rating in await self._observability_repository.list_human_ratings_for_run(result.id)
+                if rating.campaign_id == campaign_id
+            ]
+            if not ratings:
+                continue
+            ratings_by_run[result.id] = ratings
+            human_correctness_mean = mean(rating.correctness_score for rating in ratings)
+            human_faithfulness_mean = mean(rating.faithfulness_score for rating in ratings)
+            ragas_metrics = ragas_by_run.get(result.id, {})
+            auto_correctness = ragas_metrics.get("answer_correctness")
+            auto_faithfulness = ragas_metrics.get("faithfulness")
+            row = {
+                "run_id": result.id,
+                "question_id": result.question_id,
+                "mode": result.mode,
+                "rating_count": len(ratings),
+                "human_correctness_mean": human_correctness_mean,
+                "human_faithfulness_mean": human_faithfulness_mean,
+                "ragas_answer_correctness": auto_correctness,
+                "ragas_faithfulness": auto_faithfulness,
+            }
+            rows.append(row)
+            if isinstance(auto_correctness, (int, float)) and isinstance(auto_faithfulness, (int, float)):
+                human_scores.append((human_correctness_mean + human_faithfulness_mean) / 2)
+                auto_scores.append((float(auto_correctness) + float(auto_faithfulness)) / 2)
+        sample_count = len(rows)
         return HumanVsAutoResponse(
             campaign_id=campaign_id,
             analysis_unit="execution",
-            sample_count=overview.sample_count,
-            independent_question_count=overview.independent_question_count,
-            repeat_count=overview.repeat_count,
-            sample_note=overview.sample_note,
-            warnings=["Correlation summaries require human ratings."] if not ratings else [],
-            rows=ratings,
-            summaries={"human_rating_count": len(ratings)},
+            sample_count=sample_count,
+            independent_question_count=len({row["question_id"] for row in rows}),
+            repeat_count=max((self._paired_repeat_number(result, rows) for result in results), default=0),
+            sample_note=_sample_note(sample_count, len({row["question_id"] for row in rows}), max((_repeat_number(result) for result in results if result.id in ratings_by_run), default=0)) if sample_count else "No paired human/auto samples yet.",
+            warnings=["Correlation summaries require at least 2 paired samples."] if sample_count < 2 else [],
+            rows=rows,
+            summaries={
+                "human_rating_count": sum(len(items) for items in ratings_by_run.values()),
+                "paired_sample_count": sample_count,
+                "human_correctness_mean": _average([row["human_correctness_mean"] for row in rows]),
+                "human_faithfulness_mean": _average([row["human_faithfulness_mean"] for row in rows]),
+                "ragas_human_pearson_r": _pearson(human_scores, auto_scores),
+                "ragas_human_spearman_r": _spearman(human_scores, auto_scores),
+                "inter_rater_agreement": _inter_rater_agreement(ratings_by_run),
+            },
         )
 
-    async def repeat_stability(
+    async def campaign_errors(self, *, user_id: str, campaign_id: str) -> CampaignErrorsResponse:
+        await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
+        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        rows: list[SanitizedErrorRow] = []
+        for result in results:
+            if result.error_message:
+                rows.append(
+                    SanitizedErrorRow(
+                        run_id=result.id,
+                        campaign_id=campaign_id,
+                        stage_name="campaign_run",
+                        code="RUN_FAILED",
+                        message=_sanitize_error_message(result.error_message),
+                        source="run",
+                        created_at=result.created_at,
+                    )
+                )
+            for item in await self._observability_repository.list_trace_events_for_run(result.id):
+                if item.campaign_id != campaign_id or (not item.error and item.status != "failed"):
+                    continue
+                rows.append(
+                    SanitizedErrorRow(
+                        run_id=result.id,
+                        campaign_id=campaign_id,
+                        stage_name=item.stage_name,
+                        code=str(item.error.get("code") or item.error.get("type") or "TRACE_FAILED"),
+                        message=_sanitize_error_message(item.error.get("message")),
+                        source="trace",
+                        created_at=item.created_at,
+                    )
+                )
+            for call in await self._observability_repository.list_llm_calls_for_run(result.id):
+                if call.campaign_id != campaign_id or (not call.error and call.status != "failed"):
+                    continue
+                rows.append(
+                    SanitizedErrorRow(
+                        run_id=result.id,
+                        campaign_id=campaign_id,
+                        stage_name=str(call.purpose or "llm_call"),
+                        code=str(call.error.get("code") or "LLM_CALL_FAILED"),
+                        message=_sanitize_error_message(call.error.get("message")),
+                        source="llm_call",
+                        created_at=call.created_at,
+                    )
+                )
+        rows.sort(key=lambda item: (item.created_at, item.run_id, item.stage_name))
+        return CampaignErrorsResponse(campaign_id=campaign_id, rows=rows)
+
+    async def export_campaign(
         self,
         *,
         user_id: str,
         campaign_id: str,
-    ) -> RepeatStabilitySummary:
+        request: ExportCampaignRequest,
+    ) -> ExportCampaignResponse:
+        campaign = await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
+        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        runs: list[dict[str, Any]] = []
+        trace_events: list[dict[str, Any]] = []
+        llm_calls: list[dict[str, Any]] = []
+        retrieval_summary: list[dict[str, Any]] = []
+        claim_summary: list[dict[str, Any]] = []
+        for result in results:
+            row = result.model_dump(mode="json")
+            runs.append(_redact_export_run(row, request))
+
+            for event in await self._observability_repository.list_trace_events_for_run(result.id):
+                if event.campaign_id != campaign_id:
+                    continue
+                event_row = _dump(event)
+                if not request.include_raw_trace_payloads:
+                    event_row["payload"] = {}
+                trace_events.append(event_row)
+
+            for call in await self._observability_repository.list_llm_calls_for_run(result.id):
+                if call.campaign_id != campaign_id:
+                    continue
+                call_row = _dump(call)
+                if not request.include_prompt_previews:
+                    call_row["prompt_preview"] = None
+                payload = dict(call_row.get("payload") or {})
+                full_prompt = payload.get("full_prompt")
+                if full_prompt is not None and not request.include_full_prompts:
+                    payload.pop("full_prompt", None)
+                call_row["payload"] = payload
+                llm_calls.append(call_row)
+
+            chunks = [
+                _dump(chunk)
+                for chunk in await self._observability_repository.list_retrieval_chunks_for_run(result.id)
+                if chunk.campaign_id == campaign_id
+            ]
+            if not request.include_retrieved_excerpts:
+                for chunk in chunks:
+                    chunk["excerpt"] = None
+            retrieval_summary.append(
+                {
+                    "run_id": result.id,
+                    "chunk_count": len(chunks),
+                    "chunks": chunks,
+                }
+            )
+            claim_summary.append(
+                {
+                    "run_id": result.id,
+                    "claims": [
+                        _dump(claim)
+                        for claim in await self._observability_repository.list_claims_for_run(result.id)
+                        if claim.campaign_id == campaign_id
+                    ],
+                }
+            )
+        overview = await self.campaign_overview(user_id=user_id, campaign_id=campaign_id)
+        errors = await self.campaign_errors(user_id=user_id, campaign_id=campaign_id)
+        return ExportCampaignResponse(
+            campaign=campaign.model_dump(mode="json"),
+            redaction=request.model_dump(mode="json"),
+            runs=runs,
+            metrics={
+                "overview": overview.model_dump(mode="json"),
+                "errors": errors.model_dump(mode="json"),
+            },
+            trace_events=trace_events,
+            llm_calls=llm_calls,
+            retrieval_summary=retrieval_summary,
+            claim_summary=claim_summary,
+        )
+
+    async def repeat_stability(self, *, user_id: str, campaign_id: str) -> RepeatStabilitySummary:
         overview = await self.campaign_overview(user_id=user_id, campaign_id=campaign_id)
         results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
-        by_unit: dict[str, list[Any]] = {}
+        by_unit: dict[str, list[Any]] = defaultdict(list)
         for result in results:
             key = f"{result.question_id}:{result.mode}"
-            by_unit.setdefault(key, []).append(result)
+            by_unit[key].append(result)
         return RepeatStabilitySummary(
             campaign_id=campaign_id,
             analysis_unit="execution",
@@ -339,12 +643,7 @@ class EvaluationAnalyticsService:
             },
         )
 
-    async def list_campaign_runs(
-        self,
-        *,
-        user_id: str,
-        campaign_id: str,
-    ) -> EvaluationRunListResponse:
+    async def list_campaign_runs(self, *, user_id: str, campaign_id: str) -> EvaluationRunListResponse:
         await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
         results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
         return EvaluationRunListResponse(
@@ -357,6 +656,7 @@ class EvaluationAnalyticsService:
                     question=item.question,
                     mode=item.mode,
                     run_number=item.run_number,
+                    repeat_number=_repeat_number(item),
                     status=item.status,
                     total_tokens=item.total_tokens or 0,
                     total_latency_ms=item.total_latency_ms,
@@ -462,24 +762,11 @@ class EvaluationAnalyticsService:
             total_latency_ms=result.total_latency_ms,
         )
 
-    async def run_diff(
-        self,
-        *,
-        user_id: str,
-        run_id: str,
-        baseline_run_id: str,
-    ) -> RunDiffResponse:
+    async def run_diff(self, *, user_id: str, run_id: str, baseline_run_id: str) -> RunDiffResponse:
         campaign_id = await self._campaign_id_for_owned_run(user_id=user_id, run_id=run_id)
-        baseline_campaign_id = await self._campaign_id_for_owned_run(
-            user_id=user_id,
-            run_id=baseline_run_id,
-        )
+        baseline_campaign_id = await self._campaign_id_for_owned_run(user_id=user_id, run_id=baseline_run_id)
         result = await self._result_repository.get(user_id=user_id, campaign_id=campaign_id, result_id=run_id)
-        baseline = await self._result_repository.get(
-            user_id=user_id,
-            campaign_id=baseline_campaign_id,
-            result_id=baseline_run_id,
-        )
+        baseline = await self._result_repository.get(user_id=user_id, campaign_id=baseline_campaign_id, result_id=baseline_run_id)
         if campaign_id != baseline_campaign_id or result.question_id != baseline.question_id:
             raise AppError(
                 code=ErrorCode.BAD_REQUEST,
@@ -492,7 +779,12 @@ class EvaluationAnalyticsService:
                     "baseline_question_id": baseline.question_id,
                 },
             )
-        answer_changed, answer_change_status = self._answer_change(result.answer, result.final_answer_hash, baseline.answer, baseline.final_answer_hash)
+        answer_changed, answer_change_status = self._answer_change(
+            result.answer,
+            result.final_answer_hash,
+            baseline.answer,
+            baseline.final_answer_hash,
+        )
         return RunDiffResponse(
             run_id=run_id,
             baseline_run_id=baseline_run_id,
@@ -519,11 +811,7 @@ class EvaluationAnalyticsService:
             )
             row = await cursor.fetchone()
         if row is None:
-            raise AppError(
-                code=ErrorCode.NOT_FOUND,
-                message="Evaluation run not found",
-                status_code=404,
-            )
+            raise AppError(code=ErrorCode.NOT_FOUND, message="Evaluation run not found", status_code=404)
         return str(row["campaign_id"])
 
     async def _dump_owned_trace_events(self, *, run_id: str, campaign_id: str) -> list[dict[str, Any]]:
@@ -533,11 +821,38 @@ class EvaluationAnalyticsService:
             if item.campaign_id == campaign_id
         ]
 
-    def _numeric_metric_delta(
-        self,
-        metrics: dict[str, Any],
-        baseline_metrics: dict[str, Any],
-    ) -> dict[str, float]:
+    async def _ragas_metrics_for_campaign(self, *, user_id: str, campaign_id: str) -> dict[str, dict[str, float]]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT campaign_result_id, metric_name, metric_value
+                FROM ragas_scores
+                WHERE campaign_id = ? AND user_id = ?
+                """,
+                (campaign_id, user_id),
+            )
+            rows = await cursor.fetchall()
+        metrics: dict[str, dict[str, float]] = defaultdict(dict)
+        for row in rows:
+            metrics[str(row["campaign_result_id"])][str(row["metric_name"])] = float(row["metric_value"])
+        return metrics
+
+    async def _current_db_time(self):
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute("SELECT CURRENT_TIMESTAMP AS now")
+            row = await cursor.fetchone()
+        from datetime import datetime, timezone
+        raw = row["now"]
+        return datetime.fromisoformat(str(raw).replace(" ", "T") + "+00:00").astimezone(timezone.utc)
+
+    def _paired_repeat_number(self, result: Any, rows: list[dict[str, Any]]) -> int:
+        if any(row["run_id"] == result.id for row in rows):
+            return _repeat_number(result)
+        return 0
+
+    def _numeric_metric_delta(self, metrics: dict[str, Any], baseline_metrics: dict[str, Any]) -> dict[str, float]:
         delta: dict[str, float] = {}
         for key, value in metrics.items():
             baseline_value = baseline_metrics.get(key)
@@ -555,9 +870,7 @@ class EvaluationAnalyticsService:
         if answer_hash and baseline_answer_hash:
             changed = answer_hash != baseline_answer_hash
             return changed, "changed" if changed else "unchanged"
-
         if answer or baseline_answer:
             changed = _normalized_answer(answer) != _normalized_answer(baseline_answer)
             return changed, "changed" if changed else "unchanged"
-
         return False, "unknown"

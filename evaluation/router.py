@@ -16,6 +16,7 @@ from evaluation.analytics import EvaluationAnalyticsService
 from evaluation.campaign_engine import get_campaign_engine
 from evaluation.campaign_schemas import (
     AblationResponse,
+    CampaignErrorsResponse,
     CampaignCreateRequest,
     CampaignCreateResponse,
     CampaignEvaluateRequest,
@@ -27,6 +28,11 @@ from evaluation.campaign_schemas import (
     CampaignStatus,
     CostLatencyResponse,
     EvaluationRunListResponse,
+    ExportCampaignRequest,
+    ExportCampaignResponse,
+    HumanEvalQueueResponse,
+    HumanRatingRequest,
+    HumanRatingResponse,
     HumanVsAutoResponse,
     ModeComparisonResponse,
     QuestionComparisonResponse,
@@ -43,6 +49,7 @@ from evaluation.campaign_schemas import (
 )
 from evaluation.model_capabilities import normalize_model_config_for_storage
 from evaluation.model_discovery import list_available_models
+from evaluation.db import CampaignResultRepository
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.schemas import (
     AvailableModel,
@@ -426,6 +433,27 @@ async def get_campaign_human_vs_auto(
     return await analytics.human_vs_auto(user_id=user_id, campaign_id=campaign_id)
 
 
+@router.get("/campaigns/{campaign_id}/human-eval-queue", response_model=HumanEvalQueueResponse)
+async def get_campaign_human_eval_queue(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> HumanEvalQueueResponse:
+    """List runs in one campaign for human review."""
+    return await analytics.human_eval_queue(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.post("/runs/{run_id}/human-ratings", response_model=HumanRatingResponse)
+async def post_run_human_rating(
+    run_id: str,
+    payload: HumanRatingRequest,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> HumanRatingResponse:
+    """Store one human rubric score row for a run owned by the current user."""
+    return await analytics.create_human_rating(user_id=user_id, run_id=run_id, request=payload)
+
+
 @router.get("/campaigns/{campaign_id}/repeat-stability", response_model=RepeatStabilitySummary)
 async def get_campaign_repeat_stability(
     campaign_id: str,
@@ -434,6 +462,27 @@ async def get_campaign_repeat_stability(
 ) -> RepeatStabilitySummary:
     """Fetch repeat-run stability aggregates for one campaign."""
     return await analytics.repeat_stability(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get("/campaigns/{campaign_id}/errors", response_model=CampaignErrorsResponse)
+async def get_campaign_errors(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> CampaignErrorsResponse:
+    """Fetch sanitized error rows for one campaign."""
+    return await analytics.campaign_errors(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.post("/campaigns/{campaign_id}/export", response_model=ExportCampaignResponse)
+async def post_campaign_export(
+    campaign_id: str,
+    payload: ExportCampaignRequest,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> ExportCampaignResponse:
+    """Export one campaign with explicit redaction controls."""
+    return await analytics.export_campaign(user_id=user_id, campaign_id=campaign_id, request=payload)
 
 
 @router.get("/runs/{run_id}/trace", response_model=RunTraceResponse)
@@ -581,6 +630,7 @@ async def get_campaign_run_observability(
     """Fetch normalized observability details for one campaign run."""
     engine = get_campaign_engine()
     await engine.get_campaign(user_id=user_id, campaign_id=campaign_id)
+    await CampaignResultRepository().get(user_id=user_id, campaign_id=campaign_id, result_id=run_id)
 
     repository = EvaluationObservabilityRepository()
     trace_events = [

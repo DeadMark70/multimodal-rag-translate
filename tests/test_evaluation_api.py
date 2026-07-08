@@ -14,6 +14,8 @@ from fastapi.testclient import TestClient
 
 from core.auth import get_current_user_id
 from evaluation import db as evaluation_db
+from evaluation.campaign_schemas import CampaignResultStatus
+from evaluation.db import CampaignResultRepository
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.schemas import AvailableModel
 from evaluation.trace_schemas import EvaluationTraceEvent
@@ -124,6 +126,34 @@ async def _seed_trace_event(campaign_id: str, run_id: str) -> None:
             error={},
             created_at=now,
         )
+    )
+
+
+async def _seed_campaign_result(campaign_id: str, run_id: str, user_id: str) -> None:
+    await CampaignResultRepository().create(
+        result_id=run_id,
+        user_id=user_id,
+        campaign_id=campaign_id,
+        question_id="TC-1",
+        question="What is the test question?",
+        ground_truth="Ground truth answer",
+        ground_truth_short=None,
+        key_points=[],
+        ragas_focus=[],
+        mode="advanced",
+        execution_profile=None,
+        context_policy_version=None,
+        run_number=1,
+        answer="Answer",
+        contexts=[],
+        source_doc_ids=[],
+        expected_sources=[],
+        latency_ms=1,
+        token_usage={"total_tokens": 1},
+        category=None,
+        difficulty=None,
+        status=CampaignResultStatus.COMPLETED,
+        derived_metrics={"repeat_number": 1},
     )
 
 
@@ -246,6 +276,7 @@ def test_run_observability_endpoint_returns_only_owned_campaign_rows(tmp_path) -
     with patch.object(evaluation_db, "EVALUATION_DB_PATH", db_path):
         asyncio.run(_seed_campaign("campaign-owned", "user-a"))
         asyncio.run(_seed_campaign("campaign-other", "user-a"))
+        asyncio.run(_seed_campaign_result("campaign-owned", "run-1", "user-a"))
         asyncio.run(_seed_trace_event("campaign-owned", "run-1"))
 
         with _build_client("user-a", upload_root) as client:
@@ -258,8 +289,7 @@ def test_run_observability_endpoint_returns_only_owned_campaign_rows(tmp_path) -
             assert body["trace_events"][0]["stage_name"] == "retrieve"
 
             cross_campaign = client.get("/api/evaluation/campaigns/campaign-other/runs/run-1/observability")
-            assert cross_campaign.status_code == 200
-            assert cross_campaign.json()["trace_events"] == []
+            assert cross_campaign.status_code == 404
 
 
 def test_model_config_crud_and_validation() -> None:

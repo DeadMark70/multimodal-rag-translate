@@ -748,6 +748,11 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
         execution_profile=execution_profile,
         context_policy_version=context_policy_version,
         run_number=row["run_number"],
+        repeat_number=(
+            derived_metrics["repeat_number"]
+            if isinstance(derived_metrics.get("repeat_number"), int)
+            else row["run_number"]
+        ),
         answer=row["answer"],
         contexts=_json_loads(row["contexts_json"], []),
         source_doc_ids=_json_loads(row["source_doc_ids_json"], []),
