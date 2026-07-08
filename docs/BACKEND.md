@@ -151,3 +151,152 @@
 - Gemini 2.5 Flash-family models use budget controls (`thinking_budget`); Gemini 3.x Flash and Gemma 4-family models use level controls (`thinking_level`). Unknown models expose `control_type="none"`.
 - Model preset create/update/list paths normalize incompatible fields before storage, and campaign runtime overrides normalize again before provider execution.
 - Campaign configs preserve the normalized preset snapshot so history/results can show the actual reasoning setting used for a run.
+
+## Evaluation Research Dashboard Backend
+
+### Run Snapshots
+
+- `campaign_results.id` is both the legacy `campaign_result_id` and the new `run_id` for research APIs.
+- Persisted run rows now carry reproducibility and replay fields used by the dashboard:
+  - `question_version`
+  - `request_id`
+  - `started_at`
+  - `completed_at`
+  - `total_latency_ms`
+  - `total_tokens`
+  - `question_snapshot`
+  - `model_config_snapshot`
+  - `system_version_snapshot`
+  - `derived_metrics`
+  - `final_answer_hash`
+- `question_snapshot` stores the full test-case snapshot captured at execution time, including research metadata such as `required_modalities`, `atomic_facts`, and `expected_evidence`.
+- `system_version_snapshot` stores runtime context for comparison work:
+  - always: `mode`, `run_number`, `repeat_number`
+  - when present: `condition_id`, `condition_label`, `ablation_flags`, `budget`, `execution_profile`, `context_policy_version`
+- `derived_metrics` is the lightweight cross-tab summary surface. Current runtime population includes:
+  - `repeat_number`
+  - ablation metadata such as `condition_id`, `condition_label`, `ablation_flags`
+  - `context_count`, `source_doc_count`, `expected_source_count`
+  - when claim data exists: `supported_claim_ratio`, `unsupported_claim_ratio`, `citation_precision`, `evidence_coverage`, `repair_count`
+  - when gold facts exist: `gold_fact_attrition`
+- Legacy rows remain readable. When an older row has none of the new snapshot fields populated, the loader keeps it valid and normalizes `total_tokens` back to `null` instead of treating `0` as a real snapshot value.
+
+### Observability Tables
+
+- Normalized run observability lives alongside legacy `agent_traces`:
+  - `evaluation_trace_events`
+  - `evaluation_llm_calls`
+  - `evaluation_retrieval_events`
+  - `evaluation_retrieval_chunks`
+  - `evaluation_context_packs`
+  - `evaluation_tool_calls`
+  - `evaluation_routing_decisions`
+  - `evaluation_claims`
+  - `evaluation_human_ratings`
+- Each table is keyed by `run_id` and `campaign_id` so research APIs can assemble run detail without inflating `campaign_results`.
+- Current detail payload shapes:
+  - trace events: stage span/event rows with `event_schema_version`, `sequence`, `stage_type`, `stage_name`, `status`, `payload`, `error`
+  - LLM calls: provider/model/tokens/cost plus `prompt_hash`, `prompt_preview`, `response_hash`
+  - retrieval: one request row plus chunk rows with evidence-match flags
+  - context packing: selected vs dropped evidence summary and packing metadata
+  - tool calls: normalized action/latency/status rows
+  - routing: retrospective routing decision rows
+  - claims: support status, evidence list, unsupported reason, repair metadata
+  - human ratings: rubric scores plus blinded-review flags
+- Recorder writes are best-effort by default. `EvaluationRunRecorder(strict=False)` logs failures and does not fail the campaign on observability write errors.
+
+### Research And Analytics API
+
+- Existing compatibility endpoints remain:
+  - `GET /api/evaluation/campaigns/{campaign_id}/results`
+  - `GET /api/evaluation/campaigns/{campaign_id}/traces`
+  - `GET /api/evaluation/campaigns/{campaign_id}/results/{campaign_result_id}/trace`
+  - `GET /api/evaluation/campaigns/{campaign_id}/metrics`
+  - `POST /api/evaluation/campaigns/{campaign_id}/evaluate`
+  - `POST /api/evaluation/campaigns/{campaign_id}/cancel`
+  - `GET /api/evaluation/campaigns/{campaign_id}/stream`
+- Research dashboard endpoints are all auth-protected and run off `run_id`:
+  - campaign aggregates:
+    - `GET /api/evaluation/campaigns/{campaign_id}/overview`
+    - `GET /api/evaluation/campaigns/{campaign_id}/runs`
+    - `GET /api/evaluation/campaigns/{campaign_id}/mode-comparison`
+    - `GET /api/evaluation/campaigns/{campaign_id}/question-comparison`
+    - `GET /api/evaluation/campaigns/{campaign_id}/cost-latency`
+    - `GET /api/evaluation/campaigns/{campaign_id}/router-analysis`
+    - `GET /api/evaluation/campaigns/{campaign_id}/ablation`
+    - `GET /api/evaluation/campaigns/{campaign_id}/repeat-stability`
+    - `GET /api/evaluation/campaigns/{campaign_id}/human-vs-auto`
+    - `GET /api/evaluation/campaigns/{campaign_id}/human-eval-queue`
+    - `GET /api/evaluation/campaigns/{campaign_id}/errors`
+    - `POST /api/evaluation/campaigns/{campaign_id}/export`
+  - run detail:
+    - `GET /api/evaluation/runs/{run_id}/trace`
+    - `GET /api/evaluation/runs/{run_id}/retrieval`
+    - `GET /api/evaluation/runs/{run_id}/context`
+    - `GET /api/evaluation/runs/{run_id}/llm-calls`
+    - `GET /api/evaluation/runs/{run_id}/tools`
+    - `GET /api/evaluation/runs/{run_id}/visual`
+    - `GET /api/evaluation/runs/{run_id}/graph`
+    - `GET /api/evaluation/runs/{run_id}/claims`
+    - `GET /api/evaluation/runs/{run_id}/metrics`
+    - `GET /api/evaluation/runs/{run_id}/diff?baseline_run_id=...`
+    - `POST /api/evaluation/runs/{run_id}/human-ratings`
+  - campaign-scoped full observability dump:
+    - `GET /api/evaluation/campaigns/{campaign_id}/runs/{run_id}/observability`
+
+### SSE And Event Ordering
+
+- Campaign progress streaming is still coarse-grained SSE:
+  - `campaign_snapshot`
+  - `campaign_progress`
+  - terminal `campaign_completed`, `campaign_failed`, or `campaign_cancelled`
+- `campaign_snapshot` and terminal events serialize the full `CampaignStatus` model.
+- `campaign_progress` serializes `CampaignProgressEvent` with counters and current question/mode.
+- The current SSE envelope does not add `event_schema_version` or `sequence`.
+- Versioning and ordering are instead enforced on persisted run observability:
+  - every `evaluation_trace_events` row carries `event_schema_version="1.0"`
+  - `EvaluationRunRecorder` emits monotonic `sequence` values per run recorder
+  - repository reads order by `sequence ASC, started_at ASC`
+  - running spans keep `duration_ms = null` until the closing event is written
+
+### Legacy Compatibility And Empty States
+
+- Legacy campaigns without normalized observability rows remain valid for:
+  - results listing
+  - legacy trace endpoints
+  - metrics
+  - research aggregate endpoints
+- Empty research collections are expected for older campaigns:
+  - run trace/retrieval/context/tool/claim endpoints return typed wrapper objects with empty collection fields such as `trace_events=[]`, `retrieval_events=[]`, `chunks=[]`, `context_packs=[]`, `tool_calls=[]`, or `claims=[]`
+  - human ratings do not have a standalone `GET /runs/{run_id}/human-ratings` endpoint; they are exposed as `human_ratings=[]` inside `GET /campaigns/{campaign_id}/runs/{run_id}/observability`
+  - `GET /campaigns/{campaign_id}/runs/{run_id}/observability` returns a wrapper object with empty detail collections
+  - `router-analysis` returns retrospective summaries with `rows=[]` when no routing rows exist
+  - `human-vs-auto` returns `sample_count=0` and `"No paired human/auto samples yet."`
+  - `campaigns/{campaign_id}/errors` returns `rows=[]` when no sanitized errors exist
+- Legacy `agentic` rows without `execution_profile` are normalized to `legacy_shared` on read so comparison views do not break.
+- Router execution is still gated. Creating a campaign with `mode="router"` and `actual_router_execution_enabled=false` fails with `400` and directs callers to retrospective analysis.
+
+### Prompt Storage And Redaction
+
+- Default run/result APIs do not surface raw prompt bodies.
+- LLM observability rows are designed around:
+  - `prompt_hash`
+  - `prompt_preview`
+  - optional prompt payload data inside `payload_json`
+- Export is POST-only for the research surface:
+  - `POST /api/evaluation/campaigns/{campaign_id}/export`
+  - request body controls redaction:
+    - `include_raw_trace_payloads`
+    - `include_prompt_previews`
+    - `include_full_prompts`
+    - `include_answers`
+    - `include_retrieved_excerpts`
+    - `format` (`json` only)
+- Export behavior in current code:
+  - trace event `payload` is blanked unless `include_raw_trace_payloads=true`
+  - `prompt_preview` is omitted unless `include_prompt_previews=true`
+  - `payload.full_prompt` is removed unless `include_full_prompts=true`
+  - answer, ground truth, and final-answer hash are removed when `include_answers=false`
+  - retrieval excerpts and result context/source lists are removed when `include_retrieved_excerpts=false`
+  - `question_snapshot` is always partially redacted on export by removing `ground_truth`, `ground_truth_short`, `source_docs`, `atomic_facts`, and `expected_evidence`
+- Sanitized errors are stored and exported instead of raw provider dumps. Multiline stack traces and obvious secrets are redacted.
