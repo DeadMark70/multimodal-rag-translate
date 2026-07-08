@@ -5,10 +5,18 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 ThinkingControlType = Literal["none", "budget", "level"]
 ThinkingLevel = Literal["minimal", "low", "medium", "high"]
+
+
+def normalize_test_case_difficulty(value: Any) -> Any:
+    """Normalize dataset difficulty labels while preserving missing values."""
+    if value is None or not isinstance(value, str):
+        return value
+    normalized = value.strip().lower().replace("_", "-").replace(" ", "-")
+    return normalized or None
 
 
 class TestCase(BaseModel):
@@ -25,6 +33,15 @@ class TestCase(BaseModel):
     test_objective: Optional[str] = None
     key_points: list[str] = Field(default_factory=list)
     ragas_focus: list[str] = Field(default_factory=list)
+    question_version: Optional[str] = None
+    required_modalities: list[str] = Field(default_factory=list)
+    atomic_facts: list[dict[str, Any]] = Field(default_factory=list)
+    expected_evidence: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("difficulty", mode="before")
+    @classmethod
+    def _normalize_difficulty(cls, value: Any) -> Any:
+        return normalize_test_case_difficulty(value)
 
 
 class GoldenDataset(BaseModel):

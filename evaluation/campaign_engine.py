@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import time
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Optional
+from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable, Optional
+from uuid import uuid4
 
 from core.errors import AppError, ErrorCode
 from evaluation.campaign_schemas import (
@@ -18,12 +22,14 @@ from evaluation.campaign_schemas import (
     CampaignStatus,
 )
 from evaluation.db import AgentTraceRepository, CampaignRepository, CampaignResultRepository
+from evaluation.observability import EvaluationRunRecorder
+from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
 from evaluation.ragas_evaluator import RagasEvaluator
 from evaluation.retry import RateBudget
 from evaluation.schemas import TestCase
 from evaluation.storage import list_test_cases
-from evaluation.trace_schemas import AgentTraceDetail, AgentTraceSummary
+from evaluation.trace_schemas import AgentTraceDetail, AgentTraceSummary, EvaluationTraceEvent
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +50,246 @@ class CampaignUnit:
     run_number: int
 
 
+@dataclass(frozen=True)
+class ExecutedCampaignUnit:
+    """One executed unit plus immutable snapshot metadata."""
+
+    unit: CampaignUnit
+    payload: BenchmarkExecutionResult | Exception
+    run_id: str
+    request_id: str
+    started_at: datetime
+    completed_at: datetime
+    total_latency_ms: float
+    model_config: dict[str, Any]
+
+
 def _unit_key(unit: CampaignUnit) -> tuple[str, str, int]:
     return (unit.test_case.id, unit.mode, unit.run_number)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _duration_ms(started_at: datetime, completed_at: datetime) -> float:
+    return max((completed_at - started_at).total_seconds() * 1000, 0)
+
+
+def _extract_total_tokens(token_usage: dict[str, Any]) -> int:
+    raw_total = token_usage.get("total_tokens")
+    if isinstance(raw_total, dict):
+        total = 0
+        for value in raw_total.values():
+            try:
+                total += int(value or 0)
+            except (TypeError, ValueError):
+                continue
+        return total
+    try:
+        if raw_total is not None:
+            return int(raw_total)
+    except (TypeError, ValueError):
+        pass
+
+    total = 0
+    for key in ("prompt_tokens", "input_tokens", "completion_tokens", "output_tokens"):
+        try:
+            total += int(token_usage.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _build_question_snapshot(test_case: TestCase) -> dict[str, Any]:
+    return {
+        "id": test_case.id,
+        "question": test_case.question,
+        "ground_truth": test_case.ground_truth,
+        "ground_truth_short": test_case.ground_truth_short,
+        "key_points": list(test_case.key_points),
+        "ragas_focus": list(test_case.ragas_focus),
+        "category": test_case.category,
+        "difficulty": test_case.difficulty,
+        "question_version": test_case.question_version,
+        "required_modalities": list(test_case.required_modalities),
+        "atomic_facts": list(test_case.atomic_facts),
+        "expected_evidence": list(test_case.expected_evidence),
+        "source_docs": list(test_case.source_docs),
+    }
+
+
+def _build_system_version_snapshot(
+    *,
+    unit: CampaignUnit,
+    payload: BenchmarkExecutionResult | Exception,
+) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {
+        "mode": unit.mode,
+        "run_number": unit.run_number,
+    }
+    if isinstance(payload, BenchmarkExecutionResult):
+        if payload.execution_profile:
+            snapshot["execution_profile"] = payload.execution_profile
+        if payload.context_policy_version:
+            snapshot["context_policy_version"] = payload.context_policy_version
+    return snapshot
+
+
+def _build_derived_metrics(
+    *,
+    payload: BenchmarkExecutionResult | Exception,
+) -> dict[str, Any]:
+    if isinstance(payload, Exception):
+        return {}
+    return {
+        "context_count": len(payload.contexts),
+        "source_doc_count": len(payload.source_doc_ids),
+        "expected_source_count": len(payload.expected_sources),
+    }
+
+
+def _final_answer_hash(answer: str | None) -> str | None:
+    if not answer:
+        return None
+    return hashlib.sha256(answer.encode("utf-8")).hexdigest()
+
+
+async def _record_unit_root_span(
+    *,
+    run_id: str,
+    campaign_id: str,
+    request_id: str,
+    unit: CampaignUnit,
+    started_at: datetime,
+    completed_at: datetime,
+    duration_ms: float,
+    failed: bool,
+) -> str | None:
+    repository = EvaluationObservabilityRepository()
+    span_id = str(uuid4())
+    created_at = _utc_now()
+    payload = {
+        "request_id": request_id,
+        "question_id": unit.test_case.id,
+        "mode": unit.mode,
+        "run_number": unit.run_number,
+    }
+    error = {"type": "CampaignUnitFailed", "message": "Campaign unit failed"} if failed else {}
+    try:
+        await repository.record_trace_events(
+            [
+                EvaluationTraceEvent(
+                    event_id=str(uuid4()),
+                    run_id=run_id,
+                    campaign_id=campaign_id,
+                    span_id=span_id,
+                    parent_event_id=None,
+                    parent_span_id=None,
+                    event_type="campaign_unit_execution",
+                    sequence=1,
+                    stage_type="generation",
+                    stage_name="campaign_unit_execution",
+                    started_at=started_at,
+                    ended_at=None,
+                    duration_ms=None,
+                    status="running",
+                    payload=payload,
+                    error={},
+                    created_at=created_at,
+                ),
+                EvaluationTraceEvent(
+                    event_id=str(uuid4()),
+                    run_id=run_id,
+                    campaign_id=campaign_id,
+                    span_id=span_id,
+                    parent_event_id=None,
+                    parent_span_id=None,
+                    event_type="campaign_unit_execution",
+                    sequence=2,
+                    stage_type="generation",
+                    stage_name="campaign_unit_execution",
+                    started_at=started_at,
+                    ended_at=completed_at,
+                    duration_ms=duration_ms,
+                    status="failed" if failed else "success",
+                    payload=payload,
+                    error=error,
+                    created_at=created_at,
+                ),
+            ]
+        )
+        return span_id
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Failed to record campaign unit observability span",
+            extra={
+                "campaign_id": campaign_id,
+                "run_id": run_id,
+                "request_id": request_id,
+                "question_id": unit.test_case.id,
+                "mode": unit.mode,
+            },
+            exc_info=True,
+        )
+        return None
+
+
+async def _record_unit_llm_usage(
+    *,
+    run_id: str,
+    campaign_id: str,
+    user_id: str,
+    request_id: str,
+    span_id: str | None,
+    execution: ExecutedCampaignUnit,
+) -> None:
+    if not isinstance(execution.payload, BenchmarkExecutionResult):
+        return
+    if not execution.payload.token_usage:
+        return
+
+    model_name = execution.model_config.get("model_name")
+    provider = execution.model_config.get("provider")
+    if provider is None and isinstance(model_name, str) and model_name.startswith("gemini"):
+        provider = "google"
+
+    recorder = EvaluationRunRecorder(
+        run_id=run_id,
+        campaign_id=campaign_id,
+        user_id=user_id,
+        request_id=request_id,
+    )
+    await recorder.record_llm_usage(
+        purpose="campaign_generation",
+        provider=provider,
+        model_name=str(model_name) if model_name else None,
+        usage=execution.payload.token_usage,
+        latency_ms=execution.payload.latency_ms,
+        status="failed" if execution.payload.error_message else "success",
+        error=(
+            {"message": execution.payload.error_message}
+            if execution.payload.error_message
+            else None
+        ),
+        span_id=span_id,
+        payload={
+            "request_id": request_id,
+            "question_id": execution.unit.test_case.id,
+            "mode": execution.unit.mode,
+            "run_number": execution.unit.run_number,
+            "root_span_recorded": span_id is not None,
+        },
+        created_at=execution.completed_at,
+    )
+
+
+async def _cancel_and_drain_tasks(tasks: list[asyncio.Task]) -> None:
+    pending = [task for task in tasks if not task.done()]
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 class CampaignEngine:
@@ -361,7 +605,7 @@ class CampaignEngine:
         initial_completed_units: int = 0,
         total_units_override: int | None = None,
     ) -> None:
-        batch_tasks: list[asyncio.Task[tuple[CampaignUnit, BenchmarkExecutionResult | Exception]]] = []
+        batch_tasks: list[asyncio.Task] = []
         try:
             await self._campaign_repository.mark_running(user_id=user_id, campaign_id=campaign_id)
             pending_units = units
@@ -397,12 +641,12 @@ class CampaignEngine:
                 ]
 
                 for completed_task in asyncio.as_completed(batch_tasks):
-                    unit, payload = await completed_task
+                    execution = await completed_task
+                    unit = execution.unit
                     result = await self._persist_unit_result(
                         user_id=user_id,
                         campaign_id=campaign_id,
-                        unit=unit,
-                        payload=payload,
+                        execution=execution,
                     )
                     completed_units += 1
                     await self._campaign_repository.update_progress(
@@ -429,12 +673,12 @@ class CampaignEngine:
                 ragas_rpm_limit=config.ragas_rpm_limit,
             )
         except asyncio.CancelledError:
-            for task in batch_tasks:
-                task.cancel()
+            await _cancel_and_drain_tasks(batch_tasks)
             if user_id and campaign_id:
                 await self._campaign_repository.mark_cancelled(user_id=user_id, campaign_id=campaign_id)
             raise
         except Exception as exc:  # noqa: BLE001
+            await _cancel_and_drain_tasks(batch_tasks)
             logger.error("Campaign %s failed: %s", campaign_id, exc, exc_info=True)
             await self._campaign_repository.mark_failed(
                 user_id=user_id,
@@ -565,8 +809,12 @@ class CampaignEngine:
         model_config: dict,
         rate_budget: RateBudget,
         run_number: int,
-    ) -> tuple[CampaignUnit, BenchmarkExecutionResult | Exception]:
+    ) -> ExecutedCampaignUnit:
         await rate_budget.acquire()
+        run_id = str(uuid4())
+        request_id = str(uuid4())
+        started_at = _utc_now()
+        runner_started_perf = time.perf_counter()
         try:
             payload = await self._runner(
                 test_case=unit.test_case,
@@ -575,20 +823,44 @@ class CampaignEngine:
                 model_config=model_config,
                 run_number=run_number,
             )
-            return unit, payload
         except Exception as exc:  # noqa: BLE001
-            return unit, exc
+            payload = exc
+        completed_at = _utc_now()
+        total_latency_ms = max((time.perf_counter() - runner_started_perf) * 1000, 0)
+        if total_latency_ms <= 0:
+            total_latency_ms = _duration_ms(started_at, completed_at)
+        return ExecutedCampaignUnit(
+            unit=unit,
+            payload=payload,
+            run_id=run_id,
+            request_id=request_id,
+            started_at=started_at,
+            completed_at=completed_at,
+            total_latency_ms=total_latency_ms,
+            model_config=dict(model_config),
+        )
 
     async def _persist_unit_result(
         self,
         *,
         user_id: str,
         campaign_id: str,
-        unit: CampaignUnit,
-        payload: BenchmarkExecutionResult | Exception,
+        execution: ExecutedCampaignUnit,
     ):
+        unit = execution.unit
+        payload = execution.payload
+        question_snapshot = _build_question_snapshot(unit.test_case)
+        total_tokens = (
+            _extract_total_tokens(payload.token_usage)
+            if isinstance(payload, BenchmarkExecutionResult)
+            else None
+        )
+        system_version_snapshot = _build_system_version_snapshot(unit=unit, payload=payload)
+        derived_metrics = _build_derived_metrics(payload=payload)
+
         if isinstance(payload, Exception):
             created = await self._result_repository.create(
+                result_id=execution.run_id,
                 user_id=user_id,
                 campaign_id=campaign_id,
                 question_id=unit.test_case.id,
@@ -613,6 +885,34 @@ class CampaignEngine:
                 difficulty=unit.test_case.difficulty,
                 status=CampaignResultStatus.FAILED,
                 error_message=str(payload),
+                question_version=unit.test_case.question_version,
+                request_id=execution.request_id,
+                started_at=execution.started_at.isoformat(),
+                completed_at=execution.completed_at.isoformat(),
+                total_latency_ms=execution.total_latency_ms,
+                total_tokens=total_tokens,
+                question_snapshot=question_snapshot,
+                model_config_snapshot=execution.model_config,
+                system_version_snapshot=system_version_snapshot,
+                derived_metrics=derived_metrics,
+            )
+            span_id = await _record_unit_root_span(
+                run_id=created.id,
+                campaign_id=campaign_id,
+                request_id=execution.request_id,
+                unit=unit,
+                started_at=execution.started_at,
+                completed_at=execution.completed_at,
+                duration_ms=execution.total_latency_ms,
+                failed=True,
+            )
+            await _record_unit_llm_usage(
+                run_id=created.id,
+                campaign_id=campaign_id,
+                user_id=user_id,
+                request_id=execution.request_id,
+                span_id=span_id,
+                execution=execution,
             )
             trace_payload = getattr(payload, "agent_trace", None)
             if trace_payload:
@@ -625,6 +925,7 @@ class CampaignEngine:
             return created
 
         created = await self._result_repository.create(
+            result_id=execution.run_id,
             user_id=user_id,
             campaign_id=campaign_id,
             question_id=payload.question_id,
@@ -647,6 +948,35 @@ class CampaignEngine:
             difficulty=payload.difficulty,
             status=CampaignResultStatus.COMPLETED if not payload.error_message else CampaignResultStatus.FAILED,
             error_message=payload.error_message,
+            question_version=unit.test_case.question_version,
+            request_id=execution.request_id,
+            started_at=execution.started_at.isoformat(),
+            completed_at=execution.completed_at.isoformat(),
+            total_latency_ms=execution.total_latency_ms,
+            total_tokens=total_tokens,
+            question_snapshot=question_snapshot,
+            model_config_snapshot=execution.model_config,
+            system_version_snapshot=system_version_snapshot,
+            derived_metrics=derived_metrics,
+            final_answer_hash=_final_answer_hash(payload.answer),
+        )
+        span_id = await _record_unit_root_span(
+            run_id=created.id,
+            campaign_id=campaign_id,
+            request_id=execution.request_id,
+            unit=unit,
+            started_at=execution.started_at,
+            completed_at=execution.completed_at,
+            duration_ms=execution.total_latency_ms,
+            failed=payload.error_message is not None,
+        )
+        await _record_unit_llm_usage(
+            run_id=created.id,
+            campaign_id=campaign_id,
+            user_id=user_id,
+            request_id=execution.request_id,
+            span_id=span_id,
+            execution=execution,
         )
         if payload.agent_trace:
             await self._trace_repository.replace_for_result(

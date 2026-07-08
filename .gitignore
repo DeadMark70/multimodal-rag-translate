@@ -85,6 +85,9 @@ outdate/
 data/evaluation.db
 data/evaluation.db-shm
 data/evaluation.db-wal
+data/evaluation_snapshot_*.db
+data/evaluation_snapshot_*.db-shm
+data/evaluation_snapshot_*.db-wal
 
 #experiments
 experiments/

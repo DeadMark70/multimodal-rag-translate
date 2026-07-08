@@ -31,6 +31,33 @@ def test_campaign_result_allows_nested_token_usage_payloads() -> None:
     assert result.token_usage["input_token_details"] == {"cache_read": 0}
 
 
+def test_campaign_result_snapshot_fields_default_to_none_or_empty() -> None:
+    result = CampaignResult(
+        id="result-1",
+        campaign_id="cmp-1",
+        question_id="Q1",
+        question="question",
+        ground_truth="ground truth",
+        mode="naive",
+        run_number=1,
+        answer="answer",
+        status=CampaignResultStatus.COMPLETED,
+        created_at=datetime.now(UTC),
+    )
+
+    assert result.question_version is None
+    assert result.request_id is None
+    assert result.started_at is None
+    assert result.completed_at is None
+    assert result.total_latency_ms is None
+    assert result.total_tokens is None
+    assert result.question_snapshot == {}
+    assert result.model_config_snapshot == {}
+    assert result.system_version_snapshot == {}
+    assert result.derived_metrics == {}
+    assert result.final_answer_hash is None
+
+
 def test_campaign_config_ragas_fields_default_and_bounds() -> None:
     from evaluation.campaign_schemas import CampaignConfig
     from evaluation.schemas import ModelConfig

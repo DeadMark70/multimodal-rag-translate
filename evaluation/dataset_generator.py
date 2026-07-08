@@ -8,6 +8,23 @@ from pathlib import Path
 from typing import Any
 
 MASTER_DATASET_VERSION = "2.0.0"
+RESEARCH_METADATA_FIELDS = (
+    "question_version",
+    "required_modalities",
+    "atomic_facts",
+    "expected_evidence",
+)
+
+
+def _normalize_difficulty(value: Any) -> Any:
+    if value is None or not isinstance(value, str):
+        return value
+    normalized = value.strip().lower().replace("_", "-").replace(" ", "-")
+    return normalized or None
+
+
+def _copy_json_value(value: Any) -> Any:
+    return json.loads(json.dumps(value, ensure_ascii=False))
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -77,6 +94,11 @@ def upgrade_master_dataset(
         question["ground_truth_short"] = _clean_optional_text(short_entry.get("ground_truth_short"))
         question["key_points"] = _clean_list(short_entry.get("key_points"))
         question["ragas_focus"] = _clean_list(short_entry.get("ragas_focus"))
+        if "difficulty" in question:
+            question["difficulty"] = _normalize_difficulty(question.get("difficulty"))
+        for field_name in RESEARCH_METADATA_FIELDS:
+            if field_name in short_entry:
+                question[field_name] = _copy_json_value(short_entry[field_name])
 
     metadata["total_questions"] = len(questions)
     return upgraded
@@ -109,7 +131,13 @@ def build_ragas_ready_dataset(master_payload: dict[str, Any], *, derived_from: s
                 "ground_truth": question.get("ground_truth_short") or question.get("ground_truth") or "",
                 "key_points": _clean_list(question.get("key_points")),
                 "category": question.get("category"),
+                "difficulty": _normalize_difficulty(question.get("difficulty")),
                 "ragas_focus": _clean_list(question.get("ragas_focus")),
+                **{
+                    field_name: _copy_json_value(question[field_name])
+                    for field_name in RESEARCH_METADATA_FIELDS
+                    if field_name in question
+                },
             }
         )
 
