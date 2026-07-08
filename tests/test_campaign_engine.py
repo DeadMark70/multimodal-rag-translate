@@ -416,6 +416,29 @@ def test_campaign_run_persists_snapshot_and_minimal_root_span() -> None:
         assert llm_calls[0]["span_id"] == trace_events[0]["span_id"]
 
 
+def test_campaign_rejects_router_mode_without_feature_flag() -> None:
+    fake_ragas = FakeRagasEvaluator()
+    engine = CampaignEngine(ragas_evaluator=fake_ragas)
+    upload_root = _make_upload_root()
+    db_path = _make_db_path()
+
+    with _build_client("user-a", upload_root, db_path, engine) as client:
+        _create_test_case(client, "Q-ROUTER")
+        response = client.post(
+            "/api/evaluation/campaigns",
+            json=_campaign_payload(
+                name="Router guard",
+                test_case_ids=["Q-ROUTER"],
+                modes=["router"],
+            ),
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["message"] == (
+        "router mode is not implemented yet; use retrospective router analysis."
+    )
+
+
 def test_campaign_cancel_marks_campaign_cancelled() -> None:
     async def slow_runner(**kwargs) -> BenchmarkExecutionResult:
         await asyncio.sleep(0.5)
@@ -720,6 +743,264 @@ async def test_completed_run_persists_snapshots_and_root_observability_span() ->
         assert llm_calls[0].completion_tokens == 22
         assert llm_calls[0].total_tokens == 77
         assert llm_calls[0].span_id == trace_events[0].span_id
+
+
+@pytest.mark.asyncio
+async def test_agentic_trace_persists_routing_and_tool_observability() -> None:
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="agentic answer",
+            contexts=["ctx"],
+            source_doc_ids=["doc-a"],
+            expected_sources=["doc-a"],
+            latency_ms=9,
+            token_usage={"total_tokens": 12},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+            execution_profile="agentic-eval",
+            agent_trace={
+                "classifier_decision": {
+                    "router_version": "semantic-v1",
+                    "router_type": "semantic_gate",
+                    "selected_strategy_tier": "tier_3",
+                    "complexity_score": 4,
+                    "modality_score": 2,
+                    "multi_doc_score": 3,
+                    "conflict_score": 1,
+                    "exact_value_score": 0,
+                    "hallucination_risk_score": 2,
+                    "retrieval_uncertainty_score": 1,
+                    "routing_reason": "needs visual verification",
+                    "routing_features": {"has_figure": True},
+                },
+                "strategy_tier": "tier_3",
+                "route_profile": "visual_verify",
+                "steps": [
+                    {
+                        "step_id": "s1",
+                        "phase": "execution",
+                        "step_type": "visual",
+                        "title": "Verify figure",
+                        "status": "completed",
+                        "tool_calls": [
+                            {
+                                "tool_name": "visual_verifier",
+                                "tool_type": "visual",
+                                "action": "VERIFY_IMAGE",
+                                "status": "completed",
+                                "subtask_id": "1",
+                                "input_summary": {"image": "figure-1"},
+                                "output_summary": {"finding": "supported"},
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+    db_path = _make_db_path()
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        observability_repo = EvaluationObservabilityRepository()
+        campaign = await campaign_repo.create(
+            user_id="user-a",
+            name="Routing observability",
+            config=_campaign_config_for_test_case_ids(["Q-ROUTE"], modes=["agentic"]),
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+        await engine._run_campaign(
+            user_id="user-a",
+            campaign_id=campaign.id,
+            config=campaign.config,
+            test_cases=[
+                TestCase(
+                    id="Q-ROUTE",
+                    question="What does the figure show?",
+                    ground_truth="Evidence",
+                    category="visual",
+                    difficulty="hard",
+                )
+            ],
+        )
+
+        result = (await result_repo.list_for_campaign(user_id="user-a", campaign_id=campaign.id))[0]
+        trace_events = await observability_repo.list_trace_events_for_run(result.id)
+        routing_events = [event for event in trace_events if event.stage_type == "routing"]
+        assert [event.status for event in routing_events] == ["running", "success"]
+
+        decisions = await observability_repo.list_routing_decisions_for_run(result.id)
+        assert len(decisions) == 1
+        assert decisions[0].selected_mode == "agentic"
+        assert decisions[0].payload["router_version"] == "semantic-v1"
+        assert decisions[0].payload["selected_strategy_tier"] == "tier_3"
+        assert decisions[0].payload["routing_features"] == {"has_figure": True}
+        assert decisions[0].payload["actual_router_execution_enabled"] is False
+
+        tool_calls = await observability_repo.list_tool_calls_for_run(result.id)
+        assert len(tool_calls) == 1
+        assert tool_calls[0].tool_name == "visual_verifier"
+        assert tool_calls[0].action == "VERIFY_IMAGE"
+        assert tool_calls[0].payload["tool_type"] == "visual"
+        assert tool_calls[0].payload["subtask_id"] == "1"
+        assert tool_calls[0].payload["input_summary"] == {"image": "figure-1"}
+
+
+@pytest.mark.asyncio
+async def test_campaign_result_records_retrieval_context_and_evidence_flow() -> None:
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="Fact A is supported by paper A.",
+            contexts=["Fact A appears in paper A.", "Distractor text"],
+            source_doc_ids=["paper-a.pdf", "paper-b.pdf"],
+            expected_sources=["paper-a.pdf"],
+            latency_ms=11,
+            token_usage={"total_tokens": 20},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+        )
+
+    db_path = _make_db_path()
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        observability_repo = EvaluationObservabilityRepository()
+        campaign = await campaign_repo.create(
+            user_id="user-a",
+            name="Retrieval observability",
+            config=_campaign_config_for_test_case_ids(["Q-EVIDENCE"], modes=["naive"]),
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+        await engine._run_campaign(
+            user_id="user-a",
+            campaign_id=campaign.id,
+            config=campaign.config,
+            test_cases=[
+                TestCase(
+                    id="Q-EVIDENCE",
+                    question="Where is Fact A?",
+                    ground_truth="paper A",
+                    category="evidence",
+                    difficulty="medium",
+                    atomic_facts=[{"atomic_fact_id": "F1", "text": "Fact A"}],
+                    expected_evidence=[
+                        {"evidence_id": "E1", "doc_id": "paper-a.pdf", "atomic_fact_id": "F1"}
+                    ],
+                    source_docs=["paper-a.pdf"],
+                )
+            ],
+        )
+
+        result = (await result_repo.list_for_campaign(user_id="user-a", campaign_id=campaign.id))[0]
+        retrieval_events = await observability_repo.list_retrieval_events_for_run(result.id)
+        assert len(retrieval_events) == 1
+        assert retrieval_events[0].query == "Where is Fact A?"
+        assert retrieval_events[0].result_count == 2
+        assert retrieval_events[0].payload["instrumentation_depth"] == "result_level"
+        assert retrieval_events[0].payload["expected_evidence_hit_rate"] == 1.0
+
+        chunks = await observability_repo.list_retrieval_chunks_for_run(result.id)
+        assert len(chunks) == 2
+        assert chunks[0].doc_id == "paper-a.pdf"
+        assert chunks[0].rank_before_rerank == 1
+        assert chunks[0].rank_after_rerank == 1
+        assert chunks[0].used_in_context is True
+        assert chunks[0].used_in_answer is True
+        assert chunks[0].expected_evidence_match is True
+        assert chunks[1].expected_evidence_match is False
+
+        context_packs = await observability_repo.list_context_packs_for_run(result.id)
+        assert len(context_packs) == 1
+        assert context_packs[0].input_chunk_count == 2
+        assert context_packs[0].packed_chunk_count == 2
+        assert context_packs[0].payload["selected_chunk_ids"] == [chunk.chunk_id for chunk in chunks]
+        assert context_packs[0].payload["packing_policy"] == "result_level_contexts"
+        assert context_packs[0].retrieved_but_not_packed_evidence == []
+        assert result.derived_metrics["gold_fact_attrition"][0]["retrieved"] is True
+        assert result.derived_metrics["gold_fact_attrition"][0]["packed"] is True
+
+
+@pytest.mark.asyncio
+async def test_campaign_result_persists_claim_rows_and_derived_claim_metrics() -> None:
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="One supported claim. One weak claim.",
+            contexts=["evidence"],
+            source_doc_ids=["doc-a"],
+            expected_sources=["doc-a"],
+            latency_ms=7,
+            token_usage={"total_tokens": 9},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+            agent_trace={
+                "claims": [
+                    {
+                        "claim_text": "Supported claim",
+                        "claim_type": "answer",
+                        "support_status": "supported",
+                        "support_score": 0.9,
+                        "evidence": [{"chunk_id": "doc-a:1"}],
+                    },
+                    {
+                        "claim_text": "Weak claim",
+                        "claim_type": "answer",
+                        "support_status": "unsupported",
+                        "unsupported_reason": "No evidence found",
+                    },
+                ]
+            },
+        )
+
+    db_path = _make_db_path()
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        observability_repo = EvaluationObservabilityRepository()
+        campaign = await campaign_repo.create(
+            user_id="user-a",
+            name="Claim observability",
+            config=_campaign_config_for_test_case_ids(["Q-CLAIMS"], modes=["agentic"]),
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+        await engine._run_campaign(
+            user_id="user-a",
+            campaign_id=campaign.id,
+            config=campaign.config,
+            test_cases=[
+                TestCase(
+                    id="Q-CLAIMS",
+                    question="Which claims are supported?",
+                    ground_truth="One supported claim",
+                    category="claims",
+                    difficulty="medium",
+                )
+            ],
+        )
+
+        result = (await result_repo.list_for_campaign(user_id="user-a", campaign_id=campaign.id))[0]
+        claims = await observability_repo.list_claims_for_run(result.id)
+        assert [claim.support_status for claim in claims] == ["supported", "unsupported"]
+        assert claims[0].evidence == [{"chunk_id": "doc-a:1"}]
+        assert claims[0].payload["support_score"] == 0.9
+        assert claims[1].unsupported_reason == "No evidence found"
+        assert result.derived_metrics["supported_claim_ratio"] == pytest.approx(0.5)
+        assert result.derived_metrics["unsupported_claim_ratio"] == pytest.approx(0.5)
+        assert result.derived_metrics["repair_count"] == 0
 
 
 @pytest.mark.asyncio

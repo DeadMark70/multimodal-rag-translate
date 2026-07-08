@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from evaluation.schemas import ModelConfig
 
-CampaignMode = Literal["naive", "advanced", "graph", "agentic"]
+CampaignMode = Literal["naive", "advanced", "graph", "agentic", "router"]
 CampaignEvaluationPhase = Literal["execution", "evaluation"]
 
 
@@ -47,6 +47,7 @@ class CampaignConfig(BaseModel):
     ragas_batch_size: int = Field(default=8, ge=1, le=8)
     ragas_parallel_batches: int = Field(default=8, ge=1, le=8)
     ragas_rpm_limit: int = Field(default=1000, ge=1, le=1000)
+    actual_router_execution_enabled: bool = False
 
     @model_validator(mode="after")
     def dedupe_modes(self) -> "CampaignConfig":
@@ -74,6 +75,7 @@ class CampaignCreateRequest(BaseModel):
     ragas_batch_size: int = Field(default=8, ge=1, le=8)
     ragas_parallel_batches: int = Field(default=8, ge=1, le=8)
     ragas_rpm_limit: int = Field(default=1000, ge=1, le=1000)
+    actual_router_execution_enabled: bool = False
 
     def to_config(self) -> CampaignConfig:
         return CampaignConfig(
@@ -87,6 +89,7 @@ class CampaignCreateRequest(BaseModel):
             ragas_batch_size=self.ragas_batch_size,
             ragas_parallel_batches=self.ragas_parallel_batches,
             ragas_rpm_limit=self.ragas_rpm_limit,
+            actual_router_execution_enabled=self.actual_router_execution_enabled,
         )
 
 

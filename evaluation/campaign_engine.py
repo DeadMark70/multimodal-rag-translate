@@ -22,6 +22,13 @@ from evaluation.campaign_schemas import (
     CampaignStatus,
 )
 from evaluation.db import AgentTraceRepository, CampaignRepository, CampaignResultRepository
+from evaluation.evidence import (
+    build_gold_fact_attrition,
+    content_hash,
+    estimate_tokens,
+    expected_evidence_matches_doc,
+    text_mentions_fact,
+)
 from evaluation.observability import EvaluationRunRecorder
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
@@ -29,7 +36,17 @@ from evaluation.ragas_evaluator import RagasEvaluator
 from evaluation.retry import RateBudget
 from evaluation.schemas import TestCase
 from evaluation.storage import list_test_cases
-from evaluation.trace_schemas import AgentTraceDetail, AgentTraceSummary, EvaluationTraceEvent
+from evaluation.trace_schemas import (
+    AgentTraceDetail,
+    AgentTraceSummary,
+    EvaluationClaim,
+    EvaluationContextPack,
+    EvaluationRetrievalChunk,
+    EvaluationRetrievalEvent,
+    EvaluationRoutingDecision,
+    EvaluationToolCall,
+    EvaluationTraceEvent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -138,21 +155,98 @@ def _build_system_version_snapshot(
 
 def _build_derived_metrics(
     *,
+    unit: CampaignUnit,
     payload: BenchmarkExecutionResult | Exception,
 ) -> dict[str, Any]:
     if isinstance(payload, Exception):
         return {}
-    return {
+    metrics: dict[str, Any] = {
         "context_count": len(payload.contexts),
         "source_doc_count": len(payload.source_doc_ids),
         "expected_source_count": len(payload.expected_sources),
     }
+    trace_payload = payload.agent_trace or {}
+    claims = trace_payload.get("claims") if isinstance(trace_payload, dict) else None
+    if isinstance(claims, list):
+        supported = sum(1 for claim in claims if _claim_support_status(claim) == "supported")
+        unsupported = sum(1 for claim in claims if _claim_support_status(claim) in {"unsupported", "contradicted"})
+        total = len(claims)
+        metrics.update(
+            {
+                "supported_claim_ratio": supported / total if total else 0,
+                "unsupported_claim_ratio": unsupported / total if total else 0,
+                "citation_precision": supported / total if total else 0,
+                "evidence_coverage": supported / total if total else 0,
+                "repair_count": sum(1 for claim in claims if isinstance(claim, dict) and claim.get("repair_action")),
+            }
+        )
+    if unit.test_case.atomic_facts:
+        metrics["gold_fact_attrition"] = build_gold_fact_attrition(
+            atomic_facts=list(unit.test_case.atomic_facts),
+            expected_evidence=list(unit.test_case.expected_evidence),
+            source_doc_ids=list(payload.source_doc_ids),
+            contexts=list(payload.contexts),
+            answer=payload.answer,
+        )
+    return metrics
 
 
 def _final_answer_hash(answer: str | None) -> str | None:
     if not answer:
         return None
     return hashlib.sha256(answer.encode("utf-8")).hexdigest()
+
+
+def _trace_payload(payload: BenchmarkExecutionResult | Exception) -> dict[str, Any]:
+    if not isinstance(payload, BenchmarkExecutionResult):
+        return {}
+    return payload.agent_trace if isinstance(payload.agent_trace, dict) else {}
+
+
+def _trace_event_status(value: Any) -> str:
+    raw = str(value or "success").lower()
+    if raw in {"completed", "ok", "success"}:
+        return "success"
+    if raw in {"failed", "error"}:
+        return "failed"
+    if raw in {"running", "skipped", "timeout", "partial"}:
+        return raw
+    return "success"
+
+
+def _claim_support_status(claim: Any) -> str:
+    if not isinstance(claim, dict):
+        return "unsupported"
+    raw = str(
+        claim.get("support_status")
+        or claim.get("status")
+        or ("supported" if claim.get("supported") else "unsupported")
+    ).lower()
+    if raw in {"supported", "partially_supported", "unsupported", "contradicted"}:
+        return raw
+    return "unsupported"
+
+
+def _claim_text(claim: dict[str, Any]) -> str:
+    return str(claim.get("claim_text") or claim.get("claim") or claim.get("text") or "").strip()
+
+
+def _enrich_agent_trace_payload(
+    *,
+    trace_payload: dict[str, Any],
+    created_id: str,
+    unit: CampaignUnit,
+    payload: BenchmarkExecutionResult,
+) -> dict[str, Any]:
+    enriched = dict(trace_payload)
+    enriched.setdefault("campaign_result_id", created_id)
+    enriched.setdefault("question_id", payload.question_id or unit.test_case.id)
+    enriched.setdefault("question", payload.question or unit.test_case.question)
+    enriched.setdefault("mode", payload.mode or unit.mode)
+    enriched.setdefault("run_number", unit.run_number)
+    enriched.setdefault("trace_status", "failed" if payload.error_message else "completed")
+    enriched.setdefault("created_at", _utc_now().isoformat())
+    return enriched
 
 
 async def _record_unit_root_span(
@@ -284,6 +378,235 @@ async def _record_unit_llm_usage(
     )
 
 
+async def _record_unit_research_observability(
+    *,
+    run_id: str,
+    campaign_id: str,
+    user_id: str,
+    request_id: str,
+    root_span_id: str | None,
+    execution: ExecutedCampaignUnit,
+) -> None:
+    if not isinstance(execution.payload, BenchmarkExecutionResult):
+        return
+
+    recorder = EvaluationRunRecorder(
+        run_id=run_id,
+        campaign_id=campaign_id,
+        user_id=user_id,
+        request_id=request_id,
+    )
+    created_at = execution.completed_at
+    trace_payload = _trace_payload(execution.payload)
+    classifier_decision = trace_payload.get("classifier_decision")
+    if isinstance(classifier_decision, dict) or execution.unit.mode == "agentic":
+        decision_payload = dict(classifier_decision or {})
+        decision_payload.setdefault("router_version", "retrospective-v1")
+        decision_payload.setdefault("router_type", "retrospective")
+        decision_payload.setdefault("selected_mode", execution.unit.mode)
+        decision_payload.setdefault("selected_strategy_tier", trace_payload.get("strategy_tier"))
+        decision_payload.setdefault("routing_reason", decision_payload.get("reason"))
+        decision_payload.setdefault("routing_features", decision_payload.get("features", {}))
+        decision_payload.setdefault("fallback_used", False)
+        decision_payload.setdefault("manual_override", False)
+        decision_payload.setdefault("actual_router_execution_enabled", False)
+        async with recorder.start_span(
+            stage_type="routing",
+            stage_name="retrospective_routing_analysis",
+            event_type="routing_decision",
+            payload={
+                "request_id": request_id,
+                "question_id": execution.unit.test_case.id,
+                "selected_mode": execution.unit.mode,
+                "router_version": decision_payload.get("router_version"),
+            },
+        ) as routing_span:
+            await recorder.record_routing_decision(
+                EvaluationRoutingDecision(
+                    routing_decision_id=str(uuid4()),
+                    run_id=run_id,
+                    campaign_id=campaign_id,
+                    span_id=routing_span.span_id,
+                    selected_mode=execution.unit.mode,
+                    analysis_type="retrospective",
+                    confidence=decision_payload.get("confidence") or trace_payload.get("semantic_gate_score"),
+                    reason=decision_payload.get("routing_reason") or decision_payload.get("reason"),
+                    payload=decision_payload,
+                    created_at=created_at,
+                )
+            )
+
+    steps = trace_payload.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            for index, tool_call in enumerate(step.get("tool_calls") or [], start=1):
+                if not isinstance(tool_call, dict):
+                    continue
+                action = tool_call.get("action")
+                tool_name = str(tool_call.get("tool_name") or tool_call.get("name") or action or step.get("step_type") or "tool")
+                payload = {
+                    "step_id": step.get("step_id"),
+                    "step_type": step.get("step_type"),
+                    "subtask_id": tool_call.get("subtask_id") or step.get("subtask_id"),
+                    "tool_type": tool_call.get("tool_type") or step.get("step_type") or "tool",
+                    "started_at": tool_call.get("started_at") or step.get("started_at"),
+                    "ended_at": tool_call.get("ended_at") or step.get("completed_at"),
+                    "duration_ms": tool_call.get("duration_ms") or tool_call.get("latency_ms"),
+                    "input_summary": tool_call.get("input_summary") or tool_call.get("input_summary_json") or {},
+                    "output_summary": tool_call.get("output_summary") or tool_call.get("output_summary_json") or {},
+                    "error": tool_call.get("error") or tool_call.get("error_json") or {},
+                    "index": index,
+                }
+                await recorder.record_tool_call(
+                    EvaluationToolCall(
+                        tool_call_id=str(tool_call.get("tool_call_id") or uuid4()),
+                        run_id=run_id,
+                        campaign_id=campaign_id,
+                        span_id=root_span_id,
+                        tool_name=tool_name,
+                        action=str(action) if action else None,
+                        latency_ms=tool_call.get("latency_ms") or tool_call.get("duration_ms"),
+                        status=_trace_event_status(tool_call.get("status")),
+                        payload=payload,
+                        created_at=created_at,
+                    )
+                )
+
+    retrieval_event_id = str(uuid4())
+    expected_evidence = list(execution.unit.test_case.expected_evidence)
+    expected_sources = list(execution.payload.expected_sources or execution.unit.test_case.source_docs)
+    matched_expected = [
+        item
+        for item in expected_evidence
+        if expected_evidence_matches_doc(
+            doc_id=str(item.get("doc_id") or item.get("source_doc") or ""),
+            expected_evidence=expected_evidence,
+            expected_sources=list(execution.payload.source_doc_ids),
+        )
+    ]
+    chunks: list[EvaluationRetrievalChunk] = []
+    for index, context in enumerate(execution.payload.contexts, start=1):
+        doc_id = execution.payload.source_doc_ids[index - 1] if index - 1 < len(execution.payload.source_doc_ids) else None
+        chunk_id = f"{run_id}:chunk:{index}"
+        expected_match = expected_evidence_matches_doc(
+            doc_id=doc_id,
+            expected_evidence=expected_evidence,
+            expected_sources=expected_sources,
+        )
+        chunks.append(
+            EvaluationRetrievalChunk(
+                retrieval_chunk_id=str(uuid4()),
+                run_id=run_id,
+                campaign_id=campaign_id,
+                span_id=root_span_id,
+                retrieval_event_id=retrieval_event_id,
+                chunk_id=chunk_id,
+                doc_id=doc_id,
+                rank_before_rerank=index,
+                rank_after_rerank=index,
+                used_in_context=True,
+                used_in_answer=expected_match or text_mentions_fact(execution.payload.answer, context),
+                expected_evidence_match=expected_match,
+                excerpt=context[:500],
+                content_hash=content_hash(context),
+                payload={"instrumentation_depth": "result_level"},
+                created_at=created_at,
+            )
+        )
+    hit_rate = (len(matched_expected) / len(expected_evidence)) if expected_evidence else 0
+    await recorder.record_retrieval_event(
+        EvaluationRetrievalEvent(
+            retrieval_event_id=retrieval_event_id,
+            run_id=run_id,
+            campaign_id=campaign_id,
+            span_id=root_span_id,
+            query=execution.unit.test_case.question,
+            retriever_name=f"{execution.unit.mode}_result_level",
+            top_k=len(execution.payload.contexts),
+            result_count=len(execution.payload.contexts),
+            latency_ms=execution.payload.latency_ms,
+            payload={
+                "query_type": "campaign_question",
+                "retriever_type": execution.unit.mode,
+                "top_k_requested": len(execution.payload.contexts),
+                "top_k_returned": len(execution.payload.contexts),
+                "filters": {},
+                "candidate_count": len(execution.payload.contexts),
+                "empty_retrieval": len(execution.payload.contexts) == 0,
+                "retrieval_confidence": None,
+                "required_doc_hit_rate": hit_rate,
+                "expected_evidence_hit_rate": hit_rate,
+                "instrumentation_depth": "result_level",
+            },
+            created_at=created_at,
+        )
+    )
+    for chunk in chunks:
+        await recorder.record_retrieval_chunk(chunk)
+
+    selected_chunk_ids = [chunk.chunk_id for chunk in chunks]
+    retrieved_but_not_packed = [
+        {"doc_id": item.get("doc_id"), "evidence_id": item.get("evidence_id")}
+        for item in expected_evidence
+        if str(item.get("doc_id") or "") not in {chunk.doc_id for chunk in chunks if chunk.expected_evidence_match}
+    ]
+    await recorder.record_context_pack(
+        EvaluationContextPack(
+            context_pack_id=str(uuid4()),
+            run_id=run_id,
+            campaign_id=campaign_id,
+            span_id=root_span_id,
+            input_chunk_count=len(chunks),
+            packed_chunk_count=len(selected_chunk_ids),
+            token_count=sum(estimate_tokens(context) for context in execution.payload.contexts),
+            retrieved_but_not_packed_evidence=retrieved_but_not_packed,
+            payload={
+                "selected_chunk_ids": selected_chunk_ids,
+                "dropped_chunk_ids": [],
+                "token_budget": execution.model_config.get("max_input_tokens"),
+                "estimated_tokens": sum(estimate_tokens(context) for context in execution.payload.contexts),
+                "packing_policy": "result_level_contexts",
+                "drop_reasons": {},
+                "instrumentation_depth": "result_level",
+            },
+            created_at=created_at,
+        )
+    )
+
+    claims = trace_payload.get("claims")
+    if isinstance(claims, list):
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            claim_text = _claim_text(claim)
+            if not claim_text:
+                continue
+            await recorder.record_claim(
+                EvaluationClaim(
+                    claim_id=str(claim.get("claim_id") or uuid4()),
+                    run_id=run_id,
+                    campaign_id=campaign_id,
+                    span_id=root_span_id,
+                    claim_text=claim_text,
+                    claim_type=claim.get("claim_type") or claim.get("type"),
+                    support_status=_claim_support_status(claim),
+                    evidence=claim.get("evidence") or claim.get("evidence_rows") or [],
+                    unsupported_reason=claim.get("unsupported_reason") or claim.get("reason"),
+                    payload={
+                        "support_score": claim.get("support_score"),
+                        "evidence_chunk_ids": claim.get("evidence_chunk_ids") or [],
+                        "contradicting_chunk_ids": claim.get("contradicting_chunk_ids") or [],
+                        "verifier_model": claim.get("verifier_model"),
+                        "repair_action": claim.get("repair_action"),
+                        "post_repair_status": claim.get("post_repair_status"),
+                    },
+                    created_at=created_at,
+                )
+            )
+
+
 async def _cancel_and_drain_tasks(tasks: list[asyncio.Task]) -> None:
     pending = [task for task in tasks if not task.done()]
     for task in pending:
@@ -333,6 +656,12 @@ class CampaignEngine:
         name: Optional[str],
         config: CampaignConfig,
     ) -> CampaignCreateResponse:
+        if "router" in config.modes and not config.actual_router_execution_enabled:
+            raise AppError(
+                code=ErrorCode.BAD_REQUEST,
+                message="router mode is not implemented yet; use retrospective router analysis.",
+                status_code=400,
+            )
         resolved_cases = await self._resolve_test_cases(user_id=user_id, test_case_ids=config.test_case_ids)
         created = await self._campaign_repository.create(user_id=user_id, name=name, config=config)
         task = asyncio.create_task(
@@ -856,7 +1185,7 @@ class CampaignEngine:
             else None
         )
         system_version_snapshot = _build_system_version_snapshot(unit=unit, payload=payload)
-        derived_metrics = _build_derived_metrics(payload=payload)
+        derived_metrics = _build_derived_metrics(unit=unit, payload=payload)
 
         if isinstance(payload, Exception):
             created = await self._result_repository.create(
@@ -912,6 +1241,14 @@ class CampaignEngine:
                 user_id=user_id,
                 request_id=execution.request_id,
                 span_id=span_id,
+                execution=execution,
+            )
+            await _record_unit_research_observability(
+                run_id=created.id,
+                campaign_id=campaign_id,
+                user_id=user_id,
+                request_id=execution.request_id,
+                root_span_id=span_id,
                 execution=execution,
             )
             trace_payload = getattr(payload, "agent_trace", None)
@@ -978,12 +1315,25 @@ class CampaignEngine:
             span_id=span_id,
             execution=execution,
         )
+        await _record_unit_research_observability(
+            run_id=created.id,
+            campaign_id=campaign_id,
+            user_id=user_id,
+            request_id=execution.request_id,
+            root_span_id=span_id,
+            execution=execution,
+        )
         if payload.agent_trace:
             await self._trace_repository.replace_for_result(
                 user_id=user_id,
                 campaign_id=campaign_id,
                 campaign_result_id=created.id,
-                trace_payload=payload.agent_trace,
+                trace_payload=_enrich_agent_trace_payload(
+                    trace_payload=payload.agent_trace,
+                    created_id=created.id,
+                    unit=unit,
+                    payload=payload,
+                ),
             )
         return created
 
