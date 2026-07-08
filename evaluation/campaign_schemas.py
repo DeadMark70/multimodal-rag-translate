@@ -190,6 +190,177 @@ class CampaignResultsResponse(BaseModel):
     results: list[CampaignResult] = Field(default_factory=list)
 
 
+class CampaignOverviewResponse(BaseModel):
+    """Research analytics overview for one campaign."""
+
+    campaign_id: str
+    analysis_unit: Literal["execution", "question", "category"] = "execution"
+    sample_count: int = Field(default=0, ge=0)
+    independent_question_count: int = Field(default=0, ge=0)
+    repeat_count: int = Field(default=0, ge=0)
+    sample_note: str = ""
+    mode_counts: dict[str, int] = Field(default_factory=dict)
+    total_tokens: int = Field(default=0, ge=0)
+    total_cost_usd: Optional[float] = Field(default=None, ge=0)
+    total_cost_twd: Optional[float] = Field(default=None, ge=0)
+    cost_status: Literal["complete", "partial", "unknown"] = "unknown"
+    priced_call_count: int = Field(default=0, ge=0)
+    unpriced_call_count: int = Field(default=0, ge=0)
+    avg_latency_ms: Optional[float] = Field(default=None, ge=0)
+
+
+class AnalyticsAggregateResponse(BaseModel):
+    """Base shape for aggregate research analytics responses."""
+
+    campaign_id: str
+    analysis_unit: Literal["execution", "question", "category"]
+    sample_count: int = Field(default=0, ge=0)
+    independent_question_count: int = Field(default=0, ge=0)
+    repeat_count: int = Field(default=0, ge=0)
+    sample_note: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    summaries: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModeComparisonResponse(AnalyticsAggregateResponse):
+    """Mode-level comparison analytics."""
+
+
+class QuestionComparisonResponse(AnalyticsAggregateResponse):
+    """Question-level comparison analytics."""
+
+
+class CostLatencyResponse(AnalyticsAggregateResponse):
+    """Cost and latency analytics."""
+
+
+class RouterAnalysisResponse(AnalyticsAggregateResponse):
+    """Router retrospective or actual-router analytics."""
+
+    analysis_type: Literal["retrospective", "actual"] = "retrospective"
+
+
+class AblationResponse(AnalyticsAggregateResponse):
+    """Ablation grouping analytics."""
+
+
+class HumanVsAutoResponse(AnalyticsAggregateResponse):
+    """Human rating versus automated metric calibration analytics."""
+
+
+class RepeatStabilitySummary(AnalyticsAggregateResponse):
+    """Repeat-run stability analytics."""
+
+
+class EvaluationRunListItem(BaseModel):
+    """List row for one persisted evaluation execution."""
+
+    run_id: str
+    campaign_id: str
+    question_id: str
+    question: str
+    mode: CampaignMode
+    run_number: int = Field(ge=1)
+    status: CampaignResultStatus
+    total_tokens: int = Field(default=0, ge=0)
+    total_latency_ms: Optional[float] = Field(default=None, ge=0)
+    created_at: datetime
+
+
+class EvaluationRunListResponse(BaseModel):
+    """Run list for one campaign."""
+
+    campaign_id: str
+    runs: list[EvaluationRunListItem] = Field(default_factory=list)
+
+
+class RunTraceResponse(BaseModel):
+    run_id: str
+    campaign_id: str
+    trace_events: list[dict[str, Any]] = Field(default_factory=list)
+    routing_decisions: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RunRetrievalResponse(BaseModel):
+    run_id: str
+    campaign_id: str
+    retrieval_events: list[dict[str, Any]] = Field(default_factory=list)
+    retrieval_chunks: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RunContextResponse(BaseModel):
+    run_id: str
+    campaign_id: str
+    context_packs: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RunLlmCallsResponse(BaseModel):
+    run_id: str
+    campaign_id: str
+    llm_calls: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RunToolsResponse(BaseModel):
+    run_id: str
+    campaign_id: str
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RunClaimsResponse(BaseModel):
+    run_id: str
+    campaign_id: str
+    claims: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RunMetricsResponse(BaseModel):
+    run_id: str
+    campaign_id: str
+    derived_metrics: dict[str, Any] = Field(default_factory=dict)
+    token_usage: dict[str, Any] = Field(default_factory=dict)
+    total_tokens: int = Field(default=0, ge=0)
+    latency_ms: float = Field(default=0, ge=0)
+    total_latency_ms: Optional[float] = Field(default=None, ge=0)
+
+
+class RunDiffResponse(BaseModel):
+    run_id: str
+    baseline_run_id: str
+    campaign_id: str
+    baseline_campaign_id: str
+    token_delta: int
+    latency_delta_ms: float
+    comparable: bool = True
+    comparison_scope: Literal["same_run", "same_campaign_question", "cross_campaign"] = "same_campaign_question"
+    answer_changed: bool
+    answer_change_status: Literal["changed", "unchanged", "unknown"] = "unknown"
+    derived_metric_delta: dict[str, float] = Field(default_factory=dict)
+
+
+class RunDetailResponse(BaseModel):
+    """Full run detail assembled from all research observability views."""
+
+    run_id: str
+    campaign_id: str
+    trace_events: list[dict[str, Any]] = Field(default_factory=list)
+    llm_calls: list[dict[str, Any]] = Field(default_factory=list)
+    retrieval_events: list[dict[str, Any]] = Field(default_factory=list)
+    retrieval_chunks: list[dict[str, Any]] = Field(default_factory=list)
+    context_packs: list[dict[str, Any]] = Field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    routing_decisions: list[dict[str, Any]] = Field(default_factory=list)
+    claims: list[dict[str, Any]] = Field(default_factory=list)
+    human_ratings: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RunVisualResponse(RunToolsResponse):
+    """Visual-tool subset for one run."""
+
+
+class RunGraphResponse(RunToolsResponse):
+    """Graph-tool subset for one run."""
+
+
 class CampaignProgressEvent(BaseModel):
     """Incremental SSE progress payload."""
 

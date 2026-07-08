@@ -12,16 +12,34 @@ from sse_starlette.sse import EventSourceResponse
 
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
+from evaluation.analytics import EvaluationAnalyticsService
 from evaluation.campaign_engine import get_campaign_engine
 from evaluation.campaign_schemas import (
+    AblationResponse,
     CampaignCreateRequest,
     CampaignCreateResponse,
     CampaignEvaluateRequest,
     CampaignLifecycleStatus,
     CampaignMetricsResponse,
+    CampaignOverviewResponse,
     CampaignProgressEvent,
     CampaignResultsResponse,
     CampaignStatus,
+    CostLatencyResponse,
+    EvaluationRunListResponse,
+    HumanVsAutoResponse,
+    ModeComparisonResponse,
+    QuestionComparisonResponse,
+    RepeatStabilitySummary,
+    RouterAnalysisResponse,
+    RunClaimsResponse,
+    RunContextResponse,
+    RunDiffResponse,
+    RunLlmCallsResponse,
+    RunMetricsResponse,
+    RunRetrievalResponse,
+    RunToolsResponse,
+    RunTraceResponse,
 )
 from evaluation.model_capabilities import normalize_model_config_for_storage
 from evaluation.model_discovery import list_available_models
@@ -121,6 +139,11 @@ def _to_sse_event(event_name: str, payload: BaseModel | dict[str, Any]) -> dict[
         "event": event_name,
         "data": json.dumps(body, ensure_ascii=False),
     }
+
+
+def get_evaluation_analytics_service() -> EvaluationAnalyticsService:
+    """Factory for evaluation analytics service."""
+    return EvaluationAnalyticsService()
 
 
 async def _preserve_omitted_test_case_metadata(
@@ -321,6 +344,201 @@ async def get_campaign_results(
     """Fetch persisted campaign results."""
     engine = get_campaign_engine()
     return await engine.get_results(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get("/campaigns/{campaign_id}/overview", response_model=CampaignOverviewResponse)
+async def get_campaign_research_overview(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> CampaignOverviewResponse:
+    """Fetch research analytics overview for one campaign."""
+    return await analytics.campaign_overview(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get("/campaigns/{campaign_id}/runs", response_model=EvaluationRunListResponse)
+async def get_campaign_research_runs(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> EvaluationRunListResponse:
+    """List execution samples for one campaign."""
+    return await analytics.list_campaign_runs(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get("/campaigns/{campaign_id}/mode-comparison", response_model=ModeComparisonResponse)
+async def get_campaign_mode_comparison(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> ModeComparisonResponse:
+    """Fetch mode-level research comparison aggregates."""
+    return await analytics.mode_comparison(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get("/campaigns/{campaign_id}/question-comparison", response_model=QuestionComparisonResponse)
+async def get_campaign_question_comparison(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> QuestionComparisonResponse:
+    """Fetch question-level research comparison aggregates."""
+    return await analytics.question_comparison(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get("/campaigns/{campaign_id}/cost-latency", response_model=CostLatencyResponse)
+async def get_campaign_cost_latency(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> CostLatencyResponse:
+    """Fetch cost and latency aggregates for one campaign."""
+    return await analytics.cost_latency(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get("/campaigns/{campaign_id}/router-analysis", response_model=RouterAnalysisResponse)
+async def get_campaign_router_analysis(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> RouterAnalysisResponse:
+    """Fetch retrospective router decision analytics for one campaign."""
+    return await analytics.router_analysis(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get("/campaigns/{campaign_id}/ablation", response_model=AblationResponse)
+async def get_campaign_ablation(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> AblationResponse:
+    """Fetch ablation grouping aggregates for one campaign."""
+    return await analytics.ablation(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get("/campaigns/{campaign_id}/human-vs-auto", response_model=HumanVsAutoResponse)
+async def get_campaign_human_vs_auto(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> HumanVsAutoResponse:
+    """Fetch human-rating versus automated metric aggregates."""
+    return await analytics.human_vs_auto(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get("/campaigns/{campaign_id}/repeat-stability", response_model=RepeatStabilitySummary)
+async def get_campaign_repeat_stability(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> RepeatStabilitySummary:
+    """Fetch repeat-run stability aggregates for one campaign."""
+    return await analytics.repeat_stability(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get("/runs/{run_id}/trace", response_model=RunTraceResponse)
+async def get_evaluation_run_trace(
+    run_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> RunTraceResponse:
+    """Fetch stage trace and routing observability for one run."""
+    return await analytics.run_trace(user_id=user_id, run_id=run_id)
+
+
+@router.get("/runs/{run_id}/retrieval", response_model=RunRetrievalResponse)
+async def get_evaluation_run_retrieval(
+    run_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> RunRetrievalResponse:
+    """Fetch retrieval events and chunks for one run."""
+    return await analytics.run_retrieval(user_id=user_id, run_id=run_id)
+
+
+@router.get("/runs/{run_id}/context", response_model=RunContextResponse)
+async def get_evaluation_run_context(
+    run_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> RunContextResponse:
+    """Fetch context packing details for one run."""
+    return await analytics.run_context(user_id=user_id, run_id=run_id)
+
+
+@router.get("/runs/{run_id}/llm-calls", response_model=RunLlmCallsResponse)
+async def get_evaluation_run_llm_calls(
+    run_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> RunLlmCallsResponse:
+    """Fetch token, cost, and model call details for one run."""
+    return await analytics.run_llm_calls(user_id=user_id, run_id=run_id)
+
+
+@router.get("/runs/{run_id}/tools", response_model=RunToolsResponse)
+async def get_evaluation_run_tools(
+    run_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> RunToolsResponse:
+    """Fetch all tool calls for one run."""
+    return await analytics.run_tools(user_id=user_id, run_id=run_id)
+
+
+@router.get("/runs/{run_id}/visual", response_model=RunToolsResponse)
+async def get_evaluation_run_visual_tools(
+    run_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> RunToolsResponse:
+    """Fetch visual tool calls for one run."""
+    return await analytics.run_tools(user_id=user_id, run_id=run_id, tool_type="visual")
+
+
+@router.get("/runs/{run_id}/graph", response_model=RunToolsResponse)
+async def get_evaluation_run_graph_tools(
+    run_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> RunToolsResponse:
+    """Fetch graph tool calls for one run."""
+    return await analytics.run_tools(user_id=user_id, run_id=run_id, tool_type="graph")
+
+
+@router.get("/runs/{run_id}/claims", response_model=RunClaimsResponse)
+async def get_evaluation_run_claims(
+    run_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> RunClaimsResponse:
+    """Fetch claim-evidence verification rows for one run."""
+    return await analytics.run_claims(user_id=user_id, run_id=run_id)
+
+
+@router.get("/runs/{run_id}/metrics", response_model=RunMetricsResponse)
+async def get_evaluation_run_metrics(
+    run_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> RunMetricsResponse:
+    """Fetch derived metrics for one run."""
+    return await analytics.run_metrics(user_id=user_id, run_id=run_id)
+
+
+@router.get("/runs/{run_id}/diff", response_model=RunDiffResponse)
+async def get_evaluation_run_diff(
+    run_id: str,
+    baseline_run_id: str = Query(..., min_length=1),
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> RunDiffResponse:
+    """Compare one run against a baseline run owned by the same user."""
+    return await analytics.run_diff(
+        user_id=user_id,
+        run_id=run_id,
+        baseline_run_id=baseline_run_id,
+    )
 
 
 @router.get("/campaigns/{campaign_id}/traces", response_model=list[AgentTraceSummary])
