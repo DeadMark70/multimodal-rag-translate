@@ -8,6 +8,7 @@ import pytest
 
 from graph_rag.schemas import EntityType
 from graph_rag.schemas import EvidenceAnchor
+from graph_rag.schemas import GraphEdge
 from graph_rag.store import GraphStore
 
 
@@ -104,6 +105,54 @@ def test_remove_document_cleans_provenance_for_edges_removed_with_nodes() -> Non
         assert removed_nodes == 2
         assert store.graph.number_of_nodes() == 0
         assert store.graph.number_of_edges() == 0
+        assert reloaded.get_edge_provenance(edge_id) == []
+        assert reloaded.get_edge_provenance_status(edge_id) == "missing"
+    finally:
+        shutil.rmtree(store_dir, ignore_errors=True)
+
+
+def test_remove_document_cleans_incident_edge_provenance_with_legacy_edge_docs() -> None:
+    store_dir = Path(tempfile.gettempdir()) / f"graph-store-{uuid4().hex}"
+    store_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        store = GraphStore("user-1", storage_dir=store_dir)
+
+        source_id = store.add_node_from_extraction("MedSAM", EntityType.METHOD, "doc-1")
+        target_id = store.add_node_from_extraction("SAM", EntityType.METHOD, "doc-1")
+        store.add_edge(
+            GraphEdge(
+                source_id=source_id,
+                target_id=target_id,
+                relation="extends",
+                doc_ids=["legacy-doc"],
+            )
+        )
+
+        edge_id = store.graph.edges[source_id, target_id]["edge_id"]
+        store.record_edge_provenance(
+            edge_id,
+            [
+                EvidenceAnchor(
+                    doc_id="doc-1",
+                    chunk_id="chunk-1",
+                    chunk_index=0,
+                    page=2,
+                    quote="MedSAM extends SAM.",
+                    quote_hash="quote-hash",
+                    chunk_hash="chunk-hash",
+                    confidence=0.95,
+                )
+            ],
+        )
+        store.save()
+
+        removed_nodes = store.remove_document("doc-1")
+        store.save()
+
+        reloaded = GraphStore("user-1", storage_dir=store_dir)
+
+        assert removed_nodes == 2
+        assert reloaded.graph.number_of_edges() == 0
         assert reloaded.get_edge_provenance(edge_id) == []
         assert reloaded.get_edge_provenance_status(edge_id) == "missing"
     finally:
