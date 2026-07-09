@@ -460,6 +460,22 @@ class CampaignErrorsResponse(BaseModel):
     rows: list[SanitizedErrorRow] = Field(default_factory=list)
 
 
+class CampaignAnalyticsDashboardResponse(BaseModel):
+    """Single-request bundle for the Evaluation Center dashboard."""
+
+    campaign_id: str
+    overview: CampaignOverviewResponse
+    runs: EvaluationRunListResponse
+    mode_comparison: ModeComparisonResponse
+    question_comparison: QuestionComparisonResponse
+    cost_latency: CostLatencyResponse
+    router_analysis: RouterAnalysisResponse
+    ablation: AblationResponse
+    human_vs_auto: HumanVsAutoResponse
+    human_queue: HumanEvalQueueResponse
+    errors: CampaignErrorsResponse
+
+
 class ExportCampaignRequest(BaseModel):
     """Explicit export options for research data."""
 

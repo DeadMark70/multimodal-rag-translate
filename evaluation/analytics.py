@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from core.errors import AppError, ErrorCode
 from evaluation.campaign_schemas import (
     AblationResponse,
+    CampaignAnalyticsDashboardResponse,
     CampaignErrorsResponse,
     CampaignOverviewResponse,
     CostLatencyResponse,
@@ -269,13 +270,16 @@ class EvaluationAnalyticsService:
 
     async def mode_comparison(self, *, user_id: str, campaign_id: str) -> ModeComparisonResponse:
         context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        return self._build_mode_comparison(context)
+
+    def _build_mode_comparison(self, context: _CampaignAnalyticsContext) -> ModeComparisonResponse:
         overview = context.overview or self._build_campaign_overview(context)
         results = context.results
         by_mode: dict[str, list[Any]] = defaultdict(list)
         for result in results:
             by_mode[str(result.mode)].append(result)
         return ModeComparisonResponse(
-            campaign_id=campaign_id,
+            campaign_id=context.campaign_id,
             analysis_unit="execution",
             sample_count=overview.sample_count,
             independent_question_count=overview.independent_question_count,
@@ -301,13 +305,16 @@ class EvaluationAnalyticsService:
 
     async def question_comparison(self, *, user_id: str, campaign_id: str) -> QuestionComparisonResponse:
         context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        return self._build_question_comparison(context)
+
+    def _build_question_comparison(self, context: _CampaignAnalyticsContext) -> QuestionComparisonResponse:
         overview = context.overview or self._build_campaign_overview(context)
         results = context.results
         by_question: dict[str, list[Any]] = defaultdict(list)
         for result in results:
             by_question[result.question_id].append(result)
         return QuestionComparisonResponse(
-            campaign_id=campaign_id,
+            campaign_id=context.campaign_id,
             analysis_unit="question",
             sample_count=overview.sample_count,
             independent_question_count=overview.independent_question_count,
@@ -325,12 +332,15 @@ class EvaluationAnalyticsService:
 
     async def cost_latency(self, *, user_id: str, campaign_id: str) -> CostLatencyResponse:
         context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        return self._build_cost_latency(context)
+
+    def _build_cost_latency(self, context: _CampaignAnalyticsContext) -> CostLatencyResponse:
         overview = context.overview or self._build_campaign_overview(context)
         warnings = []
         if overview.cost_status != "complete":
             warnings.append("Some LLM calls have unknown price estimates; cost totals are omitted.")
         return CostLatencyResponse(
-            campaign_id=campaign_id,
+            campaign_id=context.campaign_id,
             analysis_unit="execution",
             sample_count=overview.sample_count,
             independent_question_count=overview.independent_question_count,
@@ -350,17 +360,27 @@ class EvaluationAnalyticsService:
 
     async def router_analysis(self, *, user_id: str, campaign_id: str) -> RouterAnalysisResponse:
         context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
-        overview = context.overview or self._build_campaign_overview(context)
-        results = context.results
+        decisions = await self._routing_decisions_for_context(context)
+        return self._build_router_analysis(context, decisions)
+
+    async def _routing_decisions_for_context(self, context: _CampaignAnalyticsContext) -> list[dict[str, Any]]:
         decisions = []
-        for result in results:
+        for result in context.results:
             decisions.extend(
                 _dump(item)
                 for item in await self._observability_repository.list_routing_decisions_for_run(result.id)
-                if item.campaign_id == campaign_id
+                if item.campaign_id == context.campaign_id
             )
+        return decisions
+
+    def _build_router_analysis(
+        self,
+        context: _CampaignAnalyticsContext,
+        decisions: list[dict[str, Any]],
+    ) -> RouterAnalysisResponse:
+        overview = context.overview or self._build_campaign_overview(context)
         return RouterAnalysisResponse(
-            campaign_id=campaign_id,
+            campaign_id=context.campaign_id,
             analysis_unit="execution",
             analysis_type="retrospective",
             sample_count=overview.sample_count,
@@ -373,6 +393,9 @@ class EvaluationAnalyticsService:
 
     async def ablation(self, *, user_id: str, campaign_id: str) -> AblationResponse:
         context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        return self._build_ablation(context)
+
+    def _build_ablation(self, context: _CampaignAnalyticsContext) -> AblationResponse:
         overview = context.overview or self._build_campaign_overview(context)
         results = context.results
         by_condition: dict[str, int] = Counter(
@@ -386,7 +409,7 @@ class EvaluationAnalyticsService:
             if isinstance(condition_id, str) and isinstance(label, str):
                 condition_labels[condition_id] = label
         return AblationResponse(
-            campaign_id=campaign_id,
+            campaign_id=context.campaign_id,
             analysis_unit="execution",
             sample_count=overview.sample_count,
             independent_question_count=overview.independent_question_count,
@@ -399,20 +422,25 @@ class EvaluationAnalyticsService:
         )
 
     async def human_eval_queue(self, *, user_id: str, campaign_id: str) -> HumanEvalQueueResponse:
-        await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
-        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        ratings_by_run = await self._observability_repository.list_human_ratings_for_campaign(campaign_id)
+        return self._build_human_eval_queue(context=context, ratings_by_run=ratings_by_run, user_id=user_id)
+
+    def _build_human_eval_queue(
+        self,
+        *,
+        context: _CampaignAnalyticsContext,
+        ratings_by_run: dict[str, list[EvaluationHumanRating]],
+        user_id: str,
+    ) -> HumanEvalQueueResponse:
         rater_hash = _hash_rater_id(user_id)
         rows: list[HumanEvalQueueItem] = []
-        for result in results:
-            ratings = [
-                rating
-                for rating in await self._observability_repository.list_human_ratings_for_run(result.id)
-                if rating.campaign_id == campaign_id
-            ]
+        for result in context.results:
+            ratings = [rating for rating in ratings_by_run.get(result.id, []) if rating.campaign_id == context.campaign_id]
             rows.append(
                 HumanEvalQueueItem(
                     run_id=result.id,
-                    campaign_id=campaign_id,
+                    campaign_id=context.campaign_id,
                     question_id=result.question_id,
                     question=result.question,
                     mode=result.mode,
@@ -423,7 +451,7 @@ class EvaluationAnalyticsService:
                     already_rated_by_current_user=any(rating.rater_id_hash == rater_hash for rating in ratings),
                 )
             )
-        return HumanEvalQueueResponse(campaign_id=campaign_id, rows=rows)
+        return HumanEvalQueueResponse(campaign_id=context.campaign_id, rows=rows)
 
     async def create_human_rating(
         self,
@@ -470,22 +498,31 @@ class EvaluationAnalyticsService:
         )
 
     async def human_vs_auto(self, *, user_id: str, campaign_id: str) -> HumanVsAutoResponse:
-        await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
-        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
         ragas_by_run = await self._ragas_metrics_for_campaign(user_id=user_id, campaign_id=campaign_id)
-        ratings_by_run: dict[str, list[EvaluationHumanRating]] = {}
+        ratings_by_run = await self._observability_repository.list_human_ratings_for_campaign(campaign_id)
+        return self._build_human_vs_auto(context=context, ragas_by_run=ragas_by_run, ratings_by_run=ratings_by_run)
+
+    def _build_human_vs_auto(
+        self,
+        *,
+        context: _CampaignAnalyticsContext,
+        ragas_by_run: dict[str, dict[str, float]],
+        ratings_by_run: dict[str, list[EvaluationHumanRating]],
+    ) -> HumanVsAutoResponse:
         rows: list[dict[str, Any]] = []
         human_scores: list[float] = []
         auto_scores: list[float] = []
-        for result in results:
+        paired_ratings_by_run: dict[str, list[EvaluationHumanRating]] = {}
+        for result in context.results:
             ratings = [
                 rating
-                for rating in await self._observability_repository.list_human_ratings_for_run(result.id)
-                if rating.campaign_id == campaign_id
+                for rating in ratings_by_run.get(result.id, [])
+                if rating.campaign_id == context.campaign_id
             ]
             if not ratings:
                 continue
-            ratings_by_run[result.id] = ratings
+            paired_ratings_by_run[result.id] = ratings
             human_correctness_mean = mean(rating.correctness_score for rating in ratings)
             human_faithfulness_mean = mean(rating.faithfulness_score for rating in ratings)
             ragas_metrics = ragas_by_run.get(result.id, {})
@@ -507,22 +544,22 @@ class EvaluationAnalyticsService:
                 auto_scores.append((float(auto_correctness) + float(auto_faithfulness)) / 2)
         sample_count = len(rows)
         return HumanVsAutoResponse(
-            campaign_id=campaign_id,
+            campaign_id=context.campaign_id,
             analysis_unit="execution",
             sample_count=sample_count,
             independent_question_count=len({row["question_id"] for row in rows}),
-            repeat_count=max((self._paired_repeat_number(result, rows) for result in results), default=0),
-            sample_note=_sample_note(sample_count, len({row["question_id"] for row in rows}), max((_repeat_number(result) for result in results if result.id in ratings_by_run), default=0)) if sample_count else "No paired human/auto samples yet.",
+            repeat_count=max((self._paired_repeat_number(result, rows) for result in context.results), default=0),
+            sample_note=_sample_note(sample_count, len({row["question_id"] for row in rows}), max((_repeat_number(result) for result in context.results if result.id in paired_ratings_by_run), default=0)) if sample_count else "No paired human/auto samples yet.",
             warnings=["Correlation summaries require at least 2 paired samples."] if sample_count < 2 else [],
             rows=rows,
             summaries={
-                "human_rating_count": sum(len(items) for items in ratings_by_run.values()),
+                "human_rating_count": sum(len(items) for items in paired_ratings_by_run.values()),
                 "paired_sample_count": sample_count,
                 "human_correctness_mean": _average([row["human_correctness_mean"] for row in rows]),
                 "human_faithfulness_mean": _average([row["human_faithfulness_mean"] for row in rows]),
                 "ragas_human_pearson_r": _pearson(human_scores, auto_scores),
                 "ragas_human_spearman_r": _spearman(human_scores, auto_scores),
-                "inter_rater_agreement": _inter_rater_agreement(ratings_by_run),
+                "inter_rater_agreement": _inter_rater_agreement(paired_ratings_by_run),
             },
         )
 
@@ -682,7 +719,7 @@ class EvaluationAnalyticsService:
             key = f"{result.question_id}:{result.mode}"
             by_unit[key].append(result)
         return RepeatStabilitySummary(
-            campaign_id=campaign_id,
+            campaign_id=context.campaign_id,
             analysis_unit="execution",
             sample_count=overview.sample_count,
             independent_question_count=overview.independent_question_count,
@@ -698,11 +735,46 @@ class EvaluationAnalyticsService:
             },
         )
 
-    async def list_campaign_runs(self, *, user_id: str, campaign_id: str) -> EvaluationRunListResponse:
-        await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
-        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
-        return EvaluationRunListResponse(
+    async def analytics_dashboard(self, *, user_id: str, campaign_id: str) -> CampaignAnalyticsDashboardResponse:
+        context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        routing_decisions = await self._routing_decisions_for_context(context)
+        trace_events_by_run = await self._observability_repository.list_trace_events_for_campaign(campaign_id)
+        ratings_by_run = await self._observability_repository.list_human_ratings_for_campaign(campaign_id)
+        ragas_by_run = await self._ragas_metrics_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        overview = context.overview or self._build_campaign_overview(context)
+        return CampaignAnalyticsDashboardResponse(
             campaign_id=campaign_id,
+            overview=overview,
+            runs=self._build_campaign_runs(context),
+            mode_comparison=self._build_mode_comparison(context),
+            question_comparison=self._build_question_comparison(context),
+            cost_latency=self._build_cost_latency(context),
+            router_analysis=self._build_router_analysis(context, routing_decisions),
+            ablation=self._build_ablation(context),
+            human_vs_auto=self._build_human_vs_auto(
+                context=context,
+                ragas_by_run=ragas_by_run,
+                ratings_by_run=ratings_by_run,
+            ),
+            human_queue=self._build_human_eval_queue(
+                context=context,
+                ratings_by_run=ratings_by_run,
+                user_id=user_id,
+            ),
+            errors=self._build_campaign_errors(
+                context=context,
+                trace_events_by_run=trace_events_by_run,
+                llm_calls_by_run=context.llm_calls_by_run,
+            ),
+        )
+
+    async def list_campaign_runs(self, *, user_id: str, campaign_id: str) -> EvaluationRunListResponse:
+        context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        return self._build_campaign_runs(context)
+
+    def _build_campaign_runs(self, context: _CampaignAnalyticsContext) -> EvaluationRunListResponse:
+        return EvaluationRunListResponse(
+            campaign_id=context.campaign_id,
             runs=[
                 EvaluationRunListItem(
                     run_id=item.id,
@@ -717,7 +789,7 @@ class EvaluationAnalyticsService:
                     total_latency_ms=item.total_latency_ms,
                     created_at=item.created_at,
                 )
-                for item in results
+                for item in context.results
             ],
         )
 

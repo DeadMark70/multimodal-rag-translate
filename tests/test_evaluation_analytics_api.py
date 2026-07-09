@@ -289,6 +289,21 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
             assert response.json()["analysis_unit"] == analysis_unit
             assert response.json()["sample_count"] == sample_count
 
+        dashboard = client.get(f"/api/evaluation/campaigns/{campaign_id}/analytics-dashboard")
+        assert dashboard.status_code == 200
+        dashboard_body = dashboard.json()
+        assert dashboard_body["campaign_id"] == campaign_id
+        assert dashboard_body["overview"]["sample_count"] == 1
+        assert dashboard_body["mode_comparison"]["sample_count"] == 1
+        assert dashboard_body["question_comparison"]["sample_count"] == 1
+        assert dashboard_body["cost_latency"]["sample_count"] == 1
+        assert dashboard_body["router_analysis"]["sample_count"] == 1
+        assert dashboard_body["ablation"]["sample_count"] == 1
+        assert dashboard_body["human_vs_auto"]["sample_count"] == 0
+        assert dashboard_body["human_queue"]["campaign_id"] == campaign_id
+        assert dashboard_body["errors"]["campaign_id"] == campaign_id
+        assert dashboard_body["runs"]["runs"][0]["run_id"] == run_id
+
         endpoint_expectations = {
             "trace": "trace_events",
             "retrieval": "retrieval_events",

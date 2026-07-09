@@ -16,6 +16,7 @@ from evaluation.analytics import EvaluationAnalyticsService
 from evaluation.campaign_engine import get_campaign_engine
 from evaluation.campaign_schemas import (
     AblationResponse,
+    CampaignAnalyticsDashboardResponse,
     CampaignErrorsResponse,
     CampaignCreateRequest,
     CampaignCreateResponse,
@@ -371,6 +372,16 @@ async def get_campaign_research_runs(
 ) -> EvaluationRunListResponse:
     """List execution samples for one campaign."""
     return await analytics.list_campaign_runs(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get("/campaigns/{campaign_id}/analytics-dashboard", response_model=CampaignAnalyticsDashboardResponse)
+async def get_campaign_analytics_dashboard(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> CampaignAnalyticsDashboardResponse:
+    """Fetch the Evaluation Center dashboard analytics in one bundled request."""
+    return await analytics.analytics_dashboard(user_id=user_id, campaign_id=campaign_id)
 
 
 @router.get("/campaigns/{campaign_id}/mode-comparison", response_model=ModeComparisonResponse)
