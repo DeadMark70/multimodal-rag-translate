@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -135,6 +136,45 @@ class EvaluationObservabilityRepository:
             for row in rows
         ]
 
+    async def list_trace_events_for_campaign(self, campaign_id: str) -> dict[str, list[EvaluationTraceEvent]]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM evaluation_trace_events
+                WHERE campaign_id = ?
+                ORDER BY run_id ASC, sequence ASC, started_at ASC
+                """,
+                (campaign_id,),
+            )
+            rows = await cursor.fetchall()
+        grouped: dict[str, list[EvaluationTraceEvent]] = defaultdict(list)
+        for row in rows:
+            grouped[str(row["run_id"])].append(
+                EvaluationTraceEvent(
+                    event_id=row["event_id"],
+                    run_id=row["run_id"],
+                    campaign_id=row["campaign_id"],
+                    span_id=row["span_id"],
+                    parent_event_id=row["parent_event_id"],
+                    parent_span_id=row["parent_span_id"],
+                    event_type=row["event_type"],
+                    event_schema_version=row["event_schema_version"],
+                    sequence=row["sequence"],
+                    stage_type=row["stage_type"],
+                    stage_name=row["stage_name"],
+                    started_at=datetime.fromisoformat(row["started_at"]),
+                    ended_at=_parse_dt(row["ended_at"]),
+                    duration_ms=row["duration_ms"],
+                    status=row["status"],
+                    retry_count=row["retry_count"],
+                    payload=_json_loads(row["payload_json"], {}),
+                    error=_json_loads(row["error_json"], {}),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                )
+            )
+        return dict(grouped)
+
     async def record_llm_call(self, call: EvaluationLlmCall) -> None:
         await init_db()
         async with connect_db() as connection:
@@ -205,6 +245,46 @@ class EvaluationObservabilityRepository:
             )
             for row in rows
         ]
+
+    async def list_llm_calls_for_campaign(self, campaign_id: str) -> dict[str, list[EvaluationLlmCall]]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM evaluation_llm_calls
+                WHERE campaign_id = ?
+                ORDER BY run_id ASC, created_at ASC
+                """,
+                (campaign_id,),
+            )
+            rows = await cursor.fetchall()
+        grouped: dict[str, list[EvaluationLlmCall]] = defaultdict(list)
+        for row in rows:
+            grouped[str(row["run_id"])].append(
+                EvaluationLlmCall(
+                    llm_call_id=row["llm_call_id"],
+                    run_id=row["run_id"],
+                    campaign_id=row["campaign_id"],
+                    span_id=row["span_id"],
+                    provider=row["provider"],
+                    model_name=row["model_name"],
+                    purpose=row["purpose"],
+                    prompt_tokens=row["prompt_tokens"],
+                    completion_tokens=row["completion_tokens"],
+                    total_tokens=row["total_tokens"],
+                    estimated_cost_usd=row["estimated_cost_usd"],
+                    estimated_cost_twd=row["estimated_cost_twd"],
+                    prompt_hash=row["prompt_hash"],
+                    prompt_preview=row["prompt_preview"],
+                    response_hash=row["response_hash"],
+                    latency_ms=row["latency_ms"],
+                    status=row["status"],
+                    error=_json_loads(row["error_json"], {}),
+                    payload=_json_loads(row["payload_json"], {}),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                )
+            )
+        return dict(grouped)
 
     async def record_retrieval_event(self, event: EvaluationRetrievalEvent) -> None:
         await init_db()
@@ -334,6 +414,48 @@ class EvaluationObservabilityRepository:
             )
             for row in rows
         ]
+
+    async def list_retrieval_chunks_for_campaign(self, campaign_id: str) -> dict[str, list[EvaluationRetrievalChunk]]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM evaluation_retrieval_chunks
+                WHERE campaign_id = ?
+                ORDER BY run_id ASC, retrieval_event_id ASC, rank_after_rerank ASC, created_at ASC
+                """,
+                (campaign_id,),
+            )
+            rows = await cursor.fetchall()
+        grouped: dict[str, list[EvaluationRetrievalChunk]] = defaultdict(list)
+        for row in rows:
+            grouped[str(row["run_id"])].append(
+                EvaluationRetrievalChunk(
+                    retrieval_chunk_id=row["retrieval_chunk_id"],
+                    run_id=row["run_id"],
+                    campaign_id=row["campaign_id"],
+                    span_id=row["span_id"],
+                    retrieval_event_id=row["retrieval_event_id"],
+                    chunk_id=row["chunk_id"],
+                    doc_id=row["doc_id"],
+                    page_start=row["page_start"],
+                    page_end=row["page_end"],
+                    modality=row["modality"],
+                    rank_before_rerank=row["rank_before_rerank"],
+                    rank_after_rerank=row["rank_after_rerank"],
+                    dense_score=row["dense_score"],
+                    bm25_score=row["bm25_score"],
+                    rerank_score=row["rerank_score"],
+                    used_in_context=bool(row["used_in_context"]),
+                    used_in_answer=bool(row["used_in_answer"]),
+                    expected_evidence_match=bool(row["expected_evidence_match"]),
+                    excerpt=row["excerpt"],
+                    content_hash=row["content_hash"],
+                    payload=_json_loads(row["payload_json"], {}),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                )
+            )
+        return dict(grouped)
 
     async def record_context_pack(self, pack: EvaluationContextPack) -> None:
         await init_db()
@@ -549,6 +671,37 @@ class EvaluationObservabilityRepository:
             for row in rows
         ]
 
+    async def list_claims_for_campaign(self, campaign_id: str) -> dict[str, list[EvaluationClaim]]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM evaluation_claims
+                WHERE campaign_id = ?
+                ORDER BY run_id ASC, created_at ASC
+                """,
+                (campaign_id,),
+            )
+            rows = await cursor.fetchall()
+        grouped: dict[str, list[EvaluationClaim]] = defaultdict(list)
+        for row in rows:
+            grouped[str(row["run_id"])].append(
+                EvaluationClaim(
+                    claim_id=row["claim_id"],
+                    run_id=row["run_id"],
+                    campaign_id=row["campaign_id"],
+                    span_id=row["span_id"],
+                    claim_text=row["claim_text"],
+                    claim_type=row["claim_type"],
+                    support_status=row["support_status"],
+                    evidence=_json_loads(row["evidence_json"], []),
+                    unsupported_reason=row["unsupported_reason"],
+                    payload=_json_loads(row["payload_json"], {}),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                )
+            )
+        return dict(grouped)
+
     async def record_human_rating(self, rating: EvaluationHumanRating) -> None:
         await self._record_simple(
             "evaluation_human_ratings",
@@ -619,6 +772,42 @@ class EvaluationObservabilityRepository:
             )
             for row in rows
         ]
+
+    async def list_human_ratings_for_campaign(self, campaign_id: str) -> dict[str, list[EvaluationHumanRating]]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM evaluation_human_ratings
+                WHERE campaign_id = ?
+                ORDER BY run_id ASC, created_at ASC
+                """,
+                (campaign_id,),
+            )
+            rows = await cursor.fetchall()
+        grouped: dict[str, list[EvaluationHumanRating]] = defaultdict(list)
+        for row in rows:
+            grouped[str(row["run_id"])].append(
+                EvaluationHumanRating(
+                    human_rating_id=row["human_rating_id"],
+                    run_id=row["run_id"],
+                    campaign_id=row["campaign_id"],
+                    span_id=row["span_id"],
+                    rater_id_hash=row["rater_id_hash"],
+                    rubric_version=row["rubric_version"],
+                    correctness_score=row["correctness_score"],
+                    faithfulness_score=row["faithfulness_score"],
+                    completeness_score=row["completeness_score"],
+                    citation_quality_score=row["citation_quality_score"],
+                    usefulness_score=row["usefulness_score"],
+                    comments=row["comments"],
+                    is_blinded=bool(row["is_blinded"]),
+                    shown_mode_label=bool(row["shown_mode_label"]),
+                    payload=_json_loads(row["payload_json"], {}),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                )
+            )
+        return dict(grouped)
 
     async def _record_simple(
         self,
