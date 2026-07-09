@@ -119,6 +119,7 @@ class GraphRouteDecision:
 
     query_kind: QueryKind
     path: RoutePath
+    router_reason: str | None = None
     hops: int = 2
     max_nodes: int = 10
     max_communities: int = 2
@@ -157,6 +158,7 @@ class GenericGraphRouter:
             return GraphRouteDecision(
                 query_kind="fact" if fact_hits >= relation_hits else "relation",
                 path="local-first" if not has_communities else "blended",
+                router_reason="stage_hint=verification or prefer_local",
                 hops=2,
                 max_nodes=8,
                 max_communities=1,
@@ -167,6 +169,7 @@ class GenericGraphRouter:
             return GraphRouteDecision(
                 query_kind="summary" if summary_hits >= relation_hits else "relation",
                 path="global-first" if has_communities else "local-first",
+                router_reason="stage_hint=exploration or prefer_global",
                 hops=1,
                 max_nodes=8,
                 max_communities=3,
@@ -177,6 +180,7 @@ class GenericGraphRouter:
             return GraphRouteDecision(
                 query_kind="relation" if relation_hits >= summary_hits else "summary",
                 path="blended" if has_communities else "local-first",
+                router_reason="task_type_hint=graph_analysis",
                 hops=2,
                 max_nodes=12,
                 max_communities=3,
@@ -187,6 +191,7 @@ class GenericGraphRouter:
             return GraphRouteDecision(
                 query_kind="fact",
                 path="local-first",
+                router_reason="short_fact_query",
                 hops=2,
                 max_nodes=8,
                 max_communities=1,
@@ -197,6 +202,7 @@ class GenericGraphRouter:
             return GraphRouteDecision(
                 query_kind="summary",
                 path="global-first" if has_communities else "local-first",
+                router_reason="summary_keywords",
                 hops=1,
                 max_nodes=8,
                 max_communities=3,
@@ -207,6 +213,7 @@ class GenericGraphRouter:
             return GraphRouteDecision(
                 query_kind="relation",
                 path="blended" if has_communities else "local-first",
+                router_reason="relation_keywords",
                 hops=2,
                 max_nodes=12,
                 max_communities=2,
@@ -217,6 +224,7 @@ class GenericGraphRouter:
             return GraphRouteDecision(
                 query_kind="fact",
                 path="local-first",
+                router_reason="fact_keywords",
                 hops=2,
                 max_nodes=10,
                 max_communities=1,
@@ -262,6 +270,7 @@ class GenericGraphRouter:
             decision = GraphRouteDecision(
                 query_kind=payload.get("query_kind", "fact"),
                 path=payload.get("path", "local-first"),
+                router_reason=str(payload.get("reason") or "llm_router"),
                 token_budget=token_budget,
             )
             return self._finalize(decision, has_communities=has_communities, hints=hints)
@@ -270,6 +279,7 @@ class GenericGraphRouter:
             fallback = GraphRouteDecision(
                 query_kind="relation" if has_communities else "fact",
                 path="blended" if has_communities else "local-first",
+                router_reason="llm_router_fallback",
             )
             return self._finalize(fallback, has_communities=has_communities, hints=hints)
 

@@ -635,6 +635,10 @@ class EvaluationAnalyticsService:
         trace_events_by_run = await self._observability_repository.list_trace_events_for_campaign(campaign_id)
         retrieval_chunks_by_run = await self._observability_repository.list_retrieval_chunks_for_campaign(campaign_id)
         claims_by_run = await self._observability_repository.list_claims_for_campaign(campaign_id)
+        graph_events_by_run = await self._observability_repository.list_graph_events_for_campaign(campaign_id)
+        graph_evidence_items_by_run = await self._observability_repository.list_graph_evidence_items_for_campaign(
+            campaign_id
+        )
         runs: list[dict[str, Any]] = []
         trace_events: list[dict[str, Any]] = []
         llm_calls: list[dict[str, Any]] = []
@@ -678,6 +682,17 @@ class EvaluationAnalyticsService:
                     "run_id": result.id,
                     "chunk_count": len(chunks),
                     "chunks": chunks,
+                    "graph_event_count": len(graph_events_by_run.get(result.id, [])),
+                    "graph_events": [
+                        _dump(event)
+                        for event in graph_events_by_run.get(result.id, [])
+                        if event.campaign_id == campaign_id
+                    ],
+                    "graph_evidence_item_count": len(graph_evidence_items_by_run.get(result.id, [])),
+                    "graph_evidence_items": [
+                        _dump(item)
+                        for item in graph_evidence_items_by_run.get(result.id, [])
+                    ],
                 }
             )
             claim_summary.append(

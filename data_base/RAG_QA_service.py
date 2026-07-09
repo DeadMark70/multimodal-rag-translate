@@ -12,6 +12,8 @@ import json
 import logging
 import os
 import re
+import time
+from datetime import datetime, timezone
 from typing import (
     List,
     Any,
@@ -25,6 +27,7 @@ from typing import (
     Callable,
     Awaitable,
 )
+from uuid import uuid4
 
 # Type checking imports (avoid circular imports)
 if TYPE_CHECKING:
@@ -52,6 +55,8 @@ from data_base.query_transformer import (
 )
 from data_base.repository import fetch_document_filenames
 from data_base.parent_child_store import ParentDocumentStore
+from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
+from graph_rag.feature_flags import get_graph_feature_flags
 from graph_rag.generic_mode import (
     GenericGraphRouter,
     GraphEvidence,
@@ -105,6 +110,17 @@ class RAGResult(NamedTuple):
     tool_calls: List[dict] = []
     agent_trace: Optional[dict] = None
     visual_verification_meta: Optional[Dict[str, Any]] = None
+
+
+class GraphContextDetails(NamedTuple):
+    """Graph retrieval execution metadata used for observability writes."""
+
+    route_decision: GraphRouteDecision
+    matched_entity_ids: List[str]
+    community_ids: List[int]
+    candidate_evidence_count: int
+    graph_latency_ms: int
+    graph_index_version: Optional[int] = None
 
 
 ProgressCallback = Callable[[str, Optional[Dict[str, Any]]], Awaitable[None]]
@@ -410,7 +426,12 @@ async def _get_graph_context(
     search_mode: str = "generic",
     graph_execution_hints: Optional[Dict[str, Any]] = None,
     return_evidence: bool = False,
-) -> Union[str, Tuple[str, List[GraphEvidence]]]:
+    return_details: bool = False,
+) -> Union[
+    str,
+    Tuple[str, List[GraphEvidence]],
+    Tuple[str, List[GraphEvidence], Optional[GraphContextDetails]],
+]:
     """
     Get context from knowledge graph.
 
@@ -423,6 +444,7 @@ async def _get_graph_context(
     Returns:
         Graph context string or `(context, evidence_units)` when `return_evidence=True`.
     """
+    started_at = time.perf_counter()
     try:
         from graph_rag.store import GraphStore
         from graph_rag.global_search import global_search_evidence
@@ -435,6 +457,8 @@ async def _get_graph_context(
         if not status.has_graph or status.node_count == 0:
             logger.debug(f"No graph data for user {user_id}")
             if return_evidence:
+                if return_details:
+                    return "", [], None
                 return "", []
             return ""
 
@@ -468,6 +492,8 @@ async def _get_graph_context(
 
         local_evidence = []
         global_evidence = []
+        node_ids: List[str] = []
+        community_ids: List[int] = []
 
         if decision.path in ("local-first", "blended"):
             local_evidence, node_ids = await local_search_evidence(
@@ -538,13 +564,25 @@ async def _get_graph_context(
             decision.path,
             len(merged_units),
         )
+        details = GraphContextDetails(
+            route_decision=decision,
+            matched_entity_ids=list(node_ids),
+            community_ids=list(community_ids),
+            candidate_evidence_count=len(local_evidence) + len(global_evidence),
+            graph_latency_ms=max(int((time.perf_counter() - started_at) * 1000), 0),
+            graph_index_version=getattr(status, "index_version", None),
+        )
         if return_evidence:
+            if return_details:
+                return merged_context, list(merged_units), details
             return merged_context, list(merged_units)
         return merged_context
 
     except Exception as e:
         logger.warning(f"Graph context retrieval failed: {e}")
         if return_evidence:
+            if return_details:
+                return "", [], None
             return "", []
         return ""
 
@@ -569,6 +607,252 @@ def _to_graph_evidence_documents(evidence_units: List[GraphEvidence]) -> List[Do
             )
         )
     return evidence_documents
+
+
+def _summarize_graph_evidence_for_log(evidence_units: List[GraphEvidence]) -> dict[str, object]:
+    return {
+        "node_count": sum(1 for item in evidence_units if item.evidence_type == "local_node"),
+        "edge_count": sum(1 for item in evidence_units if item.evidence_type == "local_edge"),
+        "community_count": sum(
+            1
+            for item in evidence_units
+            if item.evidence_type in {"community_summary", "community_answer"}
+        ),
+        "graph_context_tokens": sum(item.token_estimate for item in evidence_units),
+    }
+
+
+def _normalize_evaluation_metadata(
+    mode_hints: Optional[Dict[str, Any]],
+    graph_execution_hints: Optional[Dict[str, Any]],
+) -> dict[str, Any]:
+    for source in (mode_hints, graph_execution_hints):
+        if not isinstance(source, dict):
+            continue
+        payload = source.get("evaluation_metadata")
+        if isinstance(payload, dict):
+            return dict(payload)
+    return {}
+
+
+def _graph_feature_flag_snapshot(
+    mode_hints: Optional[Dict[str, Any]],
+    graph_execution_hints: Optional[Dict[str, Any]],
+    evaluation_metadata: dict[str, Any],
+) -> dict[str, bool]:
+    source: dict[str, object] = {}
+    for candidate in (mode_hints, graph_execution_hints, evaluation_metadata):
+        if not isinstance(candidate, dict):
+            continue
+        flags = candidate.get("graph_feature_flags")
+        if isinstance(flags, dict):
+            source.update(flags)
+    return get_graph_feature_flags(source).to_snapshot()
+
+
+def _graph_evidence_mode(
+    mode_hints: Optional[Dict[str, Any]],
+    graph_execution_hints: Optional[Dict[str, Any]],
+    evaluation_metadata: dict[str, Any],
+) -> str:
+    for candidate in (evaluation_metadata, mode_hints, graph_execution_hints):
+        if not isinstance(candidate, dict):
+            continue
+        value = candidate.get("graph_evidence_mode")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "raw_current"
+
+
+def _graph_provenance_status(
+    *,
+    source_doc_ids: List[str],
+    source_chunk_ids: List[str],
+    pages: List[int],
+    asset_ids: List[str],
+) -> str:
+    if source_doc_ids and source_chunk_ids:
+        return "full"
+    if source_doc_ids or source_chunk_ids or pages or asset_ids:
+        return "partial"
+    return "missing"
+
+
+def _build_graph_evidence_items(
+    *,
+    graph_event_id: str,
+    evidence_units: List[GraphEvidence],
+    graph_evidence_mode: str,
+    created_at: datetime,
+) -> List[EvaluationGraphEvidenceItem]:
+    items: List[EvaluationGraphEvidenceItem] = []
+    locator_mode = graph_evidence_mode in {"locator_only", "locator_to_chunk"}
+    for unit in evidence_units:
+        metadata = dict(unit.metadata or {})
+        node_ids: List[str] = []
+        edge_ids: List[str] = []
+        relation_path: List[str] = []
+        source_doc_ids = [str(item) for item in metadata.get("doc_ids", []) if item]
+        source_chunk_ids = [str(item) for item in metadata.get("chunk_ids", []) if item]
+        pages = [int(item) for item in metadata.get("pages", []) if isinstance(item, int)]
+        asset_ids = [str(item) for item in metadata.get("asset_ids", []) if item]
+
+        if unit.evidence_type == "local_node":
+            node_id = metadata.get("node_id")
+            if node_id:
+                node_ids.append(str(node_id))
+        elif unit.evidence_type == "local_edge":
+            source_id = metadata.get("source_id")
+            target_id = metadata.get("target_id")
+            if source_id:
+                node_ids.append(str(source_id))
+            if target_id:
+                node_ids.append(str(target_id))
+            edge_ids.append(unit.evidence_id)
+            if source_id and target_id:
+                relation_path = [str(source_id), str(target_id)]
+
+        items.append(
+            EvaluationGraphEvidenceItem(
+                graph_evidence_item_id=unit.evidence_id,
+                graph_event_id=graph_event_id,
+                node_ids=node_ids,
+                edge_ids=edge_ids,
+                relation_path=relation_path,
+                source_doc_ids=source_doc_ids,
+                source_chunk_ids=source_chunk_ids,
+                pages=pages,
+                asset_ids=asset_ids,
+                confidence=max(0.0, min(float(unit.score), 1.0)),
+                provenance_status=_graph_provenance_status(
+                    source_doc_ids=source_doc_ids,
+                    source_chunk_ids=source_chunk_ids,
+                    pages=pages,
+                    asset_ids=asset_ids,
+                ),
+                used_as_locator=locator_mode,
+                packed_in_context=True,
+                used_in_answer=False,
+                supported_claim_ids=[],
+                created_at=created_at,
+            )
+        )
+    return items
+
+
+async def _record_graph_observability(
+    *,
+    question: str,
+    graph_search_mode: str,
+    graph_execution_hints: Optional[Dict[str, Any]],
+    mode_hints: Optional[Dict[str, Any]],
+    graph_context_details: Optional[GraphContextDetails],
+    graph_evidence_units: List[GraphEvidence],
+) -> None:
+    summary = _summarize_graph_evidence_for_log(graph_evidence_units)
+    evaluation_metadata = _normalize_evaluation_metadata(mode_hints, graph_execution_hints)
+    if not evaluation_metadata:
+        logger.debug(
+            "Graph retrieval observability skipped because evaluation metadata was absent: %s",
+            summary,
+        )
+        return
+
+    run_id = str(evaluation_metadata.get("run_id") or "").strip()
+    campaign_id = str(evaluation_metadata.get("campaign_id") or "").strip()
+    if not run_id or not campaign_id:
+        logger.debug(
+            "Graph retrieval observability skipped because run_id/campaign_id were missing: %s",
+            {
+                **summary,
+                "run_id_present": bool(run_id),
+                "campaign_id_present": bool(campaign_id),
+            },
+        )
+        return
+
+    if graph_context_details is None:
+        logger.debug(
+            "Graph retrieval observability skipped because graph context details were unavailable: %s",
+            summary,
+        )
+        return
+
+    created_at = datetime.now(timezone.utc)
+    feature_flags = _graph_feature_flag_snapshot(
+        mode_hints,
+        graph_execution_hints,
+        evaluation_metadata,
+    )
+    evidence_mode = _graph_evidence_mode(
+        mode_hints,
+        graph_execution_hints,
+        evaluation_metadata,
+    )
+    event_id = str(uuid4())
+    evidence_items = _build_graph_evidence_items(
+        graph_event_id=event_id,
+        evidence_units=graph_evidence_units,
+        graph_evidence_mode=evidence_mode,
+        created_at=created_at,
+    )
+    graph_to_chunk_attempted = evidence_mode in {"locator_only", "locator_to_chunk"}
+    resolved_item_count = sum(1 for item in evidence_items if item.source_chunk_ids)
+    total_item_count = len(evidence_items)
+    candidate_count = max(graph_context_details.candidate_evidence_count, total_item_count)
+    graph_snapshot_version = evaluation_metadata.get("graph_snapshot_version")
+    if not graph_snapshot_version and graph_context_details.graph_index_version is not None:
+        graph_snapshot_version = f"index-v{graph_context_details.graph_index_version}"
+    graph_schema_version = evaluation_metadata.get("graph_schema_version")
+    if not graph_schema_version and feature_flags.get("graph_schema_v1_enabled"):
+        graph_schema_version = "graph-schema-v1"
+
+    event = EvaluationGraphEvent(
+        graph_event_id=event_id,
+        run_id=run_id,
+        campaign_id=campaign_id,
+        span_id=str(evaluation_metadata.get("span_id") or "") or None,
+        graph_query=question,
+        graph_search_mode=graph_search_mode,
+        graph_evidence_mode=evidence_mode,
+        graph_route=graph_context_details.route_decision.path,
+        router_reason=graph_context_details.route_decision.router_reason,
+        graph_feature_flags=feature_flags,
+        graph_snapshot_version=str(graph_snapshot_version) if graph_snapshot_version else None,
+        graph_schema_version=str(graph_schema_version) if graph_schema_version else None,
+        graph_extraction_prompt_version=(
+            str(evaluation_metadata.get("graph_extraction_prompt_version"))
+            if evaluation_metadata.get("graph_extraction_prompt_version")
+            else None
+        ),
+        matched_entity_ids=list(graph_context_details.matched_entity_ids),
+        community_ids=list(graph_context_details.community_ids),
+        node_count=int(summary["node_count"]),
+        edge_count=int(summary["edge_count"]),
+        path_count=int(summary["edge_count"]),
+        graph_latency_ms=graph_context_details.graph_latency_ms,
+        graph_context_tokens=int(summary["graph_context_tokens"]),
+        graph_to_chunk_success_rate=(
+            (resolved_item_count / total_item_count)
+            if graph_to_chunk_attempted and total_item_count
+            else None
+        ),
+        graph_noise_ratio=(
+            max(candidate_count - total_item_count, 0) / candidate_count
+            if candidate_count
+            else None
+        ),
+        created_at=created_at,
+    )
+
+    try:
+        from evaluation.observability_storage import EvaluationObservabilityRepository
+
+        repository = EvaluationObservabilityRepository()
+        await repository.record_graph_event(event)
+        await repository.record_graph_evidence_items(evidence_items)
+    except Exception:
+        logger.warning("Failed to persist graph retrieval observability", exc_info=True)
 
 
 def _resolve_intent_hint(
@@ -1115,6 +1399,7 @@ async def rag_answer_question(
     # Step 5.5: GraphRAG context enhancement
     graph_context = ""
     graph_evidence_units: List[GraphEvidence] = []
+    graph_context_details: Optional[GraphContextDetails] = None
     if enable_graph_rag:
         await _emit_progress(
             progress_callback,
@@ -1127,9 +1412,18 @@ async def rag_answer_question(
             search_mode=graph_search_mode,
             graph_execution_hints=graph_execution_hints,
             return_evidence=return_docs,
+            return_details=return_docs,
         )
         if return_docs:
-            graph_context, graph_evidence_units = graph_context_payload
+            graph_context, graph_evidence_units, graph_context_details = graph_context_payload
+            await _record_graph_observability(
+                question=question,
+                graph_search_mode=graph_search_mode,
+                graph_execution_hints=graph_execution_hints,
+                mode_hints=mode_hints,
+                graph_context_details=graph_context_details,
+                graph_evidence_units=graph_evidence_units,
+            )
         else:
             graph_context = graph_context_payload
 

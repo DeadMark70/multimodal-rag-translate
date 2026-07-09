@@ -196,7 +196,10 @@
   - `evaluation_routing_decisions`
   - `evaluation_claims`
   - `evaluation_human_ratings`
+  - `evaluation_graph_events`
+  - `evaluation_graph_evidence_items`
 - Each table is keyed by `run_id` and `campaign_id` so research APIs can assemble run detail without inflating `campaign_results`.
+- Table creation and additive column repair for these observability rows live in `evaluation/db.py`; repository read/write methods stay in `evaluation/observability_storage.py`.
 - Current detail payload shapes:
   - trace events: stage span/event rows with `event_schema_version`, `sequence`, `stage_type`, `stage_name`, `status`, `payload`, `error`
   - LLM calls: provider/model/tokens/cost plus `prompt_hash`, `prompt_preview`, `response_hash`
@@ -206,6 +209,8 @@
   - routing: retrospective routing decision rows
   - claims: support status, evidence list, unsupported reason, repair metadata
   - human ratings: rubric scores plus blinded-review flags
+  - graph events: route, evidence mode, feature-flag snapshot, graph schema/prompt snapshots, matched entities/communities, and graph retrieval latency/token summaries
+  - graph evidence items: per-evidence lifecycle rows capturing node/edge ids, provenance status, locator usage, and context-packing state
 - Recorder writes are best-effort by default. `EvaluationRunRecorder(strict=False)` logs failures and does not fail the campaign on observability write errors.
 
 ### Research And Analytics API
@@ -301,5 +306,6 @@
   - `payload.full_prompt` is removed unless `include_full_prompts=true`
   - answer, ground truth, and final-answer hash are removed when `include_answers=false`
   - retrieval excerpts and result context/source lists are removed when `include_retrieved_excerpts=false`
+  - each `retrieval_summary[]` row now also carries `graph_events`, `graph_event_count`, `graph_evidence_items`, and `graph_evidence_item_count` when GraphRAG observability rows exist for that run
   - `question_snapshot` is always partially redacted on export by removing `ground_truth`, `ground_truth_short`, `source_docs`, `atomic_facts`, and `expected_evidence`
 - Sanitized errors are stored and exported instead of raw provider dumps. Multiline stack traces and obvious secrets are redacted.

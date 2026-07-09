@@ -172,6 +172,47 @@ _OBSERVABILITY_TABLE_COLUMNS = {
         "payload_json": "TEXT NOT NULL DEFAULT '{}'",
         "created_at": "TEXT NOT NULL DEFAULT ''",
     },
+    "evaluation_graph_events": {
+        "run_id": "TEXT NOT NULL DEFAULT ''",
+        "campaign_id": "TEXT",
+        "span_id": "TEXT",
+        "graph_query": "TEXT NOT NULL DEFAULT ''",
+        "graph_search_mode": "TEXT NOT NULL DEFAULT ''",
+        "graph_evidence_mode": "TEXT NOT NULL DEFAULT 'raw_current'",
+        "graph_route": "TEXT NOT NULL DEFAULT ''",
+        "router_reason": "TEXT",
+        "graph_feature_flags_json": "TEXT NOT NULL DEFAULT '{}'",
+        "graph_snapshot_version": "TEXT",
+        "graph_schema_version": "TEXT",
+        "graph_extraction_prompt_version": "TEXT",
+        "matched_entity_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+        "community_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+        "node_count": "INTEGER NOT NULL DEFAULT 0",
+        "edge_count": "INTEGER NOT NULL DEFAULT 0",
+        "path_count": "INTEGER NOT NULL DEFAULT 0",
+        "graph_latency_ms": "INTEGER",
+        "graph_context_tokens": "INTEGER NOT NULL DEFAULT 0",
+        "graph_to_chunk_success_rate": "REAL",
+        "graph_noise_ratio": "REAL",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+    },
+    "evaluation_graph_evidence_items": {
+        "graph_event_id": "TEXT NOT NULL DEFAULT ''",
+        "node_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+        "edge_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+        "relation_path_json": "TEXT NOT NULL DEFAULT '[]'",
+        "source_doc_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+        "source_chunk_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+        "pages_json": "TEXT NOT NULL DEFAULT '[]'",
+        "asset_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+        "confidence": "REAL NOT NULL DEFAULT 0",
+        "provenance_status": "TEXT NOT NULL DEFAULT 'missing'",
+        "used_as_locator": "INTEGER NOT NULL DEFAULT 1",
+        "packed_in_context": "INTEGER NOT NULL DEFAULT 0",
+        "used_in_answer": "INTEGER NOT NULL DEFAULT 0",
+        "supported_claim_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+    },
 }
 _INIT_SQL = """
 CREATE TABLE IF NOT EXISTS campaigns (
@@ -397,6 +438,53 @@ CREATE TABLE IF NOT EXISTS evaluation_human_ratings (
     payload_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_graph_events (
+    graph_event_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    campaign_id TEXT,
+    span_id TEXT,
+    graph_query TEXT NOT NULL,
+    graph_search_mode TEXT NOT NULL,
+    graph_evidence_mode TEXT NOT NULL DEFAULT 'raw_current',
+    graph_route TEXT NOT NULL,
+    router_reason TEXT,
+    graph_feature_flags_json TEXT NOT NULL DEFAULT '{}',
+    graph_snapshot_version TEXT,
+    graph_schema_version TEXT,
+    graph_extraction_prompt_version TEXT,
+    matched_entity_ids_json TEXT NOT NULL DEFAULT '[]',
+    community_ids_json TEXT NOT NULL DEFAULT '[]',
+    node_count INTEGER NOT NULL DEFAULT 0,
+    edge_count INTEGER NOT NULL DEFAULT 0,
+    path_count INTEGER NOT NULL DEFAULT 0,
+    graph_latency_ms INTEGER,
+    graph_context_tokens INTEGER NOT NULL DEFAULT 0,
+    graph_to_chunk_success_rate REAL,
+    graph_noise_ratio REAL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_graph_evidence_items (
+    graph_evidence_item_id TEXT PRIMARY KEY,
+    graph_event_id TEXT NOT NULL,
+    node_ids_json TEXT NOT NULL DEFAULT '[]',
+    edge_ids_json TEXT NOT NULL DEFAULT '[]',
+    relation_path_json TEXT NOT NULL DEFAULT '[]',
+    source_doc_ids_json TEXT NOT NULL DEFAULT '[]',
+    source_chunk_ids_json TEXT NOT NULL DEFAULT '[]',
+    pages_json TEXT NOT NULL DEFAULT '[]',
+    asset_ids_json TEXT NOT NULL DEFAULT '[]',
+    confidence REAL NOT NULL DEFAULT 0,
+    provenance_status TEXT NOT NULL DEFAULT 'missing',
+    used_as_locator INTEGER NOT NULL DEFAULT 1,
+    packed_in_context INTEGER NOT NULL DEFAULT 0,
+    used_in_answer INTEGER NOT NULL DEFAULT 0,
+    supported_claim_ids_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(graph_event_id) REFERENCES evaluation_graph_events(graph_event_id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS agent_traces (
@@ -656,6 +744,24 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_eval_human_ratings_campaign_run
         ON evaluation_human_ratings(campaign_id, run_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_graph_events_run_created
+        ON evaluation_graph_events(run_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_graph_events_campaign_run
+        ON evaluation_graph_events(campaign_id, run_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_graph_evidence_items_event
+        ON evaluation_graph_evidence_items(graph_event_id, created_at ASC)
         """
     )
 
