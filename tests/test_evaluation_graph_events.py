@@ -5,12 +5,14 @@ from uuid import uuid4
 
 import pytest
 
+from data_base.RAG_QA_service import _build_graph_evidence_items, _filter_graph_query_hints
 from evaluation import db as evaluation_db
 from evaluation.observability_storage import (
     EvaluationGraphEventRepository,
     EvaluationGraphEvidenceItemRepository,
 )
 from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
+from graph_rag.generic_mode import GraphEvidence
 
 
 def _now() -> datetime:
@@ -174,3 +176,94 @@ async def test_graph_observability_repositories_round_trip_graph_rows(
         assert campaign_items["run-1"][0].graph_evidence_item_id == "gei-1"
     finally:
         db_path.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_graph_evidence_items_keep_history_across_events_with_shared_source_ids(
+    monkeypatch,
+) -> None:
+    db_path = Path(os.environ["TEMP"]) / f"graph-evidence-history-{uuid4().hex}.sqlite3"
+    try:
+        monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", db_path)
+        await _seed_campaign("campaign-graph-history")
+
+        event_repository = EvaluationGraphEventRepository()
+        item_repository = EvaluationGraphEvidenceItemRepository()
+        created_at = _now()
+
+        first_event = EvaluationGraphEvent(
+            graph_event_id="ge-1",
+            run_id="run-1",
+            campaign_id="campaign-graph-history",
+            graph_query="first graph query",
+            graph_search_mode="generic",
+            graph_evidence_mode="raw_current",
+            graph_route="local-first",
+            created_at=created_at,
+        )
+        second_event = EvaluationGraphEvent(
+            graph_event_id="ge-2",
+            run_id="run-1",
+            campaign_id="campaign-graph-history",
+            graph_query="second graph query",
+            graph_search_mode="generic",
+            graph_evidence_mode="raw_current",
+            graph_route="local-first",
+            created_at=created_at,
+        )
+        shared_evidence = GraphEvidence(
+            evidence_id="shared-edge-1",
+            evidence_type="local_edge",
+            text="Shared relation evidence",
+            score=0.91,
+            token_estimate=6,
+            metadata={"source_id": "node-a", "target_id": "node-b"},
+        )
+
+        first_items = _build_graph_evidence_items(
+            graph_event_id=first_event.graph_event_id,
+            evidence_units=[shared_evidence],
+            graph_evidence_mode="raw_current",
+            created_at=created_at,
+        )
+        second_items = _build_graph_evidence_items(
+            graph_event_id=second_event.graph_event_id,
+            evidence_units=[shared_evidence],
+            graph_evidence_mode="raw_current",
+            created_at=created_at,
+        )
+
+        await event_repository.record_graph_event(first_event)
+        await event_repository.record_graph_event(second_event)
+        await item_repository.record_graph_evidence_items(first_items)
+        await item_repository.record_graph_evidence_items(second_items)
+
+        run_items = await item_repository.list_graph_evidence_items_for_run("run-1")
+        items_by_event = {
+            item.graph_event_id: item.graph_evidence_item_id for item in run_items
+        }
+
+        assert len(run_items) == 2
+        assert items_by_event == {
+            "ge-1": "ge-1:shared-edge-1",
+            "ge-2": "ge-2:shared-edge-1",
+        }
+    finally:
+        db_path.unlink(missing_ok=True)
+
+
+def test_filter_graph_query_hints_ignores_observability_metadata() -> None:
+    hints = _filter_graph_query_hints(
+        {
+            "stage_hint": "verification",
+            "prefer_local": True,
+            "evaluation_metadata": {"run_id": "run-1"},
+            "graph_feature_flags": {"graph_raw_current_enabled": True},
+            "unexpected": "ignored",
+        }
+    )
+
+    assert hints.stage_hint == "verification"
+    assert hints.prefer_local is True
+    assert hints.task_type_hint is None
+    assert hints.prefer_global is False

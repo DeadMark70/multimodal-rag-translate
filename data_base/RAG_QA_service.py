@@ -469,7 +469,7 @@ async def _get_graph_context(
             )
 
         effective_mode = "generic" if search_mode == "auto" else search_mode
-        hints = GraphQueryHints(**(graph_execution_hints or {}))
+        hints = _filter_graph_query_hints(graph_execution_hints)
         has_hierarchy = bool(status.community_level_counts.get("1"))
         has_communities = status.community_count > 0
 
@@ -635,6 +635,18 @@ def _normalize_evaluation_metadata(
     return {}
 
 
+def _filter_graph_query_hints(
+    graph_execution_hints: Optional[Dict[str, Any]],
+) -> GraphQueryHints:
+    if not isinstance(graph_execution_hints, dict):
+        return GraphQueryHints()
+    allowed_keys = GraphQueryHints.__dataclass_fields__.keys()
+    filtered = {
+        key: value for key, value in graph_execution_hints.items() if key in allowed_keys
+    }
+    return GraphQueryHints(**filtered)
+
+
 def _graph_feature_flag_snapshot(
     mode_hints: Optional[Dict[str, Any]],
     graph_execution_hints: Optional[Dict[str, Any]],
@@ -678,6 +690,10 @@ def _graph_provenance_status(
     return "missing"
 
 
+def _graph_evidence_item_id(graph_event_id: str, evidence_id: str) -> str:
+    return f"{graph_event_id}:{evidence_id}"
+
+
 def _build_graph_evidence_items(
     *,
     graph_event_id: str,
@@ -714,7 +730,9 @@ def _build_graph_evidence_items(
 
         items.append(
             EvaluationGraphEvidenceItem(
-                graph_evidence_item_id=unit.evidence_id,
+                graph_evidence_item_id=_graph_evidence_item_id(
+                    graph_event_id, unit.evidence_id
+                ),
                 graph_event_id=graph_event_id,
                 node_ids=node_ids,
                 edge_ids=edge_ids,
