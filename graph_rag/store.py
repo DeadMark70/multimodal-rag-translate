@@ -803,6 +803,22 @@ class GraphStore:
                     edges_to_remove.append((source, target))
                 else:
                     self.graph.edges[source, target]["doc_ids"] = list(edge_docs)
+                    relation = data.get("relation", "related")
+                    edge_id = data.get("edge_id") or self.edge_id(source, target, relation)
+                    provenance = self.edge_provenance.get(edge_id)
+                    if provenance is not None:
+                        remaining_anchors = [
+                            anchor
+                            for anchor in provenance.anchors
+                            if anchor.doc_id != doc_id
+                        ]
+                        if remaining_anchors:
+                            self.edge_provenance[edge_id] = provenance.model_copy(
+                                update={"anchors": remaining_anchors},
+                                deep=True,
+                            )
+                        else:
+                            provenance_ids_to_remove.add(edge_id)
         
         for source, target in edges_to_remove:
             self.graph.remove_edge(source, target)

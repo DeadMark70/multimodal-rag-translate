@@ -159,6 +159,114 @@ def test_remove_document_cleans_incident_edge_provenance_with_legacy_edge_docs()
         shutil.rmtree(store_dir, ignore_errors=True)
 
 
+def test_remove_document_prunes_surviving_edge_provenance_anchors() -> None:
+    store_dir = Path(tempfile.gettempdir()) / f"graph-store-{uuid4().hex}"
+    store_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        store = GraphStore("user-1", storage_dir=store_dir)
+
+        source_id = store.add_node_from_extraction("MedSAM", EntityType.METHOD, "doc-1")
+        store.graph.nodes[source_id]["doc_ids"] = ["doc-1", "doc-2"]
+        target_id = store.add_node_from_extraction("SAM", EntityType.METHOD, "doc-2")
+        store.add_edge(
+            GraphEdge(
+                source_id=source_id,
+                target_id=target_id,
+                relation="extends",
+                doc_ids=["doc-1", "doc-2"],
+            )
+        )
+
+        edge_id = store.graph.edges[source_id, target_id]["edge_id"]
+        store.record_edge_provenance(
+            edge_id,
+            [
+                EvidenceAnchor(
+                    doc_id="doc-1",
+                    chunk_id="chunk-1",
+                    chunk_index=0,
+                    quote="Doc 1 evidence.",
+                    quote_hash="quote-hash-1",
+                    chunk_hash="chunk-hash-1",
+                    confidence=0.8,
+                ),
+                EvidenceAnchor(
+                    doc_id="doc-2",
+                    chunk_id="chunk-2",
+                    chunk_index=1,
+                    quote="Doc 2 evidence.",
+                    quote_hash="quote-hash-2",
+                    chunk_hash="chunk-hash-2",
+                    confidence=0.9,
+                ),
+            ],
+        )
+        store.save()
+
+        removed_nodes = store.remove_document("doc-1")
+        store.save()
+
+        reloaded = GraphStore("user-1", storage_dir=store_dir)
+        reloaded_edge = reloaded.graph.edges[source_id, target_id]
+        anchors = reloaded.get_edge_provenance(edge_id)
+
+        assert removed_nodes == 0
+        assert reloaded.graph.has_edge(source_id, target_id)
+        assert sorted(reloaded_edge["doc_ids"]) == ["doc-2"]
+        assert [anchor.doc_id for anchor in anchors] == ["doc-2"]
+    finally:
+        shutil.rmtree(store_dir, ignore_errors=True)
+
+
+def test_remove_document_drops_surviving_edge_provenance_when_no_anchors_remain() -> None:
+    store_dir = Path(tempfile.gettempdir()) / f"graph-store-{uuid4().hex}"
+    store_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        store = GraphStore("user-1", storage_dir=store_dir)
+
+        source_id = store.add_node_from_extraction("MedSAM", EntityType.METHOD, "doc-1")
+        store.graph.nodes[source_id]["doc_ids"] = ["doc-1", "doc-2"]
+        target_id = store.add_node_from_extraction("SAM", EntityType.METHOD, "doc-2")
+        store.add_edge(
+            GraphEdge(
+                source_id=source_id,
+                target_id=target_id,
+                relation="extends",
+                doc_ids=["doc-1", "doc-2"],
+            )
+        )
+
+        edge_id = store.graph.edges[source_id, target_id]["edge_id"]
+        store.record_edge_provenance(
+            edge_id,
+            [
+                EvidenceAnchor(
+                    doc_id="doc-1",
+                    chunk_id="chunk-1",
+                    chunk_index=0,
+                    quote="Doc 1 evidence.",
+                    quote_hash="quote-hash-1",
+                    chunk_hash="chunk-hash-1",
+                    confidence=0.8,
+                )
+            ],
+        )
+        store.save()
+
+        removed_nodes = store.remove_document("doc-1")
+        store.save()
+
+        reloaded = GraphStore("user-1", storage_dir=store_dir)
+
+        assert removed_nodes == 0
+        assert reloaded.graph.has_edge(source_id, target_id)
+        assert reloaded.graph.edges[source_id, target_id]["doc_ids"] == ["doc-2"]
+        assert reloaded.get_edge_provenance(edge_id) == []
+        assert edge_id not in reloaded.edge_provenance
+    finally:
+        shutil.rmtree(store_dir, ignore_errors=True)
+
+
 def test_atomic_write_json_preserves_existing_file_until_replace_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
