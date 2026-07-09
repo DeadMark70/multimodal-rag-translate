@@ -775,6 +775,21 @@ class GraphStore:
                 else:
                     # Update doc_ids
                     self.graph.nodes[node_id]["doc_ids"] = list(doc_ids)
+
+        node_ids_to_remove = set(nodes_to_remove)
+        provenance_ids_to_remove: Set[str] = set()
+        for source, target, data in self.graph.edges(data=True):
+            edge_docs = set(data.get("doc_ids", []))
+            if doc_id not in edge_docs:
+                continue
+
+            edge_removed_with_node = (
+                source in node_ids_to_remove or target in node_ids_to_remove
+            )
+            if edge_removed_with_node or not (edge_docs - {doc_id}):
+                relation = data.get("relation", "related")
+                edge_id = data.get("edge_id") or self.edge_id(source, target, relation)
+                provenance_ids_to_remove.add(edge_id)
         
         # Remove nodes (edges are automatically removed)
         for node_id in nodes_to_remove:
@@ -789,14 +804,15 @@ class GraphStore:
                 edge_docs.discard(doc_id)
                 
                 if not edge_docs:
-                    relation = data.get("relation", "related")
-                    self.edge_provenance.pop(self.edge_id(source, target, relation), None)
                     edges_to_remove.append((source, target))
                 else:
                     self.graph.edges[source, target]["doc_ids"] = list(edge_docs)
         
         for source, target in edges_to_remove:
             self.graph.remove_edge(source, target)
+
+        for edge_id in provenance_ids_to_remove:
+            self.edge_provenance.pop(edge_id, None)
         
         logger.info(
             f"Removed doc {doc_id} from graph: "
