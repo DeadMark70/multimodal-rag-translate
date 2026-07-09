@@ -527,15 +527,28 @@ class EvaluationAnalyticsService:
         )
 
     async def campaign_errors(self, *, user_id: str, campaign_id: str) -> CampaignErrorsResponse:
-        await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
-        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        trace_events_by_run = await self._observability_repository.list_trace_events_for_campaign(campaign_id)
+        return self._build_campaign_errors(
+            context=context,
+            trace_events_by_run=trace_events_by_run,
+            llm_calls_by_run=context.llm_calls_by_run,
+        )
+
+    def _build_campaign_errors(
+        self,
+        *,
+        context: _CampaignAnalyticsContext,
+        trace_events_by_run: dict[str, list[Any]],
+        llm_calls_by_run: dict[str, list[Any]],
+    ) -> CampaignErrorsResponse:
         rows: list[SanitizedErrorRow] = []
-        for result in results:
+        for result in context.results:
             if result.error_message:
                 rows.append(
                     SanitizedErrorRow(
                         run_id=result.id,
-                        campaign_id=campaign_id,
+                        campaign_id=context.campaign_id,
                         stage_name="campaign_run",
                         code="RUN_FAILED",
                         message=_sanitize_error_message(result.error_message),
@@ -543,13 +556,13 @@ class EvaluationAnalyticsService:
                         created_at=result.created_at,
                     )
                 )
-            for item in await self._observability_repository.list_trace_events_for_run(result.id):
-                if item.campaign_id != campaign_id or (not item.error and item.status != "failed"):
+            for item in trace_events_by_run.get(result.id, []):
+                if item.campaign_id != context.campaign_id or (not item.error and item.status != "failed"):
                     continue
                 rows.append(
                     SanitizedErrorRow(
                         run_id=result.id,
-                        campaign_id=campaign_id,
+                        campaign_id=context.campaign_id,
                         stage_name=item.stage_name,
                         code=str(item.error.get("code") or item.error.get("type") or "TRACE_FAILED"),
                         message=_sanitize_error_message(item.error.get("message")),
@@ -557,13 +570,13 @@ class EvaluationAnalyticsService:
                         created_at=item.created_at,
                     )
                 )
-            for call in await self._observability_repository.list_llm_calls_for_run(result.id):
-                if call.campaign_id != campaign_id or (not call.error and call.status != "failed"):
+            for call in llm_calls_by_run.get(result.id, []):
+                if call.campaign_id != context.campaign_id or (not call.error and call.status != "failed"):
                     continue
                 rows.append(
                     SanitizedErrorRow(
                         run_id=result.id,
-                        campaign_id=campaign_id,
+                        campaign_id=context.campaign_id,
                         stage_name=str(call.purpose or "llm_call"),
                         code=str(call.error.get("code") or "LLM_CALL_FAILED"),
                         message=_sanitize_error_message(call.error.get("message")),
@@ -572,7 +585,7 @@ class EvaluationAnalyticsService:
                     )
                 )
         rows.sort(key=lambda item: (item.created_at, item.run_id, item.stage_name))
-        return CampaignErrorsResponse(campaign_id=campaign_id, rows=rows)
+        return CampaignErrorsResponse(campaign_id=context.campaign_id, rows=rows)
 
     async def export_campaign(
         self,
@@ -581,18 +594,20 @@ class EvaluationAnalyticsService:
         campaign_id: str,
         request: ExportCampaignRequest,
     ) -> ExportCampaignResponse:
-        campaign = await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
-        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        trace_events_by_run = await self._observability_repository.list_trace_events_for_campaign(campaign_id)
+        retrieval_chunks_by_run = await self._observability_repository.list_retrieval_chunks_for_campaign(campaign_id)
+        claims_by_run = await self._observability_repository.list_claims_for_campaign(campaign_id)
         runs: list[dict[str, Any]] = []
         trace_events: list[dict[str, Any]] = []
         llm_calls: list[dict[str, Any]] = []
         retrieval_summary: list[dict[str, Any]] = []
         claim_summary: list[dict[str, Any]] = []
-        for result in results:
+        for result in context.results:
             row = result.model_dump(mode="json")
             runs.append(_redact_export_run(row, request))
 
-            for event in await self._observability_repository.list_trace_events_for_run(result.id):
+            for event in trace_events_by_run.get(result.id, []):
                 if event.campaign_id != campaign_id:
                     continue
                 event_row = _dump(event)
@@ -600,7 +615,7 @@ class EvaluationAnalyticsService:
                     event_row["payload"] = {}
                 trace_events.append(event_row)
 
-            for call in await self._observability_repository.list_llm_calls_for_run(result.id):
+            for call in context.llm_calls_by_run.get(result.id, []):
                 if call.campaign_id != campaign_id:
                     continue
                 call_row = _dump(call)
@@ -615,7 +630,7 @@ class EvaluationAnalyticsService:
 
             chunks = [
                 _dump(chunk)
-                for chunk in await self._observability_repository.list_retrieval_chunks_for_run(result.id)
+                for chunk in retrieval_chunks_by_run.get(result.id, [])
                 if chunk.campaign_id == campaign_id
             ]
             if not request.include_retrieved_excerpts:
@@ -633,15 +648,19 @@ class EvaluationAnalyticsService:
                     "run_id": result.id,
                     "claims": [
                         _dump(claim)
-                        for claim in await self._observability_repository.list_claims_for_run(result.id)
+                        for claim in claims_by_run.get(result.id, [])
                         if claim.campaign_id == campaign_id
                     ],
                 }
             )
-        overview = await self.campaign_overview(user_id=user_id, campaign_id=campaign_id)
-        errors = await self.campaign_errors(user_id=user_id, campaign_id=campaign_id)
+        overview = context.overview or self._build_campaign_overview(context)
+        errors = self._build_campaign_errors(
+            context=context,
+            trace_events_by_run=trace_events_by_run,
+            llm_calls_by_run=context.llm_calls_by_run,
+        )
         return ExportCampaignResponse(
-            campaign=campaign.model_dump(mode="json"),
+            campaign=context.campaign.model_dump(mode="json"),
             redaction=request.model_dump(mode="json"),
             runs=runs,
             metrics={
