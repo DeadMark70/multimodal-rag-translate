@@ -6,6 +6,7 @@ import hashlib
 import math
 import re
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from statistics import mean
 from typing import Any, Literal
 from uuid import uuid4
@@ -193,6 +194,15 @@ def _inter_rater_agreement(values_by_run: dict[str, list[EvaluationHumanRating]]
     return max(min(mean(agreement_scores), 1.0), 0.0)
 
 
+@dataclass
+class _CampaignAnalyticsContext:
+    campaign: Any
+    campaign_id: str
+    results: list[Any]
+    llm_calls_by_run: dict[str, list[Any]]
+    overview: CampaignOverviewResponse | None = None
+
+
 class EvaluationAnalyticsService:
     """Read-only analytics API over campaign result and observability tables."""
 
@@ -208,10 +218,30 @@ class EvaluationAnalyticsService:
         self._observability_repository = observability_repository or EvaluationObservabilityRepository()
 
     async def campaign_overview(self, *, user_id: str, campaign_id: str) -> CampaignOverviewResponse:
+        context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        return context.overview or self._build_campaign_overview(context)
+
+    async def _load_campaign_context(self, *, user_id: str, campaign_id: str) -> _CampaignAnalyticsContext:
         campaign = await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
         results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
-        llm_calls_by_run = [await self._observability_repository.list_llm_calls_for_run(item.id) for item in results]
-        all_llm_calls = [call for calls in llm_calls_by_run for call in calls if call.campaign_id == campaign_id]
+        llm_calls_by_run = await self._observability_repository.list_llm_calls_for_campaign(campaign_id)
+        context = _CampaignAnalyticsContext(
+            campaign=campaign,
+            campaign_id=campaign_id,
+            results=results,
+            llm_calls_by_run=llm_calls_by_run,
+        )
+        context.overview = self._build_campaign_overview(context)
+        return context
+
+    def _build_campaign_overview(self, context: _CampaignAnalyticsContext) -> CampaignOverviewResponse:
+        all_llm_calls = [
+            call
+            for calls in context.llm_calls_by_run.values()
+            for call in calls
+            if call.campaign_id == context.campaign_id
+        ]
+        results = context.results
         sample_count = len(results)
         independent_question_count = len({item.question_id for item in results})
         repeat_count = max((_repeat_number(item) for item in results), default=0)
@@ -222,7 +252,7 @@ class EvaluationAnalyticsService:
         )
         total_cost_twd, _, _, _ = _cost_rollup([call.estimated_cost_twd for call in all_llm_calls])
         return CampaignOverviewResponse(
-            campaign_id=campaign.id,
+            campaign_id=context.campaign.id,
             sample_count=sample_count,
             independent_question_count=independent_question_count,
             repeat_count=repeat_count,
@@ -238,8 +268,9 @@ class EvaluationAnalyticsService:
         )
 
     async def mode_comparison(self, *, user_id: str, campaign_id: str) -> ModeComparisonResponse:
-        overview = await self.campaign_overview(user_id=user_id, campaign_id=campaign_id)
-        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        overview = context.overview or self._build_campaign_overview(context)
+        results = context.results
         by_mode: dict[str, list[Any]] = defaultdict(list)
         for result in results:
             by_mode[str(result.mode)].append(result)
@@ -269,8 +300,9 @@ class EvaluationAnalyticsService:
         )
 
     async def question_comparison(self, *, user_id: str, campaign_id: str) -> QuestionComparisonResponse:
-        overview = await self.campaign_overview(user_id=user_id, campaign_id=campaign_id)
-        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        overview = context.overview or self._build_campaign_overview(context)
+        results = context.results
         by_question: dict[str, list[Any]] = defaultdict(list)
         for result in results:
             by_question[result.question_id].append(result)
@@ -292,7 +324,8 @@ class EvaluationAnalyticsService:
         )
 
     async def cost_latency(self, *, user_id: str, campaign_id: str) -> CostLatencyResponse:
-        overview = await self.campaign_overview(user_id=user_id, campaign_id=campaign_id)
+        context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        overview = context.overview or self._build_campaign_overview(context)
         warnings = []
         if overview.cost_status != "complete":
             warnings.append("Some LLM calls have unknown price estimates; cost totals are omitted.")
@@ -316,8 +349,9 @@ class EvaluationAnalyticsService:
         )
 
     async def router_analysis(self, *, user_id: str, campaign_id: str) -> RouterAnalysisResponse:
-        overview = await self.campaign_overview(user_id=user_id, campaign_id=campaign_id)
-        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        overview = context.overview or self._build_campaign_overview(context)
+        results = context.results
         decisions = []
         for result in results:
             decisions.extend(
@@ -338,8 +372,9 @@ class EvaluationAnalyticsService:
         )
 
     async def ablation(self, *, user_id: str, campaign_id: str) -> AblationResponse:
-        overview = await self.campaign_overview(user_id=user_id, campaign_id=campaign_id)
-        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        overview = context.overview or self._build_campaign_overview(context)
+        results = context.results
         by_condition: dict[str, int] = Counter(
             str(result.derived_metrics.get("condition_id") or result.execution_profile or "default")
             for result in results
@@ -620,8 +655,9 @@ class EvaluationAnalyticsService:
         )
 
     async def repeat_stability(self, *, user_id: str, campaign_id: str) -> RepeatStabilitySummary:
-        overview = await self.campaign_overview(user_id=user_id, campaign_id=campaign_id)
-        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        overview = context.overview or self._build_campaign_overview(context)
+        results = context.results
         by_unit: dict[str, list[Any]] = defaultdict(list)
         for result in results:
             key = f"{result.question_id}:{result.mode}"
