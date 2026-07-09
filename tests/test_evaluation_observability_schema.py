@@ -83,6 +83,13 @@ async def _index_names() -> set[str]:
     return {str(row["name"]) for row in rows}
 
 
+async def _index_columns(index_name: str) -> list[str]:
+    async with evaluation_db.connect_db() as connection:
+        cursor = await connection.execute(f"PRAGMA index_info({index_name})")
+        rows = await cursor.fetchall()
+    return [str(row["name"]) for row in rows]
+
+
 @pytest.mark.asyncio
 async def test_observability_tables_columns_and_indexes_are_created(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
@@ -125,6 +132,7 @@ async def test_observability_tables_columns_and_indexes_are_created(tmp_path, mo
     context_pack_columns = await _table_columns("evaluation_context_packs")
     assert "retrieved_but_not_packed_evidence_json" in context_pack_columns
 
+    index_names = await _index_names()
     assert {
         "idx_eval_trace_events_run_started",
         "idx_eval_llm_calls_run_purpose",
@@ -132,7 +140,18 @@ async def test_observability_tables_columns_and_indexes_are_created(tmp_path, mo
         "idx_eval_claims_run_created",
         "idx_eval_human_ratings_run_created",
         "idx_eval_retrieval_chunks_event",
-    }.issubset(await _index_names())
+    }.issubset(index_names)
+
+    campaign_index_prefixes = {
+        "idx_eval_trace_events_campaign_run": ["campaign_id", "run_id"],
+        "idx_eval_llm_calls_campaign_run": ["campaign_id", "run_id"],
+        "idx_eval_retrieval_chunks_campaign_run": ["campaign_id", "run_id"],
+        "idx_eval_claims_campaign_run": ["campaign_id", "run_id"],
+        "idx_eval_human_ratings_campaign_run": ["campaign_id", "run_id"],
+    }
+    assert campaign_index_prefixes.keys() <= index_names
+    for index_name, expected_prefix in campaign_index_prefixes.items():
+        assert (await _index_columns(index_name))[: len(expected_prefix)] == expected_prefix
 
 
 @pytest.mark.asyncio

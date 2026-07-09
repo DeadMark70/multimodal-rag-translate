@@ -570,8 +570,20 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
     )
     await connection.execute(
         """
+        CREATE INDEX IF NOT EXISTS idx_eval_trace_events_campaign_run
+        ON evaluation_trace_events(campaign_id, run_id, sequence ASC, started_at ASC)
+        """
+    )
+    await connection.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_eval_llm_calls_run_purpose
         ON evaluation_llm_calls(run_id, purpose)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_llm_calls_campaign_run
+        ON evaluation_llm_calls(campaign_id, run_id, created_at ASC)
         """
     )
     await connection.execute(
@@ -590,6 +602,18 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_eval_retrieval_chunks_run_event
         ON evaluation_retrieval_chunks(run_id, retrieval_event_id)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_retrieval_chunks_campaign_run
+        ON evaluation_retrieval_chunks(
+            campaign_id,
+            run_id,
+            retrieval_event_id,
+            rank_after_rerank,
+            created_at ASC
+        )
         """
     )
     await connection.execute(
@@ -618,8 +642,20 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
     )
     await connection.execute(
         """
+        CREATE INDEX IF NOT EXISTS idx_eval_claims_campaign_run
+        ON evaluation_claims(campaign_id, run_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_eval_human_ratings_run_created
         ON evaluation_human_ratings(run_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_human_ratings_campaign_run
+        ON evaluation_human_ratings(campaign_id, run_id, created_at ASC)
         """
     )
 
