@@ -74,6 +74,9 @@
   - FAISS load/save/create/delete, BM25 construction, synchronous retriever `invoke(...)`, and short-chunk expansion are offloaded from request/background coroutines
   - per-user async locks serialize same-user FAISS mutations so ask/upload/retry-index/delete do not race the same index directory
 - Upload, retry-index, visual-summary indexing, and document-vector deletion now share that async vector-store seam instead of calling synchronous FAISS work directly from route/background coroutines.
+- GraphRAG now has two contract surfaces:
+  - `graph_raw_current` remains the legacy rollback and ablation baseline.
+  - the evidence-locator path treats graph summaries, community summaries, and inferred relations as retrieval hints only; final answer evidence must resolve back to source chunks, tables, figures, formulas, captions, or full provenance anchors.
 - GraphRAG local search now supports vector-first node seed retrieval with safe fallback:
   - local node-vector sidecars live under `uploads/<user>/rag_index/` (`node_index.faiss/.pkl`, `node_index_map.json`, `node_index.meta.json`)
   - extraction and graph maintenance paths mark node-vector state dirty and trigger autosync (`GRAPH_NODE_VECTOR_AUTOSYNC`, default enabled)

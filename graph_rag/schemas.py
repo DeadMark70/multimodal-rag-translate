@@ -11,7 +11,7 @@ from enum import Enum
 from typing import Dict, List, Literal, Optional
 
 # Third-party
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class EntityType(str, Enum):
@@ -305,3 +305,52 @@ class ExtractionResult(BaseModel):
     relations: List[ExtractedRelation] = Field(default_factory=list)
     doc_id: str = Field(..., description="來源文件 ID")
     chunk_index: int = Field(default=0, description="來源區塊索引")
+
+
+GraphEvidenceMode = Literal[
+    "raw_current",
+    "provenance_gated",
+    "locator_to_chunk",
+    "claim_gated",
+    "planning_only",
+    "router_auto",
+    "locator_only",
+]
+
+
+class EvidenceAnchor(BaseModel):
+    """Provenance pointer from a graph item back to a source chunk or asset."""
+
+    doc_id: str = Field(..., description="來源文件 ID")
+    chunk_id: Optional[str] = Field(default=None, description="來源 chunk ID")
+    chunk_index: Optional[int] = Field(default=None, description="來源 chunk 索引")
+    page: Optional[int] = Field(default=None, description="來源頁碼")
+    quote: Optional[str] = Field(default=None, description="抽取時保留的引文")
+    quote_hash: Optional[str] = Field(default=None, description="引文雜湊")
+    chunk_hash: Optional[str] = Field(default=None, description="chunk 雜湊")
+    source_text_hash: Optional[str] = Field(default=None, description="來源文字雜湊")
+    markdown_char_start: Optional[int] = Field(default=None, description="Markdown 起始位置")
+    markdown_char_end: Optional[int] = Field(default=None, description="Markdown 結束位置")
+    asset_id: Optional[str] = Field(default=None, description="來源資產 ID")
+    anchor_type: Literal["text", "table", "figure", "formula", "caption"] = Field(
+        default="text",
+        description="錨點類型",
+    )
+    bbox: Optional[List[float]] = Field(default=None, description="頁面邊界框")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="抽取信心分數")
+    extraction_model: Optional[str] = Field(default=None, description="抽取模型名稱")
+    extraction_prompt_version: Optional[str] = Field(
+        default=None,
+        description="抽取 prompt 版本",
+    )
+
+    @computed_field
+    @property
+    def provenance_status(self) -> Literal["full", "partial", "missing"]:
+        if not self.doc_id:
+            return "missing"
+        if self.chunk_id and self.quote and self.quote_hash and self.chunk_hash:
+            return "full"
+        if self.chunk_id or self.page is not None or self.asset_id:
+            return "partial"
+        return "missing"
