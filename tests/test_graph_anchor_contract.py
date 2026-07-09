@@ -17,6 +17,11 @@ def fake_lookup():
                     page_content="Current chunk text",
                     metadata={"doc_id": "doc-1", "chunk_id": "chunk-1", "chunk_hash": "new-hash"},
                 )
+            if user_id == "user-1" and chunk_id == "chunk-wrong-doc":
+                return Document(
+                    page_content="Wrong document chunk text",
+                    metadata={"doc_id": "doc-2", "chunk_id": "chunk-wrong-doc", "chunk_hash": "wrong-doc-hash"},
+                )
             return None
 
         def by_doc_and_index(self, user_id: str, doc_id: str, chunk_index: int) -> Document | None:
@@ -44,6 +49,11 @@ def fake_lookup():
                 return Document(
                     page_content="MedSAM-2 uses memory attention in the decoder.",
                     metadata={"doc_id": "doc-1", "chunk_id": "chunk-fuzzy", "chunk_hash": "fuzzy-hash"},
+                )
+            if user_id == "user-1" and doc_id == "doc-1" and quote == "Quote from another document.":
+                return Document(
+                    page_content="Quote from another document.",
+                    metadata={"doc_id": "doc-2", "chunk_id": "chunk-other-doc", "chunk_hash": "other-doc-hash"},
                 )
             return None
 
@@ -146,3 +156,32 @@ def test_anchor_resolver_fuzzy_quote_match(fake_lookup) -> None:
     result = ChunkAnchorResolver(fake_lookup).resolve("user-1", anchor)
 
     assert result.resolution_status == "fuzzy_resolved"
+    assert result.verification_status == "quote_match"
+
+
+def test_anchor_resolver_rejects_chunk_id_from_wrong_document(fake_lookup) -> None:
+    anchor = EvidenceAnchor(
+        doc_id="doc-1",
+        chunk_id="chunk-wrong-doc",
+        confidence=0.8,
+    )
+
+    result = ChunkAnchorResolver(fake_lookup).resolve("user-1", anchor)
+
+    assert result.resolution_status == "unresolved"
+    assert result.verification_status == "not_checked"
+    assert result.reason == "doc_id_mismatch"
+
+
+def test_anchor_resolver_rejects_fuzzy_quote_from_wrong_document(fake_lookup) -> None:
+    anchor = EvidenceAnchor(
+        doc_id="doc-1",
+        quote="Quote from another document.",
+        confidence=0.8,
+    )
+
+    result = ChunkAnchorResolver(fake_lookup).resolve("user-1", anchor)
+
+    assert result.resolution_status == "unresolved"
+    assert result.verification_status == "not_checked"
+    assert result.reason == "doc_id_mismatch"
