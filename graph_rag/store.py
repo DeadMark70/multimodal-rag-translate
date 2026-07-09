@@ -9,10 +9,11 @@ Manages per-user knowledge graphs with CRUD operations.
 import hashlib
 import json
 import logging
+import os
 import pickle
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 # Third-party
 import networkx as nx
@@ -21,7 +22,9 @@ import networkx as nx
 from core import uploads as upload_paths
 from graph_rag.schemas import (
     Community,
+    EvidenceAnchor,
     GraphDocumentStatus,
+    GraphEdgeProvenance,
     EntityType,
     GraphEdge,
     GraphNode,
@@ -35,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 GRAPH_INDEX_VERSION = 2
 GRAPH_DOCUMENTS_FILENAME = "graph.documents.json"
+GRAPH_PROVENANCE_FILENAME = "graph.provenance.json"
 GRAPH_SOURCE_MARKDOWN_FILENAME = "extracted.md"
 NODE_VECTOR_INDEX_NAME = "node_index"
 NODE_VECTOR_MAP_FILENAME = "node_index_map.json"
@@ -91,6 +95,7 @@ class GraphStore:
         self.graph: nx.DiGraph = nx.DiGraph()
         self.communities: List[Community] = []
         self.document_statuses: Dict[str, GraphDocumentStatus] = {}
+        self.edge_provenance: Dict[str, GraphEdgeProvenance] = {}
         self.last_updated: Optional[datetime] = None
         self.last_optimized_at: Optional[datetime] = None
         self.index_version: int = GRAPH_INDEX_VERSION
@@ -106,6 +111,7 @@ class GraphStore:
         else:
             self._load_metadata()
             self._load_document_statuses()
+            self._load_edge_provenance()
     
     def _get_graph_path(self) -> Path:
         """
@@ -132,6 +138,10 @@ class GraphStore:
     def _get_document_status_path(self) -> Path:
         """Get path to GraphRAG per-document status sidecar."""
         return self._get_graph_path().with_name(GRAPH_DOCUMENTS_FILENAME)
+
+    def _get_provenance_path(self) -> Path:
+        """Get path to graph edge provenance sidecar."""
+        return self._get_graph_path().with_name(GRAPH_PROVENANCE_FILENAME)
 
     def _get_node_vector_faiss_path(self) -> Path:
         """Get path to GraphRAG node-vector FAISS index."""
@@ -166,11 +176,19 @@ class GraphStore:
             "active_job_state": self.active_job_state,
         }
 
+    def _atomic_write_json(self, path: Path, payload: object) -> None:
+        """Persist JSON using a temporary file and atomic replace."""
+        temp_path = path.with_suffix(path.suffix + ".tmp")
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+
     def _write_metadata(self) -> None:
         """Persist sidecar metadata JSON."""
         path = self._get_metadata_path()
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(self._build_metadata_payload(), f, ensure_ascii=False, indent=2)
+        self._atomic_write_json(path, self._build_metadata_payload())
 
     def _write_document_statuses(self) -> None:
         """Persist GraphRAG per-document status JSON."""
@@ -181,8 +199,20 @@ class GraphStore:
                 for status in sorted(self.document_statuses.values(), key=lambda item: item.doc_id)
             ]
         }
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+        self._atomic_write_json(path, payload)
+
+    def _write_edge_provenance(self) -> None:
+        """Persist graph edge provenance sidecar JSON."""
+        payload = {
+            "edges": [
+                provenance.model_dump(mode="json")
+                for provenance in sorted(
+                    self.edge_provenance.values(),
+                    key=lambda item: item.edge_id,
+                )
+            ]
+        }
+        self._atomic_write_json(self._get_provenance_path(), payload)
 
     def _load_legacy_metadata(self, legacy_data: Dict[str, Any]) -> None:
         """Load metadata fields embedded in older pickle payloads."""
@@ -253,10 +283,42 @@ class GraphStore:
         except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
             logger.warning("Failed to load graph document statuses for user %s: %s", self.user_id, e)
 
+    def _load_edge_provenance(self) -> None:
+        """Load graph edge provenance sidecar JSON."""
+        self.edge_provenance = {}
+        path = self._get_provenance_path()
+        if not path.exists():
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+
+            items: List[GraphEdgeProvenance] = []
+            if isinstance(payload, dict) and isinstance(payload.get("edges"), list):
+                items = [GraphEdgeProvenance.model_validate(item) for item in payload["edges"]]
+            elif isinstance(payload, dict):
+                for edge_id, anchors in payload.items():
+                    if isinstance(anchors, list):
+                        items.append(
+                            GraphEdgeProvenance(
+                                edge_id=edge_id,
+                                anchors=[EvidenceAnchor.model_validate(anchor) for anchor in anchors],
+                            )
+                        )
+
+            self.edge_provenance = {
+                provenance.edge_id: provenance
+                for provenance in items
+            }
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+            logger.warning("Failed to load graph provenance for user %s: %s", self.user_id, e)
+
     def save_sidecars(self) -> None:
         """Persist metadata-only sidecars without rewriting the graph pickle."""
         self._write_metadata()
         self._write_document_statuses()
+        self._write_edge_provenance()
 
     def save(self) -> None:
         """
@@ -301,6 +363,7 @@ class GraphStore:
             self.graph = data.get("graph", nx.DiGraph())
             self._load_metadata(legacy_data=data)
             self._load_document_statuses()
+            self._load_edge_provenance()
             
             logger.info(
                 f"Loaded graph for user {self.user_id}: "
@@ -323,6 +386,7 @@ class GraphStore:
         self.graph.clear()
         self.communities.clear()
         self.document_statuses.clear()
+        self.edge_provenance.clear()
         self._pending_count = 0
         self.last_optimized_at = None
         self.graph_dirty = False
@@ -531,6 +595,46 @@ class GraphStore:
         return results
     
     # ===== Edge Operations =====
+
+    def edge_id(self, source_id: str, target_id: str, relation: str) -> str:
+        """Build a deterministic opaque edge identifier."""
+        raw = f"{source_id}|{target_id}|{relation.strip().lower()}"
+        return f"edge:{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]}"
+
+    def record_edge_provenance(self, edge_id: str, anchors: List[EvidenceAnchor]) -> None:
+        """Store provenance anchors for one edge."""
+        existing = self.edge_provenance.get(edge_id)
+        self.edge_provenance[edge_id] = GraphEdgeProvenance(
+            edge_id=edge_id,
+            anchors=[anchor.model_copy(deep=True) for anchor in anchors],
+            extraction_run_id=existing.extraction_run_id if existing else None,
+            extraction_prompt_version=(
+                existing.extraction_prompt_version if existing else None
+            ),
+            created_at=existing.created_at if existing else datetime.now(),
+        )
+        self.mark_dirty()
+
+    def get_edge_provenance(self, edge_id: str) -> List[EvidenceAnchor]:
+        """Return persisted provenance anchors for one edge."""
+        provenance = self.edge_provenance.get(edge_id)
+        if provenance is None:
+            return []
+        return [anchor.model_copy(deep=True) for anchor in provenance.anchors]
+
+    def get_edge_provenance_status(
+        self,
+        edge_id: str,
+    ) -> Literal["full", "partial", "missing"]:
+        """Return aggregated provenance coverage for one edge."""
+        anchors = self.get_edge_provenance(edge_id)
+        if not anchors:
+            return "missing"
+        if any(anchor.provenance_status == "full" for anchor in anchors):
+            return "full"
+        if any(anchor.provenance_status == "partial" for anchor in anchors):
+            return "partial"
+        return "missing"
     
     def add_edge(self, edge: GraphEdge) -> Tuple[str, str]:
         """
@@ -557,12 +661,14 @@ class GraphStore:
             self.graph.edges[source, target]["weight"] = min(
                 existing.get("weight", 0.5) + 0.1, 1.0
             )
+            existing.setdefault("edge_id", self.edge_id(source, target, edge.relation))
             logger.debug(f"Updated edge {source} -> {target}")
         else:
             # Add new edge
             self.graph.add_edge(
                 source,
                 target,
+                edge_id=self.edge_id(source, target, edge.relation),
                 relation=edge.relation,
                 description=edge.description,
                 weight=edge.weight,
@@ -683,6 +789,8 @@ class GraphStore:
                 edge_docs.discard(doc_id)
                 
                 if not edge_docs:
+                    relation = data.get("relation", "related")
+                    self.edge_provenance.pop(self.edge_id(source, target, relation), None)
                     edges_to_remove.append((source, target))
                 else:
                     self.graph.edges[source, target]["doc_ids"] = list(edge_docs)

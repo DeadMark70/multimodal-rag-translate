@@ -354,3 +354,29 @@ class EvidenceAnchor(BaseModel):
         if self.chunk_id or self.page is not None or self.asset_id:
             return "partial"
         return "missing"
+
+
+class GraphEdgeProvenance(BaseModel):
+    """Persisted provenance anchors for one graph edge."""
+
+    edge_id: str
+    anchors: List[EvidenceAnchor] = Field(default_factory=list)
+    extraction_run_id: Optional[str] = None
+    schema_version: str = "graph-provenance-v1"
+    extraction_prompt_version: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class GraphExtractionRunManifest(BaseModel):
+    """Metadata describing one extraction run that produced graph provenance."""
+
+    extraction_run_id: str
+    graph_extraction_version: str
+    extractor_model: Optional[str] = None
+    prompt_version: str
+    schema_version: str
+    doc_id: str
+    chunk_hashes: List[str] = Field(default_factory=list)
+    temperature: float = 0.0
+    validated: bool = False
+    created_at: datetime = Field(default_factory=datetime.now)
