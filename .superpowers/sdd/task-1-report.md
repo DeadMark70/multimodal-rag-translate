@@ -163,3 +163,62 @@ $env:RUFF_CACHE_DIR='C:\Users\user\AppData\Local\Temp\codex-ruff-cache'; D:\flut
 Summary:
 
 - `All checks passed!`
+
+## Re-review Finding Fix: fuzzy quote verification on same-document candidates
+
+### Scope
+
+- `graph_rag/anchor_resolver.py`
+- `tests/test_graph_anchor_contract.py`
+
+### Changes
+
+- Added a regression case for a same-document fuzzy candidate whose `page_content` does not contain the exact quoted sentence.
+- Changed fuzzy lookup resolution to use `_verification_status(anchor, document)` instead of hard-coding `verification_status="quote_match"`.
+- Tightened the existing fuzzy-match fixture so the positive-path test remains a real exact-quote match.
+
+### TDD Record
+
+#### Red
+
+Added the regression test first and ran:
+
+```powershell
+$env:TEST_MODE='true'; $env:USE_FAKE_PROVIDERS='true'; D:\flutterserver\pdftopng\.venv\Scripts\python.exe -m pytest tests\test_graph_anchor_contract.py -q
+```
+
+Observed the expected failure before the production change:
+
+- `test_anchor_resolver_fuzzy_quote_mismatch_same_document`
+- expected `quote_mismatch`
+- actual `quote_match`
+
+Summary:
+
+- `1 failed, 10 passed, 2 warnings in 0.43s`
+
+#### Green
+
+After the resolver change and fixture correction, reran:
+
+```powershell
+$env:TEST_MODE='true'; $env:USE_FAKE_PROVIDERS='true'; D:\flutterserver\pdftopng\.venv\Scripts\python.exe -m pytest tests\test_graph_anchor_contract.py -q
+```
+
+Summary:
+
+- `11 passed, 1 warning in 0.31s`
+
+### Lint Verification
+
+```powershell
+$env:RUFF_CACHE_DIR='C:\Users\user\AppData\Local\Temp\codex-ruff-cache'; D:\flutterserver\pdftopng\.venv\Scripts\python.exe -m ruff check graph_rag\anchor_resolver.py tests\test_graph_anchor_contract.py
+```
+
+Summary:
+
+- `All checks passed!`
+
+### Notes
+
+- The remaining pytest warning is the existing linked-worktree cache write warning under `output\test_tmp\.pytest_cache`; it did not affect test execution.

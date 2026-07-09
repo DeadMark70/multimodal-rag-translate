@@ -47,13 +47,22 @@ def fake_lookup():
                 and quote == "MedSAM-2 uses memory attention."
             ):
                 return Document(
-                    page_content="MedSAM-2 uses memory attention in the decoder.",
+                    page_content="MedSAM-2 uses memory attention. The decoder adds more context.",
                     metadata={"doc_id": "doc-1", "chunk_id": "chunk-fuzzy", "chunk_hash": "fuzzy-hash"},
                 )
             if user_id == "user-1" and doc_id == "doc-1" and quote == "Quote from another document.":
                 return Document(
                     page_content="Quote from another document.",
                     metadata={"doc_id": "doc-2", "chunk_id": "chunk-other-doc", "chunk_hash": "other-doc-hash"},
+                )
+            if (
+                user_id == "user-1"
+                and doc_id == "doc-1"
+                and quote == "Exact quote that is not present."
+            ):
+                return Document(
+                    page_content="Nearby wording without the quoted sentence.",
+                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-fuzzy-mismatch", "chunk_hash": "fuzzy-mismatch-hash"},
                 )
             return None
 
@@ -157,6 +166,20 @@ def test_anchor_resolver_fuzzy_quote_match(fake_lookup) -> None:
 
     assert result.resolution_status == "fuzzy_resolved"
     assert result.verification_status == "quote_match"
+
+
+def test_anchor_resolver_fuzzy_quote_mismatch_same_document(fake_lookup) -> None:
+    anchor = EvidenceAnchor(
+        doc_id="doc-1",
+        quote="Exact quote that is not present.",
+        quote_hash="qhash-mismatch",
+        confidence=0.8,
+    )
+
+    result = ChunkAnchorResolver(fake_lookup).resolve("user-1", anchor)
+
+    assert result.resolution_status == "fuzzy_resolved"
+    assert result.verification_status == "quote_mismatch"
 
 
 def test_anchor_resolver_rejects_chunk_id_from_wrong_document(fake_lookup) -> None:

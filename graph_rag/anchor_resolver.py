@@ -98,7 +98,7 @@ class ChunkAnchorResolver:
                         anchor=anchor,
                         document=document,
                         resolution_status="fuzzy_resolved",
-                        verification_status="quote_match",
+                        verification_status=_verification_status(anchor, document),
                         reason="fuzzy_quote",
                     )
 
