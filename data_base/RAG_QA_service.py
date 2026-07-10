@@ -56,6 +56,7 @@ from data_base.query_transformer import (
 from data_base.repository import fetch_document_filenames
 from data_base.parent_child_store import ParentDocumentStore
 from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
+from graph_rag.anchor_resolver import ChunkAnchorResolver, ChunkLookup, VectorStoreChunkLookup
 from graph_rag.feature_flags import get_graph_feature_flags
 from graph_rag.generic_mode import (
     GenericGraphRouter,
@@ -64,8 +65,9 @@ from graph_rag.generic_mode import (
     GraphQueryHints,
     estimate_token_count,
     merge_graph_evidence,
+    merge_graph_evidence_bundle,
 )
-from graph_rag.schemas import GraphEvidenceBundle, GraphHint
+from graph_rag.schemas import GraphEvidenceBundle, is_graph_evidence_item_eligible
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -421,6 +423,35 @@ def _legacy_graph_route_decision(
     return None
 
 
+async def _resolve_graph_route_decision(
+    question: str,
+    search_mode: str,
+    status: Any,
+    graph_execution_hints: Optional[Dict[str, Any]],
+) -> Tuple[GraphRouteDecision, bool, bool]:
+    """Resolve the common route used by raw and structured graph retrieval."""
+    effective_mode = "generic" if search_mode == "auto" else search_mode
+    hints = _filter_graph_query_hints(graph_execution_hints)
+    has_hierarchy = bool(status.community_level_counts.get("1"))
+    has_communities = status.community_count > 0
+    decision = _legacy_graph_route_decision(
+        effective_mode,
+        has_communities=has_communities,
+    )
+    if decision is not None:
+        logger.warning(
+            "Legacy graph_search_mode '%s' requested; routing through generic graph core",
+            effective_mode,
+        )
+    else:
+        decision = await GenericGraphRouter().route(
+            question,
+            has_communities=has_communities,
+            hints=hints,
+        )
+    return decision, has_hierarchy, has_communities
+
+
 async def _get_graph_context_legacy_raw(
     question: str,
     user_id: str,
@@ -469,27 +500,12 @@ async def _get_graph_context_legacy_raw(
                 user_id,
             )
 
-        effective_mode = "generic" if search_mode == "auto" else search_mode
-        hints = _filter_graph_query_hints(graph_execution_hints)
-        has_hierarchy = bool(status.community_level_counts.get("1"))
-        has_communities = status.community_count > 0
-
-        decision = _legacy_graph_route_decision(
-            effective_mode,
-            has_communities=has_communities,
+        decision, has_hierarchy, has_communities = await _resolve_graph_route_decision(
+            question,
+            search_mode,
+            status,
+            graph_execution_hints,
         )
-        if decision is not None:
-            logger.warning(
-                "Legacy graph_search_mode '%s' requested; routing through generic graph core",
-                effective_mode,
-            )
-        else:
-            router = GenericGraphRouter()
-            decision = await router.route(
-                question,
-                has_communities=has_communities,
-                hints=hints,
-            )
 
         local_evidence = []
         global_evidence = []
@@ -593,36 +609,53 @@ async def _get_graph_evidence_bundle(
     user_id: str,
     search_mode: str = "generic",
     graph_execution_hints: Optional[Dict[str, Any]] = None,
+    chunk_lookup: Optional[ChunkLookup] = None,
 ) -> GraphEvidenceBundle:
     """Build a structured graph bundle without calling the compatibility wrapper."""
     try:
         from graph_rag.store import GraphStore
+        from graph_rag.global_search import global_search_hints
+        from graph_rag.local_search import local_search_evidence_items
 
         store = GraphStore(user_id)
         status = store.get_status()
         if not status.has_graph or status.node_count == 0:
             return GraphEvidenceBundle(query=question, route="none")
 
-        legacy_payload = await _get_graph_context_legacy_raw(
-            question=question,
-            user_id=user_id,
-            search_mode=search_mode,
-            graph_execution_hints=graph_execution_hints,
-            return_evidence=True,
+        decision, has_hierarchy, has_communities = await _resolve_graph_route_decision(
+            question,
+            search_mode,
+            status,
+            graph_execution_hints,
         )
-        legacy_context, legacy_evidence = legacy_payload
-        hints: List[GraphHint] = []
-        if legacy_context:
-            hints.append(
-                GraphHint(
-                    hint_id="legacy:graph-context",
-                    hint_type="query_expansion",
-                    text=legacy_context,
-                    confidence=0.5,
-                    source_ids=[item.evidence_id for item in legacy_evidence],
-                )
+        evidence_items = []
+        hints = []
+        if decision.path in ("local-first", "blended"):
+            evidence_items, _ = await local_search_evidence_items(
+                store,
+                question,
+                user_id=user_id,
+                anchor_resolver=ChunkAnchorResolver(
+                    chunk_lookup or VectorStoreChunkLookup()
+                ),
+                hops=decision.hops,
+                max_nodes=decision.max_nodes,
             )
-        return GraphEvidenceBundle(query=question, route=search_mode, hints=hints)
+
+        if decision.path in ("global-first", "blended") and has_communities:
+            _, hints, _ = await global_search_hints(
+                store,
+                question,
+                max_communities=decision.max_communities,
+                level=1 if (has_hierarchy and decision.query_kind == "summary") else None,
+            )
+        return merge_graph_evidence_bundle(
+            hints=hints,
+            evidence_items=evidence_items,
+            token_budget=decision.token_budget,
+            query=question,
+            route=decision.path,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Graph evidence bundle retrieval failed: %s", exc)
         return GraphEvidenceBundle(query=question, route="none")
@@ -631,14 +664,9 @@ async def _get_graph_evidence_bundle(
 def _render_graph_bundle_for_legacy_prompt(bundle: GraphEvidenceBundle) -> str:
     """Render only source-resolved bundle evidence for legacy prompt consumers."""
     rendered_items = [
-        item.summary
+        item.evidence_quote
         for item in bundle.final_context_items
-        if (
-            item.usable_as_context
-            and item.provenance_status == "full"
-            and item.resolution_status in {"resolved", "fuzzy_resolved"}
-        )
-        and item.summary
+        if is_graph_evidence_item_eligible(item) and item.evidence_quote
     ]
     if not rendered_items:
         return ""

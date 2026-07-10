@@ -7,6 +7,7 @@ from data_base.RAG_QA_service import (
     GraphContextDetails,
     _get_graph_context,
     _get_graph_evidence_bundle,
+    _render_graph_bundle_for_legacy_prompt,
 )
 from graph_rag.generic_mode import GraphEvidence, GraphRouteDecision
 from graph_rag.schemas import EvidenceAnchor, GraphEvidenceBundle, GraphEvidenceItem
@@ -138,7 +139,7 @@ async def test_locator_wrapper_renders_only_resolved_final_context_items(
         query="q",
         route="local-first",
         evidence_items=[_resolved_item(), _unresolved_item()],
-        final_context_items=[_resolved_item(), _unresolved_item()],
+        final_context_items=[_resolved_item()],
     )
     monkeypatch.setattr(
         "data_base.RAG_QA_service._get_graph_evidence_bundle",
@@ -174,20 +175,112 @@ async def test_graph_evidence_bundle_calls_legacy_raw_once_without_recursing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = MagicMock()
-    store.get_status.return_value = SimpleNamespace(has_graph=True, node_count=1)
-    legacy = AsyncMock(return_value=("=== Graph Evidence ===\nlegacy", []))
+    store.get_status.return_value = SimpleNamespace(
+        has_graph=True,
+        node_count=1,
+        community_count=0,
+        community_level_counts={},
+        needs_optimization=False,
+    )
     monkeypatch.setattr("graph_rag.store.GraphStore", MagicMock(return_value=store))
+    legacy = AsyncMock()
     monkeypatch.setattr(
         "data_base.RAG_QA_service._get_graph_context_legacy_raw", legacy
     )
-
-    bundle = await _get_graph_evidence_bundle("q", "user-1")
-
-    assert bundle.hints[0].text == "=== Graph Evidence ===\nlegacy"
-    legacy.assert_awaited_once_with(
-        question="q",
-        user_id="user-1",
-        search_mode="generic",
-        graph_execution_hints=None,
-        return_evidence=True,
+    local_items = AsyncMock(return_value=([], []))
+    monkeypatch.setattr(
+        "graph_rag.local_search.local_search_evidence_items", local_items
     )
+
+    bundle = await _get_graph_evidence_bundle("q", "user-1", search_mode="local")
+
+    assert bundle.route == "local-first"
+    assert bundle.hints == []
+    local_items.assert_awaited_once()
+    legacy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_lookup_failure_returns_empty_bundle_without_crashing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingLookup:
+        def by_chunk_id(self, user_id: str, chunk_id: str) -> None:
+            raise OSError("vector index unavailable")
+
+        def by_doc_and_index(self, user_id: str, doc_id: str, chunk_index: int) -> None:
+            raise OSError("vector index unavailable")
+
+        def by_chunk_hash(self, user_id: str, doc_id: str, chunk_hash: str) -> None:
+            raise OSError("vector index unavailable")
+
+        def fuzzy_by_quote(self, user_id: str, doc_id: str, quote: str) -> None:
+            raise OSError("vector index unavailable")
+
+    store = MagicMock()
+    store.get_status.return_value = SimpleNamespace(
+        has_graph=True,
+        node_count=1,
+        community_count=0,
+        community_level_counts={},
+        needs_optimization=False,
+    )
+    monkeypatch.setattr("graph_rag.store.GraphStore", MagicMock(return_value=store))
+
+    async def raise_from_local_search(*args, **kwargs):
+        kwargs["anchor_resolver"].resolve(
+            "user-1",
+            EvidenceAnchor(
+                doc_id="doc-1",
+                chunk_id="chunk-1",
+                quote="Source quote.",
+                quote_hash="quote-hash",
+                chunk_hash="chunk-hash",
+                confidence=0.9,
+            ),
+        )
+
+    monkeypatch.setattr(
+        "graph_rag.local_search.local_search_evidence_items",
+        raise_from_local_search,
+    )
+
+    bundle = await _get_graph_evidence_bundle(
+        "q",
+        "user-1",
+        search_mode="local",
+        chunk_lookup=FailingLookup(),
+    )
+
+    assert bundle.route == "none"
+    assert bundle.hints == []
+    assert bundle.evidence_items == []
+    assert bundle.final_context_items == []
+
+
+def test_legacy_renderer_uses_only_verified_quotes_and_rejects_mismatches() -> None:
+    verified = _resolved_item()
+    verified.summary = "Inferred summary that must never be rendered."
+    verified.evidence_quote = "Verified source quote only."
+    mismatched = _resolved_item()
+    mismatched.evidence_quote = "Mismatched source quote."
+    mismatched.verification_status = "quote_mismatch"
+    stale = _resolved_item()
+    stale.evidence_quote = "Stale source quote."
+    stale.verification_status = "hash_mismatch"
+    stale.resolution_status = "stale"
+    bundle = GraphEvidenceBundle.model_construct(
+        query="q",
+        route="local-first",
+        hints=[],
+        evidence_items=[],
+        final_context_items=[verified, mismatched, stale],
+        token_estimate=0,
+    )
+
+    context = _render_graph_bundle_for_legacy_prompt(bundle)
+
+    assert "Verified source quote only." in context
+    assert "Inferred summary" not in context
+    assert "Mismatched source quote." not in context
+    assert "Stale source quote." not in context

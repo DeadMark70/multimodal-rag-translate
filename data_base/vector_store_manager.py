@@ -684,6 +684,24 @@ def get_user_retriever(user_id: str, k: int = 3, plain_mode: bool = False):
         return None
 
 
+def load_user_vector_documents(user_id: str) -> List[Document]:
+    """Lazily load persisted FAISS documents for graph anchor resolution."""
+    if global_embeddings_model is None:
+        raise RuntimeError("Embedding model not initialized")
+
+    user_index_path = get_user_vector_store_path(user_id)
+    if not os.path.exists(os.path.join(user_index_path, "index.faiss")):
+        return []
+
+    vector_db = FAISS.load_local(
+        user_index_path,
+        global_embeddings_model,
+        index_name="index",
+        allow_dangerous_deserialization=True,
+    )
+    return list(vector_db.docstore._dict.values())
+
+
 async def add_markdown_to_knowledge_base(
     user_id: str,
     markdown_text: str,

@@ -77,7 +77,7 @@
 - GraphRAG now has two contract surfaces:
   - `graph_raw_current` remains the legacy rollback and ablation baseline.
   - the evidence-locator path treats graph summaries, community summaries, and inferred relations as retrieval hints only; final answer evidence must resolve back to source chunks, tables, figures, formulas, captions, or full provenance anchors.
-  - `data_base.RAG_QA_service._get_graph_context(...)` preserves its legacy return contracts: a context string by default, `(context, evidence)` with `return_evidence=True`, and `(context, evidence, details)` when `return_details=True`. The default remains `graph_raw_current`; enabling `graph_evidence_locator_enabled` uses `_get_graph_evidence_bundle(...)` and renders only full-provenance, resolved final context items for the legacy prompt.
+  - `data_base.RAG_QA_service._get_graph_context(...)` preserves its legacy return contracts: a context string by default, `(context, evidence)` with `return_evidence=True`, and `(context, evidence, details)` when `return_details=True`. The default remains `graph_raw_current`; enabling `graph_evidence_locator_enabled` uses `_get_graph_evidence_bundle(...)`, resolves eligible anchors through a lazy vector-document lookup, and renders only verified source quotes for the legacy prompt.
 - GraphRAG local search now supports vector-first node seed retrieval with safe fallback:
   - local node-vector sidecars live under `uploads/<user>/rag_index/` (`node_index.faiss/.pkl`, `node_index_map.json`, `node_index.meta.json`)
   - extraction and graph maintenance paths mark node-vector state dirty and trigger autosync (`GRAPH_NODE_VECTOR_AUTOSYNC`, default enabled)

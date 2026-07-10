@@ -208,3 +208,32 @@ def test_anchor_resolver_rejects_fuzzy_quote_from_wrong_document(fake_lookup) ->
     assert result.resolution_status == "unresolved"
     assert result.verification_status == "not_checked"
     assert result.reason == "doc_id_mismatch"
+
+
+def test_vector_store_chunk_lookup_is_lazy_and_supports_injected_loader() -> None:
+    from graph_rag.anchor_resolver import VectorStoreChunkLookup
+
+    calls: list[str] = []
+
+    def load_documents(user_id: str) -> list[Document]:
+        calls.append(user_id)
+        return [
+            Document(
+                page_content="Source-backed vector chunk.",
+                metadata={
+                    "doc_id": "doc-1",
+                    "chunk_id": "chunk-1",
+                    "chunk_index": 2,
+                    "chunk_hash": "chunk-hash",
+                },
+            )
+        ]
+
+    lookup = VectorStoreChunkLookup(document_loader=load_documents)
+
+    assert calls == []
+    assert lookup.by_chunk_id("user-1", "chunk-1") is not None
+    assert lookup.by_doc_and_index("user-1", "doc-1", 2) is not None
+    assert lookup.by_chunk_hash("user-1", "doc-1", "chunk-hash") is not None
+    assert lookup.fuzzy_by_quote("user-1", "doc-1", "Source-backed vector chunk.") is not None
+    assert calls == ["user-1"]

@@ -11,7 +11,7 @@ from enum import Enum
 from typing import Dict, List, Literal, Optional
 
 # Third-party
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 
 class EntityType(str, Enum):
@@ -369,7 +369,7 @@ class GraphHint(BaseModel):
     text: str
     confidence: float = Field(ge=0.0, le=1.0)
     source_ids: List[str] = Field(default_factory=list)
-    usable_as_final_evidence: bool = False
+    usable_as_final_evidence: Literal[False] = False
 
 
 class GraphEvidenceItem(BaseModel):
@@ -460,6 +460,26 @@ class GraphEvidenceBundle(BaseModel):
     evidence_items: List[GraphEvidenceItem] = Field(default_factory=list)
     final_context_items: List[GraphEvidenceItem] = Field(default_factory=list)
     token_estimate: int = 0
+
+    @model_validator(mode="after")
+    def validate_final_context_items(self) -> "GraphEvidenceBundle":
+        if any(
+            not is_graph_evidence_item_eligible(item)
+            for item in self.final_context_items
+        ):
+            raise ValueError("final_context_items must be independently eligible")
+        return self
+
+
+def is_graph_evidence_item_eligible(item: GraphEvidenceItem) -> bool:
+    """Return whether an item is independently safe for final evidence context."""
+    return (
+        item.usable_as_context
+        and item.provenance_status == "full"
+        and item.resolution_status in {"resolved", "fuzzy_resolved"}
+        and item.verification_status in {"quote_match", "not_checked"}
+        and bool(item.source_chunk_ids or item.asset_ids)
+    )
 
 
 class GraphEdgeProvenance(BaseModel):

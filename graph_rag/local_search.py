@@ -26,7 +26,7 @@ from graph_rag.node_vector_index import (
     node_vector_top_k,
     search_nodes_by_vector,
 )
-from graph_rag.schemas import GraphEvidenceItem
+from graph_rag.schemas import GraphEvidenceItem, is_graph_evidence_item_eligible
 from graph_rag.store import GraphStore
 
 # Configure logging
@@ -440,23 +440,31 @@ def build_local_evidence_items(
                 resolution = anchor_resolver.resolve(user_id, anchor)
                 if resolution.resolution_status not in {"resolved", "fuzzy_resolved"}:
                     continue
-                evidence_items.append(
-                    GraphEvidenceItem.from_anchor(
-                        item_id=f"{edge_id}:{anchor.chunk_id}",
-                        graph_mode="local",
-                        source="edge",
-                        edge_ids=[edge_id],
-                        node_ids=[edge.source_id, edge.target_id],
-                        relation_type=edge.relation,
-                        summary=summary,
-                        anchor=anchor,
-                        resolution_status=resolution.resolution_status,
-                        verification_status=resolution.verification_status,
-                    )
+                item = GraphEvidenceItem.from_anchor(
+                    item_id=f"{edge_id}:{anchor.chunk_id}",
+                    graph_mode="local",
+                    source="edge",
+                    edge_ids=[edge_id],
+                    node_ids=[edge.source_id, edge.target_id],
+                    relation_type=edge.relation,
+                    summary=summary,
+                    anchor=anchor,
+                    resolution_status=resolution.resolution_status,
+                    verification_status=resolution.verification_status,
                 )
+                if is_graph_evidence_item_eligible(item):
+                    evidence_items.append(item)
 
-    evidence_items.sort(key=lambda item: item.confidence, reverse=True)
-    return evidence_items[:max_edges]
+    selected: list[GraphEvidenceItem] = []
+    seen_item_ids: set[str] = set()
+    for item in sorted(evidence_items, key=lambda candidate: (-candidate.confidence, candidate.item_id)):
+        if item.item_id in seen_item_ids:
+            continue
+        seen_item_ids.add(item.item_id)
+        selected.append(item)
+        if len(selected) >= max_edges:
+            break
+    return selected
 
 
 async def local_search_evidence_items(

@@ -21,7 +21,12 @@ from core.llm_factory import graph_rag_llm_runtime_override
 from core.providers import get_llm
 from core.prompt_loader import format_graph_rag_prompt
 from graph_rag.llm_response import response_content_to_text
-from graph_rag.schemas import GraphEvidenceBundle, GraphEvidenceItem, GraphHint
+from graph_rag.schemas import (
+    GraphEvidenceBundle,
+    GraphEvidenceItem,
+    GraphHint,
+    is_graph_evidence_item_eligible,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -411,16 +416,14 @@ def merge_graph_evidence_bundle(
 ) -> GraphEvidenceBundle:
     """Select source-backed graph items permitted in final context."""
     selected: list[GraphEvidenceItem] = []
+    seen_item_ids: set[str] = set()
     spent_tokens = 0
-    for item in sorted(evidence_items, key=lambda candidate: candidate.confidence, reverse=True):
-        if (
-            not item.usable_as_context
-            or item.provenance_status != "full"
-            or item.resolution_status not in {"resolved", "fuzzy_resolved"}
-        ):
+    for item in sorted(evidence_items, key=lambda candidate: (-candidate.confidence, candidate.item_id)):
+        if item.item_id in seen_item_ids or not is_graph_evidence_item_eligible(item):
             continue
-        estimate = estimate_token_count(item.summary or item.evidence_quote or "")
-        if selected and spent_tokens + estimate > token_budget:
+        seen_item_ids.add(item.item_id)
+        estimate = estimate_token_count(item.evidence_quote or item.summary)
+        if spent_tokens + estimate > token_budget:
             continue
         selected.append(item)
         spent_tokens += estimate
