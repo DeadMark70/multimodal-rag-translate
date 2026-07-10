@@ -42,6 +42,11 @@ from langchain_core.messages import HumanMessage
 from core.llm_factory import get_llm_usage_metrics
 from core.providers import get_llm
 from core.prompt_loader import format_prompt
+from data_base.context_packing import (
+    expand_graph_evidence_to_chunks,
+    merge_vector_and_graph_docs,
+    score_graph_located_chunks,
+)
 from data_base.document_metadata import get_document_id
 from data_base.vector_store_manager import (
     get_user_retriever_async,
@@ -686,19 +691,7 @@ async def _get_graph_context(
     Tuple[str, List[GraphEvidence], Optional[GraphContextDetails]],
 ]:
     """Return legacy graph context contracts through the configured graph path."""
-    feature_flag_config: Dict[str, object] = {}
-    if isinstance(graph_execution_hints, dict):
-        nested_flags = graph_execution_hints.get("graph_feature_flags")
-        if isinstance(nested_flags, dict):
-            feature_flag_config.update(nested_flags)
-        feature_flag_config.update(
-            {
-                key: value
-                for key, value in graph_execution_hints.items()
-                if key.startswith("graph_")
-            }
-        )
-    flags = get_graph_feature_flags(feature_flag_config)
+    flags = get_graph_feature_flags(_graph_feature_flag_config(graph_execution_hints))
     if not flags.graph_evidence_locator_enabled:
         return await _get_graph_context_legacy_raw(
             question=question,
@@ -796,6 +789,35 @@ def _graph_feature_flag_snapshot(
         if isinstance(flags, dict):
             source.update(flags)
     return get_graph_feature_flags(source).to_snapshot()
+
+
+def _graph_feature_flag_config(
+    graph_execution_hints: Optional[Dict[str, Any]],
+) -> Dict[str, object]:
+    """Read graph flags from the established nested and direct hint forms."""
+    if not isinstance(graph_execution_hints, dict):
+        return {}
+    nested_flags = graph_execution_hints.get("graph_feature_flags")
+    config = dict(nested_flags) if isinstance(nested_flags, dict) else {}
+    config.update(
+        {
+            key: value
+            for key, value in graph_execution_hints.items()
+            if key.startswith("graph_")
+        }
+    )
+    return config
+
+
+def _required_modalities_for_question(question: str) -> list[str]:
+    """Infer lightweight modality requirements for the graph score bonus."""
+    lowered_question = question.lower()
+    modalities: list[str] = []
+    if any(token in lowered_question for token in ("table", "表格", "表")):
+        modalities.append("table")
+    if any(token in lowered_question for token in ("figure", "image", "圖", "圖片")):
+        modalities.append("image")
+    return modalities
 
 
 def _graph_evidence_mode(
@@ -1560,26 +1582,58 @@ async def rag_answer_question(
             "graph_context",
             {"search_mode": graph_search_mode},
         )
-        graph_context_payload = await _get_graph_context(
-            question=question,
-            user_id=user_id,
-            search_mode=graph_search_mode,
-            graph_execution_hints=graph_execution_hints,
-            return_evidence=return_docs,
-            return_details=return_docs,
+        graph_flags = get_graph_feature_flags(
+            _graph_feature_flag_config(graph_execution_hints)
         )
-        if return_docs:
-            graph_context, graph_evidence_units, graph_context_details = graph_context_payload
-            await _record_graph_observability(
-                question=question,
-                graph_search_mode=graph_search_mode,
-                graph_execution_hints=graph_execution_hints,
-                mode_hints=mode_hints,
-                graph_context_details=graph_context_details,
-                graph_evidence_units=graph_evidence_units,
-            )
+        if graph_flags.graph_to_chunk_enabled:
+            chunk_lookup = VectorStoreChunkLookup()
+            try:
+                bundle = await _get_graph_evidence_bundle(
+                    question=question,
+                    user_id=user_id,
+                    search_mode=graph_search_mode,
+                    graph_execution_hints=graph_execution_hints,
+                    chunk_lookup=chunk_lookup,
+                )
+                graph_documents = score_graph_located_chunks(
+                    expand_graph_evidence_to_chunks(
+                        user_id,
+                        bundle,
+                        ChunkAnchorResolver(chunk_lookup),
+                    ),
+                    required_modalities=_required_modalities_for_question(question),
+                )
+                docs = merge_vector_and_graph_docs(
+                    docs,
+                    graph_documents,
+                    graph_chunk_ratio=0.35,
+                )
+            except (KeyError, OSError, RuntimeError, ValueError) as exc:
+                logger.warning(
+                    "Graph-to-chunk expansion failed; retaining vector retrieval: %s",
+                    exc,
+                )
         else:
-            graph_context = graph_context_payload
+            graph_context_payload = await _get_graph_context(
+                question=question,
+                user_id=user_id,
+                search_mode=graph_search_mode,
+                graph_execution_hints=graph_execution_hints,
+                return_evidence=return_docs,
+                return_details=return_docs,
+            )
+            if return_docs:
+                graph_context, graph_evidence_units, graph_context_details = graph_context_payload
+                await _record_graph_observability(
+                    question=question,
+                    graph_search_mode=graph_search_mode,
+                    graph_execution_hints=graph_execution_hints,
+                    mode_hints=mode_hints,
+                    graph_context_details=graph_context_details,
+                    graph_evidence_units=graph_evidence_units,
+                )
+            else:
+                graph_context = graph_context_payload
 
     # Step 5.6: Context Enricher - expand short chunks (advanced mode only)
     if not plain_mode:
