@@ -96,6 +96,59 @@ async def test_run_campaign_case_graph_uses_generic_graph_mode() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "expected_evidence_mode", "expected_flags"),
+    [
+        (
+            "graph_raw_current",
+            "raw_current",
+            {"graph_raw_current_enabled": True, "graph_auto_gate_enabled": False},
+        ),
+        (
+            "graph_locator_to_chunk",
+            "locator_to_chunk",
+            {"graph_to_chunk_enabled": True, "graph_auto_gate_enabled": False},
+        ),
+        (
+            "router_auto_graph",
+            "router_auto",
+            {"graph_to_chunk_enabled": True, "graph_auto_gate_enabled": True},
+        ),
+    ],
+)
+async def test_graph_evaluation_modes_pass_explicit_execution_snapshots(
+    mode: str,
+    expected_evidence_mode: str,
+    expected_flags: dict[str, bool],
+) -> None:
+    test_case = EvaluationCase(
+        id="Q-graph-mode",
+        question="Compare the claim scope across papers",
+        ground_truth="Graph mode snapshot",
+        source_docs=[],
+        requires_multi_doc_reasoning=False,
+    )
+    mock_result = RAGResult(
+        answer="answer",
+        source_doc_ids=["doc-1"],
+        documents=[Document(page_content="ctx")],
+    )
+
+    with patch("evaluation.rag_modes.run_with_retry", new=AsyncMock(return_value=mock_result)) as mock_retry:
+        await run_campaign_case(
+            test_case=test_case,
+            user_id="user-1",
+            mode=mode,
+            model_config={"model_name": "gemini-2.5-flash"},
+        )
+
+    _, kwargs = mock_retry.await_args
+    hints = kwargs["graph_execution_hints"]
+    assert hints["graph_evidence_mode"] == expected_evidence_mode
+    assert all(hints["graph_feature_flags"][key] is value for key, value in expected_flags.items())
+
+
+@pytest.mark.asyncio
 async def test_run_campaign_case_agentic_uses_evaluation_service_and_profile() -> None:
     test_case = EvaluationCase(
         id="Q1",

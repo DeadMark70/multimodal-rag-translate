@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import (
     List,
@@ -26,6 +27,7 @@ from typing import (
     TYPE_CHECKING,
     Callable,
     Awaitable,
+    Literal,
 )
 from uuid import uuid4
 
@@ -129,6 +131,102 @@ class GraphContextDetails(NamedTuple):
     candidate_evidence_count: int
     graph_latency_ms: int
     graph_index_version: Optional[int] = None
+
+
+@dataclass(frozen=True, slots=True)
+class GraphNeedDecision:
+    """Classify whether GraphRAG may contribute to this answer path."""
+
+    use_graph: bool
+    role: Literal["skip", "locator", "planning"]
+    locator_only: bool
+    final_graph_context_allowed: bool
+    score: float
+    reason: str
+
+
+def _classify_graph_need(
+    question: str,
+    manual_override: bool = False,
+    asset_registry_available: bool = False,
+) -> GraphNeedDecision:
+    """Return deterministic graph-use semantics without reading process-global state."""
+    normalized = question.lower()
+    if manual_override:
+        return GraphNeedDecision(True, "locator", True, False, 1.0, "manual override")
+
+    exact_markers = (
+        "table",
+        "figure",
+        "formula",
+        "flops",
+        "params",
+        "exact",
+        "numeric",
+        "number",
+        "數值",
+        "公式",
+        "表格",
+    )
+    planning_markers = (
+        "evolution",
+        "roadmap",
+        "research plan",
+        "technical evolution",
+        "技術演進",
+        "規劃",
+    )
+    graph_markers = (
+        "compare",
+        "relationship",
+        "relation",
+        "claim",
+        "scope",
+        "contradict",
+        "across papers",
+        "跨文獻",
+        "關係",
+        "主張",
+        "範圍",
+    )
+
+    if any(marker in normalized for marker in exact_markers):
+        if asset_registry_available:
+            return GraphNeedDecision(
+                True,
+                "locator",
+                True,
+                False,
+                0.55,
+                "exact extraction; graph may locate table/formula but cannot answer directly",
+            )
+        return GraphNeedDecision(
+            False,
+            "skip",
+            False,
+            False,
+            0.2,
+            "exact extraction without usable graph asset locator",
+        )
+    if any(marker in normalized for marker in planning_markers):
+        return GraphNeedDecision(
+            True,
+            "planning",
+            True,
+            False,
+            0.65,
+            "technical evolution requires graph planning only",
+        )
+    if any(marker in normalized for marker in graph_markers):
+        return GraphNeedDecision(
+            True,
+            "locator",
+            False,
+            True,
+            0.8,
+            "relationship or claim-scope query",
+        )
+    return GraphNeedDecision(False, "skip", False, False, 0.3, "no graph-specific intent")
 
 
 ProgressCallback = Callable[[str, Optional[Dict[str, Any]]], Awaitable[None]]
@@ -809,6 +907,38 @@ def _graph_feature_flag_config(
     return config
 
 
+def _hint_enabled(source: Optional[Dict[str, Any]], key: str) -> bool:
+    """Read an explicit boolean execution hint without consulting global state."""
+    if not isinstance(source, dict):
+        return False
+    value = source.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+def _graph_gate_inputs(
+    graph_execution_hints: Optional[Dict[str, Any]],
+    mode_hints: Optional[Dict[str, Any]],
+    graph_flags: Any,
+) -> tuple[bool, bool]:
+    """Resolve gate inputs exclusively from explicit execution or mode snapshots."""
+    sources = (graph_execution_hints, mode_hints)
+    manual_override = any(
+        _hint_enabled(source, "graph_manual_override")
+        or _hint_enabled(source, "manual_graph_override")
+        for source in sources
+    )
+    asset_registry_available = bool(graph_flags.graph_asset_graph_enabled) or any(
+        _hint_enabled(source, "asset_registry_available")
+        or _hint_enabled(source, "graph_asset_registry_available")
+        for source in sources
+    )
+    return manual_override, asset_registry_available
+
+
 def _required_modalities_for_question(question: str) -> list[str]:
     """Infer lightweight modality requirements for the graph score bonus."""
     lowered_question = question.lower()
@@ -916,6 +1046,59 @@ def _build_graph_evidence_items(
     return items
 
 
+def _graph_evidence_units_from_bundle(bundle: GraphEvidenceBundle) -> List[GraphEvidence]:
+    """Adapt source-backed final bundle items for the established recorder."""
+    units: List[GraphEvidence] = []
+    for item in bundle.final_context_items:
+        evidence_type = "local_edge" if item.edge_ids else "local_node"
+        units.append(
+            GraphEvidence(
+                evidence_id=item.item_id,
+                evidence_type=evidence_type,
+                text=item.evidence_quote or item.summary,
+                score=item.confidence,
+                token_estimate=estimate_token_count(item.evidence_quote or item.summary),
+                metadata={
+                    "doc_ids": list(item.source_doc_ids),
+                    "chunk_ids": list(item.source_chunk_ids),
+                    "asset_ids": list(item.asset_ids),
+                    "pages": list(item.pages),
+                    "source_id": item.node_ids[0] if item.node_ids else None,
+                    "target_id": item.node_ids[1] if len(item.node_ids) > 1 else None,
+                },
+            )
+        )
+    return units
+
+
+def _graph_context_details_for_bundle(
+    bundle: GraphEvidenceBundle,
+    graph_need_decision: Optional[GraphNeedDecision],
+    resolved_count: int,
+) -> GraphContextDetails:
+    """Expose structured bundle counts through the existing graph-event contract."""
+    route = bundle.route if bundle.route in {"local-first", "global-first", "blended"} else "local-first"
+    candidate_count = len(bundle.evidence_items)
+    final_count = len(bundle.final_context_items)
+    reason_parts = []
+    if graph_need_decision is not None:
+        reason_parts.append(f"gate={graph_need_decision.reason}")
+    reason_parts.append(
+        f"candidate={candidate_count};resolved={resolved_count};final={final_count}"
+    )
+    return GraphContextDetails(
+        route_decision=GraphRouteDecision(
+            query_kind="relation",
+            path=route,
+            router_reason="; ".join(reason_parts),
+        ),
+        matched_entity_ids=[],
+        community_ids=[],
+        candidate_evidence_count=candidate_count,
+        graph_latency_ms=0,
+    )
+
+
 async def _record_graph_observability(
     *,
     question: str,
@@ -924,6 +1107,7 @@ async def _record_graph_observability(
     mode_hints: Optional[Dict[str, Any]],
     graph_context_details: Optional[GraphContextDetails],
     graph_evidence_units: List[GraphEvidence],
+    resolved_item_count: Optional[int] = None,
 ) -> None:
     summary = _summarize_graph_evidence_for_log(graph_evidence_units)
     evaluation_metadata = _normalize_evaluation_metadata(mode_hints, graph_execution_hints)
@@ -973,7 +1157,11 @@ async def _record_graph_observability(
         created_at=created_at,
     )
     graph_to_chunk_attempted = evidence_mode in {"locator_only", "locator_to_chunk"}
-    resolved_item_count = sum(1 for item in evidence_items if item.source_chunk_ids)
+    observed_resolved_count = (
+        resolved_item_count
+        if resolved_item_count is not None
+        else sum(1 for item in evidence_items if item.source_chunk_ids)
+    )
     total_item_count = len(evidence_items)
     candidate_count = max(graph_context_details.candidate_evidence_count, total_item_count)
     graph_snapshot_version = evaluation_metadata.get("graph_snapshot_version")
@@ -1009,7 +1197,7 @@ async def _record_graph_observability(
         graph_latency_ms=graph_context_details.graph_latency_ms,
         graph_context_tokens=int(summary["graph_context_tokens"]),
         graph_to_chunk_success_rate=(
-            (resolved_item_count / total_item_count)
+            (observed_resolved_count / total_item_count)
             if graph_to_chunk_attempted and total_item_count
             else None
         ),
@@ -1576,14 +1764,31 @@ async def rag_answer_question(
     graph_context = ""
     graph_evidence_units: List[GraphEvidence] = []
     graph_context_details: Optional[GraphContextDetails] = None
-    if enable_graph_rag:
+    graph_evidence_documents_for_return: List[Document] = []
+    graph_flags = get_graph_feature_flags(_graph_feature_flag_config(graph_execution_hints))
+    graph_need_decision: Optional[GraphNeedDecision] = None
+    graph_allowed = enable_graph_rag
+    if enable_graph_rag and graph_flags.graph_auto_gate_enabled:
+        manual_override, asset_registry_available = _graph_gate_inputs(
+            graph_execution_hints,
+            mode_hints,
+            graph_flags,
+        )
+        graph_need_decision = _classify_graph_need(
+            question,
+            manual_override=manual_override,
+            asset_registry_available=asset_registry_available,
+        )
+        graph_allowed = graph_need_decision.use_graph
+
+    if graph_allowed:
         await _emit_progress(
             progress_callback,
             "graph_context",
-            {"search_mode": graph_search_mode},
-        )
-        graph_flags = get_graph_feature_flags(
-            _graph_feature_flag_config(graph_execution_hints)
+            {
+                "search_mode": graph_search_mode,
+                "gate_role": graph_need_decision.role if graph_need_decision else "legacy",
+            },
         )
         if graph_flags.graph_to_chunk_enabled:
             chunk_lookup = VectorStoreChunkLookup()
@@ -1603,17 +1808,45 @@ async def rag_answer_question(
                     ),
                     required_modalities=_required_modalities_for_question(question),
                 )
+                if doc_ids:
+                    allowed_doc_ids = set(doc_ids)
+                    graph_documents = [
+                        document
+                        for document in graph_documents
+                        if get_document_id(document.metadata) in allowed_doc_ids
+                    ]
                 docs = merge_vector_and_graph_docs(
                     docs,
                     graph_documents,
                     graph_chunk_ratio=0.35,
+                )
+                graph_evidence_units = _graph_evidence_units_from_bundle(bundle)
+                graph_context_details = _graph_context_details_for_bundle(
+                    bundle,
+                    graph_need_decision,
+                    len(graph_documents),
+                )
+                await _record_graph_observability(
+                    question=question,
+                    graph_search_mode=graph_search_mode,
+                    graph_execution_hints=graph_execution_hints,
+                    mode_hints=mode_hints,
+                    graph_context_details=graph_context_details,
+                    graph_evidence_units=graph_evidence_units,
+                    resolved_item_count=len(graph_documents),
                 )
             except (KeyError, OSError, RuntimeError, ValueError) as exc:
                 logger.warning(
                     "Graph-to-chunk expansion failed; retaining vector retrieval: %s",
                     exc,
                 )
-        else:
+        elif not (
+            graph_need_decision
+            and (
+                graph_need_decision.locator_only
+                or not graph_need_decision.final_graph_context_allowed
+            )
+        ):
             graph_context_payload = await _get_graph_context(
                 question=question,
                 user_id=user_id,
@@ -1624,6 +1857,9 @@ async def rag_answer_question(
             )
             if return_docs:
                 graph_context, graph_evidence_units, graph_context_details = graph_context_payload
+                graph_evidence_documents_for_return = _to_graph_evidence_documents(
+                    graph_evidence_units
+                )
                 await _record_graph_observability(
                     question=question,
                     graph_search_mode=graph_search_mode,
@@ -1822,15 +2058,10 @@ async def rag_answer_question(
             # Note: Usage from visual verification loop is not currently aggregated into usage_metadata
 
         if return_docs:
-            graph_evidence_docs = (
-                _to_graph_evidence_documents(graph_evidence_units)
-                if enable_graph_rag
-                else []
-            )
             return RAGResult(
                 answer,
                 list(source_doc_ids),
-                [*docs, *graph_evidence_docs],
+                [*docs, *graph_evidence_documents_for_return],
                 usage_metadata,
                 thought_process=prompt_text,  # Capture the prompt as thought trace
                 tool_calls=tool_calls,
