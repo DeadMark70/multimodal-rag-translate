@@ -27,6 +27,7 @@ from graph_rag.schemas import (
     GraphHint,
     is_graph_evidence_item_eligible,
 )
+from graph_rag.store import GraphStore
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,16 @@ def estimate_token_count(text: str) -> int:
     if not text:
         return 0
     return max(1, len(text) // 4)
+
+
+def link_query_entities(store: GraphStore, query_terms: list[str]) -> list[str]:
+    """Resolve explicit aliases before local vector or fuzzy graph search runs."""
+    linked: list[str] = []
+    for term in query_terms:
+        node_id = store.find_canonical_node(term)
+        if node_id and node_id not in linked:
+            linked.append(node_id)
+    return linked
 
 
 @dataclass(slots=True)

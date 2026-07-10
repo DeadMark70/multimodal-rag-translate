@@ -374,6 +374,39 @@ class RawGraphCandidate(BaseModel):
     usable_as_final_evidence: Literal[False] = False
 
 
+class CanonicalEntity(BaseModel):
+    """Persisted canonical identity and aliases for one graph node."""
+
+    canonical_id: str
+    canonical_name: str
+    entity_type: EntityType
+    aliases: List[str] = Field(default_factory=list)
+    source_doc_ids: List[str] = Field(default_factory=list)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    review_status: Literal["auto", "needs_review", "reviewed"] = "auto"
+
+
+class ClaimIdentity(BaseModel):
+    """Identity boundary for claims that must never be globally auto-merged."""
+
+    claim_type: str
+    subject: str
+    scope: str
+    condition: Optional[str] = None
+    source_doc: str
+
+    @property
+    def stable_key(self) -> str:
+        parts = [
+            self.claim_type,
+            self.subject,
+            self.scope,
+            self.condition or "",
+            self.source_doc,
+        ]
+        return "::".join(part.strip().lower() for part in parts if part.strip())
+
+
 GraphEvidenceMode = Literal[
     "raw_current",
     "provenance_gated",

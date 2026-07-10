@@ -22,6 +22,7 @@ import networkx as nx
 from core import uploads as upload_paths
 from graph_rag.schemas import (
     Community,
+    CanonicalEntity,
     EvidenceAnchor,
     GraphDocumentStatus,
     GraphEdgeProvenance,
@@ -41,11 +42,32 @@ GRAPH_INDEX_VERSION = 2
 GRAPH_DOCUMENTS_FILENAME = "graph.documents.json"
 GRAPH_PROVENANCE_FILENAME = "graph.provenance.json"
 GRAPH_RAW_CANDIDATES_FILENAME = "graph.raw_candidates.json"
+GRAPH_ALIASES_FILENAME = "graph.aliases.json"
+GRAPH_TYPE_INDEX_FILENAME = "graph.type_index.json"
+GRAPH_DOC_INDEX_FILENAME = "graph.doc_index.json"
 GRAPH_SOURCE_MARKDOWN_FILENAME = "extracted.md"
 NODE_VECTOR_INDEX_NAME = "node_index"
 NODE_VECTOR_MAP_FILENAME = "node_index_map.json"
 NODE_VECTOR_META_FILENAME = "node_index.meta.json"
 _UNSET = object()
+
+AUTO_MERGE_ENTITY_TYPES = {
+    EntityType.PAPER,
+    EntityType.DATASET,
+    EntityType.METRIC,
+    EntityType.METHOD,
+}
+REVIEW_REQUIRED_ENTITY_TYPES = {
+    EntityType.MODEL,
+    EntityType.ARCHITECTURE_COMPONENT,
+    EntityType.TRAINING_SETTING,
+}
+NEVER_AUTO_MERGE_ENTITY_TYPES = {
+    EntityType.CLAIM,
+    EntityType.RESULT,
+    EntityType.TABLE,
+    EntityType.FORMULA,
+}
 
 
 def _generate_node_id(label: str, entity_type: EntityType) -> str:
@@ -62,6 +84,21 @@ def _generate_node_id(label: str, entity_type: EntityType) -> str:
     content = f"{entity_type.value}:{label.lower().strip()}"
     hash_suffix = hashlib.md5(content.encode()).hexdigest()[:8]
     return f"node_{entity_type.value}_{hash_suffix}"
+
+
+def _normalize_alias(value: str) -> str:
+    """Normalize explicit aliases without applying fuzzy similarity."""
+    return " ".join(value.strip().lower().replace("-", " ").split())
+
+
+def _unique_aliases(values: List[str]) -> List[str]:
+    """Return normalized alias keys in caller-provided order."""
+    aliases: List[str] = []
+    for value in values:
+        alias = _normalize_alias(value)
+        if alias and alias not in aliases:
+            aliases.append(alias)
+    return aliases
 
 
 class GraphStore:
@@ -99,6 +136,10 @@ class GraphStore:
         self.document_statuses: Dict[str, GraphDocumentStatus] = {}
         self.edge_provenance: Dict[str, GraphEdgeProvenance] = {}
         self.raw_candidates: Dict[str, RawGraphCandidate] = {}
+        self.canonical_entities: Dict[str, CanonicalEntity] = {}
+        self.alias_index: Dict[str, List[str]] = {}
+        self.type_index: Dict[str, List[str]] = {}
+        self.doc_index: Dict[str, List[str]] = {}
         self.last_updated: Optional[datetime] = None
         self.last_optimized_at: Optional[datetime] = None
         self.index_version: int = GRAPH_INDEX_VERSION
@@ -116,6 +157,7 @@ class GraphStore:
             self._load_document_statuses()
             self._load_edge_provenance()
             self._load_raw_candidates()
+            self._load_alias_indexes()
     
     def _get_graph_path(self) -> Path:
         """
@@ -150,6 +192,15 @@ class GraphStore:
     def _get_raw_candidates_path(self) -> Path:
         """Get path to the unverified extraction candidate sidecar."""
         return self._get_graph_path().with_name(GRAPH_RAW_CANDIDATES_FILENAME)
+
+    def _get_aliases_path(self) -> Path:
+        return self._get_graph_path().with_name(GRAPH_ALIASES_FILENAME)
+
+    def _get_type_index_path(self) -> Path:
+        return self._get_graph_path().with_name(GRAPH_TYPE_INDEX_FILENAME)
+
+    def _get_doc_index_path(self) -> Path:
+        return self._get_graph_path().with_name(GRAPH_DOC_INDEX_FILENAME)
 
     def _get_node_vector_faiss_path(self) -> Path:
         """Get path to GraphRAG node-vector FAISS index."""
@@ -234,6 +285,24 @@ class GraphStore:
             ]
         }
         self._atomic_write_json(self._get_raw_candidates_path(), payload)
+
+    def _write_alias_indexes(self) -> None:
+        """Persist canonical entity and lookup sidecars independently of graph pickle."""
+        self._atomic_write_json(
+            self._get_aliases_path(),
+            {
+                "entities": [
+                    entity.model_dump(mode="json")
+                    for entity in sorted(
+                        self.canonical_entities.values(),
+                        key=lambda item: item.canonical_id,
+                    )
+                ],
+                "aliases": self.alias_index,
+            },
+        )
+        self._atomic_write_json(self._get_type_index_path(), self.type_index)
+        self._atomic_write_json(self._get_doc_index_path(), self.doc_index)
 
     def _load_legacy_metadata(self, legacy_data: Dict[str, Any]) -> None:
         """Load metadata fields embedded in older pickle payloads."""
@@ -359,12 +428,60 @@ class GraphStore:
                 exc,
             )
 
+    def _load_alias_indexes(self) -> None:
+        """Load optional alias indexes while preserving legacy graph readability."""
+        self.canonical_entities = {}
+        self.alias_index = {}
+        self.type_index = {}
+        self.doc_index = {}
+        try:
+            aliases_path = self._get_aliases_path()
+            if aliases_path.exists():
+                with open(aliases_path, "r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                entities = [
+                    CanonicalEntity.model_validate(item)
+                    for item in payload.get("entities", [])
+                ]
+                self.canonical_entities = {
+                    entity.canonical_id: entity for entity in entities
+                }
+                raw_aliases = payload.get("aliases", {})
+                if isinstance(raw_aliases, dict):
+                    self.alias_index = {
+                        str(alias): [str(node_id) for node_id in node_ids]
+                        for alias, node_ids in raw_aliases.items()
+                        if isinstance(node_ids, list)
+                    }
+
+            for path, target in (
+                (self._get_type_index_path(), "type_index"),
+                (self._get_doc_index_path(), "doc_index"),
+            ):
+                if not path.exists():
+                    continue
+                with open(path, "r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                if isinstance(payload, dict):
+                    setattr(
+                        self,
+                        target,
+                        {
+                            str(key): [str(node_id) for node_id in value]
+                            for key, value in payload.items()
+                            if isinstance(value, list)
+                        },
+                    )
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
+            logger.warning("Failed to load graph alias indexes for user %s: %s", self.user_id, exc)
+
     def save_sidecars(self) -> None:
         """Persist metadata-only sidecars without rewriting the graph pickle."""
         self._write_metadata()
         self._write_document_statuses()
         self._write_edge_provenance()
         self._write_raw_candidates()
+        self._write_alias_indexes()
 
     def save(self) -> None:
         """
@@ -411,6 +528,7 @@ class GraphStore:
             self._load_document_statuses()
             self._load_edge_provenance()
             self._load_raw_candidates()
+            self._load_alias_indexes()
             
             logger.info(
                 f"Loaded graph for user {self.user_id}: "
@@ -435,6 +553,10 @@ class GraphStore:
         self.document_statuses.clear()
         self.edge_provenance.clear()
         self.raw_candidates.clear()
+        self.canonical_entities.clear()
+        self.alias_index.clear()
+        self.type_index.clear()
+        self.doc_index.clear()
         self._pending_count = 0
         self.last_optimized_at = None
         self.graph_dirty = False
@@ -697,6 +819,141 @@ class GraphStore:
             )
             if candidate.source_doc_id == doc_id
         ]
+
+    def upsert_canonical_entity(
+        self,
+        *,
+        canonical_name: str,
+        entity_type: EntityType | str,
+        aliases: List[str],
+        source_doc_ids: List[str],
+        confidence: float = 1.0,
+    ) -> str:
+        """Create or reuse a canonical node under explicit type/scope merge rules."""
+        resolved_type = EntityType(entity_type)
+        normalized_name = _normalize_alias(canonical_name)
+        normalized_aliases = _unique_aliases([canonical_name, *aliases])
+        existing_id = self._find_exact_canonical_name(normalized_name, resolved_type)
+
+        if existing_id is None and resolved_type in AUTO_MERGE_ENTITY_TYPES:
+            existing_id = self.find_canonical_node(canonical_name, resolved_type.value)
+        elif existing_id is None and resolved_type in REVIEW_REQUIRED_ENTITY_TYPES:
+            existing_id = self._find_scoped_alias_match(
+                normalized_aliases,
+                resolved_type,
+                source_doc_ids,
+            )
+
+        review_status: Literal["auto", "needs_review", "reviewed"] = (
+            "needs_review"
+            if resolved_type in REVIEW_REQUIRED_ENTITY_TYPES
+            else "auto"
+        )
+        if existing_id is None:
+            existing_id = self.add_node_from_extraction(
+                label=canonical_name,
+                entity_type=resolved_type,
+                doc_id=source_doc_ids[0] if source_doc_ids else "",
+                pending_resolution=False,
+            )
+            entity = CanonicalEntity(
+                canonical_id=existing_id,
+                canonical_name=canonical_name,
+                entity_type=resolved_type,
+                aliases=normalized_aliases,
+                source_doc_ids=list(dict.fromkeys(source_doc_ids)),
+                confidence=confidence,
+                review_status=review_status,
+            )
+        else:
+            existing = self.canonical_entities.get(existing_id)
+            if existing is None:
+                existing_node = self.get_node(existing_id)
+                existing = CanonicalEntity(
+                    canonical_id=existing_id,
+                    canonical_name=existing_node.label if existing_node else canonical_name,
+                    entity_type=resolved_type,
+                    aliases=[],
+                    source_doc_ids=existing_node.doc_ids if existing_node else [],
+                    review_status=review_status,
+                )
+            entity = existing.model_copy(
+                update={
+                    "aliases": _unique_aliases([*existing.aliases, *normalized_aliases]),
+                    "source_doc_ids": list(
+                        dict.fromkeys([*existing.source_doc_ids, *source_doc_ids])
+                    ),
+                    "confidence": max(existing.confidence, confidence),
+                }
+            )
+
+        self.canonical_entities[existing_id] = entity
+        self._index_canonical_entity(entity)
+        self.mark_dirty()
+        return existing_id
+
+    def find_canonical_node(
+        self,
+        label: str,
+        entity_type: str | None = None,
+    ) -> str | None:
+        """Resolve an exact canonical name or alias without fuzzy cross-type merging."""
+        normalized_label = _normalize_alias(label)
+        for node_id in self.alias_index.get(normalized_label, []):
+            entity = self.canonical_entities.get(node_id)
+            if entity is None:
+                continue
+            if entity_type is None or entity.entity_type.value == entity_type:
+                return node_id
+        return None
+
+    def _find_exact_canonical_name(
+        self,
+        normalized_name: str,
+        entity_type: EntityType,
+    ) -> str | None:
+        for entity in self.canonical_entities.values():
+            if (
+                entity.entity_type == entity_type
+                and _normalize_alias(entity.canonical_name) == normalized_name
+            ):
+                return entity.canonical_id
+        return None
+
+    def _find_scoped_alias_match(
+        self,
+        aliases: List[str],
+        entity_type: EntityType,
+        source_doc_ids: List[str],
+    ) -> str | None:
+        requested_docs = set(source_doc_ids)
+        for alias in aliases:
+            for node_id in self.alias_index.get(alias, []):
+                entity = self.canonical_entities.get(node_id)
+                if (
+                    entity is not None
+                    and entity.entity_type == entity_type
+                    and requested_docs.intersection(entity.source_doc_ids)
+                ):
+                    return node_id
+        return None
+
+    def _index_canonical_entity(self, entity: CanonicalEntity) -> None:
+        for alias, node_ids in list(self.alias_index.items()):
+            self.alias_index[alias] = [
+                node_id for node_id in node_ids if node_id != entity.canonical_id
+            ]
+            if not self.alias_index[alias]:
+                del self.alias_index[alias]
+        for alias in _unique_aliases([entity.canonical_name, *entity.aliases]):
+            self.alias_index.setdefault(alias, []).append(entity.canonical_id)
+        self.type_index.setdefault(entity.entity_type.value, [])
+        if entity.canonical_id not in self.type_index[entity.entity_type.value]:
+            self.type_index[entity.entity_type.value].append(entity.canonical_id)
+        for doc_id in entity.source_doc_ids:
+            self.doc_index.setdefault(doc_id, [])
+            if entity.canonical_id not in self.doc_index[doc_id]:
+                self.doc_index[doc_id].append(entity.canonical_id)
     
     def add_edge(self, edge: GraphEdge) -> Tuple[str, str]:
         """

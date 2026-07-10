@@ -819,13 +819,22 @@ async def add_extraction_to_graph(
 
     # Add entities as nodes
     for entity in result.entities:
-        node_id = store.add_node_from_extraction(
-            label=entity.label,
-            entity_type=entity.entity_type,
-            doc_id=result.doc_id,
-            description=entity.description,
-            pending_resolution=True,
-        )
+        if entity.canonical_name or entity.aliases:
+            node_id = store.upsert_canonical_entity(
+                canonical_name=entity.canonical_name or entity.label,
+                entity_type=entity.entity_type,
+                aliases=entity.aliases,
+                source_doc_ids=[result.doc_id],
+                confidence=entity.confidence,
+            )
+        else:
+            node_id = store.add_node_from_extraction(
+                label=entity.label,
+                entity_type=entity.entity_type,
+                doc_id=result.doc_id,
+                description=entity.description,
+                pending_resolution=True,
+            )
         label_to_node_id[entity.label.lower()] = node_id
         nodes_added += 1
     
