@@ -21,6 +21,7 @@ from core.llm_factory import graph_rag_llm_runtime_override
 from core.providers import get_llm
 from core.prompt_loader import format_graph_rag_prompt
 from graph_rag.llm_response import response_content_to_text
+from graph_rag.schemas import GraphEvidenceBundle, GraphEvidenceItem, GraphHint
 
 logger = logging.getLogger(__name__)
 
@@ -398,3 +399,37 @@ def merge_graph_evidence(
         lines.extend(f"- {text}" for text in sections["community_summary"])
 
     return "\n".join(lines), merged
+
+
+def merge_graph_evidence_bundle(
+    *,
+    hints: list[GraphHint],
+    evidence_items: list[GraphEvidenceItem],
+    token_budget: int,
+    query: str = "",
+    route: str = "generic",
+) -> GraphEvidenceBundle:
+    """Select source-backed graph items permitted in final context."""
+    selected: list[GraphEvidenceItem] = []
+    spent_tokens = 0
+    for item in sorted(evidence_items, key=lambda candidate: candidate.confidence, reverse=True):
+        if (
+            not item.usable_as_context
+            or item.provenance_status != "full"
+            or item.resolution_status not in {"resolved", "fuzzy_resolved"}
+        ):
+            continue
+        estimate = estimate_token_count(item.summary or item.evidence_quote or "")
+        if selected and spent_tokens + estimate > token_budget:
+            continue
+        selected.append(item)
+        spent_tokens += estimate
+
+    return GraphEvidenceBundle(
+        query=query,
+        route=route,
+        hints=hints,
+        evidence_items=evidence_items,
+        final_context_items=selected,
+        token_estimate=spent_tokens,
+    )

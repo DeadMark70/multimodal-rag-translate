@@ -20,7 +20,7 @@ from core.providers import get_llm
 from core.prompt_loader import format_graph_rag_prompt
 from graph_rag.generic_mode import GraphEvidence, estimate_token_count
 from graph_rag.llm_response import response_content_to_text
-from graph_rag.schemas import Community
+from graph_rag.schemas import Community, GraphHint
 from graph_rag.store import GraphStore
 
 # Configure logging
@@ -306,6 +306,66 @@ async def global_search_evidence(
     final_answer = await synthesize_answers(question, answer_pairs) if answer_pairs else ""
     evidence.sort(key=lambda item: item.score, reverse=True)
     return final_answer, evidence, community_ids
+
+
+async def global_search_hints(
+    store: GraphStore,
+    question: str,
+    max_communities: int = 3,
+    level: Optional[int] = None,
+) -> Tuple[str, List[GraphHint], List[int]]:
+    """Return global community output as non-final graph hints."""
+    communities = store.get_communities(level=level)
+    if not communities:
+        return "", [], []
+
+    scored = sorted(
+        (
+            (community, score_community_relevance(community, question))
+            for community in communities
+            if community.summary
+        ),
+        key=lambda item: item[1],
+        reverse=True,
+    )[:max_communities]
+    relevant = [(community, score) for community, score in scored if score > 0.0]
+    if not relevant:
+        return "", [], []
+
+    answers = await asyncio.gather(
+        *(query_community(store, community, question) for community, _ in relevant)
+    )
+    answer_pairs: list[tuple[str, str]] = []
+    hints: list[GraphHint] = []
+    community_ids: list[int] = []
+
+    for (community, score), answer in zip(relevant, answers):
+        title = community.title or f"社群 {community.id}"
+        hints.append(
+            GraphHint(
+                hint_id=f"community-summary:{community.id}",
+                hint_type="community_summary",
+                text=f"{title}: {community.summary}",
+                confidence=min(0.55 + score, 1.0),
+                source_ids=[f"community:{community.id}"],
+            )
+        )
+        if answer:
+            answer_pairs.append((title, answer))
+            community_ids.append(community.id)
+            hints.append(
+                GraphHint(
+                    hint_id=f"community-answer:{community.id}",
+                    hint_type="community_answer",
+                    text=f"{title}: {answer}",
+                    confidence=min(0.7 + score, 1.0),
+                    source_ids=[f"community:{community.id}"],
+                )
+            )
+
+    final_answer = await synthesize_answers(question, answer_pairs) if answer_pairs else ""
+    hints.sort(key=lambda hint: hint.confidence, reverse=True)
+    return final_answer, hints, community_ids
 
 
 def build_global_context(store: GraphStore) -> str:

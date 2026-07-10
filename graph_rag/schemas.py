@@ -356,6 +356,112 @@ class EvidenceAnchor(BaseModel):
         return "missing"
 
 
+class GraphHint(BaseModel):
+    """Graph-derived guidance that is not source-backed final evidence."""
+
+    hint_id: str
+    hint_type: Literal[
+        "community_summary",
+        "community_answer",
+        "global_theme",
+        "query_expansion",
+    ]
+    text: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    source_ids: List[str] = Field(default_factory=list)
+    usable_as_final_evidence: bool = False
+
+
+class GraphEvidenceItem(BaseModel):
+    """Source-backed graph item eligible for final answer context."""
+
+    item_id: str
+    graph_mode: Literal["local", "global", "blended"]
+    source: Literal["edge", "node", "path", "asset"]
+    node_ids: List[str] = Field(default_factory=list)
+    edge_ids: List[str] = Field(default_factory=list)
+    source_chunk_ids: List[str] = Field(default_factory=list)
+    source_doc_ids: List[str] = Field(default_factory=list)
+    pages: List[int] = Field(default_factory=list)
+    asset_ids: List[str] = Field(default_factory=list)
+    relation_type: Optional[str] = None
+    evidence_quote: Optional[str] = None
+    summary: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    provenance_status: Literal["full", "partial", "missing"]
+    resolution_status: Literal["resolved", "fuzzy_resolved", "unresolved", "stale"] = "unresolved"
+    verification_status: Literal[
+        "quote_match",
+        "quote_mismatch",
+        "hash_mismatch",
+        "not_checked",
+    ] = "not_checked"
+    usable_as_context: bool
+    use_reason: str
+
+    @classmethod
+    def from_anchor(
+        cls,
+        *,
+        item_id: str,
+        graph_mode: Literal["local", "global", "blended"],
+        source: Literal["edge", "node", "path", "asset"],
+        edge_ids: List[str],
+        node_ids: List[str],
+        relation_type: Optional[str],
+        summary: str,
+        anchor: EvidenceAnchor,
+        resolution_status: Literal[
+            "resolved",
+            "fuzzy_resolved",
+            "unresolved",
+            "stale",
+        ] = "resolved",
+        verification_status: Literal[
+            "quote_match",
+            "quote_mismatch",
+            "hash_mismatch",
+            "not_checked",
+        ] = "not_checked",
+    ) -> "GraphEvidenceItem":
+        usable = (
+            anchor.provenance_status == "full"
+            and resolution_status in {"resolved", "fuzzy_resolved"}
+            and verification_status in {"quote_match", "not_checked"}
+        )
+        return cls(
+            item_id=item_id,
+            graph_mode=graph_mode,
+            source=source,
+            node_ids=node_ids,
+            edge_ids=edge_ids,
+            source_chunk_ids=[anchor.chunk_id] if anchor.chunk_id else [],
+            source_doc_ids=[anchor.doc_id],
+            pages=[anchor.page] if anchor.page is not None else [],
+            asset_ids=[anchor.asset_id] if anchor.asset_id else [],
+            relation_type=relation_type,
+            evidence_quote=anchor.quote,
+            summary=summary,
+            confidence=anchor.confidence,
+            provenance_status=anchor.provenance_status,
+            resolution_status=resolution_status,
+            verification_status=verification_status,
+            usable_as_context=usable,
+            use_reason="resolved provenance" if usable else "insufficient or unresolved provenance",
+        )
+
+
+class GraphEvidenceBundle(BaseModel):
+    """Graph hints and source-backed items for downstream retrieval stages."""
+
+    query: str
+    route: str
+    hints: List[GraphHint] = Field(default_factory=list)
+    evidence_items: List[GraphEvidenceItem] = Field(default_factory=list)
+    final_context_items: List[GraphEvidenceItem] = Field(default_factory=list)
+    token_estimate: int = 0
+
+
 class GraphEdgeProvenance(BaseModel):
     """Persisted provenance anchors for one graph edge."""
 
