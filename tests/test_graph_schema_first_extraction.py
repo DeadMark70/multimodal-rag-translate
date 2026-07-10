@@ -308,3 +308,40 @@ async def test_v1_schema_rejects_legacy_node_and_relation_labels() -> None:
         "unknown_node_type",
         "unknown_relation",
     }
+
+
+@pytest.mark.asyncio
+async def test_schema_first_claim_persists_explicit_claim_identity() -> None:
+    upload_root = _workspace_upload_root("schema_claim_identity")
+    extractor = EntityRelationExtractor()
+    llm = _llm_with_payload(
+        {
+            "entities": [
+                {
+                    "id": "claim",
+                    "label": "Weak-Mamba-UNet is first",
+                    "entity_type": "claim",
+                    "claim_type": "first_claim",
+                    "scope": "scribble-based weakly supervised segmentation",
+                    "condition": "scribble supervision",
+                    "confidence": 0.9,
+                    "evidence_quote": "Weak-Mamba-UNet is first for scribble supervision",
+                }
+            ],
+            "relations": [],
+        }
+    )
+    text = "Weak-Mamba-UNet is first for scribble supervision."
+
+    with patch("graph_rag.extractor.get_llm", return_value=llm):
+        result = await extractor.extract(text, "doc-1", 0)
+
+    with patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)):
+        store = GraphStore("user-1")
+        await add_extraction_to_graph(store, result)
+
+    entity_id = next(iter(store.canonical_entities))
+    assert store.canonical_entities[entity_id].identity_key is not None
+    assert "scribble-based weakly supervised segmentation" in store.canonical_entities[
+        entity_id
+    ].identity_key

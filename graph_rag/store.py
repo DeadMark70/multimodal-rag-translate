@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import pickle
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
@@ -983,11 +984,16 @@ class GraphStore:
     def find_canonical_nodes_in_text(self, text: str) -> List[str]:
         """Find explicit aliases in query text without an LLM classification step."""
         normalized_text = _normalize_alias(text)
-        compact_text = normalized_text.replace(" ", "")
         matched: List[str] = []
         for alias, node_ids in self.alias_index.items():
             compact_alias = alias.replace(" ", "")
-            if alias not in normalized_text and compact_alias not in compact_text:
+            if len(compact_alias) < 3:
+                continue
+            phrase_match = re.search(
+                rf"(?<![0-9a-z]){re.escape(alias)}(?![0-9a-z])",
+                normalized_text,
+            )
+            if phrase_match is None:
                 continue
             for node_id in node_ids:
                 if node_id not in matched:

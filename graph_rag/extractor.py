@@ -27,6 +27,7 @@ from graph_rag.schemas import (
     ExtractedRelation,
     EvidenceAnchor,
     ExtractionResult,
+    ClaimIdentity,
     GRAPH_EDGE_TYPES_V1,
     GRAPH_NODE_TYPES_V1,
     RawGraphCandidate,
@@ -54,6 +55,9 @@ class _StructuredEntity(BaseModel):
     aliases: List[str] = Field(default_factory=list, description="Known entity aliases")
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     evidence_quote: str | None = Field(default=None, description="Exact source quote")
+    claim_type: str | None = Field(default=None, description="Claim type for claim nodes")
+    scope: str | None = Field(default=None, description="Claim scope")
+    condition: str | None = Field(default=None, description="Claim condition")
 
 
 class _StructuredRelation(BaseModel):
@@ -501,6 +505,27 @@ class EntityRelationExtractor:
                     continue
                 anchors.append(anchor)
 
+            claim_identity: ClaimIdentity | None = None
+            if node_decision.entity_type == EntityType.CLAIM:
+                if not item.claim_type or not item.scope:
+                    raw_candidates.append(
+                        _raw_candidate(
+                            candidate_type="missing_claim_identity",
+                            payload=item.model_dump(mode="json"),
+                            doc_id=doc_id,
+                            chunk_index=chunk_index,
+                            confidence=item.confidence,
+                        )
+                    )
+                    continue
+                claim_identity = ClaimIdentity(
+                    claim_type=item.claim_type,
+                    subject=item.canonical_name or item.label,
+                    scope=item.scope,
+                    condition=item.condition,
+                    source_doc=doc_id,
+                )
+
             existing_canonical_id = canonical_ids_by_label.get(normalized_label)
             if existing_canonical_id:
                 entity_aliases[item.id] = existing_canonical_id
@@ -517,6 +542,7 @@ class EntityRelationExtractor:
                 aliases=[alias.strip() for alias in item.aliases if alias.strip()],
                 confidence=item.confidence,
                 anchors=anchors,
+                claim_identity=claim_identity,
             )
             entities.append(entity)
             canonical_entities[item.id] = entity
@@ -832,6 +858,7 @@ async def add_extraction_to_graph(
                 aliases=entity.aliases,
                 source_doc_ids=[result.doc_id],
                 confidence=entity.confidence,
+                claim_identity=entity.claim_identity,
             )
         else:
             node_id = store.add_node_from_extraction(

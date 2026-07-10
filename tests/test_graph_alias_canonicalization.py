@@ -193,3 +193,26 @@ async def test_local_search_uses_alias_seed_before_vector_and_fuzzy_fallback() -
 
     assert matched == [canonical_id]
     fuzzy_match.assert_not_called()
+
+
+def test_alias_text_seeding_requires_a_phrase_boundary_and_ignores_short_aliases() -> None:
+    upload_root = _workspace_upload_root("alias_phrase_boundary")
+
+    with patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)):
+        store = GraphStore("user-1")
+        sam_id = store.upsert_canonical_entity(
+            canonical_name="Segment Anything Model",
+            entity_type="method",
+            aliases=["SAM"],
+            source_doc_ids=["doc-1"],
+        )
+        store.upsert_canonical_entity(
+            canonical_name="single-letter value",
+            entity_type="value",
+            aliases=["A"],
+            source_doc_ids=["doc-1"],
+        )
+
+    assert store.find_canonical_nodes_in_text("sample examples") == []
+    assert store.find_canonical_nodes_in_text("compare SAM with MedSAM") == [sam_id]
+    assert store.find_canonical_nodes_in_text("a method comparison") == []

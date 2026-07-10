@@ -354,6 +354,7 @@ class ExtractedEntity(BaseModel):
     aliases: List[str] = Field(default_factory=list, description="實體別名")
     confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="抽取信心")
     anchors: List["EvidenceAnchor"] = Field(default_factory=list, description="來源錨點")
+    claim_identity: Optional["ClaimIdentity"] = None
 
 
 class ExtractedRelation(BaseModel):
