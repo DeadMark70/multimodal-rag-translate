@@ -16,6 +16,8 @@ import numpy as np
 # Configure logging
 logger = logging.getLogger(__name__)
 
+AUTO_MERGE_ENTITY_TYPE_VALUES = {"paper", "dataset", "metric", "method"}
+
 if TYPE_CHECKING:
     from graph_rag.store import GraphStore
 
@@ -267,21 +269,32 @@ async def resolve_entities(store: "GraphStore") -> int:
     
     resolver = EntityResolver()
     
-    # Get all pending nodes
-    nodes = []
+    # Only low-risk types may use similarity-based automatic merging. Claims,
+    # results, tables, formulas, models, and settings remain distinct until review.
+    nodes_by_type: Dict[str, List[Tuple[str, str, Optional[List[float]]]]] = defaultdict(list)
     for node in store.get_all_nodes():
-        if node.pending_resolution:
-            nodes.append((node.id, node.label, node.embedding))
-    
-    if len(nodes) < 2:
+        if (
+            node.pending_resolution
+            and node.entity_type.value in AUTO_MERGE_ENTITY_TYPE_VALUES
+        ):
+            nodes_by_type[node.entity_type.value].append(
+                (node.id, node.label, node.embedding)
+            )
+
+    candidate_count = sum(len(nodes) for nodes in nodes_by_type.values())
+    if candidate_count < 2:
         logger.info("No pending entities to resolve")
         store.clear_pending_resolution()
         return 0
-    
-    logger.info(f"Resolving {len(nodes)} pending entities")
-    
-    # Find similar pairs
-    pairs = resolver.find_similar_pairs(nodes)
+
+    logger.info(f"Resolving {candidate_count} eligible pending entities")
+
+    # Compare only within the same entity type.
+    pairs = [
+        pair
+        for nodes in nodes_by_type.values()
+        for pair in resolver.find_similar_pairs(nodes)
+    ]
     logger.info(f"Found {len(pairs)} similar pairs")
     
     # Build merge groups

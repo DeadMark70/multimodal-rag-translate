@@ -17,14 +17,16 @@ from langchain_core.messages import HumanMessage
 from core.llm_factory import graph_rag_llm_runtime_override
 from core.providers import get_llm
 from core.prompt_loader import format_graph_rag_prompt
+from graph_rag.anchor_resolver import ChunkAnchorResolver
 from graph_rag.llm_response import response_content_to_text
-from graph_rag.generic_mode import GraphEvidence, estimate_token_count
+from graph_rag.generic_mode import GraphEvidence, estimate_token_count, link_query_entities
 from graph_rag.node_vector_index import (
     node_vector_min_score,
     node_vector_search_enabled,
     node_vector_top_k,
     search_nodes_by_vector,
 )
+from graph_rag.schemas import GraphEvidenceItem, is_graph_evidence_item_eligible
 from graph_rag.store import GraphStore
 
 # Configure logging
@@ -308,9 +310,14 @@ async def local_search(
     vector_fallback_reason: str | None = None
     index_state = "disabled"
     vector_hit_count = 0
+    matched_nodes = store.find_canonical_nodes_in_text(question)
 
-    # Step 1: Vector-first seed retrieval
-    if node_vector_search_enabled():
+    # Step 1: Exact canonical alias seeds take precedence over approximate retrieval.
+    if matched_nodes:
+        logger.info("Local search alias seeds ready | alias_match_count=%s", len(matched_nodes))
+
+    # Step 2: Vector seed retrieval when no explicit alias resolves.
+    if not matched_nodes and node_vector_search_enabled():
         vector_result = await search_nodes_by_vector(
             store=store,
             query=question,
@@ -331,9 +338,11 @@ async def local_search(
                 vector_result.top_score,
             )
 
-    # Step 2: Fallback to legacy LLM + fuzzy matching when vector seeds are missing
+    # Step 3: Fallback to fuzzy matching when neither aliases nor vectors resolve.
     if not matched_nodes:
         query_entities = await identify_query_entities(question)
+        matched_nodes = link_query_entities(store, query_entities)
+    if not matched_nodes:
         if not query_entities:
             logger.info(
                 "No entities identified in query and no vector seeds | vector_hit_count=%s | vector_fallback_reason=%s | index_state=%s",
@@ -398,6 +407,102 @@ async def local_search_evidence(
     if not context or not expanded_nodes:
         return [], expanded_nodes
     return build_local_evidence(store, question, expanded_nodes, max_edges=max_edges), expanded_nodes
+
+
+def build_local_evidence_items(
+    store: GraphStore,
+    node_ids: List[str],
+    *,
+    user_id: str,
+    anchor_resolver: ChunkAnchorResolver,
+    max_edges: int = 14,
+) -> List[GraphEvidenceItem]:
+    """Build locator-ready local evidence only from resolved full provenance."""
+    node_set = set(node_ids)
+    seen_edges: set[tuple[str, str, str]] = set()
+    evidence_items: list[GraphEvidenceItem] = []
+
+    for node_id in node_ids:
+        for edge in store.get_edges_for_node(node_id):
+            if edge.source_id not in node_set or edge.target_id not in node_set:
+                continue
+            edge_key = (edge.source_id, edge.target_id, edge.relation)
+            if edge_key in seen_edges:
+                continue
+            seen_edges.add(edge_key)
+
+            source = store.get_node(edge.source_id)
+            target = store.get_node(edge.target_id)
+            if not source or not target:
+                continue
+
+            edge_id = store.edge_id(edge.source_id, edge.target_id, edge.relation)
+            summary = f"{source.label} [{edge.relation}] {target.label}"
+            if edge.description:
+                summary += f" ({edge.description})"
+
+            for anchor in store.get_edge_provenance(edge_id):
+                if anchor.provenance_status != "full":
+                    continue
+                resolution = anchor_resolver.resolve(user_id, anchor)
+                if resolution.resolution_status not in {"resolved", "fuzzy_resolved"}:
+                    continue
+                item = GraphEvidenceItem.from_anchor(
+                    item_id=f"{edge_id}:{anchor.chunk_id}",
+                    graph_mode="local",
+                    source="edge",
+                    edge_ids=[edge_id],
+                    node_ids=[edge.source_id, edge.target_id],
+                    relation_type=edge.relation,
+                    summary=summary,
+                    anchor=anchor,
+                    resolution_status=resolution.resolution_status,
+                    verification_status=resolution.verification_status,
+                )
+                if is_graph_evidence_item_eligible(item):
+                    evidence_items.append(item)
+
+    selected: list[GraphEvidenceItem] = []
+    seen_item_ids: set[str] = set()
+    for item in sorted(evidence_items, key=lambda candidate: (-candidate.confidence, candidate.item_id)):
+        if item.item_id in seen_item_ids:
+            continue
+        seen_item_ids.add(item.item_id)
+        selected.append(item)
+        if len(selected) >= max_edges:
+            break
+    return selected
+
+
+async def local_search_evidence_items(
+    store: GraphStore,
+    question: str,
+    *,
+    user_id: str,
+    anchor_resolver: ChunkAnchorResolver,
+    hops: int = 2,
+    max_nodes: int = 30,
+    max_edges: int = 14,
+) -> Tuple[List[GraphEvidenceItem], List[str]]:
+    """Return source-backed local evidence items without changing legacy search."""
+    _, expanded_nodes = await local_search(
+        store=store,
+        question=question,
+        hops=hops,
+        max_nodes=max_nodes,
+    )
+    if not expanded_nodes:
+        return [], expanded_nodes
+    return (
+        build_local_evidence_items(
+            store,
+            expanded_nodes,
+            user_id=user_id,
+            anchor_resolver=anchor_resolver,
+            max_edges=max_edges,
+        ),
+        expanded_nodes,
+    )
 
 
 def local_search_by_node_ids(

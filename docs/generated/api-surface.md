@@ -8,7 +8,7 @@ Human-maintained inventory of the current backend surface.
 |---|---|---|
 | `/pdfmd` | document lifecycle | `/list`, `/upload_pdf_md`, `/ocr`, `/file/{doc_id}/status`, `/file/{doc_id}`, `/file/{doc_id}/translate`, `/file/{doc_id}/retry-index`, `/file/{doc_id}/summary`, `/file/{doc_id}` DELETE |
 | `/rag` | ask and research | `/ask`, `/ask/stream`, `/research`, `/plan`, `/execute`, `/execute/stream` |
-| `/graph` | graph state and maintenance | `/status`, `/data`, `/documents`, `/optimize`, `/rebuild`, `/rebuild-full`, document retry/purge endpoints, `/node-vector/sync`, `/node-vector/sync/status` |
+| `/graph` | graph state, quality, diagnostics, and maintenance | `/status`, `/quality`, `/runtime-quality?campaign_id=...`, `/debug/search`, `/data`, `/documents`, `/optimize`, `/rebuild`, `/rebuild-full`, document retry/purge endpoints, `/node-vector/sync`, `/node-vector/sync/status` |
 | `/api/evaluation` | evaluation runtime | `/test-cases`, `/models`, `/model-configs`, `/campaigns`, `/campaigns/{id}/results`, `/campaigns/{id}/overview`, `/campaigns/{id}/runs`, `/campaigns/{id}/mode-comparison`, `/campaigns/{id}/question-comparison`, `/campaigns/{id}/cost-latency`, `/campaigns/{id}/router-analysis`, `/campaigns/{id}/ablation`, `/campaigns/{id}/human-vs-auto`, `/campaigns/{id}/human-eval-queue`, `/campaigns/{id}/repeat-stability`, `/campaigns/{id}/errors`, `/campaigns/{id}/export`, `/campaigns/{id}/traces`, `/campaigns/{id}/metrics`, `/campaigns/{id}/evaluate`, `/campaigns/{id}/cancel`, `/campaigns/{id}/stream`, `/runs/{run_id}/*` |
 | `/api/conversations` | conversation persistence | list/create/detail/update/delete, `/{conversation_id}/messages` |
 | `/stats` | dashboard stats | `/dashboard` |
@@ -60,6 +60,14 @@ Human-maintained inventory of the current backend surface.
   - `evaluation_routing_decisions`
   - `evaluation_claims`
   - `evaluation_human_ratings`
+  - `evaluation_graph_events`
+  - `evaluation_graph_evidence_items`
+- GraphRAG evaluation observability now snapshots:
+  - graph route and router reason
+  - graph evidence mode
+  - graph feature flags
+  - graph snapshot/schema/prompt versions
+  - per-evidence provenance and context lifecycle rows
 - Research analytics and run-detail endpoints currently exposed under `/api/evaluation`:
   - campaign aggregates: `/overview`, `/runs`, `/mode-comparison`, `/question-comparison`, `/cost-latency`, `/router-analysis`, `/ablation`, `/human-vs-auto`, `/human-eval-queue`, `/repeat-stability`, `/errors`, `/export`
   - run detail: `/runs/{run_id}/trace`, `/retrieval`, `/context`, `/llm-calls`, `/tools`, `/visual`, `/graph`, `/claims`, `/metrics`, `/diff`
@@ -71,6 +79,7 @@ Human-maintained inventory of the current backend surface.
 - Export is redaction-aware and POST-only for the research surface:
   - `POST /api/evaluation/campaigns/{campaign_id}/export`
   - supports `include_raw_trace_payloads`, `include_prompt_previews`, `include_full_prompts`, `include_answers`, `include_retrieved_excerpts`
+  - `retrieval_summary[]` entries may include additive GraphRAG observability fields: `graph_events`, `graph_event_count`, `graph_evidence_items`, `graph_evidence_item_count`
 - Campaign SSE remains coarse-grained (`campaign_snapshot`, `campaign_progress`, terminal `campaign_*` events). `event_schema_version="1.0"` and monotonic `sequence` currently apply to persisted trace events, not the SSE envelope.
 - Legacy campaigns remain readable even when research observability tables are empty; research run-detail endpoints return empty collections instead of failing.
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import logging
-import os
 import shutil
 from pathlib import Path
 from uuid import uuid4
@@ -30,6 +29,12 @@ def _copy_graph_sidecars(src: GraphStore, dest: GraphStore) -> None:
         (src._get_graph_path(), dest._get_graph_path()),
         (src._get_metadata_path(), dest._get_metadata_path()),
         (src._get_document_status_path(), dest._get_document_status_path()),
+        (src._get_provenance_path(), dest._get_provenance_path()),
+        (src._get_raw_candidates_path(), dest._get_raw_candidates_path()),
+        (src._get_asset_links_path(), dest._get_asset_links_path()),
+        (src._get_aliases_path(), dest._get_aliases_path()),
+        (src._get_type_index_path(), dest._get_type_index_path()),
+        (src._get_doc_index_path(), dest._get_doc_index_path()),
         (src._get_node_vector_faiss_path(), dest._get_node_vector_faiss_path()),
         (src._get_node_vector_pickle_path(), dest._get_node_vector_pickle_path()),
         (src._get_node_vector_map_path(), dest._get_node_vector_map_path()),
@@ -41,38 +46,23 @@ def _copy_graph_sidecars(src: GraphStore, dest: GraphStore) -> None:
 
 
 def _replace_live_graph_files(temp_store: GraphStore, live_store: GraphStore) -> None:
-    """Atomically replace the live graph pickle and sidecars from a temp store."""
-    for source_path, target_path in (
-        (temp_store._get_graph_path(), live_store._get_graph_path()),
-        (temp_store._get_metadata_path(), live_store._get_metadata_path()),
-        (
-            temp_store._get_document_status_path(),
-            live_store._get_document_status_path(),
-        ),
-        (
-            temp_store._get_node_vector_faiss_path(),
-            live_store._get_node_vector_faiss_path(),
-        ),
-        (
-            temp_store._get_node_vector_pickle_path(),
-            live_store._get_node_vector_pickle_path(),
-        ),
-        (
-            temp_store._get_node_vector_map_path(),
-            live_store._get_node_vector_map_path(),
-        ),
-        (
-            temp_store._get_node_vector_meta_path(),
-            live_store._get_node_vector_meta_path(),
-        ),
-    ):
-        if source_path.exists():
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            temp_target = target_path.with_suffix(target_path.suffix + ".tmp")
-            shutil.copy2(source_path, temp_target)
-            os.replace(temp_target, target_path)
-        elif target_path.exists() and target_path.name.startswith("node_index"):
-            target_path.unlink()
+    """Promote a completed temp rebuild through the live immutable snapshot pointer."""
+    live_store.graph = temp_store.graph
+    live_store.communities = temp_store.communities
+    live_store.document_statuses = temp_store.document_statuses
+    live_store.edge_provenance = temp_store.edge_provenance
+    live_store.raw_candidates = temp_store.raw_candidates
+    live_store.asset_links = temp_store.asset_links
+    live_store.canonical_entities = temp_store.canonical_entities
+    live_store.alias_index = temp_store.alias_index
+    live_store.type_index = temp_store.type_index
+    live_store.doc_index = temp_store.doc_index
+    live_store.last_optimized_at = temp_store.last_optimized_at
+    live_store.index_version = temp_store.index_version
+    live_store.graph_dirty = temp_store.graph_dirty
+    live_store.node_vector_dirty = temp_store.node_vector_dirty
+    live_store.node_vector_sync = temp_store.node_vector_sync
+    live_store.save_snapshot(node_vector_source=temp_store)
 
 
 def _make_graph_work_dir(base_dir: Path, prefix: str) -> Path:
@@ -214,7 +204,7 @@ async def optimize_existing_graph(
         communities = await build_communities(store, generate_summaries=True)
         communities_count = len(communities)
 
-    store.save()
+    store.save_snapshot()
     if node_vector_autosync_enabled() and isinstance(store, GraphStore):
         sync_result = await sync_node_vector_index(
             user_id=store.user_id,

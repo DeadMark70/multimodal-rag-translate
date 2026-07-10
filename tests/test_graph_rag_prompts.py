@@ -9,6 +9,7 @@ EXPECTED_PROMPTS: dict[str, tuple[str, ...]] = {
     "entity_extraction": ("text",),
     "relation_extraction": ("text", "entities"),
     "one_pass_extraction": ("text",),
+    "one_pass_extraction_schema_v1": ("text",),
     "relevance_check": ("question", "title", "summary"),
     "community_answer": ("question", "title", "summary", "entities"),
     "global_synthesis": ("question", "community_answers"),
@@ -103,3 +104,14 @@ def test_graph_rag_prompt_format_smoke() -> None:
     assert "What is the result?" in community_answer_prompt
     assert "[A]" in synthesis_prompt
     assert "has_communities" in router_prompt
+
+
+def test_graph_schema_first_extraction_prompt_requires_schema_and_evidence_quotes() -> None:
+    registry = get_graph_rag_prompt_registry()
+
+    prompt = registry.format("one_pass_extraction_schema_v1", text="sample")
+
+    assert "method_evaluated_on_dataset" in prompt
+    assert "canonical_name" in prompt
+    assert "evidence_quote" in prompt
+    assert "unknown_relation" in prompt

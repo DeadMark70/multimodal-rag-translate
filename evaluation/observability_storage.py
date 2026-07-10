@@ -12,6 +12,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from evaluation.db import connect_db, init_db
+from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
 from evaluation.trace_schemas import (
     EvaluationClaim,
     EvaluationContextPack,
@@ -58,7 +59,234 @@ def _parse_dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
-class EvaluationObservabilityRepository:
+def _graph_event_from_row(row: Any) -> EvaluationGraphEvent:
+    return EvaluationGraphEvent(
+        graph_event_id=row["graph_event_id"],
+        run_id=row["run_id"],
+        campaign_id=row["campaign_id"],
+        span_id=row["span_id"],
+        graph_query=row["graph_query"],
+        graph_search_mode=row["graph_search_mode"],
+        graph_evidence_mode=row["graph_evidence_mode"],
+        graph_route=row["graph_route"],
+        router_reason=row["router_reason"],
+        graph_feature_flags=_json_loads(row["graph_feature_flags_json"], {}),
+        graph_snapshot_version=row["graph_snapshot_version"],
+        graph_schema_version=row["graph_schema_version"],
+        graph_extraction_prompt_version=row["graph_extraction_prompt_version"],
+        matched_entity_ids=_json_loads(row["matched_entity_ids_json"], []),
+        community_ids=_json_loads(row["community_ids_json"], []),
+        node_count=row["node_count"],
+        edge_count=row["edge_count"],
+        path_count=row["path_count"],
+        graph_latency_ms=row["graph_latency_ms"],
+        graph_context_tokens=row["graph_context_tokens"],
+        graph_to_chunk_success_rate=row["graph_to_chunk_success_rate"],
+        graph_noise_ratio=row["graph_noise_ratio"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def _graph_evidence_item_from_row(row: Any) -> EvaluationGraphEvidenceItem:
+    return EvaluationGraphEvidenceItem(
+        graph_evidence_item_id=row["graph_evidence_item_id"],
+        graph_event_id=row["graph_event_id"],
+        node_ids=_json_loads(row["node_ids_json"], []),
+        edge_ids=_json_loads(row["edge_ids_json"], []),
+        relation_path=_json_loads(row["relation_path_json"], []),
+        source_doc_ids=_json_loads(row["source_doc_ids_json"], []),
+        source_chunk_ids=_json_loads(row["source_chunk_ids_json"], []),
+        pages=_json_loads(row["pages_json"], []),
+        asset_ids=_json_loads(row["asset_ids_json"], []),
+        confidence=row["confidence"],
+        provenance_status=row["provenance_status"],
+        used_as_locator=bool(row["used_as_locator"]),
+        packed_in_context=bool(row["packed_in_context"]),
+        used_in_answer=bool(row["used_in_answer"]),
+        supported_claim_ids=_json_loads(row["supported_claim_ids_json"], []),
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+class EvaluationGraphEventRepository:
+    """Persistence operations for GraphRAG event rows."""
+
+    async def record_graph_event(self, event: EvaluationGraphEvent) -> None:
+        await init_db()
+        async with connect_db() as connection:
+            await connection.execute(
+                """
+                INSERT OR REPLACE INTO evaluation_graph_events (
+                    graph_event_id, run_id, campaign_id, span_id, graph_query, graph_search_mode,
+                    graph_evidence_mode, graph_route, router_reason, graph_feature_flags_json,
+                    graph_snapshot_version, graph_schema_version, graph_extraction_prompt_version,
+                    matched_entity_ids_json, community_ids_json, node_count, edge_count, path_count,
+                    graph_latency_ms, graph_context_tokens, graph_to_chunk_success_rate,
+                    graph_noise_ratio, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.graph_event_id,
+                    event.run_id,
+                    event.campaign_id,
+                    event.span_id,
+                    event.graph_query,
+                    event.graph_search_mode,
+                    event.graph_evidence_mode,
+                    event.graph_route,
+                    event.router_reason,
+                    _json_dumps(event.graph_feature_flags),
+                    event.graph_snapshot_version,
+                    event.graph_schema_version,
+                    event.graph_extraction_prompt_version,
+                    _json_dumps(event.matched_entity_ids),
+                    _json_dumps(event.community_ids),
+                    event.node_count,
+                    event.edge_count,
+                    event.path_count,
+                    event.graph_latency_ms,
+                    event.graph_context_tokens,
+                    event.graph_to_chunk_success_rate,
+                    event.graph_noise_ratio,
+                    event.created_at.isoformat(),
+                ),
+            )
+            await connection.commit()
+
+    async def list_graph_events_for_run(self, run_id: str) -> list[EvaluationGraphEvent]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                "SELECT * FROM evaluation_graph_events WHERE run_id = ? ORDER BY created_at ASC",
+                (run_id,),
+            )
+            rows = await cursor.fetchall()
+        return [_graph_event_from_row(row) for row in rows]
+
+    async def list_graph_events_for_campaign(
+        self, campaign_id: str
+    ) -> dict[str, list[EvaluationGraphEvent]]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM evaluation_graph_events
+                WHERE campaign_id = ?
+                ORDER BY run_id ASC, created_at ASC
+                """,
+                (campaign_id,),
+            )
+            rows = await cursor.fetchall()
+        grouped: dict[str, list[EvaluationGraphEvent]] = defaultdict(list)
+        for row in rows:
+            grouped[str(row["run_id"])].append(_graph_event_from_row(row))
+        return dict(grouped)
+
+
+class EvaluationGraphEvidenceItemRepository:
+    """Persistence operations for GraphRAG evidence rows."""
+
+    async def record_graph_evidence_item(self, item: EvaluationGraphEvidenceItem) -> None:
+        await self.record_graph_evidence_items([item])
+
+    async def record_graph_evidence_items(self, items: list[EvaluationGraphEvidenceItem]) -> None:
+        if not items:
+            return
+        await init_db()
+        async with connect_db() as connection:
+            for item in items:
+                await connection.execute(
+                    """
+                    INSERT OR REPLACE INTO evaluation_graph_evidence_items (
+                        graph_evidence_item_id, graph_event_id, node_ids_json, edge_ids_json,
+                        relation_path_json, source_doc_ids_json, source_chunk_ids_json, pages_json,
+                        asset_ids_json, confidence, provenance_status, used_as_locator,
+                        packed_in_context, used_in_answer, supported_claim_ids_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        item.graph_evidence_item_id,
+                        item.graph_event_id,
+                        _json_dumps(item.node_ids),
+                        _json_dumps(item.edge_ids),
+                        _json_dumps(item.relation_path),
+                        _json_dumps(item.source_doc_ids),
+                        _json_dumps(item.source_chunk_ids),
+                        _json_dumps(item.pages),
+                        _json_dumps(item.asset_ids),
+                        item.confidence,
+                        item.provenance_status,
+                        1 if item.used_as_locator else 0,
+                        1 if item.packed_in_context else 0,
+                        1 if item.used_in_answer else 0,
+                        _json_dumps(item.supported_claim_ids),
+                        item.created_at.isoformat(),
+                    ),
+                )
+            await connection.commit()
+
+    async def list_graph_evidence_items_for_graph_event(
+        self, graph_event_id: str
+    ) -> list[EvaluationGraphEvidenceItem]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM evaluation_graph_evidence_items
+                WHERE graph_event_id = ?
+                ORDER BY created_at ASC, graph_evidence_item_id ASC
+                """,
+                (graph_event_id,),
+            )
+            rows = await cursor.fetchall()
+        return [_graph_evidence_item_from_row(row) for row in rows]
+
+    async def list_graph_evidence_items_for_run(
+        self, run_id: str
+    ) -> list[EvaluationGraphEvidenceItem]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT items.*
+                FROM evaluation_graph_evidence_items AS items
+                JOIN evaluation_graph_events AS events
+                  ON events.graph_event_id = items.graph_event_id
+                WHERE events.run_id = ?
+                ORDER BY events.created_at ASC, items.created_at ASC, items.graph_evidence_item_id ASC
+                """,
+                (run_id,),
+            )
+            rows = await cursor.fetchall()
+        return [_graph_evidence_item_from_row(row) for row in rows]
+
+    async def list_graph_evidence_items_for_campaign(
+        self, campaign_id: str
+    ) -> dict[str, list[EvaluationGraphEvidenceItem]]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT events.run_id, items.*
+                FROM evaluation_graph_evidence_items AS items
+                JOIN evaluation_graph_events AS events
+                  ON events.graph_event_id = items.graph_event_id
+                WHERE events.campaign_id = ?
+                ORDER BY events.run_id ASC, events.created_at ASC, items.created_at ASC, items.graph_evidence_item_id ASC
+                """,
+                (campaign_id,),
+            )
+            rows = await cursor.fetchall()
+        grouped: dict[str, list[EvaluationGraphEvidenceItem]] = defaultdict(list)
+        for row in rows:
+            grouped[str(row["run_id"])].append(_graph_evidence_item_from_row(row))
+        return dict(grouped)
+
+
+class EvaluationObservabilityRepository(
+    EvaluationGraphEventRepository,
+    EvaluationGraphEvidenceItemRepository,
+):
     """Persistence operations for normalized evaluation observability rows."""
 
     async def record_trace_event(self, event: EvaluationTraceEvent) -> None:

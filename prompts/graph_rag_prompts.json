@@ -26,6 +26,14 @@
       ],
       "template": "你是一個學術論文知識圖譜抽取專家。請從以下文本中一次完成實體與關係抽取。\n\n實體類別 (entity_type):\n- concept: 概念/理論 (例如: \"注意力機制\", \"深度學習\")\n- method: 方法/技術/模型 (例如: \"BERT\", \"Transformer\", \"CNN\")\n- metric: 指標/度量 (例如: \"F1 分數\", \"準確率\", \"BLEU\")\n- result: 結果/發現 (例如: \"最先進性能\", \"顯著改進\")\n- author: 作者/研究者 (例如: \"Vaswani et al.\")\n\n關係類型 (relation):\n- uses: 使用 (A 使用 B)\n- outperforms: 優於 (A 的表現優於 B)\n- proposes: 提出 (作者提出方法)\n- evaluates_with: 用...評估 (用指標評估方法)\n- cites: 引用 (引用其他工作)\n- extends: 擴展 (基於...擴展)\n- part_of: 是...的一部分\n- applies_to: 應用於\n\n抽取規則:\n- 只抽取文本中明確提到的重要學術實體與關係\n- 每個 entity 都要有唯一 `id`，relation 必須引用這些 entity `id`\n- 不要為了補齊圖譜而猜測文本中不存在的關係\n- 如果同一個實體重複出現，可以重用同一個實體概念\n- 若無法同時提供 `source_entity_id`、`target_entity_id`、`relation` 三個欄位，該 relation 就不要輸出\n- 每個 relation 都必須引用 `entities` 陣列中已出現的 `id`\n- 只輸出單一 JSON 物件，不能有任何前言、結語、註解或 Markdown code fence\n- JSON 物件必須符合此形狀：`{{\"entities\":[...],\"relations\":[...]}}`\n- 若沒有可抽取內容，回傳 `{{\"entities\":[],\"relations\":[]}}`\n- 不要重複輸出同一個 JSON 物件，也不要在 JSON 前後補充說明\n\n文本：\n{text}\n"
     },
+    "one_pass_extraction_schema_v1": {
+      "version": 2,
+      "description": "GraphRAG schema-first extraction with verified evidence quotes.",
+      "required_variables": [
+        "text"
+      ],
+      "template": "你是一個學術論文知識圖譜抽取專家。請從文本輸出單一 JSON 物件，形狀為 `{{\"entities\":[...],\"relations\":[...]}}`。\n\n只可使用受控 entity_type：paper, method, model, dataset, metric, result, value, claim, claim_scope, limitation, task, training_setting, prompt_type, architecture_component, ablation, benchmark_setting, evidence_span, figure, table, formula, concept, author。\n\n只可使用受控 relation：paper_proposes_method, method_uses_component, method_evaluated_on_dataset, method_reports_metric, result_reports_value, paper_contains_table, paper_contains_figure, paper_contains_formula, claim_supported_by_evidence, claim_contradicted_by_evidence, method_compares_to_method, method_requires_prompt, method_supports_prompt_free, method_uses_supervision, claim_has_scope, result_has_value, table_reports_result, formula_defines_variable, method_has_training_setting, claim_limited_to_setting。無法對應的關係請標示為 unknown_relation，不要猜測。\n\n每個 entity 必須含 id, label, canonical_name, entity_type, confidence, evidence_quote；aliases 可為空陣列。每個 relation 必須含 source_entity_id, target_entity_id, relation, confidence, evidence_quote。evidence_quote 必須是文本中的連續原文。relation 只能引用 entities 內既有 id。\n\n文本：\n{text}\n"
+    },
     "relevance_check": {
       "version": 1,
       "description": "GraphRAG community relevance check prompt.",

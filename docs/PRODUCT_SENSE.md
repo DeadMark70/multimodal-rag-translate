@@ -17,3 +17,6 @@ Describe the backend capabilities that users and operators depend on through the
 - Authenticated API access is the default for user-facing routes.
 - Evaluation is a first-class subsystem, not an afterthought to ordinary chat.
 - Compatibility fallbacks exist for data migration and restore paths, but new writes should target canonical contracts.
+# GraphRAG Ablation Interpretation
+
+Graph evidence mechanisms, graph usage policy, and graph query strategy are separate ablation families. Analytics must compare conditions within one family and must not combine them into a single GraphRAG improvement score.

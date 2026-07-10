@@ -22,6 +22,10 @@ async def test_rag_return_docs_includes_graph_evidence_documents() -> None:
         token_estimate=estimate_token_count("Graph evidence content"),
     )
 
+    graph_context_mock = AsyncMock(
+        return_value=("Graph Evidence:\nGraph evidence content", [graph_evidence], None)
+    )
+
     with (
         patch("data_base.RAG_QA_service.get_llm") as mock_get_llm,
         patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={"total_tokens": 11}),
@@ -30,7 +34,7 @@ async def test_rag_return_docs_includes_graph_evidence_documents() -> None:
         patch("data_base.RAG_QA_service._expand_short_chunks", side_effect=lambda docs, _uid: docs),
         patch(
             "data_base.RAG_QA_service._get_graph_context",
-            new=AsyncMock(return_value=("Graph Evidence:\nGraph evidence content", [graph_evidence])),
+            new=graph_context_mock,
         ),
     ):
         mock_llm = Mock()
@@ -50,3 +54,11 @@ async def test_rag_return_docs_includes_graph_evidence_documents() -> None:
     assert len(graph_docs) == 1
     assert graph_docs[0].metadata["evidence_type"] == "community_answer"
     assert "Graph evidence content" in graph_docs[0].page_content
+    graph_context_mock.assert_awaited_once_with(
+        question="比較 benchmark 指標",
+        user_id="user-1",
+        search_mode="generic",
+        graph_execution_hints=None,
+        return_evidence=True,
+        return_details=True,
+    )

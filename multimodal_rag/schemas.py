@@ -11,6 +11,7 @@ class VisualElementType(str, Enum):
 
 class VisualElement(BaseModel):
     id: UUID
+    asset_id: Optional[str] = None
     type: VisualElementType
     page_number: int
     image_path: str = Field(description="Path to the cropped image")

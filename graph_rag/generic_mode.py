@@ -21,11 +21,18 @@ from core.llm_factory import graph_rag_llm_runtime_override
 from core.providers import get_llm
 from core.prompt_loader import format_graph_rag_prompt
 from graph_rag.llm_response import response_content_to_text
+from graph_rag.schemas import (
+    GraphEvidenceBundle,
+    GraphEvidenceItem,
+    GraphHint,
+    is_graph_evidence_item_eligible,
+)
+from graph_rag.store import GraphStore
 
 logger = logging.getLogger(__name__)
 
 QueryKind = Literal["fact", "relation", "summary"]
-RoutePath = Literal["local-first", "global-first", "blended"]
+RoutePath = Literal["local-first", "global-first", "blended", "skip"]
 StageHint = Literal["exploration", "verification"]
 TaskTypeHint = Literal["rag", "graph_analysis"]
 EvidenceType = Literal[
@@ -103,6 +110,16 @@ def estimate_token_count(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def link_query_entities(store: GraphStore, query_terms: list[str]) -> list[str]:
+    """Resolve explicit aliases before local vector or fuzzy graph search runs."""
+    linked: list[str] = []
+    for term in query_terms:
+        node_id = store.find_canonical_node(term)
+        if node_id and node_id not in linked:
+            linked.append(node_id)
+    return linked
+
+
 @dataclass(slots=True)
 class GraphQueryHints:
     """Execution-layer hints for generic graph routing."""
@@ -111,6 +128,7 @@ class GraphQueryHints:
     task_type_hint: Optional[TaskTypeHint] = None
     prefer_global: bool = False
     prefer_local: bool = False
+    path_pruned: bool = False
 
 
 @dataclass(slots=True)
@@ -119,6 +137,7 @@ class GraphRouteDecision:
 
     query_kind: QueryKind
     path: RoutePath
+    router_reason: str | None = None
     hops: int = 2
     max_nodes: int = 10
     max_communities: int = 2
@@ -157,6 +176,7 @@ class GenericGraphRouter:
             return GraphRouteDecision(
                 query_kind="fact" if fact_hits >= relation_hits else "relation",
                 path="local-first" if not has_communities else "blended",
+                router_reason="stage_hint=verification or prefer_local",
                 hops=2,
                 max_nodes=8,
                 max_communities=1,
@@ -167,6 +187,7 @@ class GenericGraphRouter:
             return GraphRouteDecision(
                 query_kind="summary" if summary_hits >= relation_hits else "relation",
                 path="global-first" if has_communities else "local-first",
+                router_reason="stage_hint=exploration or prefer_global",
                 hops=1,
                 max_nodes=8,
                 max_communities=3,
@@ -177,6 +198,7 @@ class GenericGraphRouter:
             return GraphRouteDecision(
                 query_kind="relation" if relation_hits >= summary_hits else "summary",
                 path="blended" if has_communities else "local-first",
+                router_reason="task_type_hint=graph_analysis",
                 hops=2,
                 max_nodes=12,
                 max_communities=3,
@@ -187,6 +209,7 @@ class GenericGraphRouter:
             return GraphRouteDecision(
                 query_kind="fact",
                 path="local-first",
+                router_reason="short_fact_query",
                 hops=2,
                 max_nodes=8,
                 max_communities=1,
@@ -197,6 +220,7 @@ class GenericGraphRouter:
             return GraphRouteDecision(
                 query_kind="summary",
                 path="global-first" if has_communities else "local-first",
+                router_reason="summary_keywords",
                 hops=1,
                 max_nodes=8,
                 max_communities=3,
@@ -207,6 +231,7 @@ class GenericGraphRouter:
             return GraphRouteDecision(
                 query_kind="relation",
                 path="blended" if has_communities else "local-first",
+                router_reason="relation_keywords",
                 hops=2,
                 max_nodes=12,
                 max_communities=2,
@@ -217,6 +242,7 @@ class GenericGraphRouter:
             return GraphRouteDecision(
                 query_kind="fact",
                 path="local-first",
+                router_reason="fact_keywords",
                 hops=2,
                 max_nodes=10,
                 max_communities=1,
@@ -262,6 +288,7 @@ class GenericGraphRouter:
             decision = GraphRouteDecision(
                 query_kind=payload.get("query_kind", "fact"),
                 path=payload.get("path", "local-first"),
+                router_reason=str(payload.get("reason") or "llm_router"),
                 token_budget=token_budget,
             )
             return self._finalize(decision, has_communities=has_communities, hints=hints)
@@ -270,6 +297,7 @@ class GenericGraphRouter:
             fallback = GraphRouteDecision(
                 query_kind="relation" if has_communities else "fact",
                 path="blended" if has_communities else "local-first",
+                router_reason="llm_router_fallback",
             )
             return self._finalize(fallback, has_communities=has_communities, hints=hints)
 
@@ -303,6 +331,11 @@ class GenericGraphRouter:
             decision.token_budget = min(decision.token_budget, 780)
         elif hints.stage_hint == "exploration":
             decision.token_budget = max(decision.token_budget, 980)
+
+        if hints.path_pruned:
+            decision.hops = 1
+            decision.max_nodes = min(decision.max_nodes, 6)
+            decision.router_reason = f"{decision.router_reason or 'generic'}; path_pruned"
 
         return decision
 
@@ -388,3 +421,35 @@ def merge_graph_evidence(
         lines.extend(f"- {text}" for text in sections["community_summary"])
 
     return "\n".join(lines), merged
+
+
+def merge_graph_evidence_bundle(
+    *,
+    hints: list[GraphHint],
+    evidence_items: list[GraphEvidenceItem],
+    token_budget: int,
+    query: str = "",
+    route: str = "generic",
+) -> GraphEvidenceBundle:
+    """Select source-backed graph items permitted in final context."""
+    selected: list[GraphEvidenceItem] = []
+    seen_item_ids: set[str] = set()
+    spent_tokens = 0
+    for item in sorted(evidence_items, key=lambda candidate: (-candidate.confidence, candidate.item_id)):
+        if item.item_id in seen_item_ids or not is_graph_evidence_item_eligible(item):
+            continue
+        seen_item_ids.add(item.item_id)
+        estimate = estimate_token_count(item.evidence_quote or item.summary)
+        if spent_tokens + estimate > token_budget:
+            continue
+        selected.append(item)
+        spent_tokens += estimate
+
+    return GraphEvidenceBundle(
+        query=query,
+        route=route,
+        hints=hints,
+        evidence_items=evidence_items,
+        final_context_items=selected,
+        token_estimate=spent_tokens,
+    )

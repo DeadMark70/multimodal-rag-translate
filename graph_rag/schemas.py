@@ -11,7 +11,7 @@ from enum import Enum
 from typing import Dict, List, Literal, Optional
 
 # Third-party
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 
 class EntityType(str, Enum):
@@ -26,6 +26,23 @@ class EntityType(str, Enum):
     METRIC = "metric"         # Metrics/measures (e.g., "F1 Score", "Accuracy")
     RESULT = "result"         # Results/findings (e.g., "State-of-the-art")
     AUTHOR = "author"         # Authors (e.g., "Vaswani et al.")
+    PAPER = "paper"
+    MODEL = "model"
+    DATASET = "dataset"
+    VALUE = "value"
+    CLAIM = "claim"
+    CLAIM_SCOPE = "claim_scope"
+    LIMITATION = "limitation"
+    TASK = "task"
+    TRAINING_SETTING = "training_setting"
+    PROMPT_TYPE = "prompt_type"
+    ARCHITECTURE_COMPONENT = "architecture_component"
+    ABLATION = "ablation"
+    BENCHMARK_SETTING = "benchmark_setting"
+    EVIDENCE_SPAN = "evidence_span"
+    FIGURE = "figure"
+    TABLE = "table"
+    FORMULA = "formula"
 
 
 class RelationType(str, Enum):
@@ -42,6 +59,58 @@ class RelationType(str, Enum):
     EXTENDS = "extends"             # Extends/builds upon
     PART_OF = "part_of"             # Is a component of
     APPLIES_TO = "applies_to"       # Applied to domain/task
+
+
+# Legacy graph data remains readable, but schema-v1 extraction accepts only
+# the controlled answer-graph vocabulary below.
+GRAPH_NODE_TYPES_V1 = frozenset(
+    {
+        "paper",
+        "method",
+        "model",
+        "dataset",
+        "metric",
+        "result",
+        "value",
+        "claim",
+        "claim_scope",
+        "limitation",
+        "task",
+        "training_setting",
+        "prompt_type",
+        "architecture_component",
+        "ablation",
+        "benchmark_setting",
+        "evidence_span",
+        "figure",
+        "table",
+        "formula",
+    }
+)
+GRAPH_EDGE_TYPES_V1 = frozenset(
+    {
+        "paper_proposes_method",
+        "method_uses_component",
+        "method_evaluated_on_dataset",
+        "method_reports_metric",
+        "result_reports_value",
+        "paper_contains_table",
+        "paper_contains_figure",
+        "paper_contains_formula",
+        "claim_supported_by_evidence",
+        "claim_contradicted_by_evidence",
+        "method_compares_to_method",
+        "method_requires_prompt",
+        "method_supports_prompt_free",
+        "method_uses_supervision",
+        "claim_has_scope",
+        "result_has_value",
+        "table_reports_result",
+        "formula_defines_variable",
+        "method_has_training_setting",
+        "claim_limited_to_setting",
+    }
+)
 
 
 class GraphNode(BaseModel):
@@ -281,6 +350,12 @@ class ExtractedEntity(BaseModel):
     label: str = Field(..., description="實體名稱")
     entity_type: EntityType = Field(..., description="實體類別")
     description: Optional[str] = Field(default=None, description="實體描述")
+    canonical_name: Optional[str] = Field(default=None, description="正規化實體名稱")
+    aliases: List[str] = Field(default_factory=list, description="實體別名")
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="抽取信心")
+    anchors: List["EvidenceAnchor"] = Field(default_factory=list, description="來源錨點")
+    claim_identity: Optional["ClaimIdentity"] = None
+    extraction_id: Optional[str] = None
 
 
 class ExtractedRelation(BaseModel):
@@ -295,6 +370,10 @@ class ExtractedRelation(BaseModel):
     entity2: str = Field(..., description="目標實體名稱")
     entity2_type: EntityType = Field(..., description="目標實體類別")
     description: Optional[str] = Field(default=None, description="關係描述")
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="抽取信心")
+    anchors: List["EvidenceAnchor"] = Field(default_factory=list, description="來源錨點")
+    source_entity_ref: Optional[str] = None
+    target_entity_ref: Optional[str] = None
 
 
 class ExtractionResult(BaseModel):
@@ -305,3 +384,317 @@ class ExtractionResult(BaseModel):
     relations: List[ExtractedRelation] = Field(default_factory=list)
     doc_id: str = Field(..., description="來源文件 ID")
     chunk_index: int = Field(default=0, description="來源區塊索引")
+    raw_candidates: List["RawGraphCandidate"] = Field(default_factory=list)
+
+
+class RawGraphCandidate(BaseModel):
+    """Unverified extraction output retained for diagnostics, never answer evidence."""
+
+    candidate_id: str
+    candidate_type: str
+    payload: Dict[str, object]
+    source_doc_id: str
+    source_chunk_index: int
+    confidence: float = Field(ge=0.0, le=1.0)
+    needs_review: bool = True
+    usable_as_final_evidence: Literal[False] = False
+
+
+class CanonicalEntity(BaseModel):
+    """Persisted canonical identity and aliases for one graph node."""
+
+    canonical_id: str
+    canonical_name: str
+    entity_type: EntityType
+    aliases: List[str] = Field(default_factory=list)
+    source_doc_ids: List[str] = Field(default_factory=list)
+    identity_key: Optional[str] = None
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    review_status: Literal["auto", "needs_review", "reviewed"] = "auto"
+
+
+class ClaimIdentity(BaseModel):
+    """Identity boundary for claims that must never be globally auto-merged."""
+
+    claim_type: str
+    subject: str
+    scope: str
+    condition: Optional[str] = None
+    source_doc: str
+
+    @property
+    def stable_key(self) -> str:
+        parts = [
+            self.claim_type,
+            self.subject,
+            self.scope,
+            self.condition or "",
+            self.source_doc,
+        ]
+        return "::".join(part.strip().lower() for part in parts if part.strip())
+
+
+class GraphQualityIssue(BaseModel):
+    code: str
+    severity: Literal["info", "warning", "critical"]
+    message: str
+    recommended_action: str
+
+
+class GraphQualityResponse(BaseModel):
+    score: int = Field(ge=0, le=100)
+    num_nodes: int
+    num_edges: int
+    edge_with_provenance_ratio: float
+    generic_relation_ratio: float
+    duplicate_method_node_ratio: float
+    orphan_node_ratio: float
+    graph_to_chunk_success_rate: Optional[float] = None
+    table_coverage_ratio: Optional[float] = None
+    figure_coverage_ratio: Optional[float] = None
+    formula_coverage_ratio: Optional[float] = None
+    claim_scope_missing_count: int = 0
+    issues: List[GraphQualityIssue] = Field(default_factory=list)
+
+
+class GraphRuntimeQualityResponse(BaseModel):
+    campaign_id: Optional[str] = None
+    community_summary_used_as_evidence_count: int = 0
+    unsupported_graph_claim_rate: Optional[float] = None
+    graph_context_noise_ratio: Optional[float] = None
+    unresolved_anchor_count: int = 0
+    graph_to_chunk_success_rate: Optional[float] = None
+    issues: List[GraphQualityIssue] = Field(default_factory=list)
+
+
+class GraphDebugSearchRequest(BaseModel):
+    query: str = Field(min_length=1)
+    search_mode: str = "generic"
+
+
+class GraphDebugSearchResponse(BaseModel):
+    query: str
+    route: str
+    entity_links: List[Dict[str, object]] = Field(default_factory=list)
+    hints: List["GraphHint"] = Field(default_factory=list)
+    evidence_items: List["GraphEvidenceItem"] = Field(default_factory=list)
+    final_context_items: List["GraphEvidenceItem"] = Field(default_factory=list)
+
+
+GraphEvidenceMode = Literal[
+    "raw_current",
+    "provenance_gated",
+    "locator_to_chunk",
+    "claim_gated",
+    "planning_only",
+    "router_auto",
+    "locator_only",
+]
+
+
+class EvidenceAnchor(BaseModel):
+    """Provenance pointer from a graph item back to a source chunk or asset."""
+
+    doc_id: str = Field(..., description="來源文件 ID")
+    chunk_id: Optional[str] = Field(default=None, description="來源 chunk ID")
+    chunk_index: Optional[int] = Field(default=None, description="來源 chunk 索引")
+    page: Optional[int] = Field(default=None, description="來源頁碼")
+    quote: Optional[str] = Field(default=None, description="抽取時保留的引文")
+    quote_hash: Optional[str] = Field(default=None, description="引文雜湊")
+    chunk_hash: Optional[str] = Field(default=None, description="chunk 雜湊")
+    source_text_hash: Optional[str] = Field(default=None, description="來源文字雜湊")
+    markdown_char_start: Optional[int] = Field(default=None, description="Markdown 起始位置")
+    markdown_char_end: Optional[int] = Field(default=None, description="Markdown 結束位置")
+    asset_id: Optional[str] = Field(default=None, description="來源資產 ID")
+    anchor_type: Literal["text", "table", "figure", "formula", "caption"] = Field(
+        default="text",
+        description="錨點類型",
+    )
+    bbox: Optional[List[float]] = Field(default=None, description="頁面邊界框")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="抽取信心分數")
+    extraction_model: Optional[str] = Field(default=None, description="抽取模型名稱")
+    extraction_prompt_version: Optional[str] = Field(
+        default=None,
+        description="抽取 prompt 版本",
+    )
+    verification_status: Literal[
+        "quote_match", "quote_mismatch", "hash_mismatch", "not_checked"
+    ] = "not_checked"
+
+    @computed_field
+    @property
+    def provenance_status(self) -> Literal["full", "partial", "missing"]:
+        if not self.doc_id:
+            return "missing"
+        if self.chunk_id and self.quote and self.quote_hash and self.chunk_hash:
+            return "full"
+        if self.chunk_id or self.page is not None or self.asset_id:
+            return "partial"
+        return "missing"
+
+
+class GraphAssetLink(BaseModel):
+    """A parsed document asset that may locate, but never directly replace, source evidence."""
+
+    asset_id: str
+    doc_id: str
+    page: Optional[int] = None
+    asset_type: Literal["table", "figure", "formula", "caption"]
+    caption: Optional[str] = None
+    text_or_markdown: Optional[str] = None
+    asset_text_hash: Optional[str] = None
+    asset_parse_status: Literal["parsed", "partial", "failed", "not_attempted"] = "not_attempted"
+    bbox: Optional[List[float]] = None
+    source_chunk_id: Optional[str] = None
+
+
+class GraphHint(BaseModel):
+    """Graph-derived guidance that is not source-backed final evidence."""
+
+    hint_id: str
+    hint_type: Literal[
+        "community_summary",
+        "community_answer",
+        "global_theme",
+        "query_expansion",
+    ]
+    text: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    source_ids: List[str] = Field(default_factory=list)
+    usable_as_final_evidence: Literal[False] = False
+
+
+class GraphEvidenceItem(BaseModel):
+    """Source-backed graph item eligible for final answer context."""
+
+    item_id: str
+    graph_mode: Literal["local", "global", "blended"]
+    source: Literal["edge", "node", "path", "asset"]
+    node_ids: List[str] = Field(default_factory=list)
+    edge_ids: List[str] = Field(default_factory=list)
+    source_chunk_ids: List[str] = Field(default_factory=list)
+    source_doc_ids: List[str] = Field(default_factory=list)
+    pages: List[int] = Field(default_factory=list)
+    asset_ids: List[str] = Field(default_factory=list)
+    relation_type: Optional[str] = None
+    evidence_quote: Optional[str] = None
+    summary: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    provenance_status: Literal["full", "partial", "missing"]
+    resolution_status: Literal["resolved", "fuzzy_resolved", "unresolved", "stale"] = "unresolved"
+    verification_status: Literal[
+        "quote_match",
+        "quote_mismatch",
+        "hash_mismatch",
+        "not_checked",
+    ] = "not_checked"
+    usable_as_context: bool
+    use_reason: str
+
+    @classmethod
+    def from_anchor(
+        cls,
+        *,
+        item_id: str,
+        graph_mode: Literal["local", "global", "blended"],
+        source: Literal["edge", "node", "path", "asset"],
+        edge_ids: List[str],
+        node_ids: List[str],
+        relation_type: Optional[str],
+        summary: str,
+        anchor: EvidenceAnchor,
+        resolution_status: Literal[
+            "resolved",
+            "fuzzy_resolved",
+            "unresolved",
+            "stale",
+        ] = "unresolved",
+        verification_status: Literal[
+            "quote_match",
+            "quote_mismatch",
+            "hash_mismatch",
+            "not_checked",
+        ] = "not_checked",
+    ) -> "GraphEvidenceItem":
+        usable = (
+            anchor.provenance_status == "full"
+            and resolution_status in {"resolved", "fuzzy_resolved"}
+            and verification_status in {"quote_match", "not_checked"}
+        )
+        return cls(
+            item_id=item_id,
+            graph_mode=graph_mode,
+            source=source,
+            node_ids=node_ids,
+            edge_ids=edge_ids,
+            source_chunk_ids=[anchor.chunk_id] if anchor.chunk_id else [],
+            source_doc_ids=[anchor.doc_id],
+            pages=[anchor.page] if anchor.page is not None else [],
+            asset_ids=[anchor.asset_id] if anchor.asset_id else [],
+            relation_type=relation_type,
+            evidence_quote=anchor.quote,
+            summary=summary,
+            confidence=anchor.confidence,
+            provenance_status=anchor.provenance_status,
+            resolution_status=resolution_status,
+            verification_status=verification_status,
+            usable_as_context=usable,
+            use_reason="resolved provenance" if usable else "insufficient or unresolved provenance",
+        )
+
+
+class GraphEvidenceBundle(BaseModel):
+    """Graph hints and source-backed items for downstream retrieval stages."""
+
+    query: str
+    route: str
+    hints: List[GraphHint] = Field(default_factory=list)
+    evidence_items: List[GraphEvidenceItem] = Field(default_factory=list)
+    final_context_items: List[GraphEvidenceItem] = Field(default_factory=list)
+    token_estimate: int = 0
+
+    @model_validator(mode="after")
+    def validate_final_context_items(self) -> "GraphEvidenceBundle":
+        if any(
+            not is_graph_evidence_item_eligible(item)
+            for item in self.final_context_items
+        ):
+            raise ValueError("final_context_items must be independently eligible")
+        return self
+
+
+def is_graph_evidence_item_eligible(item: GraphEvidenceItem) -> bool:
+    """Return whether an item is independently safe for final evidence context."""
+    return (
+        item.usable_as_context
+        and item.provenance_status == "full"
+        and item.resolution_status in {"resolved", "fuzzy_resolved"}
+        and item.verification_status in {"quote_match", "not_checked"}
+        and bool(item.source_chunk_ids or item.asset_ids)
+    )
+
+
+class GraphEdgeProvenance(BaseModel):
+    """Persisted provenance anchors for one graph edge."""
+
+    edge_id: str
+    anchors: List[EvidenceAnchor] = Field(default_factory=list)
+    extraction_run_id: Optional[str] = None
+    schema_version: str = "graph-provenance-v1"
+    extraction_prompt_version: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class GraphExtractionRunManifest(BaseModel):
+    """Metadata describing one extraction run that produced graph provenance."""
+
+    extraction_run_id: str
+    graph_extraction_version: str
+    extractor_model: Optional[str] = None
+    prompt_version: str
+    schema_version: str
+    doc_id: str
+    chunk_hashes: List[str] = Field(default_factory=list)
+    temperature: float = 0.0
+    validated: bool = False
+    created_at: datetime = Field(default_factory=datetime.now)

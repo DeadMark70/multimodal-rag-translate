@@ -53,7 +53,7 @@ async def test_structured_one_pass_returns_entities_and_relations() -> None:
                 {
                     "id": "e2",
                     "label": "Attention",
-                    "entity_type": "concept",
+                    "entity_type": "architecture_component",
                     "description": "A mechanism",
                 },
             ],
@@ -61,7 +61,7 @@ async def test_structured_one_pass_returns_entities_and_relations() -> None:
                 {
                     "source_entity_id": "e1",
                     "target_entity_id": "e2",
-                    "relation": "uses",
+                    "relation": "method_uses_component",
                     "description": "Transformer uses attention",
                 }
             ],
@@ -79,7 +79,8 @@ async def test_structured_one_pass_returns_entities_and_relations() -> None:
     assert result.relations[0].entity1 == "Transformer"
     assert result.relations[0].entity1_type == EntityType.METHOD
     assert result.relations[0].entity2 == "Attention"
-    assert result.relations[0].entity2_type == EntityType.CONCEPT
+    assert result.relations[0].entity2_type == EntityType.ARCHITECTURE_COMPONENT
+    assert result.relations[0].relation == "method_uses_component"
 
 
 @pytest.mark.asyncio
@@ -154,14 +155,14 @@ async def test_structured_one_pass_deduplicates_labels_and_keeps_valid_relations
                 {
                     "id": "e3",
                     "label": "Machine Translation",
-                    "entity_type": "concept",
+                    "entity_type": "dataset",
                 },
             ],
             "relations": [
                 {
                     "source_entity_id": "e2",
                     "target_entity_id": "e3",
-                    "relation": "applies_to",
+                    "relation": "method_evaluated_on_dataset",
                     "description": "duplicate entity id should alias to the kept entity",
                 }
             ],
@@ -181,7 +182,7 @@ async def test_structured_one_pass_deduplicates_labels_and_keeps_valid_relations
 
 
 @pytest.mark.asyncio
-async def test_structured_one_pass_falls_back_to_legacy_two_pass() -> None:
+async def test_structured_one_pass_buffers_failure_without_legacy_two_pass_write() -> None:
     extractor = EntityRelationExtractor()
     llm = Mock()
     llm.bind = Mock(side_effect=RuntimeError("schema init failed"))
@@ -218,10 +219,11 @@ async def test_structured_one_pass_falls_back_to_legacy_two_pass() -> None:
     ):
         result = await extractor.extract("x" * 120, "doc-1")
 
-    mock_entities.assert_awaited_once()
-    mock_relations.assert_awaited_once_with("x" * 120, legacy_entities)
-    assert result.entities == legacy_entities
-    assert result.relations == legacy_relations
+    mock_entities.assert_not_awaited()
+    mock_relations.assert_not_awaited()
+    assert result.entities == []
+    assert result.relations == []
+    assert result.raw_candidates[0].candidate_type == "structured_extraction_failed"
 
 
 @pytest.mark.asyncio
@@ -230,15 +232,15 @@ async def test_structured_one_pass_enforces_max_entities_per_chunk() -> None:
     llm, _ = _make_llm_with_structured_payload(
         {
             "entities": [
-                {"id": "e1", "label": "Entity 1", "entity_type": "concept"},
-                {"id": "e2", "label": "Entity 2", "entity_type": "concept"},
-                {"id": "e3", "label": "Entity 3", "entity_type": "concept"},
+                {"id": "e1", "label": "Entity 1", "entity_type": "task"},
+                {"id": "e2", "label": "Entity 2", "entity_type": "task"},
+                {"id": "e3", "label": "Entity 3", "entity_type": "task"},
             ],
             "relations": [
                 {
                     "source_entity_id": "e3",
                     "target_entity_id": "e1",
-                    "relation": "cites",
+                    "relation": "method_evaluated_on_dataset",
                 }
             ],
         }
@@ -281,7 +283,7 @@ async def test_structured_one_pass_accepts_json_from_list_content_blocks() -> No
     extractor = EntityRelationExtractor()
     llm, _ = _make_llm_with_structured_payload(
         {
-            "entities": [{"id": "e1", "label": "raw only", "entity_type": "concept"}],
+            "entities": [{"id": "e1", "label": "raw only", "entity_type": "method"}],
             "relations": [],
         },
         content_as_list=True,
@@ -295,7 +297,7 @@ async def test_structured_one_pass_accepts_json_from_list_content_blocks() -> No
 
 
 @pytest.mark.asyncio
-async def test_structured_one_pass_falls_back_on_invalid_json_response() -> None:
+async def test_structured_one_pass_buffers_invalid_json_response() -> None:
     extractor = EntityRelationExtractor()
     llm, _ = _make_llm_with_structured_payload('{"entities": [', content_as_list=True)
     legacy_entities = [
@@ -309,9 +311,10 @@ async def test_structured_one_pass_falls_back_on_invalid_json_response() -> None
     ):
         result = await extractor.extract("x" * 120, "doc-1")
 
-    mock_entities.assert_awaited_once()
-    mock_relations.assert_awaited_once_with("x" * 120, legacy_entities)
-    assert [entity.label for entity in result.entities] == ["Fallback Entity"]
+    mock_entities.assert_not_awaited()
+    mock_relations.assert_not_awaited()
+    assert result.entities == []
+    assert result.raw_candidates[0].candidate_type == "structured_extraction_failed"
 
 
 @pytest.mark.asyncio
@@ -380,7 +383,7 @@ async def test_run_graph_extraction_invokes_one_extraction_call_per_valid_chunk(
 
     assert mock_extract.await_count == 2
     assert [call.kwargs["chunk_index"] for call in mock_extract.await_args_list] == [0, 1]
-    mock_store.save.assert_called_once()
+    mock_store.save_snapshot.assert_called_once()
 
 
 @pytest.mark.asyncio
