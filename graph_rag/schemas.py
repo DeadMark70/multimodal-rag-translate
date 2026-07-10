@@ -26,6 +26,23 @@ class EntityType(str, Enum):
     METRIC = "metric"         # Metrics/measures (e.g., "F1 Score", "Accuracy")
     RESULT = "result"         # Results/findings (e.g., "State-of-the-art")
     AUTHOR = "author"         # Authors (e.g., "Vaswani et al.")
+    PAPER = "paper"
+    MODEL = "model"
+    DATASET = "dataset"
+    VALUE = "value"
+    CLAIM = "claim"
+    CLAIM_SCOPE = "claim_scope"
+    LIMITATION = "limitation"
+    TASK = "task"
+    TRAINING_SETTING = "training_setting"
+    PROMPT_TYPE = "prompt_type"
+    ARCHITECTURE_COMPONENT = "architecture_component"
+    ABLATION = "ablation"
+    BENCHMARK_SETTING = "benchmark_setting"
+    EVIDENCE_SPAN = "evidence_span"
+    FIGURE = "figure"
+    TABLE = "table"
+    FORMULA = "formula"
 
 
 class RelationType(str, Enum):
@@ -42,6 +59,36 @@ class RelationType(str, Enum):
     EXTENDS = "extends"             # Extends/builds upon
     PART_OF = "part_of"             # Is a component of
     APPLIES_TO = "applies_to"       # Applied to domain/task
+
+
+# Legacy labels stay accepted so existing graph stores and extraction fallbacks
+# remain readable, while new extraction is constrained to this explicit set.
+GRAPH_NODE_TYPES_V1 = frozenset(item.value for item in EntityType)
+GRAPH_EDGE_TYPES_V1 = frozenset(
+    {
+        "paper_proposes_method",
+        "method_uses_component",
+        "method_evaluated_on_dataset",
+        "method_reports_metric",
+        "result_reports_value",
+        "paper_contains_table",
+        "paper_contains_figure",
+        "paper_contains_formula",
+        "claim_supported_by_evidence",
+        "claim_contradicted_by_evidence",
+        "method_compares_to_method",
+        "method_requires_prompt",
+        "method_supports_prompt_free",
+        "method_uses_supervision",
+        "claim_has_scope",
+        "result_has_value",
+        "table_reports_result",
+        "formula_defines_variable",
+        "method_has_training_setting",
+        "claim_limited_to_setting",
+        *(item.value for item in RelationType),
+    }
+)
 
 
 class GraphNode(BaseModel):
@@ -281,6 +328,10 @@ class ExtractedEntity(BaseModel):
     label: str = Field(..., description="實體名稱")
     entity_type: EntityType = Field(..., description="實體類別")
     description: Optional[str] = Field(default=None, description="實體描述")
+    canonical_name: Optional[str] = Field(default=None, description="正規化實體名稱")
+    aliases: List[str] = Field(default_factory=list, description="實體別名")
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="抽取信心")
+    anchors: List["EvidenceAnchor"] = Field(default_factory=list, description="來源錨點")
 
 
 class ExtractedRelation(BaseModel):
@@ -295,6 +346,8 @@ class ExtractedRelation(BaseModel):
     entity2: str = Field(..., description="目標實體名稱")
     entity2_type: EntityType = Field(..., description="目標實體類別")
     description: Optional[str] = Field(default=None, description="關係描述")
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="抽取信心")
+    anchors: List["EvidenceAnchor"] = Field(default_factory=list, description="來源錨點")
 
 
 class ExtractionResult(BaseModel):
@@ -305,6 +358,20 @@ class ExtractionResult(BaseModel):
     relations: List[ExtractedRelation] = Field(default_factory=list)
     doc_id: str = Field(..., description="來源文件 ID")
     chunk_index: int = Field(default=0, description="來源區塊索引")
+    raw_candidates: List["RawGraphCandidate"] = Field(default_factory=list)
+
+
+class RawGraphCandidate(BaseModel):
+    """Unverified extraction output retained for diagnostics, never answer evidence."""
+
+    candidate_id: str
+    candidate_type: str
+    payload: Dict[str, object]
+    source_doc_id: str
+    source_chunk_index: int
+    confidence: float = Field(ge=0.0, le=1.0)
+    needs_review: bool = True
+    usable_as_final_evidence: Literal[False] = False
 
 
 GraphEvidenceMode = Literal[
@@ -343,6 +410,9 @@ class EvidenceAnchor(BaseModel):
         default=None,
         description="抽取 prompt 版本",
     )
+    verification_status: Literal[
+        "quote_match", "quote_mismatch", "hash_mismatch", "not_checked"
+    ] = "not_checked"
 
     @computed_field
     @property

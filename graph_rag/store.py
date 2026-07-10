@@ -25,6 +25,7 @@ from graph_rag.schemas import (
     EvidenceAnchor,
     GraphDocumentStatus,
     GraphEdgeProvenance,
+    RawGraphCandidate,
     EntityType,
     GraphEdge,
     GraphNode,
@@ -39,6 +40,7 @@ logger = logging.getLogger(__name__)
 GRAPH_INDEX_VERSION = 2
 GRAPH_DOCUMENTS_FILENAME = "graph.documents.json"
 GRAPH_PROVENANCE_FILENAME = "graph.provenance.json"
+GRAPH_RAW_CANDIDATES_FILENAME = "graph.raw_candidates.json"
 GRAPH_SOURCE_MARKDOWN_FILENAME = "extracted.md"
 NODE_VECTOR_INDEX_NAME = "node_index"
 NODE_VECTOR_MAP_FILENAME = "node_index_map.json"
@@ -96,6 +98,7 @@ class GraphStore:
         self.communities: List[Community] = []
         self.document_statuses: Dict[str, GraphDocumentStatus] = {}
         self.edge_provenance: Dict[str, GraphEdgeProvenance] = {}
+        self.raw_candidates: Dict[str, RawGraphCandidate] = {}
         self.last_updated: Optional[datetime] = None
         self.last_optimized_at: Optional[datetime] = None
         self.index_version: int = GRAPH_INDEX_VERSION
@@ -112,6 +115,7 @@ class GraphStore:
             self._load_metadata()
             self._load_document_statuses()
             self._load_edge_provenance()
+            self._load_raw_candidates()
     
     def _get_graph_path(self) -> Path:
         """
@@ -142,6 +146,10 @@ class GraphStore:
     def _get_provenance_path(self) -> Path:
         """Get path to graph edge provenance sidecar."""
         return self._get_graph_path().with_name(GRAPH_PROVENANCE_FILENAME)
+
+    def _get_raw_candidates_path(self) -> Path:
+        """Get path to the unverified extraction candidate sidecar."""
+        return self._get_graph_path().with_name(GRAPH_RAW_CANDIDATES_FILENAME)
 
     def _get_node_vector_faiss_path(self) -> Path:
         """Get path to GraphRAG node-vector FAISS index."""
@@ -213,6 +221,19 @@ class GraphStore:
             ]
         }
         self._atomic_write_json(self._get_provenance_path(), payload)
+
+    def _write_raw_candidates(self) -> None:
+        """Persist unverified extraction output separately from graph evidence."""
+        payload = {
+            "candidates": [
+                candidate.model_dump(mode="json")
+                for candidate in sorted(
+                    self.raw_candidates.values(),
+                    key=lambda item: item.candidate_id,
+                )
+            ]
+        }
+        self._atomic_write_json(self._get_raw_candidates_path(), payload)
 
     def _load_legacy_metadata(self, legacy_data: Dict[str, Any]) -> None:
         """Load metadata fields embedded in older pickle payloads."""
@@ -314,11 +335,36 @@ class GraphStore:
         except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
             logger.warning("Failed to load graph provenance for user %s: %s", self.user_id, e)
 
+    def _load_raw_candidates(self) -> None:
+        """Load unverified extraction output without treating it as graph evidence."""
+        self.raw_candidates = {}
+        path = self._get_raw_candidates_path()
+        if not path.exists():
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            candidates = [
+                RawGraphCandidate.model_validate(item)
+                for item in payload.get("candidates", [])
+            ]
+            self.raw_candidates = {
+                candidate.candidate_id: candidate for candidate in candidates
+            }
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
+            logger.warning(
+                "Failed to load graph raw candidates for user %s: %s",
+                self.user_id,
+                exc,
+            )
+
     def save_sidecars(self) -> None:
         """Persist metadata-only sidecars without rewriting the graph pickle."""
         self._write_metadata()
         self._write_document_statuses()
         self._write_edge_provenance()
+        self._write_raw_candidates()
 
     def save(self) -> None:
         """
@@ -364,6 +410,7 @@ class GraphStore:
             self._load_metadata(legacy_data=data)
             self._load_document_statuses()
             self._load_edge_provenance()
+            self._load_raw_candidates()
             
             logger.info(
                 f"Loaded graph for user {self.user_id}: "
@@ -387,6 +434,7 @@ class GraphStore:
         self.communities.clear()
         self.document_statuses.clear()
         self.edge_provenance.clear()
+        self.raw_candidates.clear()
         self._pending_count = 0
         self.last_optimized_at = None
         self.graph_dirty = False
@@ -635,6 +683,20 @@ class GraphStore:
         if any(anchor.provenance_status == "partial" for anchor in anchors):
             return "partial"
         return "missing"
+
+    def record_raw_candidate(self, candidate: RawGraphCandidate) -> None:
+        """Persist an unverified extraction candidate outside answer-eligible graph data."""
+        self.raw_candidates[candidate.candidate_id] = candidate.model_copy(deep=True)
+
+    def get_raw_candidates_for_doc(self, doc_id: str) -> List[RawGraphCandidate]:
+        """Return diagnostic candidates for one document in deterministic order."""
+        return [
+            candidate.model_copy(deep=True)
+            for candidate in sorted(
+                self.raw_candidates.values(), key=lambda item: item.candidate_id
+            )
+            if candidate.source_doc_id == doc_id
+        ]
     
     def add_edge(self, edge: GraphEdge) -> Tuple[str, str]:
         """
