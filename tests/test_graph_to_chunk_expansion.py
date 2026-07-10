@@ -175,3 +175,23 @@ def test_score_graph_located_chunks_adds_bounded_boost_metadata_and_stable_cap()
     assert scored[0].metadata["provenance_status"] == "full"
     assert scored[0].metadata["resolution_status"] == "resolved"
     assert scored[0].metadata["verification_status"] == "quote_match"
+
+
+def test_score_graph_located_chunks_uses_item_id_for_equal_score_ties() -> None:
+    beta = GraphLocatedChunk(
+        Document(page_content="Beta", metadata={"doc_id": "doc-2", "chunk_id": "chunk-2"}),
+        _item("beta", doc_id="doc-2", chunk_id="chunk-2"),
+        pre_boost_score=0.4,
+    )
+    alpha = GraphLocatedChunk(
+        Document(page_content="Alpha", metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"}),
+        _item("alpha", doc_id="doc-1", chunk_id="chunk-1"),
+        pre_boost_score=0.4,
+    )
+
+    scored = score_graph_located_chunks([beta, alpha], required_modalities=[])
+
+    assert [document.metadata["graph_evidence_item_id"] for document in scored] == [
+        "alpha",
+        "beta",
+    ]

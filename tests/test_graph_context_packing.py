@@ -33,13 +33,25 @@ def _graph_item() -> GraphEvidenceItem:
 
 def test_merge_vector_and_graph_docs_marks_overlap_and_interleaves_graph_only() -> None:
     vector_docs = [
-        Document(page_content=f"Vector {index}", metadata={"chunk_id": f"v-{index}"})
+        Document(
+            page_content=f"Vector {index}",
+            metadata={"doc_id": "doc-1", "chunk_id": f"v-{index}"},
+        )
         for index in range(1, 6)
     ]
     graph_docs = [
-        Document(page_content="Duplicate", metadata={"chunk_id": "v-2", "selected_by": "graph"}),
-        Document(page_content="Graph 1", metadata={"chunk_id": "g-1", "selected_by": "graph"}),
-        Document(page_content="Graph 2", metadata={"chunk_id": "g-2", "selected_by": "graph"}),
+        Document(
+            page_content="Duplicate",
+            metadata={"doc_id": "doc-1", "chunk_id": "v-2", "selected_by": "graph"},
+        ),
+        Document(
+            page_content="Graph 1",
+            metadata={"doc_id": "doc-2", "chunk_id": "g-1", "selected_by": "graph"},
+        ),
+        Document(
+            page_content="Graph 2",
+            metadata={"doc_id": "doc-2", "chunk_id": "g-2", "selected_by": "graph"},
+        ),
     ]
 
     merged = merge_vector_and_graph_docs(
@@ -52,6 +64,7 @@ def test_merge_vector_and_graph_docs_marks_overlap_and_interleaves_graph_only() 
         "g-1",
         "v-3",
         "v-4",
+        "g-2",
         "v-5",
     ]
     assert merged[1].metadata["selected_by"] == "both"
@@ -67,10 +80,12 @@ def test_merge_vector_and_graph_docs_preserves_vector_documents_without_chunk_id
         metadata={"doc_id": "doc-1", "chunk_index": 1, "rank": 2},
     )
     vector_with_id = Document(
-        page_content="Vector with ID", metadata={"chunk_id": "vector-id", "rank": 2}
+        page_content="Vector with ID",
+        metadata={"doc_id": "doc-2", "chunk_id": "vector-id", "rank": 2},
     )
     graph_overlap = Document(
-        page_content="Graph copy", metadata={"chunk_id": "vector-id", "selected_by": "graph"}
+        page_content="Graph copy",
+        metadata={"doc_id": "doc-2", "chunk_id": "vector-id", "selected_by": "graph"},
     )
 
     merged = merge_vector_and_graph_docs(
@@ -87,6 +102,70 @@ def test_merge_vector_and_graph_docs_preserves_vector_documents_without_chunk_id
     assert merged[0].metadata["rank"] == 1
     assert merged[1].metadata["rank"] == 2
     assert merged[2].metadata["selected_by"] == "both"
+
+
+def test_merge_vector_and_graph_docs_uses_document_and_chunk_identity() -> None:
+    vector_doc = Document(
+        page_content="Document one chunk.",
+        metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+    )
+    graph_doc = Document(
+        page_content="Document two chunk.",
+        metadata={
+            "doc_id": "doc-2",
+            "chunk_id": "chunk-1",
+            "selected_by": "graph",
+        },
+    )
+
+    merged = merge_vector_and_graph_docs(
+        [vector_doc], [graph_doc], graph_chunk_ratio=1.0
+    )
+
+    assert [document.page_content for document in merged] == [
+        "Document one chunk.",
+        "Document two chunk.",
+    ]
+
+
+def test_merge_vector_and_graph_docs_enforces_strict_graph_only_ratio() -> None:
+    vector_docs = [
+        Document(page_content=f"Vector {index}", metadata={"doc_id": "doc-1", "chunk_id": f"v-{index}"})
+        for index in range(2)
+    ]
+    graph_docs = [
+        Document(
+            page_content=f"Graph {index}",
+            metadata={"doc_id": "doc-2", "chunk_id": f"g-{index}", "selected_by": "graph"},
+        )
+        for index in range(4)
+    ]
+
+    merged = merge_vector_and_graph_docs(
+        vector_docs, graph_docs, graph_chunk_ratio=0.35
+    )
+
+    graph_only_count = sum(
+        document.metadata.get("selected_by") == "graph" for document in merged
+    )
+    assert graph_only_count == 1
+    assert graph_only_count / len(merged) <= 0.35
+
+
+def test_merge_vector_and_graph_docs_does_not_force_one_graph_document() -> None:
+    vector_doc = Document(
+        page_content="Vector", metadata={"doc_id": "doc-1", "chunk_id": "v-1"}
+    )
+    graph_doc = Document(
+        page_content="Graph",
+        metadata={"doc_id": "doc-2", "chunk_id": "g-1", "selected_by": "graph"},
+    )
+
+    merged = merge_vector_and_graph_docs(
+        [vector_doc], [graph_doc], graph_chunk_ratio=0.35
+    )
+
+    assert [document.page_content for document in merged] == ["Vector"]
 
 
 @pytest.mark.asyncio

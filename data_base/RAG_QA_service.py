@@ -145,6 +145,37 @@ class GraphNeedDecision:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class GraphExecutionStrategy:
+    """Choose the only graph path allowed to affect answer context."""
+
+    strategy: Literal["skip", "source_expand", "raw_legacy"]
+    gate_decision: Optional[GraphNeedDecision]
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class GraphEvidenceLifecycle:
+    """Track graph evidence item IDs through the answer-context lifecycle."""
+
+    candidate_item_ids: List[str]
+    resolved_item_ids: List[str]
+    scope_approved_item_ids: List[str]
+    scored_item_ids: List[str]
+    packed_item_ids: List[str]
+
+    def to_router_reason(self) -> str:
+        return "; ".join(
+            (
+                f"candidate_ids={','.join(self.candidate_item_ids)}",
+                f"resolved_ids={','.join(self.resolved_item_ids)}",
+                f"scope_approved_ids={','.join(self.scope_approved_item_ids)}",
+                f"scored_ids={','.join(self.scored_item_ids)}",
+                f"packed_ids={','.join(self.packed_item_ids)}",
+            )
+        )
+
+
 def _classify_graph_need(
     question: str,
     manual_override: bool = False,
@@ -227,6 +258,46 @@ def _classify_graph_need(
             "relationship or claim-scope query",
         )
     return GraphNeedDecision(False, "skip", False, False, 0.3, "no graph-specific intent")
+
+
+def _graph_execution_strategy(
+    *,
+    question: str,
+    flags: Any,
+    graph_evidence_mode: str,
+    manual_override: bool,
+    asset_registry_available: bool,
+) -> GraphExecutionStrategy:
+    """Prevent structured graph modes from ever falling back to raw prompts."""
+    structured_mode_requested = (
+        flags.graph_auto_gate_enabled
+        or flags.graph_evidence_locator_enabled
+        or flags.graph_to_chunk_enabled
+        or graph_evidence_mode in {"locator_only", "locator_to_chunk", "router_auto"}
+    )
+    gate_decision: Optional[GraphNeedDecision] = None
+
+    if flags.graph_auto_gate_enabled:
+        gate_decision = _classify_graph_need(
+            question,
+            manual_override=manual_override,
+            asset_registry_available=asset_registry_available,
+        )
+        if gate_decision.role == "planning":
+            return GraphExecutionStrategy("skip", gate_decision, "planning_only")
+        if not gate_decision.use_graph:
+            return GraphExecutionStrategy("skip", gate_decision, "auto_gate_skip")
+        if flags.graph_to_chunk_enabled:
+            return GraphExecutionStrategy("source_expand", gate_decision, "auto_source_expand")
+        return GraphExecutionStrategy("skip", gate_decision, "auto_requires_source_expand")
+
+    if flags.graph_to_chunk_enabled:
+        return GraphExecutionStrategy("source_expand", None, "source_expand_enabled")
+    if structured_mode_requested:
+        return GraphExecutionStrategy("skip", None, "locator_requires_source_expand")
+    if flags.graph_raw_current_enabled and graph_evidence_mode == "raw_current":
+        return GraphExecutionStrategy("raw_legacy", None, "explicit_legacy_raw")
+    return GraphExecutionStrategy("skip", None, "raw_legacy_not_explicit")
 
 
 ProgressCallback = Callable[[str, Optional[Dict[str, Any]]], Awaitable[None]]
@@ -931,9 +1002,8 @@ def _graph_gate_inputs(
         or _hint_enabled(source, "manual_graph_override")
         for source in sources
     )
-    asset_registry_available = bool(graph_flags.graph_asset_graph_enabled) or any(
-        _hint_enabled(source, "asset_registry_available")
-        or _hint_enabled(source, "graph_asset_registry_available")
+    asset_registry_available = bool(graph_flags.graph_asset_graph_enabled) and any(
+        _hint_enabled(source, "graph_asset_probe_result")
         for source in sources
     )
     return manual_override, asset_registry_available
@@ -982,15 +1052,31 @@ def _graph_evidence_item_id(graph_event_id: str, evidence_id: str) -> str:
     return f"{graph_event_id}:{evidence_id}"
 
 
+def _unique_graph_item_ids(item_ids: List[str]) -> List[str]:
+    return list(dict.fromkeys(item_id for item_id in item_ids if item_id))
+
+
+def _graph_item_ids_from_documents(documents: List[Document]) -> List[str]:
+    return _unique_graph_item_ids(
+        [str(document.metadata.get("graph_evidence_item_id") or "") for document in documents]
+    )
+
+
 def _build_graph_evidence_items(
     *,
     graph_event_id: str,
     evidence_units: List[GraphEvidence],
     graph_evidence_mode: str,
     created_at: datetime,
+    lifecycle: Optional[GraphEvidenceLifecycle] = None,
 ) -> List[EvaluationGraphEvidenceItem]:
     items: List[EvaluationGraphEvidenceItem] = []
     locator_mode = graph_evidence_mode in {"locator_only", "locator_to_chunk"}
+    packed_item_ids = (
+        set(lifecycle.packed_item_ids)
+        if lifecycle is not None
+        else {unit.evidence_id for unit in evidence_units}
+    )
     for unit in evidence_units:
         metadata = dict(unit.metadata or {})
         node_ids: List[str] = []
@@ -1037,7 +1123,7 @@ def _build_graph_evidence_items(
                     asset_ids=asset_ids,
                 ),
                 used_as_locator=locator_mode,
-                packed_in_context=True,
+                packed_in_context=unit.evidence_id in packed_item_ids,
                 used_in_answer=False,
                 supported_claim_ids=[],
                 created_at=created_at,
@@ -1046,10 +1132,15 @@ def _build_graph_evidence_items(
     return items
 
 
-def _graph_evidence_units_from_bundle(bundle: GraphEvidenceBundle) -> List[GraphEvidence]:
+def _graph_evidence_units_from_bundle(
+    bundle: GraphEvidenceBundle,
+    *,
+    items: Optional[List[Any]] = None,
+) -> List[GraphEvidence]:
     """Adapt source-backed final bundle items for the established recorder."""
     units: List[GraphEvidence] = []
-    for item in bundle.final_context_items:
+    source_items = items if items is not None else bundle.final_context_items
+    for item in source_items:
         evidence_type = "local_edge" if item.edge_ids else "local_node"
         units.append(
             GraphEvidence(
@@ -1074,18 +1165,16 @@ def _graph_evidence_units_from_bundle(bundle: GraphEvidenceBundle) -> List[Graph
 def _graph_context_details_for_bundle(
     bundle: GraphEvidenceBundle,
     graph_need_decision: Optional[GraphNeedDecision],
-    resolved_count: int,
+    lifecycle: GraphEvidenceLifecycle,
+    graph_latency_ms: int,
 ) -> GraphContextDetails:
     """Expose structured bundle counts through the existing graph-event contract."""
     route = bundle.route if bundle.route in {"local-first", "global-first", "blended"} else "local-first"
-    candidate_count = len(bundle.evidence_items)
-    final_count = len(bundle.final_context_items)
+    candidate_count = len(lifecycle.candidate_item_ids)
     reason_parts = []
     if graph_need_decision is not None:
         reason_parts.append(f"gate={graph_need_decision.reason}")
-    reason_parts.append(
-        f"candidate={candidate_count};resolved={resolved_count};final={final_count}"
-    )
+    reason_parts.extend(("strategy=source_expand", lifecycle.to_router_reason()))
     return GraphContextDetails(
         route_decision=GraphRouteDecision(
             query_kind="relation",
@@ -1095,7 +1184,7 @@ def _graph_context_details_for_bundle(
         matched_entity_ids=[],
         community_ids=[],
         candidate_evidence_count=candidate_count,
-        graph_latency_ms=0,
+        graph_latency_ms=graph_latency_ms,
     )
 
 
@@ -1107,7 +1196,7 @@ async def _record_graph_observability(
     mode_hints: Optional[Dict[str, Any]],
     graph_context_details: Optional[GraphContextDetails],
     graph_evidence_units: List[GraphEvidence],
-    resolved_item_count: Optional[int] = None,
+    lifecycle: Optional[GraphEvidenceLifecycle] = None,
 ) -> None:
     summary = _summarize_graph_evidence_for_log(graph_evidence_units)
     evaluation_metadata = _normalize_evaluation_metadata(mode_hints, graph_execution_hints)
@@ -1155,15 +1244,21 @@ async def _record_graph_observability(
         evidence_units=graph_evidence_units,
         graph_evidence_mode=evidence_mode,
         created_at=created_at,
+        lifecycle=lifecycle,
     )
     graph_to_chunk_attempted = evidence_mode in {"locator_only", "locator_to_chunk"}
-    observed_resolved_count = (
-        resolved_item_count
-        if resolved_item_count is not None
-        else sum(1 for item in evidence_items if item.source_chunk_ids)
+    candidate_item_ids = (
+        set(lifecycle.candidate_item_ids)
+        if lifecycle is not None
+        else {unit.evidence_id for unit in graph_evidence_units}
     )
-    total_item_count = len(evidence_items)
-    candidate_count = max(graph_context_details.candidate_evidence_count, total_item_count)
+    resolved_item_ids = (
+        set(lifecycle.resolved_item_ids)
+        if lifecycle is not None
+        else {unit.evidence_id for unit in graph_evidence_units if unit.metadata.get("chunk_ids")}
+    )
+    resolved_candidate_item_ids = candidate_item_ids.intersection(resolved_item_ids)
+    candidate_count = len(candidate_item_ids)
     graph_snapshot_version = evaluation_metadata.get("graph_snapshot_version")
     if not graph_snapshot_version and graph_context_details.graph_index_version is not None:
         graph_snapshot_version = f"index-v{graph_context_details.graph_index_version}"
@@ -1197,12 +1292,12 @@ async def _record_graph_observability(
         graph_latency_ms=graph_context_details.graph_latency_ms,
         graph_context_tokens=int(summary["graph_context_tokens"]),
         graph_to_chunk_success_rate=(
-            (observed_resolved_count / total_item_count)
-            if graph_to_chunk_attempted and total_item_count
+            (len(resolved_candidate_item_ids) / candidate_count)
+            if graph_to_chunk_attempted and candidate_count
             else None
         ),
         graph_noise_ratio=(
-            max(candidate_count - total_item_count, 0) / candidate_count
+            (candidate_count - len(resolved_candidate_item_ids)) / candidate_count
             if candidate_count
             else None
         ),
@@ -1766,32 +1861,81 @@ async def rag_answer_question(
     graph_context_details: Optional[GraphContextDetails] = None
     graph_evidence_documents_for_return: List[Document] = []
     graph_flags = get_graph_feature_flags(_graph_feature_flag_config(graph_execution_hints))
-    graph_need_decision: Optional[GraphNeedDecision] = None
-    graph_allowed = enable_graph_rag
-    if enable_graph_rag and graph_flags.graph_auto_gate_enabled:
+    graph_execution_strategy: Optional[GraphExecutionStrategy] = None
+    if enable_graph_rag:
         manual_override, asset_registry_available = _graph_gate_inputs(
             graph_execution_hints,
             mode_hints,
             graph_flags,
         )
-        graph_need_decision = _classify_graph_need(
-            question,
+        graph_execution_strategy = _graph_execution_strategy(
+            question=question,
+            flags=graph_flags,
+            graph_evidence_mode=_graph_evidence_mode(
+                mode_hints,
+                graph_execution_hints,
+                _normalize_evaluation_metadata(mode_hints, graph_execution_hints),
+            ),
             manual_override=manual_override,
             asset_registry_available=asset_registry_available,
         )
-        graph_allowed = graph_need_decision.use_graph
 
-    if graph_allowed:
+    if graph_execution_strategy and graph_execution_strategy.strategy == "skip":
+        skipped_lifecycle = GraphEvidenceLifecycle([], [], [], [], [])
+        graph_context_details = GraphContextDetails(
+            route_decision=GraphRouteDecision(
+                query_kind="relation",
+                path="local-first",
+                router_reason="; ".join(
+                    filter(
+                        None,
+                        (
+                            (
+                                f"gate={graph_execution_strategy.gate_decision.reason}"
+                                if graph_execution_strategy.gate_decision
+                                else None
+                            ),
+                            f"strategy={graph_execution_strategy.reason}",
+                            skipped_lifecycle.to_router_reason(),
+                        ),
+                    )
+                ),
+            ),
+            matched_entity_ids=[],
+            community_ids=[],
+            candidate_evidence_count=0,
+            graph_latency_ms=0,
+        )
+        await _emit_progress(
+            progress_callback,
+            "graph_context",
+            {"search_mode": graph_search_mode, "gate_role": "skip"},
+        )
+        await _record_graph_observability(
+            question=question,
+            graph_search_mode=graph_search_mode,
+            graph_execution_hints=graph_execution_hints,
+            mode_hints=mode_hints,
+            graph_context_details=graph_context_details,
+            graph_evidence_units=[],
+            lifecycle=skipped_lifecycle,
+        )
+    elif graph_execution_strategy:
         await _emit_progress(
             progress_callback,
             "graph_context",
             {
                 "search_mode": graph_search_mode,
-                "gate_role": graph_need_decision.role if graph_need_decision else "legacy",
+                "gate_role": (
+                    graph_execution_strategy.gate_decision.role
+                    if graph_execution_strategy.gate_decision
+                    else graph_execution_strategy.strategy
+                ),
             },
         )
-        if graph_flags.graph_to_chunk_enabled:
+        if graph_execution_strategy.strategy == "source_expand":
             chunk_lookup = VectorStoreChunkLookup()
+            graph_started_at = time.perf_counter()
             try:
                 bundle = await _get_graph_evidence_bundle(
                     question=question,
@@ -1800,31 +1944,51 @@ async def rag_answer_question(
                     graph_execution_hints=graph_execution_hints,
                     chunk_lookup=chunk_lookup,
                 )
-                graph_documents = score_graph_located_chunks(
-                    expand_graph_evidence_to_chunks(
-                        user_id,
-                        bundle,
-                        ChunkAnchorResolver(chunk_lookup),
-                    ),
-                    required_modalities=_required_modalities_for_question(question),
+                resolved_chunks = expand_graph_evidence_to_chunks(
+                    user_id,
+                    bundle,
+                    ChunkAnchorResolver(chunk_lookup),
                 )
                 if doc_ids:
                     allowed_doc_ids = set(doc_ids)
-                    graph_documents = [
-                        document
-                        for document in graph_documents
-                        if get_document_id(document.metadata) in allowed_doc_ids
+                    scoped_chunks = [
+                        chunk
+                        for chunk in resolved_chunks
+                        if get_document_id(chunk.document.metadata) in allowed_doc_ids
                     ]
+                else:
+                    scoped_chunks = resolved_chunks
+                graph_documents = score_graph_located_chunks(
+                    scoped_chunks,
+                    required_modalities=_required_modalities_for_question(question),
+                )
                 docs = merge_vector_and_graph_docs(
                     docs,
                     graph_documents,
                     graph_chunk_ratio=0.35,
                 )
-                graph_evidence_units = _graph_evidence_units_from_bundle(bundle)
+                lifecycle = GraphEvidenceLifecycle(
+                    candidate_item_ids=_unique_graph_item_ids(
+                        [item.item_id for item in bundle.evidence_items]
+                    ),
+                    resolved_item_ids=_unique_graph_item_ids(
+                        [chunk.evidence_item.item_id for chunk in resolved_chunks]
+                    ),
+                    scope_approved_item_ids=_unique_graph_item_ids(
+                        [chunk.evidence_item.item_id for chunk in scoped_chunks]
+                    ),
+                    scored_item_ids=_graph_item_ids_from_documents(graph_documents),
+                    packed_item_ids=_graph_item_ids_from_documents(docs),
+                )
+                graph_evidence_units = _graph_evidence_units_from_bundle(
+                    bundle,
+                    items=list(bundle.evidence_items),
+                )
                 graph_context_details = _graph_context_details_for_bundle(
                     bundle,
-                    graph_need_decision,
-                    len(graph_documents),
+                    graph_execution_strategy.gate_decision,
+                    lifecycle,
+                    int((time.perf_counter() - graph_started_at) * 1000),
                 )
                 await _record_graph_observability(
                     question=question,
@@ -1833,20 +1997,14 @@ async def rag_answer_question(
                     mode_hints=mode_hints,
                     graph_context_details=graph_context_details,
                     graph_evidence_units=graph_evidence_units,
-                    resolved_item_count=len(graph_documents),
+                    lifecycle=lifecycle,
                 )
             except (KeyError, OSError, RuntimeError, ValueError) as exc:
                 logger.warning(
                     "Graph-to-chunk expansion failed; retaining vector retrieval: %s",
                     exc,
                 )
-        elif not (
-            graph_need_decision
-            and (
-                graph_need_decision.locator_only
-                or not graph_need_decision.final_graph_context_allowed
-            )
-        ):
+        elif graph_execution_strategy.strategy == "raw_legacy":
             graph_context_payload = await _get_graph_context(
                 question=question,
                 user_id=user_id,

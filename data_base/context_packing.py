@@ -116,8 +116,11 @@ def score_graph_located_chunks(
         scored.append(Document(page_content=chunk.document.page_content, metadata=metadata))
 
     scored.sort(
-        key=lambda document: float(document.metadata["graph_post_boost_score"]),
-        reverse=True,
+        key=lambda document: (
+            -float(document.metadata["graph_post_boost_score"]),
+            str(document.metadata.get("graph_evidence_item_id", "")),
+            _document_identity_sort_key(document),
+        ),
     )
     return scored[:max(0, max_graph_chunks)]
 
@@ -155,13 +158,8 @@ def merge_vector_and_graph_docs(
         seen_graph_identities.add(identity)
         unique_graph_docs.append(document)
 
-    capped_ratio = min(graph_chunk_ratio, 1.0)
-    max_graph_docs = max(
-        1, int((len(vector_after_dedup) + len(unique_graph_docs)) * capped_ratio)
-    )
-    selected_graph_docs = unique_graph_docs[:max_graph_docs]
     graph_only: list[Document] = []
-    for position, document in enumerate(selected_graph_docs):
+    for position, document in enumerate(unique_graph_docs):
         identity = _canonical_chunk_identity(
             document, fallback_identity=f"graph-fallback:{position}"
         )
@@ -181,15 +179,25 @@ def merge_vector_and_graph_docs(
             metadata=metadata,
         )
 
+    capped_ratio = min(graph_chunk_ratio, 1.0)
+    if capped_ratio >= 1.0:
+        selected_graph_only = graph_only
+    else:
+        vector_count = len(vector_after_dedup)
+        max_graph_only = int(
+            (capped_ratio * vector_count) / (1.0 - capped_ratio)
+        )
+        selected_graph_only = graph_only[:max_graph_only]
+
     output: list[Document] = []
     graph_index = 0
     interval = max(1, graph_every_n)
     for vector_index, document in enumerate(vector_after_dedup, start=1):
         output.append(document)
-        if vector_index % interval == 0 and graph_index < len(graph_only):
-            output.append(graph_only[graph_index])
+        if vector_index % interval == 0 and graph_index < len(selected_graph_only):
+            output.append(selected_graph_only[graph_index])
             graph_index += 1
-    output.extend(graph_only[graph_index:])
+    output.extend(selected_graph_only[graph_index:])
     return output
 
 
@@ -210,9 +218,17 @@ def _source_chunk_identity(chunk_id: str, doc_id: str) -> str:
 
 def _canonical_chunk_identity(document: Document, *, fallback_identity: str) -> str:
     chunk_id = str(document.metadata.get("chunk_id", "")).strip()
-    if chunk_id:
-        return f"chunk:{chunk_id}"
+    doc_id = str(document.metadata.get("doc_id", "")).strip()
+    if doc_id and chunk_id:
+        return f"chunk:{doc_id}:{chunk_id}"
     return fallback_identity
+
+
+def _document_identity_sort_key(document: Document) -> tuple[str, str]:
+    return (
+        str(document.metadata.get("doc_id", "")),
+        str(document.metadata.get("chunk_id", "")),
+    )
 
 
 def _document_score(document: Document) -> float:
