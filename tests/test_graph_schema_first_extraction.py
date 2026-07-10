@@ -21,6 +21,7 @@ from graph_rag.schemas import (
     GRAPH_EDGE_TYPES_V1,
     GRAPH_NODE_TYPES_V1,
     RawGraphCandidate,
+    GraphAssetLink,
 )
 from graph_rag.store import GraphStore
 
@@ -114,6 +115,49 @@ async def test_schema_first_extraction_accepts_only_verified_relation_anchors() 
     assert result.relations[0].anchors[0].chunk_index == 4
     assert result.relations[0].anchors[0].verification_status == "quote_match"
     assert result.raw_candidates == []
+
+
+@pytest.mark.asyncio
+async def test_schema_first_extraction_attaches_matching_parsed_asset_anchor() -> None:
+    text = "| Method | Params |\n| --- | --- |\n| MedSAM-2 | 4M |"
+    extractor = EntityRelationExtractor()
+    llm = _llm_with_payload(
+        {
+            "entities": [
+                {"id": "method", "label": "MedSAM-2", "entity_type": "method"},
+                {"id": "value", "label": "4M", "entity_type": "value"},
+            ],
+            "relations": [
+                {
+                    "source_entity_id": "method",
+                    "target_entity_id": "value",
+                    "relation": "table_reports_result",
+                    "confidence": 0.9,
+                    "evidence_quote": "MedSAM-2 | 4M",
+                }
+            ],
+        }
+    )
+    asset = GraphAssetLink(
+        asset_id="table-1",
+        doc_id="doc-1",
+        page=5,
+        asset_type="table",
+        text_or_markdown=text,
+        asset_text_hash="asset-hash",
+        asset_parse_status="parsed",
+        source_chunk_id="chunk-table-1",
+    )
+
+    with patch("graph_rag.extractor.get_llm", return_value=llm):
+        result = await extractor.extract(text, "doc-1", 0, asset_links=[asset])
+
+    asset_anchor = next(
+        anchor for anchor in result.relations[0].anchors if anchor.asset_id == "table-1"
+    )
+    assert asset_anchor.anchor_type == "table"
+    assert asset_anchor.chunk_id == "chunk-table-1"
+    assert asset_anchor.verification_status == "quote_match"
 
 
 @pytest.mark.asyncio

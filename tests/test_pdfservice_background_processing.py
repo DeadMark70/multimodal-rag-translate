@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from core.errors import AppError, ErrorCode
 from data_base.indexing_service import DEFAULT_PRODUCTION_INDEXING_PROFILE
+from graph_rag.schemas import GraphAssetLink
 from main import app
 from pdfserviceMD.indexing_tasks import (
     DocumentImageProcessingError,
@@ -202,6 +203,68 @@ async def test_process_document_images_classifies_visual_index_failures() -> Non
 
     assert exc_info.value.stage == "visual_summary_index_failed"
     assert "vector indexing failed" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_process_document_images_records_only_successfully_indexed_assets() -> None:
+    figure_element = SimpleNamespace(
+        id="visual-1",
+        type="figure",
+        summary=None,
+        page_number=3,
+        bbox=[0, 0, 10, 10],
+        context_text="Figure 2 shows the architecture.",
+        figure_reference="Figure 2",
+    )
+    successful_summary = SimpleNamespace(**figure_element.__dict__)
+    successful_summary.summary = "A source image summary."
+    asset_link = GraphAssetLink(
+        asset_id="figure-1",
+        doc_id="doc-1",
+        page=3,
+        asset_type="figure",
+        text_or_markdown="A source image summary.",
+        asset_text_hash="hash",
+        asset_parse_status="parsed",
+        source_chunk_id="graph:asset:figure-1",
+    )
+    graph_store = Mock()
+
+    with (
+        patch(
+            "pdfserviceMD.indexing_tasks.extract_images_from_markdown",
+            return_value=["page1.png"],
+        ),
+        patch(
+            "pdfserviceMD.indexing_tasks.create_visual_elements",
+            return_value=[figure_element],
+        ),
+        patch(
+            "pdfserviceMD.indexing_tasks.image_summarizer.summarize_elements",
+            new=AsyncMock(return_value=[successful_summary]),
+        ),
+        patch(
+            "pdfserviceMD.indexing_tasks.build_visual_asset_links",
+            return_value=[asset_link],
+        ) as build_links,
+        patch(
+            "pdfserviceMD.indexing_tasks.index_visual_summaries",
+            new=AsyncMock(return_value=1),
+        ),
+        patch("pdfserviceMD.indexing_tasks.GraphStore", return_value=graph_store),
+    ):
+        indexed_count = await process_document_images(
+            user_id=TEST_USER_ID,
+            doc_id="doc-1",
+            markdown_text="markdown",
+            user_folder="uploads/test-user-123/doc-1",
+            book_title="Demo",
+        )
+
+    assert indexed_count == 1
+    build_links.assert_called_once_with(doc_id="doc-1", elements=[successful_summary])
+    graph_store.record_asset_link.assert_called_once_with(asset_link)
+    graph_store.save_sidecars.assert_called_once()
 
 
 @pytest.mark.asyncio

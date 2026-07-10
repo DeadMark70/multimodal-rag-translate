@@ -533,6 +533,21 @@ class EvidenceAnchor(BaseModel):
         return "missing"
 
 
+class GraphAssetLink(BaseModel):
+    """A parsed document asset that may locate, but never directly replace, source evidence."""
+
+    asset_id: str
+    doc_id: str
+    page: Optional[int] = None
+    asset_type: Literal["table", "figure", "formula", "caption"]
+    caption: Optional[str] = None
+    text_or_markdown: Optional[str] = None
+    asset_text_hash: Optional[str] = None
+    asset_parse_status: Literal["parsed", "partial", "failed", "not_attempted"] = "not_attempted"
+    bbox: Optional[List[float]] = None
+    source_chunk_id: Optional[str] = None
+
+
 class GraphHint(BaseModel):
     """Graph-derived guidance that is not source-backed final evidence."""
 

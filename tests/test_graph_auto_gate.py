@@ -20,6 +20,8 @@ from graph_rag.feature_flags import get_graph_feature_flags
 from graph_rag.generic_mode import GraphEvidence, GraphRouteDecision
 from data_base.context_packing import GraphLocatedChunk
 from graph_rag.schemas import EvidenceAnchor, GraphEvidenceBundle, GraphEvidenceItem
+from graph_rag.schemas import GraphAssetLink
+from graph_rag.store import GraphStore
 
 
 def test_graph_gate_uses_graph_for_claim_scope() -> None:
@@ -141,24 +143,60 @@ def test_graph_execution_strategy_skips_planning_without_packing_or_prompting() 
     assert strategy.gate_decision.role == "planning"
 
 
-def test_graph_asset_gate_requires_feature_and_request_scoped_probe_result() -> None:
+def test_graph_asset_gate_requires_feature_and_real_request_scoped_probe_result() -> None:
     flags = get_graph_feature_flags({"graph_asset_graph_enabled": True})
 
-    _, unavailable = _graph_gate_inputs(
+    _, ignored_hint = _graph_gate_inputs(
         {"asset_registry_available": True}, None, flags
     )
-    _, available = _graph_gate_inputs(
+    _, forged_hint = _graph_gate_inputs(
         {"graph_asset_probe_result": True}, None, flags
     )
+    _, available = _graph_gate_inputs(
+        {"graph_asset_probe_result": True}, None, flags, asset_probe_result=True
+    )
     _, disabled_feature = _graph_gate_inputs(
-        {"graph_asset_probe_result": True},
+        None,
         None,
         get_graph_feature_flags({"graph_asset_graph_enabled": False}),
+        asset_probe_result=True,
     )
 
-    assert unavailable is False
+    assert ignored_hint is False
+    assert forged_hint is False
     assert available is True
     assert disabled_feature is False
+
+
+def test_request_scoped_asset_probe_uses_registry_not_caller_hint(tmp_path) -> None:
+    from data_base.RAG_QA_service import _request_scoped_graph_asset_probe
+
+    store = GraphStore("user-1", storage_dir=tmp_path)
+    store.record_asset_link(
+        GraphAssetLink(
+            asset_id="table-1",
+            doc_id="doc-1",
+            asset_type="table",
+            text_or_markdown="| A | B |",
+            asset_text_hash="hash",
+            asset_parse_status="parsed",
+        )
+    )
+    docs = [Document(page_content="Table content", metadata={"doc_id": "doc-1"})]
+
+    with patch("data_base.RAG_QA_service.GraphStore", return_value=store):
+        assert _request_scoped_graph_asset_probe(
+            user_id="user-1",
+            question="What exact value is reported in the table?",
+            documents=docs,
+            requested_doc_ids=None,
+        ) is True
+        assert _request_scoped_graph_asset_probe(
+            user_id="user-1",
+            question="What exact value is reported in the formula?",
+            documents=docs,
+            requested_doc_ids=None,
+        ) is False
 
 
 def test_graph_evidence_lifecycle_tracks_only_finally_packed_item_ids() -> None:

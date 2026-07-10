@@ -26,6 +26,7 @@ from graph_rag.schemas import (
     CanonicalEntity,
     ClaimIdentity,
     EvidenceAnchor,
+    GraphAssetLink,
     GraphDocumentStatus,
     GraphEdgeProvenance,
     RawGraphCandidate,
@@ -47,6 +48,7 @@ GRAPH_RAW_CANDIDATES_FILENAME = "graph.raw_candidates.json"
 GRAPH_ALIASES_FILENAME = "graph.aliases.json"
 GRAPH_TYPE_INDEX_FILENAME = "graph.type_index.json"
 GRAPH_DOC_INDEX_FILENAME = "graph.doc_index.json"
+GRAPH_ASSET_LINKS_FILENAME = "graph.asset_links.json"
 GRAPH_SOURCE_MARKDOWN_FILENAME = "extracted.md"
 NODE_VECTOR_INDEX_NAME = "node_index"
 NODE_VECTOR_MAP_FILENAME = "node_index_map.json"
@@ -166,6 +168,7 @@ class GraphStore:
         self.document_statuses: Dict[str, GraphDocumentStatus] = {}
         self.edge_provenance: Dict[str, GraphEdgeProvenance] = {}
         self.raw_candidates: Dict[str, RawGraphCandidate] = {}
+        self.asset_links: Dict[str, GraphAssetLink] = {}
         self.canonical_entities: Dict[str, CanonicalEntity] = {}
         self.alias_index: Dict[str, List[str]] = {}
         self.type_index: Dict[str, List[str]] = {}
@@ -187,6 +190,7 @@ class GraphStore:
             self._load_document_statuses()
             self._load_edge_provenance()
             self._load_raw_candidates()
+            self._load_asset_links()
             self._load_alias_indexes()
     
     def _get_graph_path(self) -> Path:
@@ -222,6 +226,10 @@ class GraphStore:
     def _get_raw_candidates_path(self) -> Path:
         """Get path to the unverified extraction candidate sidecar."""
         return self._get_graph_path().with_name(GRAPH_RAW_CANDIDATES_FILENAME)
+
+    def _get_asset_links_path(self) -> Path:
+        """Get the graph asset registry sidecar path."""
+        return self._get_graph_path().with_name(GRAPH_ASSET_LINKS_FILENAME)
 
     def _get_aliases_path(self) -> Path:
         return self._get_graph_path().with_name(GRAPH_ALIASES_FILENAME)
@@ -315,6 +323,20 @@ class GraphStore:
             ]
         }
         self._atomic_write_json(self._get_raw_candidates_path(), payload)
+
+    def _write_asset_links(self) -> None:
+        """Persist parsed document assets separately from answer evidence."""
+        self._atomic_write_json(
+            self._get_asset_links_path(),
+            {
+                "assets": [
+                    link.model_dump(mode="json")
+                    for link in sorted(
+                        self.asset_links.values(), key=lambda item: item.asset_id
+                    )
+                ]
+            },
+        )
 
     def _write_alias_indexes(self) -> None:
         """Persist canonical entity and lookup sidecars independently of graph pickle."""
@@ -458,6 +480,23 @@ class GraphStore:
                 exc,
             )
 
+    def _load_asset_links(self) -> None:
+        """Load a best-effort asset registry while retaining legacy graph readability."""
+        self.asset_links = {}
+        path = self._get_asset_links_path()
+        if not path.exists():
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            links = [
+                GraphAssetLink.model_validate(item)
+                for item in payload.get("assets", [])
+            ]
+            self.asset_links = {link.asset_id: link for link in links}
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
+            logger.warning("Failed to load graph asset links for user %s: %s", self.user_id, exc)
+
     def _load_alias_indexes(self) -> None:
         """Load optional alias indexes while preserving legacy graph readability."""
         self.canonical_entities = {}
@@ -511,6 +550,7 @@ class GraphStore:
         self._write_document_statuses()
         self._write_edge_provenance()
         self._write_raw_candidates()
+        self._write_asset_links()
         self._write_alias_indexes()
 
     def save(self) -> None:
@@ -558,6 +598,7 @@ class GraphStore:
             self._load_document_statuses()
             self._load_edge_provenance()
             self._load_raw_candidates()
+            self._load_asset_links()
             self._load_alias_indexes()
             
             logger.info(
@@ -583,6 +624,7 @@ class GraphStore:
         self.document_statuses.clear()
         self.edge_provenance.clear()
         self.raw_candidates.clear()
+        self.asset_links.clear()
         self.canonical_entities.clear()
         self.alias_index.clear()
         self.type_index.clear()
@@ -849,6 +891,35 @@ class GraphStore:
             )
             if candidate.source_doc_id == doc_id
         ]
+
+    def record_asset_link(self, link: GraphAssetLink) -> None:
+        """Insert or replace one parsed document asset in the locator registry."""
+        self.asset_links[link.asset_id] = link.model_copy(deep=True)
+        self.mark_dirty()
+
+    def get_asset_links_for_doc(self, doc_id: str) -> List[GraphAssetLink]:
+        """Return deterministic copies of one document's registered assets."""
+        return [
+            link.model_copy(deep=True)
+            for link in sorted(self.asset_links.values(), key=lambda item: item.asset_id)
+            if link.doc_id == doc_id
+        ]
+
+    def has_usable_asset_links(
+        self,
+        doc_ids: Set[str],
+        asset_types: Set[str],
+    ) -> bool:
+        """Check an explicit request scope against parsed assets, never feature flags."""
+        if not doc_ids or not asset_types:
+            return False
+        return any(
+            link.doc_id in doc_ids
+            and link.asset_type in asset_types
+            and link.asset_parse_status == "parsed"
+            and bool(link.source_chunk_id or (link.text_or_markdown and link.asset_text_hash))
+            for link in self.asset_links.values()
+        )
 
     def upsert_canonical_entity(
         self,
@@ -1237,12 +1308,19 @@ class GraphStore:
 
         for edge_id in provenance_ids_to_remove:
             self.edge_provenance.pop(edge_id, None)
+        removed_asset_ids = [
+            asset_id
+            for asset_id, link in self.asset_links.items()
+            if link.doc_id == doc_id
+        ]
+        for asset_id in removed_asset_ids:
+            self.asset_links.pop(asset_id, None)
         
         logger.info(
             f"Removed doc {doc_id} from graph: "
             f"{len(nodes_to_remove)} nodes, {len(edges_to_remove)} edges removed"
         )
-        if nodes_to_remove or edges_to_remove:
+        if nodes_to_remove or edges_to_remove or removed_asset_ids:
             self.mark_dirty()
         
         return len(nodes_to_remove)

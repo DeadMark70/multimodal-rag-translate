@@ -117,6 +117,7 @@ async def run_graph_extraction(
                     doc_id=doc_id,
                     store=active_store,
                     chunk_index=idx,
+                    asset_links=active_store.get_asset_links_for_doc(doc_id),
                 )
                 for idx, chunk in batch
             ]

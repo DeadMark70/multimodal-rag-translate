@@ -27,6 +27,7 @@ from graph_rag.schemas import (
     ExtractedRelation,
     EvidenceAnchor,
     ExtractionResult,
+    GraphAssetLink,
     ClaimIdentity,
     GRAPH_EDGE_TYPES_V1,
     GRAPH_NODE_TYPES_V1,
@@ -191,6 +192,47 @@ def _verified_text_anchor(
         extraction_prompt_version="graph-extract-v2",
         verification_status="quote_match",
     )
+
+
+def _verified_asset_anchors(
+    *,
+    asset_links: Sequence[GraphAssetLink],
+    doc_id: str,
+    quote: str,
+    confidence: float,
+) -> List[EvidenceAnchor]:
+    """Attach parsed asset provenance only when the LLM quote matches stored asset text."""
+    normalized_quote = quote.strip()
+    if not normalized_quote:
+        return []
+    quote_hash = hashlib.sha256(normalized_quote.encode("utf-8")).hexdigest()
+    anchors: List[EvidenceAnchor] = []
+    for link in asset_links:
+        if (
+            link.doc_id != doc_id
+            or link.asset_parse_status != "parsed"
+            or not link.text_or_markdown
+            or normalized_quote not in link.text_or_markdown
+        ):
+            continue
+        anchors.append(
+            EvidenceAnchor(
+                doc_id=doc_id,
+                chunk_id=link.source_chunk_id,
+                page=link.page,
+                quote=normalized_quote,
+                quote_hash=quote_hash,
+                chunk_hash=link.asset_text_hash if link.source_chunk_id else None,
+                source_text_hash=link.asset_text_hash,
+                asset_id=link.asset_id,
+                anchor_type=link.asset_type,
+                bbox=link.bbox,
+                confidence=confidence,
+                extraction_prompt_version="graph-extract-v2",
+                verification_status="quote_match",
+            )
+        )
+    return anchors
 
 
 def _parse_json_from_response(
@@ -388,6 +430,7 @@ class EntityRelationExtractor:
         text: str,
         doc_id: str,
         chunk_index: int,
+        asset_links: Sequence[GraphAssetLink],
     ) -> tuple[List[ExtractedEntity], List[ExtractedRelation], List[RawGraphCandidate]]:
         """
         Extract entities and relations in a single structured-output call.
@@ -439,6 +482,7 @@ class EntityRelationExtractor:
             text=text,
             doc_id=doc_id,
             chunk_index=chunk_index,
+            asset_links=asset_links,
         )
 
     def _build_extraction_from_payload(
@@ -448,6 +492,7 @@ class EntityRelationExtractor:
         text: str,
         doc_id: str,
         chunk_index: int,
+        asset_links: Sequence[GraphAssetLink],
     ) -> tuple[List[ExtractedEntity], List[ExtractedRelation], List[RawGraphCandidate]]:
         """Convert structured payload into existing extraction result types."""
         entities: List[ExtractedEntity] = []
@@ -504,6 +549,14 @@ class EntityRelationExtractor:
                     )
                     continue
                 anchors.append(anchor)
+                anchors.extend(
+                    _verified_asset_anchors(
+                        asset_links=asset_links,
+                        doc_id=doc_id,
+                        quote=item.evidence_quote,
+                        confidence=item.confidence,
+                    )
+                )
 
             claim_identity: ClaimIdentity | None = None
             if node_decision.entity_type == EntityType.CLAIM:
@@ -610,6 +663,14 @@ class EntityRelationExtractor:
                     )
                     continue
                 anchors.append(anchor)
+                anchors.extend(
+                    _verified_asset_anchors(
+                        asset_links=asset_links,
+                        doc_id=doc_id,
+                        quote=item.evidence_quote,
+                        confidence=item.confidence,
+                    )
+                )
 
             try:
                 relation = ExtractedRelation(
@@ -765,6 +826,7 @@ class EntityRelationExtractor:
         text: str,
         doc_id: str,
         chunk_index: int = 0,
+        asset_links: Sequence[GraphAssetLink] | None = None,
     ) -> ExtractionResult:
         """
         Perform full extraction (entities + relations) on text.
@@ -787,6 +849,7 @@ class EntityRelationExtractor:
                     text,
                     doc_id,
                     chunk_index,
+                    asset_links or (),
                 )
             except Exception as e:
                 logger.warning(
@@ -818,6 +881,7 @@ async def extract_from_chunk(
     text: str,
     doc_id: str,
     chunk_index: int = 0,
+    asset_links: Sequence[GraphAssetLink] | None = None,
 ) -> ExtractionResult:
     """
     Convenience function to extract from a single chunk.
@@ -831,7 +895,7 @@ async def extract_from_chunk(
         ExtractionResult.
     """
     extractor = EntityRelationExtractor()
-    return await extractor.extract(text, doc_id, chunk_index)
+    return await extractor.extract(text, doc_id, chunk_index, asset_links=asset_links)
 
 
 async def add_extraction_to_graph(
@@ -918,6 +982,7 @@ async def extract_and_add_to_graph(
     doc_id: str,
     store: GraphStore,
     chunk_index: int = 0,
+    asset_links: Sequence[GraphAssetLink] | None = None,
 ) -> Tuple[int, int]:
     """
     Extract from text and add directly to graph.
@@ -933,5 +998,10 @@ async def extract_and_add_to_graph(
     Returns:
         Tuple of (nodes_added, edges_added).
     """
-    result = await extract_from_chunk(text, doc_id, chunk_index)
+    result = await extract_from_chunk(
+        text,
+        doc_id,
+        chunk_index,
+        asset_links=asset_links,
+    )
     return await add_extraction_to_graph(store, result)

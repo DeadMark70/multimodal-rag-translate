@@ -75,6 +75,7 @@ from graph_rag.generic_mode import (
     merge_graph_evidence_bundle,
 )
 from graph_rag.schemas import GraphEvidenceBundle, is_graph_evidence_item_eligible
+from graph_rag.store import GraphStore
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -1014,17 +1015,18 @@ def _graph_gate_inputs(
     graph_execution_hints: Optional[Dict[str, Any]],
     mode_hints: Optional[Dict[str, Any]],
     graph_flags: Any,
+    *,
+    asset_probe_result: bool = False,
 ) -> tuple[bool, bool]:
-    """Resolve gate inputs exclusively from explicit execution or mode snapshots."""
+    """Resolve manual override plus a registry-derived asset availability result."""
     sources = (graph_execution_hints, mode_hints)
     manual_override = any(
         _hint_enabled(source, "graph_manual_override")
         or _hint_enabled(source, "manual_graph_override")
         for source in sources
     )
-    asset_registry_available = bool(graph_flags.graph_asset_graph_enabled) and any(
-        _hint_enabled(source, "graph_asset_probe_result")
-        for source in sources
+    asset_registry_available = (
+        bool(graph_flags.graph_asset_graph_enabled) and asset_probe_result
     )
     return manual_override, asset_registry_available
 
@@ -1038,6 +1040,32 @@ def _required_modalities_for_question(question: str) -> list[str]:
     if any(token in lowered_question for token in ("figure", "image", "圖", "圖片")):
         modalities.append("image")
     return modalities
+
+
+def _request_scoped_graph_asset_probe(
+    *,
+    user_id: str,
+    question: str,
+    documents: List[Document],
+    requested_doc_ids: Optional[List[str]],
+) -> bool:
+    """Resolve asset availability from actual registry entries in this request's scope."""
+    doc_scope = set(requested_doc_ids or [])
+    if not doc_scope:
+        doc_scope = {
+            doc_id
+            for document in documents
+            if (doc_id := get_document_id(document.metadata))
+        }
+    requested_types: set[str] = set()
+    lowered_question = question.lower()
+    if any(token in lowered_question for token in ("table", "表格", "表")):
+        requested_types.add("table")
+    if any(token in lowered_question for token in ("figure", "image", "圖", "圖片")):
+        requested_types.add("figure")
+    if any(token in lowered_question for token in ("formula", "equation", "公式")):
+        requested_types.add("formula")
+    return GraphStore(user_id).has_usable_asset_links(doc_scope, requested_types)
 
 
 def _graph_evidence_mode(
@@ -1885,10 +1913,21 @@ async def rag_answer_question(
     graph_flags = get_graph_feature_flags(_graph_feature_flag_config(graph_execution_hints))
     graph_execution_strategy: Optional[GraphExecutionStrategy] = None
     if enable_graph_rag:
+        asset_probe_result = (
+            _request_scoped_graph_asset_probe(
+                user_id=user_id,
+                question=question,
+                documents=docs,
+                requested_doc_ids=doc_ids,
+            )
+            if graph_flags.graph_asset_graph_enabled
+            else False
+        )
         manual_override, asset_registry_available = _graph_gate_inputs(
             graph_execution_hints,
             mode_hints,
             graph_flags,
+            asset_probe_result=asset_probe_result,
         )
         graph_execution_strategy = _graph_execution_strategy(
             question=question,

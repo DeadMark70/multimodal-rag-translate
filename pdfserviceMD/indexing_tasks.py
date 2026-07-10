@@ -13,7 +13,9 @@ from data_base.indexing_service import (
     index_visual_summaries,
 )
 from data_base.vector_store_manager import delete_document_from_knowledge_base_async
+from graph_rag.assets import build_visual_asset_links, extract_markdown_asset_links
 from graph_rag.service import run_graph_extraction
+from graph_rag.store import GraphStore
 from multimodal_rag.image_summarizer import summarizer as image_summarizer
 from pdfserviceMD.image_processor import (
     create_visual_elements,
@@ -29,6 +31,17 @@ from pdfserviceMD.service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _record_markdown_asset_links(*, user_id: str, doc_id: str, markdown_text: str) -> None:
+    """Persist parsed Markdown assets after their source Markdown has been indexed."""
+    links = extract_markdown_asset_links(doc_id=doc_id, markdown_text=markdown_text)
+    if not links:
+        return
+    store = GraphStore(user_id)
+    for link in links:
+        store.record_asset_link(link)
+    store.save_sidecars()
 
 
 class DocumentImageProcessingError(RuntimeError):
@@ -84,6 +97,14 @@ async def _run_pre_graph_indexing_steps(
             k_retriever=3,
             indexing_profile=DEFAULT_PRODUCTION_INDEXING_PROFILE,
         )
+        try:
+            _record_markdown_asset_links(
+                user_id=user_id,
+                doc_id=doc_id,
+                markdown_text=markdown_text,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Background] Graph asset registry failed for doc %s: %s", doc_id, exc)
         logger.info("[Background] RAG indexing complete for doc %s", doc_id)
     except Exception as e:  # noqa: BLE001
         logger.warning("[Background] RAG indexing failed for doc %s: %s", doc_id, e)
@@ -313,6 +334,11 @@ async def process_document_images(
                 detail=f"No figure summaries were generated for {figure_count} extracted images",
             )
 
+        asset_links = build_visual_asset_links(
+            doc_id=doc_id,
+            elements=summarized_elements,
+        )
+
         # 4. Index summaries to vector store
         try:
             indexed_count = await index_visual_summaries(
@@ -333,6 +359,19 @@ async def process_document_images(
                 stage="visual_summary_index_failed",
                 detail=f"Generated {success_count} image summaries, but indexed 0 entries",
             )
+
+        if asset_links:
+            try:
+                store = GraphStore(user_id)
+                for link in asset_links:
+                    store.record_asset_link(link)
+                store.save_sidecars()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[Background] Visual graph asset registry failed for doc %s: %s",
+                    doc_id,
+                    exc,
+                )
 
         logger.info(
             f"[Background] Indexed {indexed_count} image summaries for doc {doc_id}"

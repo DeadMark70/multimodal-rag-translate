@@ -99,6 +99,11 @@
   - `GET /graph/quality` reports deterministic store quality, including provenance coverage, generic relations, duplicate methods, orphan nodes, and unscoped claims.
   - `GET /graph/runtime-quality?campaign_id=...` aggregates only persisted `evaluation_graph_events` and `evaluation_graph_evidence_items`; it does not infer runtime success from `GraphStore`.
   - `POST /graph/debug/search` returns entity links, graph hints, candidate evidence, and only independently eligible final-context items. Graph hints and unresolved evidence are diagnostic output, not answer evidence.
+- Graph asset links persist in `graph.asset_links.json` and are locator metadata, not final answer text:
+  - explicit Markdown tables, display formulas, and captions are parsed with their page marker, source text, and hash after Markdown indexing succeeds;
+  - visual assets are registered only after their summaries have been successfully indexed, with matching `asset_id` and `chunk_id` metadata for later source resolution;
+  - exact table/figure/formula questions probe only the parsed assets belonging to the request's candidate documents. Feature flags and caller-provided hints alone cannot claim asset availability;
+  - extraction adds an asset anchor only when its evidence quote matches registered asset source text. The asset still must resolve to a source chunk or asset before it can support final context.
 - Production markdown indexing is profile-aware:
   - default compatibility profile in `data_base/indexing_service.py` remains `recursive_baseline`
   - document upload / retry-index currently opt into `semantic_contextual`

@@ -578,6 +578,10 @@ def add_visual_summaries_to_knowledge_base(
                 "image_path": element.image_path,
                 "context": element.context_text or "",
                 "figure_ref": element.figure_reference or "",
+                "asset_id": element.asset_id or "",
+                "chunk_id": (
+                    f"graph:asset:{element.asset_id}" if element.asset_id else ""
+                ),
             }
         ))
 
