@@ -530,14 +530,20 @@ class EntityRelationExtractor:
 
             anchors: List[EvidenceAnchor] = []
             if item.evidence_quote:
-                anchor = _verified_text_anchor(
+                text_anchor = _verified_text_anchor(
                     text=text,
                     doc_id=doc_id,
                     chunk_index=chunk_index,
                     quote=item.evidence_quote,
                     confidence=item.confidence,
                 )
-                if anchor is None:
+                asset_anchors = _verified_asset_anchors(
+                    asset_links=asset_links,
+                    doc_id=doc_id,
+                    quote=item.evidence_quote,
+                    confidence=item.confidence,
+                )
+                if text_anchor is None and not asset_anchors:
                     raw_candidates.append(
                         _raw_candidate(
                             candidate_type="quote_mismatch",
@@ -548,15 +554,9 @@ class EntityRelationExtractor:
                         )
                     )
                     continue
-                anchors.append(anchor)
-                anchors.extend(
-                    _verified_asset_anchors(
-                        asset_links=asset_links,
-                        doc_id=doc_id,
-                        quote=item.evidence_quote,
-                        confidence=item.confidence,
-                    )
-                )
+                if text_anchor is not None:
+                    anchors.append(text_anchor)
+                anchors.extend(asset_anchors)
 
             claim_identity: ClaimIdentity | None = None
             if node_decision.entity_type == EntityType.CLAIM:
@@ -644,14 +644,20 @@ class EntityRelationExtractor:
 
             anchors: List[EvidenceAnchor] = []
             if item.evidence_quote:
-                anchor = _verified_text_anchor(
+                text_anchor = _verified_text_anchor(
                     text=text,
                     doc_id=doc_id,
                     chunk_index=chunk_index,
                     quote=item.evidence_quote,
                     confidence=item.confidence,
                 )
-                if anchor is None:
+                asset_anchors = _verified_asset_anchors(
+                    asset_links=asset_links,
+                    doc_id=doc_id,
+                    quote=item.evidence_quote,
+                    confidence=item.confidence,
+                )
+                if text_anchor is None and not asset_anchors:
                     raw_candidates.append(
                         _raw_candidate(
                             candidate_type="quote_mismatch",
@@ -662,15 +668,9 @@ class EntityRelationExtractor:
                         )
                     )
                     continue
-                anchors.append(anchor)
-                anchors.extend(
-                    _verified_asset_anchors(
-                        asset_links=asset_links,
-                        doc_id=doc_id,
-                        quote=item.evidence_quote,
-                        confidence=item.confidence,
-                    )
-                )
+                if text_anchor is not None:
+                    anchors.append(text_anchor)
+                anchors.extend(asset_anchors)
 
             try:
                 relation = ExtractedRelation(

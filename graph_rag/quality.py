@@ -38,7 +38,11 @@ def compute_graph_quality(store: GraphStore) -> GraphQualityResponse:
         for entity in store.canonical_entities.values()
         if entity.entity_type.value == "method"
     }
-    duplicate_methods = max(0, len(method_nodes) - len(canonical_methods))
+    duplicate_methods = (
+        max(0, len(method_nodes) - len(canonical_methods))
+        if canonical_methods
+        else 0
+    )
     generic_relations = sum(edge.relation in {"uses", "related"} for edge in edges)
     issues: list[GraphQualityIssue] = []
     if edge_count and provenance_count < edge_count:

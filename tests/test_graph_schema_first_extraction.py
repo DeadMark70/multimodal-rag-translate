@@ -161,6 +161,45 @@ async def test_schema_first_extraction_attaches_matching_parsed_asset_anchor() -
 
 
 @pytest.mark.asyncio
+async def test_schema_first_extraction_accepts_quote_from_registered_visual_asset() -> None:
+    text = "Figure 2 is referenced in the paper and its caption describes the model architecture."
+    extractor = EntityRelationExtractor()
+    llm = _llm_with_payload(
+        {
+            "entities": [
+                {"id": "method", "label": "MedSAM-2", "entity_type": "method"},
+                {"id": "component", "label": "memory attention", "entity_type": "architecture_component"},
+            ],
+            "relations": [
+                {
+                    "source_entity_id": "method",
+                    "target_entity_id": "component",
+                    "relation": "method_uses_component",
+                    "confidence": 0.9,
+                    "evidence_quote": "A source image summary with memory attention.",
+                }
+            ],
+        }
+    )
+    asset = GraphAssetLink(
+        asset_id="figure-1",
+        doc_id="doc-1",
+        page=2,
+        asset_type="figure",
+        text_or_markdown="A source image summary with memory attention.",
+        asset_text_hash="asset-hash",
+        asset_parse_status="parsed",
+        source_chunk_id="graph:asset:figure-1",
+    )
+
+    with patch("graph_rag.extractor.get_llm", return_value=llm):
+        result = await extractor.extract(text, "doc-1", 0, asset_links=[asset])
+
+    assert result.raw_candidates == []
+    assert result.relations[0].anchors[0].asset_id == "figure-1"
+
+
+@pytest.mark.asyncio
 async def test_schema_first_extraction_buffers_unknown_or_unverified_relations() -> None:
     extractor = EntityRelationExtractor()
     llm = _llm_with_payload(
