@@ -65,6 +65,7 @@ from graph_rag.generic_mode import (
     estimate_token_count,
     merge_graph_evidence,
 )
+from graph_rag.schemas import GraphEvidenceBundle, GraphHint
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -420,7 +421,7 @@ def _legacy_graph_route_decision(
     return None
 
 
-async def _get_graph_context(
+async def _get_graph_context_legacy_raw(
     question: str,
     user_id: str,
     search_mode: str = "generic",
@@ -433,7 +434,7 @@ async def _get_graph_context(
     Tuple[str, List[GraphEvidence], Optional[GraphContextDetails]],
 ]:
     """
-    Get context from knowledge graph.
+    Get raw context from knowledge graph for legacy compatibility.
 
     Args:
         question: User's question.
@@ -585,6 +586,113 @@ async def _get_graph_context(
                 return "", [], None
             return "", []
         return ""
+
+
+async def _get_graph_evidence_bundle(
+    question: str,
+    user_id: str,
+    search_mode: str = "generic",
+    graph_execution_hints: Optional[Dict[str, Any]] = None,
+) -> GraphEvidenceBundle:
+    """Build a structured graph bundle without calling the compatibility wrapper."""
+    try:
+        from graph_rag.store import GraphStore
+
+        store = GraphStore(user_id)
+        status = store.get_status()
+        if not status.has_graph or status.node_count == 0:
+            return GraphEvidenceBundle(query=question, route="none")
+
+        legacy_payload = await _get_graph_context_legacy_raw(
+            question=question,
+            user_id=user_id,
+            search_mode=search_mode,
+            graph_execution_hints=graph_execution_hints,
+            return_evidence=True,
+        )
+        legacy_context, legacy_evidence = legacy_payload
+        hints: List[GraphHint] = []
+        if legacy_context:
+            hints.append(
+                GraphHint(
+                    hint_id="legacy:graph-context",
+                    hint_type="query_expansion",
+                    text=legacy_context,
+                    confidence=0.5,
+                    source_ids=[item.evidence_id for item in legacy_evidence],
+                )
+            )
+        return GraphEvidenceBundle(query=question, route=search_mode, hints=hints)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Graph evidence bundle retrieval failed: %s", exc)
+        return GraphEvidenceBundle(query=question, route="none")
+
+
+def _render_graph_bundle_for_legacy_prompt(bundle: GraphEvidenceBundle) -> str:
+    """Render only source-resolved bundle evidence for legacy prompt consumers."""
+    rendered_items = [
+        item.summary
+        for item in bundle.final_context_items
+        if (
+            item.usable_as_context
+            and item.provenance_status == "full"
+            and item.resolution_status in {"resolved", "fuzzy_resolved"}
+        )
+        and item.summary
+    ]
+    if not rendered_items:
+        return ""
+    return "=== Graph Evidence ===\n" + "\n".join(rendered_items)
+
+
+async def _get_graph_context(
+    question: str,
+    user_id: str,
+    search_mode: str = "generic",
+    graph_execution_hints: Optional[Dict[str, Any]] = None,
+    return_evidence: bool = False,
+    return_details: bool = False,
+) -> Union[
+    str,
+    Tuple[str, List[GraphEvidence]],
+    Tuple[str, List[GraphEvidence], Optional[GraphContextDetails]],
+]:
+    """Return legacy graph context contracts through the configured graph path."""
+    feature_flag_config: Dict[str, object] = {}
+    if isinstance(graph_execution_hints, dict):
+        nested_flags = graph_execution_hints.get("graph_feature_flags")
+        if isinstance(nested_flags, dict):
+            feature_flag_config.update(nested_flags)
+        feature_flag_config.update(
+            {
+                key: value
+                for key, value in graph_execution_hints.items()
+                if key.startswith("graph_")
+            }
+        )
+    flags = get_graph_feature_flags(feature_flag_config)
+    if not flags.graph_evidence_locator_enabled:
+        return await _get_graph_context_legacy_raw(
+            question=question,
+            user_id=user_id,
+            search_mode=search_mode,
+            graph_execution_hints=graph_execution_hints,
+            return_evidence=return_evidence,
+            return_details=return_details,
+        )
+
+    bundle = await _get_graph_evidence_bundle(
+        question=question,
+        user_id=user_id,
+        search_mode=search_mode,
+        graph_execution_hints=graph_execution_hints,
+    )
+    context = _render_graph_bundle_for_legacy_prompt(bundle)
+    if return_evidence:
+        if return_details:
+            return context, [], None
+        return context, []
+    return context
 
 
 def _to_graph_evidence_documents(evidence_units: List[GraphEvidence]) -> List[Document]:
