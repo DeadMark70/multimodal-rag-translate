@@ -19,7 +19,7 @@ from core.providers import get_llm
 from core.prompt_loader import format_graph_rag_prompt
 from graph_rag.anchor_resolver import ChunkAnchorResolver
 from graph_rag.llm_response import response_content_to_text
-from graph_rag.generic_mode import GraphEvidence, estimate_token_count
+from graph_rag.generic_mode import GraphEvidence, estimate_token_count, link_query_entities
 from graph_rag.node_vector_index import (
     node_vector_min_score,
     node_vector_search_enabled,
@@ -310,9 +310,14 @@ async def local_search(
     vector_fallback_reason: str | None = None
     index_state = "disabled"
     vector_hit_count = 0
+    matched_nodes = store.find_canonical_nodes_in_text(question)
 
-    # Step 1: Vector-first seed retrieval
-    if node_vector_search_enabled():
+    # Step 1: Exact canonical alias seeds take precedence over approximate retrieval.
+    if matched_nodes:
+        logger.info("Local search alias seeds ready | alias_match_count=%s", len(matched_nodes))
+
+    # Step 2: Vector seed retrieval when no explicit alias resolves.
+    if not matched_nodes and node_vector_search_enabled():
         vector_result = await search_nodes_by_vector(
             store=store,
             query=question,
@@ -333,9 +338,11 @@ async def local_search(
                 vector_result.top_score,
             )
 
-    # Step 2: Fallback to legacy LLM + fuzzy matching when vector seeds are missing
+    # Step 3: Fallback to fuzzy matching when neither aliases nor vectors resolve.
     if not matched_nodes:
         query_entities = await identify_query_entities(question)
+        matched_nodes = link_query_entities(store, query_entities)
+    if not matched_nodes:
         if not query_entities:
             logger.info(
                 "No entities identified in query and no vector seeds | vector_hit_count=%s | vector_fallback_reason=%s | index_state=%s",

@@ -245,3 +245,66 @@ async def test_graph_write_persists_verified_anchor_and_raw_candidate_separately
     edge_id = next(iter(store.edge_provenance))
     assert store.get_edge_provenance(edge_id) == [anchor]
     assert store.get_raw_candidates_for_doc("doc-1")[0].candidate_id == "raw-unknown"
+
+
+@pytest.mark.asyncio
+async def test_structured_extraction_failure_is_buffered_not_sent_to_legacy_graph_writer() -> None:
+    extractor = EntityRelationExtractor()
+    llm = Mock()
+    llm.bind.side_effect = RuntimeError("schema service unavailable")
+
+    with patch("graph_rag.extractor.get_llm", return_value=llm):
+        result = await extractor.extract("x" * 120, "doc-1", 0)
+
+    assert result.entities == []
+    assert result.relations == []
+    assert [candidate.candidate_type for candidate in result.raw_candidates] == [
+        "structured_extraction_failed"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v1_schema_rejects_legacy_node_and_relation_labels() -> None:
+    extractor = EntityRelationExtractor()
+    llm = _llm_with_payload(
+        {
+            "entities": [
+                {
+                    "id": "method",
+                    "label": "MedSAM-2",
+                    "entity_type": "method",
+                    "confidence": 0.9,
+                    "evidence_quote": "MedSAM-2 uses memory attention",
+                },
+                {
+                    "id": "author",
+                    "label": "Author A",
+                    "entity_type": "author",
+                    "confidence": 0.9,
+                    "evidence_quote": "MedSAM-2 uses memory attention",
+                },
+            ],
+            "relations": [
+                {
+                    "source_entity_id": "method",
+                    "target_entity_id": "method",
+                    "relation": "uses",
+                    "confidence": 0.9,
+                    "evidence_quote": "MedSAM-2 uses memory attention",
+                }
+            ],
+        }
+    )
+
+    with patch("graph_rag.extractor.get_llm", return_value=llm):
+        result = await extractor.extract(
+            "MedSAM-2 uses memory attention for medical image segmentation.",
+            "doc-1",
+            0,
+        )
+
+    assert result.relations == []
+    assert {candidate.candidate_type for candidate in result.raw_candidates} == {
+        "unknown_node_type",
+        "unknown_relation",
+    }

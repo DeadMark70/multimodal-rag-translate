@@ -61,9 +61,32 @@ class RelationType(str, Enum):
     APPLIES_TO = "applies_to"       # Applied to domain/task
 
 
-# Legacy labels stay accepted so existing graph stores and extraction fallbacks
-# remain readable, while new extraction is constrained to this explicit set.
-GRAPH_NODE_TYPES_V1 = frozenset(item.value for item in EntityType)
+# Legacy graph data remains readable, but schema-v1 extraction accepts only
+# the controlled answer-graph vocabulary below.
+GRAPH_NODE_TYPES_V1 = frozenset(
+    {
+        "paper",
+        "method",
+        "model",
+        "dataset",
+        "metric",
+        "result",
+        "value",
+        "claim",
+        "claim_scope",
+        "limitation",
+        "task",
+        "training_setting",
+        "prompt_type",
+        "architecture_component",
+        "ablation",
+        "benchmark_setting",
+        "evidence_span",
+        "figure",
+        "table",
+        "formula",
+    }
+)
 GRAPH_EDGE_TYPES_V1 = frozenset(
     {
         "paper_proposes_method",
@@ -86,7 +109,6 @@ GRAPH_EDGE_TYPES_V1 = frozenset(
         "formula_defines_variable",
         "method_has_training_setting",
         "claim_limited_to_setting",
-        *(item.value for item in RelationType),
     }
 )
 
@@ -382,6 +404,7 @@ class CanonicalEntity(BaseModel):
     entity_type: EntityType
     aliases: List[str] = Field(default_factory=list)
     source_doc_ids: List[str] = Field(default_factory=list)
+    identity_key: Optional[str] = None
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     review_status: Literal["auto", "needs_review", "reviewed"] = "auto"
 

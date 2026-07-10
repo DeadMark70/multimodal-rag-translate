@@ -756,14 +756,20 @@ class EntityRelationExtractor:
                 )
             except Exception as e:
                 logger.warning(
-                    "Structured GraphRAG extraction failed; falling back to legacy two-pass flow: %s",
+                    "Structured GraphRAG extraction failed; buffering unverified output: %s",
                     e,
                 )
-                entities = await self.extract_entities(text)
+                entities = []
                 relations = []
-                if entities:
-                    relations = await self.extract_relations(text, entities)
-                raw_candidates = []
+                raw_candidates = [
+                    _raw_candidate(
+                        candidate_type="structured_extraction_failed",
+                        payload={"error": str(e)},
+                        doc_id=doc_id,
+                        chunk_index=chunk_index,
+                        confidence=0.0,
+                    )
+                ]
         
         return ExtractionResult(
             entities=entities,

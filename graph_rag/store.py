@@ -23,6 +23,7 @@ from core import uploads as upload_paths
 from graph_rag.schemas import (
     Community,
     CanonicalEntity,
+    ClaimIdentity,
     EvidenceAnchor,
     GraphDocumentStatus,
     GraphEdgeProvenance,
@@ -84,6 +85,34 @@ def _generate_node_id(label: str, entity_type: EntityType) -> str:
     content = f"{entity_type.value}:{label.lower().strip()}"
     hash_suffix = hashlib.md5(content.encode()).hexdigest()[:8]
     return f"node_{entity_type.value}_{hash_suffix}"
+
+
+def _generate_scoped_node_id(
+    label: str,
+    entity_type: EntityType,
+    source_doc_ids: List[str],
+) -> str:
+    """Generate a stable node id scoped to the source-document set."""
+    scope = "|".join(sorted(source_doc_ids)) or "no-source"
+    content = f"{entity_type.value}:{label.lower().strip()}:{scope}"
+    hash_suffix = hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
+    return f"node_{entity_type.value}_{hash_suffix}"
+
+
+def _next_unmerged_node_id(
+    graph: nx.DiGraph,
+    label: str,
+    entity_type: EntityType,
+    source_doc_ids: List[str],
+) -> str:
+    """Allocate a distinct identity for types that must never auto-merge."""
+    base = _generate_scoped_node_id(label, entity_type, source_doc_ids)
+    node_id = base
+    suffix = 2
+    while graph.has_node(node_id):
+        node_id = f"{base}_{suffix}"
+        suffix += 1
+    return node_id
 
 
 def _normalize_alias(value: str) -> str:
@@ -828,20 +857,37 @@ class GraphStore:
         aliases: List[str],
         source_doc_ids: List[str],
         confidence: float = 1.0,
+        claim_identity: ClaimIdentity | None = None,
     ) -> str:
         """Create or reuse a canonical node under explicit type/scope merge rules."""
         resolved_type = EntityType(entity_type)
         normalized_name = _normalize_alias(canonical_name)
         normalized_aliases = _unique_aliases([canonical_name, *aliases])
-        existing_id = self._find_exact_canonical_name(normalized_name, resolved_type)
+        existing_id: str | None = None
 
-        if existing_id is None and resolved_type in AUTO_MERGE_ENTITY_TYPES:
-            existing_id = self.find_canonical_node(canonical_name, resolved_type.value)
-        elif existing_id is None and resolved_type in REVIEW_REQUIRED_ENTITY_TYPES:
+        identity_key = claim_identity.stable_key if claim_identity is not None else None
+        if resolved_type in AUTO_MERGE_ENTITY_TYPES:
+            existing_id = self._find_exact_canonical_name(normalized_name, resolved_type)
+            if existing_id is None:
+                existing_id = self.find_canonical_node(
+                    canonical_name,
+                    resolved_type.value,
+                )
+        elif resolved_type in REVIEW_REQUIRED_ENTITY_TYPES:
             existing_id = self._find_scoped_alias_match(
                 normalized_aliases,
                 resolved_type,
                 source_doc_ids,
+            )
+        elif resolved_type == EntityType.CLAIM and identity_key is not None:
+            existing_id = next(
+                (
+                    entity.canonical_id
+                    for entity in self.canonical_entities.values()
+                    if entity.entity_type == EntityType.CLAIM
+                    and entity.identity_key == identity_key
+                ),
+                None,
             )
 
         review_status: Literal["auto", "needs_review", "reviewed"] = (
@@ -850,11 +896,35 @@ class GraphStore:
             else "auto"
         )
         if existing_id is None:
-            existing_id = self.add_node_from_extraction(
-                label=canonical_name,
-                entity_type=resolved_type,
-                doc_id=source_doc_ids[0] if source_doc_ids else "",
-                pending_resolution=False,
+            if resolved_type in AUTO_MERGE_ENTITY_TYPES:
+                existing_id = _generate_node_id(canonical_name, resolved_type)
+            elif resolved_type in REVIEW_REQUIRED_ENTITY_TYPES:
+                existing_id = _generate_scoped_node_id(
+                    canonical_name,
+                    resolved_type,
+                    source_doc_ids,
+                )
+            elif identity_key is not None:
+                existing_id = _generate_scoped_node_id(
+                    identity_key,
+                    resolved_type,
+                    source_doc_ids,
+                )
+            else:
+                existing_id = _next_unmerged_node_id(
+                    self.graph,
+                    canonical_name,
+                    resolved_type,
+                    source_doc_ids,
+                )
+            self.add_node(
+                GraphNode(
+                    id=existing_id,
+                    label=canonical_name,
+                    entity_type=resolved_type,
+                    doc_ids=list(dict.fromkeys(source_doc_ids)),
+                    pending_resolution=False,
+                )
             )
             entity = CanonicalEntity(
                 canonical_id=existing_id,
@@ -862,6 +932,7 @@ class GraphStore:
                 entity_type=resolved_type,
                 aliases=normalized_aliases,
                 source_doc_ids=list(dict.fromkeys(source_doc_ids)),
+                identity_key=identity_key,
                 confidence=confidence,
                 review_status=review_status,
             )
@@ -875,6 +946,7 @@ class GraphStore:
                     entity_type=resolved_type,
                     aliases=[],
                     source_doc_ids=existing_node.doc_ids if existing_node else [],
+                    identity_key=identity_key,
                     review_status=review_status,
                 )
             entity = existing.model_copy(
@@ -884,6 +956,7 @@ class GraphStore:
                         dict.fromkeys([*existing.source_doc_ids, *source_doc_ids])
                     ),
                     "confidence": max(existing.confidence, confidence),
+                    "identity_key": existing.identity_key or identity_key,
                 }
             )
 
@@ -906,6 +979,20 @@ class GraphStore:
             if entity_type is None or entity.entity_type.value == entity_type:
                 return node_id
         return None
+
+    def find_canonical_nodes_in_text(self, text: str) -> List[str]:
+        """Find explicit aliases in query text without an LLM classification step."""
+        normalized_text = _normalize_alias(text)
+        compact_text = normalized_text.replace(" ", "")
+        matched: List[str] = []
+        for alias, node_ids in self.alias_index.items():
+            compact_alias = alias.replace(" ", "")
+            if alias not in normalized_text and compact_alias not in compact_text:
+                continue
+            for node_id in node_ids:
+                if node_id not in matched:
+                    matched.append(node_id)
+        return matched
 
     def _find_exact_canonical_name(
         self,
