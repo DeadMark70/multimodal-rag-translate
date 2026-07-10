@@ -44,6 +44,7 @@ from evaluation.campaign_schemas import (
     SanitizedErrorRow,
 )
 from evaluation.db import CampaignRepository, CampaignResultRepository, connect_db, init_db
+from evaluation.rag_modes import RAG_MODES
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.trace_schemas import EvaluationHumanRating
 
@@ -403,11 +404,19 @@ class EvaluationAnalyticsService:
             for result in results
         )
         condition_labels: dict[str, str] = {}
+        family_conditions: dict[str, dict[str, int]] = {}
         for result in results:
             condition_id = result.derived_metrics.get("condition_id")
             label = result.derived_metrics.get("condition_label")
             if isinstance(condition_id, str) and isinstance(label, str):
                 condition_labels[condition_id] = label
+            flags = result.derived_metrics.get("ablation_flags")
+            family = flags.get("ablation_family") if isinstance(flags, dict) else None
+            if not isinstance(family, str):
+                family = RAG_MODES.get(result.mode, {}).get("ablation_family", "compatibility")
+            family_conditions.setdefault(family, {})[str(condition_id or result.mode)] = (
+                family_conditions.setdefault(family, {}).get(str(condition_id or result.mode), 0) + 1
+            )
         return AblationResponse(
             campaign_id=context.campaign_id,
             analysis_unit="execution",
@@ -418,6 +427,7 @@ class EvaluationAnalyticsService:
             summaries={
                 "condition_counts": dict(by_condition),
                 "condition_labels": condition_labels,
+                "conditions_by_ablation_family": family_conditions,
             },
         )
 

@@ -10,7 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from evaluation.schemas import ModelConfig
 
-CampaignMode = Literal["naive", "advanced", "graph", "agentic", "router"]
+CampaignMode = Literal[
+    "naive", "advanced", "graph", "agentic", "router",
+    "graph_raw_current", "graph_provenance_gated", "graph_locator_to_chunk",
+    "graph_locator_claim_gate", "always_no_graph", "always_graph_locator",
+    "router_auto_graph", "graph_local_first", "graph_global_first", "graph_blended",
+]
 CampaignEvaluationPhase = Literal["execution", "evaluation"]
 
 

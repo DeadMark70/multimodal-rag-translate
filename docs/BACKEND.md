@@ -104,6 +104,7 @@
   - visual assets are registered only after their summaries have been successfully indexed, with matching `asset_id` and `chunk_id` metadata for later source resolution;
   - exact table/figure/formula questions probe only the parsed assets belonging to the request's candidate documents. Feature flags and caller-provided hints alone cannot claim asset availability;
   - extraction adds an asset anchor only when its evidence quote matches registered asset source text. The asset still must resolve to a source chunk or asset before it can support final context.
+- Graph evaluation modes carry an explicit `ablation_family`: `graph_evidence`, `graph_usage_policy`, or `graph_query_strategy`. Campaign analytics report each family separately rather than treating routing policy as evidence-mechanism quality.
 - Production markdown indexing is profile-aware:
   - default compatibility profile in `data_base/indexing_service.py` remains `recursive_baseline`
   - document upload / retry-index currently opt into `semantic_contextual`
