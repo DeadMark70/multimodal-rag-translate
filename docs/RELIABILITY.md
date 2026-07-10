@@ -35,3 +35,11 @@
 - `.\.venv\Scripts\python.exe -m pytest`
 - `ruff check .` when the environment is scoped to production code
 - spot-check `openapi.json` when endpoint families or schemas change
+
+# Graph Evidence Locator Reliability
+
+Graph query readers load `current.json` when a versioned snapshot exists and fall back to the legacy root-layout graph when it does not. Writers build a complete temporary snapshot, validate required graph files, then atomically replace the pointer. A failed extraction or rebuild therefore leaves the prior readable snapshot in place.
+
+Legacy edges without provenance remain readable for `graph_raw_current`, but are marked missing and cannot enter final evidence locator context.
+
+The regression smoke covers legacy-store loading, raw-context rollback, locator rejection of unresolved legacy anchors, source-backed graph expansion, and snapshot promotion with provenance, asset, alias, and ready node-vector sidecars.
