@@ -163,6 +163,8 @@ class GraphEvidenceLifecycle:
     scope_approved_item_ids: List[str]
     scored_item_ids: List[str]
     packed_item_ids: List[str]
+    used_as_locator: bool = False
+    graph_to_chunk_attempted: bool = False
 
     def to_router_reason(self) -> str:
         return "; ".join(
@@ -1071,7 +1073,7 @@ def _build_graph_evidence_items(
     lifecycle: Optional[GraphEvidenceLifecycle] = None,
 ) -> List[EvaluationGraphEvidenceItem]:
     items: List[EvaluationGraphEvidenceItem] = []
-    locator_mode = graph_evidence_mode in {"locator_only", "locator_to_chunk"}
+    used_as_locator = lifecycle.used_as_locator if lifecycle is not None else False
     packed_item_ids = (
         set(lifecycle.packed_item_ids)
         if lifecycle is not None
@@ -1122,7 +1124,7 @@ def _build_graph_evidence_items(
                     pages=pages,
                     asset_ids=asset_ids,
                 ),
-                used_as_locator=locator_mode,
+                used_as_locator=used_as_locator,
                 packed_in_context=unit.evidence_id in packed_item_ids,
                 used_in_answer=False,
                 supported_claim_ids=[],
@@ -1246,7 +1248,9 @@ async def _record_graph_observability(
         created_at=created_at,
         lifecycle=lifecycle,
     )
-    graph_to_chunk_attempted = evidence_mode in {"locator_only", "locator_to_chunk"}
+    graph_to_chunk_attempted = (
+        lifecycle.graph_to_chunk_attempted if lifecycle is not None else False
+    )
     candidate_item_ids = (
         set(lifecycle.candidate_item_ids)
         if lifecycle is not None
@@ -1885,7 +1889,7 @@ async def rag_answer_question(
         graph_context_details = GraphContextDetails(
             route_decision=GraphRouteDecision(
                 query_kind="relation",
-                path="local-first",
+                path="skip",
                 router_reason="; ".join(
                     filter(
                         None,
@@ -1979,6 +1983,12 @@ async def rag_answer_question(
                     ),
                     scored_item_ids=_graph_item_ids_from_documents(graph_documents),
                     packed_item_ids=_graph_item_ids_from_documents(docs),
+                    used_as_locator=(
+                        graph_execution_strategy.strategy == "source_expand"
+                    ),
+                    graph_to_chunk_attempted=(
+                        graph_execution_strategy.strategy == "source_expand"
+                    ),
                 )
                 graph_evidence_units = _graph_evidence_units_from_bundle(
                     bundle,

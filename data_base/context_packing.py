@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from langchain_core.documents import Document
 
-from data_base.document_metadata import matches_document_id
+from data_base.document_metadata import get_document_id, matches_document_id
 from graph_rag.anchor_resolver import ChunkAnchorResolver
 from graph_rag.schemas import (
     EvidenceAnchor,
@@ -218,7 +218,7 @@ def _source_chunk_identity(chunk_id: str, doc_id: str) -> str:
 
 def _canonical_chunk_identity(document: Document, *, fallback_identity: str) -> str:
     chunk_id = str(document.metadata.get("chunk_id", "")).strip()
-    doc_id = str(document.metadata.get("doc_id", "")).strip()
+    doc_id = str(get_document_id(document.metadata) or "").strip()
     if doc_id and chunk_id:
         return f"chunk:{doc_id}:{chunk_id}"
     return fallback_identity
@@ -226,7 +226,7 @@ def _canonical_chunk_identity(document: Document, *, fallback_identity: str) -> 
 
 def _document_identity_sort_key(document: Document) -> tuple[str, str]:
     return (
-        str(document.metadata.get("doc_id", "")),
+        str(get_document_id(document.metadata) or ""),
         str(document.metadata.get("chunk_id", "")),
     )
 

@@ -5,7 +5,11 @@ import pytest
 from langchain_core.documents import Document
 
 from data_base.RAG_QA_service import RAGResult, rag_answer_question
-from data_base.context_packing import merge_vector_and_graph_docs
+from data_base.context_packing import (
+    GraphLocatedChunk,
+    merge_vector_and_graph_docs,
+    score_graph_located_chunks,
+)
 from graph_rag.schemas import GraphEvidenceBundle, GraphEvidenceItem
 
 
@@ -102,6 +106,56 @@ def test_merge_vector_and_graph_docs_preserves_vector_documents_without_chunk_id
     assert merged[0].metadata["rank"] == 1
     assert merged[1].metadata["rank"] == 2
     assert merged[2].metadata["selected_by"] == "both"
+
+
+def test_merge_uses_legacy_document_id_for_overlap_without_graph_ratio_cost() -> None:
+    vector_doc = Document(
+        page_content="Legacy vector source",
+        metadata={"original_doc_uid": "doc-legacy", "chunk_id": "chunk-1"},
+    )
+    graph_overlap = Document(
+        page_content="Graph copy",
+        metadata={
+            "doc_id": "doc-legacy",
+            "chunk_id": "chunk-1",
+            "selected_by": "graph",
+            "graph_evidence_item_id": "edge-legacy",
+        },
+    )
+
+    merged = merge_vector_and_graph_docs(
+        [vector_doc], [graph_overlap], graph_chunk_ratio=0.35
+    )
+
+    assert len(merged) == 1
+    assert merged[0].page_content == "Legacy vector source"
+    assert merged[0].metadata["selected_by"] == "both"
+    assert merged[0].metadata["graph_evidence_item_id"] == "edge-legacy"
+
+
+def test_equal_score_sort_uses_legacy_document_id() -> None:
+    item = _graph_item()
+    legacy_document = Document(
+        page_content="Legacy B",
+        metadata={"original_doc_uid": "doc-b", "chunk_id": "chunk-1"},
+    )
+    canonical_document = Document(
+        page_content="Canonical A",
+        metadata={"doc_id": "doc-a", "chunk_id": "chunk-1"},
+    )
+
+    scored = score_graph_located_chunks(
+        [
+            GraphLocatedChunk(legacy_document, item, pre_boost_score=0.4),
+            GraphLocatedChunk(canonical_document, item, pre_boost_score=0.4),
+        ],
+        required_modalities=[],
+    )
+
+    assert [document.page_content for document in scored] == [
+        "Canonical A",
+        "Legacy B",
+    ]
 
 
 def test_merge_vector_and_graph_docs_uses_document_and_chunk_identity() -> None:

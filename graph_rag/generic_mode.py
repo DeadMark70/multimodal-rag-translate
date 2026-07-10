@@ -31,7 +31,7 @@ from graph_rag.schemas import (
 logger = logging.getLogger(__name__)
 
 QueryKind = Literal["fact", "relation", "summary"]
-RoutePath = Literal["local-first", "global-first", "blended"]
+RoutePath = Literal["local-first", "global-first", "blended", "skip"]
 StageHint = Literal["exploration", "verification"]
 TaskTypeHint = Literal["rag", "graph_analysis"]
 EvidenceType = Literal[

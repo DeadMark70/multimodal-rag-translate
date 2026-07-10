@@ -6,16 +6,18 @@ import pytest
 from langchain_core.documents import Document
 
 from data_base.RAG_QA_service import (
+    GraphContextDetails,
     GraphEvidenceLifecycle,
     RAGResult,
     _build_graph_evidence_items,
     _classify_graph_need,
     _graph_execution_strategy,
     _graph_gate_inputs,
+    _record_graph_observability,
     rag_answer_question,
 )
 from graph_rag.feature_flags import get_graph_feature_flags
-from graph_rag.generic_mode import GraphEvidence
+from graph_rag.generic_mode import GraphEvidence, GraphRouteDecision
 from data_base.context_packing import GraphLocatedChunk
 from graph_rag.schemas import EvidenceAnchor, GraphEvidenceBundle, GraphEvidenceItem
 
@@ -213,6 +215,76 @@ def test_graph_observability_marks_only_merged_lifecycle_items_as_packed() -> No
     } == {"candidate": False, "packed": True}
 
 
+@pytest.mark.asyncio
+async def test_router_auto_observability_records_locator_and_success_rate() -> None:
+    repository = Mock()
+    repository.record_graph_event = AsyncMock()
+    repository.record_graph_evidence_items = AsyncMock()
+    lifecycle = GraphEvidenceLifecycle(
+        candidate_item_ids=["resolved", "unresolved"],
+        resolved_item_ids=["resolved"],
+        scope_approved_item_ids=["resolved"],
+        scored_item_ids=["resolved"],
+        packed_item_ids=["resolved"],
+        used_as_locator=True,
+        graph_to_chunk_attempted=True,
+    )
+    evidence_units = [
+        GraphEvidence(
+            evidence_id="resolved",
+            evidence_type="local_node",
+            text="Resolved source",
+            score=0.9,
+            token_estimate=2,
+            metadata={"doc_ids": ["doc-1"], "chunk_ids": ["chunk-1"]},
+        ),
+        GraphEvidence(
+            evidence_id="unresolved",
+            evidence_type="local_node",
+            text="Unresolved source",
+            score=0.7,
+            token_estimate=2,
+            metadata={"doc_ids": ["doc-2"], "chunk_ids": ["chunk-2"]},
+        ),
+    ]
+
+    with patch(
+        "evaluation.observability_storage.EvaluationObservabilityRepository",
+        return_value=repository,
+    ):
+        await _record_graph_observability(
+            question="Compare claim scope",
+            graph_search_mode="generic",
+            graph_execution_hints={
+                "graph_evidence_mode": "router_auto",
+                "evaluation_metadata": {
+                    "run_id": "run-1",
+                    "campaign_id": "campaign-1",
+                },
+            },
+            mode_hints=None,
+            graph_context_details=GraphContextDetails(
+                route_decision=GraphRouteDecision(
+                    query_kind="relation",
+                    path="local-first",
+                    router_reason="auto source expand",
+                ),
+                matched_entity_ids=[],
+                community_ids=[],
+                candidate_evidence_count=2,
+                graph_latency_ms=12,
+            ),
+            graph_evidence_units=evidence_units,
+            lifecycle=lifecycle,
+        )
+
+    event = repository.record_graph_event.await_args.args[0]
+    items = repository.record_graph_evidence_items.await_args.args[0]
+    assert event.graph_evidence_mode == "router_auto"
+    assert event.graph_to_chunk_success_rate == 0.5
+    assert all(item.used_as_locator is True for item in items)
+
+
 def _vector_document() -> Document:
     return Document(
         page_content="Allowed vector source context.",
@@ -355,6 +427,8 @@ async def test_auto_gate_planning_records_skip_without_bundling_merging_or_promp
     graph_bundle.assert_not_awaited()
     merge.assert_not_called()
     record.assert_awaited_once()
+    details = record.await_args.kwargs["graph_context_details"]
+    assert details.route_decision.path == "skip"
 
 
 @pytest.mark.asyncio
