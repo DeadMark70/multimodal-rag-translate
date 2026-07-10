@@ -270,8 +270,16 @@ def _graph_execution_strategy(
     graph_evidence_mode: str,
     manual_override: bool,
     asset_registry_available: bool,
+    oracle_graph_decision: bool | None = None,
 ) -> GraphExecutionStrategy:
     """Prevent structured graph modes from ever falling back to raw prompts."""
+    if graph_evidence_mode == "planning_only":
+        return GraphExecutionStrategy("skip", None, "planning_only")
+    if oracle_graph_decision is False:
+        return GraphExecutionStrategy("skip", None, "oracle_router_skip")
+    if oracle_graph_decision is True:
+        manual_override = True
+
     structured_mode_requested = (
         flags.graph_auto_gate_enabled
         or flags.graph_evidence_locator_enabled
@@ -1029,6 +1037,51 @@ def _graph_gate_inputs(
         bool(graph_flags.graph_asset_graph_enabled) and asset_probe_result
     )
     return manual_override, asset_registry_available
+
+
+def _oracle_graph_decision(
+    graph_execution_hints: Optional[Dict[str, Any]],
+    mode_hints: Optional[Dict[str, Any]],
+) -> bool | None:
+    """Read an explicit per-question oracle label used only by evaluation modes."""
+    for source in (graph_execution_hints, mode_hints):
+        if not isinstance(source, dict):
+            continue
+        value = source.get("graph_oracle_decision")
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"use", "true", "1"}:
+                return True
+            if normalized in {"skip", "false", "0"}:
+                return False
+    return None
+
+
+_CLAIM_SCOPE_STOPWORDS = {
+    "a", "an", "and", "are", "does", "for", "how", "in", "is", "of", "the",
+    "to", "use", "what", "which", "with",
+}
+
+
+def _claim_scope_approves_chunk(question: str, chunk: Any) -> bool:
+    """Require graph-located evidence to share claim-bearing terms with the query."""
+    query_terms = {
+        term.lower()
+        for term in re.findall(r"[A-Za-z0-9_]+", question)
+        if len(term) > 2 and term.lower() not in _CLAIM_SCOPE_STOPWORDS
+    }
+    if not query_terms:
+        return True
+    item = chunk.evidence_item
+    evidence_text = " ".join(
+        filter(
+            None,
+            (item.evidence_quote, item.summary, item.relation_type, chunk.document.page_content),
+        )
+    ).lower()
+    return any(term in evidence_text for term in query_terms)
 
 
 def _required_modalities_for_question(question: str) -> list[str]:
@@ -1939,6 +1992,10 @@ async def rag_answer_question(
             ),
             manual_override=manual_override,
             asset_registry_available=asset_registry_available,
+            oracle_graph_decision=_oracle_graph_decision(
+                graph_execution_hints,
+                mode_hints,
+            ),
         )
 
     if graph_execution_strategy and graph_execution_strategy.strategy == "skip":
@@ -2019,6 +2076,16 @@ async def rag_answer_question(
                     ]
                 else:
                     scoped_chunks = resolved_chunks
+                if _graph_evidence_mode(
+                    mode_hints,
+                    graph_execution_hints,
+                    _normalize_evaluation_metadata(mode_hints, graph_execution_hints),
+                ) == "claim_gated":
+                    scoped_chunks = [
+                        chunk
+                        for chunk in scoped_chunks
+                        if _claim_scope_approves_chunk(question, chunk)
+                    ]
                 graph_documents = score_graph_located_chunks(
                     scoped_chunks,
                     required_modalities=_required_modalities_for_question(question),

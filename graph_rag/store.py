@@ -237,7 +237,11 @@ class GraphStore:
     def _hash_file(path: Path) -> str:
         return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
 
-    def save_snapshot(self) -> str:
+    def save_snapshot(
+        self,
+        *,
+        node_vector_source: "GraphStore | None" = None,
+    ) -> str:
         """Write a complete immutable graph version before atomically swapping current."""
         version = self._next_snapshot_version()
         versions_dir = self._root_storage_dir / "versions"
@@ -248,9 +252,20 @@ class GraphStore:
             shutil.rmtree(temp)
         temp.mkdir()
         original_dir = self._storage_dir
+        vector_store = node_vector_source or self
+        vector_paths = (
+            vector_store._get_node_vector_faiss_path(),
+            vector_store._get_node_vector_pickle_path(),
+            vector_store._get_node_vector_map_path(),
+            vector_store._get_node_vector_meta_path(),
+        )
         try:
             self._storage_dir = temp
             self.save()
+            if not self.node_vector_dirty:
+                for source_path in vector_paths:
+                    if source_path.exists():
+                        shutil.copy2(source_path, temp / source_path.name)
             required = [temp / "graph.pkl", temp / "graph.meta.json"]
             if any(not path.exists() for path in required):
                 raise RuntimeError("snapshot validation failed: graph files missing")

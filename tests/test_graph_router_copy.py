@@ -7,6 +7,9 @@ from fastapi.testclient import TestClient
 
 from core.auth import get_current_user_id
 from graph_rag.maintenance import rebuild_graph_task
+from graph_rag.maintenance import _copy_graph_sidecars, _replace_live_graph_files
+from graph_rag.schemas import EvidenceAnchor, EntityType, GraphAssetLink
+from graph_rag.store import GraphStore
 from main import app
 
 TEST_USER_ID = "test-user-graph"
@@ -82,3 +85,50 @@ async def test_rebuild_task_does_not_clear_graph() -> None:
 
     mock_store.clear.assert_not_called()
     mock_optimize.assert_awaited_once_with(mock_store, regenerate_communities=True)
+
+
+def test_copy_graph_sidecars_preserves_evidence_locator_state(tmp_path) -> None:
+    source = GraphStore(TEST_USER_ID, storage_dir=tmp_path / "source")
+    source_id = source.add_node_from_extraction("MedSAM", EntityType.METHOD, "doc-1")
+    target_id = source.add_node_from_extraction("memory", EntityType.CONCEPT, "doc-1")
+    source.add_edge_from_extraction(
+        source_id,
+        target_id,
+        "uses",
+        "doc-1",
+    )
+    edge_id = source.edge_id(source_id, target_id, "uses")
+    source.record_edge_provenance(
+        edge_id,
+        [EvidenceAnchor(doc_id="doc-1", chunk_id="chunk-1", confidence=0.9)],
+    )
+    source.record_asset_link(
+        GraphAssetLink(
+            asset_id="asset-1",
+            doc_id="doc-1",
+            asset_type="table",
+            asset_parse_status="parsed",
+        )
+    )
+    source.save()
+    destination = GraphStore(TEST_USER_ID, storage_dir=tmp_path / "destination")
+
+    _copy_graph_sidecars(source, destination)
+    copied = GraphStore(TEST_USER_ID, storage_dir=tmp_path / "destination")
+
+    assert edge_id in copied.edge_provenance
+    assert "asset-1" in copied.asset_links
+
+
+def test_snapshot_promotion_retains_ready_node_vector_index(tmp_path) -> None:
+    live = GraphStore(TEST_USER_ID, storage_dir=tmp_path / "live")
+    temp = GraphStore(TEST_USER_ID, storage_dir=tmp_path / "temp")
+    temp.add_node_from_extraction("MedSAM", EntityType.METHOD, "doc-1")
+    temp.save()
+    temp.node_vector_dirty = False
+    temp._get_node_vector_map_path().write_text('{"node_ids": ["node-1"]}', encoding="utf-8")
+
+    _replace_live_graph_files(temp, live)
+
+    promoted = GraphStore(TEST_USER_ID, storage_dir=tmp_path / "live")
+    assert promoted._get_node_vector_map_path().exists()

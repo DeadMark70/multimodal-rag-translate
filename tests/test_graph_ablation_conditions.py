@@ -15,5 +15,8 @@ def test_graph_evidence_ablation_conditions_exist() -> None:
 
 def test_router_policy_and_query_strategy_are_separate_families() -> None:
     assert RAG_MODES["router_auto_graph"]["ablation_family"] == "graph_usage_policy"
+    assert RAG_MODES["oracle_graph_router"]["ablation_family"] == "graph_usage_policy"
     assert RAG_MODES["graph_local_first"]["ablation_family"] == "graph_query_strategy"
+    assert RAG_MODES["graph_path_pruned"]["ablation_family"] == "graph_query_strategy"
+    assert RAG_MODES["graph_planning_only"]["ablation_family"] == "graph_query_strategy"
     assert RAG_MODES["graph_locator_to_chunk"]["graph_evidence_mode"] == "locator_to_chunk"

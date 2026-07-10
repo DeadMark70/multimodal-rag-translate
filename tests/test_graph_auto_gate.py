@@ -9,6 +9,7 @@ from data_base.RAG_QA_service import (
     GraphContextDetails,
     GraphEvidenceLifecycle,
     RAGResult,
+    _claim_scope_approves_chunk,
     _build_graph_evidence_items,
     _classify_graph_need,
     _graph_execution_strategy,
@@ -22,6 +23,33 @@ from data_base.context_packing import GraphLocatedChunk
 from graph_rag.schemas import EvidenceAnchor, GraphEvidenceBundle, GraphEvidenceItem
 from graph_rag.schemas import GraphAssetLink
 from graph_rag.store import GraphStore
+
+
+def test_claim_gate_keeps_only_question_scoped_graph_chunks() -> None:
+    item = GraphEvidenceItem(
+        item_id="edge-1",
+        graph_mode="local",
+        source="edge",
+        node_ids=["method", "memory"],
+        edge_ids=["edge-1"],
+        source_chunk_ids=["chunk-1"],
+        source_doc_ids=["doc-1"],
+        summary="MedSAM uses memory attention.",
+        evidence_quote="MedSAM uses memory attention.",
+        confidence=0.9,
+        provenance_status="full",
+        resolution_status="resolved",
+        verification_status="quote_match",
+        usable_as_context=True,
+        use_reason="resolved provenance",
+    )
+    chunk = GraphLocatedChunk(
+        document=Document(page_content="MedSAM uses memory attention."),
+        evidence_item=item,
+    )
+
+    assert _claim_scope_approves_chunk("How does MedSAM use memory?", chunk) is True
+    assert _claim_scope_approves_chunk("What optimizer was used?", chunk) is False
 
 
 def test_graph_gate_uses_graph_for_claim_scope() -> None:

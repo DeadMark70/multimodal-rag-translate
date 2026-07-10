@@ -29,6 +29,12 @@ def _copy_graph_sidecars(src: GraphStore, dest: GraphStore) -> None:
         (src._get_graph_path(), dest._get_graph_path()),
         (src._get_metadata_path(), dest._get_metadata_path()),
         (src._get_document_status_path(), dest._get_document_status_path()),
+        (src._get_provenance_path(), dest._get_provenance_path()),
+        (src._get_raw_candidates_path(), dest._get_raw_candidates_path()),
+        (src._get_asset_links_path(), dest._get_asset_links_path()),
+        (src._get_aliases_path(), dest._get_aliases_path()),
+        (src._get_type_index_path(), dest._get_type_index_path()),
+        (src._get_doc_index_path(), dest._get_doc_index_path()),
         (src._get_node_vector_faiss_path(), dest._get_node_vector_faiss_path()),
         (src._get_node_vector_pickle_path(), dest._get_node_vector_pickle_path()),
         (src._get_node_vector_map_path(), dest._get_node_vector_map_path()),
@@ -54,7 +60,9 @@ def _replace_live_graph_files(temp_store: GraphStore, live_store: GraphStore) ->
     live_store.last_optimized_at = temp_store.last_optimized_at
     live_store.index_version = temp_store.index_version
     live_store.graph_dirty = temp_store.graph_dirty
-    live_store.save_snapshot()
+    live_store.node_vector_dirty = temp_store.node_vector_dirty
+    live_store.node_vector_sync = temp_store.node_vector_sync
+    live_store.save_snapshot(node_vector_source=temp_store)
 
 
 def _make_graph_work_dir(base_dir: Path, prefix: str) -> Path:
@@ -196,7 +204,7 @@ async def optimize_existing_graph(
         communities = await build_communities(store, generate_summaries=True)
         communities_count = len(communities)
 
-    store.save()
+    store.save_snapshot()
     if node_vector_autosync_enabled() and isinstance(store, GraphStore):
         sync_result = await sync_node_vector_index(
             user_id=store.user_id,

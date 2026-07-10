@@ -54,7 +54,7 @@ async def run_graph_extraction(
                 last_succeeded_at=attempted_at if status in {"indexed", "partial", "empty"} else None,
             )
         )
-        active_store.save_sidecars()
+        active_store.save_snapshot()
         return GraphExtractionRunResult(
             doc_id=doc_id,
             status=status,
@@ -155,14 +155,7 @@ async def run_graph_extraction(
             total_edges,
         )
         mark_node_vector_dirty(active_store)
-        active_store.save_snapshot()
-        if autosync:
-            schedule_node_vector_autosync(
-                user_id=user_id,
-                store=active_store,
-                reason=f"graph_extraction:{doc_id}",
-            )
-        return _persist_status(
+        result = _persist_status(
             status=status,
             chunk_count=len(chunks),
             chunks_succeeded=completed_chunks,
@@ -171,6 +164,13 @@ async def run_graph_extraction(
             edges_added=total_edges,
             last_error=last_error,
         )
+        if autosync:
+            schedule_node_vector_autosync(
+                user_id=user_id,
+                store=active_store,
+                reason=f"graph_extraction:{doc_id}",
+            )
+        return result
 
     except Exception as exc:  # noqa: BLE001
         logger.error("[GraphRAG] Graph extraction failed for doc %s: %s", doc_id, exc, exc_info=True)

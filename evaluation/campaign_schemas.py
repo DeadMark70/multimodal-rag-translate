@@ -14,7 +14,8 @@ CampaignMode = Literal[
     "naive", "advanced", "graph", "agentic", "router",
     "graph_raw_current", "graph_provenance_gated", "graph_locator_to_chunk",
     "graph_locator_claim_gate", "always_no_graph", "always_graph_locator",
-    "router_auto_graph", "graph_local_first", "graph_global_first", "graph_blended",
+    "router_auto_graph", "oracle_graph_router", "graph_local_first", "graph_global_first", "graph_blended",
+    "graph_path_pruned", "graph_planning_only",
 ]
 CampaignEvaluationPhase = Literal["execution", "evaluation"]
 

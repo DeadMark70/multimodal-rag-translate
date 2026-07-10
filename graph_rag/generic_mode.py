@@ -128,6 +128,7 @@ class GraphQueryHints:
     task_type_hint: Optional[TaskTypeHint] = None
     prefer_global: bool = False
     prefer_local: bool = False
+    path_pruned: bool = False
 
 
 @dataclass(slots=True)
@@ -330,6 +331,11 @@ class GenericGraphRouter:
             decision.token_budget = min(decision.token_budget, 780)
         elif hints.stage_hint == "exploration":
             decision.token_budget = max(decision.token_budget, 980)
+
+        if hints.path_pruned:
+            decision.hops = 1
+            decision.max_nodes = min(decision.max_nodes, 6)
+            decision.router_reason = f"{decision.router_reason or 'generic'}; path_pruned"
 
         return decision
 

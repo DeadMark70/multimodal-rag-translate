@@ -54,6 +54,18 @@ _SECRET_PATTERNS = [
     re.compile(r"api[_-]?key\s*=\s*\S+", re.IGNORECASE),
 ]
 
+_GRAPH_ABLATION_METRICS = (
+    "graph_node_hit_at_k",
+    "graph_edge_hit_at_k",
+    "graph_doc_hit_rate",
+    "graph_evidence_chunk_hit_rate",
+    "graph_to_chunk_success_rate",
+    "graph_context_noise_ratio",
+    "unsupported_graph_claim_rate",
+    "router_skip_graph_accuracy",
+    "router_use_graph_accuracy",
+)
+
 
 def _dump(value: BaseModel) -> dict[str, Any]:
     return value.model_dump(mode="json")
@@ -405,6 +417,7 @@ class EvaluationAnalyticsService:
         )
         condition_labels: dict[str, str] = {}
         family_conditions: dict[str, dict[str, int]] = {}
+        family_results: dict[str, list[Any]] = defaultdict(list)
         for result in results:
             condition_id = result.derived_metrics.get("condition_id")
             label = result.derived_metrics.get("condition_label")
@@ -417,6 +430,24 @@ class EvaluationAnalyticsService:
             family_conditions.setdefault(family, {})[str(condition_id or result.mode)] = (
                 family_conditions.setdefault(family, {}).get(str(condition_id or result.mode), 0) + 1
             )
+            family_results[family].append(result)
+        family_metrics = {
+            family: {
+                metric: _average(
+                    [
+                        value
+                        for item in items
+                        if isinstance(
+                            value := item.derived_metrics.get(metric),
+                            (int, float),
+                        )
+                    ]
+                )
+                for metric in _GRAPH_ABLATION_METRICS
+            }
+            for family, items in family_results.items()
+            if family.startswith("graph_")
+        }
         return AblationResponse(
             campaign_id=context.campaign_id,
             analysis_unit="execution",
@@ -428,6 +459,7 @@ class EvaluationAnalyticsService:
                 "condition_counts": dict(by_condition),
                 "condition_labels": condition_labels,
                 "conditions_by_ablation_family": family_conditions,
+                "graph_metrics_by_ablation_family": family_metrics,
             },
         )
 
@@ -645,9 +677,23 @@ class EvaluationAnalyticsService:
         trace_events_by_run = await self._observability_repository.list_trace_events_for_campaign(campaign_id)
         retrieval_chunks_by_run = await self._observability_repository.list_retrieval_chunks_for_campaign(campaign_id)
         claims_by_run = await self._observability_repository.list_claims_for_campaign(campaign_id)
-        graph_events_by_run = await self._observability_repository.list_graph_events_for_campaign(campaign_id)
-        graph_evidence_items_by_run = await self._observability_repository.list_graph_evidence_items_for_campaign(
-            campaign_id
+        list_graph_events = getattr(
+            self._observability_repository,
+            "list_graph_events_for_campaign",
+            None,
+        )
+        list_graph_evidence_items = getattr(
+            self._observability_repository,
+            "list_graph_evidence_items_for_campaign",
+            None,
+        )
+        graph_events_by_run = (
+            await list_graph_events(campaign_id) if list_graph_events is not None else {}
+        )
+        graph_evidence_items_by_run = (
+            await list_graph_evidence_items(campaign_id)
+            if list_graph_evidence_items is not None
+            else {}
         )
         runs: list[dict[str, Any]] = []
         trace_events: list[dict[str, Any]] = []
