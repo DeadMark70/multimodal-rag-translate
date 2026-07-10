@@ -383,7 +383,7 @@ async def test_run_graph_extraction_invokes_one_extraction_call_per_valid_chunk(
 
     assert mock_extract.await_count == 2
     assert [call.kwargs["chunk_index"] for call in mock_extract.await_args_list] == [0, 1]
-    mock_store.save.assert_called_once()
+    mock_store.save_snapshot.assert_called_once()
 
 
 @pytest.mark.asyncio

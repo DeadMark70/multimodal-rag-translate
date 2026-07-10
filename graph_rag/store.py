@@ -12,6 +12,7 @@ import logging
 import os
 import pickle
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
@@ -157,11 +158,12 @@ class GraphStore:
             user_id: User's ID.
         """
         self.user_id = user_id
-        self._storage_dir = (
+        self._root_storage_dir = (
             Path(storage_dir)
             if storage_dir is not None
             else upload_paths.get_rag_index_dir_path(self.user_id)
         )
+        self._storage_dir = self._current_snapshot_dir(self._root_storage_dir) or self._root_storage_dir
         self._storage_dir.mkdir(parents=True, exist_ok=True)
         self.graph: nx.DiGraph = nx.DiGraph()
         self.communities: List[Community] = []
@@ -201,6 +203,83 @@ class GraphStore:
             Path to graph.pkl file.
         """
         return self._storage_dir / "graph.pkl"
+
+    @staticmethod
+    def _current_snapshot_dir(root: Path) -> Path | None:
+        pointer_path = root / "current.json"
+        if not pointer_path.exists():
+            return None
+        try:
+            payload = json.loads(pointer_path.read_text(encoding="utf-8"))
+            version = payload.get("current_version")
+            candidate = root / "versions" / str(version)
+            return candidate if candidate.is_dir() else None
+        except (OSError, ValueError, TypeError):
+            return None
+
+    def load_current_pointer(self) -> Dict[str, Any]:
+        """Return the immutable snapshot pointer, or an empty mapping for legacy stores."""
+        path = self._root_storage_dir / "current.json"
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _next_snapshot_version(self) -> str:
+        versions_dir = self._root_storage_dir / "versions"
+        existing = [
+            int(item.name[1:])
+            for item in versions_dir.glob("v*")
+            if item.is_dir() and item.name[1:].isdigit()
+        ] if versions_dir.exists() else []
+        return f"v{(max(existing, default=0) + 1):03d}"
+
+    @staticmethod
+    def _hash_file(path: Path) -> str:
+        return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+
+    def save_snapshot(self) -> str:
+        """Write a complete immutable graph version before atomically swapping current."""
+        version = self._next_snapshot_version()
+        versions_dir = self._root_storage_dir / "versions"
+        versions_dir.mkdir(parents=True, exist_ok=True)
+        target = versions_dir / version
+        temp = versions_dir / f".{version}.tmp"
+        if temp.exists():
+            shutil.rmtree(temp)
+        temp.mkdir()
+        original_dir = self._storage_dir
+        try:
+            self._storage_dir = temp
+            self.save()
+            required = [temp / "graph.pkl", temp / "graph.meta.json"]
+            if any(not path.exists() for path in required):
+                raise RuntimeError("snapshot validation failed: graph files missing")
+            temp.rename(target)
+            hashes = {
+                path.name: self._hash_file(path)
+                for path in sorted(target.iterdir())
+                if path.is_file()
+            }
+            pointer = {
+                "current_version": version,
+                "created_at": datetime.now().isoformat(),
+                "schema_version": "graph-schema-v1",
+                "graph_hash": hashes["graph.pkl"],
+                "sidecar_hashes": hashes,
+            }
+            pointer_path = self._root_storage_dir / "current.json"
+            pointer_temp = pointer_path.with_suffix(".json.tmp")
+            pointer_temp.write_text(json.dumps(pointer, ensure_ascii=False, indent=2), encoding="utf-8")
+            pointer_temp.replace(pointer_path)
+            self._storage_dir = target
+            return version
+        except Exception:
+            if temp.exists():
+                shutil.rmtree(temp)
+            raise
+        finally:
+            if self._storage_dir == temp:
+                self._storage_dir = original_dir
     
     def _graph_exists(self) -> bool:
         """

@@ -155,7 +155,7 @@ async def run_graph_extraction(
             total_edges,
         )
         mark_node_vector_dirty(active_store)
-        active_store.save()
+        active_store.save_snapshot()
         if autosync:
             schedule_node_vector_autosync(
                 user_id=user_id,
