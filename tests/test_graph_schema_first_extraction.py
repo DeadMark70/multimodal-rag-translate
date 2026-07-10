@@ -345,3 +345,40 @@ async def test_schema_first_claim_persists_explicit_claim_identity() -> None:
     assert "scribble-based weakly supervised segmentation" in store.canonical_entities[
         entity_id
     ].identity_key
+
+
+@pytest.mark.asyncio
+async def test_same_label_claims_with_distinct_scopes_remain_distinct_identities() -> None:
+    extractor = EntityRelationExtractor()
+    text = "X is first for scope alpha. X is first for scope beta."
+    llm = _llm_with_payload(
+        {
+            "entities": [
+                {
+                    "id": "claim-alpha",
+                    "label": "X is first",
+                    "entity_type": "claim",
+                    "claim_type": "first_claim",
+                    "scope": "scope alpha",
+                    "confidence": 0.9,
+                    "evidence_quote": "X is first for scope alpha",
+                },
+                {
+                    "id": "claim-beta",
+                    "label": "X is first",
+                    "entity_type": "claim",
+                    "claim_type": "first_claim",
+                    "scope": "scope beta",
+                    "confidence": 0.9,
+                    "evidence_quote": "X is first for scope beta",
+                },
+            ],
+            "relations": [],
+        }
+    )
+
+    with patch("graph_rag.extractor.get_llm", return_value=llm):
+        result = await extractor.extract(text, "doc-1", 0)
+
+    assert len(result.entities) == 2
+    assert result.entities[0].claim_identity != result.entities[1].claim_identity

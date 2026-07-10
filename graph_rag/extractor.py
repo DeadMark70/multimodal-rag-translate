@@ -526,7 +526,12 @@ class EntityRelationExtractor:
                     source_doc=doc_id,
                 )
 
-            existing_canonical_id = canonical_ids_by_label.get(normalized_label)
+            entity_dedup_key = (
+                claim_identity.stable_key
+                if claim_identity is not None
+                else normalized_label
+            )
+            existing_canonical_id = canonical_ids_by_label.get(entity_dedup_key)
             if existing_canonical_id:
                 entity_aliases[item.id] = existing_canonical_id
                 continue
@@ -546,7 +551,7 @@ class EntityRelationExtractor:
             )
             entities.append(entity)
             canonical_entities[item.id] = entity
-            canonical_ids_by_label[normalized_label] = item.id
+            canonical_ids_by_label[entity_dedup_key] = item.id
             entity_aliases[item.id] = item.id
 
         relations: List[ExtractedRelation] = []
