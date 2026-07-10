@@ -60,11 +60,40 @@ def test_full_provenance_edge_can_enter_locator_bundle() -> None:
         relation_type="extends",
         summary="A extends B",
         anchor=anchor,
+        resolution_status="resolved",
     )
 
     bundle = merge_graph_evidence_bundle(hints=[], evidence_items=[item], token_budget=800)
 
     assert bundle.final_context_items[0].source_chunk_ids == ["chunk-1"]
+
+
+def test_unresolved_anchor_is_not_final_context() -> None:
+    anchor = EvidenceAnchor(
+        doc_id="doc-1",
+        chunk_id="chunk-1",
+        chunk_index=1,
+        quote="A extends B.",
+        quote_hash="q",
+        chunk_hash="c",
+        confidence=0.9,
+    )
+    item = GraphEvidenceItem.from_anchor(
+        item_id="edge:1",
+        graph_mode="local",
+        source="edge",
+        edge_ids=["edge:1"],
+        node_ids=["a", "b"],
+        relation_type="extends",
+        summary="A extends B",
+        anchor=anchor,
+    )
+
+    bundle = merge_graph_evidence_bundle(hints=[], evidence_items=[item], token_budget=800)
+
+    assert item.resolution_status == "unresolved"
+    assert item.usable_as_context is False
+    assert bundle.final_context_items == []
 
 
 def test_community_hint_never_becomes_final_context_even_with_high_confidence() -> None:

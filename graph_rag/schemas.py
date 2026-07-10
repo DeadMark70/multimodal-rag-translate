@@ -416,7 +416,7 @@ class GraphEvidenceItem(BaseModel):
             "fuzzy_resolved",
             "unresolved",
             "stale",
-        ] = "resolved",
+        ] = "unresolved",
         verification_status: Literal[
             "quote_match",
             "quote_mismatch",
