@@ -837,6 +837,24 @@ async def _get_graph_evidence_bundle(
         return GraphEvidenceBundle(query=question, route="none")
 
 
+async def get_graph_evidence_bundle(
+    *,
+    question: str,
+    user_id: str,
+    search_mode: str = "generic",
+    graph_execution_hints: Optional[Dict[str, Any]] = None,
+    chunk_lookup: Optional[ChunkLookup] = None,
+) -> GraphEvidenceBundle:
+    """Public adapter for callers that need the normal evidence-locator bundle."""
+    return await _get_graph_evidence_bundle(
+        question=question,
+        user_id=user_id,
+        search_mode=search_mode,
+        graph_execution_hints=graph_execution_hints,
+        chunk_lookup=chunk_lookup,
+    )
+
+
 def _render_graph_bundle_for_legacy_prompt(bundle: GraphEvidenceBundle) -> str:
     """Render only source-resolved bundle evidence for legacy prompt consumers."""
     rendered_items = [

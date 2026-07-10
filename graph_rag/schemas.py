@@ -434,6 +434,53 @@ class ClaimIdentity(BaseModel):
         return "::".join(part.strip().lower() for part in parts if part.strip())
 
 
+class GraphQualityIssue(BaseModel):
+    code: str
+    severity: Literal["info", "warning", "critical"]
+    message: str
+    recommended_action: str
+
+
+class GraphQualityResponse(BaseModel):
+    score: int = Field(ge=0, le=100)
+    num_nodes: int
+    num_edges: int
+    edge_with_provenance_ratio: float
+    generic_relation_ratio: float
+    duplicate_method_node_ratio: float
+    orphan_node_ratio: float
+    graph_to_chunk_success_rate: Optional[float] = None
+    table_coverage_ratio: Optional[float] = None
+    figure_coverage_ratio: Optional[float] = None
+    formula_coverage_ratio: Optional[float] = None
+    claim_scope_missing_count: int = 0
+    issues: List[GraphQualityIssue] = Field(default_factory=list)
+
+
+class GraphRuntimeQualityResponse(BaseModel):
+    campaign_id: Optional[str] = None
+    community_summary_used_as_evidence_count: int = 0
+    unsupported_graph_claim_rate: Optional[float] = None
+    graph_context_noise_ratio: Optional[float] = None
+    unresolved_anchor_count: int = 0
+    graph_to_chunk_success_rate: Optional[float] = None
+    issues: List[GraphQualityIssue] = Field(default_factory=list)
+
+
+class GraphDebugSearchRequest(BaseModel):
+    query: str = Field(min_length=1)
+    search_mode: str = "generic"
+
+
+class GraphDebugSearchResponse(BaseModel):
+    query: str
+    route: str
+    entity_links: List[Dict[str, object]] = Field(default_factory=list)
+    hints: List["GraphHint"] = Field(default_factory=list)
+    evidence_items: List["GraphEvidenceItem"] = Field(default_factory=list)
+    final_context_items: List["GraphEvidenceItem"] = Field(default_factory=list)
+
+
 GraphEvidenceMode = Literal[
     "raw_current",
     "provenance_gated",

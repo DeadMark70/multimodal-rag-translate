@@ -95,6 +95,10 @@
     - `POST /graph/node-vector/sync` starts a background sync job and persists progress state
     - `GET /graph/node-vector/sync/status` exposes `idle/running/completed/failed`, processed counts, and error/details for polling UIs
   - embedding provider calls in node-vector sync/search are guarded by a process-local per-user limiter (`GRAPH_NODE_VECTOR_EMBEDDING_RPM_LIMIT`, default `1000` RPM) with wait-queue behavior and retry/backoff on 429/transport errors
+- Graph quality and query diagnostics are protected, user-scoped graph APIs:
+  - `GET /graph/quality` reports deterministic store quality, including provenance coverage, generic relations, duplicate methods, orphan nodes, and unscoped claims.
+  - `GET /graph/runtime-quality?campaign_id=...` aggregates only persisted `evaluation_graph_events` and `evaluation_graph_evidence_items`; it does not infer runtime success from `GraphStore`.
+  - `POST /graph/debug/search` returns entity links, graph hints, candidate evidence, and only independently eligible final-context items. Graph hints and unresolved evidence are diagnostic output, not answer evidence.
 - Production markdown indexing is profile-aware:
   - default compatibility profile in `data_base/indexing_service.py` remains `recursive_baseline`
   - document upload / retry-index currently opt into `semantic_contextual`

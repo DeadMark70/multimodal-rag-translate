@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 # Local application
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
+from evaluation.db import CampaignRepository
 from graph_rag.maintenance import (
     list_graph_source_documents as _list_graph_source_documents,
     node_vector_sync_task as _node_vector_sync_task,
@@ -31,12 +32,18 @@ from graph_rag.maintenance import (
     retry_graph_document_task as _retry_graph_document_task,
 )
 from graph_rag.schemas import (
+    GraphDebugSearchRequest,
+    GraphDebugSearchResponse,
     GraphDocumentStatus,
     GraphDocumentStatusItem,
     GraphDocumentStatusListResponse,
     NodeVectorSyncStatusResponse,
     GraphStatusResponse,
+    GraphQualityResponse,
+    GraphRuntimeQualityResponse,
 )
+from graph_rag.debug import run_debug_search
+from graph_rag.quality import compute_campaign_runtime_quality, compute_graph_quality
 from graph_rag.store import GraphStore
 from pdfserviceMD.repository import get_document
 
@@ -119,6 +126,52 @@ async def _build_graph_document_rows(
 
 
 # ===== Endpoints =====
+
+
+@router.get(
+    "/quality",
+    response_model=GraphQualityResponse,
+    summary="取得圖譜品質指標",
+    description="回傳目前使用者圖譜的靜態品質與可處理問題。",
+)
+async def get_graph_quality(
+    user_id: str = Depends(get_current_user_id),
+) -> GraphQualityResponse:
+    """Return static quality metrics for the current user's graph store."""
+    return compute_graph_quality(GraphStore(user_id))
+
+
+@router.get(
+    "/runtime-quality",
+    response_model=GraphRuntimeQualityResponse,
+    summary="取得圖譜執行期品質指標",
+    description="從 evaluation observability 彙整指定 campaign 的 GraphRAG 執行期品質。",
+)
+async def get_graph_runtime_quality(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> GraphRuntimeQualityResponse:
+    """Return campaign runtime quality from persisted observability rows."""
+    await CampaignRepository().get(user_id=user_id, campaign_id=campaign_id)
+    return await compute_campaign_runtime_quality(campaign_id)
+
+
+@router.post(
+    "/debug/search",
+    response_model=GraphDebugSearchResponse,
+    summary="除錯 GraphRAG 查詢",
+    description="回傳實體連結、graph hints、候選證據與最終 context 資格。",
+)
+async def debug_graph_search(
+    request: GraphDebugSearchRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> GraphDebugSearchResponse:
+    """Run a user-scoped evidence-locator diagnostic without exposing unsafe context."""
+    return await run_debug_search(
+        user_id=user_id,
+        query=request.query,
+        search_mode=request.search_mode,
+    )
 
 
 @router.get(
