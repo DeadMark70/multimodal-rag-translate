@@ -382,3 +382,54 @@ async def test_same_label_claims_with_distinct_scopes_remain_distinct_identities
 
     assert len(result.entities) == 2
     assert result.entities[0].claim_identity != result.entities[1].claim_identity
+
+
+@pytest.mark.asyncio
+async def test_same_label_claim_relations_remain_bound_to_their_scope_identity() -> None:
+    upload_root = _workspace_upload_root("scoped_claim_relations")
+    extractor = EntityRelationExtractor()
+    text = (
+        "X is first for scope alpha. X is first for scope beta. "
+        "scope alpha applies. scope beta applies."
+    )
+    llm = _llm_with_payload(
+        {
+            "entities": [
+                {"id": "claim-alpha", "label": "X is first", "entity_type": "claim", "claim_type": "first_claim", "scope": "scope alpha", "confidence": 0.9, "evidence_quote": "X is first for scope alpha"},
+                {"id": "claim-beta", "label": "X is first", "entity_type": "claim", "claim_type": "first_claim", "scope": "scope beta", "confidence": 0.9, "evidence_quote": "X is first for scope beta"},
+                {"id": "scope-alpha", "label": "scope alpha", "entity_type": "claim_scope", "confidence": 0.9, "evidence_quote": "scope alpha applies"},
+                {"id": "scope-beta", "label": "scope beta", "entity_type": "claim_scope", "confidence": 0.9, "evidence_quote": "scope beta applies"},
+            ],
+            "relations": [
+                {"source_entity_id": "claim-alpha", "target_entity_id": "scope-alpha", "relation": "claim_has_scope", "confidence": 0.9, "evidence_quote": "X is first for scope alpha"},
+                {"source_entity_id": "claim-beta", "target_entity_id": "scope-beta", "relation": "claim_has_scope", "confidence": 0.9, "evidence_quote": "X is first for scope beta"},
+            ],
+        }
+    )
+
+    with patch("graph_rag.extractor.get_llm", return_value=llm):
+        result = await extractor.extract(text, "doc-1", 0)
+    with patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)):
+        store = GraphStore("user-1")
+        await add_extraction_to_graph(store, result)
+
+    identities_by_node = {
+        node_id: entity.identity_key
+        for node_id, entity in store.canonical_entities.items()
+        if entity.entity_type == EntityType.CLAIM
+    }
+    claim_target_pairs = {
+        (identity, store.graph.nodes[target]["label"])
+        for source, target in store.graph.edges()
+        if (identity := identities_by_node.get(source)) is not None
+    }
+    assert claim_target_pairs == {
+        (
+            "first_claim::x is first::scope alpha::doc-1",
+            "scope alpha",
+        ),
+        (
+            "first_claim::x is first::scope beta::doc-1",
+            "scope beta",
+        ),
+    }

@@ -355,6 +355,7 @@ class ExtractedEntity(BaseModel):
     confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="抽取信心")
     anchors: List["EvidenceAnchor"] = Field(default_factory=list, description="來源錨點")
     claim_identity: Optional["ClaimIdentity"] = None
+    extraction_id: Optional[str] = None
 
 
 class ExtractedRelation(BaseModel):
@@ -371,6 +372,8 @@ class ExtractedRelation(BaseModel):
     description: Optional[str] = Field(default=None, description="關係描述")
     confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="抽取信心")
     anchors: List["EvidenceAnchor"] = Field(default_factory=list, description="來源錨點")
+    source_entity_ref: Optional[str] = None
+    target_entity_ref: Optional[str] = None
 
 
 class ExtractionResult(BaseModel):

@@ -548,6 +548,7 @@ class EntityRelationExtractor:
                 confidence=item.confidence,
                 anchors=anchors,
                 claim_identity=claim_identity,
+                extraction_id=item.id,
             )
             entities.append(entity)
             canonical_entities[item.id] = entity
@@ -620,6 +621,8 @@ class EntityRelationExtractor:
                     description=item.description,
                     confidence=item.confidence,
                     anchors=anchors,
+                    source_entity_ref=source_id,
+                    target_entity_ref=target_id,
                 )
                 relations.append(relation)
             except ValidationError as e:
@@ -850,6 +853,7 @@ async def add_extraction_to_graph(
     
     # Map from entity label to node ID
     label_to_node_id = {}
+    entity_ref_to_node_id = {}
 
     for candidate in result.raw_candidates:
         store.record_raw_candidate(candidate)
@@ -874,12 +878,22 @@ async def add_extraction_to_graph(
                 pending_resolution=True,
             )
         label_to_node_id[entity.label.lower()] = node_id
+        if entity.extraction_id:
+            entity_ref_to_node_id[entity.extraction_id] = node_id
         nodes_added += 1
     
     # Add relations as edges
     for relation in result.relations:
-        source_id = label_to_node_id.get(relation.entity1.lower())
-        target_id = label_to_node_id.get(relation.entity2.lower())
+        source_id = (
+            entity_ref_to_node_id.get(relation.source_entity_ref)
+            if relation.source_entity_ref
+            else None
+        ) or label_to_node_id.get(relation.entity1.lower())
+        target_id = (
+            entity_ref_to_node_id.get(relation.target_entity_ref)
+            if relation.target_entity_ref
+            else None
+        ) or label_to_node_id.get(relation.entity2.lower())
         
         if source_id and target_id:
             store.add_edge_from_extraction(
