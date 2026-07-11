@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
+import secrets
 from typing import Any, Optional
 from uuid import uuid4
 
 from graph_rag.schemas import (
     GraphRebuildDocument,
+    GraphRebuildLease,
     GraphRebuildManifest,
     GraphRebuildStatusResponse,
 )
@@ -20,12 +23,18 @@ from graph_rag.store import GraphStore
 class GraphRebuildJobStore:
     """Persist one user's full-rebuild manifests under a constrained root."""
 
-    def __init__(self, user_id: str, rebuild_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        user_id: str,
+        rebuild_root: Path | None = None,
+        lease_ttl: timedelta = timedelta(minutes=2),
+    ) -> None:
         self.user_id = user_id
         if rebuild_root is None:
             rebuild_root = GraphStore(user_id).storage_dir / "rebuild_jobs"
         self.root = rebuild_root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self.lease_ttl = lease_ttl
 
     def create_job(self, sources: list[dict[str, str | None]]) -> GraphRebuildManifest:
         """Freeze eligible sources into a newly created pending job."""
@@ -114,6 +123,69 @@ class GraphRebuildJobStore:
             last_error=manifest.last_error,
         )
 
+    def acquire_lease(self, job_id: str) -> Optional[str]:
+        """Atomically claim the one runner slot for a persistent job."""
+        lock_path = self._lock_path(job_id)
+        owner_token = secrets.token_urlsafe(32)
+        try:
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            return None
+
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(owner_token)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        manifest = self.load(job_id)
+        now = self._now()
+        manifest.lease = GraphRebuildLease(
+            owner_token=owner_token,
+            acquired_at=now,
+            heartbeat_at=now,
+        )
+        self.save(manifest)
+        return owner_token
+
+    def heartbeat(self, job_id: str, owner_token: str) -> bool:
+        """Refresh a lease heartbeat only when the caller still owns it."""
+        manifest = self.load(job_id)
+        if not self._has_owner(manifest, owner_token):
+            return False
+        manifest.lease.heartbeat_at = self._now()
+        self.save(manifest)
+        return True
+
+    def release_lease(self, job_id: str, owner_token: str) -> bool:
+        """Release a runner slot without allowing a non-owner to unlock it."""
+        manifest = self.load(job_id)
+        if not self._has_owner(manifest, owner_token):
+            return False
+        lock_path = self._lock_path(job_id)
+        if lock_path.exists() and lock_path.read_text(encoding="utf-8") != owner_token:
+            return False
+        if lock_path.exists():
+            lock_path.unlink()
+        manifest.lease = None
+        self.save(manifest)
+        return True
+
+    def reconcile_status(self, manifest: Optional[GraphRebuildManifest]) -> Optional[GraphRebuildManifest]:
+        """Turn a stale running job into manual-resume state without doing work."""
+        if manifest is None or manifest.state != "running" or manifest.lease is None:
+            return manifest
+        if manifest.lease.heartbeat_at + self.lease_ttl >= self._now():
+            return manifest
+
+        lock_path = self._lock_path(manifest.job_id)
+        if lock_path.exists() and lock_path.read_text(encoding="utf-8") == manifest.lease.owner_token:
+            lock_path.unlink()
+        manifest.state = "interrupted"
+        manifest.lease = None
+        manifest.current_doc_id = None
+        self.save(manifest)
+        return manifest
+
     def staging_dir(self, job_id: str) -> Path:
         """Return the user-contained staging GraphStore directory for a job."""
         path = self._job_dir(job_id) / "staging_graph"
@@ -130,12 +202,21 @@ class GraphRebuildJobStore:
     def _manifest_path(self, job_id: str) -> Path:
         return self._job_dir(job_id) / "manifest.json"
 
+    def _lock_path(self, job_id: str) -> Path:
+        return self._job_dir(job_id) / "runner.lock"
+
     def _current_path(self) -> Path:
         return self.root / "current.json"
 
     def _assert_owned_path(self, path: Path) -> None:
         if not path.resolve().is_relative_to(self.root):
             raise ValueError("Graph rebuild path escapes the user's rebuild root")
+
+    @staticmethod
+    def _has_owner(manifest: GraphRebuildManifest, owner_token: str) -> bool:
+        return manifest.lease is not None and secrets.compare_digest(
+            manifest.lease.owner_token, owner_token
+        )
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any]:
