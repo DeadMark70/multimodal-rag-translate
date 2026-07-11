@@ -74,6 +74,18 @@
   - FAISS load/save/create/delete, BM25 construction, synchronous retriever `invoke(...)`, and short-chunk expansion are offloaded from request/background coroutines
   - per-user async locks serialize same-user FAISS mutations so ask/upload/retry-index/delete do not race the same index directory
 - Upload, retry-index, visual-summary indexing, and document-vector deletion now share that async vector-store seam instead of calling synchronous FAISS work directly from route/background coroutines.
+- GraphRAG now has two contract surfaces:
+  - `graph_raw_current` remains the legacy rollback and ablation baseline.
+  - Evaluation additionally exposes `graph_locator_to_chunk` (source-chunk expansion) and `router_auto_graph` (intent-gated source locator) without changing the existing `graph` mode.
+  - `router_auto_graph` classifies each question from explicit execution hints: relationship/claim-scope queries may use graph retrieval, exact table/figure/formula/numeric questions use it only as a locator when both the asset feature is enabled and a request-scoped `graph_asset_probe_result` is true, and non-graph questions leave vector retrieval unchanged. Explicit manual override is locator-only.
+  - Any auto, locator, or graph-to-chunk flag combination source-expands or skips; it never falls back to a raw graph prompt. The existing `graph` evaluation mode is a `raw_current` compatibility alias, while `graph_raw_current` is the explicit ablation name; both require no structured graph flag to be enabled. Planning decisions are recorded as gate events but never bundle, merge, or prompt graph evidence.
+  - Locator-only decisions never inject raw or inferred graph text into the answer prompt. With `graph_to_chunk_enabled`, only resolved source chunks can be merged; graph-located chunks are filtered to caller-supplied `doc_ids` before merging.
+  - Structured graph retrieval reuses evaluation graph-event recording. Events retain the mode's explicit feature-flag/evidence-mode snapshot, route and gate reason, measured graph latency, and candidate/resolved/scope-approved/scored/packed item IDs in the route reason. `packed_in_context` is set only for IDs present in the final merged documents; community hints are not final evidence.
+  - the evidence-locator path treats graph summaries, community summaries, and inferred relations as retrieval hints only; final answer evidence must resolve back to source chunks, tables, figures, formulas, captions, or full provenance anchors.
+  - Schema-first extraction uses the versioned `one_pass_extraction_schema_v1` prompt. Only the V1 allowlisted node and edge types with source quotes verified against the extraction chunk receive provenance anchors; unknown schema values, invalid entity references, quote mismatches, and structured-extraction failures are persisted in `graph.raw_candidates.json` for review and never become graph evidence. It does not fall back to an unverified legacy graph write.
+  - Canonical entity aliases persist in `graph.aliases.json` with type and document indexes. Similarity-based automatic merging is limited to Paper, Dataset, Metric, and Method within one type; models, architecture components, and training settings require scoped review, while claims, results, tables, and formulas are never auto-merged.
+  - `data_base.RAG_QA_service._get_graph_context(...)` preserves its legacy return contracts: a context string by default, `(context, evidence)` with `return_evidence=True`, and `(context, evidence, details)` when `return_details=True`. The default remains `graph_raw_current`; enabling `graph_evidence_locator_enabled` uses `_get_graph_evidence_bundle(...)`, resolves eligible anchors through a lazy vector-document lookup, and renders only verified source quotes for the legacy prompt.
+  - Enabling `graph_to_chunk_enabled` bypasses graph-summary prompt injection. It reuses one lazy vector-document lookup to build the structured bundle, re-resolves eligible source chunks, applies bounded graph boosts, and interleaves the resulting source documents with vector retrieval under a 35% graph-only cap. Packing identity is normalized as `(doc_id, chunk_id)`, equal scores break by evidence item/document identity, and for a ratio below one graph-only additions are capped at `floor(r * vector_count / (1 - r))`; overlaps do not consume that allowance. Lookup or expansion failures retain the original vector documents.
 - GraphRAG local search now supports vector-first node seed retrieval with safe fallback:
   - local node-vector sidecars live under `uploads/<user>/rag_index/` (`node_index.faiss/.pkl`, `node_index_map.json`, `node_index.meta.json`)
   - extraction and graph maintenance paths mark node-vector state dirty and trigger autosync (`GRAPH_NODE_VECTOR_AUTOSYNC`, default enabled)
@@ -83,6 +95,18 @@
     - `POST /graph/node-vector/sync` starts a background sync job and persists progress state
     - `GET /graph/node-vector/sync/status` exposes `idle/running/completed/failed`, processed counts, and error/details for polling UIs
   - embedding provider calls in node-vector sync/search are guarded by a process-local per-user limiter (`GRAPH_NODE_VECTOR_EMBEDDING_RPM_LIMIT`, default `1000` RPM) with wait-queue behavior and retry/backoff on 429/transport errors
+- Graph quality and query diagnostics are protected, user-scoped graph APIs:
+  - `GET /graph/quality` reports deterministic store quality, including provenance coverage, generic relations, duplicate methods, orphan nodes, and unscoped claims.
+  - `GET /graph/runtime-quality?campaign_id=...` aggregates only persisted `evaluation_graph_events` and `evaluation_graph_evidence_items`; it does not infer runtime success from `GraphStore`.
+  - `POST /graph/debug/search` returns entity links, graph hints, candidate evidence, and only independently eligible final-context items. Graph hints and unresolved evidence are diagnostic output, not answer evidence.
+- Graph asset links persist in `graph.asset_links.json` and are locator metadata, not final answer text:
+  - explicit Markdown tables, display formulas, and captions are parsed with their page marker, source text, and hash after Markdown indexing succeeds;
+  - visual assets are registered only after their summaries have been successfully indexed, with matching `asset_id` and `chunk_id` metadata for later source resolution;
+  - exact table/figure/formula questions probe only the parsed assets belonging to the request's candidate documents. Feature flags and caller-provided hints alone cannot claim asset availability;
+  - extraction adds an asset anchor only when its evidence quote matches registered asset source text. The asset still must resolve to a source chunk or asset before it can support final context.
+- Graph evaluation modes carry an explicit `ablation_family`: `graph_evidence`, `graph_usage_policy`, or `graph_query_strategy`. Campaign analytics report each family separately rather than treating routing policy as evidence-mechanism quality.
+  - `oracle_graph_router` accepts a per-question `graph_oracle_decisions` map in the campaign condition flags; it is an upper-bound intervention, not a production routing policy.
+  - The ablation response includes the graph retrieval/evidence/router metric keys per family. Metrics without the required gold annotation remain `null` rather than being inferred from an unrelated score.
 - Production markdown indexing is profile-aware:
   - default compatibility profile in `data_base/indexing_service.py` remains `recursive_baseline`
   - document upload / retry-index currently opt into `semantic_contextual`
@@ -193,7 +217,10 @@
   - `evaluation_routing_decisions`
   - `evaluation_claims`
   - `evaluation_human_ratings`
+  - `evaluation_graph_events`
+  - `evaluation_graph_evidence_items`
 - Each table is keyed by `run_id` and `campaign_id` so research APIs can assemble run detail without inflating `campaign_results`.
+- Table creation and additive column repair for these observability rows live in `evaluation/db.py`; repository read/write methods stay in `evaluation/observability_storage.py`.
 - Current detail payload shapes:
   - trace events: stage span/event rows with `event_schema_version`, `sequence`, `stage_type`, `stage_name`, `status`, `payload`, `error`
   - LLM calls: provider/model/tokens/cost plus `prompt_hash`, `prompt_preview`, `response_hash`
@@ -203,6 +230,8 @@
   - routing: retrospective routing decision rows
   - claims: support status, evidence list, unsupported reason, repair metadata
   - human ratings: rubric scores plus blinded-review flags
+  - graph events: route, evidence mode, feature-flag snapshot, graph schema/prompt snapshots, matched entities/communities, and graph retrieval latency/token summaries
+  - graph evidence items: per-evidence lifecycle rows capturing node/edge ids, provenance status, locator usage, and context-packing state
 - Recorder writes are best-effort by default. `EvaluationRunRecorder(strict=False)` logs failures and does not fail the campaign on observability write errors.
 
 ### Research And Analytics API
@@ -298,5 +327,6 @@
   - `payload.full_prompt` is removed unless `include_full_prompts=true`
   - answer, ground truth, and final-answer hash are removed when `include_answers=false`
   - retrieval excerpts and result context/source lists are removed when `include_retrieved_excerpts=false`
+  - each `retrieval_summary[]` row now also carries `graph_events`, `graph_event_count`, `graph_evidence_items`, and `graph_evidence_item_count` when GraphRAG observability rows exist for that run
   - `question_snapshot` is always partially redacted on export by removing `ground_truth`, `ground_truth_short`, `source_docs`, `atomic_facts`, and `expected_evidence`
 - Sanitized errors are stored and exported instead of raw provider dumps. Multiline stack traces and obvious secrets are redacted.

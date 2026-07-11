@@ -28,12 +28,16 @@ LLMPurpose = Literal[
     "evaluator", "planner", "synthesizer", "summary",
     "graph_extraction", "community_summary"  # GraphRAG purposes
 ]
+GraphRAGPurpose = Literal["graph_extraction", "community_summary"]
+ExtractionProfile = Literal["standard", "high_precision"]
+
+_GRAPH_RAG_MODEL = "gemini-3.1-flash-lite"
 
 # Model mapping - only translation uses different model
 _MODEL_BY_PURPOSE: dict[str, str] = {
     "translation": "gemini-2.5-flash-lite",
-    "graph_extraction": "gemini-2.5-flash-lite",   # Thinking-enabled extraction for GraphRAG
-    "community_summary": "gemini-2.5-flash-lite",   # Thinking-enabled summarization for GraphRAG
+    "graph_extraction": _GRAPH_RAG_MODEL,
+    "community_summary": _GRAPH_RAG_MODEL,
 }
 
 # Default model for all other purposes
@@ -45,9 +49,19 @@ _runtime_llm_overrides: ContextVar[dict[str, Any]] = ContextVar(
     "runtime_llm_overrides",
     default={},
 )
-_GRAPH_RAG_THINKING_BUDGETS: dict[Literal["graph_extraction", "community_summary"], int] = {
+_GRAPH_RAG_THINKING_BUDGETS: dict[GraphRAGPurpose, int] = {
     "graph_extraction": 2048,
     "community_summary": 1024,
+}
+_GRAPH_RAG_THINKING_LEVELS: dict[GraphRAGPurpose, dict[ExtractionProfile, str]] = {
+    "graph_extraction": {
+        "standard": "medium",
+        "high_precision": "high",
+    },
+    "community_summary": {
+        "standard": "low",
+        "high_precision": "low",
+    },
 }
 
 def set_session_model_override(model_name: Optional[str]) -> None:
@@ -93,17 +107,27 @@ def _resolve_model_name(purpose: LLMPurpose, model_name: Optional[str] = None) -
     return _MODEL_BY_PURPOSE.get(purpose, _DEFAULT_MODEL)
 
 
-def get_graph_rag_runtime_overrides(
-    purpose: Literal["graph_extraction", "community_summary"],
+def get_graph_rag_model_name(
+    purpose: GraphRAGPurpose,
     *,
     model_name: Optional[str] = None,
+) -> str:
+    """Return the effective GraphRAG model name for persisted run metadata."""
+    return _resolve_model_name(purpose, model_name=model_name)
+
+
+def get_graph_rag_runtime_overrides(
+    purpose: GraphRAGPurpose,
+    *,
+    model_name: Optional[str] = None,
+    extraction_profile: ExtractionProfile = "standard",
 ) -> dict[str, Any]:
     """Return model-family-aware thinking overrides for GraphRAG calls."""
     model = _resolve_model_name(purpose, model_name=model_name)
     overrides: dict[str, Any] = {"include_thoughts": False}
 
     if model.startswith("gemini-3"):
-        overrides["thinking_level"] = "high"
+        overrides["thinking_level"] = _GRAPH_RAG_THINKING_LEVELS[purpose][extraction_profile]
     else:
         overrides["thinking_budget"] = _GRAPH_RAG_THINKING_BUDGETS[purpose]
 
@@ -112,12 +136,19 @@ def get_graph_rag_runtime_overrides(
 
 @contextmanager
 def graph_rag_llm_runtime_override(
-    purpose: Literal["graph_extraction", "community_summary"],
+    purpose: GraphRAGPurpose,
     *,
     model_name: Optional[str] = None,
+    extraction_profile: ExtractionProfile = "standard",
 ):
     """Apply the correct thinking config for the current GraphRAG model family."""
-    with llm_runtime_override(**get_graph_rag_runtime_overrides(purpose, model_name=model_name)):
+    with llm_runtime_override(
+        **get_graph_rag_runtime_overrides(
+            purpose,
+            model_name=model_name,
+            extraction_profile=extraction_profile,
+        )
+    ):
         yield
 
 # Configuration for each purpose

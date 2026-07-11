@@ -54,6 +54,9 @@ def test_graph_documents_endpoint_returns_persisted_and_unattempted_rows() -> No
         def get_document_status(self, doc_id: str) -> GraphDocumentStatus | None:
             return self.document_statuses.get(doc_id)
 
+        def get_latest_extraction_manifest(self, _doc_id: str) -> None:
+            return None
+
         def list_eligible_document_ids(self) -> list[str]:
             return ["doc-1", "doc-2"]
 
@@ -391,6 +394,28 @@ async def test_retry_graph_document_replaces_only_target_document_contribution()
     assert "Keep Entity" in labels
     assert reloaded.get_document_status("doc-1") is not None
     assert reloaded.get_document_status("doc-1").status == "indexed"
+
+
+@pytest.mark.asyncio
+async def test_full_rebuild_forwards_standard_extraction_profile() -> None:
+    upload_root = _workspace_upload_root("graph_rebuild_standard_profile")
+    artifact_dir = upload_root / TEST_USER_ID / "doc-1"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "extracted.md").write_text("demo", encoding="utf-8")
+
+    with (
+        patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)),
+        patch(
+            "graph_rag.maintenance.list_graph_source_documents",
+            new=AsyncMock(return_value=[{"doc_id": "doc-1", "original_path": str(artifact_dir / "demo.pdf")}]),
+        ),
+        patch("graph_rag.maintenance.load_ocr_artifacts", new=Mock(return_value=("demo", []))),
+        patch("graph_rag.maintenance.run_graph_extraction", new=AsyncMock()) as mock_extract,
+        patch("graph_rag.maintenance.optimize_existing_graph", new=AsyncMock(return_value=(0, 0))),
+    ):
+        await rebuild_full_graph_task(TEST_USER_ID)
+
+    assert mock_extract.await_args.kwargs["extraction_profile"] == "standard"
 
 
 @pytest.mark.asyncio

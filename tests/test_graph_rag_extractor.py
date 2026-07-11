@@ -9,8 +9,15 @@ from graph_rag.extractor import (
     EntityRelationExtractor,
     _StructuredExtractionPayload,
     _parse_json_from_response,
+    extract_and_add_to_graph,
 )
-from graph_rag.schemas import EntityType, ExtractedEntity, ExtractedRelation
+from graph_rag.schemas import (
+    EntityType,
+    ExtractedEntity,
+    ExtractedRelation,
+    ExtractionResult,
+    RawGraphCandidate,
+)
 from graph_rag.service import run_graph_extraction
 from graph_rag.store import GraphStore
 
@@ -39,6 +46,30 @@ def _make_llm_with_structured_payload(
 
 
 @pytest.mark.asyncio
+async def test_structured_extraction_failure_raises_before_graph_mutation() -> None:
+    failed_result = ExtractionResult(
+        doc_id="doc-1",
+        raw_candidates=[
+            RawGraphCandidate(
+                candidate_id="candidate-1",
+                candidate_type="structured_extraction_failed",
+                payload={"error": "provider unavailable"},
+                source_doc_id="doc-1",
+                source_chunk_index=0,
+                confidence=0.0,
+            )
+        ],
+    )
+    store = Mock()
+
+    with patch("graph_rag.extractor.extract_from_chunk", new=AsyncMock(return_value=failed_result)):
+        with pytest.raises(RuntimeError, match="provider unavailable"):
+            await extract_and_add_to_graph("text", "doc-1", store)
+
+    store.record_raw_candidate.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_structured_one_pass_returns_entities_and_relations() -> None:
     extractor = EntityRelationExtractor()
     llm, bound_llm = _make_llm_with_structured_payload(
@@ -53,7 +84,7 @@ async def test_structured_one_pass_returns_entities_and_relations() -> None:
                 {
                     "id": "e2",
                     "label": "Attention",
-                    "entity_type": "concept",
+                    "entity_type": "architecture_component",
                     "description": "A mechanism",
                 },
             ],
@@ -61,7 +92,7 @@ async def test_structured_one_pass_returns_entities_and_relations() -> None:
                 {
                     "source_entity_id": "e1",
                     "target_entity_id": "e2",
-                    "relation": "uses",
+                    "relation": "method_uses_component",
                     "description": "Transformer uses attention",
                 }
             ],
@@ -79,7 +110,8 @@ async def test_structured_one_pass_returns_entities_and_relations() -> None:
     assert result.relations[0].entity1 == "Transformer"
     assert result.relations[0].entity1_type == EntityType.METHOD
     assert result.relations[0].entity2 == "Attention"
-    assert result.relations[0].entity2_type == EntityType.CONCEPT
+    assert result.relations[0].entity2_type == EntityType.ARCHITECTURE_COMPONENT
+    assert result.relations[0].relation == "method_uses_component"
 
 
 @pytest.mark.asyncio
@@ -154,14 +186,14 @@ async def test_structured_one_pass_deduplicates_labels_and_keeps_valid_relations
                 {
                     "id": "e3",
                     "label": "Machine Translation",
-                    "entity_type": "concept",
+                    "entity_type": "dataset",
                 },
             ],
             "relations": [
                 {
                     "source_entity_id": "e2",
                     "target_entity_id": "e3",
-                    "relation": "applies_to",
+                    "relation": "method_evaluated_on_dataset",
                     "description": "duplicate entity id should alias to the kept entity",
                 }
             ],
@@ -181,7 +213,7 @@ async def test_structured_one_pass_deduplicates_labels_and_keeps_valid_relations
 
 
 @pytest.mark.asyncio
-async def test_structured_one_pass_falls_back_to_legacy_two_pass() -> None:
+async def test_structured_one_pass_buffers_failure_without_legacy_two_pass_write() -> None:
     extractor = EntityRelationExtractor()
     llm = Mock()
     llm.bind = Mock(side_effect=RuntimeError("schema init failed"))
@@ -218,10 +250,11 @@ async def test_structured_one_pass_falls_back_to_legacy_two_pass() -> None:
     ):
         result = await extractor.extract("x" * 120, "doc-1")
 
-    mock_entities.assert_awaited_once()
-    mock_relations.assert_awaited_once_with("x" * 120, legacy_entities)
-    assert result.entities == legacy_entities
-    assert result.relations == legacy_relations
+    mock_entities.assert_not_awaited()
+    mock_relations.assert_not_awaited()
+    assert result.entities == []
+    assert result.relations == []
+    assert result.raw_candidates[0].candidate_type == "structured_extraction_failed"
 
 
 @pytest.mark.asyncio
@@ -230,15 +263,15 @@ async def test_structured_one_pass_enforces_max_entities_per_chunk() -> None:
     llm, _ = _make_llm_with_structured_payload(
         {
             "entities": [
-                {"id": "e1", "label": "Entity 1", "entity_type": "concept"},
-                {"id": "e2", "label": "Entity 2", "entity_type": "concept"},
-                {"id": "e3", "label": "Entity 3", "entity_type": "concept"},
+                {"id": "e1", "label": "Entity 1", "entity_type": "task"},
+                {"id": "e2", "label": "Entity 2", "entity_type": "task"},
+                {"id": "e3", "label": "Entity 3", "entity_type": "task"},
             ],
             "relations": [
                 {
                     "source_entity_id": "e3",
                     "target_entity_id": "e1",
-                    "relation": "cites",
+                    "relation": "method_evaluated_on_dataset",
                 }
             ],
         }
@@ -281,7 +314,7 @@ async def test_structured_one_pass_accepts_json_from_list_content_blocks() -> No
     extractor = EntityRelationExtractor()
     llm, _ = _make_llm_with_structured_payload(
         {
-            "entities": [{"id": "e1", "label": "raw only", "entity_type": "concept"}],
+            "entities": [{"id": "e1", "label": "raw only", "entity_type": "method"}],
             "relations": [],
         },
         content_as_list=True,
@@ -295,7 +328,7 @@ async def test_structured_one_pass_accepts_json_from_list_content_blocks() -> No
 
 
 @pytest.mark.asyncio
-async def test_structured_one_pass_falls_back_on_invalid_json_response() -> None:
+async def test_structured_one_pass_buffers_invalid_json_response() -> None:
     extractor = EntityRelationExtractor()
     llm, _ = _make_llm_with_structured_payload('{"entities": [', content_as_list=True)
     legacy_entities = [
@@ -309,9 +342,10 @@ async def test_structured_one_pass_falls_back_on_invalid_json_response() -> None
     ):
         result = await extractor.extract("x" * 120, "doc-1")
 
-    mock_entities.assert_awaited_once()
-    mock_relations.assert_awaited_once_with("x" * 120, legacy_entities)
-    assert [entity.label for entity in result.entities] == ["Fallback Entity"]
+    mock_entities.assert_not_awaited()
+    mock_relations.assert_not_awaited()
+    assert result.entities == []
+    assert result.raw_candidates[0].candidate_type == "structured_extraction_failed"
 
 
 @pytest.mark.asyncio
@@ -380,7 +414,28 @@ async def test_run_graph_extraction_invokes_one_extraction_call_per_valid_chunk(
 
     assert mock_extract.await_count == 2
     assert [call.kwargs["chunk_index"] for call in mock_extract.await_args_list] == [0, 1]
-    mock_store.save.assert_called_once()
+    mock_store.save_snapshot.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_run_graph_extraction_forwards_high_precision_profile_to_every_chunk() -> None:
+    mock_store = Mock()
+
+    with (
+        patch("graph_rag.service.GraphStore", return_value=mock_store),
+        patch(
+            "graph_rag.service.extract_and_add_to_graph",
+            new=AsyncMock(return_value=(1, 0)),
+        ) as mock_extract,
+    ):
+        await run_graph_extraction(
+            user_id="user-1",
+            doc_id="doc-1",
+            markdown_text="A" * 9000,
+            extraction_profile="high_precision",
+        )
+
+    assert mock_extract.await_args.kwargs["extraction_profile"] == "high_precision"
 
 
 @pytest.mark.asyncio
@@ -420,6 +475,8 @@ async def test_run_graph_extraction_marks_partial_when_some_chunks_fail() -> Non
         )
 
     assert result.status == "partial"
+    recorded_manifest = mock_store.record_extraction_manifest.call_args.args[0]
+    assert recorded_manifest.validated is False
     saved_status = mock_store.upsert_document_status.call_args.args[0]
     assert saved_status.status == "partial"
     assert "quota exceeded" in (saved_status.last_error or "")

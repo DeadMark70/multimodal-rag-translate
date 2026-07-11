@@ -9,6 +9,8 @@ Uses Gemini Flash for fast, cost-effective extraction.
 import json
 import logging
 import re
+import hashlib
+from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence, Tuple
 
 # Third-party
@@ -16,14 +18,20 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 # Local application
-from core.llm_factory import get_llm_usage_metrics, graph_rag_llm_runtime_override
+from core.llm_factory import ExtractionProfile, get_llm_usage_metrics, graph_rag_llm_runtime_override
 from core.providers import get_llm
 from core.prompt_loader import format_graph_rag_prompt
 from graph_rag.schemas import (
     EntityType,
     ExtractedEntity,
     ExtractedRelation,
+    EvidenceAnchor,
     ExtractionResult,
+    GraphAssetLink,
+    ClaimIdentity,
+    GRAPH_EDGE_TYPES_V1,
+    GRAPH_NODE_TYPES_V1,
+    RawGraphCandidate,
 )
 from graph_rag.llm_response import response_content_to_text
 from graph_rag.store import GraphStore
@@ -44,6 +52,13 @@ class _StructuredEntity(BaseModel):
     label: str = Field(..., description="Entity label from the text")
     entity_type: str = Field(default="concept", description="Academic entity type")
     description: str | None = Field(default=None, description="Short entity description")
+    canonical_name: str | None = Field(default=None, description="Canonical entity name")
+    aliases: List[str] = Field(default_factory=list, description="Known entity aliases")
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    evidence_quote: str | None = Field(default=None, description="Exact source quote")
+    claim_type: str | None = Field(default=None, description="Claim type for claim nodes")
+    scope: str | None = Field(default=None, description="Claim scope")
+    condition: str | None = Field(default=None, description="Claim condition")
 
 
 class _StructuredRelation(BaseModel):
@@ -55,6 +70,8 @@ class _StructuredRelation(BaseModel):
     target_entity_id: str = Field(..., description="Target entity id")
     relation: str = Field(..., description="Relation type between the entities")
     description: str | None = Field(default=None, description="Short relation description")
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    evidence_quote: str | None = Field(default=None, description="Exact source quote")
 
 
 class _StructuredExtractionPayload(BaseModel):
@@ -64,6 +81,158 @@ class _StructuredExtractionPayload(BaseModel):
 
     entities: List[_StructuredEntity] = Field(default_factory=list)
     relations: List[_StructuredRelation] = Field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class RelationSchemaDecision:
+    allowed: bool
+    normalized_relation: str
+
+
+@dataclass(frozen=True, slots=True)
+class NodeSchemaDecision:
+    allowed: bool
+    entity_type: EntityType | None
+
+
+_NODE_TYPE_ALIASES = {
+    "architecture": "architecture_component",
+    "component": "architecture_component",
+    "claimscope": "claim_scope",
+    "training setting": "training_setting",
+    "benchmark setting": "benchmark_setting",
+    "prompt type": "prompt_type",
+    "evidence span": "evidence_span",
+}
+
+
+def _normalize_schema_value(value: str) -> str:
+    return re.sub(r"_+", "_", value.strip().lower().replace("-", " ").replace(" ", "_"))
+
+
+def classify_relation_for_answer_graph(relation: str) -> RelationSchemaDecision:
+    """Allow only declared relation values to enter the answer graph."""
+    normalized = _normalize_schema_value(relation)
+    if normalized in GRAPH_EDGE_TYPES_V1:
+        return RelationSchemaDecision(True, normalized)
+    return RelationSchemaDecision(False, "unknown_relation")
+
+
+def _classify_node_for_answer_graph(entity_type: str) -> NodeSchemaDecision:
+    normalized = _normalize_schema_value(entity_type)
+    normalized = _NODE_TYPE_ALIASES.get(normalized, normalized)
+    if normalized in GRAPH_NODE_TYPES_V1:
+        return NodeSchemaDecision(True, EntityType(normalized))
+    return NodeSchemaDecision(False, None)
+
+
+def _candidate_id(
+    *,
+    candidate_type: str,
+    payload: Dict[str, object],
+    doc_id: str,
+    chunk_index: int,
+) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    digest = hashlib.sha256(
+        f"{candidate_type}|{doc_id}|{chunk_index}|{raw}".encode("utf-8")
+    ).hexdigest()[:20]
+    return f"raw:{digest}"
+
+
+def _raw_candidate(
+    *,
+    candidate_type: str,
+    payload: Dict[str, object],
+    doc_id: str,
+    chunk_index: int,
+    confidence: float,
+) -> RawGraphCandidate:
+    return RawGraphCandidate(
+        candidate_id=_candidate_id(
+            candidate_type=candidate_type,
+            payload=payload,
+            doc_id=doc_id,
+            chunk_index=chunk_index,
+        ),
+        candidate_type=candidate_type,
+        payload=payload,
+        source_doc_id=doc_id,
+        source_chunk_index=chunk_index,
+        confidence=confidence,
+        needs_review=True,
+    )
+
+
+def _verified_text_anchor(
+    *,
+    text: str,
+    doc_id: str,
+    chunk_index: int,
+    quote: str,
+    confidence: float,
+) -> EvidenceAnchor | None:
+    normalized_quote = quote.strip()
+    start = text.find(normalized_quote)
+    if not normalized_quote or start < 0:
+        return None
+    chunk_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    quote_hash = hashlib.sha256(normalized_quote.encode("utf-8")).hexdigest()
+    return EvidenceAnchor(
+        doc_id=doc_id,
+        chunk_id=f"graph:{doc_id}:chunk:{chunk_index}",
+        chunk_index=chunk_index,
+        quote=normalized_quote,
+        quote_hash=quote_hash,
+        chunk_hash=chunk_hash,
+        source_text_hash=chunk_hash,
+        markdown_char_start=start,
+        markdown_char_end=start + len(normalized_quote),
+        confidence=confidence,
+        extraction_prompt_version="graph-extract-v2",
+        verification_status="quote_match",
+    )
+
+
+def _verified_asset_anchors(
+    *,
+    asset_links: Sequence[GraphAssetLink],
+    doc_id: str,
+    quote: str,
+    confidence: float,
+) -> List[EvidenceAnchor]:
+    """Attach parsed asset provenance only when the LLM quote matches stored asset text."""
+    normalized_quote = quote.strip()
+    if not normalized_quote:
+        return []
+    quote_hash = hashlib.sha256(normalized_quote.encode("utf-8")).hexdigest()
+    anchors: List[EvidenceAnchor] = []
+    for link in asset_links:
+        if (
+            link.doc_id != doc_id
+            or link.asset_parse_status != "parsed"
+            or not link.text_or_markdown
+            or normalized_quote not in link.text_or_markdown
+        ):
+            continue
+        anchors.append(
+            EvidenceAnchor(
+                doc_id=doc_id,
+                chunk_id=link.source_chunk_id,
+                page=link.page,
+                quote=normalized_quote,
+                quote_hash=quote_hash,
+                chunk_hash=link.asset_text_hash if link.source_chunk_id else None,
+                source_text_hash=link.asset_text_hash,
+                asset_id=link.asset_id,
+                anchor_type=link.asset_type,
+                bbox=link.bbox,
+                confidence=confidence,
+                extraction_prompt_version="graph-extract-v2",
+                verification_status="quote_match",
+            )
+        )
+    return anchors
 
 
 def _parse_json_from_response(
@@ -259,15 +428,22 @@ class EntityRelationExtractor:
     async def _extract_one_pass_structured(
         self,
         text: str,
-    ) -> tuple[List[ExtractedEntity], List[ExtractedRelation]]:
+        doc_id: str,
+        chunk_index: int,
+        asset_links: Sequence[GraphAssetLink],
+        extraction_profile: ExtractionProfile = "standard",
+    ) -> tuple[List[ExtractedEntity], List[ExtractedRelation], List[RawGraphCandidate]]:
         """
         Extract entities and relations in a single structured-output call.
 
         Raises:
             Exception: Any model setup / invocation / validation failure.
         """
-        prompt = format_graph_rag_prompt("one_pass_extraction", text=text[:4000])
-        with graph_rag_llm_runtime_override("graph_extraction"):
+        prompt = format_graph_rag_prompt("one_pass_extraction_schema_v1", text=text[:4000])
+        with graph_rag_llm_runtime_override(
+            "graph_extraction",
+            extraction_profile=extraction_profile,
+        ):
             llm = get_llm("graph_extraction")
             try:
                 structured_llm = llm.bind(
@@ -305,24 +481,114 @@ class EntityRelationExtractor:
                     if raw_response is not None:
                         _log_thinking_usage("Structured graph extraction", raw_response)
                 payload = _coerce_structured_payload_from_raw_payload(raw_payload)
-        return self._build_extraction_from_payload(payload)
+        return self._build_extraction_from_payload(
+            payload,
+            text=text,
+            doc_id=doc_id,
+            chunk_index=chunk_index,
+            asset_links=asset_links,
+        )
 
     def _build_extraction_from_payload(
         self,
         payload: _StructuredExtractionPayload,
-    ) -> tuple[List[ExtractedEntity], List[ExtractedRelation]]:
+        *,
+        text: str,
+        doc_id: str,
+        chunk_index: int,
+        asset_links: Sequence[GraphAssetLink],
+    ) -> tuple[List[ExtractedEntity], List[ExtractedRelation], List[RawGraphCandidate]]:
         """Convert structured payload into existing extraction result types."""
         entities: List[ExtractedEntity] = []
         canonical_entities: Dict[str, ExtractedEntity] = {}
         canonical_ids_by_label: Dict[str, str] = {}
         entity_aliases: Dict[str, str] = {}
+        raw_candidates: List[RawGraphCandidate] = []
 
         for item in payload.entities:
             normalized_label = _normalize_label(item.label)
             if not normalized_label:
+                raw_candidates.append(
+                    _raw_candidate(
+                        candidate_type="missing_entity_label",
+                        payload=item.model_dump(mode="json"),
+                        doc_id=doc_id,
+                        chunk_index=chunk_index,
+                        confidence=item.confidence,
+                    )
+                )
                 continue
 
-            existing_canonical_id = canonical_ids_by_label.get(normalized_label)
+            node_decision = _classify_node_for_answer_graph(item.entity_type)
+            if not node_decision.allowed or node_decision.entity_type is None:
+                raw_candidates.append(
+                    _raw_candidate(
+                        candidate_type="unknown_node_type",
+                        payload=item.model_dump(mode="json"),
+                        doc_id=doc_id,
+                        chunk_index=chunk_index,
+                        confidence=item.confidence,
+                    )
+                )
+                continue
+
+            anchors: List[EvidenceAnchor] = []
+            if item.evidence_quote:
+                text_anchor = _verified_text_anchor(
+                    text=text,
+                    doc_id=doc_id,
+                    chunk_index=chunk_index,
+                    quote=item.evidence_quote,
+                    confidence=item.confidence,
+                )
+                asset_anchors = _verified_asset_anchors(
+                    asset_links=asset_links,
+                    doc_id=doc_id,
+                    quote=item.evidence_quote,
+                    confidence=item.confidence,
+                )
+                if text_anchor is None and not asset_anchors:
+                    raw_candidates.append(
+                        _raw_candidate(
+                            candidate_type="quote_mismatch",
+                            payload=item.model_dump(mode="json"),
+                            doc_id=doc_id,
+                            chunk_index=chunk_index,
+                            confidence=item.confidence,
+                        )
+                    )
+                    continue
+                if text_anchor is not None:
+                    anchors.append(text_anchor)
+                anchors.extend(asset_anchors)
+
+            claim_identity: ClaimIdentity | None = None
+            if node_decision.entity_type == EntityType.CLAIM:
+                if not item.claim_type or not item.scope:
+                    raw_candidates.append(
+                        _raw_candidate(
+                            candidate_type="missing_claim_identity",
+                            payload=item.model_dump(mode="json"),
+                            doc_id=doc_id,
+                            chunk_index=chunk_index,
+                            confidence=item.confidence,
+                        )
+                    )
+                    continue
+                claim_identity = ClaimIdentity(
+                    claim_type=item.claim_type,
+                    subject=item.canonical_name or item.label,
+                    scope=item.scope,
+                    condition=item.condition,
+                    source_doc=doc_id,
+                )
+
+            entity_dedup_key = (
+                claim_identity.stable_key
+                if claim_identity is not None
+                else normalized_label
+            )
+            existing_canonical_id = canonical_ids_by_label.get(entity_dedup_key)
             if existing_canonical_id:
                 entity_aliases[item.id] = existing_canonical_id
                 continue
@@ -332,12 +598,18 @@ class EntityRelationExtractor:
 
             entity = ExtractedEntity(
                 label=item.label.strip(),
-                entity_type=_normalize_entity_type(item.entity_type),
+                entity_type=node_decision.entity_type,
                 description=item.description,
+                canonical_name=(item.canonical_name or item.label).strip(),
+                aliases=[alias.strip() for alias in item.aliases if alias.strip()],
+                confidence=item.confidence,
+                anchors=anchors,
+                claim_identity=claim_identity,
+                extraction_id=item.id,
             )
             entities.append(entity)
             canonical_entities[item.id] = entity
-            canonical_ids_by_label[normalized_label] = item.id
+            canonical_ids_by_label[entity_dedup_key] = item.id
             entity_aliases[item.id] = item.id
 
         relations: List[ExtractedRelation] = []
@@ -345,10 +617,14 @@ class EntityRelationExtractor:
             source_id = entity_aliases.get(item.source_entity_id)
             target_id = entity_aliases.get(item.target_entity_id)
             if not source_id or not target_id:
-                logger.debug(
-                    "Skipping structured relation: missing entity id(s) %s -> %s",
-                    item.source_entity_id,
-                    item.target_entity_id,
+                raw_candidates.append(
+                    _raw_candidate(
+                        candidate_type="unknown_entity_reference",
+                        payload=item.model_dump(mode="json"),
+                        doc_id=doc_id,
+                        chunk_index=chunk_index,
+                        confidence=item.confidence,
+                    )
                 )
                 continue
 
@@ -357,14 +633,61 @@ class EntityRelationExtractor:
             if not source_entity or not target_entity:
                 continue
 
+            relation_decision = classify_relation_for_answer_graph(item.relation)
+            if not relation_decision.allowed:
+                raw_candidates.append(
+                    _raw_candidate(
+                        candidate_type="unknown_relation",
+                        payload=item.model_dump(mode="json"),
+                        doc_id=doc_id,
+                        chunk_index=chunk_index,
+                        confidence=item.confidence,
+                    )
+                )
+                continue
+
+            anchors: List[EvidenceAnchor] = []
+            if item.evidence_quote:
+                text_anchor = _verified_text_anchor(
+                    text=text,
+                    doc_id=doc_id,
+                    chunk_index=chunk_index,
+                    quote=item.evidence_quote,
+                    confidence=item.confidence,
+                )
+                asset_anchors = _verified_asset_anchors(
+                    asset_links=asset_links,
+                    doc_id=doc_id,
+                    quote=item.evidence_quote,
+                    confidence=item.confidence,
+                )
+                if text_anchor is None and not asset_anchors:
+                    raw_candidates.append(
+                        _raw_candidate(
+                            candidate_type="quote_mismatch",
+                            payload=item.model_dump(mode="json"),
+                            doc_id=doc_id,
+                            chunk_index=chunk_index,
+                            confidence=item.confidence,
+                        )
+                    )
+                    continue
+                if text_anchor is not None:
+                    anchors.append(text_anchor)
+                anchors.extend(asset_anchors)
+
             try:
                 relation = ExtractedRelation(
                     entity1=source_entity.label,
                     entity1_type=source_entity.entity_type,
-                    relation=item.relation.strip().lower() or "related",
+                    relation=relation_decision.normalized_relation,
                     entity2=target_entity.label,
                     entity2_type=target_entity.entity_type,
                     description=item.description,
+                    confidence=item.confidence,
+                    anchors=anchors,
+                    source_entity_ref=source_id,
+                    target_entity_ref=target_id,
                 )
                 relations.append(relation)
             except ValidationError as e:
@@ -376,7 +699,7 @@ class EntityRelationExtractor:
             len(entities),
             len(relations),
         )
-        return entities, relations
+        return entities, relations, raw_candidates
     
     async def extract_entities(self, text: str) -> List[ExtractedEntity]:
         """
@@ -507,6 +830,8 @@ class EntityRelationExtractor:
         text: str,
         doc_id: str,
         chunk_index: int = 0,
+        asset_links: Sequence[GraphAssetLink] | None = None,
+        extraction_profile: ExtractionProfile = "standard",
     ) -> ExtractionResult:
         """
         Perform full extraction (entities + relations) on text.
@@ -522,24 +847,39 @@ class EntityRelationExtractor:
         if len(text.strip()) < self.min_text_length:
             entities: List[ExtractedEntity] = []
             relations: List[ExtractedRelation] = []
+            raw_candidates: List[RawGraphCandidate] = []
         else:
             try:
-                entities, relations = await self._extract_one_pass_structured(text)
+                entities, relations, raw_candidates = await self._extract_one_pass_structured(
+                    text,
+                    doc_id,
+                    chunk_index,
+                    asset_links or (),
+                    extraction_profile,
+                )
             except Exception as e:
                 logger.warning(
-                    "Structured GraphRAG extraction failed; falling back to legacy two-pass flow: %s",
+                    "Structured GraphRAG extraction failed; buffering unverified output: %s",
                     e,
                 )
-                entities = await self.extract_entities(text)
+                entities = []
                 relations = []
-                if entities:
-                    relations = await self.extract_relations(text, entities)
+                raw_candidates = [
+                    _raw_candidate(
+                        candidate_type="structured_extraction_failed",
+                        payload={"error": str(e)},
+                        doc_id=doc_id,
+                        chunk_index=chunk_index,
+                        confidence=0.0,
+                    )
+                ]
         
         return ExtractionResult(
             entities=entities,
             relations=relations,
             doc_id=doc_id,
             chunk_index=chunk_index,
+            raw_candidates=raw_candidates,
         )
 
 
@@ -547,6 +887,8 @@ async def extract_from_chunk(
     text: str,
     doc_id: str,
     chunk_index: int = 0,
+    asset_links: Sequence[GraphAssetLink] | None = None,
+    extraction_profile: ExtractionProfile = "standard",
 ) -> ExtractionResult:
     """
     Convenience function to extract from a single chunk.
@@ -560,7 +902,13 @@ async def extract_from_chunk(
         ExtractionResult.
     """
     extractor = EntityRelationExtractor()
-    return await extractor.extract(text, doc_id, chunk_index)
+    return await extractor.extract(
+        text,
+        doc_id,
+        chunk_index,
+        asset_links=asset_links,
+        extraction_profile=extraction_profile,
+    )
 
 
 async def add_extraction_to_graph(
@@ -582,23 +930,47 @@ async def add_extraction_to_graph(
     
     # Map from entity label to node ID
     label_to_node_id = {}
-    
+    entity_ref_to_node_id = {}
+
+    for candidate in result.raw_candidates:
+        store.record_raw_candidate(candidate)
+
     # Add entities as nodes
     for entity in result.entities:
-        node_id = store.add_node_from_extraction(
-            label=entity.label,
-            entity_type=entity.entity_type,
-            doc_id=result.doc_id,
-            description=entity.description,
-            pending_resolution=True,
-        )
+        if entity.canonical_name or entity.aliases:
+            node_id = store.upsert_canonical_entity(
+                canonical_name=entity.canonical_name or entity.label,
+                entity_type=entity.entity_type,
+                aliases=entity.aliases,
+                source_doc_ids=[result.doc_id],
+                confidence=entity.confidence,
+                claim_identity=entity.claim_identity,
+            )
+        else:
+            node_id = store.add_node_from_extraction(
+                label=entity.label,
+                entity_type=entity.entity_type,
+                doc_id=result.doc_id,
+                description=entity.description,
+                pending_resolution=True,
+            )
         label_to_node_id[entity.label.lower()] = node_id
+        if entity.extraction_id:
+            entity_ref_to_node_id[entity.extraction_id] = node_id
         nodes_added += 1
     
     # Add relations as edges
     for relation in result.relations:
-        source_id = label_to_node_id.get(relation.entity1.lower())
-        target_id = label_to_node_id.get(relation.entity2.lower())
+        source_id = (
+            entity_ref_to_node_id.get(relation.source_entity_ref)
+            if relation.source_entity_ref
+            else None
+        ) or label_to_node_id.get(relation.entity1.lower())
+        target_id = (
+            entity_ref_to_node_id.get(relation.target_entity_ref)
+            if relation.target_entity_ref
+            else None
+        ) or label_to_node_id.get(relation.entity2.lower())
         
         if source_id and target_id:
             store.add_edge_from_extraction(
@@ -608,6 +980,11 @@ async def add_extraction_to_graph(
                 doc_id=result.doc_id,
                 description=relation.description,
             )
+            if relation.anchors:
+                store.record_edge_provenance(
+                    store.edge_id(source_id, target_id, relation.relation),
+                    relation.anchors,
+                )
             edges_added += 1
     
     return nodes_added, edges_added
@@ -618,6 +995,8 @@ async def extract_and_add_to_graph(
     doc_id: str,
     store: GraphStore,
     chunk_index: int = 0,
+    asset_links: Sequence[GraphAssetLink] | None = None,
+    extraction_profile: ExtractionProfile = "standard",
 ) -> Tuple[int, int]:
     """
     Extract from text and add directly to graph.
@@ -633,5 +1012,22 @@ async def extract_and_add_to_graph(
     Returns:
         Tuple of (nodes_added, edges_added).
     """
-    result = await extract_from_chunk(text, doc_id, chunk_index)
+    result = await extract_from_chunk(
+        text,
+        doc_id,
+        chunk_index,
+        asset_links=asset_links,
+        extraction_profile=extraction_profile,
+    )
+    extraction_failure = next(
+        (
+            candidate
+            for candidate in result.raw_candidates
+            if candidate.candidate_type == "structured_extraction_failed"
+        ),
+        None,
+    )
+    if extraction_failure is not None:
+        error = extraction_failure.payload.get("error", "structured extraction failed")
+        raise RuntimeError(str(error))
     return await add_extraction_to_graph(store, result)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -109,3 +109,52 @@ class AvailableModel(BaseModel):
     output_token_limit: Optional[int] = None
     supported_actions: list[str] = Field(default_factory=list)
     thinking: ThinkingCapability = Field(default_factory=ThinkingCapability)
+
+
+class EvaluationGraphEvent(BaseModel):
+    """Persisted GraphRAG retrieval observability summary for one run."""
+
+    graph_event_id: str = Field(..., min_length=1)
+    run_id: str = Field(..., min_length=1)
+    campaign_id: Optional[str] = None
+    span_id: Optional[str] = None
+    graph_query: str = Field(..., min_length=1)
+    graph_search_mode: str = Field(..., min_length=1)
+    graph_evidence_mode: str = Field(default="raw_current", min_length=1)
+    graph_route: str = Field(..., min_length=1)
+    router_reason: Optional[str] = None
+    graph_feature_flags: dict[str, Any] = Field(default_factory=dict)
+    graph_snapshot_version: Optional[str] = None
+    graph_schema_version: Optional[str] = None
+    graph_extraction_prompt_version: Optional[str] = None
+    matched_entity_ids: list[str] = Field(default_factory=list)
+    community_ids: list[int] = Field(default_factory=list)
+    node_count: int = Field(default=0, ge=0)
+    edge_count: int = Field(default=0, ge=0)
+    path_count: int = Field(default=0, ge=0)
+    graph_latency_ms: Optional[int] = Field(default=None, ge=0)
+    graph_context_tokens: int = Field(default=0, ge=0)
+    graph_to_chunk_success_rate: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    graph_noise_ratio: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class EvaluationGraphEvidenceItem(BaseModel):
+    """Persisted graph evidence row aligned to a GraphRAG retrieval event."""
+
+    graph_evidence_item_id: str = Field(..., min_length=1)
+    graph_event_id: str = Field(..., min_length=1)
+    node_ids: list[str] = Field(default_factory=list)
+    edge_ids: list[str] = Field(default_factory=list)
+    relation_path: list[str] = Field(default_factory=list)
+    source_doc_ids: list[str] = Field(default_factory=list)
+    source_chunk_ids: list[str] = Field(default_factory=list)
+    pages: list[int] = Field(default_factory=list)
+    asset_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    provenance_status: Literal["full", "partial", "missing"] = "missing"
+    used_as_locator: bool = True
+    packed_in_context: bool = False
+    used_in_answer: bool = False
+    supported_claim_ids: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
