@@ -30,6 +30,7 @@ def test_create_job_freezes_sources_and_round_trips(tmp_path: Path) -> None:
     assert restored is not None
     assert restored.job_id == manifest.job_id
     assert [document.doc_id for document in restored.documents] == ["doc-1", "doc-2"]
+    assert restored.documents[0].original_path == "uploads/user-1/doc-1/first.pdf"
     assert restored.source_snapshot_hash == manifest.source_snapshot_hash
     assert restored.state == "pending"
     assert (tmp_path / manifest.job_id / "manifest.json").is_file()

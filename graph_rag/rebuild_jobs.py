@@ -104,6 +104,7 @@ class GraphRebuildJobStore:
             (document for document in manifest.documents if document.doc_id == manifest.current_doc_id),
             None,
         )
+        public_documents = [self._public_document(document) for document in manifest.documents]
         return GraphRebuildStatusResponse(
             job_id=manifest.job_id,
             state=manifest.state,
@@ -116,8 +117,12 @@ class GraphRebuildJobStore:
             partial=counts["partial"],
             pending=counts["pending"],
             progress_percent=round(processed * 100 / total) if total else 0,
-            current_document=current_document,
-            documents=manifest.documents,
+            current_document=(
+                self._public_document(current_document)
+                if current_document is not None
+                else None
+            ),
+            documents=public_documents,
             can_resume=manifest.state == "interrupted",
             can_retry_failed=manifest.state == "completed_with_failures",
             last_error=manifest.last_error,
@@ -217,6 +222,10 @@ class GraphRebuildJobStore:
         return manifest.lease is not None and secrets.compare_digest(
             manifest.lease.owner_token, owner_token
         )
+
+    @staticmethod
+    def _public_document(document: GraphRebuildDocument) -> GraphRebuildDocument:
+        return document.model_copy(update={"original_path": None})
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any]:
