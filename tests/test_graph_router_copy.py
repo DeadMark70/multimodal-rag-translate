@@ -27,6 +27,12 @@ class _MockStore:
     def get_status(self):  # noqa: ANN201
         return self._status
 
+    def set_active_job_state(self, _state: str | None) -> None:
+        return None
+
+    def save_sidecars(self) -> None:
+        return None
+
 
 def _client() -> TestClient:
     app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID

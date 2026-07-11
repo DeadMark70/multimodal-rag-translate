@@ -17,6 +17,7 @@ from graph_rag.node_vector_index import (
 from core.llm_factory import ExtractionProfile
 from graph_rag.rebuild_coordinator import GraphRebuildCoordinator
 from graph_rag.rebuild_jobs import GraphRebuildJobStore
+from graph_rag.maintenance_lock import GraphMaintenanceLock
 from graph_rag.schemas import GraphDocumentStatus
 from graph_rag.service import run_graph_extraction
 from graph_rag.store import GraphStore
@@ -109,7 +110,7 @@ async def list_graph_source_documents(user_id: str) -> list[dict[str, str | None
     return sources
 
 
-async def node_vector_sync_task(user_id: str) -> None:
+async def node_vector_sync_task(user_id: str, maintenance_token: str | None = None) -> None:
     """Run manual node-vector sync in background and persist progress."""
     logger.info("Starting node-vector sync for user %s", user_id)
 
@@ -190,6 +191,8 @@ async def node_vector_sync_task(user_id: str) -> None:
         store = GraphStore(user_id)
         store.set_active_job_state(None)
         store.save_sidecars()
+        if maintenance_token:
+            GraphMaintenanceLock(user_id).release(maintenance_token)
 
 
 async def optimize_existing_graph(
@@ -224,7 +227,7 @@ async def optimize_existing_graph(
     return merges, communities_count
 
 
-async def rebuild_graph_task(user_id: str) -> None:
+async def rebuild_graph_task(user_id: str, maintenance_token: str | None = None) -> None:
     """
     Background task to safely rebuild graph metadata and communities.
 
@@ -247,12 +250,19 @@ async def rebuild_graph_task(user_id: str) -> None:
 
     except Exception as e:
         logger.error(f"Graph rebuild failed for user {user_id}: {e}")
+    finally:
+        store = GraphStore(user_id)
+        store.set_active_job_state(None)
+        store.save_sidecars()
+        if maintenance_token:
+            GraphMaintenanceLock(user_id).release(maintenance_token)
 
 
 async def rebuild_full_graph_task(
     user_id: str,
     job_id: str | None = None,
     owner_token: str | None = None,
+    maintenance_token: str | None = None,
 ) -> None:
     """Build a brand-new graph from all OCR-complete document artifacts."""
     if job_id is not None and owner_token is not None:
@@ -270,6 +280,8 @@ async def rebuild_full_graph_task(
             live_store = GraphStore(user_id)
             live_store.set_active_job_state(None)
             live_store.save_sidecars()
+            if maintenance_token:
+                GraphMaintenanceLock(user_id).release(maintenance_token)
         return
 
     logger.info("Starting full graph rebuild for user %s", user_id)
@@ -360,12 +372,15 @@ async def rebuild_full_graph_task(
         live_store.set_active_job_state(None)
         live_store.save_sidecars()
         shutil.rmtree(temp_dir, ignore_errors=True)
+        if maintenance_token:
+            GraphMaintenanceLock(user_id).release(maintenance_token)
 
 
 async def retry_graph_document_task(
     user_id: str,
     doc_id: str,
     extraction_profile: ExtractionProfile = "standard",
+    maintenance_token: str | None = None,
 ) -> None:
     """Retry GraphRAG extraction for one document using a temp copy of the live graph."""
     logger.info("Starting graph retry for user %s doc %s", user_id, doc_id)
@@ -453,9 +468,13 @@ async def retry_graph_document_task(
         live_store.set_active_job_state(None)
         live_store.save_sidecars()
         shutil.rmtree(temp_dir, ignore_errors=True)
+        if maintenance_token:
+            GraphMaintenanceLock(user_id).release(maintenance_token)
 
 
-async def purge_graph_document_task(user_id: str, doc_id: str) -> None:
+async def purge_graph_document_task(
+    user_id: str, doc_id: str, maintenance_token: str | None = None
+) -> None:
     """Safely purge one document's remaining contribution from the live graph."""
     logger.info("Starting graph purge for user %s doc %s", user_id, doc_id)
     live_store = GraphStore(user_id)
@@ -502,3 +521,5 @@ async def purge_graph_document_task(user_id: str, doc_id: str) -> None:
         live_store.set_active_job_state(None)
         live_store.save_sidecars()
         shutil.rmtree(temp_dir, ignore_errors=True)
+        if maintenance_token:
+            GraphMaintenanceLock(user_id).release(maintenance_token)

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -37,6 +37,14 @@ def _workspace_upload_root(test_name: str) -> Path:
 def _client() -> TestClient:
     app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def mock_router_maintenance_lock():
+    lock = Mock()
+    lock.acquire.return_value = "maintenance-owner"
+    with patch("graph_rag.router.GraphMaintenanceLock", return_value=lock):
+        yield lock
 
 
 def test_graph_documents_endpoint_returns_persisted_and_unattempted_rows() -> None:
@@ -188,7 +196,9 @@ def test_rebuild_full_endpoint_starts_durable_job_and_schedules_owner_token() ->
     assert mock_jobs.create_or_load_active.call_args.kwargs["source_markdown"] == {
         "doc-1": "frozen markdown"
     }
-    mock_task.assert_awaited_once_with(TEST_USER_ID, "job-1", "owner-token")
+    mock_task.assert_awaited_once_with(
+        TEST_USER_ID, "job-1", "owner-token", ANY
+    )
 
 
 def test_rebuild_full_status_reconciles_without_scheduling_work() -> None:
@@ -250,7 +260,9 @@ def test_rebuild_full_resume_schedules_only_one_owner() -> None:
     app.dependency_overrides = {}
     assert first.status_code == 200
     assert second.status_code == 200
-    mock_task.assert_awaited_once_with(TEST_USER_ID, "job-1", "owner-token")
+    mock_task.assert_awaited_once_with(
+        TEST_USER_ID, "job-1", "owner-token", ANY
+    )
 
 
 def test_purge_graph_document_endpoint_sets_active_job_and_starts_background_task() -> (
@@ -279,7 +291,7 @@ def test_purge_graph_document_endpoint_sets_active_job_and_starts_background_tas
     assert response.json()["status"] == "started"
     mock_store.set_active_job_state.assert_called_once_with("purge:doc-1")
     mock_store.save_sidecars.assert_called()
-    mock_task.assert_awaited_once_with(TEST_USER_ID, "doc-1")
+    mock_task.assert_awaited_once_with(TEST_USER_ID, "doc-1", ANY)
 
 
 def test_start_node_vector_sync_endpoint_starts_background_task() -> None:
@@ -305,7 +317,7 @@ def test_start_node_vector_sync_endpoint_starts_background_task() -> None:
     mock_store.set_active_job_state.assert_called_once_with("node_vector_sync")
     mock_store.set_node_vector_sync_status.assert_called_once()
     mock_store.save_sidecars.assert_called()
-    mock_task.assert_awaited_once_with(TEST_USER_ID)
+    mock_task.assert_awaited_once_with(TEST_USER_ID, ANY)
 
 
 def test_start_node_vector_sync_endpoint_skips_when_another_job_is_running() -> None:

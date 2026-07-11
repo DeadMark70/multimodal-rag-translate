@@ -34,6 +34,7 @@ from graph_rag.maintenance import (
     retry_graph_document_task as _retry_graph_document_task,
 )
 from graph_rag.rebuild_jobs import GraphRebuildJobStore
+from graph_rag.maintenance_lock import GraphMaintenanceLock
 from graph_rag.schemas import (
     GraphDebugSearchRequest,
     GraphDebugSearchResponse,
@@ -57,6 +58,14 @@ from pdfserviceMD.repository import get_document
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _acquire_graph_maintenance(
+    user_id: str, activity: str
+) -> tuple[GraphMaintenanceLock, str] | None:
+    lock = GraphMaintenanceLock(user_id)
+    owner_token = lock.acquire(activity)
+    return (lock, owner_token) if owner_token is not None else None
 
 
 # ===== Request/Response Models =====
@@ -269,11 +278,13 @@ async def start_node_vector_sync(
     """Start background manual node-vector sync job."""
     try:
         store = GraphStore(user_id)
-        if store.active_job_state:
+        maintenance = _acquire_graph_maintenance(user_id, "node_vector_sync")
+        if maintenance is None:
             return GraphOperationResponse(
                 status="skipped",
-                message=f"已有圖譜工作執行中：{store.active_job_state}",
+                message="已有圖譜維護工作執行中",
             )
+        _, maintenance_token = maintenance
 
         now = datetime.now(timezone.utc)
         total_nodes = store.get_status().node_count
@@ -293,13 +304,15 @@ async def start_node_vector_sync(
             finished_at=None,
         )
         store.save_sidecars()
-        background_tasks.add_task(_node_vector_sync_task, user_id)
+        background_tasks.add_task(_node_vector_sync_task, user_id, maintenance_token)
         return GraphOperationResponse(
             status="started",
             message="節點嵌入同步已啟動，請稍候查看進度",
             details={"total_nodes": total_nodes},
         )
     except Exception as exc:  # noqa: BLE001
+        if "maintenance_token" in locals():
+            GraphMaintenanceLock(user_id).release(maintenance_token)
         logger.error(
             "Failed to start node-vector sync for user %s: %s",
             user_id,
@@ -428,20 +441,25 @@ async def rebuild_graph(
     try:
         store = GraphStore(user_id)
 
-        if store.active_job_state:
+        maintenance = _acquire_graph_maintenance(user_id, "rebuild")
+        if maintenance is None:
             return GraphOperationResponse(
                 status="skipped",
-                message=f"已有圖譜工作執行中：{store.active_job_state}",
+                message="已有圖譜維護工作執行中",
             )
+        _, maintenance_token = maintenance
 
         if not request.force and store.get_status().node_count == 0:
+            GraphMaintenanceLock(user_id).release(maintenance_token)
             return GraphOperationResponse(
                 status="skipped",
                 message="圖譜已是空的，無需重建",
             )
 
         # Queue background rebuild task
-        background_tasks.add_task(_rebuild_graph_task, user_id)
+        store.set_active_job_state("rebuild")
+        store.save_sidecars()
+        background_tasks.add_task(_rebuild_graph_task, user_id, maintenance_token)
 
         return GraphOperationResponse(
             status="started",
@@ -450,6 +468,8 @@ async def rebuild_graph(
         )
 
     except Exception as e:
+        if "maintenance_token" in locals():
+            GraphMaintenanceLock(user_id).release(maintenance_token)
         logger.error(f"Failed to start graph rebuild: {e}")
         raise AppError(
             code=ErrorCode.PROCESSING_ERROR,
@@ -553,23 +573,32 @@ def _schedule_full_rebuild(
     manifest: GraphRebuildManifest,
 ) -> GraphRebuildStatusResponse:
     """Claim one durable runner, preserve legacy maintenance exclusion, and schedule it."""
-    live_store = GraphStore(user_id)
-    if live_store.active_job_state not in {None, "rebuild_full"}:
+    maintenance = _acquire_graph_maintenance(user_id, "rebuild_full")
+    if maintenance is None:
         raise AppError(
             code=ErrorCode.VALIDATION_ERROR,
-            message=f"已有圖譜工作執行中：{live_store.active_job_state}",
+            message="已有圖譜維護工作執行中",
             status_code=409,
         )
-    owner_token = jobs.acquire_lease(manifest.job_id)
-    if owner_token is None:
-        return jobs.to_status(jobs.load(manifest.job_id))
-    manifest = jobs.load(manifest.job_id)
-    manifest.state = "running"
-    jobs.save(manifest)
-    live_store.set_active_job_state("rebuild_full")
-    live_store.save_sidecars()
-    background_tasks.add_task(_rebuild_full_graph_task, user_id, manifest.job_id, owner_token)
-    return jobs.to_status(manifest)
+    _, maintenance_token = maintenance
+    try:
+        live_store = GraphStore(user_id)
+        owner_token = jobs.acquire_lease(manifest.job_id)
+        if owner_token is None:
+            GraphMaintenanceLock(user_id).release(maintenance_token)
+            return jobs.to_status(jobs.load(manifest.job_id))
+        manifest = jobs.load(manifest.job_id)
+        manifest.state = "running"
+        jobs.save(manifest)
+        live_store.set_active_job_state("rebuild_full")
+        live_store.save_sidecars()
+        background_tasks.add_task(
+            _rebuild_full_graph_task, user_id, manifest.job_id, owner_token, maintenance_token
+        )
+        return jobs.to_status(manifest)
+    except Exception:
+        GraphMaintenanceLock(user_id).release(maintenance_token)
+        raise
 
 
 async def _freeze_full_rebuild_sources(
@@ -605,11 +634,13 @@ async def retry_graph_document(
     """Retry GraphRAG extraction for a single OCR-complete document."""
     try:
         store = GraphStore(user_id)
-        if store.active_job_state:
+        maintenance = _acquire_graph_maintenance(user_id, f"retry:{doc_id}")
+        if maintenance is None:
             return GraphOperationResponse(
                 status="skipped",
-                message=f"已有圖譜工作執行中：{store.active_job_state}",
+                message="已有圖譜維護工作執行中",
             )
+        _, maintenance_token = maintenance
 
         row = await get_document(
             doc_id=doc_id,
@@ -617,6 +648,7 @@ async def retry_graph_document(
             columns="id, file_name, original_path",
         )
         if not row:
+            GraphMaintenanceLock(user_id).release(maintenance_token)
             raise AppError(
                 code=ErrorCode.NOT_FOUND,
                 message="Document not found",
@@ -625,6 +657,7 @@ async def retry_graph_document(
 
         original_path = row.get("original_path")
         if not original_path:
+            GraphMaintenanceLock(user_id).release(maintenance_token)
             raise AppError(
                 code=ErrorCode.BAD_REQUEST,
                 message="Document has no original path",
@@ -633,6 +666,7 @@ async def retry_graph_document(
 
         user_folder = Path(original_path).resolve().parent
         if not (user_folder / "extracted.md").exists():
+            GraphMaintenanceLock(user_id).release(maintenance_token)
             raise AppError(
                 code=ErrorCode.BAD_REQUEST,
                 message="Document has no OCR artifacts for GraphRAG retry",
@@ -647,6 +681,7 @@ async def retry_graph_document(
             user_id,
             doc_id,
             extraction_profile,
+            maintenance_token,
         )
         return GraphOperationResponse(
             status="started",
@@ -658,8 +693,12 @@ async def retry_graph_document(
             },
         )
     except AppError:
+        if "maintenance_token" in locals():
+            GraphMaintenanceLock(user_id).release(maintenance_token)
         raise
     except Exception as e:
+        if "maintenance_token" in locals():
+            GraphMaintenanceLock(user_id).release(maintenance_token)
         logger.error("Failed to start graph retry for %s: %s", doc_id, e, exc_info=True)
         raise AppError(
             code=ErrorCode.PROCESSING_ERROR,
@@ -682,16 +721,19 @@ async def purge_graph_document(
     """Purge one document's remaining GraphRAG contribution from the live graph."""
     try:
         store = GraphStore(user_id)
-        if store.active_job_state:
+        maintenance = _acquire_graph_maintenance(user_id, f"purge:{doc_id}")
+        if maintenance is None:
             return GraphOperationResponse(
                 status="skipped",
-                message=f"已有圖譜工作執行中：{store.active_job_state}",
+                message="已有圖譜維護工作執行中",
             )
+        _, maintenance_token = maintenance
 
         if (
             not store.get_document_status(doc_id)
             and doc_id not in store.get_documents()
         ):
+            GraphMaintenanceLock(user_id).release(maintenance_token)
             return GraphOperationResponse(
                 status="skipped",
                 message="找不到可移除的圖譜殘留",
@@ -699,13 +741,17 @@ async def purge_graph_document(
 
         store.set_active_job_state(f"purge:{doc_id}")
         store.save_sidecars()
-        background_tasks.add_task(_purge_graph_document_task, user_id, doc_id)
+        background_tasks.add_task(
+            _purge_graph_document_task, user_id, doc_id, maintenance_token
+        )
         return GraphOperationResponse(
             status="started",
             message="文件圖譜殘留移除已開始",
             details={"doc_id": doc_id},
         )
     except Exception as e:
+        if "maintenance_token" in locals():
+            GraphMaintenanceLock(user_id).release(maintenance_token)
         logger.error("Failed to start graph purge for %s: %s", doc_id, e, exc_info=True)
         raise AppError(
             code=ErrorCode.PROCESSING_ERROR,
@@ -735,10 +781,24 @@ async def optimize_graph(
                 message="圖譜是空的，無需優化",
             )
 
-        merges, communities_count = await _optimize_existing_graph(
-            store,
-            regenerate_communities=request.regenerate_communities,
-        )
+        maintenance = _acquire_graph_maintenance(user_id, "optimize")
+        if maintenance is None:
+            return GraphOperationResponse(
+                status="skipped",
+                message="已有圖譜維護工作執行中",
+            )
+        _, maintenance_token = maintenance
+        try:
+            store.set_active_job_state("optimize")
+            store.save_sidecars()
+            merges, communities_count = await _optimize_existing_graph(
+                store,
+                regenerate_communities=request.regenerate_communities,
+            )
+        finally:
+            store.set_active_job_state(None)
+            store.save_sidecars()
+            GraphMaintenanceLock(user_id).release(maintenance_token)
 
         return GraphOperationResponse(
             status="success",
