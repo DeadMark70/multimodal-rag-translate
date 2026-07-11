@@ -282,6 +282,105 @@ class GraphStatusResponse(BaseModel):
 
 GraphDocumentExtractionState = Literal["indexed", "partial", "empty", "failed", "running", "skipped"]
 
+GraphRebuildJobState = Literal[
+    "pending",
+    "running",
+    "interrupted",
+    "completed_with_failures",
+    "failed",
+    "completed",
+]
+GraphRebuildPhase = Literal[
+    "preparing",
+    "extracting",
+    "retry_wait",
+    "optimizing",
+    "building_communities",
+    "syncing_sidecars",
+    "validating",
+    "publishing",
+    "done",
+]
+GraphRebuildDocumentState = Literal[
+    "pending",
+    "running",
+    "retry_wait",
+    "indexed",
+    "empty",
+    "partial",
+    "failed",
+]
+
+
+class GraphRebuildDocument(BaseModel):
+    """One immutable source document and its durable rebuild checkpoint."""
+
+    doc_id: str
+    file_name: Optional[str] = None
+    original_path: Optional[str] = Field(default=None, exclude=True)
+    state: GraphRebuildDocumentState = "pending"
+    attempt: int = Field(default=0, ge=0)
+    cumulative_attempts: int = Field(default=0, ge=0)
+    chunk_count: int = Field(default=0, ge=0)
+    chunks_succeeded: int = Field(default=0, ge=0)
+    chunks_failed: int = Field(default=0, ge=0)
+    entities_added: int = Field(default=0, ge=0)
+    edges_added: int = Field(default=0, ge=0)
+    last_error: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class GraphRebuildLease(BaseModel):
+    """Durable ownership record for a rebuild runner."""
+
+    owner_token: str
+    acquired_at: datetime
+    heartbeat_at: datetime
+
+
+class GraphRebuildManifest(BaseModel):
+    """Versioned persistent control record for one full graph rebuild."""
+
+    schema_version: Literal[1] = 1
+    job_id: str
+    user_id: str
+    state: GraphRebuildJobState = "pending"
+    phase: GraphRebuildPhase = "preparing"
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    updated_at: datetime
+    completed_at: Optional[datetime] = None
+    published_at: Optional[datetime] = None
+    current_doc_id: Optional[str] = None
+    source_snapshot_hash: str
+    max_attempts: int = Field(default=3, ge=1)
+    documents: List[GraphRebuildDocument]
+    last_error: Optional[str] = None
+    lease: Optional[GraphRebuildLease] = None
+
+
+class GraphRebuildStatusResponse(BaseModel):
+    """Safe, pollable projection of a durable full rebuild job."""
+
+    job_id: str
+    state: GraphRebuildJobState
+    phase: GraphRebuildPhase
+    total: int = Field(ge=0)
+    processed: int = Field(ge=0)
+    succeeded: int = Field(ge=0)
+    empty: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    partial: int = Field(ge=0)
+    pending: int = Field(ge=0)
+    progress_percent: int = Field(ge=0, le=100)
+    current_document: Optional[GraphRebuildDocument] = None
+    documents: List[GraphRebuildDocument] = Field(default_factory=list)
+    can_resume: bool = False
+    can_retry_failed: bool = False
+    live_graph_unchanged: bool = True
+    last_error: Optional[str] = None
+
 
 class GraphDocumentStatus(BaseModel):
     """Persisted GraphRAG extraction status for one source document."""
