@@ -7,6 +7,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
@@ -270,6 +271,9 @@ CREATE TABLE IF NOT EXISTS campaign_results (
 CREATE INDEX IF NOT EXISTS idx_campaign_results_campaign_created
 ON campaign_results(campaign_id, created_at ASC);
 
+CREATE INDEX IF NOT EXISTS idx_campaign_results_campaign_user_order
+ON campaign_results(campaign_id, user_id, created_at ASC, question_id ASC, mode ASC, run_number ASC, id ASC);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_results_unit_unique
 ON campaign_results(campaign_id, question_id, mode, run_number);
 
@@ -510,6 +514,9 @@ CREATE TABLE IF NOT EXISTS ragas_scores (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ragas_scores_result_metric
 ON ragas_scores(campaign_result_id, metric_name);
 
+CREATE INDEX IF NOT EXISTS idx_ragas_scores_campaign_user_result
+ON ragas_scores(campaign_id, user_id, campaign_result_id, metric_name);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_traces_result
 ON agent_traces(campaign_result_id);
 """
@@ -640,8 +647,28 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
     )
     await connection.execute(
         """
+        CREATE INDEX IF NOT EXISTS idx_ragas_scores_campaign_user_result
+        ON ragas_scores(campaign_id, user_id, campaign_result_id, metric_name)
+        """
+    )
+    await connection.execute(
+        """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_results_unit_unique
         ON campaign_results(campaign_id, question_id, mode, run_number)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_campaign_results_campaign_user_order
+        ON campaign_results(
+            campaign_id,
+            user_id,
+            created_at ASC,
+            question_id ASC,
+            mode ASC,
+            run_number ASC,
+            id ASC
+        )
         """
     )
     await connection.execute(
@@ -720,6 +747,12 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_eval_routing_decisions_run_created
         ON evaluation_routing_decisions(run_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_routing_decisions_campaign_run_created
+        ON evaluation_routing_decisions(campaign_id, run_id, created_at ASC, routing_decision_id ASC)
         """
     )
     await connection.execute(
@@ -919,6 +952,31 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
         has_trace=bool(row["has_trace"]) if "has_trace" in row.keys() else False,
         created_at=datetime.fromisoformat(row["created_at"]),
     )
+
+
+@dataclass(frozen=True)
+class CampaignAnalyticsResult:
+    """Bounded result projection used by campaign analytics pages."""
+
+    id: str
+    campaign_id: str
+    question_id: str
+    question: str
+    mode: str
+    execution_profile: Optional[str]
+    context_policy_version: Optional[str]
+    run_number: int
+    latency_ms: float
+    total_latency_ms: Optional[float]
+    total_tokens: Optional[int]
+    category: Optional[str]
+    difficulty: Optional[str]
+    question_version: Optional[str]
+    status: CampaignResultStatus
+    error_message: Optional[str]
+    derived_metrics: dict[str, Any]
+    answer_preview: str
+    created_at: datetime
 
 
 def _normalize_route_profile(value: Any) -> Any:
@@ -1229,6 +1287,74 @@ class CampaignRepository:
 
 class CampaignResultRepository:
     """Persistence for per-unit campaign outputs."""
+
+    async def list_for_campaign_analytics(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+    ) -> list["CampaignAnalyticsResult"]:
+        """Read only the bounded fields needed by campaign analytics.
+
+        Answers, contexts, ground truth, and snapshot JSON are intentionally
+        excluded from this projection. Explicit result/detail/export paths use
+        ``list_for_campaign`` or ``get`` when full payloads are required.
+        """
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT
+                    id,
+                    campaign_id,
+                    question_id,
+                    question,
+                    mode,
+                    execution_profile,
+                    context_policy_version,
+                    run_number,
+                    latency_ms,
+                    total_latency_ms,
+                    total_tokens,
+                    category,
+                    difficulty,
+                    question_version,
+                    status,
+                    error_message,
+                    derived_metrics_json,
+                    substr(answer, 1, 240) AS answer_preview,
+                    created_at
+                FROM campaign_results
+                WHERE campaign_id = ? AND user_id = ?
+                ORDER BY created_at ASC, question_id ASC, mode ASC, run_number ASC, id ASC
+                """,
+                (campaign_id, user_id),
+            )
+            rows = await cursor.fetchall()
+        return [
+            CampaignAnalyticsResult(
+                id=row["id"],
+                campaign_id=row["campaign_id"],
+                question_id=row["question_id"],
+                question=row["question"],
+                mode=row["mode"],
+                execution_profile=row["execution_profile"],
+                context_policy_version=row["context_policy_version"],
+                run_number=row["run_number"],
+                latency_ms=row["latency_ms"],
+                total_latency_ms=row["total_latency_ms"],
+                total_tokens=row["total_tokens"],
+                category=row["category"],
+                difficulty=row["difficulty"],
+                question_version=row["question_version"],
+                status=CampaignResultStatus(row["status"]),
+                error_message=row["error_message"],
+                derived_metrics=_json_loads(row["derived_metrics_json"], {}),
+                answer_preview=row["answer_preview"] or "",
+                created_at=datetime.fromisoformat(row["created_at"]),
+            )
+            for row in rows
+        ]
 
     async def create(
         self,

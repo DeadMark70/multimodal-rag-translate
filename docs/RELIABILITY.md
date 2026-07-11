@@ -13,6 +13,8 @@
 - Typed repository and background-task error handling
 - Authenticated SSE for evaluation and research execution
 - SQLite WAL mode for evaluation campaign persistence
+- Bounded analytics projections and bulk observability reads so evaluation latency does not grow with raw answer/context payloads or run count
+- Terminal-campaign context reuse is guarded by lifecycle status and an updated-at marker; running campaigns continue to use live reads
 - Compatibility fallbacks for legacy metadata reads while new writes stay canonical
 
 ## Known Failure Classes

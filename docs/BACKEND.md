@@ -44,6 +44,12 @@
 - `graph_rag/`: graph extraction, graph store, optimize/rebuild/retry/purge maintenance
 - `conversations/`: conversation and message persistence
 - `evaluation/`: test cases, model presets, campaigns, traces, metrics, rerun/evaluate flows
+
+### Loading-sensitive read paths
+
+- Evaluation analytics uses campaign-level bulk observability reads and a bounded result projection; full answer/context blobs remain restricted to explicit result/export/detail paths.
+- Terminal campaign analytics contexts are reused by the process-local analytics service while the campaign `updated_at` marker is unchanged; running campaigns continue to read live state.
+- Conversation history exposes additive summary/cursor endpoints under `/api/conversations/page` and `/messages/page`; legacy unbounded endpoints remain for compatibility during frontend migration.
 - `stats/`: dashboard aggregates
 - `multimodal_rag/` and `image_service/`: multimodal extraction and image translation support
 

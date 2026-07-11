@@ -149,9 +149,12 @@ def _to_sse_event(event_name: str, payload: BaseModel | dict[str, Any]) -> dict[
     }
 
 
+_ANALYTICS_SERVICE = EvaluationAnalyticsService()
+
+
 def get_evaluation_analytics_service() -> EvaluationAnalyticsService:
     """Factory for evaluation analytics service."""
-    return EvaluationAnalyticsService()
+    return _ANALYTICS_SERVICE
 
 
 async def _preserve_omitted_test_case_metadata(

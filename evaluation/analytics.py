@@ -6,7 +6,7 @@ import hashlib
 import math
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from statistics import mean
 from typing import Any, Literal
 from uuid import uuid4
@@ -17,6 +17,7 @@ from core.errors import AppError, ErrorCode
 from evaluation.campaign_schemas import (
     AblationResponse,
     CampaignAnalyticsDashboardResponse,
+    CampaignLifecycleStatus,
     CampaignErrorsResponse,
     CampaignOverviewResponse,
     CostLatencyResponse,
@@ -43,7 +44,12 @@ from evaluation.campaign_schemas import (
     RunTraceResponse,
     SanitizedErrorRow,
 )
-from evaluation.db import CampaignRepository, CampaignResultRepository, connect_db, init_db
+from evaluation.db import (
+    CampaignRepository,
+    CampaignResultRepository,
+    connect_db,
+    init_db,
+)
 from evaluation.rag_modes import RAG_MODES
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.trace_schemas import EvaluationHumanRating
@@ -230,6 +236,9 @@ class EvaluationAnalyticsService:
         self._campaign_repository = campaign_repository or CampaignRepository()
         self._result_repository = result_repository or CampaignResultRepository()
         self._observability_repository = observability_repository or EvaluationObservabilityRepository()
+        self._terminal_context_cache: dict[
+            str, tuple[str, _CampaignAnalyticsContext]
+        ] = {}
 
     async def campaign_overview(self, *, user_id: str, campaign_id: str) -> CampaignOverviewResponse:
         context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
@@ -237,7 +246,25 @@ class EvaluationAnalyticsService:
 
     async def _load_campaign_context(self, *, user_id: str, campaign_id: str) -> _CampaignAnalyticsContext:
         campaign = await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
-        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        campaign_status = getattr(campaign, "status", None)
+        updated_at = getattr(campaign, "updated_at", None)
+        cache_marker = updated_at.isoformat() if updated_at is not None else ""
+        is_terminal = campaign_status in {
+            CampaignLifecycleStatus.COMPLETED,
+            CampaignLifecycleStatus.FAILED,
+            CampaignLifecycleStatus.CANCELLED,
+        } and bool(cache_marker)
+        if is_terminal:
+            cached = self._terminal_context_cache.get(campaign_id)
+            if cached and cached[0] == cache_marker:
+                return cached[1]
+        list_analytics_results = getattr(self._result_repository, "list_for_campaign_analytics", None)
+        if list_analytics_results is not None:
+            results = await list_analytics_results(user_id=user_id, campaign_id=campaign_id)
+        else:
+            # Keep lightweight test doubles and older repository adapters
+            # compatible while production uses the projection query above.
+            results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
         llm_calls_by_run = await self._observability_repository.list_llm_calls_for_campaign(campaign_id)
         context = _CampaignAnalyticsContext(
             campaign=campaign,
@@ -246,6 +273,8 @@ class EvaluationAnalyticsService:
             llm_calls_by_run=llm_calls_by_run,
         )
         context.overview = self._build_campaign_overview(context)
+        if is_terminal:
+            self._terminal_context_cache[campaign_id] = (cache_marker, context)
         return context
 
     def _build_campaign_overview(self, context: _CampaignAnalyticsContext) -> CampaignOverviewResponse:
@@ -377,7 +406,23 @@ class EvaluationAnalyticsService:
         return self._build_router_analysis(context, decisions)
 
     async def _routing_decisions_for_context(self, context: _CampaignAnalyticsContext) -> list[dict[str, Any]]:
-        decisions = []
+        list_for_campaign = getattr(
+            self._observability_repository,
+            "list_routing_decisions_for_campaign",
+            None,
+        )
+        if list_for_campaign is not None:
+            grouped = await list_for_campaign(context.campaign_id)
+            return [
+                _dump(item)
+                for result in context.results
+                for item in grouped.get(result.id, [])
+                if item.campaign_id == context.campaign_id
+            ]
+
+        # Compatibility fallback for older injected repository doubles only.
+        # The production repository always exposes the bulk method above.
+        decisions: list[dict[str, Any]] = []
         for result in context.results:
             decisions.extend(
                 _dump(item)
@@ -488,7 +533,11 @@ class EvaluationAnalyticsService:
                     mode=result.mode,
                     run_number=result.run_number,
                     repeat_number=_repeat_number(result),
-                    answer_preview=result.answer[:240],
+                    answer_preview=(
+                        getattr(result, "answer_preview", None)
+                        if getattr(result, "answer_preview", None) is not None
+                        else str(getattr(result, "answer", ""))[:240]
+                    ),
                     existing_rating_count=len(ratings),
                     already_rated_by_current_user=any(rating.rater_id_hash == rater_hash for rating in ratings),
                 )
@@ -674,6 +723,14 @@ class EvaluationAnalyticsService:
         request: ExportCampaignRequest,
     ) -> ExportCampaignResponse:
         context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        # Export is intentionally the full-detail path. Analytics/dashboard
+        # reads use the bounded projection, while explicit export retains its
+        # existing redaction-aware complete result contract.
+        full_results = await self._result_repository.list_for_campaign(
+            user_id=user_id,
+            campaign_id=campaign_id,
+        )
+        context = replace(context, results=full_results)
         trace_events_by_run = await self._observability_repository.list_trace_events_for_campaign(campaign_id)
         retrieval_chunks_by_run = await self._observability_repository.list_retrieval_chunks_for_campaign(campaign_id)
         claims_by_run = await self._observability_repository.list_claims_for_campaign(campaign_id)

@@ -1,7 +1,7 @@
 """API tests for conversations router."""
 
 from datetime import datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -50,6 +50,71 @@ def test_list_conversations(client: TestClient) -> None:
     assert payload[0]["title"] == "Test Chat"
     assert payload[0]["metadata"] == {"tags": ["test"]}
     mock_service.assert_awaited_once_with(user_id=TEST_USER_ID)
+
+
+def test_list_conversation_page_uses_bounded_cursor_contract(client: TestClient) -> None:
+    returned = {
+        "items": [
+            {
+                "id": TEST_CONV_ID,
+                "title": "Test Chat",
+                "type": "chat",
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat(),
+                "metadata": {"mode_preset": "advanced"},
+            }
+        ],
+        "next_cursor": "cursor-next",
+    }
+    with patch(
+        "conversations.router.list_user_conversation_page",
+        new=AsyncMock(return_value=returned),
+    ) as mock_service:
+        response = client.get(
+            "/api/conversations/page?limit=20&cursor=cursor-prev&search=research"
+        )
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["metadata"] == {"mode_preset": "advanced"}
+    assert response.json()["next_cursor"] == "cursor-next"
+    mock_service.assert_awaited_once_with(
+        user_id=TEST_USER_ID,
+        limit=20,
+        cursor="cursor-prev",
+        search="research",
+    )
+
+
+def test_list_message_page_uses_bounded_cursor_contract(client: TestClient) -> None:
+    returned = {
+        "items": [
+            {
+                "id": TEST_MSG_ID,
+                "role": "assistant",
+                "content": "latest",
+                "metadata": {},
+                "created_at": datetime.now().isoformat(),
+            }
+        ],
+        "next_cursor": "cursor-older",
+    }
+    with patch(
+        "conversations.router.list_user_message_page",
+        new=AsyncMock(return_value=returned),
+    ) as mock_service:
+        response = client.get(
+            f"/api/conversations/{TEST_CONV_ID}/messages/page?limit=30&cursor=cursor-newer"
+        )
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["content"] == "latest"
+    assert response.json()["next_cursor"] == "cursor-older"
+    mock_service.assert_awaited_once_with(
+        conversation_id=UUID(TEST_CONV_ID),
+        user_id=TEST_USER_ID,
+        limit=30,
+        cursor="cursor-newer",
+    )
 
 
 def test_create_conversation(client: TestClient) -> None:

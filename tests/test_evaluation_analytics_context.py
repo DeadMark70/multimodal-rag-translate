@@ -5,6 +5,7 @@ import pytest
 
 from evaluation.analytics import EvaluationAnalyticsService
 from evaluation.campaign_schemas import ExportCampaignRequest
+from evaluation.campaign_schemas import CampaignLifecycleStatus
 from evaluation.trace_schemas import (
     EvaluationClaim,
     EvaluationLlmCall,
@@ -51,6 +52,19 @@ class CountingResultRepository:
     async def list_for_campaign(self, *, user_id: str, campaign_id: str):
         self.list_calls += 1
         return self.results
+
+
+class ProjectionResultRepository(CountingResultRepository):
+    def __init__(self):
+        super().__init__()
+        self.analytics_list_calls = 0
+
+    async def list_for_campaign_analytics(self, *, user_id: str, campaign_id: str):
+        self.analytics_list_calls += 1
+        return self.results
+
+    async def list_for_campaign(self, *, user_id: str, campaign_id: str):
+        raise AssertionError("campaign analytics must use the bounded projection")
 
 
 class CountingObservabilityRepository:
@@ -135,6 +149,18 @@ class FakeResult:
 class SingleRunCampaignRepository:
     async def get(self, *, user_id: str, campaign_id: str):
         return FakeCampaign()
+
+
+class TerminalCampaignRepository:
+    def __init__(self):
+        self.campaign = SimpleNamespace(
+            id="campaign-1",
+            status=CampaignLifecycleStatus.COMPLETED,
+            updated_at=datetime(2026, 7, 8, tzinfo=timezone.utc),
+        )
+
+    async def get(self, *, user_id: str, campaign_id: str):
+        return self.campaign
 
 
 class SingleRunResultRepository:
@@ -281,6 +307,36 @@ async def test_campaign_overview_uses_bulk_llm_calls() -> None:
     assert observability_repository.bulk_llm_calls == ["campaign-1"]
     assert observability_repository.per_run_llm_calls == []
     assert result_repository.list_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_campaign_analytics_uses_bounded_result_projection() -> None:
+    result_repository = ProjectionResultRepository()
+    service = EvaluationAnalyticsService(
+        campaign_repository=FakeCampaignRepository(),
+        result_repository=result_repository,
+        observability_repository=CountingObservabilityRepository(),
+    )
+
+    overview = await service.campaign_overview(user_id="user-a", campaign_id="campaign-1")
+
+    assert overview.sample_count == 2
+    assert result_repository.analytics_list_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_campaign_context_is_reused_until_campaign_changes() -> None:
+    result_repository = ProjectionResultRepository()
+    service = EvaluationAnalyticsService(
+        campaign_repository=TerminalCampaignRepository(),
+        result_repository=result_repository,
+        observability_repository=CountingObservabilityRepository(),
+    )
+
+    await service.campaign_overview(user_id="user-a", campaign_id="campaign-1")
+    await service.mode_comparison(user_id="user-a", campaign_id="campaign-1")
+
+    assert result_repository.analytics_list_calls == 1
 
 
 @pytest.mark.asyncio

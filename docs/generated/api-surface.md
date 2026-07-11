@@ -10,7 +10,7 @@ Human-maintained inventory of the current backend surface.
 | `/rag` | ask and research | `/ask`, `/ask/stream`, `/research`, `/plan`, `/execute`, `/execute/stream` |
 | `/graph` | graph state, quality, diagnostics, and maintenance | `/status`, `/quality`, `/runtime-quality?campaign_id=...`, `/debug/search`, `/data`, `/documents`, `/optimize`, `/rebuild`, `/rebuild-full`, document retry/purge endpoints, `/node-vector/sync`, `/node-vector/sync/status` |
 | `/api/evaluation` | evaluation runtime | `/test-cases`, `/models`, `/model-configs`, `/campaigns`, `/campaigns/{id}/results`, `/campaigns/{id}/overview`, `/campaigns/{id}/runs`, `/campaigns/{id}/mode-comparison`, `/campaigns/{id}/question-comparison`, `/campaigns/{id}/cost-latency`, `/campaigns/{id}/router-analysis`, `/campaigns/{id}/ablation`, `/campaigns/{id}/human-vs-auto`, `/campaigns/{id}/human-eval-queue`, `/campaigns/{id}/repeat-stability`, `/campaigns/{id}/errors`, `/campaigns/{id}/export`, `/campaigns/{id}/traces`, `/campaigns/{id}/metrics`, `/campaigns/{id}/evaluate`, `/campaigns/{id}/cancel`, `/campaigns/{id}/stream`, `/runs/{run_id}/*` |
-| `/api/conversations` | conversation persistence | list/create/detail/update/delete, `/{conversation_id}/messages` |
+| `/api/conversations` | conversation persistence | legacy list/create/detail/update/delete, `/page` summary cursor list, `/{conversation_id}/messages/page`, `/{conversation_id}/messages` |
 | `/stats` | dashboard stats | `/dashboard` |
 | `/multimodal` | multimodal extraction | `/extract`, `/file/{doc_id}` DELETE |
 | `/imagemd` | image translation | `/translate_image` |
@@ -82,6 +82,13 @@ Human-maintained inventory of the current backend surface.
   - `retrieval_summary[]` entries may include additive GraphRAG observability fields: `graph_events`, `graph_event_count`, `graph_evidence_items`, `graph_evidence_item_count`
 - Campaign SSE remains coarse-grained (`campaign_snapshot`, `campaign_progress`, terminal `campaign_*` events). `event_schema_version="1.0"` and monotonic `sequence` currently apply to persisted trace events, not the SSE envelope.
 - Legacy campaigns remain readable even when research observability tables are empty; research run-detail endpoints return empty collections instead of failing.
+- Campaign analytics reads use a bounded result projection and campaign-scoped routing bulk query; terminal campaign contexts are reused in the process-local analytics service cache while the campaign `updated_at` marker is unchanged.
+
+## Conversation Performance Contract
+
+- `GET /api/conversations` remains the legacy full list for compatibility.
+- `GET /api/conversations/page?limit=40&cursor=...&search=...` returns bounded summary rows and a keyset `next_cursor`; large research result metadata is excluded.
+- `GET /api/conversations/{conversation_id}/messages/page?limit=50&cursor=...` returns a bounded newest message page and preserves the existing detail endpoint for compatibility.
 
 ## Shared Runtime Contracts
 

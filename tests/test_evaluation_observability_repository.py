@@ -430,6 +430,20 @@ async def test_observability_repository_lists_campaign_details_grouped_by_run(
                 created_at=created_at,
             )
         )
+        await repository.record_routing_decision(
+            EvaluationRoutingDecision(
+                routing_decision_id=f"routing-{run_id}",
+                run_id=run_id,
+                campaign_id=campaign_id,
+                span_id=f"span-{run_id}",
+                selected_mode="agentic",
+                analysis_type="retrospective",
+                confidence=0.9,
+                reason="bulk test",
+                payload={},
+                created_at=created_at,
+            )
+        )
         await repository.record_claim(
             EvaluationClaim(
                 claim_id=f"claim-{run_id}",
@@ -469,17 +483,20 @@ async def test_observability_repository_lists_campaign_details_grouped_by_run(
     trace_by_run = await repository.list_trace_events_for_campaign("campaign-bulk")
     llm_by_run = await repository.list_llm_calls_for_campaign("campaign-bulk")
     chunks_by_run = await repository.list_retrieval_chunks_for_campaign("campaign-bulk")
+    routing_by_run = await repository.list_routing_decisions_for_campaign("campaign-bulk")
     claims_by_run = await repository.list_claims_for_campaign("campaign-bulk")
     ratings_by_run = await repository.list_human_ratings_for_campaign("campaign-bulk")
 
     assert set(trace_by_run) == {"run-1", "run-2"}
     assert set(llm_by_run) == {"run-1", "run-2"}
     assert set(chunks_by_run) == {"run-1", "run-2"}
+    assert set(routing_by_run) == {"run-1", "run-2"}
     assert set(claims_by_run) == {"run-1", "run-2"}
     assert set(ratings_by_run) == {"run-1", "run-2"}
     assert trace_by_run["run-1"][0].event_id == "trace-run-1"
     assert trace_by_run["run-2"][0].event_id == "trace-run-2"
     assert llm_by_run["run-1"][0].llm_call_id == "llm-run-1"
     assert chunks_by_run["run-2"][0].retrieval_chunk_id == "chunk-row-run-2"
+    assert routing_by_run["run-1"][0].routing_decision_id == "routing-run-1"
     assert claims_by_run["run-1"][0].claim_text == "Claim run-1"
     assert ratings_by_run["run-2"][0].human_rating_id == "rating-run-2"

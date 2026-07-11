@@ -843,6 +843,44 @@ class EvaluationObservabilityRepository(
             for row in rows
         ]
 
+    async def list_routing_decisions_for_campaign(
+        self, campaign_id: str
+    ) -> dict[str, list[EvaluationRoutingDecision]]:
+        """Load all routing decisions for a campaign in one query.
+
+        Campaign analytics must not issue one routing query per result/run. The
+        response is grouped by run_id so callers can preserve their existing
+        run-oriented response shapes without reopening the database.
+        """
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM evaluation_routing_decisions
+                WHERE campaign_id = ?
+                ORDER BY run_id ASC, created_at ASC, routing_decision_id ASC
+                """,
+                (campaign_id,),
+            )
+            rows = await cursor.fetchall()
+        grouped: dict[str, list[EvaluationRoutingDecision]] = defaultdict(list)
+        for row in rows:
+            grouped[str(row["run_id"])].append(
+                EvaluationRoutingDecision(
+                    routing_decision_id=row["routing_decision_id"],
+                    run_id=row["run_id"],
+                    campaign_id=row["campaign_id"],
+                    span_id=row["span_id"],
+                    selected_mode=row["selected_mode"],
+                    analysis_type=row["analysis_type"],
+                    confidence=row["confidence"],
+                    reason=row["reason"],
+                    payload=_json_loads(row["payload_json"], {}),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                )
+            )
+        return dict(grouped)
+
     async def record_claim(self, claim: EvaluationClaim) -> None:
         await self._record_simple(
             "evaluation_claims",

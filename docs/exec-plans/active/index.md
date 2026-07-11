@@ -2,6 +2,7 @@
 
 The following active plans currently exist in this folder:
 
+- `docs/exec-plans/active/2026-07-evaluation-chat-loading-performance.md`
 - `docs/exec-plans/active/genai-langchain-layering-plan.md`
 - `docs/exec-plans/active/google-genai-stage2-langchain-paths.md`
 

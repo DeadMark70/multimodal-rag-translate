@@ -81,6 +81,31 @@ class ConversationResponse(BaseModel):
     metadata: Optional[dict] = None
 
 
+class ConversationSummaryResponse(BaseModel):
+    """Bounded list row; full research metadata stays on the detail endpoint."""
+
+    id: UUID
+    title: str
+    type: Literal["chat", "research"]
+    created_at: datetime
+    updated_at: datetime
+    metadata: Optional[dict] = None
+
+
+class ConversationPageResponse(BaseModel):
+    """Cursor-paginated conversation summaries."""
+
+    items: List[ConversationSummaryResponse] = Field(default_factory=list)
+    next_cursor: Optional[str] = None
+
+
+class MessagePageResponse(BaseModel):
+    """Cursor-paginated messages for bounded conversation hydration."""
+
+    items: List["ChatMessageResponse"] = Field(default_factory=list)
+    next_cursor: Optional[str] = None
+
+
 class ChatMessageResponse(BaseModel):
     """
     Response model for a single chat message.

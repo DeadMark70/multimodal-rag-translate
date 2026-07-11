@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 from uuid import UUID
 
 from core.errors import AppError, ErrorCode
@@ -11,7 +14,9 @@ from conversations.repository import (
     delete_conversation as repo_delete_conversation,
     get_conversation as repo_get_conversation,
     list_conversations as repo_list_conversations,
+    list_conversation_page as repo_list_conversation_page,
     list_messages as repo_list_messages,
+    list_messages_page as repo_list_messages_page,
     update_conversation as repo_update_conversation,
 )
 from conversations.schemas import (
@@ -19,7 +24,10 @@ from conversations.schemas import (
     ConversationCreate,
     ConversationDetailResponse,
     ConversationResponse,
+    ConversationPageResponse,
+    ConversationSummaryResponse,
     ConversationUpdate,
+    MessagePageResponse,
     MessageCreate,
 )
 
@@ -27,6 +35,80 @@ from conversations.schemas import (
 async def list_user_conversations(*, user_id: str) -> list[ConversationResponse]:
     rows = await repo_list_conversations(user_id=user_id)
     return [ConversationResponse(**row) for row in rows]
+
+
+def _encode_conversation_cursor(*, updated_at: str, conversation_id: str) -> str:
+    payload = json.dumps(
+        {"updated_at": updated_at, "id": conversation_id},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_conversation_cursor(cursor: str) -> tuple[str, str]:
+    padded = cursor + ("=" * (-len(cursor) % 4))
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+        updated_at = str(payload["updated_at"])
+        conversation_id = str(UUID(str(payload["id"])))
+    except (
+        binascii.Error,
+        UnicodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise AppError(
+            code=ErrorCode.BAD_REQUEST,
+            message="Invalid conversation cursor",
+            status_code=400,
+        ) from exc
+    return updated_at, conversation_id
+
+
+async def list_user_conversation_page(
+    *,
+    user_id: str,
+    limit: int,
+    cursor: str | None = None,
+    search: str | None = None,
+) -> ConversationPageResponse:
+    cursor_updated_at: str | None = None
+    cursor_id: str | None = None
+    if cursor:
+        cursor_updated_at, cursor_id = _decode_conversation_cursor(cursor)
+    rows, has_more = await repo_list_conversation_page(
+        user_id=user_id,
+        limit=limit,
+        cursor_updated_at=cursor_updated_at,
+        cursor_id=cursor_id,
+        search=search.strip() or None if search else None,
+    )
+    items: list[ConversationSummaryResponse] = []
+    for row in rows:
+        metadata: dict[str, object] = {}
+        for key in ("mode_preset", "mode_config_snapshot", "enable_graph_planning"):
+            if row.get(key) is not None:
+                metadata[key] = row[key]
+        items.append(
+            ConversationSummaryResponse(
+                id=row["id"],
+                title=row["title"],
+                type=row["type"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                metadata=metadata or None,
+            )
+        )
+    next_cursor = None
+    if has_more and items:
+        last = items[-1]
+        next_cursor = _encode_conversation_cursor(
+            updated_at=last.updated_at.isoformat(),
+            conversation_id=str(last.id),
+        )
+    return ConversationPageResponse(items=items, next_cursor=next_cursor)
 
 
 async def create_user_conversation(
@@ -74,6 +156,52 @@ async def get_user_conversation_detail(
             for msg in message_rows
         ]
     return ConversationDetailResponse(**conversation_row, messages=messages)
+
+
+async def list_user_message_page(
+    *,
+    conversation_id: UUID,
+    user_id: str,
+    limit: int,
+    cursor: str | None = None,
+) -> MessagePageResponse:
+    conversation = await repo_get_conversation(
+        conversation_id=str(conversation_id), user_id=user_id
+    )
+    if not conversation:
+        raise AppError(
+            code=ErrorCode.NOT_FOUND,
+            message="Conversation not found",
+            status_code=404,
+        )
+    cursor_created_at: str | None = None
+    cursor_id: str | None = None
+    if cursor:
+        cursor_created_at, cursor_id = _decode_conversation_cursor(cursor)
+    rows, has_more = await repo_list_messages_page(
+        conversation_id=str(conversation_id),
+        limit=limit,
+        cursor_created_at=cursor_created_at,
+        cursor_id=cursor_id,
+    )
+    items = [
+        ChatMessageResponse(
+            id=row["id"],
+            role=row["role"],
+            content=row["content"],
+            metadata=row.get("metadata"),
+            created_at=row["created_at"],
+        )
+        for row in reversed(rows)
+    ]
+    next_cursor = None
+    if has_more and rows:
+        oldest = rows[-1]
+        next_cursor = _encode_conversation_cursor(
+            updated_at=oldest["created_at"],
+            conversation_id=str(oldest["id"]),
+        )
+    return MessagePageResponse(items=items, next_cursor=next_cursor)
 
 
 async def update_user_conversation(
