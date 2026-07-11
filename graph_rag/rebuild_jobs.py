@@ -176,6 +176,7 @@ class GraphRebuildJobStore:
             partial=counts["partial"],
             pending=counts["pending"],
             progress_percent=round(processed * 100 / total) if total else 0,
+            max_attempts=manifest.max_attempts,
             current_document=(
                 self._public_document(current_document)
                 if current_document is not None

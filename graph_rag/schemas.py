@@ -376,6 +376,7 @@ class GraphRebuildStatusResponse(BaseModel):
     partial: int = Field(ge=0)
     pending: int = Field(ge=0)
     progress_percent: int = Field(ge=0, le=100)
+    max_attempts: int = Field(default=3, ge=1)
     current_document: Optional[GraphRebuildDocument] = None
     documents: List[GraphRebuildDocument] = Field(default_factory=list)
     can_resume: bool = False
