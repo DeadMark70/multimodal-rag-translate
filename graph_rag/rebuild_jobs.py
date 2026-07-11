@@ -191,6 +191,19 @@ class GraphRebuildJobStore:
         self.save(manifest)
         return manifest
 
+    def reset_failed_documents(self, manifest: GraphRebuildManifest) -> GraphRebuildManifest:
+        """Prepare only failed/partial documents for a new retry cycle."""
+        for document in manifest.documents:
+            if document.state in {"failed", "partial"}:
+                document.state = "pending"
+                document.attempt = 0
+                document.last_error = None
+        manifest.state = "pending"
+        manifest.phase = "extracting"
+        manifest.current_doc_id = None
+        manifest.last_error = None
+        return manifest
+
     def staging_dir(self, job_id: str) -> Path:
         """Return the user-contained staging GraphStore directory for a job."""
         path = self._job_dir(job_id) / "staging_graph"

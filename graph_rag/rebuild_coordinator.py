@@ -24,6 +24,8 @@ ExtractionRunner = Callable[..., Awaitable[GraphExtractionRunResult]]
 ArtifactLoader = Callable[..., tuple[str, object]]
 StoreFactory = Callable[..., GraphStore]
 Sleep = Callable[[float], Awaitable[None]]
+Optimizer = Callable[[GraphStore], Awaitable[tuple[int, int]]]
+Publisher = Callable[[GraphStore, GraphStore], None]
 
 
 class GraphRebuildCoordinator:
@@ -40,6 +42,8 @@ class GraphRebuildCoordinator:
         load_artifacts: ArtifactLoader = load_ocr_artifacts,
         sleep: Sleep = asyncio.sleep,
         jitter: Callable[[], float] | None = None,
+        optimize: Optimizer | None = None,
+        publish: Publisher | None = None,
     ) -> None:
         self.jobs = jobs
         self.store_factory = store_factory
@@ -47,12 +51,16 @@ class GraphRebuildCoordinator:
         self.load_artifacts = load_artifacts
         self.sleep = sleep
         self.jitter = jitter or (lambda: 0.0)
+        self.optimize = optimize or self._default_optimize
+        self.publish = publish or self._default_publish
 
     async def run(self, user_id: str, job_id: str, owner_token: str) -> None:
         """Extract all incomplete documents and persist a checkpoint after each one."""
         manifest = self.jobs.load(job_id)
         self._require_runner(manifest, owner_token)
-        staging = self.store_factory(user_id, storage_dir=self.jobs.staging_dir(job_id))
+        staging_dir = self.jobs.staging_dir(job_id)
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        staging = self.store_factory(user_id, storage_dir=staging_dir)
         self._reset_interrupted_document(manifest, staging)
         manifest.state = "running"
         manifest.phase = "extracting"
@@ -64,6 +72,8 @@ class GraphRebuildCoordinator:
             await self._process_document(manifest, document, staging, owner_token)
 
         self._complete_extraction_phase(manifest)
+        if manifest.state == "running":
+            await self._finalize(manifest, staging, owner_token)
 
     async def _process_document(
         self,
@@ -124,6 +134,56 @@ class GraphRebuildCoordinator:
             manifest.state = "running"
             manifest.phase = "optimizing"
         self.jobs.save(manifest)
+
+    async def _finalize(
+        self,
+        manifest: GraphRebuildManifest,
+        staging: GraphStore,
+        owner_token: str,
+    ) -> None:
+        """Optimize and publish only a complete staging graph."""
+        self._require_runner(manifest, owner_token)
+        if manifest.phase == "optimizing":
+            await self.optimize(staging)
+            manifest.phase = "validating"
+            self.jobs.save(manifest)
+        if manifest.phase == "validating":
+            self._validate_for_publication(manifest, staging)
+            manifest.phase = "publishing"
+            self.jobs.save(manifest)
+        if manifest.phase == "publishing":
+            self.publish(staging, self.store_factory(manifest.user_id))
+            manifest.state = "completed"
+            manifest.phase = "done"
+            manifest.published_at = self.jobs._now()
+            manifest.completed_at = self.jobs._now()
+            manifest.current_doc_id = None
+            self.jobs.save(manifest)
+
+    @staticmethod
+    async def _default_optimize(staging: GraphStore) -> tuple[int, int]:
+        from graph_rag.maintenance import optimize_existing_graph
+
+        return await optimize_existing_graph(staging, regenerate_communities=True)
+
+    @staticmethod
+    def _default_publish(staging: GraphStore, live: GraphStore) -> None:
+        from graph_rag.maintenance import _replace_live_graph_files
+
+        _replace_live_graph_files(staging, live)
+
+    @staticmethod
+    def _validate_for_publication(manifest: GraphRebuildManifest, staging: GraphStore) -> None:
+        successful_ids = {
+            document.doc_id
+            for document in manifest.documents
+            if document.state in {"indexed", "empty"}
+        }
+        expected_ids = {document.doc_id for document in manifest.documents}
+        if successful_ids != expected_ids:
+            raise RuntimeError("Graph rebuild staging data does not cover every source document")
+        if not expected_ids.issubset(staging.get_documents()):
+            raise RuntimeError("Graph rebuild staging graph is missing checkpointed documents")
 
     @staticmethod
     def _document_folder(document: GraphRebuildDocument) -> Path:

@@ -20,7 +20,14 @@ def _indexed_result(doc_id: str) -> GraphExtractionRunResult:
     return GraphExtractionRunResult(doc_id=doc_id, status="indexed", entities_added=1)
 
 
-def _coordinator(tmp_path: Path, extract: AsyncMock, sleep: AsyncMock) -> tuple[GraphRebuildJobStore, GraphRebuildCoordinator, str, str]:
+def _coordinator(
+    tmp_path: Path,
+    extract: AsyncMock,
+    sleep: AsyncMock,
+    *,
+    optimize: AsyncMock | None = None,
+    publish: Mock | None = None,
+) -> tuple[GraphRebuildJobStore, GraphRebuildCoordinator, str, str]:
     jobs = GraphRebuildJobStore("user-1", rebuild_root=tmp_path)
     manifest = jobs.create_job(SOURCES)
     owner_token = jobs.acquire_lease(manifest.job_id)
@@ -35,6 +42,8 @@ def _coordinator(tmp_path: Path, extract: AsyncMock, sleep: AsyncMock) -> tuple[
         load_artifacts=Mock(return_value=("markdown", [])),
         sleep=sleep,
         jitter=lambda: 0.0,
+        optimize=optimize or AsyncMock(return_value=(0, 0)),
+        publish=publish or Mock(),
     )
     return jobs, coordinator, manifest.job_id, owner_token
 
@@ -66,3 +75,39 @@ async def test_retryable_failure_succeeds_on_third_attempt(tmp_path: Path) -> No
     first = jobs.load(job_id).documents[0]
     assert first.state == "indexed"
     assert first.attempt == 3
+
+
+@pytest.mark.asyncio
+async def test_failed_document_keeps_staging_and_old_graph(tmp_path: Path) -> None:
+    extract = AsyncMock(
+        side_effect=[
+            GraphExtractionRunResult(doc_id="doc-1", status="failed", last_error="quota"),
+            _indexed_result("doc-2"),
+        ]
+    )
+    publish = Mock()
+    jobs, coordinator, job_id, owner_token = _coordinator(
+        tmp_path, extract, AsyncMock(), publish=publish
+    )
+
+    await coordinator.run("user-1", job_id, owner_token)
+
+    assert jobs.load(job_id).state == "completed_with_failures"
+    assert jobs.staging_dir(job_id).exists()
+    publish.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_all_successful_documents_finalize_and_publish(tmp_path: Path) -> None:
+    extract = AsyncMock(side_effect=[_indexed_result("doc-1"), _indexed_result("doc-2")])
+    optimize = AsyncMock(return_value=(1, 2))
+    publish = Mock()
+    jobs, coordinator, job_id, owner_token = _coordinator(
+        tmp_path, extract, AsyncMock(), optimize=optimize, publish=publish
+    )
+
+    await coordinator.run("user-1", job_id, owner_token)
+
+    assert jobs.load(job_id).state == "completed"
+    optimize.assert_awaited_once()
+    publish.assert_called_once()

@@ -98,3 +98,22 @@ def test_only_lease_owner_can_release_runner_lock(tmp_path: Path) -> None:
     assert store.release_lease(manifest.job_id, "wrong-owner") is False
     assert store.release_lease(manifest.job_id, owner_token) is True
     assert store.load(manifest.job_id).lease is None
+
+
+def test_reset_failed_documents_keeps_successful_checkpoints(tmp_path: Path) -> None:
+    store = GraphRebuildJobStore("user-1", rebuild_root=tmp_path)
+    manifest = store.create_job(SOURCES)
+    manifest.state = "completed_with_failures"
+    manifest.documents[0].state = "indexed"
+    manifest.documents[1].state = "failed"
+    manifest.documents[1].attempt = 3
+    manifest.documents[1].last_error = "quota exceeded"
+
+    reset = store.reset_failed_documents(manifest)
+
+    assert reset.state == "pending"
+    assert reset.phase == "extracting"
+    assert reset.documents[0].state == "indexed"
+    assert reset.documents[1].state == "pending"
+    assert reset.documents[1].attempt == 0
+    assert reset.documents[1].last_error is None
