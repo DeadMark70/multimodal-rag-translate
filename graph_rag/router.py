@@ -32,6 +32,7 @@ from graph_rag.maintenance import (
     rebuild_graph_task as _rebuild_graph_task,
     retry_graph_document_task as _retry_graph_document_task,
 )
+from graph_rag.rebuild_jobs import GraphRebuildJobStore
 from graph_rag.schemas import (
     GraphDebugSearchRequest,
     GraphDebugSearchResponse,
@@ -42,6 +43,8 @@ from graph_rag.schemas import (
     GraphStatusResponse,
     GraphQualityResponse,
     GraphRuntimeQualityResponse,
+    GraphRebuildManifest,
+    GraphRebuildStatusResponse,
 )
 from graph_rag.debug import run_debug_search
 from graph_rag.quality import compute_campaign_runtime_quality, compute_graph_quality
@@ -449,38 +452,31 @@ async def rebuild_graph(
 
 @router.post(
     "/rebuild-full",
-    response_model=GraphOperationResponse,
+    response_model=GraphRebuildStatusResponse,
     summary="完整重構圖譜",
     description="從所有 OCR artifact 重新抽取並建立全新圖譜；成功後才會覆蓋目前圖譜。",
 )
 async def rebuild_graph_full(
     background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user_id),
-) -> GraphOperationResponse:
+) -> GraphRebuildStatusResponse:
     """Build a fresh graph from all OCR-complete document artifacts."""
     try:
-        store = GraphStore(user_id)
-        if store.active_job_state:
-            return GraphOperationResponse(
-                status="skipped",
-                message=f"已有圖譜工作執行中：{store.active_job_state}",
-            )
+        jobs = GraphRebuildJobStore(user_id)
+        current = jobs.load_current()
+        if current is not None:
+            current = jobs.reconcile_status(current)
+        if current is not None and current.state not in {"completed", "failed"}:
+            return jobs.to_status(current)
 
         sources = await _list_graph_source_documents(user_id)
         if not sources:
-            return GraphOperationResponse(
-                status="skipped",
+            raise AppError(
+                code=ErrorCode.VALIDATION_ERROR,
                 message="沒有可用的 OCR 文件可供完整重構",
+                status_code=400,
             )
-
-        store.set_active_job_state("rebuild_full")
-        store.save_sidecars()
-        background_tasks.add_task(_rebuild_full_graph_task, user_id)
-        return GraphOperationResponse(
-            status="started",
-            message="完整圖譜重構已開始，將從所有 OCR 文件重新抽取",
-            details={"document_count": len(sources)},
-        )
+        return _schedule_full_rebuild(background_tasks, user_id, jobs, jobs.create_job(sources))
     except Exception as e:
         logger.error("Failed to start full graph rebuild: %s", e, exc_info=True)
         raise AppError(
@@ -488,6 +484,75 @@ async def rebuild_graph_full(
             message="Failed to start full graph rebuild",
             status_code=500,
         ) from e
+
+
+@router.get(
+    "/rebuild-full/status",
+    response_model=GraphRebuildStatusResponse | None,
+    summary="取得完整圖譜重構進度",
+)
+async def get_rebuild_graph_full_status(
+    user_id: str = Depends(get_current_user_id),
+) -> GraphRebuildStatusResponse | None:
+    """Return the durable job projection without scheduling provider work."""
+    jobs = GraphRebuildJobStore(user_id)
+    manifest = jobs.load_current()
+    if manifest is not None:
+        manifest = jobs.reconcile_status(manifest)
+    return jobs.to_status(manifest) if manifest is not None else None
+
+
+@router.post(
+    "/rebuild-full/resume",
+    response_model=GraphRebuildStatusResponse,
+    summary="繼續完整圖譜重構",
+)
+async def resume_rebuild_graph_full(
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user_id),
+) -> GraphRebuildStatusResponse:
+    """Resume an interrupted job or retry only failed document checkpoints."""
+    jobs = GraphRebuildJobStore(user_id)
+    manifest = jobs.load_current()
+    if manifest is not None:
+        manifest = jobs.reconcile_status(manifest)
+    if manifest is None:
+        raise AppError(
+            code=ErrorCode.NOT_FOUND,
+            message="沒有可繼續的完整圖譜重構工作",
+            status_code=404,
+        )
+    if manifest.state == "completed_with_failures":
+        manifest = jobs.reset_failed_documents(manifest)
+        jobs.save(manifest)
+    elif manifest.state == "running":
+        return jobs.to_status(manifest)
+    elif manifest.state != "interrupted":
+        raise AppError(
+            code=ErrorCode.VALIDATION_ERROR,
+            message="目前完整圖譜重構工作無法繼續",
+            status_code=409,
+        )
+    return _schedule_full_rebuild(background_tasks, user_id, jobs, manifest)
+
+
+def _schedule_full_rebuild(
+    background_tasks: BackgroundTasks,
+    user_id: str,
+    jobs: GraphRebuildJobStore,
+    manifest: GraphRebuildManifest,
+) -> GraphRebuildStatusResponse:
+    """Claim one durable runner, preserve legacy maintenance exclusion, and schedule it."""
+    owner_token = jobs.acquire_lease(manifest.job_id)
+    if owner_token is None:
+        return jobs.to_status(jobs.load(manifest.job_id))
+    manifest.state = "running"
+    jobs.save(manifest)
+    live_store = GraphStore(user_id)
+    live_store.set_active_job_state("rebuild_full")
+    live_store.save_sidecars()
+    background_tasks.add_task(_rebuild_full_graph_task, user_id, manifest.job_id, owner_token)
+    return jobs.to_status(manifest)
 
 
 @router.post(

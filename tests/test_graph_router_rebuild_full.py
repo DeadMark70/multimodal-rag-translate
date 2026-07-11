@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 from unittest.mock import AsyncMock, Mock, patch
@@ -16,6 +17,8 @@ from graph_rag.schemas import (
     EntityType,
     GraphDocumentStatus,
     GraphExtractionRunResult,
+    GraphRebuildManifest,
+    GraphRebuildStatusResponse,
     NodeVectorSyncStatusResponse,
 )
 from graph_rag.store import GraphStore
@@ -99,16 +102,54 @@ def test_graph_documents_endpoint_returns_persisted_and_unattempted_rows() -> No
     assert payload["documents"][2]["is_eligible"] is False
 
 
-def test_rebuild_full_endpoint_sets_active_job_and_starts_background_task() -> None:
+def _rebuild_manifest(*, state: str = "pending") -> GraphRebuildManifest:
+    now = datetime.now(timezone.utc)
+    return GraphRebuildManifest(
+        job_id="job-1",
+        user_id=TEST_USER_ID,
+        state=state,
+        created_at=now,
+        updated_at=now,
+        source_snapshot_hash="snapshot",
+        documents=[],
+    )
+
+
+def _rebuild_status(*, state: str = "running") -> GraphRebuildStatusResponse:
+    return GraphRebuildStatusResponse(
+        job_id="job-1",
+        state=state,
+        phase="extracting" if state == "running" else "done",
+        total=1,
+        processed=0,
+        succeeded=0,
+        empty=0,
+        failed=0,
+        partial=0,
+        pending=1,
+        progress_percent=0,
+    )
+
+
+def test_rebuild_full_endpoint_starts_durable_job_and_schedules_owner_token() -> None:
     mock_store = Mock()
     mock_store.active_job_state = None
     mock_store.save_sidecars = Mock()
     mock_task = AsyncMock()
+    mock_jobs = Mock()
+    manifest = _rebuild_manifest()
+    status = _rebuild_status()
+    mock_jobs.load_current.return_value = None
+    mock_jobs.create_job.return_value = manifest
+    mock_jobs.acquire_lease.return_value = "owner-token"
+    mock_jobs.load.return_value = manifest
+    mock_jobs.to_status.return_value = status
 
     with (
         patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
         patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
         patch("graph_rag.router.GraphStore", return_value=mock_store),
+        patch("graph_rag.router.GraphRebuildJobStore", return_value=mock_jobs),
         patch(
             "graph_rag.router._list_graph_source_documents",
             new=AsyncMock(
@@ -128,10 +169,63 @@ def test_rebuild_full_endpoint_sets_active_job_and_starts_background_task() -> N
 
     app.dependency_overrides = {}
     assert response.status_code == 200
-    assert response.json()["status"] == "started"
+    assert response.json()["job_id"] == "job-1"
     mock_store.set_active_job_state.assert_called_once_with("rebuild_full")
     mock_store.save_sidecars.assert_called()
-    mock_task.assert_awaited_once_with(TEST_USER_ID)
+    mock_task.assert_awaited_once_with(TEST_USER_ID, "job-1", "owner-token")
+
+
+def test_rebuild_full_status_reconciles_without_scheduling_work() -> None:
+    mock_jobs = Mock()
+    manifest = _rebuild_manifest(state="running")
+    status = _rebuild_status(state="interrupted")
+    mock_jobs.load_current.return_value = manifest
+    mock_jobs.reconcile_status.return_value = manifest
+    mock_jobs.to_status.return_value = status
+    mock_task = AsyncMock()
+
+    with (
+        patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
+        patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
+        patch("graph_rag.router.GraphRebuildJobStore", return_value=mock_jobs),
+        patch("graph_rag.router._rebuild_full_graph_task", new=mock_task),
+        _client() as client,
+    ):
+        response = client.get("/graph/rebuild-full/status")
+
+    app.dependency_overrides = {}
+    assert response.status_code == 200
+    assert response.json()["state"] == "interrupted"
+    mock_task.assert_not_called()
+
+
+def test_rebuild_full_resume_schedules_only_one_owner() -> None:
+    mock_store = Mock()
+    mock_jobs = Mock()
+    manifest = _rebuild_manifest(state="interrupted")
+    status = _rebuild_status()
+    mock_jobs.load_current.return_value = manifest
+    mock_jobs.reconcile_status.return_value = manifest
+    mock_jobs.acquire_lease.side_effect = ["owner-token", None]
+    mock_jobs.load.return_value = manifest
+    mock_jobs.to_status.return_value = status
+    mock_task = AsyncMock()
+
+    with (
+        patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
+        patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
+        patch("graph_rag.router.GraphStore", return_value=mock_store),
+        patch("graph_rag.router.GraphRebuildJobStore", return_value=mock_jobs),
+        patch("graph_rag.router._rebuild_full_graph_task", new=mock_task),
+        _client() as client,
+    ):
+        first = client.post("/graph/rebuild-full/resume")
+        second = client.post("/graph/rebuild-full/resume")
+
+    app.dependency_overrides = {}
+    assert first.status_code == 200
+    assert second.status_code == 200
+    mock_task.assert_awaited_once_with(TEST_USER_ID, "job-1", "owner-token")
 
 
 def test_purge_graph_document_endpoint_sets_active_job_and_starts_background_task() -> (

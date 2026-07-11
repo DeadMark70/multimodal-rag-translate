@@ -15,6 +15,8 @@ from graph_rag.node_vector_index import (
     sync_node_vector_index,
 )
 from core.llm_factory import ExtractionProfile
+from graph_rag.rebuild_coordinator import GraphRebuildCoordinator
+from graph_rag.rebuild_jobs import GraphRebuildJobStore
 from graph_rag.schemas import GraphDocumentStatus
 from graph_rag.service import run_graph_extraction
 from graph_rag.store import GraphStore
@@ -247,8 +249,29 @@ async def rebuild_graph_task(user_id: str) -> None:
         logger.error(f"Graph rebuild failed for user {user_id}: {e}")
 
 
-async def rebuild_full_graph_task(user_id: str) -> None:
+async def rebuild_full_graph_task(
+    user_id: str,
+    job_id: str | None = None,
+    owner_token: str | None = None,
+) -> None:
     """Build a brand-new graph from all OCR-complete document artifacts."""
+    if job_id is not None and owner_token is not None:
+        jobs = GraphRebuildJobStore(user_id)
+        try:
+            await GraphRebuildCoordinator(jobs).run(user_id, job_id, owner_token)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Durable full graph rebuild failed for user %s: %s", user_id, exc, exc_info=True)
+            manifest = jobs.load(job_id)
+            manifest.state = "interrupted"
+            manifest.last_error = str(exc).replace("\n", " ")[:500]
+            jobs.save(manifest)
+        finally:
+            jobs.release_lease(job_id, owner_token)
+            live_store = GraphStore(user_id)
+            live_store.set_active_job_state(None)
+            live_store.save_sidecars()
+        return
+
     logger.info("Starting full graph rebuild for user %s", user_id)
     live_store = GraphStore(user_id)
     sources = await list_graph_source_documents(user_id)
