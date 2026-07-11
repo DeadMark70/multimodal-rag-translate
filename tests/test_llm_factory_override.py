@@ -39,23 +39,29 @@ def test_get_llm_override_model():
         raise e
 
 
-def test_get_llm_graph_rag_defaults_use_2_5_flash_lite() -> None:
+def test_get_llm_graph_rag_defaults_use_gemini_31_flash_lite() -> None:
     clear_llm_cache()
     with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
-        mock_chat.return_value.model = "gemini-2.5-flash-lite"
+        mock_chat.return_value.model = "gemini-3.1-flash-lite"
         get_llm("graph_extraction")
         get_llm("community_summary")
 
-    assert mock_chat.call_args_list[0].kwargs["model"] == "gemini-2.5-flash-lite"
-    assert mock_chat.call_args_list[1].kwargs["model"] == "gemini-2.5-flash-lite"
+    assert mock_chat.call_args_list[0].kwargs["model"] == "gemini-3.1-flash-lite"
+    assert mock_chat.call_args_list[1].kwargs["model"] == "gemini-3.1-flash-lite"
 
 
 def test_get_graph_rag_runtime_overrides_use_budget_for_2_5_models() -> None:
-    assert get_graph_rag_runtime_overrides("graph_extraction") == {
+    assert get_graph_rag_runtime_overrides(
+        "graph_extraction",
+        model_name="gemini-2.5-flash-lite",
+    ) == {
         "thinking_budget": 2048,
         "include_thoughts": False,
     }
-    assert get_graph_rag_runtime_overrides("community_summary") == {
+    assert get_graph_rag_runtime_overrides(
+        "community_summary",
+        model_name="gemini-2.5-flash-lite",
+    ) == {
         "thinking_budget": 1024,
         "include_thoughts": False,
     }
@@ -65,6 +71,23 @@ def test_get_graph_rag_runtime_overrides_use_thinking_level_for_gemini_3() -> No
     assert get_graph_rag_runtime_overrides(
         "community_summary",
         model_name="gemini-3.1-flash-lite-preview",
+    ) == {
+        "thinking_level": "low",
+        "include_thoughts": False,
+    }
+
+
+def test_standard_graph_extraction_uses_medium_thinking() -> None:
+    assert get_graph_rag_runtime_overrides("graph_extraction") == {
+        "thinking_level": "medium",
+        "include_thoughts": False,
+    }
+
+
+def test_high_precision_graph_extraction_uses_high_thinking() -> None:
+    assert get_graph_rag_runtime_overrides(
+        "graph_extraction",
+        extraction_profile="high_precision",
     ) == {
         "thinking_level": "high",
         "include_thoughts": False,
@@ -76,8 +99,11 @@ def test_graph_rag_runtime_override_passes_2_5_thinking_config() -> None:
     clear_llm_cache()
     with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
         mock_chat.return_value.model = "gemini-2.5-flash-lite"
-        with graph_rag_llm_runtime_override("graph_extraction"):
-            get_llm("graph_extraction")
+        with graph_rag_llm_runtime_override(
+            "graph_extraction",
+            model_name="gemini-2.5-flash-lite",
+        ):
+            get_llm("graph_extraction", model_name="gemini-2.5-flash-lite")
 
     mock_chat.assert_called_once()
     kwargs = mock_chat.call_args.kwargs
@@ -90,8 +116,11 @@ def test_graph_rag_runtime_override_passes_summary_budget_for_2_5() -> None:
     clear_llm_cache()
     with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
         mock_chat.return_value.model = "gemini-2.5-flash-lite"
-        with graph_rag_llm_runtime_override("community_summary"):
-            get_llm("community_summary")
+        with graph_rag_llm_runtime_override(
+            "community_summary",
+            model_name="gemini-2.5-flash-lite",
+        ):
+            get_llm("community_summary", model_name="gemini-2.5-flash-lite")
 
     mock_chat.assert_called_once()
     kwargs = mock_chat.call_args.kwargs
@@ -99,7 +128,7 @@ def test_graph_rag_runtime_override_passes_summary_budget_for_2_5() -> None:
     assert kwargs["include_thoughts"] is False
 
 
-def test_graph_rag_runtime_override_passes_3x_thinking_level() -> None:
+def test_graph_rag_runtime_override_passes_low_thinking_to_community_summary() -> None:
     clear_llm_cache()
     with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
         mock_chat.return_value.model = "gemini-3.1-flash-lite-preview"
@@ -111,9 +140,22 @@ def test_graph_rag_runtime_override_passes_3x_thinking_level() -> None:
 
     mock_chat.assert_called_once()
     kwargs = mock_chat.call_args.kwargs
-    assert kwargs["thinking_level"] == "high"
+    assert kwargs["thinking_level"] == "low"
     assert kwargs["include_thoughts"] is False
     assert "thinking_budget" not in kwargs
+
+
+def test_graph_rag_runtime_override_passes_high_thinking_to_high_precision_extraction() -> None:
+    clear_llm_cache()
+    with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
+        mock_chat.return_value.model = "gemini-3.1-flash-lite"
+        with graph_rag_llm_runtime_override(
+            "graph_extraction",
+            extraction_profile="high_precision",
+        ):
+            get_llm("graph_extraction")
+
+    assert mock_chat.call_args.kwargs["thinking_level"] == "high"
 
 
 def test_get_llm_usage_metrics_reads_reasoning_tokens() -> None:
