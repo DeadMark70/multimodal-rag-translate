@@ -18,7 +18,7 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 # Local application
-from core.llm_factory import get_llm_usage_metrics, graph_rag_llm_runtime_override
+from core.llm_factory import ExtractionProfile, get_llm_usage_metrics, graph_rag_llm_runtime_override
 from core.providers import get_llm
 from core.prompt_loader import format_graph_rag_prompt
 from graph_rag.schemas import (
@@ -431,6 +431,7 @@ class EntityRelationExtractor:
         doc_id: str,
         chunk_index: int,
         asset_links: Sequence[GraphAssetLink],
+        extraction_profile: ExtractionProfile = "standard",
     ) -> tuple[List[ExtractedEntity], List[ExtractedRelation], List[RawGraphCandidate]]:
         """
         Extract entities and relations in a single structured-output call.
@@ -439,7 +440,10 @@ class EntityRelationExtractor:
             Exception: Any model setup / invocation / validation failure.
         """
         prompt = format_graph_rag_prompt("one_pass_extraction_schema_v1", text=text[:4000])
-        with graph_rag_llm_runtime_override("graph_extraction"):
+        with graph_rag_llm_runtime_override(
+            "graph_extraction",
+            extraction_profile=extraction_profile,
+        ):
             llm = get_llm("graph_extraction")
             try:
                 structured_llm = llm.bind(
@@ -827,6 +831,7 @@ class EntityRelationExtractor:
         doc_id: str,
         chunk_index: int = 0,
         asset_links: Sequence[GraphAssetLink] | None = None,
+        extraction_profile: ExtractionProfile = "standard",
     ) -> ExtractionResult:
         """
         Perform full extraction (entities + relations) on text.
@@ -850,6 +855,7 @@ class EntityRelationExtractor:
                     doc_id,
                     chunk_index,
                     asset_links or (),
+                    extraction_profile,
                 )
             except Exception as e:
                 logger.warning(
@@ -882,6 +888,7 @@ async def extract_from_chunk(
     doc_id: str,
     chunk_index: int = 0,
     asset_links: Sequence[GraphAssetLink] | None = None,
+    extraction_profile: ExtractionProfile = "standard",
 ) -> ExtractionResult:
     """
     Convenience function to extract from a single chunk.
@@ -895,7 +902,13 @@ async def extract_from_chunk(
         ExtractionResult.
     """
     extractor = EntityRelationExtractor()
-    return await extractor.extract(text, doc_id, chunk_index, asset_links=asset_links)
+    return await extractor.extract(
+        text,
+        doc_id,
+        chunk_index,
+        asset_links=asset_links,
+        extraction_profile=extraction_profile,
+    )
 
 
 async def add_extraction_to_graph(
@@ -983,6 +996,7 @@ async def extract_and_add_to_graph(
     store: GraphStore,
     chunk_index: int = 0,
     asset_links: Sequence[GraphAssetLink] | None = None,
+    extraction_profile: ExtractionProfile = "standard",
 ) -> Tuple[int, int]:
     """
     Extract from text and add directly to graph.
@@ -1003,5 +1017,6 @@ async def extract_and_add_to_graph(
         doc_id,
         chunk_index,
         asset_links=asset_links,
+        extraction_profile=extraction_profile,
     )
     return await add_extraction_to_graph(store, result)

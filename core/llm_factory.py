@@ -107,6 +107,15 @@ def _resolve_model_name(purpose: LLMPurpose, model_name: Optional[str] = None) -
     return _MODEL_BY_PURPOSE.get(purpose, _DEFAULT_MODEL)
 
 
+def get_graph_rag_model_name(
+    purpose: GraphRAGPurpose,
+    *,
+    model_name: Optional[str] = None,
+) -> str:
+    """Return the effective GraphRAG model name for persisted run metadata."""
+    return _resolve_model_name(purpose, model_name=model_name)
+
+
 def get_graph_rag_runtime_overrides(
     purpose: GraphRAGPurpose,
     *,

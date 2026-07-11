@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 # Local application
 from core.auth import get_current_user_id
+from core.llm_factory import ExtractionProfile
 from core.errors import AppError, ErrorCode
 from evaluation.db import CampaignRepository
 from graph_rag.maintenance import (
@@ -68,6 +69,12 @@ class GraphOptimizeRequest(BaseModel):
     regenerate_communities: bool = Field(default=True, description="重新生成社群摘要")
 
 
+class GraphDocumentRetryRequest(BaseModel):
+    """Requested extraction quality for one-document GraphRAG retry."""
+
+    extraction_profile: ExtractionProfile = "standard"
+
+
 class GraphOperationResponse(BaseModel):
     """Response for graph operations."""
 
@@ -112,6 +119,7 @@ async def _build_graph_document_rows(
 
     for doc_id in sorted(known_doc_ids):
         persisted = store.get_document_status(doc_id)
+        extraction_manifest = store.get_latest_extraction_manifest(doc_id)
         source = source_map.get(doc_id, {})
         fallback_status = "indexed" if doc_id in graph_doc_ids else "skipped"
         status = persisted or GraphDocumentStatus(doc_id=doc_id, status=fallback_status)
@@ -120,6 +128,21 @@ async def _build_graph_document_rows(
                 **status.model_dump(),
                 file_name=source.get("file_name"),
                 is_eligible=doc_id in source_map,
+                extraction_model=(
+                    extraction_manifest.extractor_model if extraction_manifest else None
+                ),
+                extraction_thinking_level=(
+                    extraction_manifest.thinking_level if extraction_manifest else None
+                ),
+                extraction_profile=(
+                    extraction_manifest.extraction_profile if extraction_manifest else None
+                ),
+                extraction_prompt_version=(
+                    extraction_manifest.prompt_version if extraction_manifest else None
+                ),
+                extraction_recorded_at=(
+                    extraction_manifest.created_at if extraction_manifest else None
+                ),
             )
         )
     return rows
@@ -476,6 +499,7 @@ async def rebuild_graph_full(
 async def retry_graph_document(
     doc_id: str,
     background_tasks: BackgroundTasks,
+    request: GraphDocumentRetryRequest | None = None,
     user_id: str = Depends(get_current_user_id),
 ) -> GraphOperationResponse:
     """Retry GraphRAG extraction for a single OCR-complete document."""
@@ -517,11 +541,21 @@ async def retry_graph_document(
 
         store.set_active_job_state(f"retry:{doc_id}")
         store.save_sidecars()
-        background_tasks.add_task(_retry_graph_document_task, user_id, doc_id)
+        extraction_profile = (request or GraphDocumentRetryRequest()).extraction_profile
+        background_tasks.add_task(
+            _retry_graph_document_task,
+            user_id,
+            doc_id,
+            extraction_profile,
+        )
         return GraphOperationResponse(
             status="started",
             message="單一文件 GraphRAG 重試已開始",
-            details={"doc_id": doc_id, "file_name": row.get("file_name")},
+            details={
+                "doc_id": doc_id,
+                "file_name": row.get("file_name"),
+                "extraction_profile": extraction_profile,
+            },
         )
     except AppError:
         raise

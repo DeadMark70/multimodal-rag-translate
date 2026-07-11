@@ -251,6 +251,10 @@ class GraphStatusResponse(BaseModel):
     partial_document_count: int = Field(default=0, description="GraphRAG 部分成功文件數量")
     empty_document_count: int = Field(default=0, description="GraphRAG 成功執行但未抽出實體的文件數量")
     active_job_state: Optional[str] = Field(default=None, description="目前進行中的圖譜工作狀態")
+    graph_extraction_model: Optional[str] = Field(default=None, description="預設圖譜抽取模型")
+    graph_extraction_thinking_level: Optional[str] = Field(default=None, description="預設圖譜抽取 thinking level")
+    community_summary_model: Optional[str] = Field(default=None, description="預設社群摘要模型")
+    community_summary_thinking_level: Optional[str] = Field(default=None, description="預設社群摘要 thinking level")
     
     model_config = ConfigDict(
         json_schema_extra={
@@ -299,6 +303,11 @@ class GraphDocumentStatusItem(GraphDocumentStatus):
 
     file_name: Optional[str] = Field(default=None, description="文件名稱")
     is_eligible: bool = Field(default=True, description="是否仍具備 OCR artifact 可重建")
+    extraction_model: Optional[str] = Field(default=None, description="最近成功抽取使用的模型")
+    extraction_thinking_level: Optional[str] = Field(default=None, description="最近成功抽取的 thinking level")
+    extraction_profile: Optional[str] = Field(default=None, description="最近成功抽取 profile")
+    extraction_prompt_version: Optional[str] = Field(default=None, description="最近成功抽取 prompt version")
+    extraction_recorded_at: Optional[datetime] = Field(default=None, description="最近成功抽取時間")
 
 
 class GraphDocumentStatusListResponse(BaseModel):

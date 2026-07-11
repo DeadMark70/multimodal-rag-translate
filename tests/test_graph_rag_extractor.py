@@ -387,6 +387,27 @@ async def test_run_graph_extraction_invokes_one_extraction_call_per_valid_chunk(
 
 
 @pytest.mark.asyncio
+async def test_run_graph_extraction_forwards_high_precision_profile_to_every_chunk() -> None:
+    mock_store = Mock()
+
+    with (
+        patch("graph_rag.service.GraphStore", return_value=mock_store),
+        patch(
+            "graph_rag.service.extract_and_add_to_graph",
+            new=AsyncMock(return_value=(1, 0)),
+        ) as mock_extract,
+    ):
+        await run_graph_extraction(
+            user_id="user-1",
+            doc_id="doc-1",
+            markdown_text="A" * 9000,
+            extraction_profile="high_precision",
+        )
+
+    assert mock_extract.await_args.kwargs["extraction_profile"] == "high_precision"
+
+
+@pytest.mark.asyncio
 async def test_run_graph_extraction_marks_empty_when_no_valid_chunks() -> None:
     mock_store = Mock()
 

@@ -22,6 +22,7 @@ import networkx as nx
 
 # Local application
 from core import uploads as upload_paths
+from core.llm_factory import get_graph_rag_model_name, get_graph_rag_runtime_overrides
 from graph_rag.schemas import (
     Community,
     CanonicalEntity,
@@ -1685,6 +1686,14 @@ class GraphStore:
             partial_document_count=document_counts["partial"],
             empty_document_count=document_counts["empty"],
             active_job_state=self.active_job_state,
+            graph_extraction_model=get_graph_rag_model_name("graph_extraction"),
+            graph_extraction_thinking_level=get_graph_rag_runtime_overrides(
+                "graph_extraction"
+            ).get("thinking_level"),
+            community_summary_model=get_graph_rag_model_name("community_summary"),
+            community_summary_thinking_level=get_graph_rag_runtime_overrides(
+                "community_summary"
+            ).get("thinking_level"),
         )
     
     def mark_pending_resolution(self, node_ids: List[str]) -> int:
