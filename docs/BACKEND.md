@@ -101,6 +101,12 @@
     - `POST /graph/node-vector/sync` starts a background sync job and persists progress state
     - `GET /graph/node-vector/sync/status` exposes `idle/running/completed/failed`, processed counts, and error/details for polling UIs
   - embedding provider calls in node-vector sync/search are guarded by a process-local per-user limiter (`GRAPH_NODE_VECTOR_EMBEDDING_RPM_LIMIT`, default `1000` RPM) with wait-queue behavior and retry/backoff on 429/transport errors
+- Full GraphRAG rebuilds are durable, user-scoped jobs rather than disposable background tasks:
+  - `POST /graph/rebuild-full` creates a frozen source-document snapshot and persistent staging graph, or returns the active job instead of starting duplicate work
+  - each document is checkpointed after staging persistence, retryable provider/transport failures receive at most three attempts, and exhausted failures do not stop later documents
+  - `GET /graph/rebuild-full/status` is the recovery-safe polling projection; a stale runner becomes `interrupted` but startup/status reads never invoke model work
+  - `POST /graph/rebuild-full/resume` manually continues an interrupted job or retries only its failed/partial documents
+  - live graph files remain queryable until all snapshotted documents succeed and staging validation/optimization complete; only then is the new snapshot published atomically
 - Graph quality and query diagnostics are protected, user-scoped graph APIs:
   - `GET /graph/quality` reports deterministic store quality, including provenance coverage, generic relations, duplicate methods, orphan nodes, and unscoped claims.
   - `GET /graph/runtime-quality?campaign_id=...` aggregates only persisted `evaluation_graph_events` and `evaluation_graph_evidence_items`; it does not infer runtime success from `GraphStore`.
