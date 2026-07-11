@@ -9,8 +9,15 @@ from graph_rag.extractor import (
     EntityRelationExtractor,
     _StructuredExtractionPayload,
     _parse_json_from_response,
+    extract_and_add_to_graph,
 )
-from graph_rag.schemas import EntityType, ExtractedEntity, ExtractedRelation
+from graph_rag.schemas import (
+    EntityType,
+    ExtractedEntity,
+    ExtractedRelation,
+    ExtractionResult,
+    RawGraphCandidate,
+)
 from graph_rag.service import run_graph_extraction
 from graph_rag.store import GraphStore
 
@@ -36,6 +43,30 @@ def _make_llm_with_structured_payload(
     llm = Mock()
     llm.bind = Mock(return_value=bound_llm)
     return llm, bound_llm
+
+
+@pytest.mark.asyncio
+async def test_structured_extraction_failure_raises_before_graph_mutation() -> None:
+    failed_result = ExtractionResult(
+        doc_id="doc-1",
+        raw_candidates=[
+            RawGraphCandidate(
+                candidate_id="candidate-1",
+                candidate_type="structured_extraction_failed",
+                payload={"error": "provider unavailable"},
+                source_doc_id="doc-1",
+                source_chunk_index=0,
+                confidence=0.0,
+            )
+        ],
+    )
+    store = Mock()
+
+    with patch("graph_rag.extractor.extract_from_chunk", new=AsyncMock(return_value=failed_result)):
+        with pytest.raises(RuntimeError, match="provider unavailable"):
+            await extract_and_add_to_graph("text", "doc-1", store)
+
+    store.record_raw_candidate.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -387,6 +418,27 @@ async def test_run_graph_extraction_invokes_one_extraction_call_per_valid_chunk(
 
 
 @pytest.mark.asyncio
+async def test_run_graph_extraction_forwards_high_precision_profile_to_every_chunk() -> None:
+    mock_store = Mock()
+
+    with (
+        patch("graph_rag.service.GraphStore", return_value=mock_store),
+        patch(
+            "graph_rag.service.extract_and_add_to_graph",
+            new=AsyncMock(return_value=(1, 0)),
+        ) as mock_extract,
+    ):
+        await run_graph_extraction(
+            user_id="user-1",
+            doc_id="doc-1",
+            markdown_text="A" * 9000,
+            extraction_profile="high_precision",
+        )
+
+    assert mock_extract.await_args.kwargs["extraction_profile"] == "high_precision"
+
+
+@pytest.mark.asyncio
 async def test_run_graph_extraction_marks_empty_when_no_valid_chunks() -> None:
     mock_store = Mock()
 
@@ -423,6 +475,8 @@ async def test_run_graph_extraction_marks_partial_when_some_chunks_fail() -> Non
         )
 
     assert result.status == "partial"
+    recorded_manifest = mock_store.record_extraction_manifest.call_args.args[0]
+    assert recorded_manifest.validated is False
     saved_status = mock_store.upsert_document_status.call_args.args[0]
     assert saved_status.status == "partial"
     assert "quota exceeded" in (saved_status.last_error or "")

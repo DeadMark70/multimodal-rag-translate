@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from datetime import datetime
+from uuid import uuid4
 
+from core.llm_factory import (
+    ExtractionProfile,
+    get_graph_rag_model_name,
+    get_graph_rag_runtime_overrides,
+)
 from graph_rag.extractor import extract_and_add_to_graph
 from graph_rag.node_vector_index import (
     mark_node_vector_dirty,
     schedule_node_vector_autosync,
 )
-from graph_rag.schemas import GraphDocumentStatus, GraphExtractionRunResult
+from graph_rag.schemas import (
+    GraphDocumentStatus,
+    GraphExtractionRunManifest,
+    GraphExtractionRunResult,
+)
 from graph_rag.store import GraphStore
 
 logger = logging.getLogger(__name__)
@@ -25,6 +36,7 @@ async def run_graph_extraction(
     batch_size: int = 3,
     store: GraphStore | None = None,
     autosync: bool = True,
+    extraction_profile: ExtractionProfile = "standard",
 ) -> GraphExtractionRunResult:
     """Run GraphRAG extraction and persist per-document status."""
     active_store = store or GraphStore(user_id)
@@ -39,6 +51,7 @@ async def run_graph_extraction(
         entities_added: int,
         edges_added: int,
         last_error: str | None,
+        chunk_hashes: list[str],
     ) -> GraphExtractionRunResult:
         active_store.upsert_document_status(
             GraphDocumentStatus(
@@ -54,6 +67,26 @@ async def run_graph_extraction(
                 last_succeeded_at=attempted_at if status in {"indexed", "partial", "empty"} else None,
             )
         )
+        if status in {"indexed", "partial", "empty"}:
+            overrides = get_graph_rag_runtime_overrides(
+                "graph_extraction",
+                extraction_profile=extraction_profile,
+            )
+            active_store.record_extraction_manifest(
+                GraphExtractionRunManifest(
+                    extraction_run_id=str(uuid4()),
+                    graph_extraction_version="schema-v1",
+                    extractor_model=get_graph_rag_model_name("graph_extraction"),
+                    thinking_level=overrides.get("thinking_level"),
+                    thinking_budget=overrides.get("thinking_budget"),
+                    extraction_profile=extraction_profile,
+                    prompt_version="one_pass_extraction_schema_v1",
+                    schema_version="graph-provenance-v1",
+                    doc_id=doc_id,
+                    chunk_hashes=chunk_hashes,
+                    validated=status in {"indexed", "empty"},
+                )
+            )
         active_store.save_snapshot()
         return GraphExtractionRunResult(
             doc_id=doc_id,
@@ -88,6 +121,7 @@ async def run_graph_extraction(
                 entities_added=0,
                 edges_added=0,
                 last_error=None,
+                chunk_hashes=[],
             )
 
         total_nodes = 0
@@ -118,6 +152,7 @@ async def run_graph_extraction(
                     store=active_store,
                     chunk_index=idx,
                     asset_links=active_store.get_asset_links_for_doc(doc_id),
+                    extraction_profile=extraction_profile,
                 )
                 for idx, chunk in batch
             ]
@@ -163,6 +198,10 @@ async def run_graph_extraction(
             entities_added=total_nodes,
             edges_added=total_edges,
             last_error=last_error,
+            chunk_hashes=[
+                hashlib.sha256(chunk.encode("utf-8")).hexdigest()
+                for _, chunk in chunks
+            ],
         )
         if autosync:
             schedule_node_vector_autosync(
@@ -182,4 +221,5 @@ async def run_graph_extraction(
             entities_added=0,
             edges_added=0,
             last_error=str(exc),
+            chunk_hashes=[],
         )

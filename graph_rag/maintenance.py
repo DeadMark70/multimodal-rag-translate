@@ -14,6 +14,7 @@ from graph_rag.node_vector_index import (
     node_vector_autosync_enabled,
     sync_node_vector_index,
 )
+from core.llm_factory import ExtractionProfile
 from graph_rag.schemas import GraphDocumentStatus
 from graph_rag.service import run_graph_extraction
 from graph_rag.store import GraphStore
@@ -29,6 +30,7 @@ def _copy_graph_sidecars(src: GraphStore, dest: GraphStore) -> None:
         (src._get_graph_path(), dest._get_graph_path()),
         (src._get_metadata_path(), dest._get_metadata_path()),
         (src._get_document_status_path(), dest._get_document_status_path()),
+        (src._get_extraction_runs_path(), dest._get_extraction_runs_path()),
         (src._get_provenance_path(), dest._get_provenance_path()),
         (src._get_raw_candidates_path(), dest._get_raw_candidates_path()),
         (src._get_asset_links_path(), dest._get_asset_links_path()),
@@ -50,6 +52,7 @@ def _replace_live_graph_files(temp_store: GraphStore, live_store: GraphStore) ->
     live_store.graph = temp_store.graph
     live_store.communities = temp_store.communities
     live_store.document_statuses = temp_store.document_statuses
+    live_store.extraction_manifests = temp_store.extraction_manifests
     live_store.edge_provenance = temp_store.edge_provenance
     live_store.raw_candidates = temp_store.raw_candidates
     live_store.asset_links = temp_store.asset_links
@@ -292,6 +295,7 @@ async def rebuild_full_graph_task(user_id: str) -> None:
                 markdown_text=markdown_text,
                 store=temp_store,
                 autosync=False,
+                extraction_profile="standard",
             )
 
         blocking_failures = [
@@ -335,7 +339,11 @@ async def rebuild_full_graph_task(user_id: str) -> None:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-async def retry_graph_document_task(user_id: str, doc_id: str) -> None:
+async def retry_graph_document_task(
+    user_id: str,
+    doc_id: str,
+    extraction_profile: ExtractionProfile = "standard",
+) -> None:
     """Retry GraphRAG extraction for one document using a temp copy of the live graph."""
     logger.info("Starting graph retry for user %s doc %s", user_id, doc_id)
     live_store = GraphStore(user_id)
@@ -372,6 +380,7 @@ async def retry_graph_document_task(user_id: str, doc_id: str) -> None:
             markdown_text=markdown_text,
             store=temp_store,
             autosync=False,
+            extraction_profile=extraction_profile,
         )
 
         if result.status in {"failed", "partial"}:
