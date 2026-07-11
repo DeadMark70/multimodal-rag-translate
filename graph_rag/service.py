@@ -8,7 +8,6 @@ import logging
 from datetime import datetime
 from uuid import uuid4
 
-import httpx
 
 from core.llm_factory import (
     ExtractionProfile,
@@ -16,6 +15,7 @@ from core.llm_factory import (
     get_graph_rag_runtime_overrides,
 )
 from graph_rag.extractor import extract_and_add_to_graph
+from graph_rag.retry import is_retryable_graph_error
 from graph_rag.node_vector_index import (
     mark_node_vector_dirty,
     schedule_node_vector_autosync,
@@ -167,7 +167,7 @@ async def run_graph_extraction(
                 chunk_idx = batch[i][0]
                 if isinstance(result, Exception):
                     chunk_failures.append(f"chunk {chunk_idx}: {result}")
-                    retryable_failures.append(_is_retryable_error(result))
+                    retryable_failures.append(is_retryable_graph_error(result))
                     logger.warning("[GraphRAG] Chunk %s extraction failed: %s", chunk_idx, result)
                     continue
 
@@ -229,10 +229,5 @@ async def run_graph_extraction(
             edges_added=0,
             last_error=str(exc),
             chunk_hashes=[],
-            retryable=_is_retryable_error(exc),
+            retryable=is_retryable_graph_error(exc),
         )
-
-
-def _is_retryable_error(exc: Exception) -> bool:
-    """Classify transient provider and transport failures without raising them."""
-    return isinstance(exc, (TimeoutError, httpx.TransportError)) or getattr(exc, "status_code", None) == 429

@@ -6,9 +6,8 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-import httpx
-
 from graph_rag.rebuild_jobs import GraphRebuildJobStore
+from graph_rag.retry import is_retryable_graph_error
 from graph_rag.schemas import (
     GraphExtractionRunResult,
     GraphRebuildDocument,
@@ -224,7 +223,7 @@ class GraphRebuildCoordinator:
 
     @staticmethod
     def _is_retryable(exc: Exception) -> bool:
-        return isinstance(exc, (TimeoutError, httpx.TransportError)) or getattr(exc, "status_code", None) == 429
+        return is_retryable_graph_error(exc)
 
     @staticmethod
     def _safe_error(exc: Exception) -> str:
