@@ -690,7 +690,10 @@ class GraphExtractionRunManifest(BaseModel):
 
     extraction_run_id: str
     graph_extraction_version: str
+    extractor_provider: str = "google"
     extractor_model: Optional[str] = None
+    thinking_level: Optional[Literal["low", "medium", "high"]] = None
+    extraction_profile: Optional[Literal["standard", "high_precision"]] = None
     prompt_version: str
     schema_version: str
     doc_id: str
@@ -698,3 +701,4 @@ class GraphExtractionRunManifest(BaseModel):
     temperature: float = 0.0
     validated: bool = False
     created_at: datetime = Field(default_factory=datetime.now)
+    graph_snapshot_version: Optional[str] = None

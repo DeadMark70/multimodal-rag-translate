@@ -30,6 +30,7 @@ from graph_rag.schemas import (
     GraphAssetLink,
     GraphDocumentStatus,
     GraphEdgeProvenance,
+    GraphExtractionRunManifest,
     RawGraphCandidate,
     EntityType,
     GraphEdge,
@@ -44,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 GRAPH_INDEX_VERSION = 2
 GRAPH_DOCUMENTS_FILENAME = "graph.documents.json"
+GRAPH_EXTRACTION_RUNS_FILENAME = "graph.extraction_runs.json"
 GRAPH_PROVENANCE_FILENAME = "graph.provenance.json"
 GRAPH_RAW_CANDIDATES_FILENAME = "graph.raw_candidates.json"
 GRAPH_ALIASES_FILENAME = "graph.aliases.json"
@@ -168,6 +170,7 @@ class GraphStore:
         self.graph: nx.DiGraph = nx.DiGraph()
         self.communities: List[Community] = []
         self.document_statuses: Dict[str, GraphDocumentStatus] = {}
+        self.extraction_manifests: List[GraphExtractionRunManifest] = []
         self.edge_provenance: Dict[str, GraphEdgeProvenance] = {}
         self.raw_candidates: Dict[str, RawGraphCandidate] = {}
         self.asset_links: Dict[str, GraphAssetLink] = {}
@@ -190,6 +193,7 @@ class GraphStore:
         else:
             self._load_metadata()
             self._load_document_statuses()
+            self._load_extraction_manifests()
             self._load_edge_provenance()
             self._load_raw_candidates()
             self._load_asset_links()
@@ -259,14 +263,25 @@ class GraphStore:
             vector_store._get_node_vector_map_path(),
             vector_store._get_node_vector_meta_path(),
         )
+        newly_versioned_manifests = [
+            manifest
+            for manifest in self.extraction_manifests
+            if manifest.graph_snapshot_version is None
+        ]
         try:
+            for manifest in newly_versioned_manifests:
+                manifest.graph_snapshot_version = version
             self._storage_dir = temp
             self.save()
             if not self.node_vector_dirty:
                 for source_path in vector_paths:
                     if source_path.exists():
                         shutil.copy2(source_path, temp / source_path.name)
-            required = [temp / "graph.pkl", temp / "graph.meta.json"]
+            required = [
+                temp / "graph.pkl",
+                temp / "graph.meta.json",
+                temp / GRAPH_EXTRACTION_RUNS_FILENAME,
+            ]
             if any(not path.exists() for path in required):
                 raise RuntimeError("snapshot validation failed: graph files missing")
             temp.rename(target)
@@ -289,6 +304,8 @@ class GraphStore:
             self._storage_dir = target
             return version
         except Exception:
+            for manifest in newly_versioned_manifests:
+                manifest.graph_snapshot_version = None
             if temp.exists():
                 shutil.rmtree(temp)
             raise
@@ -312,6 +329,10 @@ class GraphStore:
     def _get_document_status_path(self) -> Path:
         """Get path to GraphRAG per-document status sidecar."""
         return self._get_graph_path().with_name(GRAPH_DOCUMENTS_FILENAME)
+
+    def _get_extraction_runs_path(self) -> Path:
+        """Get path to GraphRAG extraction run manifest sidecar."""
+        return self._get_graph_path().with_name(GRAPH_EXTRACTION_RUNS_FILENAME)
 
     def _get_provenance_path(self) -> Path:
         """Get path to graph edge provenance sidecar."""
@@ -391,6 +412,13 @@ class GraphStore:
             ]
         }
         self._atomic_write_json(path, payload)
+
+    def _write_extraction_manifests(self) -> None:
+        """Persist successful GraphRAG extraction run metadata."""
+        self._atomic_write_json(
+            self._get_extraction_runs_path(),
+            {"runs": [manifest.model_dump(mode="json") for manifest in self.extraction_manifests]},
+        )
 
     def _write_edge_provenance(self) -> None:
         """Persist graph edge provenance sidecar JSON."""
@@ -519,6 +547,24 @@ class GraphStore:
         except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
             logger.warning("Failed to load graph document statuses for user %s: %s", self.user_id, e)
 
+    def _load_extraction_manifests(self) -> None:
+        """Load extraction manifests while retaining malformed legacy-store readability."""
+        self.extraction_manifests = []
+        path = self._get_extraction_runs_path()
+        if not path.exists():
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
+            logger.warning("Failed to load graph extraction manifests for user %s: %s", self.user_id, exc)
+            return
+        for item in payload.get("runs", []):
+            try:
+                self.extraction_manifests.append(GraphExtractionRunManifest.model_validate(item))
+            except (TypeError, ValueError) as exc:
+                logger.warning("Skipping malformed graph extraction manifest for user %s: %s", self.user_id, exc)
+
     def _load_edge_provenance(self) -> None:
         """Load graph edge provenance sidecar JSON."""
         self.edge_provenance = {}
@@ -642,6 +688,7 @@ class GraphStore:
         """Persist metadata-only sidecars without rewriting the graph pickle."""
         self._write_metadata()
         self._write_document_statuses()
+        self._write_extraction_manifests()
         self._write_edge_provenance()
         self._write_raw_candidates()
         self._write_asset_links()
@@ -690,6 +737,7 @@ class GraphStore:
             self.graph = data.get("graph", nx.DiGraph())
             self._load_metadata(legacy_data=data)
             self._load_document_statuses()
+            self._load_extraction_manifests()
             self._load_edge_provenance()
             self._load_raw_candidates()
             self._load_asset_links()
@@ -716,6 +764,7 @@ class GraphStore:
         self.graph.clear()
         self.communities.clear()
         self.document_statuses.clear()
+        self.extraction_manifests.clear()
         self.edge_provenance.clear()
         self.raw_candidates.clear()
         self.asset_links.clear()
@@ -1436,6 +1485,17 @@ class GraphStore:
     def get_document_status(self, doc_id: str) -> Optional[GraphDocumentStatus]:
         """Return persisted GraphRAG status for one document."""
         return self.document_statuses.get(doc_id)
+
+    def record_extraction_manifest(self, manifest: GraphExtractionRunManifest) -> None:
+        """Record a successful extraction run for inclusion in the next snapshot."""
+        self.extraction_manifests.append(manifest)
+
+    def get_latest_extraction_manifest(self, doc_id: str) -> Optional[GraphExtractionRunManifest]:
+        """Return the newest successful extraction manifest for one document."""
+        return next(
+            (manifest for manifest in reversed(self.extraction_manifests) if manifest.doc_id == doc_id),
+            None,
+        )
 
     def upsert_document_status(self, status: GraphDocumentStatus) -> None:
         """Insert or replace GraphRAG status for one document."""
