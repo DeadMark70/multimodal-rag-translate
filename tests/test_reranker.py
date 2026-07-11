@@ -270,6 +270,9 @@ class TestRerankerSingleton:
             "data_base.reranker.torch.cuda.is_available",
             return_value=True,
         ), patch(
+            "data_base.reranker.torch.cuda.device_count",
+            return_value=1,
+        ), patch(
             "data_base.reranker._gpu_total_memory_gb",
             return_value=7.0,
         ), patch(

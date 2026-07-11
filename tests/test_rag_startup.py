@@ -49,7 +49,7 @@ async def test_app_lifespan_recovers_inflight_campaigns_after_init_db() -> None:
     fake_engine = type("FakeCampaignEngine", (), {"recover_inflight_campaigns": recover_mock})()
 
     with (
-        patch("evaluation.db.init_db", new=AsyncMock()) as mock_init_db,
+        patch("evaluation.db.force_init_db", new=AsyncMock()) as mock_init_db,
         patch("evaluation.router.get_campaign_engine", return_value=fake_engine),
         patch.object(app_factory, "_ensure_base_directories"),
         patch.object(app_factory, "_initialize_external_clients"),

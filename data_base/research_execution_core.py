@@ -11,7 +11,7 @@ from typing import Any, List, Optional
 from agents.evaluator import RAGEvaluator
 from agents.planner import SubTask, TaskPlanner
 from agents.synthesizer import SubTaskResult, synthesize_results
-from core.llm_factory import get_llm
+from core.providers import get_llm
 from core.prompt_loader import format_agentic_rag_prompt
 from data_base.RAG_QA_service import rag_answer_question
 from data_base.schemas_deep_research import (

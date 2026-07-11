@@ -5,7 +5,12 @@ from agents.planner import classify_question_intent
 
 
 def test_classify_question_intent_on_ragas_hardset_v2_samples() -> None:
-    dataset_path = Path(__file__).resolve().parents[2] / "ragas_hardset_v2.json"
+    dataset_path = (
+        Path(__file__).resolve().parents[2]
+        / "_artifacts"
+        / "evaluation"
+        / "ragas_hardset_v2.json"
+    )
     payload = json.loads(dataset_path.read_text(encoding="utf-8"))
     questions = {item["id"]: item["question"] for item in payload["questions"]}
 

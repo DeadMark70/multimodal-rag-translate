@@ -22,6 +22,7 @@ class _MockStatus:
 class _MockStore:
     def __init__(self, _user_id: str) -> None:
         self._status = _MockStatus()
+        self.active_job_state = None
 
     def get_status(self):  # noqa: ANN201
         return self._status
