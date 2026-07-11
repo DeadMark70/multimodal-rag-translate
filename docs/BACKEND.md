@@ -103,7 +103,11 @@
   - embedding provider calls in node-vector sync/search are guarded by a process-local per-user limiter (`GRAPH_NODE_VECTOR_EMBEDDING_RPM_LIMIT`, default `1000` RPM) with wait-queue behavior and retry/backoff on 429/transport errors
 - Full GraphRAG rebuilds are durable, user-scoped jobs rather than disposable background tasks:
   - `POST /graph/rebuild-full` creates a frozen source-document snapshot and persistent staging graph, or returns the active job instead of starting duplicate work
+  - control manifests, locks, staging graphs, and frozen OCR markdown live below the stable per-user graph root rather than an immutable `versions/v*` snapshot; resume remains available after live snapshot promotion
+  - every OCR markdown input is copied and SHA-256 checked inside its rebuild job before scheduling, so retries and resumes never consume later OCR edits
   - each document is checkpointed after staging persistence, retryable provider/transport failures receive at most three attempts, and exhausted failures do not stop later documents
+  - timeout, transport, HTTP 408, HTTP 429, and HTTP 5xx provider failures are retryable; the durable status exposes `max_attempts` for the UI
+  - full rebuild, legacy rebuild, optimize, document retry/purge, and node-vector sync share one stable per-user maintenance lease; `active_job_state` is display metadata rather than the concurrency primitive
   - `GET /graph/rebuild-full/status` is the recovery-safe polling projection; a stale runner becomes `interrupted` but startup/status reads never invoke model work
   - `POST /graph/rebuild-full/resume` manually continues an interrupted job or retries only its failed/partial documents
   - live graph files remain queryable until all snapshotted documents succeed and staging validation/optimization complete; only then is the new snapshot published atomically
