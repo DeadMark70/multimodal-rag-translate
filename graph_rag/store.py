@@ -264,13 +264,12 @@ class GraphStore:
             vector_store._get_node_vector_map_path(),
             vector_store._get_node_vector_meta_path(),
         )
-        newly_versioned_manifests = [
-            manifest
+        manifest_versions = [
+            (manifest, manifest.graph_snapshot_version)
             for manifest in self.extraction_manifests
-            if manifest.graph_snapshot_version is None
         ]
         try:
-            for manifest in newly_versioned_manifests:
+            for manifest, _ in manifest_versions:
                 manifest.graph_snapshot_version = version
             self._storage_dir = temp
             self.save()
@@ -305,8 +304,8 @@ class GraphStore:
             self._storage_dir = target
             return version
         except Exception:
-            for manifest in newly_versioned_manifests:
-                manifest.graph_snapshot_version = None
+            for manifest, previous_version in manifest_versions:
+                manifest.graph_snapshot_version = previous_version
             if temp.exists():
                 shutil.rmtree(temp)
             raise

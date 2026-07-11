@@ -702,6 +702,7 @@ class GraphExtractionRunManifest(BaseModel):
     extractor_provider: str = "google"
     extractor_model: Optional[str] = None
     thinking_level: Optional[Literal["low", "medium", "high"]] = None
+    thinking_budget: Optional[int] = Field(default=None, ge=0)
     extraction_profile: Optional[Literal["standard", "high_precision"]] = None
     prompt_version: str
     schema_version: str

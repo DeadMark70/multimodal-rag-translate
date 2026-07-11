@@ -36,3 +36,22 @@ def test_missing_manifest_sidecar_is_legacy_compatible(tmp_path) -> None:
     store = GraphStore("user-1", storage_dir=tmp_path)
 
     assert store.get_latest_extraction_manifest("missing") is None
+
+
+def test_snapshot_rebinds_manifest_to_the_live_snapshot_version(tmp_path) -> None:
+    store = GraphStore("user-1", storage_dir=tmp_path)
+    manifest = _manifest()
+    manifest.graph_snapshot_version = "v-temp"
+    store.record_extraction_manifest(manifest)
+
+    version = store.save_snapshot()
+
+    assert manifest.graph_snapshot_version == version
+
+
+def test_manifest_retains_legacy_thinking_budget() -> None:
+    manifest = _manifest()
+    manifest.thinking_level = None
+    manifest.thinking_budget = 2048
+
+    assert manifest.model_dump(mode="json")["thinking_budget"] == 2048

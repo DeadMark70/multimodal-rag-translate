@@ -67,7 +67,7 @@ async def run_graph_extraction(
                 last_succeeded_at=attempted_at if status in {"indexed", "partial", "empty"} else None,
             )
         )
-        if status in {"indexed", "empty"}:
+        if status in {"indexed", "partial", "empty"}:
             overrides = get_graph_rag_runtime_overrides(
                 "graph_extraction",
                 extraction_profile=extraction_profile,
@@ -78,12 +78,13 @@ async def run_graph_extraction(
                     graph_extraction_version="schema-v1",
                     extractor_model=get_graph_rag_model_name("graph_extraction"),
                     thinking_level=overrides.get("thinking_level"),
+                    thinking_budget=overrides.get("thinking_budget"),
                     extraction_profile=extraction_profile,
                     prompt_version="one_pass_extraction_schema_v1",
                     schema_version="graph-provenance-v1",
                     doc_id=doc_id,
                     chunk_hashes=chunk_hashes,
-                    validated=status == "indexed",
+                    validated=status in {"indexed", "empty"},
                 )
             )
         active_store.save_snapshot()

@@ -1019,4 +1019,15 @@ async def extract_and_add_to_graph(
         asset_links=asset_links,
         extraction_profile=extraction_profile,
     )
+    extraction_failure = next(
+        (
+            candidate
+            for candidate in result.raw_candidates
+            if candidate.candidate_type == "structured_extraction_failed"
+        ),
+        None,
+    )
+    if extraction_failure is not None:
+        error = extraction_failure.payload.get("error", "structured extraction failed")
+        raise RuntimeError(str(error))
     return await add_extraction_to_graph(store, result)
