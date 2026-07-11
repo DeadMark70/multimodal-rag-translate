@@ -5,6 +5,7 @@ from pathlib import Path
 
 from graph_rag.rebuild_jobs import GraphRebuildJobStore
 from graph_rag.schemas import GraphRebuildLease
+from graph_rag.store import GraphStore
 
 
 SOURCES = [
@@ -34,6 +35,35 @@ def test_create_job_freezes_sources_and_round_trips(tmp_path: Path) -> None:
     assert restored.source_snapshot_hash == manifest.source_snapshot_hash
     assert restored.state == "pending"
     assert (tmp_path / manifest.job_id / "manifest.json").is_file()
+
+
+def test_default_job_root_survives_live_snapshot_promotion(
+    tmp_path: Path, monkeypatch
+) -> None:
+    graph_root = tmp_path / "live_graph"
+    monkeypatch.setattr(
+        "graph_rag.store.upload_paths.get_rag_index_dir_path",
+        lambda _user_id: graph_root,
+    )
+    GraphStore("user-1").save_snapshot()
+    jobs = GraphRebuildJobStore("user-1")
+    manifest = jobs.create_job(SOURCES)
+
+    GraphStore("user-1").save_snapshot()
+    reopened = GraphRebuildJobStore("user-1")
+
+    assert reopened.load_current() is not None
+    assert reopened.load_current().job_id == manifest.job_id
+
+
+def test_job_persists_and_verifies_frozen_source_markdown(tmp_path: Path) -> None:
+    store = GraphRebuildJobStore("user-1", rebuild_root=tmp_path)
+    source_markdown = {"doc-1": "frozen first", "doc-2": "frozen second"}
+
+    manifest = store.create_job(SOURCES, source_markdown=source_markdown)
+
+    assert manifest.documents[0].source_markdown_sha256 is not None
+    assert store.load_source_markdown(manifest.job_id, "doc-1") == "frozen first"
 
 
 def test_status_aggregates_terminal_document_counts(tmp_path: Path) -> None:

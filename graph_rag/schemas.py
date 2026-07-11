@@ -318,6 +318,7 @@ class GraphRebuildDocument(BaseModel):
     doc_id: str
     file_name: Optional[str] = None
     original_path: Optional[str] = None
+    source_markdown_sha256: Optional[str] = None
     state: GraphRebuildDocumentState = "pending"
     attempt: int = Field(default=0, ge=0)
     cumulative_attempts: int = Field(default=0, ge=0)

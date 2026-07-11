@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -30,20 +31,37 @@ class GraphRebuildJobStore:
         lease_ttl: timedelta = timedelta(minutes=2),
     ) -> None:
         self.user_id = user_id
+        graph_store = GraphStore(user_id)
         if rebuild_root is None:
-            rebuild_root = GraphStore(user_id).storage_dir / "rebuild_jobs"
+            rebuild_root = graph_store.root_storage_dir / "rebuild_jobs"
         self.root = rebuild_root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self._legacy_root = (graph_store.storage_dir / "rebuild_jobs").resolve()
+        self._migrate_legacy_current_job()
         self.lease_ttl = lease_ttl
 
-    def create_job(self, sources: list[dict[str, str | None]]) -> GraphRebuildManifest:
+    def create_job(
+        self,
+        sources: list[dict[str, str | None]],
+        *,
+        source_markdown: dict[str, str] | None = None,
+    ) -> GraphRebuildManifest:
         """Freeze eligible sources into a newly created pending job."""
         if not sources:
             raise ValueError("A full rebuild requires at least one source document")
 
         normalized_sources = sorted(sources, key=lambda source: str(source["doc_id"]))
+        documents = [GraphRebuildDocument(**source) for source in normalized_sources]
+        if source_markdown is not None:
+            expected_ids = {document.doc_id for document in documents}
+            if set(source_markdown) != expected_ids:
+                raise ValueError("Frozen GraphRAG sources do not match the rebuild documents")
+            for document in documents:
+                document.source_markdown_sha256 = self._content_hash(
+                    source_markdown[document.doc_id]
+                )
         snapshot = json.dumps(
-            normalized_sources,
+            [document.model_dump(mode="json") for document in documents],
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -55,14 +73,22 @@ class GraphRebuildJobStore:
             created_at=now,
             updated_at=now,
             source_snapshot_hash=hashlib.sha256(snapshot.encode("utf-8")).hexdigest(),
-            documents=[GraphRebuildDocument(**source) for source in normalized_sources],
+            documents=documents,
         )
         self._job_dir(manifest.job_id).mkdir(parents=True, exist_ok=False)
+        if source_markdown is not None:
+            for document in documents:
+                self._write_source_markdown(
+                    manifest.job_id, document.doc_id, source_markdown[document.doc_id]
+                )
         self.save(manifest)
         return manifest
 
     def create_or_load_active(
-        self, sources: list[dict[str, str | None]]
+        self,
+        sources: list[dict[str, str | None]],
+        *,
+        source_markdown: dict[str, str] | None = None,
     ) -> tuple[GraphRebuildManifest, bool]:
         """Atomically create a job, unless another active rebuild already exists."""
         start_lock = self.root / "start.lock"
@@ -83,7 +109,7 @@ class GraphRebuildJobStore:
                 current = self.reconcile_status(current)
             if current is not None and current.state not in {"completed", "failed"}:
                 return current, False
-            return self.create_job(sources), True
+            return self.create_job(sources, source_markdown=source_markdown), True
         finally:
             start_lock.unlink(missing_ok=True)
 
@@ -249,6 +275,20 @@ class GraphRebuildJobStore:
         self._assert_owned_path(path)
         return path
 
+    def load_source_markdown(self, job_id: str, doc_id: str) -> str:
+        """Load one frozen OCR markdown input and verify its recorded checksum."""
+        manifest = self.load(job_id)
+        document = next(
+            (item for item in manifest.documents if item.doc_id == doc_id), None
+        )
+        if document is None or not document.source_markdown_sha256:
+            raise ValueError("Graph rebuild source markdown is unavailable")
+        source_path = self._source_path(job_id, doc_id)
+        markdown = source_path.read_text(encoding="utf-8")
+        if self._content_hash(markdown) != document.source_markdown_sha256:
+            raise ValueError("Graph rebuild source markdown checksum does not match")
+        return markdown
+
     def _job_dir(self, job_id: str) -> Path:
         if not job_id or Path(job_id).name != job_id:
             raise ValueError("Invalid graph rebuild job id")
@@ -270,6 +310,35 @@ class GraphRebuildJobStore:
 
     def _current_path(self) -> Path:
         return self.root / "current.json"
+
+    def _source_path(self, job_id: str, doc_id: str) -> Path:
+        file_name = f"{hashlib.sha256(doc_id.encode('utf-8')).hexdigest()}.md"
+        path = self._job_dir(job_id) / "sources" / file_name
+        self._assert_owned_path(path)
+        return path
+
+    def _write_source_markdown(self, job_id: str, doc_id: str, markdown: str) -> None:
+        path = self._source_path(job_id, doc_id)
+        self._atomic_write_text(path, markdown)
+
+    def _migrate_legacy_current_job(self) -> None:
+        """Move a pre-release current job out of its mutable snapshot directory."""
+        legacy_current = self._legacy_root / "current.json"
+        if self._legacy_root == self.root or self._current_path().exists() or not legacy_current.exists():
+            return
+        pointer = self._read_json(legacy_current)
+        job_id = pointer.get("job_id")
+        if not isinstance(job_id, str):
+            return
+        legacy_job_dir = self._legacy_root / job_id
+        if not legacy_job_dir.is_dir():
+            return
+        shutil.move(str(legacy_job_dir), str(self._job_dir(job_id)))
+        self._atomic_write_json(self._current_path(), {"job_id": job_id})
+
+    @staticmethod
+    def _content_hash(markdown: str) -> str:
+        return f"sha256:{hashlib.sha256(markdown.encode('utf-8')).hexdigest()}"
 
     def _assert_owned_path(self, path: Path) -> None:
         if not path.resolve().is_relative_to(self.root):
@@ -332,6 +401,13 @@ class GraphRebuildJobStore:
         with temporary_path.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
             handle.flush()
+        temporary_path.replace(path)
+
+    @staticmethod
+    def _atomic_write_text(path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = path.with_suffix(f"{path.suffix}.tmp")
+        temporary_path.write_text(content, encoding="utf-8")
         temporary_path.replace(path)
 
     @staticmethod

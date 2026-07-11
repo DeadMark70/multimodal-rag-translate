@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -17,11 +16,9 @@ from graph_rag.schemas import (
 )
 from graph_rag.service import run_graph_extraction
 from graph_rag.store import GraphStore
-from pdfserviceMD.service import load_ocr_artifacts
 
 
 ExtractionRunner = Callable[..., Awaitable[GraphExtractionRunResult]]
-ArtifactLoader = Callable[..., tuple[str, object]]
 StoreFactory = Callable[..., GraphStore]
 Sleep = Callable[[float], Awaitable[None]]
 Optimizer = Callable[[GraphStore], Awaitable[tuple[int, int]]]
@@ -39,7 +36,6 @@ class GraphRebuildCoordinator:
         *,
         store_factory: StoreFactory = GraphStore,
         run_extraction: ExtractionRunner = run_graph_extraction,
-        load_artifacts: ArtifactLoader = load_ocr_artifacts,
         sleep: Sleep = asyncio.sleep,
         jitter: Callable[[], float] | None = None,
         optimize: Optimizer | None = None,
@@ -48,7 +44,6 @@ class GraphRebuildCoordinator:
         self.jobs = jobs
         self.store_factory = store_factory
         self.run_extraction = run_extraction
-        self.load_artifacts = load_artifacts
         self.sleep = sleep
         self.jitter = jitter or (lambda: 0.0)
         self.optimize = optimize or self._default_optimize
@@ -112,9 +107,8 @@ class GraphRebuildCoordinator:
             manifest.current_doc_id = document.doc_id
             self.jobs.save(manifest)
             try:
-                markdown_text, _ = await asyncio.to_thread(
-                    self.load_artifacts,
-                    user_folder=str(self._document_folder(document)),
+                markdown_text = await asyncio.to_thread(
+                    self.jobs.load_source_markdown, manifest.job_id, document.doc_id
                 )
                 result = await self.run_extraction(
                     user_id=manifest.user_id,
@@ -217,12 +211,6 @@ class GraphRebuildCoordinator:
             raise RuntimeError("Graph rebuild staging data does not cover every source document")
         for document in manifest.documents:
             GraphRebuildCoordinator._validate_document_checkpoint(staging, document)
-
-    @staticmethod
-    def _document_folder(document: GraphRebuildDocument) -> Path:
-        if not document.original_path:
-            raise FileNotFoundError(f"Missing OCR artifact path for document {document.doc_id}")
-        return Path(document.original_path).resolve().parent
 
     @staticmethod
     def _apply_result(document: GraphRebuildDocument, result: GraphExtractionRunResult) -> None:

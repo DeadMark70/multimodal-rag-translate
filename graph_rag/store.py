@@ -785,6 +785,11 @@ class GraphStore:
         """Return the on-disk storage directory used by this store."""
         return self._storage_dir
 
+    @property
+    def root_storage_dir(self) -> Path:
+        """Return the stable per-user root that owns immutable snapshots."""
+        return self._root_storage_dir
+
     def mark_dirty(self) -> None:
         """Mark graph metadata as needing optimization or rebuild."""
         self.graph_dirty = True

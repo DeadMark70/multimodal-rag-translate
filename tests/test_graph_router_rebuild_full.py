@@ -171,6 +171,7 @@ def test_rebuild_full_endpoint_starts_durable_job_and_schedules_owner_token() ->
                 ]
             ),
         ),
+        patch("graph_rag.router.load_ocr_artifacts", return_value=("frozen markdown", [])),
         patch("graph_rag.router._rebuild_full_graph_task", new=mock_task),
         _client() as client,
     ):
@@ -184,6 +185,9 @@ def test_rebuild_full_endpoint_starts_durable_job_and_schedules_owner_token() ->
     saved_manifest = mock_jobs.save.call_args.args[0]
     assert saved_manifest.lease is not None
     assert saved_manifest.lease.owner_token == "owner-token"
+    assert mock_jobs.create_or_load_active.call_args.kwargs["source_markdown"] == {
+        "doc-1": "frozen markdown"
+    }
     mock_task.assert_awaited_once_with(TEST_USER_ID, "job-1", "owner-token")
 
 

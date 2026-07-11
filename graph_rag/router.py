@@ -9,6 +9,7 @@ Provides REST API endpoints for graph management operations:
 """
 
 # Standard library
+import asyncio
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
@@ -49,6 +50,7 @@ from graph_rag.schemas import (
 from graph_rag.debug import run_debug_search
 from graph_rag.quality import compute_campaign_runtime_quality, compute_graph_quality
 from graph_rag.store import GraphStore
+from pdfserviceMD.service import load_ocr_artifacts
 from pdfserviceMD.repository import get_document
 
 # Configure logging
@@ -476,7 +478,10 @@ async def rebuild_graph_full(
                 message="沒有可用的 OCR 文件可供完整重構",
                 status_code=400,
             )
-        manifest, created = jobs.create_or_load_active(sources)
+        source_markdown = await _freeze_full_rebuild_sources(sources)
+        manifest, created = jobs.create_or_load_active(
+            sources, source_markdown=source_markdown
+        )
         if not created:
             return jobs.to_status(manifest)
         return _schedule_full_rebuild(background_tasks, user_id, jobs, manifest)
@@ -565,6 +570,24 @@ def _schedule_full_rebuild(
     live_store.save_sidecars()
     background_tasks.add_task(_rebuild_full_graph_task, user_id, manifest.job_id, owner_token)
     return jobs.to_status(manifest)
+
+
+async def _freeze_full_rebuild_sources(
+    sources: list[dict[str, str | None]],
+) -> dict[str, str]:
+    """Read every OCR markdown input before a durable rebuild is scheduled."""
+    frozen: dict[str, str] = {}
+    for source in sources:
+        doc_id = str(source["doc_id"])
+        original_path = source.get("original_path")
+        if not original_path:
+            raise FileNotFoundError(f"Missing OCR artifact path for document {doc_id}")
+        markdown, _ = await asyncio.to_thread(
+            load_ocr_artifacts,
+            user_folder=str(Path(original_path).resolve().parent),
+        )
+        frozen[doc_id] = markdown
+    return frozen
 
 
 @router.post(

@@ -29,7 +29,10 @@ def _coordinator(
     publish: Mock | None = None,
 ) -> tuple[GraphRebuildJobStore, GraphRebuildCoordinator, str, str]:
     jobs = GraphRebuildJobStore("user-1", rebuild_root=tmp_path)
-    manifest = jobs.create_job(SOURCES)
+    manifest = jobs.create_job(
+        SOURCES,
+        source_markdown={source["doc_id"]: "markdown" for source in SOURCES},
+    )
     owner_token = jobs.acquire_lease(manifest.job_id)
     assert owner_token is not None
     store = Mock()
@@ -42,7 +45,6 @@ def _coordinator(
         jobs,
         store_factory=Mock(return_value=store),
         run_extraction=extract,
-        load_artifacts=Mock(return_value=("markdown", [])),
         sleep=sleep,
         jitter=lambda: 0.0,
         optimize=optimize or AsyncMock(return_value=(0, 0)),
