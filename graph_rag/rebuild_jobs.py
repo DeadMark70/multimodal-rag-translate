@@ -324,18 +324,31 @@ class GraphRebuildJobStore:
 
     def _migrate_legacy_current_job(self) -> None:
         """Move a pre-release current job out of its mutable snapshot directory."""
-        legacy_current = self._legacy_root / "current.json"
-        if self._legacy_root == self.root or self._current_path().exists() or not legacy_current.exists():
+        if self._current_path().exists():
             return
-        pointer = self._read_json(legacy_current)
-        job_id = pointer.get("job_id")
-        if not isinstance(job_id, str):
+        legacy_roots = [self._legacy_root]
+        versions_dir = GraphStore(self.user_id).root_storage_dir / "versions"
+        if versions_dir.exists():
+            legacy_roots.extend(
+                version / "rebuild_jobs"
+                for version in sorted(versions_dir.glob("v*"), reverse=True)
+            )
+        for legacy_root in legacy_roots:
+            if legacy_root == self.root:
+                continue
+            legacy_current = legacy_root / "current.json"
+            if not legacy_current.exists():
+                continue
+            pointer = self._read_json(legacy_current)
+            job_id = pointer.get("job_id")
+            if not isinstance(job_id, str):
+                continue
+            legacy_job_dir = legacy_root / job_id
+            if not legacy_job_dir.is_dir():
+                continue
+            shutil.move(str(legacy_job_dir), str(self._job_dir(job_id)))
+            self._atomic_write_json(self._current_path(), {"job_id": job_id})
             return
-        legacy_job_dir = self._legacy_root / job_id
-        if not legacy_job_dir.is_dir():
-            return
-        shutil.move(str(legacy_job_dir), str(self._job_dir(job_id)))
-        self._atomic_write_json(self._current_path(), {"job_id": job_id})
 
     @staticmethod
     def _content_hash(markdown: str) -> str:
