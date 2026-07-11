@@ -8,6 +8,8 @@ import logging
 from datetime import datetime
 from uuid import uuid4
 
+import httpx
+
 from core.llm_factory import (
     ExtractionProfile,
     get_graph_rag_model_name,
@@ -52,6 +54,7 @@ async def run_graph_extraction(
         edges_added: int,
         last_error: str | None,
         chunk_hashes: list[str],
+        retryable: bool = False,
     ) -> GraphExtractionRunResult:
         active_store.upsert_document_status(
             GraphDocumentStatus(
@@ -97,6 +100,7 @@ async def run_graph_extraction(
             entities_added=entities_added,
             edges_added=edges_added,
             last_error=last_error,
+            retryable=retryable,
         )
 
     try:
@@ -128,6 +132,7 @@ async def run_graph_extraction(
         total_edges = 0
         completed_chunks = 0
         chunk_failures: list[str] = []
+        retryable_failures: list[bool] = []
 
         num_batches = (len(chunks) + batch_size - 1) // batch_size
         logger.info(
@@ -162,6 +167,7 @@ async def run_graph_extraction(
                 chunk_idx = batch[i][0]
                 if isinstance(result, Exception):
                     chunk_failures.append(f"chunk {chunk_idx}: {result}")
+                    retryable_failures.append(_is_retryable_error(result))
                     logger.warning("[GraphRAG] Chunk %s extraction failed: %s", chunk_idx, result)
                     continue
 
@@ -202,6 +208,7 @@ async def run_graph_extraction(
                 hashlib.sha256(chunk.encode("utf-8")).hexdigest()
                 for _, chunk in chunks
             ],
+            retryable=bool(chunk_failures) and all(retryable_failures),
         )
         if autosync:
             schedule_node_vector_autosync(
@@ -222,4 +229,10 @@ async def run_graph_extraction(
             edges_added=0,
             last_error=str(exc),
             chunk_hashes=[],
+            retryable=_is_retryable_error(exc),
         )
+
+
+def _is_retryable_error(exc: Exception) -> bool:
+    """Classify transient provider and transport failures without raising them."""
+    return isinstance(exc, (TimeoutError, httpx.TransportError)) or getattr(exc, "status_code", None) == 429

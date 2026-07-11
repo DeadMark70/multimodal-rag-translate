@@ -18,6 +18,7 @@ from graph_rag.schemas import (
     GraphDocumentStatus,
     GraphExtractionRunResult,
     GraphRebuildManifest,
+    GraphRebuildLease,
     GraphRebuildStatusResponse,
     NodeVectorSyncStatusResponse,
 )
@@ -139,10 +140,18 @@ def test_rebuild_full_endpoint_starts_durable_job_and_schedules_owner_token() ->
     mock_jobs = Mock()
     manifest = _rebuild_manifest()
     status = _rebuild_status()
-    mock_jobs.load_current.return_value = None
-    mock_jobs.create_job.return_value = manifest
+    mock_jobs.create_or_load_active.return_value = (manifest, True)
     mock_jobs.acquire_lease.return_value = "owner-token"
-    mock_jobs.load.return_value = manifest
+    leased_manifest = manifest.model_copy(
+        update={
+            "lease": GraphRebuildLease(
+                owner_token="owner-token",
+                acquired_at=manifest.created_at,
+                heartbeat_at=manifest.created_at,
+            )
+        }
+    )
+    mock_jobs.load.return_value = leased_manifest
     mock_jobs.to_status.return_value = status
 
     with (
@@ -172,6 +181,9 @@ def test_rebuild_full_endpoint_starts_durable_job_and_schedules_owner_token() ->
     assert response.json()["job_id"] == "job-1"
     mock_store.set_active_job_state.assert_called_once_with("rebuild_full")
     mock_store.save_sidecars.assert_called()
+    saved_manifest = mock_jobs.save.call_args.args[0]
+    assert saved_manifest.lease is not None
+    assert saved_manifest.lease.owner_token == "owner-token"
     mock_task.assert_awaited_once_with(TEST_USER_ID, "job-1", "owner-token")
 
 
@@ -201,13 +213,22 @@ def test_rebuild_full_status_reconciles_without_scheduling_work() -> None:
 
 def test_rebuild_full_resume_schedules_only_one_owner() -> None:
     mock_store = Mock()
+    mock_store.active_job_state = None
     mock_jobs = Mock()
     manifest = _rebuild_manifest(state="interrupted")
     status = _rebuild_status()
     mock_jobs.load_current.return_value = manifest
     mock_jobs.reconcile_status.return_value = manifest
     mock_jobs.acquire_lease.side_effect = ["owner-token", None]
-    mock_jobs.load.return_value = manifest
+    mock_jobs.load.return_value = manifest.model_copy(
+        update={
+            "lease": GraphRebuildLease(
+                owner_token="owner-token",
+                acquired_at=manifest.created_at,
+                heartbeat_at=manifest.created_at,
+            )
+        }
+    )
     mock_jobs.to_status.return_value = status
     mock_task = AsyncMock()
 

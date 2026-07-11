@@ -89,6 +89,29 @@ def test_stale_running_job_becomes_interrupted_without_starting_work(tmp_path: P
     assert not (tmp_path / manifest.job_id / "runner.lock").exists()
 
 
+def test_dead_process_job_becomes_interrupted_without_waiting_for_ttl(tmp_path: Path) -> None:
+    store = GraphRebuildJobStore("user-1", rebuild_root=tmp_path)
+    manifest = store.create_job(SOURCES)
+    now = datetime.now(timezone.utc)
+    manifest.state = "running"
+    manifest.lease = GraphRebuildLease(
+        owner_token="dead-process",
+        acquired_at=now,
+        heartbeat_at=now,
+        process_id=999_999_999,
+    )
+    store.save(manifest)
+    (tmp_path / manifest.job_id / "runner.lock").write_text(
+        '{"owner_token":"dead-process","process_id":999999999}', encoding="utf-8"
+    )
+
+    reconciled = store.reconcile_status(store.load_current())
+
+    assert reconciled is not None
+    assert reconciled.state == "interrupted"
+    assert reconciled.lease is None
+
+
 def test_only_lease_owner_can_release_runner_lock(tmp_path: Path) -> None:
     store = GraphRebuildJobStore("user-1", rebuild_root=tmp_path)
     manifest = store.create_job(SOURCES)
@@ -98,6 +121,23 @@ def test_only_lease_owner_can_release_runner_lock(tmp_path: Path) -> None:
     assert store.release_lease(manifest.job_id, "wrong-owner") is False
     assert store.release_lease(manifest.job_id, owner_token) is True
     assert store.load(manifest.job_id).lease is None
+
+
+def test_saving_stale_manifest_does_not_erase_newer_lease_heartbeat(tmp_path: Path) -> None:
+    store = GraphRebuildJobStore("user-1", rebuild_root=tmp_path)
+    manifest = store.create_job(SOURCES)
+    owner_token = store.acquire_lease(manifest.job_id)
+    assert owner_token is not None
+    stale_manifest = store.load(manifest.job_id)
+    assert stale_manifest.lease is not None
+    stale_manifest.lease.heartbeat_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+    assert store.heartbeat(manifest.job_id, owner_token) is True
+    store.save(stale_manifest)
+
+    restored = store.load(manifest.job_id)
+    assert restored.lease is not None
+    assert restored.lease.heartbeat_at > datetime(2020, 1, 1, tzinfo=timezone.utc)
 
 
 def test_reset_failed_documents_keeps_successful_checkpoints(tmp_path: Path) -> None:

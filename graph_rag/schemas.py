@@ -337,6 +337,7 @@ class GraphRebuildLease(BaseModel):
     owner_token: str
     acquired_at: datetime
     heartbeat_at: datetime
+    process_id: Optional[int] = None
 
 
 class GraphRebuildManifest(BaseModel):
@@ -427,6 +428,7 @@ class GraphExtractionRunResult(BaseModel):
     entities_added: int = 0
     edges_added: int = 0
     last_error: Optional[str] = None
+    retryable: bool = False
 
 
 NodeVectorSyncState = Literal["idle", "running", "completed", "failed"]

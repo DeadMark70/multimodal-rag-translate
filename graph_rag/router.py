@@ -426,6 +426,12 @@ async def rebuild_graph(
     try:
         store = GraphStore(user_id)
 
+        if store.active_job_state:
+            return GraphOperationResponse(
+                status="skipped",
+                message=f"已有圖譜工作執行中：{store.active_job_state}",
+            )
+
         if not request.force and store.get_status().node_count == 0:
             return GraphOperationResponse(
                 status="skipped",
@@ -463,12 +469,6 @@ async def rebuild_graph_full(
     """Build a fresh graph from all OCR-complete document artifacts."""
     try:
         jobs = GraphRebuildJobStore(user_id)
-        current = jobs.load_current()
-        if current is not None:
-            current = jobs.reconcile_status(current)
-        if current is not None and current.state not in {"completed", "failed"}:
-            return jobs.to_status(current)
-
         sources = await _list_graph_source_documents(user_id)
         if not sources:
             raise AppError(
@@ -476,7 +476,12 @@ async def rebuild_graph_full(
                 message="沒有可用的 OCR 文件可供完整重構",
                 status_code=400,
             )
-        return _schedule_full_rebuild(background_tasks, user_id, jobs, jobs.create_job(sources))
+        manifest, created = jobs.create_or_load_active(sources)
+        if not created:
+            return jobs.to_status(manifest)
+        return _schedule_full_rebuild(background_tasks, user_id, jobs, manifest)
+    except AppError:
+        raise
     except Exception as e:
         logger.error("Failed to start full graph rebuild: %s", e, exc_info=True)
         raise AppError(
@@ -543,12 +548,19 @@ def _schedule_full_rebuild(
     manifest: GraphRebuildManifest,
 ) -> GraphRebuildStatusResponse:
     """Claim one durable runner, preserve legacy maintenance exclusion, and schedule it."""
+    live_store = GraphStore(user_id)
+    if live_store.active_job_state not in {None, "rebuild_full"}:
+        raise AppError(
+            code=ErrorCode.VALIDATION_ERROR,
+            message=f"已有圖譜工作執行中：{live_store.active_job_state}",
+            status_code=409,
+        )
     owner_token = jobs.acquire_lease(manifest.job_id)
     if owner_token is None:
         return jobs.to_status(jobs.load(manifest.job_id))
+    manifest = jobs.load(manifest.job_id)
     manifest.state = "running"
     jobs.save(manifest)
-    live_store = GraphStore(user_id)
     live_store.set_active_job_state("rebuild_full")
     live_store.save_sidecars()
     background_tasks.add_task(_rebuild_full_graph_task, user_id, manifest.job_id, owner_token)

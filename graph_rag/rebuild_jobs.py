@@ -61,6 +61,32 @@ class GraphRebuildJobStore:
         self.save(manifest)
         return manifest
 
+    def create_or_load_active(
+        self, sources: list[dict[str, str | None]]
+    ) -> tuple[GraphRebuildManifest, bool]:
+        """Atomically create a job, unless another active rebuild already exists."""
+        start_lock = self.root / "start.lock"
+        try:
+            descriptor = os.open(start_lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            current = self.load_current()
+            if current is None:
+                raise RuntimeError("Another graph rebuild is being created")
+            return current, False
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(str(os.getpid()))
+                handle.flush()
+                os.fsync(handle.fileno())
+            current = self.load_current()
+            if current is not None:
+                current = self.reconcile_status(current)
+            if current is not None and current.state not in {"completed", "failed"}:
+                return current, False
+            return self.create_job(sources), True
+        finally:
+            start_lock.unlink(missing_ok=True)
+
     def load_current(self) -> Optional[GraphRebuildManifest]:
         """Load the current job pointer, if this user has one."""
         pointer_path = self._current_path()
@@ -81,10 +107,17 @@ class GraphRebuildJobStore:
             raise ValueError("Graph rebuild job does not belong to this user")
         return manifest
 
-    def save(self, manifest: GraphRebuildManifest) -> None:
+    def save(self, manifest: GraphRebuildManifest, *, preserve_lease: bool = True) -> None:
         """Atomically persist a manifest and mark it as the current job."""
         if manifest.user_id != self.user_id:
             raise ValueError("Cannot save a graph rebuild job for another user")
+        existing = self._load_existing_manifest(manifest.job_id)
+        if preserve_lease and existing is not None and existing.lease is not None:
+            if manifest.lease is None or (
+                manifest.lease.owner_token == existing.lease.owner_token
+                and manifest.lease.heartbeat_at < existing.lease.heartbeat_at
+            ):
+                manifest.lease = existing.lease
         manifest.updated_at = self._now()
         self._atomic_write_json(
             self._manifest_path(manifest.job_id), manifest.model_dump(mode="json")
@@ -138,7 +171,7 @@ class GraphRebuildJobStore:
             return None
 
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(owner_token)
+            json.dump({"owner_token": owner_token, "process_id": os.getpid()}, handle)
             handle.flush()
             os.fsync(handle.fileno())
 
@@ -148,8 +181,9 @@ class GraphRebuildJobStore:
             owner_token=owner_token,
             acquired_at=now,
             heartbeat_at=now,
+            process_id=os.getpid(),
         )
-        self.save(manifest)
+        self.save(manifest, preserve_lease=False)
         return owner_token
 
     def heartbeat(self, job_id: str, owner_token: str) -> bool:
@@ -158,7 +192,7 @@ class GraphRebuildJobStore:
         if not self._has_owner(manifest, owner_token):
             return False
         manifest.lease.heartbeat_at = self._now()
-        self.save(manifest)
+        self.save(manifest, preserve_lease=False)
         return True
 
     def release_lease(self, job_id: str, owner_token: str) -> bool:
@@ -167,28 +201,33 @@ class GraphRebuildJobStore:
         if not self._has_owner(manifest, owner_token):
             return False
         lock_path = self._lock_path(job_id)
-        if lock_path.exists() and lock_path.read_text(encoding="utf-8") != owner_token:
+        if lock_path.exists() and self._lock_owner_token(lock_path) != owner_token:
             return False
         if lock_path.exists():
             lock_path.unlink()
         manifest.lease = None
-        self.save(manifest)
+        self.save(manifest, preserve_lease=False)
         return True
 
     def reconcile_status(self, manifest: Optional[GraphRebuildManifest]) -> Optional[GraphRebuildManifest]:
         """Turn a stale running job into manual-resume state without doing work."""
         if manifest is None or manifest.state != "running" or manifest.lease is None:
             return manifest
-        if manifest.lease.heartbeat_at + self.lease_ttl >= self._now():
+        lock_path = self._lock_path(manifest.job_id)
+        lock_process_id = self._lock_process_id(lock_path) if lock_path.exists() else None
+        if lock_process_id is not None and not self._process_is_alive(lock_process_id):
+            stale = True
+        else:
+            stale = manifest.lease.heartbeat_at + self.lease_ttl < self._now()
+        if not stale:
             return manifest
 
-        lock_path = self._lock_path(manifest.job_id)
-        if lock_path.exists() and lock_path.read_text(encoding="utf-8") == manifest.lease.owner_token:
+        if lock_path.exists() and self._lock_owner_token(lock_path) == manifest.lease.owner_token:
             lock_path.unlink()
         manifest.state = "interrupted"
         manifest.lease = None
         manifest.current_doc_id = None
-        self.save(manifest)
+        self.save(manifest, preserve_lease=False)
         return manifest
 
     def reset_failed_documents(self, manifest: GraphRebuildManifest) -> GraphRebuildManifest:
@@ -220,6 +259,12 @@ class GraphRebuildJobStore:
     def _manifest_path(self, job_id: str) -> Path:
         return self._job_dir(job_id) / "manifest.json"
 
+    def _load_existing_manifest(self, job_id: str) -> Optional[GraphRebuildManifest]:
+        path = self._manifest_path(job_id)
+        if not path.exists():
+            return None
+        return GraphRebuildManifest.model_validate(self._read_json(path))
+
     def _lock_path(self, job_id: str) -> Path:
         return self._job_dir(job_id) / "runner.lock"
 
@@ -247,6 +292,38 @@ class GraphRebuildJobStore:
         if not isinstance(payload, dict):
             raise ValueError("Graph rebuild JSON payload must be an object")
         return payload
+
+    @staticmethod
+    def _lock_owner_token(path: Path) -> Optional[str]:
+        """Read both current JSON locks and pre-release plain-token locks."""
+        raw = path.read_text(encoding="utf-8")
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
+        return payload.get("owner_token") if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _lock_process_id(path: Path) -> Optional[int]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+        process_id = payload.get("process_id") if isinstance(payload, dict) else None
+        return process_id if isinstance(process_id, int) and process_id > 0 else None
+
+    @staticmethod
+    def _process_is_alive(process_id: int) -> bool:
+        try:
+            os.kill(process_id, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            # Windows reports an invalid/nonexistent PID as WinError 87.
+            return False
+        return True
 
     @staticmethod
     def _atomic_write_json(path: Path, payload: object) -> None:

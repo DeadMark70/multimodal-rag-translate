@@ -483,6 +483,27 @@ async def test_run_graph_extraction_marks_partial_when_some_chunks_fail() -> Non
 
 
 @pytest.mark.asyncio
+async def test_run_graph_extraction_marks_transient_chunk_failures_retryable() -> None:
+    mock_store = Mock()
+
+    with (
+        patch("graph_rag.service.GraphStore", return_value=mock_store),
+        patch(
+            "graph_rag.service.extract_and_add_to_graph",
+            new=AsyncMock(side_effect=TimeoutError("provider timed out")),
+        ),
+    ):
+        result = await run_graph_extraction(
+            user_id="user-1",
+            doc_id="doc-retryable",
+            markdown_text="A" * 9000,
+        )
+
+    assert result.status == "failed"
+    assert result.retryable is True
+
+
+@pytest.mark.asyncio
 async def test_run_graph_extraction_marks_node_vector_dirty_and_schedules_autosync() -> None:
     upload_root = _workspace_upload_root("graph_extraction_autosync")
     markdown_text = "A" * 16050

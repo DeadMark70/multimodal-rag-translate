@@ -63,17 +63,37 @@ class GraphRebuildCoordinator:
         staging = self.store_factory(user_id, storage_dir=staging_dir)
         self._reset_interrupted_document(manifest, staging)
         manifest.state = "running"
-        manifest.phase = "extracting"
+        if manifest.phase in {"preparing", "extracting", "retry_wait"}:
+            manifest.phase = "extracting"
         self.jobs.save(manifest)
+        stop_heartbeat = asyncio.Event()
+        heartbeat_task = asyncio.create_task(
+            self._heartbeat_until_stopped(manifest.job_id, owner_token, stop_heartbeat)
+        )
+        try:
+            if manifest.phase == "extracting":
+                for document in manifest.documents:
+                    if document.state in {"indexed", "empty", "failed", "partial"}:
+                        continue
+                    await self._process_document(manifest, document, staging, owner_token)
+                self._complete_extraction_phase(manifest)
+            if manifest.state == "running":
+                await self._finalize(manifest, staging, owner_token)
+        finally:
+            stop_heartbeat.set()
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
 
-        for document in manifest.documents:
-            if document.state in {"indexed", "empty", "failed", "partial"}:
-                continue
-            await self._process_document(manifest, document, staging, owner_token)
-
-        self._complete_extraction_phase(manifest)
-        if manifest.state == "running":
-            await self._finalize(manifest, staging, owner_token)
+    async def _heartbeat_until_stopped(
+        self, job_id: str, owner_token: str, stop: asyncio.Event
+    ) -> None:
+        interval = max(1.0, self.jobs.lease_ttl.total_seconds() / 3)
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+            except TimeoutError:
+                if not self.jobs.heartbeat(job_id, owner_token):
+                    return
 
     async def _process_document(
         self,
@@ -84,7 +104,8 @@ class GraphRebuildCoordinator:
     ) -> None:
         while document.attempt < manifest.max_attempts:
             self._require_runner(manifest, owner_token)
-            self.jobs.heartbeat(manifest.job_id, owner_token)
+            if not self.jobs.heartbeat(manifest.job_id, owner_token):
+                raise RuntimeError("Graph rebuild runner lease is no longer owned by this task")
             document.attempt += 1
             document.cumulative_attempts += 1
             document.state = "running"
@@ -119,9 +140,21 @@ class GraphRebuildCoordinator:
                 return
 
             self._apply_result(document, result)
-            staging.save()
+            if (
+                document.state in {"failed", "partial"}
+                and result.retryable
+                and document.attempt < manifest.max_attempts
+            ):
+                self._clear_document_contribution(staging, document.doc_id)
+                document.state = "retry_wait"
+                manifest.phase = "retry_wait"
+                self.jobs.save(manifest)
+                delay = self.retry_delays[document.attempt - 1] + self.jitter()
+                await self.sleep(max(delay, 0.0))
+                manifest.phase = "extracting"
+                continue
             if document.state in {"indexed", "empty"}:
-                self._validate_document_checkpoint(staging, document.doc_id)
+                self._validate_document_checkpoint(staging, document)
             self.jobs.save(manifest)
             return
 
@@ -182,8 +215,8 @@ class GraphRebuildCoordinator:
         expected_ids = {document.doc_id for document in manifest.documents}
         if successful_ids != expected_ids:
             raise RuntimeError("Graph rebuild staging data does not cover every source document")
-        if not expected_ids.issubset(staging.get_documents()):
-            raise RuntimeError("Graph rebuild staging graph is missing checkpointed documents")
+        for document in manifest.documents:
+            GraphRebuildCoordinator._validate_document_checkpoint(staging, document)
 
     @staticmethod
     def _document_folder(document: GraphRebuildDocument) -> Path:
@@ -210,18 +243,36 @@ class GraphRebuildCoordinator:
         return str(exc).replace("\n", " ")[:500]
 
     @staticmethod
-    def _validate_document_checkpoint(staging: GraphStore, doc_id: str) -> None:
-        if doc_id not in staging.get_documents() or staging.get_latest_extraction_manifest(doc_id) is None:
-            raise RuntimeError(f"Staging graph checkpoint is incomplete for document {doc_id}")
+    def _validate_document_checkpoint(
+        staging: GraphStore, document: GraphRebuildDocument
+    ) -> None:
+        status = staging.get_document_status(document.doc_id)
+        manifest = staging.get_latest_extraction_manifest(document.doc_id)
+        if status is None or status.status != document.state or manifest is None:
+            raise RuntimeError(
+                f"Staging graph checkpoint is incomplete for document {document.doc_id}"
+            )
+        if document.state == "indexed" and document.doc_id not in staging.get_documents():
+            raise RuntimeError(
+                f"Staging graph checkpoint is missing indexed document {document.doc_id}"
+            )
 
     @staticmethod
     def _reset_interrupted_document(manifest: GraphRebuildManifest, staging: GraphStore) -> None:
         for document in manifest.documents:
             if document.state == "running":
-                staging.remove_document(document.doc_id)
-                staging.remove_document_status(document.doc_id)
+                GraphRebuildCoordinator._clear_document_contribution(staging, document.doc_id)
                 document.state = "pending"
-        staging.save()
+                document.attempt = 0
+            elif document.state == "pending" and document.cumulative_attempts:
+                GraphRebuildCoordinator._clear_document_contribution(staging, document.doc_id)
+
+    @staticmethod
+    def _clear_document_contribution(staging: GraphStore, doc_id: str) -> None:
+        """Remove a previous partial attempt before retrying the whole document."""
+        staging.remove_document(doc_id)
+        staging.remove_document_status(doc_id)
+        staging.save_snapshot()
 
     @staticmethod
     def _require_runner(manifest: GraphRebuildManifest, owner_token: str) -> None:

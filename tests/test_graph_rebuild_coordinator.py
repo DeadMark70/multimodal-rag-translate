@@ -7,7 +7,7 @@ import pytest
 
 from graph_rag.rebuild_coordinator import GraphRebuildCoordinator
 from graph_rag.rebuild_jobs import GraphRebuildJobStore
-from graph_rag.schemas import GraphExtractionRunResult
+from graph_rag.schemas import GraphDocumentStatus, GraphExtractionRunResult
 
 
 SOURCES = [
@@ -35,6 +35,9 @@ def _coordinator(
     store = Mock()
     store.get_documents.return_value = {"doc-1", "doc-2"}
     store.get_latest_extraction_manifest.return_value = object()
+    store.get_document_status.side_effect = lambda doc_id: GraphDocumentStatus(
+        doc_id=doc_id, status="indexed"
+    )
     coordinator = GraphRebuildCoordinator(
         jobs,
         store_factory=Mock(return_value=store),
@@ -75,6 +78,26 @@ async def test_retryable_failure_succeeds_on_third_attempt(tmp_path: Path) -> No
     first = jobs.load(job_id).documents[0]
     assert first.state == "indexed"
     assert first.attempt == 3
+
+
+@pytest.mark.asyncio
+async def test_retryable_result_retries_after_removing_partial_contribution(tmp_path: Path) -> None:
+    extract = AsyncMock(
+        side_effect=[
+            GraphExtractionRunResult(
+                doc_id="doc-1", status="partial", last_error="temporary", retryable=True
+            ),
+            _indexed_result("doc-1"),
+            _indexed_result("doc-2"),
+        ]
+    )
+    jobs, coordinator, job_id, owner_token = _coordinator(tmp_path, extract, AsyncMock())
+
+    await coordinator.run("user-1", job_id, owner_token)
+
+    staging = coordinator.store_factory.return_value
+    staging.remove_document.assert_called_with("doc-1")
+    assert jobs.load(job_id).documents[0].state == "indexed"
 
 
 @pytest.mark.asyncio
