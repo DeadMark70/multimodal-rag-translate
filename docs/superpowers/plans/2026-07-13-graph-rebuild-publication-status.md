@@ -35,7 +35,8 @@ Add a test that projects both a running and completed manifest:
 ```python
 def test_status_reports_live_graph_changed_only_after_publication() -> None:
     store = GraphRebuildJobStore("user-1", rebuild_root=tmp_path)
-    running = _manifest(state="running")
+    running = store.create_job(SOURCES)
+    running.state = "running"
     completed = running.model_copy(update={"state": "completed"})
 
     assert store.to_status(running).live_graph_unchanged is True
