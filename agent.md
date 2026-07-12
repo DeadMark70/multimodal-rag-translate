@@ -202,6 +202,8 @@ Keep these three files synchronized before ending a session.
 
 - 2026-07-12: Full GraphRAG rebuild eligibility is defined by each document's `extracted.md`; freeze that Markdown directly from the canonical upload directory and do not require optional OCR image sidecars such as `image_blocks.json`. This keeps legacy text-only OCR uploads rebuildable. Add a regression test with no image sidecar whenever this path changes.
 
+- 2026-07-13: Boolean status fields whose schema has a default must still be explicitly derived in every durable status projection. For GraphRAG full rebuilds, derive `live_graph_unchanged` from the published terminal state and cover both running and completed manifests, otherwise a completed UI can falsely report that queries use old data.
+
 
 
 
