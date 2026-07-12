@@ -185,6 +185,7 @@ class GraphRebuildJobStore:
             documents=public_documents,
             can_resume=manifest.state == "interrupted",
             can_retry_failed=manifest.state == "completed_with_failures",
+            live_graph_unchanged=manifest.state != "completed",
             last_error=manifest.last_error,
         )
 

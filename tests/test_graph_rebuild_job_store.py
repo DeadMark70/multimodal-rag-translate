@@ -83,6 +83,16 @@ def test_status_aggregates_terminal_document_counts(tmp_path: Path) -> None:
     assert status.live_graph_unchanged is True
 
 
+def test_status_reports_live_graph_changed_only_after_publication(tmp_path: Path) -> None:
+    store = GraphRebuildJobStore("user-1", rebuild_root=tmp_path)
+    running = store.create_job(SOURCES)
+    running.state = "running"
+    completed = running.model_copy(update={"state": "completed"})
+
+    assert store.to_status(running).live_graph_unchanged is True
+    assert store.to_status(completed).live_graph_unchanged is False
+
+
 def test_status_exposes_manifest_retry_limit(tmp_path: Path) -> None:
     store = GraphRebuildJobStore("user-1", rebuild_root=tmp_path)
     manifest = store.create_job(SOURCES)
