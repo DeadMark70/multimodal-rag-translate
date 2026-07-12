@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 # Local application
 from core.auth import get_current_user_id
+from core.uploads import get_document_upload_dir
 from core.llm_factory import ExtractionProfile
 from core.errors import AppError, ErrorCode
 from evaluation.db import CampaignRepository
@@ -498,7 +499,7 @@ async def rebuild_graph_full(
                 message="沒有可用的 OCR 文件可供完整重構",
                 status_code=400,
             )
-        source_markdown = await _freeze_full_rebuild_sources(sources)
+        source_markdown = await _freeze_full_rebuild_sources(user_id, sources)
         manifest, created = jobs.create_or_load_active(
             sources, source_markdown=source_markdown
         )
@@ -602,20 +603,22 @@ def _schedule_full_rebuild(
 
 
 async def _freeze_full_rebuild_sources(
+    user_id: str,
     sources: list[dict[str, str | None]],
 ) -> dict[str, str]:
-    """Read every OCR markdown input before a durable rebuild is scheduled."""
+    """Freeze GraphRAG's markdown-only OCR input before scheduling a rebuild."""
     frozen: dict[str, str] = {}
     for source in sources:
         doc_id = str(source["doc_id"])
-        original_path = source.get("original_path")
-        if not original_path:
-            raise FileNotFoundError(f"Missing OCR artifact path for document {doc_id}")
-        markdown, _ = await asyncio.to_thread(
-            load_ocr_artifacts,
-            user_folder=str(Path(original_path).resolve().parent),
-        )
-        frozen[doc_id] = markdown
+        markdown_path = Path(get_document_upload_dir(user_id, doc_id)) / "extracted.md"
+        try:
+            frozen[doc_id] = await asyncio.to_thread(
+                markdown_path.read_text, encoding="utf-8"
+            )
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(
+                f"GraphRAG OCR markdown is missing for document {doc_id}"
+            ) from exc
     return frozen
 
 

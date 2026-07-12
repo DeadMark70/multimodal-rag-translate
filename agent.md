@@ -200,6 +200,8 @@ Keep these three files synchronized before ending a session.
 - 2026-04-04: For repository-wide string search on Windows, avoid `Get-ChildItem -Recurse | Select-String` because denied cache directories can break scans; prefer `git grep` first, then file-targeted `Select-String`.
 - 2026-04-04: In evaluation agentic routing, never treat benchmark intent as numeric-only based on metric words (for example `Dice`) without explicit numeric context; exclude methodology phrases like `Dice supervision`, anchor figure-flow plans to the original question, and force single-task synthesis normalization so answers do not drift into broad/off-question headings.
 
+- 2026-07-12: Full GraphRAG rebuild eligibility is defined by each document's `extracted.md`; freeze that Markdown directly from the canonical upload directory and do not require optional OCR image sidecars such as `image_blocks.json`. This keeps legacy text-only OCR uploads rebuildable. Add a regression test with no image sidecar whenever this path changes.
+
 
 
 

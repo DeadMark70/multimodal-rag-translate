@@ -140,6 +140,25 @@ def _rebuild_status(*, state: str = "running") -> GraphRebuildStatusResponse:
     )
 
 
+@pytest.mark.asyncio
+async def test_full_rebuild_freezes_markdown_without_image_blocks() -> None:
+    """Legacy OCR uploads remain valid GraphRAG sources without image sidecars."""
+    from graph_rag.router import _freeze_full_rebuild_sources
+
+    upload_root = _workspace_upload_root("graph_rebuild_markdown_only")
+    artifact_dir = upload_root / TEST_USER_ID / "doc-1"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "extracted.md").write_text("frozen markdown", encoding="utf-8")
+
+    with patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)):
+        frozen = await _freeze_full_rebuild_sources(
+            TEST_USER_ID,
+            [{"doc_id": "doc-1", "original_path": str(artifact_dir / "demo.pdf")}],
+        )
+
+    assert frozen == {"doc-1": "frozen markdown"}
+
+
 def test_rebuild_full_endpoint_starts_durable_job_and_schedules_owner_token() -> None:
     mock_store = Mock()
     mock_store.active_job_state = None
@@ -179,7 +198,10 @@ def test_rebuild_full_endpoint_starts_durable_job_and_schedules_owner_token() ->
                 ]
             ),
         ),
-        patch("graph_rag.router.load_ocr_artifacts", return_value=("frozen markdown", [])),
+        patch(
+            "graph_rag.router._freeze_full_rebuild_sources",
+            new=AsyncMock(return_value={"doc-1": "frozen markdown"}),
+        ),
         patch("graph_rag.router._rebuild_full_graph_task", new=mock_task),
         _client() as client,
     ):
