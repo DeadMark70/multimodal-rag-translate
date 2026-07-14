@@ -929,6 +929,7 @@ async def test_list_job_items_is_job_scoped_and_includes_latest_safe_attempt(
     assert items[0].latest_attempt is not None
     assert items[0].latest_attempt.attempt_id == claimed.attempt_id
     assert items[0].latest_attempt.safe_error_message is None
+    assert (await store.get_job(user_id="user-a", job_id=created.job_id)).missing_items == 0
     with pytest.raises(AppError) as exc_info:
         await store.list_job_items(user_id="user-b", job_id=created.job_id)
     assert exc_info.value.code is ErrorCode.NOT_FOUND

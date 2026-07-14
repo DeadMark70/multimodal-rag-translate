@@ -1109,6 +1109,7 @@ class EvaluationJobStore:
                 "completed_items": succeeded,
                 "failed_items": failed,
                 "cancelled_items": cancelled,
+                "missing_items": 0,
             }
         )
 

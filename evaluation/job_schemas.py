@@ -144,6 +144,9 @@ class EvaluationJob(BaseModel):
     completed_items: int = Field(default=0, ge=0)
     failed_items: int = Field(default=0, ge=0)
     cancelled_items: int = Field(default=0, ge=0)
+    # Durable job ledgers represent every work item; missing is explicit zero
+    # unless a future backend reports an incomplete materialization.
+    missing_items: int = Field(default=0, ge=0)
     created_at: datetime = Field(default_factory=_utc_now)
 
     @property
