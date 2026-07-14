@@ -153,7 +153,8 @@
 - Phase 2 metrics are implemented behind `ENABLE_RAGAS_CONTEXT_METRICS`:
   - `context_precision`
   - `context_recall`
-- Metric execution is non-blocking per metric; one metric failure does not fail the campaign.
+- Metric execution is non-blocking per metric; one metric failure produces a failed attempt and may yield `completed_with_errors` without erasing successful metrics.
+- A provider response can arrive after a process interruption but before its checkpoint transaction commits. This unavoidable billing/checkpoint window is recorded as an attempt outcome and is safe to replay; retry policy never assumes the provider did not charge.
 - Metrics API now returns:
   - `available_metrics`
   - per-row `metric_values`
