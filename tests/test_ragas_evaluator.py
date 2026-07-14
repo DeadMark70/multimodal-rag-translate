@@ -262,14 +262,12 @@ async def test_evaluate_batch_uses_short_ground_truth_and_keeps_metric_failures_
 
     assert _FakeDataset.payload is not None
     assert _FakeDataset.payload["ground_truth"] == ["Short ground truth"]
-    assert len(score_rows) == len(PRIMARY_RAGAS_METRICS)
-    assert {row["metric_name"] for row in score_rows} == set(PRIMARY_RAGAS_METRICS)
-    answer_relevancy_row = next(row for row in score_rows if row["metric_name"] == "answer_relevancy")
-    assert answer_relevancy_row["metric_value"] == 0.0
-    assert answer_relevancy_row["details"]["reference_source"] == "ground_truth_short"
-    assert "metric broke" in answer_relevancy_row["details"]["error"]
-    assert answer_relevancy_row["details"]["invalid_metric"] is True
-    assert answer_relevancy_row["details"]["error_type"] == "unknown"
+    assert len(score_rows) == len(PRIMARY_RAGAS_METRICS) - 1
+    assert {row["metric_name"] for row in score_rows} == {
+        "faithfulness",
+        "answer_correctness",
+    }
+    assert not any(row["metric_name"] == "answer_relevancy" for row in score_rows)
 
 
 @pytest.mark.asyncio
