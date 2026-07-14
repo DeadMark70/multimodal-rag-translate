@@ -319,6 +319,42 @@ async def test_evaluate_batch_respects_rate_budget_per_metric():
 
 
 @pytest.mark.asyncio
+async def test_evaluate_metric_batch_propagates_provider_failures_without_zero_fill():
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository([]),
+        score_repository=FakeScoreRepository([]),
+        evaluator_model="fake-evaluator",
+    )
+    rows = [
+        SimpleNamespace(
+            id="r1",
+            question_id="Q1",
+            question="Question 1",
+            answer="Answer 1",
+            contexts=["ctx-1"],
+            ground_truth="Ground truth",
+            ground_truth_short="Short ground truth",
+        )
+    ]
+    with patch.object(
+        evaluator,
+        "_load_ragas_dependencies",
+        new=AsyncMock(
+            return_value={
+                "Dataset": _FakeDataset,
+                "metrics": {metric_name: object() for metric_name in PRIMARY_RAGAS_METRICS},
+            }
+        ),
+    ), patch.object(
+        evaluator,
+        "_evaluate_metric_async",
+        new=AsyncMock(side_effect=RuntimeError("provider down")),
+    ):
+        with pytest.raises(RuntimeError, match="provider down"):
+            await evaluator.evaluate_metric_batch("faithfulness", rows, object(), object())
+
+
+@pytest.mark.asyncio
 async def test_evaluate_campaign_reports_progress_when_batches_fall_back():
     result = CampaignResult(
         id="r1",

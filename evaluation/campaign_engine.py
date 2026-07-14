@@ -669,18 +669,34 @@ class CampaignEngine:
         )
         self._runner = runner
         self._job_store = job_store or EvaluationJobStore()
+        worker = None
         if worker_notifier is None:
             from evaluation.execution_worker import DatasetExecutionWorker
             from evaluation.job_worker import configure_evaluation_job_worker
             from evaluation.job_worker import get_evaluation_job_worker
+            from evaluation.ragas_worker import RagasBatchWorker
 
             worker = get_evaluation_job_worker()
             if configure_worker:
                 configure_evaluation_job_worker(
-                    execution_handler=DatasetExecutionWorker(runner=runner).execute
+                    execution_handler=DatasetExecutionWorker(
+                        store=self._job_store,
+                        runner=runner,
+                        ragas_evaluator=self._ragas_evaluator,
+                        notify=worker.notify,
+                    ).execute,
+                    ragas_batch_handler=RagasBatchWorker(
+                        store=self._job_store,
+                        evaluator=self._ragas_evaluator,
+                        campaign_repository=self._campaign_repository,
+                    ).execute,
                 )
             worker_notifier = worker.notify
         self._worker_notifier = worker_notifier
+        if getattr(self._job_store, "_on_job_created", None) is None:
+            self._job_store._on_job_created = (
+                worker.notify if worker is not None else worker_notifier
+            )
 
     async def create_and_start(
         self,
@@ -800,25 +816,22 @@ class CampaignEngine:
                 )
 
         selected_result_ids = [row.id for row in selected_completed_results]
+        evaluation_total_units = len(selected_result_ids) * len(self._ragas_evaluator.enabled_metrics)
         await self._campaign_repository.mark_evaluating(
             user_id=user_id,
             campaign_id=campaign_id,
-            evaluation_total_units=len(selected_completed_results),
+            evaluation_total_units=evaluation_total_units,
         )
-        task = asyncio.create_task(
-            self._run_evaluation_only(
-                user_id=user_id,
-                campaign_id=campaign_id,
-                completed_units=campaign.completed_units,
-                evaluation_total_units=len(selected_completed_results),
-                ragas_batch_size=campaign.config.ragas_batch_size,
-                ragas_parallel_batches=campaign.config.ragas_parallel_batches,
-                ragas_rpm_limit=campaign.config.ragas_rpm_limit,
-                selected_result_ids=selected_result_ids,
-            ),
-            name=f"evaluation-ragas-{campaign_id}",
+        await self._job_store.ensure_ragas_work(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            evaluator_model=self._ragas_evaluator.evaluator_model,
+            evaluator_config={},
+            enabled_metrics=self._ragas_evaluator.enabled_metrics,
+            selected_result_ids=selected_result_ids,
+            force=True,
         )
-        await self._register_active_task(campaign_id, task)
+        self._worker_notifier()
         return await self.get_campaign(user_id=user_id, campaign_id=campaign_id)
 
     async def recover_inflight_campaigns(self) -> None:

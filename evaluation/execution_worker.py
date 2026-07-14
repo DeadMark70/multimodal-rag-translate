@@ -44,11 +44,15 @@ class DatasetExecutionWorker:
         runner: CampaignRunner = run_campaign_case,
         campaign_repository: CampaignRepository | None = None,
         trace_repository: AgentTraceRepository | None = None,
+        ragas_evaluator: Any | None = None,
+        notify: Any | None = None,
     ) -> None:
         self._store = store or EvaluationJobStore()
         self._runner = runner
         self._campaign_repository = campaign_repository or CampaignRepository()
         self._trace_repository = trace_repository or AgentTraceRepository()
+        self._ragas_evaluator = ragas_evaluator
+        self._notify = notify
 
     async def execute(self, claim: ClaimedEvaluationWork) -> None:
         """Execute one claimed unit, preserving attempts before official promotion."""
@@ -191,9 +195,28 @@ class DatasetExecutionWorker:
 
     async def _derive_campaign_state(self, claim: ClaimedEvaluationWork) -> None:
         snapshot = claim.input_snapshot
-        await self._campaign_repository.derive_execution_state(
+        campaign = await self._campaign_repository.derive_execution_state(
             user_id=str(snapshot["user_id"]), campaign_id=str(snapshot["campaign_id"])
         )
+        if self._ragas_evaluator is None:
+            return
+        if campaign.status.value not in {"completed", "completed_with_errors"}:
+            return
+        created = await self._store.ensure_ragas_work(
+            user_id=str(snapshot["user_id"]),
+            campaign_id=str(snapshot["campaign_id"]),
+            evaluator_model=str(getattr(self._ragas_evaluator, "evaluator_model", "")),
+            evaluator_config={},
+            enabled_metrics=list(getattr(self._ragas_evaluator, "enabled_metrics", [])),
+        )
+        if created:
+            await self._campaign_repository.mark_evaluating(
+                user_id=str(snapshot["user_id"]),
+                campaign_id=str(snapshot["campaign_id"]),
+                evaluation_total_units=created,
+            )
+            if self._notify is not None:
+                self._notify()
 
     async def _record_observability(
         self,

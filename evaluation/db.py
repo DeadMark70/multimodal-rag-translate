@@ -1346,6 +1346,62 @@ class CampaignRepository:
             )
         return await self.mark_completed(user_id=user_id, campaign_id=campaign_id, phase="execution")
 
+    async def derive_ragas_state(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
+        """Derive evaluation lifecycle from durable RAGAS job items."""
+        await init_db()
+        async with connect_db() as connection:
+            row = await (
+                await connection.execute(
+                    """
+                    SELECT COUNT(*) AS total,
+                           SUM(CASE WHEN item.status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded,
+                           SUM(CASE WHEN item.status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                           SUM(CASE WHEN item.status IN ('pending', 'running', 'retry_wait') THEN 1 ELSE 0 END) AS unresolved
+                    FROM evaluation_job_items AS item
+                    JOIN evaluation_jobs AS job ON job.id = item.job_id
+                    JOIN evaluation_work_items AS work ON work.id = item.work_item_id
+                    WHERE job.user_id = ? AND job.campaign_id = ? AND work.work_type = 'ragas_metric'
+                    """,
+                    (user_id, campaign_id),
+                )
+            ).fetchone()
+        total = int(row["total"] or 0)
+        succeeded = int(row["succeeded"] or 0)
+        failed = int(row["failed"] or 0)
+        unresolved = int(row["unresolved"] or 0)
+        if total == 0:
+            return await self.mark_completed(user_id=user_id, campaign_id=campaign_id, phase="evaluation")
+        if unresolved:
+            return await self._update_campaign(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                status=CampaignLifecycleStatus.EVALUATING,
+                phase="evaluation",
+                evaluation_completed_units=succeeded,
+                evaluation_total_units=total,
+            )
+        if failed and succeeded:
+            return await self._update_campaign(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                status=CampaignLifecycleStatus.COMPLETED_WITH_ERRORS,
+                phase="evaluation",
+                evaluation_completed_units=succeeded,
+                evaluation_total_units=total,
+                error_message="Some RAGAS metrics failed; valid checkpoints were retained.",
+                completed_at=_utc_now_iso(),
+                current_question_id=None,
+                current_mode=None,
+            )
+        if failed:
+            return await self.mark_failed(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                error_message="No RAGAS metric result was produced.",
+                phase="evaluation",
+            )
+        return await self.mark_completed(user_id=user_id, campaign_id=campaign_id, phase="evaluation")
+
     async def mark_failed(
         self,
         *,
@@ -1944,7 +2000,8 @@ class RagasScoreRepository:
         async with connect_db() as connection:
             cursor = await connection.execute(
                 """
-                SELECT campaign_result_id, metric_name, metric_value, details_json
+                SELECT campaign_result_id, metric_name, metric_value, details_json,
+                       evaluation_signature, source_attempt_id
                 FROM ragas_scores
                 WHERE campaign_id = ? AND user_id = ?
                 ORDER BY created_at ASC
@@ -1959,6 +2016,8 @@ class RagasScoreRepository:
                 "metric_name": row["metric_name"],
                 "metric_value": row["metric_value"],
                 "details": _json_loads(row["details_json"], {}),
+                "evaluation_signature": row["evaluation_signature"],
+                "source_attempt_id": row["source_attempt_id"],
             }
             for row in rows
         ]

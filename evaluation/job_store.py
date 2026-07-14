@@ -126,6 +126,102 @@ class EvaluationJobStore:
             self._on_job_created()
         return created_job
 
+    async def ensure_ragas_work(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        evaluator_model: str,
+        evaluator_config: dict[str, Any] | None,
+        enabled_metrics: Sequence[str],
+        metric_version: str = "v1",
+        selected_result_ids: Sequence[str] | None = None,
+        force: bool = False,
+        max_attempts: int = 3,
+    ) -> int:
+        """Create idempotent metric work for current official results."""
+        results = await CampaignResultRepository().list_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
+        selected = {str(value) for value in (selected_result_ids or []) if value}
+        if selected:
+            results = [row for row in results if row.id in selected]
+        results = [
+            row
+            for row in results
+            if row.status == "completed" and row.source_attempt_id is not None
+        ]
+        if not results or not enabled_metrics:
+            return 0
+
+        await init_db()
+        specs: list[WorkItemSpec] = []
+        async with connect_db() as connection:
+            for result in results:
+                ground_truth = result.ground_truth_short or result.ground_truth or ""
+                ground_truth_hash = sha256(ground_truth.encode("utf-8")).hexdigest()
+                for metric_name in dict.fromkeys(str(name) for name in enabled_metrics):
+                    signature = build_evaluation_signature(
+                        result=result,
+                        evaluator_model=evaluator_model,
+                        evaluator_config=evaluator_config or {},
+                        metric_name=metric_name,
+                        metric_version=metric_version,
+                        ground_truth_hash=ground_truth_hash,
+                        context_metrics_enabled=metric_name.startswith("context_"),
+                    )
+                    score_cursor = await connection.execute(
+                        "SELECT evaluation_signature FROM ragas_scores WHERE campaign_result_id = ? AND metric_name = ?",
+                        (result.id, metric_name),
+                    )
+                    score = await score_cursor.fetchone()
+                    if not force and score is not None and score["evaluation_signature"] == signature:
+                        continue
+                    logical_key = f"ragas:{result.id}:{metric_name}:{signature}"
+                    if not force:
+                        work_cursor = await connection.execute(
+                            """
+                            SELECT 1 FROM evaluation_work_items AS work
+                            JOIN evaluation_job_items AS item ON item.work_item_id = work.id
+                            WHERE work.campaign_id = ? AND work.logical_key = ?
+                              AND item.status IN ('pending', 'running', 'retry_wait', 'succeeded', 'failed')
+                            LIMIT 1
+                            """,
+                            (campaign_id, logical_key),
+                        )
+                        if await work_cursor.fetchone() is not None:
+                            continue
+                    specs.append(
+                        WorkItemSpec(
+                            work_type=EvaluationWorkType.RAGAS_METRIC,
+                            logical_key=logical_key,
+                            input_snapshot={
+                                "user_id": user_id,
+                                "campaign_id": campaign_id,
+                                "campaign_result_id": result.id,
+                                "metric_name": metric_name,
+                                "evaluation_signature": signature,
+                                "result": result.model_dump(mode="json"),
+                            },
+                            max_attempts=max_attempts,
+                        )
+                    )
+        if not specs:
+            return 0
+        await self.create_job_with_items(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            job_type=EvaluationJobType.RERUN if force else EvaluationJobType.INITIAL,
+            selection={"stage": "ragas", "force": force},
+            config_snapshot={
+                "evaluator_model": evaluator_model,
+                "evaluator_config": evaluator_config or {},
+                "metric_version": metric_version,
+            },
+            items=specs,
+        )
+        return len(specs)
+
     async def claim_ready_items(
         self,
         *,

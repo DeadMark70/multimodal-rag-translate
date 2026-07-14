@@ -12,11 +12,13 @@ from evaluation.job_store import EvaluationJobStore
 
 
 ClaimHandler: TypeAlias = Callable[[ClaimedEvaluationWork], Awaitable[None]]
+RagasBatchHandler: TypeAlias = Callable[[list[ClaimedEvaluationWork]], Awaitable[None]]
 Clock: TypeAlias = Callable[[], datetime]
 Sleep: TypeAlias = Callable[[float], Awaitable[None]]
 
 _EXECUTION_CONCURRENCY = 4
 _RAGAS_CONCURRENCY = 2
+_RAGAS_BATCH_SIZE = 4
 _HEARTBEAT_SECONDS = 15.0
 
 
@@ -29,12 +31,14 @@ class EvaluationJobWorker:
         store: EvaluationJobStore | None = None,
         execution_handler: ClaimHandler | None = None,
         ragas_handler: ClaimHandler | None = None,
+        ragas_batch_handler: RagasBatchHandler | None = None,
         clock: Clock | None = None,
         sleep: Sleep | None = None,
     ) -> None:
         self._store = store or EvaluationJobStore(on_job_created=self.notify)
         self._execution_handler = execution_handler
         self._ragas_handler = ragas_handler
+        self._ragas_batch_handler = ragas_batch_handler
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._sleep = sleep or asyncio.sleep
         self._execution_slots = asyncio.Semaphore(_EXECUTION_CONCURRENCY)
@@ -56,6 +60,7 @@ class EvaluationJobWorker:
         *,
         execution_handler: ClaimHandler | None = None,
         ragas_handler: ClaimHandler | None = None,
+        ragas_batch_handler: RagasBatchHandler | None = None,
     ) -> None:
         """Attach Task 5/6 handlers before the process worker starts."""
         if self._accepting:
@@ -64,6 +69,8 @@ class EvaluationJobWorker:
             self._execution_handler = execution_handler
         if ragas_handler is not None:
             self._ragas_handler = ragas_handler
+        if ragas_batch_handler is not None:
+            self._ragas_batch_handler = ragas_batch_handler
 
     async def start(self) -> None:
         """Recover interrupted ledger attempts and start the event-driven loop."""
@@ -123,10 +130,30 @@ class EvaluationJobWorker:
                     self._ragas_handler,
                 ),
             ):
-                if handler is None:
+                if handler is None and not (
+                    work_type == EvaluationWorkType.RAGAS_METRIC
+                    and self._ragas_batch_handler is not None
+                ):
                     continue
                 available = capacity - self._active_count(work_type)
                 if available > 0:
+                    if (
+                        work_type == EvaluationWorkType.RAGAS_METRIC
+                        and self._ragas_batch_handler is not None
+                        and self._ragas_handler is None
+                    ):
+                        # One batch-handler task owns two provider batches at a
+                        # time; claim up to the durable worker's batch window.
+                        if self._active_count(work_type) > 0:
+                            continue
+                        claims.extend(
+                            await self._store.claim_ready_items(
+                                limit=_RAGAS_BATCH_SIZE * _RAGAS_CONCURRENCY,
+                                now=self._clock(),
+                                work_type=work_type,
+                            )
+                        )
+                        continue
                     claims.extend(
                         await self._store.claim_ready_items(
                             limit=available,
@@ -136,9 +163,37 @@ class EvaluationJobWorker:
                     )
             if not self._accepting:
                 return 0
-        for claim in claims:
-            task = asyncio.create_task(self._run_claim(claim), name=f"evaluation-attempt-{claim.attempt_id}")
-            self._active_tasks[task] = self._work_type_for(claim)
+        if self._ragas_batch_handler is not None and self._ragas_handler is None:
+            ragas_claims = [claim for claim in claims if self._work_type_for(claim) == EvaluationWorkType.RAGAS_METRIC]
+            other_claims = [claim for claim in claims if claim not in ragas_claims]
+            dispatch: list[tuple[asyncio.Task[None], EvaluationWorkType]] = []
+            if ragas_claims:
+                dispatch.append(
+                    (
+                        asyncio.create_task(
+                            self._run_ragas_batch(ragas_claims),
+                            name="evaluation-ragas-batch",
+                        ),
+                        EvaluationWorkType.RAGAS_METRIC,
+                    )
+                )
+            dispatch.extend(
+                (
+                    asyncio.create_task(self._run_claim(claim), name=f"evaluation-attempt-{claim.attempt_id}"),
+                    self._work_type_for(claim),
+                )
+                for claim in other_claims
+            )
+        else:
+            dispatch = [
+                (
+                    asyncio.create_task(self._run_claim(claim), name=f"evaluation-attempt-{claim.attempt_id}"),
+                    self._work_type_for(claim),
+                )
+                for claim in claims
+            ]
+        for task, work_type in dispatch:
+            self._active_tasks[task] = work_type
             task.add_done_callback(self._task_finished)
         return len(claims)
 
@@ -180,6 +235,23 @@ class EvaluationJobWorker:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
 
+    async def _run_ragas_batch(self, claims: list[ClaimedEvaluationWork]) -> None:
+        assert self._ragas_batch_handler is not None
+        heartbeats = [
+            asyncio.create_task(
+                self._heartbeat_until_cancelled(claim.attempt_id),
+                name=f"evaluation-heartbeat-{claim.attempt_id}",
+            )
+            for claim in claims
+        ]
+        try:
+            await self._ragas_batch_handler(claims)
+        finally:
+            for heartbeat in heartbeats:
+                heartbeat.cancel()
+            if heartbeats:
+                await asyncio.gather(*heartbeats, return_exceptions=True)
+
     async def _heartbeat_until_cancelled(self, attempt_id: str) -> None:
         while not self._stop_event.is_set():
             await self._sleep(_HEARTBEAT_SECONDS)
@@ -193,7 +265,11 @@ class EvaluationJobWorker:
         self.notify()
 
     def _handlers_unavailable(self) -> bool:
-        return self._execution_handler is None and self._ragas_handler is None
+        return (
+            self._execution_handler is None
+            and self._ragas_handler is None
+            and self._ragas_batch_handler is None
+        )
 
     def _active_count(self, work_type: EvaluationWorkType) -> int:
         return sum(active_type == work_type for active_type in self._active_tasks.values())
@@ -230,11 +306,13 @@ def configure_evaluation_job_worker(
     *,
     execution_handler: ClaimHandler | None = None,
     ragas_handler: ClaimHandler | None = None,
+    ragas_batch_handler: RagasBatchHandler | None = None,
 ) -> EvaluationJobWorker:
     """Configure the process singleton when Task 5/6 adapters become available."""
     worker = get_evaluation_job_worker()
     worker.configure_handlers(
         execution_handler=execution_handler,
         ragas_handler=ragas_handler,
+        ragas_batch_handler=ragas_batch_handler,
     )
     return worker

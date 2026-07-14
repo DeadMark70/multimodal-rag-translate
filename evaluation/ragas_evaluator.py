@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import logging
 import math
 import os
@@ -25,6 +26,7 @@ from evaluation.campaign_schemas import (
     ModeMetricsSummary,
 )
 from evaluation.db import CampaignResultRepository, RagasScoreRepository
+from evaluation.job_store import build_evaluation_signature
 from evaluation.retry import RateBudget, run_with_retry
 
 PRIMARY_RAGAS_METRICS = ["faithfulness", "answer_correctness", "answer_relevancy"]
@@ -144,6 +146,56 @@ class RagasEvaluator:
         if self._enable_context_metrics:
             metrics.extend(CONTEXT_RAGAS_METRICS)
         return metrics
+
+    async def evaluator_handles(self) -> tuple[Any, Any]:
+        """Create the provider wrappers used by a durable metric batch."""
+        dependencies = await self._load_ragas_dependencies()
+        evaluator_llm = dependencies["LangchainLLMWrapper"](
+            get_llm("evaluator", model_name=self._evaluator_model)
+        )
+        await dependencies["initialize_embeddings"]()
+        evaluator_embeddings = dependencies["LangchainEmbeddingsWrapper"](
+            dependencies["get_embeddings"]()
+        )
+        return evaluator_llm, evaluator_embeddings
+
+    async def evaluate_metric_batch(
+        self,
+        metric_name: str,
+        rows: list[Any],
+        evaluator_llm: Any,
+        evaluator_embeddings: Any,
+    ) -> list[float]:
+        """Evaluate one metric for exactly the supplied rows.
+
+        Provider and dependency failures intentionally propagate to the durable
+        worker.  In particular, this method never synthesizes zero values for a
+        failed metric call.
+        """
+        if metric_name not in self.enabled_metrics:
+            raise ValueError(f"Unsupported RAGAS metric: {metric_name}")
+        dependencies = await self._load_ragas_dependencies()
+        dataset = dependencies["Dataset"].from_dict(
+            {
+                "question": [row.question for row in rows],
+                "answer": [row.answer for row in rows],
+                "contexts": [row.contexts for row in rows],
+                "ground_truth": [self._effective_ground_truth(row) for row in rows],
+            }
+        )
+        values = await self._evaluate_metric_async(
+            dataset=dataset,
+            metric_name=metric_name,
+            metric_template=dependencies["metrics"][metric_name],
+            ragas_dependencies=dependencies,
+            evaluator_llm=evaluator_llm,
+            evaluator_embeddings=evaluator_embeddings,
+        )
+        if len(values) != len(rows):
+            raise ValueError(
+                f"RAGAS metric {metric_name!r} returned {len(values)} values for {len(rows)} rows"
+            )
+        return values
 
     async def evaluate_campaign(
         self,
@@ -309,6 +361,7 @@ class RagasEvaluator:
         results = await self._result_repository.list_for_campaign(
             user_id=user_id, campaign_id=campaign.id
         )
+        result_map = {result.id: result for result in results}
         score_map: dict[str, dict[str, float]] = defaultdict(dict)
         invalid_map: dict[str, dict[str, bool]] = defaultdict(dict)
         invalid_reasons_map: dict[str, dict[str, str]] = defaultdict(dict)
@@ -321,6 +374,21 @@ class RagasEvaluator:
         for score_row in score_rows:
             campaign_result_id = score_row["campaign_result_id"]
             metric_name = str(score_row["metric_name"])
+            result = result_map.get(campaign_result_id)
+            signature = score_row.get("evaluation_signature")
+            if result is not None and signature:
+                ground_truth = result.ground_truth_short or result.ground_truth or ""
+                expected_signature = build_evaluation_signature(
+                    result=result,
+                    evaluator_model=self._evaluator_model,
+                    evaluator_config={},
+                    metric_name=metric_name,
+                    metric_version="v1",
+                    ground_truth_hash=hashlib.sha256(ground_truth.encode("utf-8")).hexdigest(),
+                    context_metrics_enabled=metric_name.startswith("context_"),
+                )
+                if signature != expected_signature:
+                    continue
             score_map[campaign_result_id][metric_name] = _clean_metric(
                 score_row["metric_value"]
             )
