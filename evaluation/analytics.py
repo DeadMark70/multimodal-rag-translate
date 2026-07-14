@@ -251,6 +251,7 @@ class EvaluationAnalyticsService:
         cache_marker = updated_at.isoformat() if updated_at is not None else ""
         is_terminal = campaign_status in {
             CampaignLifecycleStatus.COMPLETED,
+            CampaignLifecycleStatus.COMPLETED_WITH_ERRORS,
             CampaignLifecycleStatus.FAILED,
             CampaignLifecycleStatus.CANCELLED,
         } and bool(cache_marker)

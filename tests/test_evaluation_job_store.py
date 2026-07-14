@@ -712,6 +712,7 @@ async def test_additive_migration_adds_result_provenance_columns(store) -> None:
         ragas_score_columns = await evaluation_db._table_columns(connection, "ragas_scores")
 
     assert "source_attempt_id" in campaign_result_columns
+    assert "condition_id" in campaign_result_columns
     assert {"source_attempt_id", "evaluation_signature"} <= ragas_score_columns
 
 

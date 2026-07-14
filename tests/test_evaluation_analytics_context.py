@@ -163,6 +163,12 @@ class TerminalCampaignRepository:
         return self.campaign
 
 
+class CompletedWithErrorsCampaignRepository(TerminalCampaignRepository):
+    def __init__(self):
+        super().__init__()
+        self.campaign.status = CampaignLifecycleStatus.COMPLETED_WITH_ERRORS
+
+
 class SingleRunResultRepository:
     async def list_for_campaign(self, *, user_id: str, campaign_id: str):
         return [FakeResult()]
@@ -329,6 +335,21 @@ async def test_terminal_campaign_context_is_reused_until_campaign_changes() -> N
     result_repository = ProjectionResultRepository()
     service = EvaluationAnalyticsService(
         campaign_repository=TerminalCampaignRepository(),
+        result_repository=result_repository,
+        observability_repository=CountingObservabilityRepository(),
+    )
+
+    await service.campaign_overview(user_id="user-a", campaign_id="campaign-1")
+    await service.mode_comparison(user_id="user-a", campaign_id="campaign-1")
+
+    assert result_repository.analytics_list_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_with_errors_campaign_context_is_cached() -> None:
+    result_repository = ProjectionResultRepository()
+    service = EvaluationAnalyticsService(
+        campaign_repository=CompletedWithErrorsCampaignRepository(),
         result_repository=result_repository,
         observability_repository=CountingObservabilityRepository(),
     )

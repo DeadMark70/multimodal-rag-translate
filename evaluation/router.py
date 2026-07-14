@@ -81,6 +81,7 @@ from evaluation.trace_schemas import (
 router = APIRouter()
 _TERMINAL_CAMPAIGN_STATUSES = {
     CampaignLifecycleStatus.COMPLETED,
+    CampaignLifecycleStatus.COMPLETED_WITH_ERRORS,
     CampaignLifecycleStatus.FAILED,
     CampaignLifecycleStatus.CANCELLED,
 }

@@ -189,6 +189,7 @@ class CampaignResult(BaseModel):
     context_policy_version: Optional[str] = None
     run_number: int = Field(ge=1)
     repeat_number: int = Field(default=1, ge=1)
+    condition_id: Optional[str] = None
     answer: str
     contexts: list[str] = Field(default_factory=list)
     source_doc_ids: list[str] = Field(default_factory=list)

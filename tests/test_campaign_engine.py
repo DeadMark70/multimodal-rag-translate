@@ -6,6 +6,7 @@ import asyncio
 import sqlite3
 import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
@@ -23,6 +24,7 @@ from evaluation.campaign_schemas import (
     CampaignLifecycleStatus,
     CampaignMetricsResponse,
     CampaignResultStatus,
+    CampaignStatus,
     MetricAggregate,
     ModeMetricsSummary,
 )
@@ -32,6 +34,7 @@ from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.rag_modes import BenchmarkExecutionResult, CONTEXT_POLICY_VERSION, run_campaign_case
 from evaluation.ragas_evaluator import RagasEvaluator
 from evaluation.retry import run_with_retry
+from evaluation.router import stream_campaign
 from evaluation.schemas import ModelConfig, TestCase
 from data_base.RAG_QA_service import RAGResult
 from main import app
@@ -443,6 +446,37 @@ def test_campaign_rejects_router_mode_without_feature_flag() -> None:
     assert response.json()["error"]["message"] == (
         "router mode is not implemented yet; use retrospective router analysis."
     )
+
+
+@pytest.mark.asyncio
+async def test_campaign_stream_ends_for_completed_with_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(timezone.utc)
+    snapshot = CampaignStatus(
+        id="cmp-1",
+        status=CampaignLifecycleStatus.COMPLETED_WITH_ERRORS,
+        config=_campaign_config_for_test_case_ids(["Q1"], modes=["naive"]),
+        created_at=now,
+        updated_at=now,
+    )
+
+    class CompletedWithErrorsEngine:
+        async def ensure_campaign_task(self, **_kwargs):  # noqa: ANN003
+            return snapshot
+
+        async def get_campaign(self, **_kwargs):  # noqa: ANN003
+            return snapshot
+
+    monkeypatch.setattr("evaluation.router.get_campaign_engine", lambda: CompletedWithErrorsEngine())
+    response = await stream_campaign(campaign_id="cmp-1", user_id="user-a")
+
+    async def collect_events() -> list[dict[str, str]]:
+        return [event async for event in response.body_iterator]
+
+    events = await asyncio.wait_for(collect_events(), timeout=0.1)
+
+    assert events[-1]["event"] == "campaign_completed_with_errors"
 
 
 @pytest.mark.asyncio

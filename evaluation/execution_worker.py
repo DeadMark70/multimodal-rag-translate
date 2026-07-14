@@ -89,8 +89,15 @@ class DatasetExecutionWorker:
                 claim, ExecutionAttemptOutput(result=result)
             )
         except Exception as exc:  # noqa: BLE001
+            if await self._claim_was_cancelled(claim):
+                return
             decision = classify_evaluation_error(exc)
-            await self._store.fail_attempt(claim, decision, next_retry_at=None)
+            try:
+                await self._store.fail_attempt(claim, decision, next_retry_at=None)
+            except ValueError:
+                if await self._claim_was_cancelled(claim):
+                    return
+                raise
             await self._derive_campaign_state(claim)
             return
 
@@ -108,6 +115,9 @@ class DatasetExecutionWorker:
                 extra={"campaign_id": campaign_id, "result_id": promoted.id},
                 exc_info=True,
             )
+
+    async def _claim_was_cancelled(self, claim: ClaimedEvaluationWork) -> bool:
+        return await self._store.get_job_item_status(claim.job_item_id) == "cancelled"
 
     def _snapshot_inputs(
         self, claim: ClaimedEvaluationWork
@@ -155,6 +165,7 @@ class DatasetExecutionWorker:
             execution_profile=payload.execution_profile,
             context_policy_version=payload.context_policy_version,
             run_number=unit.run_number,
+            condition_id=unit.condition_id,
             answer=payload.answer,
             contexts=payload.contexts,
             source_doc_ids=payload.source_doc_ids,

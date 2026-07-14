@@ -254,6 +254,7 @@ CREATE TABLE IF NOT EXISTS campaign_results (
     execution_profile TEXT,
     context_policy_version TEXT,
     run_number INTEGER NOT NULL,
+    condition_id TEXT NOT NULL DEFAULT '',
     answer TEXT NOT NULL,
     contexts_json TEXT NOT NULL,
     source_doc_ids_json TEXT NOT NULL,
@@ -276,7 +277,7 @@ CREATE INDEX IF NOT EXISTS idx_campaign_results_campaign_user_order
 ON campaign_results(campaign_id, user_id, created_at ASC, question_id ASC, mode ASC, run_number ASC, id ASC);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_results_unit_unique
-ON campaign_results(campaign_id, question_id, mode, run_number);
+ON campaign_results(campaign_id, question_id, mode, run_number, condition_id);
 
 CREATE TABLE IF NOT EXISTS evaluation_jobs (
     id TEXT PRIMARY KEY,
@@ -682,6 +683,10 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         await connection.execute(
             "ALTER TABLE campaign_results ADD COLUMN source_attempt_id TEXT"
         )
+    if "condition_id" not in campaign_result_columns:
+        await connection.execute(
+            "ALTER TABLE campaign_results ADD COLUMN condition_id TEXT NOT NULL DEFAULT ''"
+        )
 
     work_item_columns = await _table_columns(connection, "evaluation_work_items")
     if "latest_success_attempt_id" not in work_item_columns:
@@ -747,10 +752,11 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         ON ragas_scores(campaign_id, user_id, campaign_result_id, metric_name)
         """
     )
+    await connection.execute("DROP INDEX IF EXISTS idx_campaign_results_unit_unique")
     await connection.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_results_unit_unique
-        ON campaign_results(campaign_id, question_id, mode, run_number)
+        ON campaign_results(campaign_id, question_id, mode, run_number, condition_id)
         """
     )
     await connection.execute(
@@ -1024,6 +1030,7 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
             if isinstance(derived_metrics.get("repeat_number"), int)
             else row["run_number"]
         ),
+        condition_id=(row["condition_id"] or None) if "condition_id" in row.keys() else None,
         answer=row["answer"],
         contexts=_json_loads(row["contexts_json"], []),
         source_doc_ids=_json_loads(row["source_doc_ids_json"], []),
@@ -1278,9 +1285,24 @@ class CampaignRepository:
                 """
                 SELECT
                     COUNT(*) AS total,
-                    SUM(CASE WHEN item.status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded,
+                    SUM(
+                        CASE WHEN item.status = 'succeeded' AND EXISTS (
+                            SELECT 1
+                            FROM campaign_results AS result
+                            WHERE result.campaign_id = job.campaign_id
+                              AND result.user_id = job.user_id
+                              AND result.source_attempt_id = work.latest_success_attempt_id
+                        ) THEN 1 ELSE 0 END
+                    ) AS compatible_succeeded,
                     SUM(CASE WHEN item.status = 'failed' THEN 1 ELSE 0 END) AS failed,
-                    SUM(CASE WHEN item.status IN ('pending', 'running', 'retry_wait') THEN 1 ELSE 0 END) AS unresolved
+                    SUM(CASE WHEN item.status IN ('pending', 'running', 'retry_wait') THEN 1 ELSE 0 END) AS unresolved,
+                    SUM(CASE WHEN item.status = 'succeeded' AND NOT EXISTS (
+                        SELECT 1
+                        FROM campaign_results AS result
+                        WHERE result.campaign_id = job.campaign_id
+                          AND result.user_id = job.user_id
+                          AND result.source_attempt_id = work.latest_success_attempt_id
+                    ) THEN 1 ELSE 0 END) AS incompatible
                 FROM evaluation_job_items AS item
                 JOIN evaluation_jobs AS job ON job.id = item.job_id
                 JOIN evaluation_work_items AS work ON work.id = item.work_item_id
@@ -1291,30 +1313,31 @@ class CampaignRepository:
             )
             row = await cursor.fetchone()
         total = int(row["total"] or 0)
-        succeeded = int(row["succeeded"] or 0)
+        compatible_succeeded = int(row["compatible_succeeded"] or 0)
         failed = int(row["failed"] or 0)
         unresolved = int(row["unresolved"] or 0)
+        incompatible = int(row["incompatible"] or 0)
         if total == 0 or unresolved:
             return await self._update_campaign(
                 user_id=user_id,
                 campaign_id=campaign_id,
                 status=CampaignLifecycleStatus.PENDING if total == 0 else CampaignLifecycleStatus.RUNNING,
                 phase="execution",
-                completed_units=succeeded,
+                completed_units=compatible_succeeded,
             )
-        if failed and succeeded:
+        if (failed or incompatible) and compatible_succeeded:
             return await self._update_campaign(
                 user_id=user_id,
                 campaign_id=campaign_id,
                 status=CampaignLifecycleStatus.COMPLETED_WITH_ERRORS,
                 phase="execution",
-                completed_units=succeeded,
-                error_message="Some dataset execution units failed.",
+                completed_units=compatible_succeeded,
+                error_message="Some dataset execution units failed or lacked compatible results.",
                 completed_at=_utc_now_iso(),
                 current_question_id=None,
                 current_mode=None,
             )
-        if failed:
+        if failed or incompatible:
             return await self.mark_failed(
                 user_id=user_id,
                 campaign_id=campaign_id,

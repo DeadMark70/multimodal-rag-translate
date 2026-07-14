@@ -407,9 +407,16 @@ class EvaluationJobStore:
                     """
                     SELECT id FROM campaign_results
                     WHERE campaign_id = ? AND user_id = ? AND question_id = ?
-                      AND mode = ? AND run_number = ?
+                      AND mode = ? AND run_number = ? AND condition_id = ?
                     """,
-                    (job["campaign_id"], job["user_id"], result.question_id, result.mode, result.run_number),
+                    (
+                        job["campaign_id"],
+                        job["user_id"],
+                        result.question_id,
+                        result.mode,
+                        result.run_number,
+                        result.condition_id or "",
+                    ),
                 )
                 existing = await existing_cursor.fetchone()
                 result_id = existing["id"] if existing is not None else result.id
@@ -418,15 +425,15 @@ class EvaluationJobStore:
                     INSERT INTO campaign_results (
                         id, campaign_id, user_id, question_id, question, ground_truth,
                         ground_truth_short, key_points_json, ragas_focus_json, mode,
-                        execution_profile, context_policy_version, run_number, answer,
+                        execution_profile, context_policy_version, run_number, condition_id, answer,
                         contexts_json, source_doc_ids_json, expected_sources_json, latency_ms,
                         token_usage_json, category, difficulty, status, error_message,
                         question_version, request_id, started_at, completed_at, total_latency_ms,
                         total_tokens, question_snapshot_json, model_config_snapshot_json,
                         system_version_snapshot_json, derived_metrics_json, final_answer_hash,
                         source_attempt_id, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(campaign_id, question_id, mode, run_number) DO UPDATE SET
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(campaign_id, question_id, mode, run_number, condition_id) DO UPDATE SET
                         question = excluded.question,
                         ground_truth = excluded.ground_truth,
                         ground_truth_short = excluded.ground_truth_short,
@@ -954,7 +961,7 @@ def _campaign_result_values(
         result_id, result.campaign_id, user_id, result.question_id, result.question,
         result.ground_truth, result.ground_truth_short, _json_dumps(result.key_points),
         _json_dumps(result.ragas_focus), result.mode, result.execution_profile,
-        result.context_policy_version, result.run_number, result.answer,
+        result.context_policy_version, result.run_number, result.condition_id or "", result.answer,
         _json_dumps(result.contexts), _json_dumps(result.source_doc_ids),
         _json_dumps(result.expected_sources), result.latency_ms, _json_dumps(result.token_usage),
         result.category, result.difficulty, result.status.value, result.error_message,
