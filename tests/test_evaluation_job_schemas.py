@@ -43,3 +43,29 @@ def test_claimed_work_snapshot_is_deeply_immutable() -> None:
 
     source_snapshot["payload"]["values"].append("source mutation")
     assert claimed.input_snapshot["payload"]["values"] == ("original",)
+
+
+def test_claimed_work_model_copy_freezes_updated_snapshot() -> None:
+    claimed = ClaimedEvaluationWork(
+        job_id="job-1",
+        job_item_id="item-1",
+        work_item_id="work-1",
+        attempt_id="attempt-1",
+        input_snapshot={"payload": {"values": ["original"]}},
+    )
+
+    copied = claimed.model_copy(
+        update={"input_snapshot": {"payload": {"values": ["updated"]}}}
+    )
+
+    payload = copied.input_snapshot["payload"]
+    assert isinstance(payload, Mapping)
+    values = payload["values"]
+    assert isinstance(values, tuple)
+    with pytest.raises(TypeError):
+        payload["other"] = "mutated"
+    with pytest.raises(AttributeError):
+        values.append("mutated")
+    assert copied.model_dump(mode="json")["input_snapshot"] == {
+        "payload": {"values": ["updated"]}
+    }

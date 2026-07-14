@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from datetime import datetime, timezone
 from enum import Enum
 from types import MappingProxyType
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from pydantic import (
     BaseModel,
@@ -165,3 +166,18 @@ class ClaimedEvaluationWork(BaseModel):
             key: _thaw_json_value(value)
             for key, value in snapshot.items()
         }
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> ClaimedEvaluationWork:
+        if update is None or "input_snapshot" not in update:
+            return super().model_copy(update=update, deep=deep)
+
+        values = self.model_dump(mode="python")
+        values.update(update)
+        if deep:
+            values = deepcopy(values)
+        return type(self).model_validate(values)
