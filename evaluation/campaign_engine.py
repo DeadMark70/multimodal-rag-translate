@@ -1027,7 +1027,7 @@ class CampaignEngine:
                 )
             if EvaluationWorkType.RAGAS_METRIC in work_types:
                 await self._campaign_repository.derive_ragas_state(
-                    user_id=user_id, campaign_id=campaign.id, job_id=job_id
+                    user_id=user_id, campaign_id=campaign.id
                 )
         return cancelled
 
