@@ -151,6 +151,17 @@ class ClaimedEvaluationWork(BaseModel):
     attempt_id: str
     input_snapshot: dict[str, JsonValue]
 
+    @classmethod
+    def model_construct(
+        cls,
+        _fields_set: set[str] | None = None,
+        **values: Any,
+    ) -> ClaimedEvaluationWork:
+        raise TypeError(
+            "ClaimedEvaluationWork requires validated construction; "
+            "use ClaimedEvaluationWork(...) instead"
+        )
+
     @model_validator(mode="after")
     def freeze_input_snapshot(self) -> ClaimedEvaluationWork:
         object.__setattr__(

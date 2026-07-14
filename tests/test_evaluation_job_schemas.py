@@ -69,3 +69,14 @@ def test_claimed_work_model_copy_freezes_updated_snapshot() -> None:
     assert copied.model_dump(mode="json")["input_snapshot"] == {
         "payload": {"values": ["updated"]}
     }
+
+
+def test_claimed_work_model_construct_is_prohibited() -> None:
+    with pytest.raises(TypeError, match="validated construction"):
+        ClaimedEvaluationWork.model_construct(
+            job_id="job-1",
+            job_item_id="item-1",
+            work_item_id="work-1",
+            attempt_id="attempt-1",
+            input_snapshot={"payload": {"values": ["mutable"]}},
+        )
