@@ -90,6 +90,17 @@ Human-maintained inventory of the current backend surface.
 - `GET /api/conversations/page?limit=40&cursor=...&search=...` returns bounded summary rows and a keyset `next_cursor`; large research result metadata is excluded.
 - `GET /api/conversations/{conversation_id}/messages/page?limit=50&cursor=...` returns a bounded newest message page and preserves the existing detail endpoint for compatibility.
 
+### Durable Evaluation Jobs
+
+- `POST /api/evaluation/campaigns/{campaign_id}/rerun`
+- `GET /api/evaluation/campaigns/{campaign_id}/jobs`
+- `GET /api/evaluation/jobs/{job_id}`
+- `GET /api/evaluation/jobs/{job_id}/items`
+- `GET /api/evaluation/work-items/{work_item_id}/attempts`
+- `POST /api/evaluation/jobs/{job_id}/cancel`
+
+Job and attempt responses include ownership-filtered status, retry, safe-error, and compatible-result provenance fields. The legacy `/evaluate` operation delegates to a durable RAGAS rerun for compatibility.
+
 ## Shared Runtime Contracts
 
 - Request-id middleware returns `X-Request-Id`.

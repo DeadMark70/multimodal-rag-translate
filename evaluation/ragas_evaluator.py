@@ -60,6 +60,11 @@ def _metric_aggregate(values: list[float]) -> MetricAggregate:
     )
 
 
+def _valid_row_count(rows: list[CampaignMetricRow]) -> int:
+    """Count rows with at least one valid metric observation."""
+    return sum(1 for row in rows if row.metric_values)
+
+
 def _metric_mean_or_none(values: list[float]) -> float | None:
     if not values:
         return None
@@ -350,6 +355,26 @@ class RagasEvaluator:
                 score_row, result_map, evaluator_config=evaluator_config
             )
         ]
+        completed_result_ids = {
+            result.id
+            for result in results
+            if result.status == CampaignResultStatus.COMPLETED
+        }
+        failed_work_items = sum(
+            1
+            for result in results
+            if result.status != CampaignResultStatus.COMPLETED
+        )
+        failed_metric_rows = sum(
+            1
+            for score_row in score_rows
+            if score_row.get("campaign_result_id") not in completed_result_ids
+        )
+        score_rows = [
+            score_row
+            for score_row in score_rows
+            if score_row.get("campaign_result_id") in completed_result_ids
+        ]
         if not score_rows:
             return CampaignMetricsResponse(
                 campaign=campaign,
@@ -364,6 +389,9 @@ class RagasEvaluator:
                 evaluation_warnings={
                     "total_metric_rows": 0,
                     "invalid_metric_rows": 0,
+                    "missing_metric_rows": failed_metric_rows,
+                    "failed_work_items": failed_work_items,
+                    "valid_sample_count": 0,
                     "invalid_ratio": 0,
                     "invalid_by_metric": {},
                 },
@@ -378,6 +406,7 @@ class RagasEvaluator:
         evaluator_model = self._evaluator_model
         invalid_rows = 0
         invalid_by_metric: dict[str, int] = defaultdict(int)
+        missing_rows = failed_metric_rows
 
         for score_row in score_rows:
             campaign_result_id = score_row["campaign_result_id"]
@@ -408,6 +437,7 @@ class RagasEvaluator:
             if metric_value is None and not invalid_map[campaign_result_id].get(metric_name):
                 invalid_map[campaign_result_id][metric_name] = True
                 invalid_rows += 1
+                missing_rows += 1
                 invalid_by_metric[metric_name] += 1
                 invalid_reasons_map[campaign_result_id][metric_name] = "missing_metric_value"
 
@@ -480,6 +510,9 @@ class RagasEvaluator:
             evaluation_warnings={
                 "total_metric_rows": total_metric_rows,
                 "invalid_metric_rows": invalid_rows,
+                "missing_metric_rows": missing_rows,
+                "failed_work_items": failed_work_items,
+                "valid_sample_count": _valid_row_count(chart_rows),
                 "invalid_ratio": invalid_ratio,
                 "invalid_by_metric": dict(sorted(invalid_by_metric.items())),
             },
@@ -722,6 +755,7 @@ class RagasEvaluator:
             summaries[group_key] = GroupMetricsSummary(
                 group_key=group_key,
                 sample_count=len(group_rows),
+                valid_sample_count=_valid_row_count(group_rows),
                 metric_summaries={
                     metric_name: _metric_aggregate(
                         self._valid_metric_values(group_rows, metric_name)
@@ -791,6 +825,7 @@ class RagasEvaluator:
                     by_mode[mode] = DeltaModeSummary(
                         mode=mode,
                         sample_count=len(mode_rows),
+                        valid_sample_count=_valid_row_count(mode_rows),
                         answer_correctness_mean=answer_correctness_mean,
                         faithfulness_mean=faithfulness_mean,
                         total_tokens_mean=total_tokens_mean,
@@ -810,6 +845,7 @@ class RagasEvaluator:
                     by_mode[mode] = DeltaModeSummary(
                         mode=mode,
                         sample_count=len(mode_rows),
+                        valid_sample_count=_valid_row_count(mode_rows),
                         answer_correctness_mean=answer_correctness_mean,
                         faithfulness_mean=faithfulness_mean,
                         total_tokens_mean=total_tokens_mean,
@@ -834,6 +870,7 @@ class RagasEvaluator:
                     by_mode[mode] = DeltaModeSummary(
                         mode=mode,
                         sample_count=len(mode_rows),
+                        valid_sample_count=_valid_row_count(mode_rows),
                         answer_correctness_mean=answer_correctness_mean,
                         faithfulness_mean=faithfulness_mean,
                         total_tokens_mean=total_tokens_mean,
@@ -858,6 +895,7 @@ class RagasEvaluator:
                 by_mode[mode] = DeltaModeSummary(
                     mode=mode,
                     sample_count=len(mode_rows),
+                    valid_sample_count=_valid_row_count(mode_rows),
                     answer_correctness_mean=answer_correctness_mean,
                     faithfulness_mean=faithfulness_mean,
                     total_tokens_mean=total_tokens_mean,
@@ -910,6 +948,7 @@ class RagasEvaluator:
             summary = ModeMetricsSummary(
                 mode=mode,
                 sample_count=len(mode_rows),
+                valid_sample_count=_valid_row_count(mode_rows),
                 metric_summaries=metric_summaries,
                 faithfulness=metric_summaries.get("faithfulness", MetricAggregate()),
                 answer_correctness=metric_summaries.get(

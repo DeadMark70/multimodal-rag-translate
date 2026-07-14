@@ -947,8 +947,46 @@ async def test_get_metrics_excludes_missing_metric_values_from_rows_and_averages
     assert row.metric_values == {}
     assert row.faithfulness is None
     assert row.answer_correctness is None
-    assert response.summary_by_mode["naive"].faithfulness.mean == 0
-    assert response.summary_by_mode["naive"].answer_correctness.mean == 0
+    assert response.summary_by_mode["naive"].faithfulness.mean is None
+    assert response.summary_by_mode["naive"].answer_correctness.mean is None
+
+
+@pytest.mark.asyncio
+async def test_get_metrics_excludes_failed_attempts_and_reports_missing_samples() -> None:
+    results = [
+        _result("r-success", "naive", 100),
+        _result("r-failed", "naive", 200, status=CampaignResultStatus.FAILED),
+    ]
+    scores = [
+        {
+            "campaign_result_id": "r-success",
+            "metric_name": "faithfulness",
+            "metric_value": 0.8,
+            "details": {"evaluator_model": "fake"},
+        },
+        {
+            "campaign_result_id": "r-failed",
+            "metric_name": "faithfulness",
+            "metric_value": 0.1,
+            "details": {"evaluator_model": "fake"},
+        },
+    ]
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository(results),
+        score_repository=FakeScoreRepository(scores),
+        evaluator_model="fake",
+    )
+
+    response = await evaluator.get_metrics(
+        user_id="user-a", campaign=_campaign_status(modes=["naive"])
+    )
+
+    assert response.summary_by_mode["naive"].sample_count == 1
+    assert response.summary_by_mode["naive"].valid_sample_count == 1
+    assert response.evaluation_warnings.failed_work_items == 1
+    assert response.evaluation_warnings.missing_metric_rows == 1
+    assert response.rows[0].metric_values == {"faithfulness": 0.8}
+    assert "answer_correctness" not in response.rows[0].metric_values
 
 
 def _fake_ragas_dependencies_for_eval() -> dict:

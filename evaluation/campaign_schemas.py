@@ -527,9 +527,12 @@ class CampaignProgressEvent(BaseModel):
 class MetricAggregate(BaseModel):
     """Aggregate statistics for one metric."""
 
-    mean: float = Field(default=0, ge=0)
-    max: float = Field(default=0, ge=0)
-    stddev: float = Field(default=0, ge=0)
+    # ``None`` means that no valid observations were available.  A missing
+    # metric must never be rendered as a zero, which would bias aggregate
+    # means and deltas toward an artificial value.
+    mean: Optional[float] = Field(default=None, ge=0)
+    max: Optional[float] = Field(default=None, ge=0)
+    stddev: Optional[float] = Field(default=None, ge=0)
 
 
 class CampaignMetricRow(BaseModel):
@@ -558,6 +561,7 @@ class GroupMetricsSummary(BaseModel):
 
     group_key: str
     sample_count: int = Field(default=0, ge=0)
+    valid_sample_count: int = Field(default=0, ge=0)
     metric_summaries: dict[str, MetricAggregate] = Field(default_factory=dict)
     total_tokens: MetricAggregate = Field(default_factory=MetricAggregate)
 
@@ -567,6 +571,7 @@ class ModeMetricsSummary(BaseModel):
 
     mode: CampaignMode
     sample_count: int = Field(default=0, ge=0)
+    valid_sample_count: int = Field(default=0, ge=0)
     metric_summaries: dict[str, MetricAggregate] = Field(default_factory=dict)
     faithfulness: MetricAggregate = Field(default_factory=MetricAggregate)
     answer_correctness: MetricAggregate = Field(default_factory=MetricAggregate)
@@ -587,9 +592,10 @@ class DeltaModeSummary(BaseModel):
 
     mode: CampaignMode
     sample_count: int = Field(default=0, ge=0)
-    answer_correctness_mean: float = Field(default=0, ge=0)
-    faithfulness_mean: float = Field(default=0, ge=0)
-    total_tokens_mean: float = Field(default=0, ge=0)
+    valid_sample_count: int = Field(default=0, ge=0)
+    answer_correctness_mean: Optional[float] = Field(default=None, ge=0)
+    faithfulness_mean: Optional[float] = Field(default=None, ge=0)
+    total_tokens_mean: Optional[float] = Field(default=None, ge=0)
     delta_answer_correctness: Optional[float] = None
     delta_faithfulness: Optional[float] = None
     delta_total_tokens: Optional[float] = None
@@ -613,6 +619,9 @@ class EvaluationWarnings(BaseModel):
 
     total_metric_rows: int = Field(default=0, ge=0)
     invalid_metric_rows: int = Field(default=0, ge=0)
+    missing_metric_rows: int = Field(default=0, ge=0)
+    failed_work_items: int = Field(default=0, ge=0)
+    valid_sample_count: int = Field(default=0, ge=0)
     invalid_ratio: float = Field(default=0, ge=0)
     invalid_by_metric: dict[str, int] = Field(default_factory=dict)
 

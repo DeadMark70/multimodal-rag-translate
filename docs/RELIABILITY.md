@@ -32,6 +32,10 @@
 - Surface skipped/fake-provider startup explicitly in logs rather than pretending warmups succeeded.
 - Keep graph/document maintenance retryable through dedicated endpoints instead of hidden background retries.
 
+## Evaluation Recovery Contract
+
+Evaluation execution is backed by a SQLite WAL ledger. Claims, attempts, retries, heartbeats, cancellation, and official-result promotion are durable and safe to repeat. A process restart converts running claims to interrupted work; it does not delete attempt history. Provider failures are classified into retryable transport/timeout/rate-limit/server errors and permanent authentication/configuration/data errors. Failed and missing metrics are excluded from statistical aggregates rather than coerced to zero. The UI exposes job and attempt history, safe error messages, partial completion (`completed_with_errors`), and retry/cancel actions.
+
 ## Operational Checks
 
 - `.\.venv\Scripts\python.exe -m pytest`
