@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -250,10 +251,29 @@ async def test_ensure_ragas_work_assigns_one_shared_batch_key_to_compatible_resu
 
 @pytest.mark.asyncio
 async def test_derive_ragas_state_preserves_terminal_campaign_cancellation(store, fixed_now) -> None:  # noqa: ANN001
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            "UPDATE campaigns SET config_json = ? WHERE id = ?",
+            (
+                json.dumps(
+                    {
+                        "test_case_ids": ["Q1"],
+                        "modes": ["naive"],
+                        "model_config": {
+                            "id": "cfg-1",
+                            "name": "test",
+                            "model_name": "test-model",
+                        },
+                    }
+                ),
+                "cmp-1",
+            ),
+        )
+        await connection.commit()
     await store.create_job_with_items(
         user_id="user-a",
         campaign_id="cmp-1",
-        job_type="evaluation",
+        job_type="initial",
         selection={},
         config_snapshot={},
         items=[
