@@ -24,7 +24,7 @@ from evaluation.campaign_engine import (
     _record_unit_root_span,
 )
 from evaluation.campaign_schemas import CampaignResult, CampaignResultStatus
-from evaluation.db import AgentTraceRepository, CampaignRepository
+from evaluation.db import AgentTraceRepository, CampaignRepository, CampaignResultRepository
 from evaluation.error_policy import classify_evaluation_error
 from evaluation.job_schemas import ClaimedEvaluationWork, ExecutionAttemptOutput
 from evaluation.job_store import EvaluationJobStore
@@ -213,6 +213,22 @@ class DatasetExecutionWorker:
             return
         if campaign.status.value not in {"completed", "completed_with_errors"}:
             return
+        selected_result_ids: list[str] | None = None
+        enabled_metrics = list(getattr(self._ragas_evaluator, "enabled_metrics", []))
+        if job is not None:
+            raw_question_ids = job.config_snapshot.get("downstream_question_ids")
+            if isinstance(raw_question_ids, list) and raw_question_ids:
+                results = await CampaignResultRepository().list_for_campaign(
+                    user_id=str(snapshot["user_id"]),
+                    campaign_id=str(snapshot["campaign_id"]),
+                )
+                question_ids = {str(value) for value in raw_question_ids}
+                selected_result_ids = [
+                    result.id for result in results if result.question_id in question_ids
+                ]
+            raw_metrics = job.config_snapshot.get("metric_names")
+            if isinstance(raw_metrics, list) and raw_metrics:
+                enabled_metrics = [str(value) for value in raw_metrics]
         ragas_config = getattr(campaign, "config", None)
         ragas_batch_size = getattr(ragas_config, "ragas_batch_size", None)
         ragas_parallel_batches = getattr(ragas_config, "ragas_parallel_batches", None)
@@ -221,7 +237,8 @@ class DatasetExecutionWorker:
             campaign_id=str(snapshot["campaign_id"]),
             evaluator_model=str(getattr(self._ragas_evaluator, "evaluator_model", "")),
             evaluator_config={},
-            enabled_metrics=list(getattr(self._ragas_evaluator, "enabled_metrics", [])),
+            enabled_metrics=enabled_metrics,
+            selected_result_ids=selected_result_ids,
             ragas_batch_size=ragas_batch_size,
             ragas_parallel_batches=ragas_parallel_batches,
         )

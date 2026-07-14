@@ -983,6 +983,25 @@ class EvaluationJobStore:
                 raise
         return await self.get_job(user_id=user_id, job_id=job_id)
 
+    async def get_job_work_types(
+        self, *, user_id: str, job_id: str
+    ) -> list[EvaluationWorkType]:
+        """Return the durable work stages owned by one job."""
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT DISTINCT work.work_type
+                FROM evaluation_job_items AS item
+                JOIN evaluation_work_items AS work ON work.id = item.work_item_id
+                JOIN evaluation_jobs AS job ON job.id = item.job_id
+                WHERE item.job_id = ? AND job.user_id = ?
+                """,
+                (job_id, user_id),
+            )
+            rows = await cursor.fetchall()
+        return [EvaluationWorkType(row["work_type"]) for row in rows]
+
     async def _with_job_status(self, job: EvaluationJob) -> EvaluationJob:
         """Attach an aggregate lifecycle status to a job snapshot."""
         await init_db()
@@ -1004,18 +1023,13 @@ class EvaluationJobStore:
         failed = int(row["failed"] or 0)
         cancelled = int(row["cancelled"] or 0)
         unresolved = int(row["unresolved"] or 0)
-        if unresolved:
-            status = "running" if (total - unresolved) else "pending"
-        elif cancelled and cancelled == total:
-            status = "cancelled"
-        elif failed and succeeded:
-            status = "completed_with_errors"
-        elif failed:
-            status = "failed"
-        elif total and succeeded == total:
-            status = "completed"
-        else:
-            status = "pending"
+        status = self._derive_job_status(
+            total=total,
+            succeeded=succeeded,
+            failed=failed,
+            cancelled=cancelled,
+            unresolved=unresolved,
+        )
         return job.model_copy(
             update={
                 "status": status,
@@ -1026,6 +1040,24 @@ class EvaluationJobStore:
                 "cancelled_items": cancelled,
             }
         )
+
+    @staticmethod
+    def _derive_job_status(
+        *, total: int, succeeded: int, failed: int, cancelled: int, unresolved: int
+    ) -> str:
+        if unresolved:
+            return "running" if (total - unresolved) else "pending"
+        if cancelled and succeeded:
+            return "completed_with_errors"
+        if cancelled and cancelled == total:
+            return "cancelled"
+        if failed and succeeded:
+            return "completed_with_errors"
+        if failed:
+            return "failed"
+        if total and succeeded == total:
+            return "completed"
+        return "pending"
 
     async def list_attempts(
         self, *, user_id: str, work_item_id: str

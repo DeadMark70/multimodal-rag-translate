@@ -33,3 +33,14 @@ currently blocked before test execution because this workspace denies creation
 of `output/test_tmp` and `.test-artifacts`; this is an environment ACL issue,
 not a code assertion failure.
 
+## Review follow-up
+
+- Mixed succeeded/cancelled job items now report `completed_with_errors`.
+- Combined execution/RAGAS reruns preserve selected/failed-only question and
+  metric scope when downstream work is generated.
+- Execution reruns move the campaign back to `running` before worker claims,
+  and job cancellation derives a terminal campaign lifecycle instead of
+  leaving an active snapshot stuck in `running` or `evaluating`. Job
+  cancellation remains scoped to that job; aggregate campaign derivation
+  reports cancelled units as missing/error coverage unless the explicit
+  campaign-cancel endpoint was used.

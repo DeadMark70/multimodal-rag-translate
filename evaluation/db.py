@@ -1295,6 +1295,7 @@ class CampaignRepository:
                         ) THEN 1 ELSE 0 END
                     ) AS compatible_succeeded,
                     SUM(CASE WHEN item.status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                    SUM(CASE WHEN item.status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled,
                     SUM(CASE WHEN item.status IN ('pending', 'running', 'retry_wait') THEN 1 ELSE 0 END) AS unresolved,
                     SUM(CASE WHEN item.status = 'succeeded' AND NOT EXISTS (
                         SELECT 1
@@ -1315,8 +1316,13 @@ class CampaignRepository:
         total = int(row["total"] or 0)
         compatible_succeeded = int(row["compatible_succeeded"] or 0)
         failed = int(row["failed"] or 0)
+        cancelled = int(row["cancelled"] or 0)
         unresolved = int(row["unresolved"] or 0)
         incompatible = int(row["incompatible"] or 0)
+        # A job-scoped cancellation is a failed/missing unit for campaign
+        # coverage; only the explicit campaign cancellation endpoint sets the
+        # campaign's cancel_requested flag and transitions it to cancelled.
+        failed += cancelled
         if total == 0 or unresolved:
             return await self._update_campaign(
                 user_id=user_id,
@@ -1388,6 +1394,7 @@ class CampaignRepository:
         cancelled = int(row["cancelled"] or 0)
         if campaign.cancel_requested and cancelled and not unresolved:
             return await self.mark_cancelled(user_id=user_id, campaign_id=campaign_id)
+        failed += cancelled
         if total == 0:
             return await self.mark_completed(user_id=user_id, campaign_id=campaign_id, phase="evaluation")
         if unresolved:

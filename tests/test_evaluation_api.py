@@ -16,8 +16,11 @@ from fastapi.testclient import TestClient
 from core.auth import get_current_user_id
 from evaluation import db as evaluation_db
 from evaluation.campaign_schemas import CampaignResultStatus
+from evaluation.campaign_schemas import CampaignLifecycleStatus
+from evaluation.campaign_engine import CampaignEngine
 from evaluation.db import CampaignResultRepository
-from evaluation.job_schemas import EvaluationJob, EvaluationJobType
+from evaluation.job_schemas import EvaluationJob, EvaluationJobType, EvaluationWorkType
+from evaluation.job_store import EvaluationJobStore
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.schemas import AvailableModel
 from evaluation.trace_schemas import EvaluationTraceEvent
@@ -483,4 +486,46 @@ async def test_attempt_history_route_rejects_unknown_owner(monkeypatch: pytest.M
     with pytest.raises(AppError) as exc_info:
         await evaluation_router.get_work_item_attempts("missing", "user-b")
     assert exc_info.value.status_code == 404
+
+
+def test_mixed_succeeded_cancelled_job_is_completed_with_errors() -> None:
+    status = EvaluationJobStore._derive_job_status(
+        total=2,
+        succeeded=1,
+        failed=0,
+        cancelled=1,
+        unresolved=0,
+    )
+    assert status == "completed_with_errors"
+
+
+@pytest.mark.asyncio
+async def test_cancel_job_derives_running_campaign_lifecycle() -> None:
+    campaign = type("Campaign", (), {"id": "campaign-a", "status": CampaignLifecycleStatus.RUNNING})()
+    job = EvaluationJob(
+        job_id="job-a",
+        job_type=EvaluationJobType.RERUN,
+        user_id="user-a",
+        campaign_id="campaign-a",
+    )
+    store = AsyncMock()
+    store.get_job.return_value = job
+    store.get_job_work_types.return_value = [EvaluationWorkType.DATASET_EXECUTION]
+    store.cancel_job.return_value = job.model_copy(update={"status": "cancelled"})
+    repository = AsyncMock()
+    repository.get.return_value = campaign
+    engine = CampaignEngine(
+        campaign_repository=repository,
+        job_store=store,
+        configure_worker=False,
+        worker_notifier=lambda: None,
+    )
+
+    result = await engine.cancel_job(user_id="user-a", job_id="job-a")
+
+    assert result.status == "cancelled"
+    repository.derive_execution_state.assert_awaited_once_with(
+        user_id="user-a", campaign_id="campaign-a"
+    )
+    repository.derive_ragas_state.assert_not_awaited()
 

@@ -805,6 +805,24 @@ class CampaignEngine:
                 status_code=400,
             )
 
+        enabled_metrics = list(
+            getattr(
+                self._ragas_evaluator,
+                "enabled_metrics",
+                ["faithfulness", "answer_correctness", "answer_relevancy"],
+            )
+        )
+        if request.stages != "execution":
+            unknown_metrics = [
+                name for name in request.metric_names if name not in enabled_metrics
+            ]
+            if unknown_metrics:
+                raise AppError(
+                    code=ErrorCode.BAD_REQUEST,
+                    message=f"Unknown RAGAS metrics: {', '.join(unknown_metrics)}",
+                    status_code=400,
+                )
+
         includes_execution = request.stages in {"execution", "execution_and_ragas"}
         if includes_execution:
             rows = await self._job_store.list_campaign_work_items(
@@ -828,7 +846,14 @@ class CampaignEngine:
                 )
                 for row in selected_rows
             ]
-            return await self._job_store.create_job_with_items(
+            downstream_question_ids = sorted(
+                {
+                    str(row["input_snapshot"].get("test_case", {}).get("id"))
+                    for row in selected_rows
+                    if row["input_snapshot"].get("test_case", {}).get("id")
+                }
+            )
+            job = await self._job_store.create_job_with_items(
                 user_id=user_id,
                 campaign_id=campaign_id,
                 job_type=EvaluationJobType.RERUN,
@@ -837,17 +862,17 @@ class CampaignEngine:
                     "campaign_config": campaign.config.model_dump(mode="json", by_alias=True),
                     "stages": request.stages,
                     "skip_ragas": request.stages == "execution",
+                    "metric_names": list(request.metric_names),
+                    "downstream_question_ids": downstream_question_ids,
                 },
                 items=specs,
             )
-
-        enabled_metrics = list(
-            getattr(
-                self._ragas_evaluator,
-                "enabled_metrics",
-                ["faithfulness", "answer_correctness", "answer_relevancy"],
+            await self._campaign_repository.mark_running(
+                user_id=user_id,
+                campaign_id=campaign_id,
             )
-        )
+            return job
+
         metric_names = list(request.metric_names) if request.metric_names else enabled_metrics
         unknown_metrics = [name for name in metric_names if name not in enabled_metrics]
         if unknown_metrics:
@@ -985,7 +1010,26 @@ class CampaignEngine:
         return await self._job_store.get_job(user_id=user_id, job_id=job_id)
 
     async def cancel_job(self, *, user_id: str, job_id: str) -> EvaluationJob:
-        return await self._job_store.cancel_job(user_id=user_id, job_id=job_id)
+        job = await self._job_store.get_job(user_id=user_id, job_id=job_id)
+        campaign = None
+        if job.campaign_id:
+            campaign = await self._campaign_repository.get(
+                user_id=user_id, campaign_id=job.campaign_id
+            )
+        work_types = await self._job_store.get_job_work_types(
+            user_id=user_id, job_id=job_id
+        )
+        cancelled = await self._job_store.cancel_job(user_id=user_id, job_id=job_id)
+        if campaign is not None:
+            if EvaluationWorkType.DATASET_EXECUTION in work_types:
+                await self._campaign_repository.derive_execution_state(
+                    user_id=user_id, campaign_id=campaign.id
+                )
+            if EvaluationWorkType.RAGAS_METRIC in work_types:
+                await self._campaign_repository.derive_ragas_state(
+                    user_id=user_id, campaign_id=campaign.id, job_id=job_id
+                )
+        return cancelled
 
     async def list_attempts(
         self, *, user_id: str, work_item_id: str
