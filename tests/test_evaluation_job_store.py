@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 
+from core.errors import AppError, ErrorCode
 import evaluation.db as evaluation_db
 from evaluation.error_policy import ErrorDecision
 from evaluation.job_schemas import WorkItemSpec
@@ -187,6 +188,60 @@ async def test_rerun_receives_a_fresh_retry_budget_for_a_reused_work_item(
 
 
 @pytest.mark.asyncio
+async def test_retryable_failure_without_schedule_uses_a_claimable_default_backoff(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    await store.create_job_with_items(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="initial",
+        selection={},
+        config_snapshot={},
+        items=[_spec(max_attempts=2)],
+    )
+    claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
+    failed = await store.fail_attempt(
+        claim,
+        ErrorDecision("timeout", True, None, "The evaluation provider timed out."),
+        next_retry_at=None,
+    )
+
+    assert await store.get_job_item_status(claim.job_item_id) == "retry_wait"
+    assert failed.finished_at is not None
+    retry_claim = await store.claim_ready_items(
+        limit=1, now=failed.finished_at + timedelta(seconds=2)
+    )
+    assert [item.work_item_id for item in retry_claim] == [claim.work_item_id]
+
+
+@pytest.mark.asyncio
+async def test_claim_excludes_second_non_terminal_job_item_for_same_work_item(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    await store.create_job_with_items(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="initial",
+        selection={},
+        config_snapshot={},
+        items=[_spec()],
+    )
+    await store.create_job_with_items(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="rerun",
+        selection={},
+        config_snapshot={},
+        items=[_spec()],
+    )
+
+    claimed = await store.claim_ready_items(limit=2, now=fixed_now)
+
+    assert len(claimed) == 1
+    assert await store.claim_ready_items(limit=2, now=fixed_now) == []
+
+
+@pytest.mark.asyncio
 async def test_cancel_and_startup_recovery_preserve_attempt_history(store, fixed_now) -> None:  # noqa: ANN001
     await store.create_job_with_items(
         user_id="user-a",
@@ -251,7 +306,9 @@ async def test_heartbeat_and_job_read_apis_are_user_scoped(store, fixed_now) -> 
 
     assert await store.get_job(user_id="user-a", job_id=created.id) == created
     assert await store.list_jobs(user_id="user-a", campaign_id="cmp-1") == [created]
-    assert await store.get_job(user_id="user-b", job_id=created.id) is None
+    with pytest.raises(AppError) as exc_info:
+        await store.get_job(user_id="user-b", job_id=created.id)
+    assert exc_info.value.code is ErrorCode.NOT_FOUND
     attempts = await store.list_attempts(
         user_id="user-a", work_item_id=claimed.work_item_id
     )

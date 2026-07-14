@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from typing import Any
 from uuid import uuid4
 
 import aiosqlite
 
+from core.errors import AppError, ErrorCode
 from evaluation.db import connect_db, init_db
-from evaluation.error_policy import ErrorDecision
+from evaluation.error_policy import ErrorDecision, retry_delay_seconds
 from evaluation.job_schemas import (
     ClaimedEvaluationWork,
     EvaluationAttempt,
@@ -114,8 +115,9 @@ class EvaluationJobStore:
                     WHERE ji.status = 'pending'
                        OR (ji.status = 'retry_wait' AND ji.next_retry_at <= ?)
                     ORDER BY ji.created_at ASC, ji.id ASC
+                    LIMIT ?
                     """,
-                    (now_iso,),
+                    (now_iso, limit),
                 )
                 rows = await cursor.fetchall()
                 for row in rows:
@@ -193,6 +195,15 @@ class EvaluationJobStore:
                 retry = decision.retryable and row["attempt_count"] < row["max_attempts"]
                 item_status = "retry_wait" if retry else "failed"
                 retry_at = _as_iso(next_retry_at) if retry and next_retry_at else None
+                if retry and retry_at is None:
+                    retry_at = _as_iso(
+                        now
+                        + timedelta(
+                            seconds=retry_delay_seconds(
+                                row["attempt_count"], decision.retry_after_seconds
+                            )
+                        )
+                    )
                 await connection.execute(
                     """
                     UPDATE evaluation_attempts
@@ -355,14 +366,20 @@ class EvaluationJobStore:
             )
             return [_row_to_job(row) for row in await cursor.fetchall()]
 
-    async def get_job(self, *, user_id: str, job_id: str) -> EvaluationJob | None:
+    async def get_job(self, *, user_id: str, job_id: str) -> EvaluationJob:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
                 "SELECT * FROM evaluation_jobs WHERE id = ? AND user_id = ?", (job_id, user_id)
             )
             row = await cursor.fetchone()
-        return _row_to_job(row) if row is not None else None
+        if row is None:
+            raise AppError(
+                code=ErrorCode.NOT_FOUND,
+                message="Evaluation job not found",
+                status_code=404,
+            )
+        return _row_to_job(row)
 
     async def list_attempts(
         self, *, user_id: str, work_item_id: str
