@@ -26,6 +26,7 @@ from evaluation.db import AgentTraceRepository, CampaignRepository, CampaignResu
 from evaluation.job_schemas import (
     EvaluationAttempt,
     EvaluationJob,
+    EvaluationJobItemSummary,
     EvaluationJobType,
     EvaluationRerunRequest,
     EvaluationWorkType,
@@ -1009,6 +1010,11 @@ class CampaignEngine:
 
     async def get_job(self, *, user_id: str, job_id: str) -> EvaluationJob:
         return await self._job_store.get_job(user_id=user_id, job_id=job_id)
+
+    async def list_job_items(
+        self, *, user_id: str, job_id: str
+    ) -> list[EvaluationJobItemSummary]:
+        return await self._job_store.list_job_items(user_id=user_id, job_id=job_id)
 
     async def cancel_job(self, *, user_id: str, job_id: str) -> EvaluationJob:
         job = await self._job_store.get_job(user_id=user_id, job_id=job_id)

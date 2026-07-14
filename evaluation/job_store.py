@@ -19,6 +19,7 @@ from evaluation.job_schemas import (
     ClaimedEvaluationWork,
     EvaluationAttempt,
     EvaluationJob,
+    EvaluationJobItemSummary,
     EvaluationJobType,
     EvaluationWorkType,
     ExecutionAttemptOutput,
@@ -883,6 +884,76 @@ class EvaluationJobStore:
             )
         return await self._with_job_status(_row_to_job(row))
 
+    async def list_job_items(
+        self, *, user_id: str, job_id: str
+    ) -> list[EvaluationJobItemSummary]:
+        """List one owned job's item state and the latest safe attempt details."""
+        await init_db()
+        async with connect_db() as connection:
+            owner_cursor = await connection.execute(
+                "SELECT 1 FROM evaluation_jobs WHERE id = ? AND user_id = ?",
+                (job_id, user_id),
+            )
+            if await owner_cursor.fetchone() is None:
+                raise AppError(
+                    code=ErrorCode.NOT_FOUND,
+                    message="Evaluation job not found",
+                    status_code=404,
+                )
+
+            cursor = await connection.execute(
+                """
+                SELECT item.id AS job_item_id, item.job_id, item.work_item_id,
+                       item.status, item.next_retry_at, item.max_attempts,
+                       item.active_attempt_id, item.created_at, item.updated_at,
+                       work.work_type, work.input_snapshot_json
+                FROM evaluation_job_items AS item
+                JOIN evaluation_work_items AS work ON work.id = item.work_item_id
+                WHERE item.job_id = ?
+                ORDER BY item.created_at ASC, item.id ASC
+                """,
+                (job_id,),
+            )
+            rows = await cursor.fetchall()
+
+            summaries: list[EvaluationJobItemSummary] = []
+            for row in rows:
+                attempt_cursor = await connection.execute(
+                    """
+                    SELECT * FROM evaluation_attempts
+                    WHERE job_item_id = ?
+                    ORDER BY attempt_number DESC, started_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (row["job_item_id"],),
+                )
+                attempt_row = await attempt_cursor.fetchone()
+                snapshot = json.loads(row["input_snapshot_json"])
+                summaries.append(
+                    EvaluationJobItemSummary(
+                        job_item_id=row["job_item_id"],
+                        job_id=row["job_id"],
+                        work_item_id=row["work_item_id"],
+                        work_type=row["work_type"],
+                        status=row["status"],
+                        retry_after=(
+                            _from_iso(row["next_retry_at"])
+                            if row["next_retry_at"] is not None
+                            else None
+                        ),
+                        max_attempts=row["max_attempts"],
+                        active_attempt_id=row["active_attempt_id"],
+                        created_at=_from_iso(row["created_at"]),
+                        updated_at=_from_iso(row["updated_at"]),
+                        question_id=_snapshot_question_id(snapshot),
+                        metric_name=_snapshot_metric_name(snapshot),
+                        latest_attempt=(
+                            _row_to_attempt(attempt_row) if attempt_row is not None else None
+                        ),
+                    )
+                )
+            return summaries
+
     async def list_campaign_work_items(
         self,
         *,
@@ -1344,6 +1415,28 @@ def _as_iso(value: datetime) -> str:
 
 def _from_iso(value: str) -> datetime:
     return datetime.fromisoformat(value)
+
+
+def _snapshot_question_id(snapshot: Any) -> str | None:
+    if not isinstance(snapshot, Mapping):
+        return None
+    direct = snapshot.get("question_id")
+    if isinstance(direct, str) and direct:
+        return direct
+    for key in ("test_case", "result"):
+        nested = snapshot.get(key)
+        if isinstance(nested, Mapping):
+            value = nested.get("id") if key == "test_case" else nested.get("question_id")
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
+def _snapshot_metric_name(snapshot: Any) -> str | None:
+    if not isinstance(snapshot, Mapping):
+        return None
+    value = snapshot.get("metric_name")
+    return value if isinstance(value, str) and value else None
 
 
 def _row_to_job(row: aiosqlite.Row) -> EvaluationJob:

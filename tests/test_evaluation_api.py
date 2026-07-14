@@ -488,6 +488,31 @@ async def test_attempt_history_route_rejects_unknown_owner(monkeypatch: pytest.M
     assert exc_info.value.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_job_items_route_returns_owned_item_summaries(monkeypatch: pytest.MonkeyPatch) -> None:
+    from evaluation import router as evaluation_router
+
+    engine = AsyncMock()
+    engine.list_job_items.return_value = [
+        {
+            "job_item_id": "item-1",
+            "job_id": "job-1",
+            "work_item_id": "work-1",
+            "work_type": "dataset_execution",
+            "status": "failed",
+            "question_id": "Q1",
+            "metric_name": None,
+            "latest_attempt": None,
+        }
+    ]
+    monkeypatch.setattr(evaluation_router, "get_campaign_engine", lambda: engine)
+
+    response = await evaluation_router.list_evaluation_job_items("job-1", "user-a")
+
+    assert response[0]["work_item_id"] == "work-1"
+    engine.list_job_items.assert_awaited_once_with(user_id="user-a", job_id="job-1")
+
+
 def test_mixed_succeeded_cancelled_job_is_completed_with_errors() -> None:
     status = EvaluationJobStore._derive_job_status(
         total=2,

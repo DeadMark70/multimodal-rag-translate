@@ -51,7 +51,12 @@ from evaluation.campaign_schemas import (
 from evaluation.model_capabilities import normalize_model_config_for_storage
 from evaluation.model_discovery import list_available_models
 from evaluation.db import CampaignResultRepository
-from evaluation.job_schemas import EvaluationAttempt, EvaluationJob, EvaluationRerunRequest
+from evaluation.job_schemas import (
+    EvaluationAttempt,
+    EvaluationJob,
+    EvaluationJobItemSummary,
+    EvaluationRerunRequest,
+)
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.schemas import (
     AvailableModel,
@@ -767,6 +772,16 @@ async def get_evaluation_job(
     """Fetch one owned durable evaluation job."""
     engine = get_campaign_engine()
     return await engine.get_job(user_id=user_id, job_id=job_id)
+
+
+@router.get("/jobs/{job_id}/items", response_model=list[EvaluationJobItemSummary])
+async def list_evaluation_job_items(
+    job_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> list[EvaluationJobItemSummary]:
+    """List one owned durable job's work items and latest safe attempts."""
+    engine = get_campaign_engine()
+    return await engine.list_job_items(user_id=user_id, job_id=job_id)
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=EvaluationJob)

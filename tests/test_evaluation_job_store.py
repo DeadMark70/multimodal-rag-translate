@@ -903,3 +903,31 @@ async def test_heartbeat_and_job_read_apis_are_user_scoped(store, fixed_now) -> 
         user_id="user-a", work_item_id=claimed.work_item_id
     )
     assert attempts[0].last_heartbeat_at == fixed_now + timedelta(seconds=15)
+
+
+@pytest.mark.asyncio
+async def test_list_job_items_is_job_scoped_and_includes_latest_safe_attempt(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    created = await store.create_job_with_items(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="rerun",
+        selection={"scope": "all"},
+        config_snapshot={},
+        items=[_spec(max_attempts=2)],
+    )
+    claimed = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
+
+    items = await store.list_job_items(user_id="user-a", job_id=created.job_id)
+
+    assert len(items) == 1
+    assert items[0].job_item_id == claimed.job_item_id
+    assert items[0].work_item_id == claimed.work_item_id
+    assert items[0].question_id == "Q1"
+    assert items[0].latest_attempt is not None
+    assert items[0].latest_attempt.attempt_id == claimed.attempt_id
+    assert items[0].latest_attempt.safe_error_message is None
+    with pytest.raises(AppError) as exc_info:
+        await store.list_job_items(user_id="user-b", job_id=created.job_id)
+    assert exc_info.value.code is ErrorCode.NOT_FOUND

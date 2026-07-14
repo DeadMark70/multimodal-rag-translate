@@ -179,6 +179,14 @@ class EvaluationAttempt(BaseModel):
     safe_error_message: str | None = None
 
 
+class EvaluationJobItemSummary(EvaluationJobItem):
+    """Owned job-item details used to explain durable rerun progress."""
+
+    question_id: str | None = None
+    metric_name: str | None = None
+    latest_attempt: EvaluationAttempt | None = None
+
+
 class ClaimedEvaluationWork(BaseModel):
     """A worker claim bound to the exact input snapshot it must execute."""
 
