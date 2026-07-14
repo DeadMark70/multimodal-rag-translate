@@ -1022,11 +1022,17 @@ class CampaignEngine:
         )
         cancelled = await self._job_store.cancel_job(user_id=user_id, job_id=job_id)
         if campaign is not None:
-            if EvaluationWorkType.DATASET_EXECUTION in work_types:
+            if (
+                EvaluationWorkType.DATASET_EXECUTION in work_types
+                or campaign.status == CampaignLifecycleStatus.RUNNING
+            ):
                 await self._campaign_repository.derive_execution_state(
                     user_id=user_id, campaign_id=campaign.id
                 )
-            if EvaluationWorkType.RAGAS_METRIC in work_types:
+            if (
+                EvaluationWorkType.RAGAS_METRIC in work_types
+                or campaign.status == CampaignLifecycleStatus.EVALUATING
+            ):
                 await self._campaign_repository.derive_ragas_state(
                     user_id=user_id, campaign_id=campaign.id
                 )
