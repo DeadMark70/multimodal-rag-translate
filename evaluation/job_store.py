@@ -189,12 +189,19 @@ class EvaluationJobStore:
             return 0
 
         effective_config = dict(evaluator_config or {})
-        if ragas_batch_size is not None:
-            effective_config.setdefault("ragas_batch_size", int(ragas_batch_size))
-        if ragas_parallel_batches is not None:
-            effective_config.setdefault(
-                "ragas_parallel_batches", int(ragas_parallel_batches)
-            )
+        effective_batch_size = ragas_batch_size
+        if effective_batch_size is None:
+            raw_batch_size = effective_config.get("ragas_batch_size")
+            effective_batch_size = int(raw_batch_size) if raw_batch_size is not None else None
+        effective_parallel_batches = ragas_parallel_batches
+        if effective_parallel_batches is None:
+            raw_parallel = effective_config.get("ragas_parallel_batches")
+            effective_parallel_batches = int(raw_parallel) if raw_parallel is not None else None
+        batch_config = dict(effective_config)
+        if effective_batch_size is not None:
+            batch_config["ragas_batch_size"] = effective_batch_size
+        if effective_parallel_batches is not None:
+            batch_config["ragas_parallel_batches"] = effective_parallel_batches
         await init_db()
         specs: list[WorkItemSpec] = []
         async with connect_db() as connection:
@@ -214,7 +221,7 @@ class EvaluationJobStore:
                     batch_group_key = build_ragas_batch_group_key(
                         result=result,
                         evaluator_model=evaluator_model,
-                        evaluator_config=effective_config,
+                        evaluator_config=batch_config,
                         metric_name=metric_name,
                         metric_version=metric_version,
                         ground_truth_hash=ground_truth_hash,
@@ -252,12 +259,8 @@ class EvaluationJobStore:
                                 "metric_name": metric_name,
                                 "evaluation_signature": signature,
                                 "batch_group_key": batch_group_key,
-                                "ragas_batch_size": effective_config.get(
-                                    "ragas_batch_size"
-                                ),
-                                "ragas_parallel_batches": effective_config.get(
-                                    "ragas_parallel_batches"
-                                ),
+                                "ragas_batch_size": effective_batch_size,
+                                "ragas_parallel_batches": effective_parallel_batches,
                                 "result": result.model_dump(mode="json"),
                             },
                             max_attempts=max_attempts,
@@ -274,10 +277,8 @@ class EvaluationJobStore:
                 "evaluator_model": evaluator_model,
                 "evaluator_config": effective_config,
                 "metric_version": metric_version,
-                "ragas_batch_size": effective_config.get("ragas_batch_size"),
-                "ragas_parallel_batches": effective_config.get(
-                    "ragas_parallel_batches"
-                ),
+                "ragas_batch_size": effective_batch_size,
+                "ragas_parallel_batches": effective_parallel_batches,
             },
             items=specs,
         )

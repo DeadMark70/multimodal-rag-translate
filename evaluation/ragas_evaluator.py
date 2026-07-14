@@ -342,17 +342,7 @@ class RagasEvaluator:
             user_id=user_id, campaign_id=campaign.id
         )
         result_map = {result.id: result for result in results}
-        campaign_config = getattr(campaign, "config", None)
-        evaluator_config = {
-            key: value
-            for key, value in {
-                "ragas_batch_size": getattr(campaign_config, "ragas_batch_size", None),
-                "ragas_parallel_batches": getattr(
-                    campaign_config, "ragas_parallel_batches", None
-                ),
-            }.items()
-            if value is not None
-        }
+        evaluator_config: dict[str, Any] = {}
         score_rows = [
             score_row
             for score_row in score_rows

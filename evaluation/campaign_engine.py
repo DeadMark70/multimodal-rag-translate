@@ -833,10 +833,7 @@ class CampaignEngine:
             user_id=user_id,
             campaign_id=campaign_id,
             evaluator_model=str(getattr(self._ragas_evaluator, "evaluator_model", "")),
-            evaluator_config={
-                "ragas_batch_size": campaign.config.ragas_batch_size,
-                "ragas_parallel_batches": campaign.config.ragas_parallel_batches,
-            },
+            evaluator_config={},
             enabled_metrics=enabled_metrics,
             selected_result_ids=selected_result_ids,
             force=True,

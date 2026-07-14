@@ -209,14 +209,7 @@ class DatasetExecutionWorker:
             user_id=str(snapshot["user_id"]),
             campaign_id=str(snapshot["campaign_id"]),
             evaluator_model=str(getattr(self._ragas_evaluator, "evaluator_model", "")),
-            evaluator_config={
-                key: value
-                for key, value in {
-                    "ragas_batch_size": ragas_batch_size,
-                    "ragas_parallel_batches": ragas_parallel_batches,
-                }.items()
-                if value is not None
-            },
+            evaluator_config={},
             enabled_metrics=list(getattr(self._ragas_evaluator, "enabled_metrics", [])),
             ragas_batch_size=ragas_batch_size,
             ragas_parallel_batches=ragas_parallel_batches,
