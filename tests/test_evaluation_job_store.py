@@ -18,6 +18,7 @@ from evaluation.job_schemas import (
     WorkItemSpec,
 )
 from evaluation.job_store import build_evaluation_signature, build_ragas_batch_group_key
+from evaluation.ragas_worker import RagasBatchWorker
 
 
 @pytest_asyncio.fixture
@@ -229,6 +230,18 @@ async def test_ensure_ragas_work_assigns_one_shared_batch_key_to_compatible_resu
     assert len(claims) == 4
     assert len({claim.input_snapshot["evaluation_signature"] for claim in claims}) == 4
     assert len({claim.input_snapshot["batch_group_key"] for claim in claims}) == 1
+
+    class BatchEvaluator:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        async def evaluate_metric_batch(self, metric_name, rows, llm, embeddings):  # noqa: ANN001
+            self.calls.append(len(rows))
+            return [0.5] * len(rows)
+
+    batch_evaluator = BatchEvaluator()
+    await RagasBatchWorker(store=store, evaluator=batch_evaluator).execute(claims)
+    assert batch_evaluator.calls == [4]
 
 
 @pytest.mark.asyncio
