@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from types import MappingProxyType
 from typing import Any, Literal, cast
+from uuid import uuid4
 
 from pydantic import (
     BaseModel,
@@ -103,18 +104,36 @@ class EvaluationRerunRequest(BaseModel):
 class WorkItemSpec(BaseModel):
     """The immutable input needed to execute one unit of evaluation work."""
 
-    work_item_id: str
+    work_item_id: str = Field(default_factory=lambda: str(uuid4()))
     work_type: EvaluationWorkType
-    question_id: str
+    logical_key: str | None = None
+    question_id: str | None = None
     metric_name: str | None = None
     input_snapshot: dict[str, JsonValue] = Field(default_factory=dict)
+    max_attempts: int = Field(default=1, ge=1)
+
+    @model_validator(mode="after")
+    def default_logical_key_to_legacy_id(self) -> WorkItemSpec:
+        if self.logical_key is None:
+            self.logical_key = self.work_item_id
+        return self
 
 
 class EvaluationJob(BaseModel):
     job_id: str
     job_type: EvaluationJobType
+    user_id: str | None = None
+    campaign_id: str | None = None
+    selection: dict[str, JsonValue] = Field(default_factory=dict)
+    config_snapshot: dict[str, JsonValue] = Field(default_factory=dict)
     rerun_request: EvaluationRerunRequest | None = None
     created_at: datetime = Field(default_factory=_utc_now)
+
+    @property
+    def id(self) -> str:
+        """Compatibility alias for callers that use database-style identifiers."""
+
+        return self.job_id
 
 
 class EvaluationJobItem(BaseModel):
@@ -123,6 +142,8 @@ class EvaluationJobItem(BaseModel):
     work_item_id: str
     status: EvaluationJobItemStatus = EvaluationJobItemStatus.PENDING
     retry_after: datetime | None = None
+    max_attempts: int = Field(default=1, ge=1)
+    active_attempt_id: str | None = None
     created_at: datetime = Field(default_factory=_utc_now)
     updated_at: datetime = Field(default_factory=_utc_now)
 
@@ -135,6 +156,7 @@ class EvaluationAttempt(BaseModel):
     attempt_number: int
     status: EvaluationAttemptStatus = EvaluationAttemptStatus.RUNNING
     started_at: datetime = Field(default_factory=_utc_now)
+    last_heartbeat_at: datetime | None = None
     finished_at: datetime | None = None
     error_type: str | None = None
     safe_error_message: str | None = None
@@ -149,6 +171,7 @@ class ClaimedEvaluationWork(BaseModel):
     job_item_id: str
     work_item_id: str
     attempt_id: str
+    attempt_number: int = Field(default=1, ge=1)
     input_snapshot: dict[str, JsonValue]
 
     @classmethod

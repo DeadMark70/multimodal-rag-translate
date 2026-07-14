@@ -264,6 +264,7 @@ CREATE TABLE IF NOT EXISTS campaign_results (
     difficulty TEXT,
     status TEXT NOT NULL,
     error_message TEXT,
+    source_attempt_id TEXT,
     created_at TEXT NOT NULL,
     FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
 );
@@ -276,6 +277,73 @@ ON campaign_results(campaign_id, user_id, created_at ASC, question_id ASC, mode 
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_results_unit_unique
 ON campaign_results(campaign_id, question_id, mode, run_number);
+
+CREATE TABLE IF NOT EXISTS evaluation_jobs (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    job_type TEXT NOT NULL,
+    selection_json TEXT NOT NULL,
+    config_snapshot_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_eval_jobs_user_campaign_created
+ON evaluation_jobs(user_id, campaign_id, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS evaluation_work_items (
+    id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL,
+    logical_key TEXT NOT NULL,
+    work_type TEXT NOT NULL,
+    input_snapshot_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_work_item_logical_key
+ON evaluation_work_items(campaign_id, logical_key);
+
+CREATE TABLE IF NOT EXISTS evaluation_job_items (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    work_item_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    max_attempts INTEGER NOT NULL,
+    next_retry_at TEXT,
+    active_attempt_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(job_id) REFERENCES evaluation_jobs(id) ON DELETE CASCADE,
+    FOREIGN KEY(work_item_id) REFERENCES evaluation_work_items(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_job_item_pair
+ON evaluation_job_items(job_id, work_item_id);
+
+CREATE INDEX IF NOT EXISTS idx_eval_job_item_ready
+ON evaluation_job_items(status, next_retry_at, created_at);
+
+CREATE TABLE IF NOT EXISTS evaluation_attempts (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    job_item_id TEXT NOT NULL,
+    work_item_id TEXT NOT NULL,
+    attempt_number INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    last_heartbeat_at TEXT,
+    finished_at TEXT,
+    error_type TEXT,
+    safe_error_message TEXT,
+    FOREIGN KEY(job_id) REFERENCES evaluation_jobs(id) ON DELETE CASCADE,
+    FOREIGN KEY(job_item_id) REFERENCES evaluation_job_items(id) ON DELETE CASCADE,
+    FOREIGN KEY(work_item_id) REFERENCES evaluation_work_items(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_attempt_number
+ON evaluation_attempts(work_item_id, attempt_number);
 
 CREATE TABLE IF NOT EXISTS evaluation_trace_events (
     event_id TEXT PRIMARY KEY,
@@ -508,6 +576,8 @@ CREATE TABLE IF NOT EXISTS ragas_scores (
     metric_name TEXT NOT NULL,
     metric_value REAL NOT NULL,
     details_json TEXT NOT NULL,
+    source_attempt_id TEXT,
+    evaluation_signature TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -535,6 +605,7 @@ async def connect_db():
     connection.row_factory = aiosqlite.Row
     await connection.execute("PRAGMA journal_mode=WAL;")
     await connection.execute("PRAGMA synchronous=NORMAL;")
+    await connection.execute("PRAGMA busy_timeout=5000;")
     await connection.execute("PRAGMA foreign_keys=ON;")
     try:
         yield connection
@@ -604,6 +675,20 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
     if "ragas_focus_json" not in campaign_result_columns:
         await connection.execute(
             "ALTER TABLE campaign_results ADD COLUMN ragas_focus_json TEXT NOT NULL DEFAULT '[]'"
+        )
+    if "source_attempt_id" not in campaign_result_columns:
+        await connection.execute(
+            "ALTER TABLE campaign_results ADD COLUMN source_attempt_id TEXT"
+        )
+
+    ragas_score_columns = await _table_columns(connection, "ragas_scores")
+    if "source_attempt_id" not in ragas_score_columns:
+        await connection.execute(
+            "ALTER TABLE ragas_scores ADD COLUMN source_attempt_id TEXT"
+        )
+    if "evaluation_signature" not in ragas_score_columns:
+        await connection.execute(
+            "ALTER TABLE ragas_scores ADD COLUMN evaluation_signature TEXT"
         )
     campaign_result_research_columns = {
         "question_version": "TEXT",
