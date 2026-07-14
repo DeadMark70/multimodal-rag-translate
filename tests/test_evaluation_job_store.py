@@ -924,6 +924,7 @@ async def test_list_job_items_is_job_scoped_and_includes_latest_safe_attempt(
     assert len(items) == 1
     assert items[0].job_item_id == claimed.job_item_id
     assert items[0].work_item_id == claimed.work_item_id
+    assert items[0].work_type.value == "dataset_execution"
     assert items[0].question_id == "Q1"
     assert items[0].latest_attempt is not None
     assert items[0].latest_attempt.attempt_id == claimed.attempt_id

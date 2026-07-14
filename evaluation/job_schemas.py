@@ -182,6 +182,7 @@ class EvaluationAttempt(BaseModel):
 class EvaluationJobItemSummary(EvaluationJobItem):
     """Owned job-item details used to explain durable rerun progress."""
 
+    work_type: EvaluationWorkType
     question_id: str | None = None
     metric_name: str | None = None
     latest_attempt: EvaluationAttempt | None = None
