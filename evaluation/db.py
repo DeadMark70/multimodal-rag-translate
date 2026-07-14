@@ -298,6 +298,7 @@ CREATE TABLE IF NOT EXISTS evaluation_work_items (
     logical_key TEXT NOT NULL,
     work_type TEXT NOT NULL,
     input_snapshot_json TEXT NOT NULL,
+    latest_success_attempt_id TEXT,
     created_at TEXT NOT NULL,
     FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
 );
@@ -337,6 +338,7 @@ CREATE TABLE IF NOT EXISTS evaluation_attempts (
     finished_at TEXT,
     error_type TEXT,
     safe_error_message TEXT,
+    output_json TEXT,
     FOREIGN KEY(job_id) REFERENCES evaluation_jobs(id) ON DELETE CASCADE,
     FOREIGN KEY(job_item_id) REFERENCES evaluation_job_items(id) ON DELETE CASCADE,
     FOREIGN KEY(work_item_id) REFERENCES evaluation_work_items(id) ON DELETE CASCADE
@@ -680,6 +682,15 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         await connection.execute(
             "ALTER TABLE campaign_results ADD COLUMN source_attempt_id TEXT"
         )
+
+    work_item_columns = await _table_columns(connection, "evaluation_work_items")
+    if "latest_success_attempt_id" not in work_item_columns:
+        await connection.execute(
+            "ALTER TABLE evaluation_work_items ADD COLUMN latest_success_attempt_id TEXT"
+        )
+    attempt_columns = await _table_columns(connection, "evaluation_attempts")
+    if "output_json" not in attempt_columns:
+        await connection.execute("ALTER TABLE evaluation_attempts ADD COLUMN output_json TEXT")
 
     ragas_score_columns = await _table_columns(connection, "ragas_scores")
     if "source_attempt_id" not in ragas_score_columns:
@@ -1032,6 +1043,9 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
         system_version_snapshot=system_version_snapshot,
         derived_metrics=derived_metrics,
         final_answer_hash=final_answer_hash,
+        source_attempt_id=(
+            row["source_attempt_id"] if "source_attempt_id" in row.keys() else None
+        ),
         status=CampaignResultStatus(row["status"]),
         error_message=row["error_message"],
         has_trace=bool(row["has_trace"]) if "has_trace" in row.keys() else False,
@@ -1781,8 +1795,14 @@ class RagasScoreRepository:
                 """
                 INSERT INTO ragas_scores (
                     id, campaign_id, campaign_result_id, user_id, metric_name,
-                    metric_value, details_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    metric_value, details_json, source_attempt_id, evaluation_signature, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(campaign_result_id, metric_name) DO UPDATE SET
+                    metric_value = excluded.metric_value,
+                    details_json = excluded.details_json,
+                    source_attempt_id = COALESCE(excluded.source_attempt_id, ragas_scores.source_attempt_id),
+                    evaluation_signature = COALESCE(excluded.evaluation_signature, ragas_scores.evaluation_signature),
+                    created_at = excluded.created_at
                 """,
                 (
                     str(uuid4()),
@@ -1792,6 +1812,8 @@ class RagasScoreRepository:
                     row["metric_name"],
                     row["metric_value"],
                     _json_dumps(row.get("details", {})),
+                    row.get("source_attempt_id"),
+                    row.get("evaluation_signature"),
                     _utc_now_iso(),
                 ),
             )
@@ -1805,10 +1827,6 @@ class RagasScoreRepository:
     ) -> None:
         await init_db()
         async with connect_db() as connection:
-            await connection.execute(
-                "DELETE FROM ragas_scores WHERE campaign_id = ? AND user_id = ?",
-                (campaign_id, user_id),
-            )
             await self._insert_score_rows(
                 connection=connection,
                 user_id=user_id,
@@ -1828,22 +1846,7 @@ class RagasScoreRepository:
         if not selected_result_ids:
             return
         await init_db()
-        placeholders = ",".join("?" for _ in selected_result_ids)
-        params: tuple[Any, ...] = (
-            campaign_id,
-            user_id,
-            *selected_result_ids,
-        )
         async with connect_db() as connection:
-            await connection.execute(
-                f"""
-                DELETE FROM ragas_scores
-                WHERE campaign_id = ?
-                  AND user_id = ?
-                  AND campaign_result_id IN ({placeholders})
-                """,
-                params,
-            )
             await self._insert_score_rows(
                 connection=connection,
                 user_id=user_id,

@@ -19,6 +19,8 @@ from pydantic import (
     model_validator,
 )
 
+from evaluation.campaign_schemas import CampaignResult
+
 
 class EvaluationJobType(str, Enum):
     INITIAL = "initial"
@@ -216,3 +218,24 @@ class ClaimedEvaluationWork(BaseModel):
         if deep:
             values = deepcopy(values)
         return type(self).model_validate(values)
+
+
+class ExecutionAttemptOutput(BaseModel):
+    """The complete successful execution payload retained by an attempt."""
+
+    result: CampaignResult
+
+
+class RagasAttemptOutput(BaseModel):
+    """The successful metric rows retained by a RAGAS attempt."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scores: list[dict[str, Any]] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_score_rows_alias(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "scores" not in value and "score_rows" in value:
+            return {**value, "scores": value["score_rows"]}
+        return value

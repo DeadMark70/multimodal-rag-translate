@@ -39,7 +39,7 @@ class FakeScoreRepository:
         return list(self._scores)
 
     async def replace_for_campaign(self, *, user_id: str, campaign_id: str, score_rows: list[dict]) -> None:
-        self._scores = list(score_rows)
+        self._upsert(score_rows)
 
     async def replace_for_campaign_subset(
         self,
@@ -49,11 +49,16 @@ class FakeScoreRepository:
         selected_result_ids: list[str],
         score_rows: list[dict],
     ) -> None:
-        selected_set = set(selected_result_ids)
-        remaining = [
-            row for row in self._scores if row["campaign_result_id"] not in selected_set
-        ]
-        self._scores = [*remaining, *score_rows]
+        self._upsert(score_rows)
+
+    def _upsert(self, score_rows: list[dict]) -> None:
+        by_key = {
+            (row["campaign_result_id"], row["metric_name"]): row
+            for row in self._scores
+        }
+        for row in score_rows:
+            by_key[(row["campaign_result_id"], row["metric_name"])] = row
+        self._scores = list(by_key.values())
 
 
 class _FakeDataset:
@@ -585,7 +590,14 @@ async def test_evaluate_campaign_skips_when_ragas_dependency_missing() -> None:
         )
 
     assert model_name == "fake-evaluator"
-    assert score_repository._scores == []
+    assert score_repository._scores == [
+        {
+            "campaign_result_id": "legacy",
+            "metric_name": "faithfulness",
+            "metric_value": 0.9,
+            "details": {},
+        }
+    ]
 
 
 @pytest.mark.asyncio

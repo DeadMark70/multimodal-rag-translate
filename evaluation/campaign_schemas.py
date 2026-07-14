@@ -207,6 +207,7 @@ class CampaignResult(BaseModel):
     system_version_snapshot: dict[str, Any] = Field(default_factory=dict)
     derived_metrics: dict[str, Any] = Field(default_factory=dict)
     final_answer_hash: Optional[str] = None
+    source_attempt_id: Optional[str] = None
     status: CampaignResultStatus
     error_message: Optional[str] = None
     has_trace: bool = False
