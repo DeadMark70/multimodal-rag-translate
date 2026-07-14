@@ -40,10 +40,42 @@ def build_evaluation_signature(
     ground_truth_hash: str,
     context_metrics_enabled: bool,
 ) -> str:
-    """Return a stable identity for a metric evaluated against one result."""
+    """Return the durable per-result identity for one metric evaluation."""
     payload = {
         "campaign_result_id": result.id,
         "final_answer_hash": result.final_answer_hash,
+        "evaluator_model": evaluator_model,
+        "evaluator_config": evaluator_config,
+        "metric_name": metric_name,
+        "metric_version": metric_version,
+        "context_policy_version": result.context_policy_version,
+        "ground_truth_hash": ground_truth_hash,
+        "context_metrics_enabled": context_metrics_enabled,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def build_ragas_batch_group_key(
+    *,
+    result: CampaignResult,
+    evaluator_model: str,
+    evaluator_config: dict[str, Any],
+    metric_name: str,
+    metric_version: str,
+    ground_truth_hash: str,
+    context_metrics_enabled: bool,
+) -> str:
+    """Return a provider-batch compatibility key without result identity."""
+    answer = result.answer or ""
+    answer_hash = result.final_answer_hash or sha256(answer.encode("utf-8")).hexdigest()
+    context_hash = sha256(
+        json.dumps(result.contexts or [], ensure_ascii=False, separators=(",", ":"))
+        .encode("utf-8")
+    ).hexdigest()
+    payload = {
+        "final_answer_hash": answer_hash,
+        "context_hash": context_hash,
         "evaluator_model": evaluator_model,
         "evaluator_config": evaluator_config,
         "metric_name": metric_name,
@@ -138,6 +170,8 @@ class EvaluationJobStore:
         selected_result_ids: Sequence[str] | None = None,
         force: bool = False,
         max_attempts: int = 3,
+        ragas_batch_size: int | None = None,
+        ragas_parallel_batches: int | None = None,
     ) -> int:
         """Create idempotent metric work for current official results."""
         results = await CampaignResultRepository().list_for_campaign(
@@ -154,6 +188,13 @@ class EvaluationJobStore:
         if not results or not enabled_metrics:
             return 0
 
+        effective_config = dict(evaluator_config or {})
+        if ragas_batch_size is not None:
+            effective_config.setdefault("ragas_batch_size", int(ragas_batch_size))
+        if ragas_parallel_batches is not None:
+            effective_config.setdefault(
+                "ragas_parallel_batches", int(ragas_parallel_batches)
+            )
         await init_db()
         specs: list[WorkItemSpec] = []
         async with connect_db() as connection:
@@ -164,7 +205,16 @@ class EvaluationJobStore:
                     signature = build_evaluation_signature(
                         result=result,
                         evaluator_model=evaluator_model,
-                        evaluator_config=evaluator_config or {},
+                        evaluator_config=effective_config,
+                        metric_name=metric_name,
+                        metric_version=metric_version,
+                        ground_truth_hash=ground_truth_hash,
+                        context_metrics_enabled=metric_name.startswith("context_"),
+                    )
+                    batch_group_key = build_ragas_batch_group_key(
+                        result=result,
+                        evaluator_model=evaluator_model,
+                        evaluator_config=effective_config,
                         metric_name=metric_name,
                         metric_version=metric_version,
                         ground_truth_hash=ground_truth_hash,
@@ -201,6 +251,13 @@ class EvaluationJobStore:
                                 "campaign_result_id": result.id,
                                 "metric_name": metric_name,
                                 "evaluation_signature": signature,
+                                "batch_group_key": batch_group_key,
+                                "ragas_batch_size": effective_config.get(
+                                    "ragas_batch_size"
+                                ),
+                                "ragas_parallel_batches": effective_config.get(
+                                    "ragas_parallel_batches"
+                                ),
                                 "result": result.model_dump(mode="json"),
                             },
                             max_attempts=max_attempts,
@@ -215,8 +272,12 @@ class EvaluationJobStore:
             selection={"stage": "ragas", "force": force},
             config_snapshot={
                 "evaluator_model": evaluator_model,
-                "evaluator_config": evaluator_config or {},
+                "evaluator_config": effective_config,
                 "metric_version": metric_version,
+                "ragas_batch_size": effective_config.get("ragas_batch_size"),
+                "ragas_parallel_batches": effective_config.get(
+                    "ragas_parallel_batches"
+                ),
             },
             items=specs,
         )

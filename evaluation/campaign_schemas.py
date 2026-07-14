@@ -549,8 +549,8 @@ class CampaignMetricRow(BaseModel):
     metric_values: dict[str, float] = Field(default_factory=dict)
     invalid_metrics: dict[str, bool] = Field(default_factory=dict)
     invalid_reasons: dict[str, str] = Field(default_factory=dict)
-    faithfulness: float = Field(default=0, ge=0)
-    answer_correctness: float = Field(default=0, ge=0)
+    faithfulness: Optional[float] = Field(default=None, ge=0)
+    answer_correctness: Optional[float] = Field(default=None, ge=0)
 
 
 class GroupMetricsSummary(BaseModel):

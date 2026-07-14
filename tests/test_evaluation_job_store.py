@@ -17,6 +17,7 @@ from evaluation.job_schemas import (
     RagasAttemptOutput,
     WorkItemSpec,
 )
+from evaluation.job_store import build_evaluation_signature, build_ragas_batch_group_key
 
 
 @pytest_asyncio.fixture
@@ -142,6 +143,91 @@ async def test_create_job_notifies_post_commit_producer_hook(store) -> None:  # 
     )
 
     assert notifications == [None]
+
+
+def test_ragas_batch_group_key_is_shared_while_result_signatures_remain_distinct() -> None:
+    first = CampaignResult(
+        id="result-1",
+        campaign_id="cmp-1",
+        question_id="Q1",
+        question="Question",
+        ground_truth="Ground truth",
+        mode="naive",
+        run_number=1,
+        answer="Answer",
+        contexts=["Context"],
+        context_policy_version="policy-v1",
+        status=CampaignResultStatus.COMPLETED,
+        created_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
+    )
+    second = first.model_copy(update={"id": "result-2"})
+    kwargs = {
+        "evaluator_model": "evaluator",
+        "evaluator_config": {"temperature": 0},
+        "metric_name": "faithfulness",
+        "metric_version": "v1",
+        "ground_truth_hash": "ground-truth-hash",
+        "context_metrics_enabled": False,
+    }
+
+    assert build_evaluation_signature(result=first, **kwargs) != build_evaluation_signature(
+        result=second, **kwargs
+    )
+    assert build_ragas_batch_group_key(result=first, **kwargs) == build_ragas_batch_group_key(
+        result=second, **kwargs
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_ragas_work_assigns_one_shared_signature_to_compatible_results(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    repository = CampaignResultRepository()
+    for index in range(4):
+        result = await repository.create(
+            result_id=f"ragas-result-{index}",
+            user_id="user-a",
+            campaign_id="cmp-1",
+            question_id=f"Q{index}",
+            question="Question",
+            ground_truth="Ground truth",
+            ground_truth_short="Ground truth",
+            key_points=[],
+            ragas_focus=[],
+            mode="naive",
+            execution_profile=None,
+            context_policy_version="policy-v1",
+            run_number=index + 1,
+            answer="Answer",
+            contexts=["Context"],
+            source_doc_ids=[],
+            expected_sources=[],
+            latency_ms=1,
+            token_usage={"total_tokens": 1},
+            category=None,
+            difficulty=None,
+            status=CampaignResultStatus.COMPLETED,
+        )
+        async with evaluation_db.connect_db() as connection:
+            await connection.execute(
+                "UPDATE campaign_results SET source_attempt_id = ? WHERE id = ?",
+                (f"attempt-{index}", result.id),
+            )
+            await connection.commit()
+
+    assert await store.ensure_ragas_work(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        evaluator_model="evaluator",
+        evaluator_config={"temperature": 0},
+        enabled_metrics=["faithfulness"],
+        ragas_batch_size=4,
+        ragas_parallel_batches=1,
+    ) == 4
+
+    claims = await store.claim_ready_items(limit=4, now=fixed_now, work_type="ragas_metric")
+    assert len(claims) == 4
+    assert len({claim.input_snapshot["evaluation_signature"] for claim in claims}) == 1
 
 
 @pytest.mark.asyncio

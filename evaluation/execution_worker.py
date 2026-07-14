@@ -202,12 +202,24 @@ class DatasetExecutionWorker:
             return
         if campaign.status.value not in {"completed", "completed_with_errors"}:
             return
+        ragas_config = getattr(campaign, "config", None)
+        ragas_batch_size = getattr(ragas_config, "ragas_batch_size", None)
+        ragas_parallel_batches = getattr(ragas_config, "ragas_parallel_batches", None)
         created = await self._store.ensure_ragas_work(
             user_id=str(snapshot["user_id"]),
             campaign_id=str(snapshot["campaign_id"]),
             evaluator_model=str(getattr(self._ragas_evaluator, "evaluator_model", "")),
-            evaluator_config={},
+            evaluator_config={
+                key: value
+                for key, value in {
+                    "ragas_batch_size": ragas_batch_size,
+                    "ragas_parallel_batches": ragas_parallel_batches,
+                }.items()
+                if value is not None
+            },
             enabled_metrics=list(getattr(self._ragas_evaluator, "enabled_metrics", [])),
+            ragas_batch_size=ragas_batch_size,
+            ragas_parallel_batches=ragas_parallel_batches,
         )
         if created:
             await self._campaign_repository.mark_evaluating(

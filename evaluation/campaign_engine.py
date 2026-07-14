@@ -816,7 +816,14 @@ class CampaignEngine:
                 )
 
         selected_result_ids = [row.id for row in selected_completed_results]
-        evaluation_total_units = len(selected_result_ids) * len(self._ragas_evaluator.enabled_metrics)
+        enabled_metrics = list(
+            getattr(
+                self._ragas_evaluator,
+                "enabled_metrics",
+                ["faithfulness", "answer_correctness", "answer_relevancy"],
+            )
+        )
+        evaluation_total_units = len(selected_result_ids) * len(enabled_metrics)
         await self._campaign_repository.mark_evaluating(
             user_id=user_id,
             campaign_id=campaign_id,
@@ -825,11 +832,16 @@ class CampaignEngine:
         await self._job_store.ensure_ragas_work(
             user_id=user_id,
             campaign_id=campaign_id,
-            evaluator_model=self._ragas_evaluator.evaluator_model,
-            evaluator_config={},
-            enabled_metrics=self._ragas_evaluator.enabled_metrics,
+            evaluator_model=str(getattr(self._ragas_evaluator, "evaluator_model", "")),
+            evaluator_config={
+                "ragas_batch_size": campaign.config.ragas_batch_size,
+                "ragas_parallel_batches": campaign.config.ragas_parallel_batches,
+            },
+            enabled_metrics=enabled_metrics,
             selected_result_ids=selected_result_ids,
             force=True,
+            ragas_batch_size=campaign.config.ragas_batch_size,
+            ragas_parallel_batches=campaign.config.ragas_parallel_batches,
         )
         self._worker_notifier()
         return await self.get_campaign(user_id=user_id, campaign_id=campaign_id)

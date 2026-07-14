@@ -160,6 +160,18 @@ def classify_evaluation_error(exc: BaseException) -> ErrorDecision:
             "The evaluation provider request timed out.",
             retry_after,
         )
+    if any(
+        "rate limit" in str(current).lower()
+        or "rate limited" in str(current).lower()
+        or "429" in str(current).lower()
+        for current in chain
+    ):
+        return _decision(
+            "rate_limit",
+            True,
+            "The evaluation provider rate limit was reached.",
+            retry_after,
+        )
     if any(500 <= status <= 599 for status in status_codes):
         return _decision(
             "server_error",

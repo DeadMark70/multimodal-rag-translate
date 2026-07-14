@@ -19,7 +19,7 @@ from evaluation.campaign_schemas import (
     CampaignStatus,
 )
 from evaluation.db import CampaignResultRepository, RagasScoreRepository
-from evaluation.ragas_evaluator import PRIMARY_RAGAS_METRICS, RagasEvaluator
+from evaluation.ragas_evaluator import PRIMARY_RAGAS_METRICS, RagasEvaluator, _clean_metric
 from evaluation.schemas import ModelConfig
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "bergen"
@@ -910,6 +910,47 @@ async def test_get_metrics_excludes_invalid_metrics_from_averages_and_sets_warni
     advanced_row = next(row for row in response.rows if row.campaign_result_id == "r-advanced")
     assert advanced_row.invalid_metrics["answer_correctness"] is True
     assert advanced_row.invalid_reasons["answer_correctness"] == "io_aborted"
+
+
+def test_clean_metric_preserves_missing_and_non_finite_values() -> None:
+    assert _clean_metric(None) is None
+    assert _clean_metric(float("nan")) is None
+    assert _clean_metric(float("inf")) is None
+
+
+@pytest.mark.asyncio
+async def test_get_metrics_excludes_missing_metric_values_from_rows_and_averages() -> None:
+    results = [_result("r-missing", "naive", 100, category="catA")]
+    scores = [
+        {
+            "campaign_result_id": "r-missing",
+            "metric_name": "faithfulness",
+            "metric_value": None,
+            "details": {"evaluator_model": "fake"},
+        },
+        {
+            "campaign_result_id": "r-missing",
+            "metric_name": "answer_correctness",
+            "metric_value": float("nan"),
+            "details": {"evaluator_model": "fake"},
+        },
+    ]
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository(results),
+        score_repository=FakeScoreRepository(scores),
+        evaluator_model="fake",
+    )
+
+    response = await evaluator.get_metrics(
+        user_id="user-a", campaign=_campaign_status(modes=["naive"])
+    )
+
+    row = response.rows[0]
+    assert row.metric_values == {}
+    assert row.faithfulness is None
+    assert row.answer_correctness is None
+    assert response.summary_by_mode["naive"].faithfulness.mean == 0
+    assert response.summary_by_mode["naive"].answer_correctness.mean == 0
 
 
 def _fake_ragas_dependencies_for_eval() -> dict:

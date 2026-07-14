@@ -69,7 +69,7 @@ class FakeEvaluator:
 @pytest.mark.asyncio
 async def test_completed_metric_checkpoints_survive_later_batch_failure() -> None:
     store = FakeStore()
-    evaluator = FakeEvaluator([[0.8, 0.7, 0.9, 0.6], RuntimeError("rate limited")])
+    evaluator = FakeEvaluator([[0.8, 0.7, 0.9, 0.6], RuntimeError("later batch failed")])
     worker = RagasBatchWorker(store=store, evaluator=evaluator, batch_size=4, parallel_batches=2)
 
     await worker.execute([_claim(i) for i in range(4)])
@@ -91,6 +91,19 @@ async def test_missing_dependency_is_failure_not_completed_empty_scores() -> Non
     assert store.completed == []
     assert len(store.failed) == 1
     assert store.failed[0][1].error_type == "missing_dependency"
+
+
+@pytest.mark.asyncio
+async def test_missing_metric_value_is_failure_not_zero_score() -> None:
+    store = FakeStore()
+    evaluator = FakeEvaluator([[None]])
+    worker = RagasBatchWorker(store=store, evaluator=evaluator)
+
+    await worker.execute([_claim(1)])
+
+    assert store.completed == []
+    assert len(store.failed) == 1
+    assert store.failed[0][1].error_type == "invalid_configuration"
 
 
 @pytest.mark.asyncio

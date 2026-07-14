@@ -40,13 +40,13 @@ EvaluationProgressCallback = Callable[
 ]
 
 
-def _clean_metric(value: Any) -> float:
+def _clean_metric(value: Any) -> float | None:
     try:
         numeric = float(value)
     except (TypeError, ValueError):
-        return 0.0
-    if math.isnan(numeric):
-        return 0.0
+        return None
+    if not math.isfinite(numeric):
+        return None
     return numeric
 
 
@@ -338,6 +338,28 @@ class RagasEvaluator:
             user_id=user_id,
             campaign_id=campaign.id,
         )
+        results = await self._result_repository.list_for_campaign(
+            user_id=user_id, campaign_id=campaign.id
+        )
+        result_map = {result.id: result for result in results}
+        campaign_config = getattr(campaign, "config", None)
+        evaluator_config = {
+            key: value
+            for key, value in {
+                "ragas_batch_size": getattr(campaign_config, "ragas_batch_size", None),
+                "ragas_parallel_batches": getattr(
+                    campaign_config, "ragas_parallel_batches", None
+                ),
+            }.items()
+            if value is not None
+        }
+        score_rows = [
+            score_row
+            for score_row in score_rows
+            if self._score_matches_current_signature(
+                score_row, result_map, evaluator_config=evaluator_config
+            )
+        ]
         if not score_rows:
             return CampaignMetricsResponse(
                 campaign=campaign,
@@ -358,11 +380,7 @@ class RagasEvaluator:
                 rows=[],
             )
 
-        results = await self._result_repository.list_for_campaign(
-            user_id=user_id, campaign_id=campaign.id
-        )
-        result_map = {result.id: result for result in results}
-        score_map: dict[str, dict[str, float]] = defaultdict(dict)
+        score_map: dict[str, dict[str, float | None]] = defaultdict(dict)
         invalid_map: dict[str, dict[str, bool]] = defaultdict(dict)
         invalid_reasons_map: dict[str, dict[str, str]] = defaultdict(dict)
         reference_sources: dict[str, str] = {}
@@ -374,24 +392,8 @@ class RagasEvaluator:
         for score_row in score_rows:
             campaign_result_id = score_row["campaign_result_id"]
             metric_name = str(score_row["metric_name"])
-            result = result_map.get(campaign_result_id)
-            signature = score_row.get("evaluation_signature")
-            if result is not None and signature:
-                ground_truth = result.ground_truth_short or result.ground_truth or ""
-                expected_signature = build_evaluation_signature(
-                    result=result,
-                    evaluator_model=self._evaluator_model,
-                    evaluator_config={},
-                    metric_name=metric_name,
-                    metric_version="v1",
-                    ground_truth_hash=hashlib.sha256(ground_truth.encode("utf-8")).hexdigest(),
-                    context_metrics_enabled=metric_name.startswith("context_"),
-                )
-                if signature != expected_signature:
-                    continue
-            score_map[campaign_result_id][metric_name] = _clean_metric(
-                score_row["metric_value"]
-            )
+            metric_value = _clean_metric(score_row["metric_value"])
+            score_map[campaign_result_id][metric_name] = metric_value
             details = score_row.get("details", {})
             if isinstance(details, dict):
                 invalid_metric = bool(details.get("invalid_metric"))
@@ -413,6 +415,11 @@ class RagasEvaluator:
                     context_policy_versions[campaign_result_id] = str(
                         details["context_policy_version"]
                     )
+            if metric_value is None and not invalid_map[campaign_result_id].get(metric_name):
+                invalid_map[campaign_result_id][metric_name] = True
+                invalid_rows += 1
+                invalid_by_metric[metric_name] += 1
+                invalid_reasons_map[campaign_result_id][metric_name] = "missing_metric_value"
 
         chart_rows: list[CampaignMetricRow] = []
         for result in results:
@@ -422,9 +429,9 @@ class RagasEvaluator:
             if not metrics:
                 continue
             metric_values = {
-                metric_name: _clean_metric(metrics.get(metric_name))
+                metric_name: metric_value
                 for metric_name in self.enabled_metrics
-                if metric_name in metrics
+                if (metric_value := _clean_metric(metrics.get(metric_name))) is not None
             }
             chart_rows.append(
                 CampaignMetricRow(
@@ -488,6 +495,33 @@ class RagasEvaluator:
             },
             rows=chart_rows,
         )
+
+    def _score_matches_current_signature(
+        self,
+        score_row: dict[str, Any],
+        result_map: dict[str, Any],
+        *,
+        evaluator_config: dict[str, Any] | None = None,
+    ) -> bool:
+        signature = score_row.get("evaluation_signature")
+        if not signature:
+            return True
+        result = result_map.get(str(score_row.get("campaign_result_id")))
+        if result is None:
+            return False
+        ground_truth = result.ground_truth_short or result.ground_truth or ""
+        expected_signature = build_evaluation_signature(
+            result=result,
+            evaluator_model=self._evaluator_model,
+            evaluator_config=evaluator_config or {},
+            metric_name=str(score_row.get("metric_name")),
+            metric_version="v1",
+            ground_truth_hash=hashlib.sha256(ground_truth.encode("utf-8")).hexdigest(),
+            context_metrics_enabled=str(score_row.get("metric_name", "")).startswith(
+                "context_"
+            ),
+        )
+        return signature == expected_signature
 
     async def _load_ragas_dependencies(self) -> dict[str, Any]:
         # Lazy import avoids sandbox-time network fetches during module import.
@@ -561,7 +595,10 @@ class RagasEvaluator:
                     )
                 )
             except Exception as exc:  # noqa: BLE001
-                metric_scores[metric_name] = [0.0] * len(batch_rows)
+                # No checkpoint is written for a failed metric.  Keeping the
+                # metric absent prevents analytics from treating failure as a
+                # synthetic zero score.
+                metric_scores[metric_name] = []
                 metric_errors[metric_name] = {
                     "message": str(exc),
                     "error_type": _classify_metric_error(exc),
@@ -611,12 +648,23 @@ class RagasEvaluator:
         values = result[metric_name]
         if not isinstance(values, list):
             values = [values]
-        return [_clean_metric(value) for value in values]
+        normalized: list[float] = []
+        for value in values:
+            if isinstance(value, bool) or value is None:
+                raise ValueError("RAGAS returned a missing metric value")
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("RAGAS returned a non-numeric metric value") from exc
+            if not math.isfinite(numeric):
+                raise ValueError("RAGAS returned a non-finite metric value")
+            normalized.append(numeric)
+        return normalized
 
     def _score_rows_from_batch(
         self,
         batch_rows: list[Any],
-        metric_scores: dict[str, list[float]],
+        metric_scores: dict[str, list[float | None]],
         metric_errors: dict[str, dict[str, str]],
     ) -> list[dict[str, Any]]:
         score_rows: list[dict[str, Any]] = []
@@ -624,9 +672,9 @@ class RagasEvaluator:
             reference_source = self._reference_source(row)
             for metric_name in self.enabled_metrics:
                 scores = metric_scores.get(metric_name, [])
-                metric_value = _clean_metric(
-                    scores[index] if index < len(scores) else 0.0
-                )
+                metric_value = _clean_metric(scores[index]) if index < len(scores) else None
+                if metric_value is None:
+                    continue
                 details = {
                     "evaluator_model": self._evaluator_model,
                     "question_id": row.question_id,
@@ -663,7 +711,9 @@ class RagasEvaluator:
                 continue
             if metric_name not in row.metric_values:
                 continue
-            values.append(_clean_metric(row.metric_values.get(metric_name)))
+            value = _clean_metric(row.metric_values.get(metric_name))
+            if value is not None:
+                values.append(value)
         return values
 
     def _group_summaries(
