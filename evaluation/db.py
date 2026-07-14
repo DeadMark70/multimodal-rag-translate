@@ -1360,7 +1360,7 @@ class CampaignRepository:
         # cancelled; never let that late derivation turn it into completed or
         # failed based on the now-terminal job items.
         campaign = await self.get(user_id=user_id, campaign_id=campaign_id)
-        if campaign.status is CampaignLifecycleStatus.CANCELLED:
+        if campaign.status == CampaignLifecycleStatus.CANCELLED:
             return campaign
         async with connect_db() as connection:
             row = await (
@@ -1518,15 +1518,26 @@ class CampaignRepository:
             updates.append("completed_at = ?")
             values.append(completed_at)
 
-        values.extend([campaign_id, user_id])
+        where_clauses = ["id = ?", "user_id = ?"]
+        where_values: list[Any] = [campaign_id, user_id]
+        # CANCELLED is terminal.  Late worker callbacks can still attempt to
+        # derive or publish a completed/failed state after cancellation; keep
+        # those writes from overwriting the terminal lifecycle state.
+        if status is not None and status != CampaignLifecycleStatus.CANCELLED:
+            where_clauses.append("status != ?")
+            where_values.append(CampaignLifecycleStatus.CANCELLED.value)
+        values.extend(where_values)
 
         async with connect_db() as connection:
             cursor = await connection.execute(
-                f"UPDATE campaigns SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
+                f"UPDATE campaigns SET {', '.join(updates)} WHERE {' AND '.join(where_clauses)}",
                 values,
             )
             await connection.commit()
             if cursor.rowcount == 0:
+                current = await self.get(user_id=user_id, campaign_id=campaign_id)
+                if current.status == CampaignLifecycleStatus.CANCELLED:
+                    return current
                 raise AppError(
                     code=ErrorCode.NOT_FOUND,
                     message="Campaign not found",
