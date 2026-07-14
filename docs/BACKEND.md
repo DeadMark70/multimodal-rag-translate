@@ -353,4 +353,4 @@
 - Attempts are append-only. A failed, cancelled, or interrupted attempt never replaces the official result; only a compatible successful attempt is promoted atomically.
 - Restart recovery reclaims interrupted work from SQLite. Default worker limits are four execution claims and two RAGAS provider calls; RAGAS batches are capped at four.
 - Missing or non-finite metrics remain missing and are excluded from means, deltas, ECR, and exports. Warning payloads expose missing and failed-work counts.
-- Rerun endpoints are `POST /api/evaluation/campaigns/{campaign_id}/rerun`, `GET /api/evaluation/campaigns/{campaign_id}/jobs`, `GET /api/evaluation/jobs/{job_id}`, `GET /api/evaluation/jobs/{job_id}/items`, and `POST /api/evaluation/jobs/{job_id}/cancel`.
+- Rerun endpoints are `POST /api/evaluation/campaigns/{campaign_id}/reruns`, `GET /api/evaluation/campaigns/{campaign_id}/jobs`, `GET /api/evaluation/jobs/{job_id}`, `GET /api/evaluation/jobs/{job_id}/items`, and `POST /api/evaluation/jobs/{job_id}/cancel`.
