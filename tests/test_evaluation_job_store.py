@@ -242,6 +242,43 @@ async def test_claim_excludes_second_non_terminal_job_item_for_same_work_item(
 
 
 @pytest.mark.asyncio
+async def test_claim_skips_blocked_same_work_items_before_applying_limit(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    await store.create_job_with_items(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="initial",
+        selection={},
+        config_snapshot={},
+        items=[_spec(logical_key="execution:Q1:naive:1:active")],
+    )
+    active_claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
+    for _ in range(2):
+        await store.create_job_with_items(
+            user_id="user-a",
+            campaign_id="cmp-1",
+            job_type="rerun",
+            selection={},
+            config_snapshot={},
+            items=[_spec(logical_key="execution:Q1:naive:1:active")],
+        )
+    await store.create_job_with_items(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="initial",
+        selection={},
+        config_snapshot={},
+        items=[_spec(logical_key="execution:Q2:naive:1:independent")],
+    )
+
+    claimed = await store.claim_ready_items(limit=2, now=fixed_now)
+
+    assert len(claimed) == 1
+    assert claimed[0].work_item_id != active_claim.work_item_id
+
+
+@pytest.mark.asyncio
 async def test_cancel_and_startup_recovery_preserve_attempt_history(store, fixed_now) -> None:  # noqa: ANN001
     await store.create_job_with_items(
         user_id="user-a",

@@ -17,17 +17,9 @@ from evaluation.job_schemas import (
     ClaimedEvaluationWork,
     EvaluationAttempt,
     EvaluationJob,
-    EvaluationJobItemStatus,
     EvaluationJobType,
     WorkItemSpec,
 )
-
-_ACTIVE_ITEM_STATUSES = (
-    EvaluationJobItemStatus.PENDING.value,
-    EvaluationJobItemStatus.RUNNING.value,
-    EvaluationJobItemStatus.RETRY_WAIT.value,
-)
-
 
 class EvaluationJobStore:
     """Persist jobs, immutable work inputs, and append-only attempts."""
@@ -112,8 +104,24 @@ class EvaluationJobStore:
                            wi.input_snapshot_json, ji.created_at
                     FROM evaluation_job_items AS ji
                     JOIN evaluation_work_items AS wi ON wi.id = ji.work_item_id
-                    WHERE ji.status = 'pending'
-                       OR (ji.status = 'retry_wait' AND ji.next_retry_at <= ?)
+                    WHERE (
+                        ji.status = 'pending'
+                        OR (ji.status = 'retry_wait' AND ji.next_retry_at <= ?)
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM evaluation_job_items AS active
+                        WHERE active.work_item_id = ji.work_item_id
+                          AND active.status IN ('pending', 'running', 'retry_wait')
+                          AND (
+                              active.status = 'running'
+                              OR active.created_at < ji.created_at
+                              OR (
+                                  active.created_at = ji.created_at
+                                  AND active.id < ji.id
+                              )
+                          )
+                    )
                     ORDER BY ji.created_at ASC, ji.id ASC
                     LIMIT ?
                     """,
@@ -123,8 +131,6 @@ class EvaluationJobStore:
                 for row in rows:
                     if len(claimed) >= limit:
                         break
-                    if await self._has_earlier_active_item(connection, row):
-                        continue
                     attempt_id = str(uuid4())
                     attempt_cursor = await connection.execute(
                         """
@@ -459,21 +465,6 @@ class EvaluationJobStore:
             ),
         )
         return work_item_id
-
-    async def _has_earlier_active_item(
-        self, connection: aiosqlite.Connection, row: aiosqlite.Row
-    ) -> bool:
-        cursor = await connection.execute(
-            """
-            SELECT 1 FROM evaluation_job_items
-            WHERE work_item_id = ?
-              AND status IN ('pending', 'running', 'retry_wait')
-              AND (created_at < ? OR (created_at = ? AND id < ?))
-            LIMIT 1
-            """,
-            (row["work_item_id"], row["created_at"], row["created_at"], row["job_item_id"]),
-        )
-        return await cursor.fetchone() is not None
 
     async def _active_claim_row(
         self, connection: aiosqlite.Connection, claim: ClaimedEvaluationWork
