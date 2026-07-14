@@ -68,7 +68,7 @@ def build_ragas_batch_group_key(
 ) -> str:
     """Return a provider-batch compatibility key without result identity."""
     answer = result.answer or ""
-    answer_hash = result.final_answer_hash or sha256(answer.encode("utf-8")).hexdigest()
+    answer_hash = sha256(answer.encode("utf-8")).hexdigest()
     context_hash = sha256(
         json.dumps(result.contexts or [], ensure_ascii=False, separators=(",", ":"))
         .encode("utf-8")

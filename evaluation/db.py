@@ -1346,7 +1346,13 @@ class CampaignRepository:
             )
         return await self.mark_completed(user_id=user_id, campaign_id=campaign_id, phase="execution")
 
-    async def derive_ragas_state(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
+    async def derive_ragas_state(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        job_id: str | None = None,
+    ) -> CampaignStatus:
         """Derive evaluation lifecycle from durable RAGAS job items."""
         await init_db()
         async with connect_db() as connection:
@@ -1360,9 +1366,11 @@ class CampaignRepository:
                     FROM evaluation_job_items AS item
                     JOIN evaluation_jobs AS job ON job.id = item.job_id
                     JOIN evaluation_work_items AS work ON work.id = item.work_item_id
-                    WHERE job.user_id = ? AND job.campaign_id = ? AND work.work_type = 'ragas_metric'
+                    WHERE job.user_id = ? AND job.campaign_id = ?
+                      AND work.work_type = 'ragas_metric'
+                      AND (? IS NULL OR job.id = ?)
                     """,
-                    (user_id, campaign_id),
+                    (user_id, campaign_id, job_id, job_id),
                 )
             ).fetchone()
         total = int(row["total"] or 0)

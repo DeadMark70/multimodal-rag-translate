@@ -116,3 +116,32 @@ async def test_compatible_claims_are_chunked_and_run_with_bounded_parallelism() 
 
     assert evaluator.calls == [("faithfulness", 4), ("faithfulness", 4), ("faithfulness", 2)]
     assert len(store.completed) == 10
+
+
+@pytest.mark.asyncio
+async def test_batch_group_key_batches_distinct_result_signatures_and_preserves_identity() -> None:
+    store = FakeStore()
+    evaluator = FakeEvaluator([[0.5] * 4])
+    worker = RagasBatchWorker(store=store, evaluator=evaluator, batch_size=4)
+    claims = []
+    for index in range(4):
+        base = _claim(index)
+        snapshot = base.model_dump(mode="json")["input_snapshot"]
+        claim = base.model_copy(
+            update={
+                "input_snapshot": dict(
+                    snapshot,
+                    evaluation_signature=f"result-signature-{index}",
+                    batch_group_key="shared-batch-key",
+                ),
+            }
+        )
+        claims.append(claim)
+
+    await worker.execute(claims)
+
+    assert evaluator.calls == [("faithfulness", 4)]
+    signatures = {
+        output.scores[0]["evaluation_signature"] for _, output in store.completed
+    }
+    assert signatures == {f"result-signature-{index}" for index in range(4)}

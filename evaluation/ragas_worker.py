@@ -257,7 +257,7 @@ class RagasBatchWorker:
             )
         except (TypeError, ValueError):
             parallel_batches = self._parallel_batches
-        return max(1, min(8, batch_size)), max(1, min(8, parallel_batches))
+        return max(1, min(4, batch_size)), max(1, min(2, parallel_batches))
 
     @staticmethod
     def _result_id(claim: ClaimedEvaluationWork) -> str:
