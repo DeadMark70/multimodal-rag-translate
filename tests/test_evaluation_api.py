@@ -10,12 +10,14 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from core.auth import get_current_user_id
 from evaluation import db as evaluation_db
 from evaluation.campaign_schemas import CampaignResultStatus
 from evaluation.db import CampaignResultRepository
+from evaluation.job_schemas import EvaluationJob, EvaluationJobType
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.schemas import AvailableModel
 from evaluation.trace_schemas import EvaluationTraceEvent
@@ -438,4 +440,47 @@ def test_evaluation_data_is_isolated_by_user() -> None:
         assert len(listed_a.json()) == 1
         assert listed_a.json()[0]["id"] == "TC-A"
         assert listed_a.json()[0]["ground_truth_short"] == "A-short"
+
+
+@pytest.mark.asyncio
+async def test_rerun_route_returns_durable_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    from evaluation import router as evaluation_router
+
+    created = EvaluationJob(
+        job_id="job-rerun",
+        job_type=EvaluationJobType.RERUN,
+        user_id="user-a",
+        campaign_id="campaign-a",
+        selection={"scope": "failed_only"},
+    )
+    engine = AsyncMock()
+    engine.create_rerun.return_value = created
+    monkeypatch.setattr(evaluation_router, "get_campaign_engine", lambda: engine)
+
+    response = await evaluation_router.create_campaign_rerun(
+        "campaign-a",
+        evaluation_router.EvaluationRerunRequest(
+            scope="failed_only", stages="execution_and_ragas"
+        ),
+        "user-a",
+    )
+
+    assert response.job_type is EvaluationJobType.RERUN
+    engine.create_rerun.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_attempt_history_route_rejects_unknown_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    from evaluation import router as evaluation_router
+    from core.errors import AppError, ErrorCode
+
+    engine = AsyncMock()
+    engine.list_attempts.side_effect = AppError(
+        code=ErrorCode.NOT_FOUND, message="Attempt history not found", status_code=404
+    )
+    monkeypatch.setattr(evaluation_router, "get_campaign_engine", lambda: engine)
+
+    with pytest.raises(AppError) as exc_info:
+        await evaluation_router.get_work_item_attempts("missing", "user-b")
+    assert exc_info.value.status_code == 404
 

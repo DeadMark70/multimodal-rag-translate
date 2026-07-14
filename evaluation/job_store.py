@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
@@ -168,6 +168,7 @@ class EvaluationJobStore:
         enabled_metrics: Sequence[str],
         metric_version: str = "v1",
         selected_result_ids: Sequence[str] | None = None,
+        metric_names_by_result: Mapping[str, Sequence[str]] | None = None,
         force: bool = False,
         max_attempts: int = 3,
         ragas_batch_size: int | None = None,
@@ -208,7 +209,12 @@ class EvaluationJobStore:
             for result in results:
                 ground_truth = result.ground_truth_short or result.ground_truth or ""
                 ground_truth_hash = sha256(ground_truth.encode("utf-8")).hexdigest()
-                for metric_name in dict.fromkeys(str(name) for name in enabled_metrics):
+                metrics_for_result = (
+                    metric_names_by_result.get(result.id, ())
+                    if metric_names_by_result is not None
+                    else enabled_metrics
+                )
+                for metric_name in dict.fromkeys(str(name) for name in metrics_for_result):
                     signature = build_evaluation_signature(
                         result=result,
                         evaluator_model=evaluator_model,
@@ -856,7 +862,11 @@ class EvaluationJobStore:
                 """,
                 (user_id, campaign_id),
             )
-            return [_row_to_job(row) for row in await cursor.fetchall()]
+            rows = await cursor.fetchall()
+        jobs: list[EvaluationJob] = []
+        for row in rows:
+            jobs.append(await self._with_job_status(_row_to_job(row)))
+        return jobs
 
     async def get_job(self, *, user_id: str, job_id: str) -> EvaluationJob:
         await init_db()
@@ -871,13 +881,174 @@ class EvaluationJobStore:
                 message="Evaluation job not found",
                 status_code=404,
             )
-        return _row_to_job(row)
+        return await self._with_job_status(_row_to_job(row))
+
+    async def list_campaign_work_items(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        work_type: EvaluationWorkType | None = None,
+    ) -> list[dict[str, Any]]:
+        """List campaign work with its latest durable job-item state.
+
+        Work inputs are immutable and can be safely reused by a rerun job.  The
+        latest item is selected by creation order so ``failed_only`` reruns do
+        not accidentally resurrect an older failed attempt after a successful
+        rerun.
+        """
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT work.id AS work_item_id, work.logical_key, work.work_type,
+                       work.input_snapshot_json, item.status, item.job_id,
+                       item.id AS job_item_id
+                FROM evaluation_work_items AS work
+                JOIN evaluation_job_items AS item
+                  ON item.work_item_id = work.id
+                WHERE work.campaign_id = ?
+                  AND EXISTS (
+                      SELECT 1 FROM evaluation_jobs AS owner_job
+                      WHERE owner_job.campaign_id = work.campaign_id
+                        AND owner_job.user_id = ?
+                  )
+                  AND (? IS NULL OR work.work_type = ?)
+                  AND item.id = (
+                      SELECT latest.id
+                      FROM evaluation_job_items AS latest
+                      JOIN evaluation_jobs AS latest_job ON latest_job.id = latest.job_id
+                      WHERE latest.work_item_id = work.id
+                        AND latest_job.user_id = ?
+                      ORDER BY latest.created_at DESC, latest.id DESC
+                      LIMIT 1
+                  )
+                ORDER BY work.created_at ASC, work.id ASC
+                """,
+                (
+                    campaign_id,
+                    user_id,
+                    _enum_value(work_type) if work_type is not None else None,
+                    _enum_value(work_type) if work_type is not None else None,
+                    user_id,
+                ),
+            )
+            rows = await cursor.fetchall()
+        return [
+            {
+                "work_item_id": row["work_item_id"],
+                "logical_key": row["logical_key"],
+                "work_type": row["work_type"],
+                "input_snapshot": json.loads(row["input_snapshot_json"]),
+                "status": row["status"],
+                "job_id": row["job_id"],
+                "job_item_id": row["job_item_id"],
+            }
+            for row in rows
+        ]
+
+    async def cancel_job(self, *, user_id: str, job_id: str) -> EvaluationJob:
+        """Cancel one owned job while retaining all append-only attempts."""
+        job = await self.get_job(user_id=user_id, job_id=job_id)
+        now_iso = _as_iso(datetime.now(timezone.utc))
+        await init_db()
+        async with connect_db() as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            try:
+                await connection.execute(
+                    """
+                    UPDATE evaluation_attempts
+                    SET status = 'cancelled', finished_at = ?, error_type = 'cancelled',
+                        safe_error_message = 'Evaluation job cancellation was requested.'
+                    WHERE job_id = ? AND status = 'running'
+                    """,
+                    (now_iso, job_id),
+                )
+                await connection.execute(
+                    """
+                    UPDATE evaluation_job_items
+                    SET status = 'cancelled', active_attempt_id = NULL,
+                        next_retry_at = NULL, updated_at = ?
+                    WHERE job_id = ? AND status IN ('pending', 'running', 'retry_wait')
+                    """,
+                    (now_iso, job_id),
+                )
+                if job.campaign_id:
+                    await self._recompute_campaign_counts(
+                        connection, campaign_id=job.campaign_id
+                    )
+                await connection.commit()
+            except BaseException:
+                await connection.rollback()
+                raise
+        return await self.get_job(user_id=user_id, job_id=job_id)
+
+    async def _with_job_status(self, job: EvaluationJob) -> EvaluationJob:
+        """Attach an aggregate lifecycle status to a job snapshot."""
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded,
+                       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                       SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled,
+                       SUM(CASE WHEN status IN ('pending','running','retry_wait') THEN 1 ELSE 0 END) AS unresolved
+                FROM evaluation_job_items WHERE job_id = ?
+                """,
+                (job.job_id,),
+            )
+            row = await cursor.fetchone()
+        total = int(row["total"] or 0)
+        succeeded = int(row["succeeded"] or 0)
+        failed = int(row["failed"] or 0)
+        cancelled = int(row["cancelled"] or 0)
+        unresolved = int(row["unresolved"] or 0)
+        if unresolved:
+            status = "running" if (total - unresolved) else "pending"
+        elif cancelled and cancelled == total:
+            status = "cancelled"
+        elif failed and succeeded:
+            status = "completed_with_errors"
+        elif failed:
+            status = "failed"
+        elif total and succeeded == total:
+            status = "completed"
+        else:
+            status = "pending"
+        return job.model_copy(
+            update={
+                "status": status,
+                "total_items": total,
+                "succeeded_items": succeeded,
+                "completed_items": succeeded,
+                "failed_items": failed,
+                "cancelled_items": cancelled,
+            }
+        )
 
     async def list_attempts(
         self, *, user_id: str, work_item_id: str
     ) -> list[EvaluationAttempt]:
         await init_db()
         async with connect_db() as connection:
+            owner_cursor = await connection.execute(
+                """
+                SELECT 1
+                FROM evaluation_work_items AS work
+                JOIN evaluation_jobs AS job ON job.campaign_id = work.campaign_id
+                WHERE work.id = ? AND job.user_id = ?
+                LIMIT 1
+                """,
+                (work_item_id, user_id),
+            )
+            owner_row = await owner_cursor.fetchone()
+            if owner_row is None:
+                raise AppError(
+                    code=ErrorCode.NOT_FOUND,
+                    message="Evaluation work item not found",
+                    status_code=404,
+                )
             cursor = await connection.execute(
                 """
                 SELECT attempt.*

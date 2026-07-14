@@ -23,7 +23,14 @@ from evaluation.campaign_schemas import (
     CampaignStatus,
 )
 from evaluation.db import AgentTraceRepository, CampaignRepository, CampaignResultRepository
-from evaluation.job_schemas import EvaluationJobType, EvaluationWorkType, WorkItemSpec
+from evaluation.job_schemas import (
+    EvaluationAttempt,
+    EvaluationJob,
+    EvaluationJobType,
+    EvaluationRerunRequest,
+    EvaluationWorkType,
+    WorkItemSpec,
+)
 from evaluation.job_store import EvaluationJobStore
 from evaluation.evidence import (
     build_gold_fact_attrition,
@@ -727,7 +734,8 @@ class CampaignEngine:
             config_snapshot=config.model_dump(mode="json", by_alias=True),
             items=[self._work_item_spec(user_id=user_id, campaign_id=created.id, unit=unit, config=config) for unit in units],
         )
-        self._worker_notifier()
+        if self._worker_notifier is not None:
+            self._worker_notifier()
         return CampaignCreateResponse(campaign_id=created.id, status=created.status)
 
     async def list_campaigns(self, *, user_id: str) -> list[CampaignStatus]:
@@ -772,13 +780,20 @@ class CampaignEngine:
         await self._job_store.cancel_campaign_jobs(user_id=user_id, campaign_id=campaign_id)
         return await self._campaign_repository.mark_cancelled(user_id=user_id, campaign_id=campaign_id)
 
-    async def evaluate_campaign(
+    async def create_rerun(
         self,
         *,
         user_id: str,
         campaign_id: str,
-        question_ids: Optional[list[str]] = None,
-    ) -> CampaignStatus:
+        request: EvaluationRerunRequest,
+    ) -> EvaluationJob:
+        """Create one durable rerun job from immutable campaign work.
+
+        Execution reruns reuse the original work snapshots, while metric-only
+        reruns target the campaign's current successful official results.  The
+        worker creates downstream RAGAS work after an execution rerun promotes
+        a result, so a combined rerun never evaluates an uncommitted payload.
+        """
         campaign = await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
         if campaign.status in {
             CampaignLifecycleStatus.RUNNING,
@@ -790,32 +805,42 @@ class CampaignEngine:
                 status_code=400,
             )
 
-        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
-        completed_results = [row for row in results if row.status == CampaignResultStatus.COMPLETED]
-        if not completed_results:
-            raise AppError(
-                code=ErrorCode.BAD_REQUEST,
-                message="Campaign has no completed raw results to evaluate",
-                status_code=400,
+        includes_execution = request.stages in {"execution", "execution_and_ragas"}
+        if includes_execution:
+            rows = await self._job_store.list_campaign_work_items(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                work_type=EvaluationWorkType.DATASET_EXECUTION,
             )
-
-        selected_completed_results = completed_results
-        normalized_question_ids = [question_id for question_id in (question_ids or []) if question_id]
-        if normalized_question_ids:
-            selected_question_id_set = set(normalized_question_ids)
-            selected_completed_results = [
-                row for row in completed_results if row.question_id in selected_question_id_set
-            ]
-            if not selected_completed_results:
+            selected_rows = self._select_rerun_work_rows(rows, request=request, kind="execution")
+            if not selected_rows:
                 raise AppError(
                     code=ErrorCode.BAD_REQUEST,
-                    message=(
-                        "Requested question_ids have no completed raw results in this campaign"
-                    ),
+                    message="No matching execution work is available for rerun",
                     status_code=400,
                 )
+            specs = [
+                WorkItemSpec(
+                    work_item_id=str(row["work_item_id"]),
+                    work_type=EvaluationWorkType.DATASET_EXECUTION,
+                    logical_key=str(row["logical_key"]),
+                    input_snapshot=dict(row["input_snapshot"]),
+                )
+                for row in selected_rows
+            ]
+            return await self._job_store.create_job_with_items(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                job_type=EvaluationJobType.RERUN,
+                selection=request.model_dump(mode="json"),
+                config_snapshot={
+                    "campaign_config": campaign.config.model_dump(mode="json", by_alias=True),
+                    "stages": request.stages,
+                    "skip_ragas": request.stages == "execution",
+                },
+                items=specs,
+            )
 
-        selected_result_ids = [row.id for row in selected_completed_results]
         enabled_metrics = list(
             getattr(
                 self._ragas_evaluator,
@@ -823,24 +848,167 @@ class CampaignEngine:
                 ["faithfulness", "answer_correctness", "answer_relevancy"],
             )
         )
-        evaluation_total_units = len(selected_result_ids) * len(enabled_metrics)
-        await self._campaign_repository.mark_evaluating(
+        metric_names = list(request.metric_names) if request.metric_names else enabled_metrics
+        unknown_metrics = [name for name in metric_names if name not in enabled_metrics]
+        if unknown_metrics:
+            raise AppError(
+                code=ErrorCode.BAD_REQUEST,
+                message=f"Unknown RAGAS metrics: {', '.join(unknown_metrics)}",
+                status_code=400,
+            )
+
+        # Legacy campaigns created before the durable ledger have no attempt
+        # provenance.  Backfill deterministic synthetic attempts so the
+        # compatibility endpoint can still enqueue a metric-only rerun.
+        await self._job_store.backfill_legacy_attempts()
+        results = await self._result_repository.list_for_campaign(
             user_id=user_id,
             campaign_id=campaign_id,
-            evaluation_total_units=evaluation_total_units,
         )
-        await self._job_store.ensure_ragas_work(
+        completed_results = [
+            row
+            for row in results
+            if row.status == CampaignResultStatus.COMPLETED and row.source_attempt_id is not None
+        ]
+        metric_names_by_result: dict[str, list[str]] | None = None
+        if request.scope == "selected":
+            question_ids = set(request.question_ids)
+            completed_results = [row for row in completed_results if row.question_id in question_ids]
+        elif request.scope == "failed_only":
+            failed_rows = await self._job_store.list_campaign_work_items(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                work_type=EvaluationWorkType.RAGAS_METRIC,
+            )
+            failed_keys = {
+                (
+                    str(row["input_snapshot"].get("campaign_result_id") or ""),
+                    str(row["input_snapshot"].get("metric_name") or ""),
+                )
+                for row in failed_rows
+                if row["status"] in {"failed", "interrupted"}
+            }
+            completed_results = [
+                row
+                for row in completed_results
+                if any(
+                    row.id == result_id and metric in metric_names
+                    for result_id, metric in failed_keys
+                )
+            ]
+            failed_metric_names = {metric for _, metric in failed_keys}
+            metric_names = [metric for metric in metric_names if metric in failed_metric_names]
+            metric_names_by_result = {}
+            for result_id, metric in failed_keys:
+                if metric in metric_names:
+                    metric_names_by_result.setdefault(result_id, []).append(metric)
+
+        if not completed_results or not metric_names:
+            raise AppError(
+                code=ErrorCode.BAD_REQUEST,
+                message="No matching completed results are available for RAGAS rerun",
+                status_code=400,
+            )
+
+        existing_jobs = {
+            job.job_id
+            for job in await self._job_store.list_jobs(user_id=user_id, campaign_id=campaign_id)
+        }
+        selected_result_ids = [row.id for row in completed_results]
+        created_count = await self._job_store.ensure_ragas_work(
             user_id=user_id,
             campaign_id=campaign_id,
             evaluator_model=str(getattr(self._ragas_evaluator, "evaluator_model", "")),
             evaluator_config={},
-            enabled_metrics=enabled_metrics,
+            enabled_metrics=metric_names,
             selected_result_ids=selected_result_ids,
+            **(
+                {"metric_names_by_result": metric_names_by_result}
+                if metric_names_by_result is not None
+                else {}
+            ),
             force=True,
             ragas_batch_size=campaign.config.ragas_batch_size,
             ragas_parallel_batches=campaign.config.ragas_parallel_batches,
         )
-        self._worker_notifier()
+        if not created_count:
+            raise AppError(
+                code=ErrorCode.BAD_REQUEST,
+                message="No RAGAS work was created for rerun",
+                status_code=400,
+            )
+        await self._campaign_repository.mark_evaluating(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            evaluation_total_units=created_count,
+        )
+        if self._worker_notifier is not None:
+            self._worker_notifier()
+        jobs = await self._job_store.list_jobs(user_id=user_id, campaign_id=campaign_id)
+        new_jobs = [job for job in jobs if job.job_id not in existing_jobs]
+        if not new_jobs:
+            raise AppError(
+                code=ErrorCode.INTERNAL_ERROR,
+                message="RAGAS rerun job was not persisted",
+                status_code=500,
+            )
+        return max(new_jobs, key=lambda job: job.created_at)
+
+    @staticmethod
+    def _select_rerun_work_rows(
+        rows: list[dict[str, Any]],
+        *,
+        request: EvaluationRerunRequest,
+        kind: str,
+    ) -> list[dict[str, Any]]:
+        if request.scope == "all":
+            return rows
+        if request.scope == "failed_only":
+            return [row for row in rows if row["status"] in {"failed", "interrupted"}]
+        selected_ids = set(request.question_ids)
+        selected: list[dict[str, Any]] = []
+        for row in rows:
+            snapshot = row["input_snapshot"]
+            if kind == "execution":
+                question_id = snapshot.get("test_case", {}).get("id")
+            else:
+                question_id = snapshot.get("result", {}).get("question_id")
+            if question_id in selected_ids:
+                selected.append(row)
+        return selected
+
+    async def list_jobs(self, *, user_id: str, campaign_id: str) -> list[EvaluationJob]:
+        await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
+        return await self._job_store.list_jobs(user_id=user_id, campaign_id=campaign_id)
+
+    async def get_job(self, *, user_id: str, job_id: str) -> EvaluationJob:
+        return await self._job_store.get_job(user_id=user_id, job_id=job_id)
+
+    async def cancel_job(self, *, user_id: str, job_id: str) -> EvaluationJob:
+        return await self._job_store.cancel_job(user_id=user_id, job_id=job_id)
+
+    async def list_attempts(
+        self, *, user_id: str, work_item_id: str
+    ) -> list[EvaluationAttempt]:
+        return await self._job_store.list_attempts(user_id=user_id, work_item_id=work_item_id)
+
+    async def evaluate_campaign(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        question_ids: Optional[list[str]] = None,
+    ) -> CampaignStatus:
+        request = EvaluationRerunRequest(
+            scope="selected" if question_ids else "all",
+            stages="ragas",
+            question_ids=list(question_ids or []),
+        )
+        await self.create_rerun(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            request=request,
+        )
         return await self.get_campaign(user_id=user_id, campaign_id=campaign_id)
 
     async def recover_inflight_campaigns(self) -> None:

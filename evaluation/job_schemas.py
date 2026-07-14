@@ -52,6 +52,14 @@ class EvaluationAttemptStatus(str, Enum):
 
 EvaluationRerunScope = Literal["failed_only", "selected", "all"]
 EvaluationRerunStages = Literal["execution", "ragas", "execution_and_ragas"]
+EvaluationJobStatus = Literal[
+    "pending",
+    "running",
+    "completed",
+    "completed_with_errors",
+    "failed",
+    "cancelled",
+]
 
 
 def _utc_now() -> datetime:
@@ -129,6 +137,13 @@ class EvaluationJob(BaseModel):
     selection: dict[str, JsonValue] = Field(default_factory=dict)
     config_snapshot: dict[str, JsonValue] = Field(default_factory=dict)
     rerun_request: EvaluationRerunRequest | None = None
+    status: EvaluationJobStatus = "pending"
+    total_items: int = Field(default=0, ge=0)
+    succeeded_items: int = Field(default=0, ge=0)
+    # ``completed_items`` is retained as a response alias for early clients.
+    completed_items: int = Field(default=0, ge=0)
+    failed_items: int = Field(default=0, ge=0)
+    cancelled_items: int = Field(default=0, ge=0)
     created_at: datetime = Field(default_factory=_utc_now)
 
     @property

@@ -51,6 +51,7 @@ from evaluation.campaign_schemas import (
 from evaluation.model_capabilities import normalize_model_config_for_storage
 from evaluation.model_discovery import list_available_models
 from evaluation.db import CampaignResultRepository
+from evaluation.job_schemas import EvaluationAttempt, EvaluationJob, EvaluationRerunRequest
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.schemas import (
     AvailableModel,
@@ -731,6 +732,61 @@ async def evaluate_campaign(
         campaign_id=campaign_id,
         question_ids=(payload.question_ids if payload else None),
     )
+
+
+@router.post("/campaigns/{campaign_id}/reruns", response_model=EvaluationJob)
+async def create_campaign_rerun(
+    campaign_id: str,
+    payload: EvaluationRerunRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> EvaluationJob:
+    """Create a durable execution and/or RAGAS rerun job."""
+    engine = get_campaign_engine()
+    return await engine.create_rerun(
+        user_id=user_id,
+        campaign_id=campaign_id,
+        request=payload,
+    )
+
+
+@router.get("/campaigns/{campaign_id}/jobs", response_model=list[EvaluationJob])
+async def list_campaign_jobs(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> list[EvaluationJob]:
+    """List durable jobs for one owned campaign."""
+    engine = get_campaign_engine()
+    return await engine.list_jobs(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get("/jobs/{job_id}", response_model=EvaluationJob)
+async def get_evaluation_job(
+    job_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> EvaluationJob:
+    """Fetch one owned durable evaluation job."""
+    engine = get_campaign_engine()
+    return await engine.get_job(user_id=user_id, job_id=job_id)
+
+
+@router.post("/jobs/{job_id}/cancel", response_model=EvaluationJob)
+async def cancel_evaluation_job(
+    job_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> EvaluationJob:
+    """Cancel active work for one owned durable job."""
+    engine = get_campaign_engine()
+    return await engine.cancel_job(user_id=user_id, job_id=job_id)
+
+
+@router.get("/work-items/{work_item_id}/attempts", response_model=list[EvaluationAttempt])
+async def get_work_item_attempts(
+    work_item_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> list[EvaluationAttempt]:
+    """List append-only attempts for one owned work item."""
+    engine = get_campaign_engine()
+    return await engine.list_attempts(user_id=user_id, work_item_id=work_item_id)
 
 
 @router.post("/campaigns/{campaign_id}/cancel", response_model=CampaignStatus)

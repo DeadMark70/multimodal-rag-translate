@@ -200,6 +200,17 @@ class DatasetExecutionWorker:
         )
         if self._ragas_evaluator is None:
             return
+        # An execution-only rerun intentionally stops after promoting the
+        # dataset result.  Combined and initial jobs continue to materialize
+        # downstream metric work from the successful official projection.
+        try:
+            job = await self._store.get_job(
+                user_id=str(snapshot["user_id"]), job_id=claim.job_id
+            )
+        except Exception:  # noqa: BLE001
+            job = None
+        if job is not None and job.config_snapshot.get("skip_ragas") is True:
+            return
         if campaign.status.value not in {"completed", "completed_with_errors"}:
             return
         ragas_config = getattr(campaign, "config", None)
