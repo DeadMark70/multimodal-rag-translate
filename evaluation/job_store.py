@@ -131,7 +131,7 @@ class EvaluationJobStore:
                 cursor = await connection.execute(
                     """
                     SELECT ji.id AS job_item_id, ji.job_id, ji.work_item_id,
-                           wi.input_snapshot_json, ji.created_at
+                           wi.input_snapshot_json, wi.work_type, wi.logical_key, ji.created_at
                     FROM evaluation_job_items AS ji
                     JOIN evaluation_work_items AS wi ON wi.id = ji.work_item_id
                     WHERE (
@@ -205,6 +205,8 @@ class EvaluationJobStore:
                             attempt_id=attempt_id,
                             attempt_number=attempt_number,
                             input_snapshot=json.loads(row["input_snapshot_json"]),
+                            work_type=row["work_type"],
+                            logical_key=row["logical_key"],
                         )
                     )
                 await connection.commit()
@@ -212,6 +214,22 @@ class EvaluationJobStore:
                 await connection.rollback()
                 raise
         return claimed
+
+    async def next_ready_at(self) -> datetime | None:
+        """Return the next retry deadline, if retry-wait work remains."""
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT MIN(next_retry_at) AS next_retry_at
+                FROM evaluation_job_items
+                WHERE status = 'retry_wait' AND next_retry_at IS NOT NULL
+                """
+            )
+            row = await cursor.fetchone()
+        if row is None or row["next_retry_at"] is None:
+            return None
+        return _from_iso(row["next_retry_at"])
 
     async def fail_attempt(
         self,

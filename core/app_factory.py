@@ -206,17 +206,21 @@ async def _warm_up_pdf_ocr() -> None:
 async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
     """FastAPI lifespan hook for startup initialization."""
     from evaluation.db import force_init_db
-    from evaluation.router import get_campaign_engine
+    from evaluation.job_worker import get_evaluation_job_worker
 
     logger.info("=== Application Startup ===")
     _ensure_base_directories()
     _initialize_external_clients(_)
     await force_init_db()
-    await get_campaign_engine().recover_inflight_campaigns()
-    await _initialize_rag_components()
-    await _warm_up_pdf_ocr()
-    logger.info("=== All components ready ===")
-    yield
+    worker = get_evaluation_job_worker()
+    await worker.start()
+    try:
+        await _initialize_rag_components()
+        await _warm_up_pdf_ocr()
+        logger.info("=== All components ready ===")
+        yield
+    finally:
+        await worker.stop()
 
 
 async def read_root() -> dict[str, str]:

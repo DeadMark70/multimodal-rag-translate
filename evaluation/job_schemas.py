@@ -175,6 +175,8 @@ class ClaimedEvaluationWork(BaseModel):
     attempt_id: str
     attempt_number: int = Field(default=1, ge=1)
     input_snapshot: dict[str, JsonValue]
+    work_type: EvaluationWorkType | None = None
+    logical_key: str | None = None
 
     @classmethod
     def model_construct(
