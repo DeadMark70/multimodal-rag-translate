@@ -155,6 +155,35 @@ async def test_successful_rerun_promotion_keeps_old_attempt(store, fixed_now) ->
 
 
 @pytest.mark.asyncio
+async def test_non_completed_execution_output_preserves_official_projection(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    first_claim = await _claim_execution(store, fixed_now)
+    first = await store.complete_execution_attempt(first_claim, _successful_output("answer-v1"))
+    rerun_claim = await _claim_execution_rerun(store, fixed_now)
+    failed_output = _successful_output("bad-answer").model_copy(
+        update={
+            "result": _successful_output("bad-answer").result.model_copy(
+                update={"status": CampaignResultStatus.FAILED}
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="completed"):
+        await store.complete_execution_attempt(rerun_claim, failed_output)
+
+    current = await CampaignResultRepository().get(
+        user_id="user-a", campaign_id="cmp-1", result_id=first.id
+    )
+    attempts = await store.list_attempts(
+        user_id="user-a", work_item_id=rerun_claim.work_item_id
+    )
+    assert current.answer == "answer-v1"
+    assert [attempt.status for attempt in attempts] == ["succeeded", "running"]
+    assert await store.get_job_item_status(rerun_claim.job_item_id) == "running"
+
+
+@pytest.mark.asyncio
 async def test_incompatible_signature_preserves_current_score(store, fixed_now) -> None:  # noqa: ANN001
     execution_claim = await _claim_execution(store, fixed_now)
     result = await store.complete_execution_attempt(execution_claim, _successful_output("answer-v1"))
@@ -199,6 +228,152 @@ async def test_incompatible_signature_preserves_current_score(store, fixed_now) 
         ).fetchone()
     assert row["metric_value"] == 0.8
     assert row["source_attempt_id"] == first_claim.attempt_id
+
+
+@pytest.mark.asyncio
+async def test_legacy_null_signature_preserves_current_score(store, fixed_now) -> None:  # noqa: ANN001
+    execution_claim = await _claim_execution(store, fixed_now)
+    result = await store.complete_execution_attempt(execution_claim, _successful_output("answer-v1"))
+    ragas_spec = WorkItemSpec(
+        work_type="ragas_metric",
+        logical_key="ragas:Q1:naive:1:faithfulness",
+        input_snapshot={"campaign_result_id": result.id},
+        max_attempts=1,
+    )
+    await store.create_job_with_items(
+        user_id="user-a", campaign_id="cmp-1", job_type="initial", selection={},
+        config_snapshot={}, items=[ragas_spec]
+    )
+    first_claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
+    await store.complete_ragas_attempt(
+        first_claim,
+        RagasAttemptOutput(scores=[{
+            "campaign_result_id": result.id, "metric_name": "faithfulness",
+            "metric_value": 0.8, "details": {}, "evaluation_signature": "compatible",
+        }]),
+    )
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            "UPDATE ragas_scores SET evaluation_signature = NULL "
+            "WHERE campaign_result_id = ? AND metric_name = ?",
+            (result.id, "faithfulness"),
+        )
+        await connection.commit()
+    await store.create_job_with_items(
+        user_id="user-a", campaign_id="cmp-1", job_type="rerun", selection={},
+        config_snapshot={}, items=[ragas_spec]
+    )
+    rerun_claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
+    await store.complete_ragas_attempt(
+        rerun_claim,
+        RagasAttemptOutput(scores=[{
+            "campaign_result_id": result.id, "metric_name": "faithfulness",
+            "metric_value": 0.1, "details": {}, "evaluation_signature": "compatible",
+        }]),
+    )
+
+    async with evaluation_db.connect_db() as connection:
+        row = await (
+            await connection.execute(
+                "SELECT metric_value, source_attempt_id FROM ragas_scores "
+                "WHERE campaign_result_id = ? AND metric_name = ?",
+                (result.id, "faithfulness"),
+            )
+        ).fetchone()
+    assert row["metric_value"] == 0.8
+    assert row["source_attempt_id"] == first_claim.attempt_id
+
+
+@pytest.mark.asyncio
+async def test_failed_ragas_rerun_preserves_current_score(store, fixed_now) -> None:  # noqa: ANN001
+    execution_claim = await _claim_execution(store, fixed_now)
+    result = await store.complete_execution_attempt(execution_claim, _successful_output("answer-v1"))
+    ragas_spec = WorkItemSpec(
+        work_type="ragas_metric",
+        logical_key="ragas:Q1:naive:1:faithfulness",
+        input_snapshot={"campaign_result_id": result.id},
+        max_attempts=1,
+    )
+    await store.create_job_with_items(
+        user_id="user-a", campaign_id="cmp-1", job_type="initial", selection={},
+        config_snapshot={}, items=[ragas_spec]
+    )
+    first_claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
+    await store.complete_ragas_attempt(
+        first_claim,
+        RagasAttemptOutput(scores=[{
+            "campaign_result_id": result.id, "metric_name": "faithfulness",
+            "metric_value": 0.8, "details": {}, "evaluation_signature": "compatible",
+        }]),
+    )
+    await store.create_job_with_items(
+        user_id="user-a", campaign_id="cmp-1", job_type="rerun", selection={},
+        config_snapshot={}, items=[ragas_spec]
+    )
+    rerun_claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
+    await store.fail_attempt(
+        rerun_claim,
+        ErrorDecision("transport", False, None, "The provider is unavailable."),
+        next_retry_at=None,
+    )
+
+    async with evaluation_db.connect_db() as connection:
+        row = await (
+            await connection.execute(
+                "SELECT metric_value, source_attempt_id FROM ragas_scores "
+                "WHERE campaign_result_id = ? AND metric_name = ?",
+                (result.id, "faithfulness"),
+            )
+        ).fetchone()
+    assert row["metric_value"] == 0.8
+    assert row["source_attempt_id"] == first_claim.attempt_id
+
+
+@pytest.mark.asyncio
+async def test_compatible_ragas_rerun_replaces_current_score(store, fixed_now) -> None:  # noqa: ANN001
+    execution_claim = await _claim_execution(store, fixed_now)
+    result = await store.complete_execution_attempt(execution_claim, _successful_output("answer-v1"))
+    ragas_spec = WorkItemSpec(
+        work_type="ragas_metric",
+        logical_key="ragas:Q1:naive:1:faithfulness",
+        input_snapshot={"campaign_result_id": result.id},
+        max_attempts=1,
+    )
+    await store.create_job_with_items(
+        user_id="user-a", campaign_id="cmp-1", job_type="initial", selection={},
+        config_snapshot={}, items=[ragas_spec]
+    )
+    first_claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
+    await store.complete_ragas_attempt(
+        first_claim,
+        RagasAttemptOutput(scores=[{
+            "campaign_result_id": result.id, "metric_name": "faithfulness",
+            "metric_value": 0.8, "details": {}, "evaluation_signature": "compatible",
+        }]),
+    )
+    await store.create_job_with_items(
+        user_id="user-a", campaign_id="cmp-1", job_type="rerun", selection={},
+        config_snapshot={}, items=[ragas_spec]
+    )
+    rerun_claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
+    await store.complete_ragas_attempt(
+        rerun_claim,
+        RagasAttemptOutput(scores=[{
+            "campaign_result_id": result.id, "metric_name": "faithfulness",
+            "metric_value": 0.1, "details": {}, "evaluation_signature": "compatible",
+        }]),
+    )
+
+    async with evaluation_db.connect_db() as connection:
+        row = await (
+            await connection.execute(
+                "SELECT metric_value, source_attempt_id FROM ragas_scores "
+                "WHERE campaign_result_id = ? AND metric_name = ?",
+                (result.id, "faithfulness"),
+            )
+        ).fetchone()
+    assert row["metric_value"] == 0.1
+    assert row["source_attempt_id"] == rerun_claim.attempt_id
 
 
 @pytest.mark.asyncio

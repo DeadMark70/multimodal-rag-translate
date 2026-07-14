@@ -352,6 +352,8 @@ class EvaluationJobStore:
         """Atomically retain successful output and promote its official result."""
         now_iso = _as_iso(datetime.now(timezone.utc))
         result = output.result
+        if result.status != CampaignResultStatus.COMPLETED:
+            raise ValueError("execution output result must be completed")
         await init_db()
         async with connect_db() as connection:
             await connection.execute("BEGIN IMMEDIATE")
@@ -484,7 +486,14 @@ class EvaluationJobStore:
                         (result_id, metric_name),
                     )
                     existing = await existing_cursor.fetchone()
-                    if existing is not None and existing["evaluation_signature"] not in (None, signature):
+                    if (
+                        existing is not None
+                        and (
+                            existing["evaluation_signature"] is None
+                            or signature is None
+                            or existing["evaluation_signature"] != signature
+                        )
+                    ):
                         continue
                     await connection.execute(
                         """
