@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from evaluation.error_policy import ErrorDecision
@@ -145,3 +147,42 @@ async def test_batch_group_key_batches_distinct_result_signatures_and_preserves_
         output.scores[0]["evaluation_signature"] for _, output in store.completed
     }
     assert signatures == {f"result-signature-{index}" for index in range(4)}
+
+
+@pytest.mark.asyncio
+async def test_provider_parallelism_is_bounded_across_compatible_groups() -> None:
+    store = FakeStore()
+
+    class ConcurrentEvaluator:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+
+        async def evaluate_metric_batch(self, metric_name, rows, evaluator_llm, evaluator_embeddings):  # noqa: ANN001
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            return [0.5] * len(rows)
+
+    evaluator = ConcurrentEvaluator()
+    worker = RagasBatchWorker(
+        store=store, evaluator=evaluator, batch_size=4, parallel_batches=2
+    )
+    claims = []
+    for group in ("batch-group-a", "batch-group-b"):
+        for index in range(8):
+            base = _claim(index + (0 if group.endswith("a") else 100))
+            snapshot = base.model_dump(mode="json")["input_snapshot"]
+            claims.append(
+                base.model_copy(
+                    update={
+                        "input_snapshot": dict(snapshot, batch_group_key=group),
+                    }
+                )
+            )
+
+    await worker.execute(claims)
+
+    assert evaluator.max_active == 2
+    assert len(store.completed) == len(claims)

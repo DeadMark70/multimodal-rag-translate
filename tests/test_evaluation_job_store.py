@@ -9,8 +9,12 @@ import pytest_asyncio
 
 from core.errors import AppError, ErrorCode
 import evaluation.db as evaluation_db
-from evaluation.campaign_schemas import CampaignResult, CampaignResultStatus
-from evaluation.db import CampaignResultRepository, RagasScoreRepository
+from evaluation.campaign_schemas import (
+    CampaignLifecycleStatus,
+    CampaignResult,
+    CampaignResultStatus,
+)
+from evaluation.db import CampaignRepository, CampaignResultRepository, RagasScoreRepository
 from evaluation.error_policy import ErrorDecision
 from evaluation.job_schemas import (
     ExecutionAttemptOutput,
@@ -242,6 +246,44 @@ async def test_ensure_ragas_work_assigns_one_shared_batch_key_to_compatible_resu
     batch_evaluator = BatchEvaluator()
     await RagasBatchWorker(store=store, evaluator=batch_evaluator).execute(claims)
     assert batch_evaluator.calls == [4]
+
+
+@pytest.mark.asyncio
+async def test_derive_ragas_state_preserves_terminal_campaign_cancellation(store, fixed_now) -> None:  # noqa: ANN001
+    await store.create_job_with_items(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="evaluation",
+        selection={},
+        config_snapshot={},
+        items=[
+            WorkItemSpec(
+                work_type="ragas_metric",
+                logical_key="ragas:result-1:faithfulness:signature-v1",
+                input_snapshot={
+                    "campaign_result_id": "result-1",
+                    "metric_name": "faithfulness",
+                },
+            )
+        ],
+    )
+    claims = await store.claim_ready_items(
+        limit=1, now=fixed_now, work_type="ragas_metric"
+    )
+    assert len(claims) == 1
+
+    repository = CampaignRepository()
+    await repository.mark_evaluating(
+        user_id="user-a", campaign_id="cmp-1", evaluation_total_units=1
+    )
+    await store.cancel_campaign_jobs(user_id="user-a", campaign_id="cmp-1")
+    await repository.mark_cancelled(user_id="user-a", campaign_id="cmp-1")
+
+    derived = await repository.derive_ragas_state(
+        user_id="user-a", campaign_id="cmp-1", job_id=claims[0].job_id
+    )
+
+    assert derived.status is CampaignLifecycleStatus.CANCELLED
 
 
 @pytest.mark.asyncio

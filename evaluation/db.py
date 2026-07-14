@@ -1355,6 +1355,13 @@ class CampaignRepository:
     ) -> CampaignStatus:
         """Derive evaluation lifecycle from durable RAGAS job items."""
         await init_db()
+        # Cancellation is terminal.  Workers may finish their cancellation
+        # cleanup after the campaign endpoint has marked the campaign
+        # cancelled; never let that late derivation turn it into completed or
+        # failed based on the now-terminal job items.
+        campaign = await self.get(user_id=user_id, campaign_id=campaign_id)
+        if campaign.status is CampaignLifecycleStatus.CANCELLED:
+            return campaign
         async with connect_db() as connection:
             row = await (
                 await connection.execute(
@@ -1362,7 +1369,8 @@ class CampaignRepository:
                     SELECT COUNT(*) AS total,
                            SUM(CASE WHEN item.status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded,
                            SUM(CASE WHEN item.status = 'failed' THEN 1 ELSE 0 END) AS failed,
-                           SUM(CASE WHEN item.status IN ('pending', 'running', 'retry_wait') THEN 1 ELSE 0 END) AS unresolved
+                           SUM(CASE WHEN item.status IN ('pending', 'running', 'retry_wait') THEN 1 ELSE 0 END) AS unresolved,
+                           SUM(CASE WHEN item.status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled
                     FROM evaluation_job_items AS item
                     JOIN evaluation_jobs AS job ON job.id = item.job_id
                     JOIN evaluation_work_items AS work ON work.id = item.work_item_id
@@ -1377,6 +1385,9 @@ class CampaignRepository:
         succeeded = int(row["succeeded"] or 0)
         failed = int(row["failed"] or 0)
         unresolved = int(row["unresolved"] or 0)
+        cancelled = int(row["cancelled"] or 0)
+        if campaign.cancel_requested and cancelled and not unresolved:
+            return await self.mark_cancelled(user_id=user_id, campaign_id=campaign_id)
         if total == 0:
             return await self.mark_completed(user_id=user_id, campaign_id=campaign_id, phase="evaluation")
         if unresolved:
