@@ -689,6 +689,7 @@ class CampaignEngine:
                     execution_handler=DatasetExecutionWorker(
                         store=self._job_store,
                         runner=runner,
+                        result_repository=self._result_repository,
                         ragas_evaluator=self._ragas_evaluator,
                         notify=worker.notify,
                     ).execute,

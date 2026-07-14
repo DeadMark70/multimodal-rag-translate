@@ -43,6 +43,7 @@ class DatasetExecutionWorker:
         store: EvaluationJobStore | None = None,
         runner: CampaignRunner = run_campaign_case,
         campaign_repository: CampaignRepository | None = None,
+        result_repository: CampaignResultRepository | None = None,
         trace_repository: AgentTraceRepository | None = None,
         ragas_evaluator: Any | None = None,
         notify: Any | None = None,
@@ -50,6 +51,7 @@ class DatasetExecutionWorker:
         self._store = store or EvaluationJobStore()
         self._runner = runner
         self._campaign_repository = campaign_repository or CampaignRepository()
+        self._result_repository = result_repository or CampaignResultRepository()
         self._trace_repository = trace_repository or AgentTraceRepository()
         self._ragas_evaluator = ragas_evaluator
         self._notify = notify
@@ -218,7 +220,7 @@ class DatasetExecutionWorker:
         if job is not None:
             raw_question_ids = job.config_snapshot.get("downstream_question_ids")
             if isinstance(raw_question_ids, list) and raw_question_ids:
-                results = await CampaignResultRepository().list_for_campaign(
+                results = await self._result_repository.list_for_campaign(
                     user_id=str(snapshot["user_id"]),
                     campaign_id=str(snapshot["campaign_id"]),
                 )
