@@ -179,7 +179,7 @@ def test_ragas_batch_group_key_is_shared_while_result_signatures_remain_distinct
 
 
 @pytest.mark.asyncio
-async def test_ensure_ragas_work_assigns_one_shared_signature_to_compatible_results(
+async def test_ensure_ragas_work_assigns_one_shared_batch_key_to_compatible_results(
     store, fixed_now
 ) -> None:  # noqa: ANN001
     repository = CampaignResultRepository()
@@ -227,7 +227,8 @@ async def test_ensure_ragas_work_assigns_one_shared_signature_to_compatible_resu
 
     claims = await store.claim_ready_items(limit=4, now=fixed_now, work_type="ragas_metric")
     assert len(claims) == 4
-    assert len({claim.input_snapshot["evaluation_signature"] for claim in claims}) == 1
+    assert len({claim.input_snapshot["evaluation_signature"] for claim in claims}) == 4
+    assert len({claim.input_snapshot["batch_group_key"] for claim in claims}) == 1
 
 
 @pytest.mark.asyncio
