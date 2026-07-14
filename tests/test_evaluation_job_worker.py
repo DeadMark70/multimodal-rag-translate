@@ -14,16 +14,18 @@ import pytest
 import pytest_asyncio
 
 import evaluation.db as evaluation_db
-from evaluation.job_schemas import WorkItemSpec
+from evaluation.job_schemas import EvaluationWorkType, WorkItemSpec
 from evaluation.job_store import EvaluationJobStore
-from evaluation.job_worker import EvaluationJobWorker
+from evaluation.job_worker import EvaluationJobWorker, get_evaluation_job_worker
 
 
 @pytest_asyncio.fixture
 async def store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> EvaluationJobStore:
-    database_path = Path(mkdtemp(prefix="evaluation-worker-")) / "worker.db"
+    artifacts_dir = Path(__file__).resolve().parent.parent / ".test-artifacts"
+    artifacts_dir.mkdir(exist_ok=True)
+    database_path = Path(mkdtemp(prefix="evaluation-worker-", dir=artifacts_dir)) / "worker.db"
     monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", database_path)
     try:
         await evaluation_db.force_init_db()
@@ -48,6 +50,7 @@ async def _seed_work(
     store: EvaluationJobStore,
     *,
     logical_key: str,
+    work_type: EvaluationWorkType = EvaluationWorkType.DATASET_EXECUTION,
     max_attempts: int = 2,
 ) -> None:
     await store.create_job_with_items(
@@ -58,7 +61,7 @@ async def _seed_work(
         config_snapshot={},
         items=[
             WorkItemSpec(
-                work_type="dataset_execution",
+                work_type=work_type,
                 logical_key=logical_key,
                 input_snapshot={"question_id": logical_key.split(":")[1]},
                 max_attempts=max_attempts,
@@ -143,6 +146,62 @@ async def test_execution_dispatch_never_exceeds_its_limit(store: EvaluationJobSt
     await worker.stop()
 
     assert peak == 4
+
+
+@pytest.mark.asyncio
+async def test_mixed_dispatch_claims_four_execution_and_two_ragas_items(
+    store: EvaluationJobStore,
+) -> None:
+    for number in range(5):
+        await _seed_work(store, logical_key=f"execution:Q{number}:naive:1:none")
+    for number in range(3):
+        await _seed_work(
+            store,
+            logical_key=f"ragas:R{number}:faithfulness:signature",
+            work_type=EvaluationWorkType.RAGAS_METRIC,
+        )
+
+    release = asyncio.Event()
+    execution_active = 0
+    ragas_active = 0
+
+    async def execute(_claim) -> None:  # noqa: ANN001
+        nonlocal execution_active
+        execution_active += 1
+        await release.wait()
+        execution_active -= 1
+
+    async def evaluate_ragas(_claim) -> None:  # noqa: ANN001
+        nonlocal ragas_active
+        ragas_active += 1
+        await release.wait()
+        ragas_active -= 1
+
+    worker = EvaluationJobWorker(
+        store=store,
+        execution_handler=execute,
+        ragas_handler=evaluate_ragas,
+    )
+
+    await worker.start()
+    try:
+        await _wait_until(lambda: execution_active == 4 and ragas_active == 2)
+    finally:
+        release.set()
+        await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_singleton_refuses_to_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import evaluation.job_worker as job_worker
+
+    monkeypatch.setattr(job_worker, "_worker", None)
+    worker = get_evaluation_job_worker()
+
+    with pytest.raises(RuntimeError, match="handlers"):
+        await worker.start()
 
 
 @pytest.mark.asyncio

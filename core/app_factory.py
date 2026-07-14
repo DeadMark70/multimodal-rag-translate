@@ -205,6 +205,7 @@ async def _warm_up_pdf_ocr() -> None:
 @asynccontextmanager
 async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
     """FastAPI lifespan hook for startup initialization."""
+    from evaluation.campaign_engine import get_campaign_engine
     from evaluation.db import force_init_db
     from evaluation.job_worker import get_evaluation_job_worker
 
@@ -212,15 +213,20 @@ async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
     _ensure_base_directories()
     _initialize_external_clients(_)
     await force_init_db()
+    await get_campaign_engine().recover_inflight_campaigns()
     worker = get_evaluation_job_worker()
-    await worker.start()
+    worker_started = False
+    if worker.is_configured:
+        await worker.start()
+        worker_started = True
     try:
         await _initialize_rag_components()
         await _warm_up_pdf_ocr()
         logger.info("=== All components ready ===")
         yield
     finally:
-        await worker.stop()
+        if worker_started:
+            await worker.stop()
 
 
 async def read_root() -> dict[str, str]:

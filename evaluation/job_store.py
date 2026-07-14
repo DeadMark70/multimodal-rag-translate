@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
@@ -20,10 +20,14 @@ from evaluation.job_schemas import (
     EvaluationAttempt,
     EvaluationJob,
     EvaluationJobType,
+    EvaluationWorkType,
     ExecutionAttemptOutput,
     RagasAttemptOutput,
     WorkItemSpec,
 )
+
+
+JobCreatedNotifier = Callable[[], None]
 
 
 def build_evaluation_signature(
@@ -53,6 +57,9 @@ def build_evaluation_signature(
 
 class EvaluationJobStore:
     """Persist jobs, immutable work inputs, and append-only attempts."""
+
+    def __init__(self, *, on_job_created: JobCreatedNotifier | None = None) -> None:
+        self._on_job_created = on_job_created
 
     async def create_job_with_items(
         self,
@@ -106,7 +113,7 @@ class EvaluationJobStore:
             except BaseException:
                 await connection.rollback()
                 raise
-        return EvaluationJob(
+        created_job = EvaluationJob(
             job_id=job_id,
             job_type=job_type,
             user_id=user_id,
@@ -115,9 +122,16 @@ class EvaluationJobStore:
             config_snapshot=config_snapshot,
             created_at=_from_iso(now),
         )
+        if self._on_job_created is not None:
+            self._on_job_created()
+        return created_job
 
     async def claim_ready_items(
-        self, *, limit: int, now: datetime
+        self,
+        *,
+        limit: int,
+        now: datetime,
+        work_type: EvaluationWorkType | None = None,
     ) -> list[ClaimedEvaluationWork]:
         """Atomically claim ready work, recording one append-only running attempt."""
         if limit <= 0:
@@ -138,6 +152,7 @@ class EvaluationJobStore:
                         ji.status = 'pending'
                         OR (ji.status = 'retry_wait' AND ji.next_retry_at <= ?)
                     )
+                    AND (? IS NULL OR wi.work_type = ?)
                     AND NOT EXISTS (
                         SELECT 1
                         FROM evaluation_job_items AS active
@@ -155,7 +170,12 @@ class EvaluationJobStore:
                     ORDER BY ji.created_at ASC, ji.id ASC
                     LIMIT ?
                     """,
-                    (now_iso, limit),
+                    (
+                        now_iso,
+                        _enum_value(work_type) if work_type is not None else None,
+                        _enum_value(work_type) if work_type is not None else None,
+                        limit,
+                    ),
                 )
                 rows = await cursor.fetchall()
                 for row in rows:

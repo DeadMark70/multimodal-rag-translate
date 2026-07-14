@@ -42,13 +42,19 @@ async def test_startup_degrades_when_reranker_warmup_fails(caplog: pytest.LogCap
 
 
 @pytest.mark.asyncio
-async def test_app_lifespan_starts_and_stops_durable_worker_after_init_db() -> None:
+async def test_app_lifespan_recovers_legacy_campaigns_and_manages_configured_worker() -> None:
     from core import app_factory
 
-    worker = type("FakeWorker", (), {"start": AsyncMock(), "stop": AsyncMock()})()
+    worker = type(
+        "FakeWorker",
+        (),
+        {"is_configured": True, "start": AsyncMock(), "stop": AsyncMock()},
+    )()
+    engine = type("FakeCampaignEngine", (), {"recover_inflight_campaigns": AsyncMock()})()
 
     with (
         patch("evaluation.db.force_init_db", new=AsyncMock()) as mock_init_db,
+        patch("evaluation.campaign_engine.get_campaign_engine", return_value=engine),
         patch("evaluation.job_worker.get_evaluation_job_worker", return_value=worker),
         patch.object(app_factory, "_ensure_base_directories"),
         patch.object(app_factory, "_initialize_external_clients"),
@@ -59,5 +65,6 @@ async def test_app_lifespan_starts_and_stops_durable_worker_after_init_db() -> N
             pass
 
     mock_init_db.assert_awaited_once()
+    engine.recover_inflight_campaigns.assert_awaited_once()
     worker.start.assert_awaited_once()
     worker.stop.assert_awaited_once()

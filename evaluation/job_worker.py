@@ -32,7 +32,7 @@ class EvaluationJobWorker:
         clock: Clock | None = None,
         sleep: Sleep | None = None,
     ) -> None:
-        self._store = store or EvaluationJobStore()
+        self._store = store or EvaluationJobStore(on_job_created=self.notify)
         self._execution_handler = execution_handler
         self._ragas_handler = ragas_handler
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -43,13 +43,34 @@ class EvaluationJobWorker:
         self._wake_event = asyncio.Event()
         self._claim_lock = asyncio.Lock()
         self._loop_task: asyncio.Task[None] | None = None
-        self._active_tasks: set[asyncio.Task[None]] = set()
+        self._active_tasks: dict[asyncio.Task[None], EvaluationWorkType] = {}
         self._accepting = False
+
+    @property
+    def is_configured(self) -> bool:
+        """Whether at least one durable work handler is ready to run."""
+        return not self._handlers_unavailable()
+
+    def configure_handlers(
+        self,
+        *,
+        execution_handler: ClaimHandler | None = None,
+        ragas_handler: ClaimHandler | None = None,
+    ) -> None:
+        """Attach Task 5/6 handlers before the process worker starts."""
+        if self._accepting:
+            raise RuntimeError("Evaluation worker handlers cannot change while it is running")
+        if execution_handler is not None:
+            self._execution_handler = execution_handler
+        if ragas_handler is not None:
+            self._ragas_handler = ragas_handler
 
     async def start(self) -> None:
         """Recover interrupted ledger attempts and start the event-driven loop."""
         if self._loop_task is not None and not self._loop_task.done():
             return
+        if self._handlers_unavailable():
+            raise RuntimeError("Evaluation worker handlers must be configured before start")
         self._stop_event.clear()
         self._accepting = True
         async with self._claim_lock:
@@ -88,15 +109,35 @@ class EvaluationJobWorker:
         async with self._claim_lock:
             if not self._accepting:
                 return 0
-            available = _EXECUTION_CONCURRENCY + _RAGAS_CONCURRENCY - len(self._active_tasks)
-            if available <= 0:
-                return 0
-            claims = await self._store.claim_ready_items(limit=available, now=self._clock())
+            claims: list[ClaimedEvaluationWork] = []
+            for work_type, capacity, handler in (
+                (
+                    EvaluationWorkType.DATASET_EXECUTION,
+                    _EXECUTION_CONCURRENCY,
+                    self._execution_handler,
+                ),
+                (
+                    EvaluationWorkType.RAGAS_METRIC,
+                    _RAGAS_CONCURRENCY,
+                    self._ragas_handler,
+                ),
+            ):
+                if handler is None:
+                    continue
+                available = capacity - self._active_count(work_type)
+                if available > 0:
+                    claims.extend(
+                        await self._store.claim_ready_items(
+                            limit=available,
+                            now=self._clock(),
+                            work_type=work_type,
+                        )
+                    )
             if not self._accepting:
                 return 0
         for claim in claims:
             task = asyncio.create_task(self._run_claim(claim), name=f"evaluation-attempt-{claim.attempt_id}")
-            self._active_tasks.add(task)
+            self._active_tasks[task] = self._work_type_for(claim)
             task.add_done_callback(self._task_finished)
         return len(claims)
 
@@ -145,7 +186,7 @@ class EvaluationJobWorker:
                 await self._store.heartbeat_attempt(attempt_id, at=self._clock())
 
     def _task_finished(self, task: asyncio.Task[None]) -> None:
-        self._active_tasks.discard(task)
+        self._active_tasks.pop(task, None)
         if not task.cancelled():
             task.exception()
         self.notify()
@@ -153,10 +194,18 @@ class EvaluationJobWorker:
     def _handlers_unavailable(self) -> bool:
         return self._execution_handler is None and self._ragas_handler is None
 
-    def _handler_for(self, claim: ClaimedEvaluationWork) -> tuple[ClaimHandler, asyncio.Semaphore]:
+    def _active_count(self, work_type: EvaluationWorkType) -> int:
+        return sum(active_type == work_type for active_type in self._active_tasks.values())
+
+    def _work_type_for(self, claim: ClaimedEvaluationWork) -> EvaluationWorkType:
         if claim.work_type == EvaluationWorkType.RAGAS_METRIC or (
             claim.work_type is None and (claim.logical_key or "").startswith("ragas:")
         ):
+            return EvaluationWorkType.RAGAS_METRIC
+        return EvaluationWorkType.DATASET_EXECUTION
+
+    def _handler_for(self, claim: ClaimedEvaluationWork) -> tuple[ClaimHandler, asyncio.Semaphore]:
+        if self._work_type_for(claim) == EvaluationWorkType.RAGAS_METRIC:
             if self._ragas_handler is None:
                 raise RuntimeError("RAGAS handler is not configured")
             return self._ragas_handler, self._ragas_slots
@@ -174,3 +223,17 @@ def get_evaluation_job_worker() -> EvaluationJobWorker:
     if _worker is None:
         _worker = EvaluationJobWorker()
     return _worker
+
+
+def configure_evaluation_job_worker(
+    *,
+    execution_handler: ClaimHandler | None = None,
+    ragas_handler: ClaimHandler | None = None,
+) -> EvaluationJobWorker:
+    """Configure the process singleton when Task 5/6 adapters become available."""
+    worker = get_evaluation_job_worker()
+    worker.configure_handlers(
+        execution_handler=execution_handler,
+        ragas_handler=ragas_handler,
+    )
+    return worker

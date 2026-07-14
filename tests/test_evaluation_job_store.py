@@ -25,6 +25,7 @@ async def store(monkeypatch):  # noqa: ANN001
         Path(__file__).resolve().parent.parent / ".test-artifacts"
         / f"evaluation-ledger-{uuid4().hex}.db"
     )
+    database_path.parent.mkdir(exist_ok=True)
     monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", database_path)
     try:
         await evaluation_db.force_init_db()
@@ -119,6 +120,28 @@ async def _claim_execution_rerun(store, now: datetime):  # noqa: ANN001
         items=[_spec(max_attempts=1)],
     )
     return (await store.claim_ready_items(limit=1, now=now))[0]
+
+
+@pytest.mark.asyncio
+async def test_create_job_notifies_post_commit_producer_hook(store) -> None:  # noqa: ANN001
+    notifications: list[None] = []
+
+    def notify() -> None:
+        notifications.append(None)
+
+    from evaluation.job_store import EvaluationJobStore
+
+    producer = EvaluationJobStore(on_job_created=notify)
+    await producer.create_job_with_items(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="initial",
+        selection={},
+        config_snapshot={},
+        items=[_spec()],
+    )
+
+    assert notifications == [None]
 
 
 @pytest.mark.asyncio
