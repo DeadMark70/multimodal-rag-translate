@@ -27,6 +27,7 @@ class CampaignLifecycleStatus(str, Enum):
     RUNNING = "running"
     EVALUATING = "evaluating"
     COMPLETED = "completed"
+    COMPLETED_WITH_ERRORS = "completed_with_errors"
     FAILED = "failed"
     CANCELLED = "cancelled"
 

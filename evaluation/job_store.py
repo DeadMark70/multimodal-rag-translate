@@ -751,6 +751,40 @@ class EvaluationJobStore:
             row = await cursor.fetchone()
         return row["status"] if row is not None else None
 
+    async def cancel_campaign_jobs(self, *, user_id: str, campaign_id: str) -> None:
+        """Close active durable work for a cancelled campaign without deleting attempts."""
+        now_iso = _as_iso(datetime.now(timezone.utc))
+        await init_db()
+        async with connect_db() as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            try:
+                await connection.execute(
+                    """
+                    UPDATE evaluation_attempts
+                    SET status = 'cancelled', finished_at = ?, error_type = 'cancelled',
+                        safe_error_message = 'Campaign cancellation was requested.'
+                    WHERE job_id IN (
+                        SELECT id FROM evaluation_jobs WHERE user_id = ? AND campaign_id = ?
+                    ) AND status = 'running'
+                    """,
+                    (now_iso, user_id, campaign_id),
+                )
+                await connection.execute(
+                    """
+                    UPDATE evaluation_job_items
+                    SET status = 'cancelled', active_attempt_id = NULL, next_retry_at = NULL,
+                        updated_at = ?
+                    WHERE job_id IN (
+                        SELECT id FROM evaluation_jobs WHERE user_id = ? AND campaign_id = ?
+                    ) AND status IN ('pending', 'running', 'retry_wait')
+                    """,
+                    (now_iso, user_id, campaign_id),
+                )
+                await connection.commit()
+            except BaseException:
+                await connection.rollback()
+                raise
+
     async def _recompute_campaign_counts(
         self, connection: aiosqlite.Connection, *, campaign_id: str
     ) -> None:

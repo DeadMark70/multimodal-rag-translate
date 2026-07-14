@@ -1270,6 +1270,59 @@ class CampaignRepository:
             current_mode=None,
         )
 
+    async def derive_execution_state(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
+        """Derive durable campaign execution state from its current ledger items."""
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN item.status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded,
+                    SUM(CASE WHEN item.status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                    SUM(CASE WHEN item.status IN ('pending', 'running', 'retry_wait') THEN 1 ELSE 0 END) AS unresolved
+                FROM evaluation_job_items AS item
+                JOIN evaluation_jobs AS job ON job.id = item.job_id
+                JOIN evaluation_work_items AS work ON work.id = item.work_item_id
+                WHERE job.user_id = ? AND job.campaign_id = ?
+                  AND work.work_type = 'dataset_execution'
+                """,
+                (user_id, campaign_id),
+            )
+            row = await cursor.fetchone()
+        total = int(row["total"] or 0)
+        succeeded = int(row["succeeded"] or 0)
+        failed = int(row["failed"] or 0)
+        unresolved = int(row["unresolved"] or 0)
+        if total == 0 or unresolved:
+            return await self._update_campaign(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                status=CampaignLifecycleStatus.PENDING if total == 0 else CampaignLifecycleStatus.RUNNING,
+                phase="execution",
+                completed_units=succeeded,
+            )
+        if failed and succeeded:
+            return await self._update_campaign(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                status=CampaignLifecycleStatus.COMPLETED_WITH_ERRORS,
+                phase="execution",
+                completed_units=succeeded,
+                error_message="Some dataset execution units failed.",
+                completed_at=_utc_now_iso(),
+                current_question_id=None,
+                current_mode=None,
+            )
+        if failed:
+            return await self.mark_failed(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                error_message="No usable dataset execution result was produced.",
+                phase="execution",
+            )
+        return await self.mark_completed(user_id=user_id, campaign_id=campaign_id, phase="execution")
+
     async def mark_failed(
         self,
         *,

@@ -7,7 +7,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -27,6 +27,7 @@ from evaluation.campaign_schemas import (
     ModeMetricsSummary,
 )
 from evaluation.db import CampaignRepository, CampaignResultRepository
+from evaluation.job_store import EvaluationJobStore
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.rag_modes import BenchmarkExecutionResult, CONTEXT_POLICY_VERSION, run_campaign_case
 from evaluation.ragas_evaluator import RagasEvaluator
@@ -442,6 +443,31 @@ def test_campaign_rejects_router_mode_without_feature_flag() -> None:
     assert response.json()["error"]["message"] == (
         "router mode is not implemented yet; use retrospective router analysis."
     )
+
+
+@pytest.mark.asyncio
+async def test_durable_campaign_creation_enqueues_units_without_process_local_task() -> None:
+    worker = Mock()
+    store = AsyncMock(spec=EvaluationJobStore)
+    store.create_job_with_items = AsyncMock()
+    engine = CampaignEngine(job_store=store, worker_notifier=worker.notify)
+    config = _campaign_config_for_test_case_ids(["Q1", "Q2"], modes=["naive"], repeat_count=2)
+    resolved_cases = [
+        TestCase(
+            id=question_id,
+            question="Question",
+            ground_truth="Answer",
+            source_docs=[],
+            requires_multi_doc_reasoning=False,
+        )
+        for question_id in config.test_case_ids
+    ]
+    with patch.object(engine, "_resolve_test_cases", new=AsyncMock(return_value=resolved_cases)):
+        response = await engine.create_and_start(user_id="user-a", name="durable", config=config)
+
+    assert response.status == CampaignLifecycleStatus.PENDING
+    assert len(store.create_job_with_items.await_args.kwargs["items"]) == 4
+    worker.notify.assert_called_once_with()
 
 
 def test_campaign_cancel_marks_campaign_cancelled() -> None:

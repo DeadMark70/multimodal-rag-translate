@@ -71,7 +71,8 @@ class EvaluationJobWorker:
             return
         if self._handlers_unavailable():
             raise RuntimeError("Evaluation worker handlers must be configured before start")
-        self._stop_event.clear()
+        self._stop_event = asyncio.Event()
+        self._wake_event = asyncio.Event()
         self._accepting = True
         async with self._claim_lock:
             await self._store.recover_interrupted_attempts(at=self._clock())
