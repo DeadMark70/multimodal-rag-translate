@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import evaluation.db as evaluation_db
 from evaluation.campaign_schemas import (
     CampaignConfig,
     CampaignLifecycleStatus,
@@ -17,6 +18,7 @@ from evaluation.campaign_schemas import (
     CampaignResultStatus,
     CampaignStatus,
 )
+from evaluation.db import CampaignResultRepository, RagasScoreRepository
 from evaluation.ragas_evaluator import PRIMARY_RAGAS_METRICS, RagasEvaluator
 from evaluation.schemas import ModelConfig
 
@@ -458,6 +460,129 @@ async def test_evaluate_campaign_selected_result_ids_merge_overwrites_subset_onl
             "details": {"source": "old"},
         }
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("replacement_signature", "expected_metric_value", "expected_details"),
+    [
+        (None, 0.8, {"source": "protected"}),
+        ("mismatched-signature", 0.8, {"source": "protected"}),
+        ("protected-signature", 0.1, {"source": "legacy-evaluator"}),
+    ],
+)
+async def test_evaluate_campaign_replaces_protected_score_only_when_signature_is_exact(
+    monkeypatch,
+    tmp_path: Path,
+    replacement_signature: str | None,
+    expected_metric_value: float,
+    expected_details: dict[str, str],
+) -> None:
+    database_path = tmp_path / "ragas-signature.db"
+    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", database_path)
+    try:
+        await evaluation_db.force_init_db()
+        async with evaluation_db.connect_db() as connection:
+            await connection.execute(
+                """
+                INSERT INTO campaigns (
+                    id, user_id, name, status, config_json, created_at, updated_at
+                ) VALUES (?, ?, NULL, ?, '{}', ?, ?)
+                """,
+                (
+                    "cmp-1",
+                    "user-a",
+                    "pending",
+                    "2026-07-14T00:00:00+00:00",
+                    "2026-07-14T00:00:00+00:00",
+                ),
+            )
+            await connection.commit()
+
+        result = _result("r1", "naive", 100)
+        result_repository = CampaignResultRepository()
+        await result_repository.create(
+            result_id=result.id,
+            user_id="user-a",
+            campaign_id=result.campaign_id,
+            question_id=result.question_id,
+            question=result.question,
+            ground_truth=result.ground_truth,
+            ground_truth_short=result.ground_truth_short,
+            key_points=result.key_points,
+            ragas_focus=result.ragas_focus,
+            mode=result.mode,
+            execution_profile=result.execution_profile,
+            context_policy_version=result.context_policy_version,
+            run_number=result.run_number,
+            answer=result.answer,
+            contexts=result.contexts,
+            source_doc_ids=result.source_doc_ids,
+            expected_sources=result.expected_sources,
+            latency_ms=result.latency_ms,
+            token_usage=result.token_usage,
+            category=result.category,
+            difficulty=result.difficulty,
+            status=result.status,
+        )
+        score_repository = RagasScoreRepository()
+        await score_repository.replace_for_campaign(
+            user_id="user-a",
+            campaign_id="cmp-1",
+            score_rows=[
+                {
+                    "campaign_result_id": result.id,
+                    "metric_name": "faithfulness",
+                    "metric_value": 0.8,
+                    "details": {"source": "protected"},
+                    "source_attempt_id": "attempt-protected",
+                    "evaluation_signature": "protected-signature",
+                }
+            ],
+        )
+        evaluator = RagasEvaluator(
+            result_repository=result_repository,
+            score_repository=score_repository,
+            evaluator_model="fake-evaluator",
+        )
+        replacement = {
+            "campaign_result_id": result.id,
+            "metric_name": "faithfulness",
+            "metric_value": 0.1,
+            "details": {"source": "legacy-evaluator"},
+        }
+        if replacement_signature is not None:
+            replacement["evaluation_signature"] = replacement_signature
+
+        with patch("evaluation.ragas_evaluator.get_llm", return_value=object()), patch.object(
+            evaluator,
+            "_load_ragas_dependencies",
+            new=AsyncMock(return_value=_fake_ragas_dependencies_for_eval()),
+        ), patch.object(evaluator, "_evaluate_batch", new=AsyncMock(return_value=[replacement])):
+            await evaluator.evaluate_campaign(user_id="user-a", campaign_id="cmp-1")
+
+        async with evaluation_db.connect_db() as connection:
+            score = await (
+                await connection.execute(
+                    """
+                    SELECT metric_value, details_json, source_attempt_id, evaluation_signature
+                    FROM ragas_scores
+                    WHERE campaign_result_id = ? AND metric_name = ?
+                    """,
+                    (result.id, "faithfulness"),
+                )
+        ).fetchone()
+        assert score["metric_value"] == expected_metric_value
+        assert json.loads(score["details_json"]) == expected_details
+        assert score["source_attempt_id"] == "attempt-protected"
+        assert score["evaluation_signature"] == "protected-signature"
+    finally:
+        for path in (
+            database_path,
+            database_path.with_suffix(".db-shm"),
+            database_path.with_suffix(".db-wal"),
+        ):
+            path.unlink(missing_ok=True)
 
 
 @pytest.mark.asyncio

@@ -1803,6 +1803,9 @@ class RagasScoreRepository:
                     source_attempt_id = COALESCE(excluded.source_attempt_id, ragas_scores.source_attempt_id),
                     evaluation_signature = COALESCE(excluded.evaluation_signature, ragas_scores.evaluation_signature),
                     created_at = excluded.created_at
+                WHERE ragas_scores.evaluation_signature IS NOT NULL
+                  AND excluded.evaluation_signature IS NOT NULL
+                  AND ragas_scores.evaluation_signature = excluded.evaluation_signature
                 """,
                 (
                     str(uuid4()),
