@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Literal
+from types import MappingProxyType
+from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_serializer,
+    model_validator,
+)
 
 
 class EvaluationJobType(str, Enum):
@@ -43,6 +52,32 @@ EvaluationRerunStages = Literal["execution", "ragas", "execution_and_ragas"]
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _freeze_json_value(value: JsonValue) -> object:
+    if isinstance(value, dict):
+        return MappingProxyType(
+            {key: _freeze_json_value(nested_value) for key, nested_value in value.items()}
+        )
+    if isinstance(value, list):
+        return tuple(_freeze_json_value(nested_value) for nested_value in value)
+    return value
+
+
+def _freeze_snapshot(snapshot: dict[str, JsonValue]) -> Mapping[str, object]:
+    return MappingProxyType(
+        {key: _freeze_json_value(value) for key, value in snapshot.items()}
+    )
+
+
+def _thaw_json_value(value: object) -> JsonValue:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json_value(nested_value) for key, nested_value in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json_value(nested_value) for nested_value in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TypeError("snapshot contains a non-JSON value")
 
 
 class EvaluationRerunRequest(BaseModel):
@@ -114,3 +149,19 @@ class ClaimedEvaluationWork(BaseModel):
     work_item_id: str
     attempt_id: str
     input_snapshot: dict[str, JsonValue]
+
+    @model_validator(mode="after")
+    def freeze_input_snapshot(self) -> ClaimedEvaluationWork:
+        object.__setattr__(
+            self,
+            "input_snapshot",
+            cast(dict[str, JsonValue], _freeze_snapshot(self.input_snapshot)),
+        )
+        return self
+
+    @field_serializer("input_snapshot")
+    def serialize_input_snapshot(self, snapshot: Mapping[str, object]) -> dict[str, JsonValue]:
+        return {
+            key: _thaw_json_value(value)
+            for key, value in snapshot.items()
+        }
