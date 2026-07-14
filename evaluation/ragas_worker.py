@@ -71,19 +71,25 @@ class RagasBatchWorker:
                 (metric_name, batch_group_key, batch_size, parallel_batches), []
             ).append(claim)
 
-        semaphores: dict[int, asyncio.Semaphore] = {}
+        # Provider calls are bounded globally as well as within each group's
+        # configured window.  A per-group semaphore alone could otherwise
+        # allow two metric groups to each launch two calls concurrently.
+        global_semaphore = asyncio.Semaphore(2)
+        semaphores: dict[tuple[str, str | None, int, int], asyncio.Semaphore] = {}
 
         async def run_chunk(
             metric_name: str,
             batch_group_key: str | None,
             chunk: list[ClaimedEvaluationWork],
+            group_key: tuple[str, str | None, int, int],
             parallel_batches: int,
         ) -> None:
             semaphore = semaphores.setdefault(
-                parallel_batches, asyncio.Semaphore(parallel_batches)
+                group_key, asyncio.Semaphore(parallel_batches)
             )
-            async with semaphore:
-                await self._execute_chunk(metric_name, batch_group_key, chunk)
+            async with global_semaphore:
+                async with semaphore:
+                    await self._execute_chunk(metric_name, batch_group_key, chunk)
 
         tasks: list[asyncio.Task[None]] = []
         for (metric_name, batch_group_key, batch_size, parallel_batches), group in groups.items():
@@ -94,6 +100,7 @@ class RagasBatchWorker:
                             metric_name,
                             batch_group_key,
                             group[offset : offset + batch_size],
+                            (metric_name, batch_group_key, batch_size, parallel_batches),
                             parallel_batches,
                         )
                     )
