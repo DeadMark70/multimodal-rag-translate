@@ -184,11 +184,12 @@ class ClaimedEvaluationWork(BaseModel):
         update: Mapping[str, Any] | None = None,
         deep: bool = False,
     ) -> ClaimedEvaluationWork:
-        if update is None or "input_snapshot" not in update:
+        if not deep and (update is None or "input_snapshot" not in update):
             return super().model_copy(update=update, deep=deep)
 
         values = self.model_dump(mode="python")
-        values.update(update)
+        if update is not None:
+            values.update(update)
         if deep:
             values = deepcopy(values)
         return type(self).model_validate(values)
