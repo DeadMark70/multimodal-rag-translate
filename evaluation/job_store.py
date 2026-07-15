@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -93,6 +94,15 @@ class EvaluationJobStore:
 
     def __init__(self, *, on_job_created: JobCreatedNotifier | None = None) -> None:
         self._on_job_created = on_job_created
+        self._materialization_lock: asyncio.Lock | None = None
+        self._materialization_loop: asyncio.AbstractEventLoop | None = None
+
+    def _materialization_guard(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._materialization_lock is None or self._materialization_loop is not loop:
+            self._materialization_loop = loop
+            self._materialization_lock = asyncio.Lock()
+        return self._materialization_lock
 
     async def create_job_with_items(
         self,
@@ -159,7 +169,12 @@ class EvaluationJobStore:
             self._on_job_created()
         return created_job
 
-    async def ensure_ragas_work(
+    async def ensure_ragas_work(self, **kwargs: Any) -> int:
+        """Serialize RAGAS materialization within one process and event loop."""
+        async with self._materialization_guard():
+            return await self._ensure_ragas_work(**kwargs)
+
+    async def _ensure_ragas_work(
         self,
         *,
         user_id: str,
@@ -1233,16 +1248,20 @@ class EvaluationJobStore:
             """
             UPDATE campaigns
             SET evaluation_total_units = (
-                    SELECT COUNT(*)
+                    SELECT COUNT(DISTINCT json_extract(work.input_snapshot_json, '$.campaign_result_id'))
                     FROM evaluation_job_items AS item
                     JOIN evaluation_jobs AS job ON job.id = item.job_id
+                    JOIN evaluation_work_items AS work ON work.id = item.work_item_id
                     WHERE job.campaign_id = campaigns.id
+                      AND work.work_type = 'ragas_metric'
                 ),
                 evaluation_completed_units = (
-                    SELECT COUNT(*)
+                    SELECT COUNT(DISTINCT json_extract(work.input_snapshot_json, '$.campaign_result_id'))
                     FROM evaluation_job_items AS item
                     JOIN evaluation_jobs AS job ON job.id = item.job_id
-                    WHERE job.campaign_id = campaigns.id AND item.status = 'succeeded'
+                    JOIN evaluation_work_items AS work ON work.id = item.work_item_id
+                    WHERE job.campaign_id = campaigns.id
+                      AND work.work_type = 'ragas_metric' AND item.status = 'succeeded'
                 ),
                 updated_at = ?
             WHERE id = ?

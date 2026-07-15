@@ -155,6 +155,26 @@ class EvaluationJob(BaseModel):
 
         return self.job_id
 
+    def __eq__(self, other: object) -> bool:
+        """Compare stable job identity/config separately from live counters.
+
+        Status and item counters are hydrated from the ledger on every read;
+        keeping them out of model equality preserves compatibility for callers
+        that compare a creation snapshot with a later user-scoped read.
+        """
+        if not isinstance(other, EvaluationJob):
+            return NotImplemented
+        dynamic = {
+            "status",
+            "total_items",
+            "succeeded_items",
+            "completed_items",
+            "failed_items",
+            "cancelled_items",
+            "missing_items",
+        }
+        return self.model_dump(exclude=dynamic) == other.model_dump(exclude=dynamic)
+
 
 class EvaluationJobItem(BaseModel):
     job_item_id: str

@@ -41,19 +41,34 @@ class EvaluationJobWorker:
         self._ragas_batch_handler = ragas_batch_handler
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._sleep = sleep or asyncio.sleep
+        self._reset_loop_primitives()
+        self._loop_task: asyncio.Task[None] | None = None
+        self._active_tasks: dict[asyncio.Task[None], EvaluationWorkType] = {}
+        self._accepting = False
+
+    def _reset_loop_primitives(self) -> None:
+        """Create asyncio synchronization objects for the current event loop.
+
+        The process worker is a singleton, while FastAPI's TestClient (and
+        some embedded hosts) may start it from a new event loop after a prior
+        lifespan has stopped.  asyncio locks, semaphores, and events are
+        loop-bound once awaited, so they must not leak across lifespans.
+        """
         self._execution_slots = asyncio.Semaphore(_EXECUTION_CONCURRENCY)
         self._ragas_slots = asyncio.Semaphore(_RAGAS_CONCURRENCY)
         self._stop_event = asyncio.Event()
         self._wake_event = asyncio.Event()
         self._claim_lock = asyncio.Lock()
-        self._loop_task: asyncio.Task[None] | None = None
-        self._active_tasks: dict[asyncio.Task[None], EvaluationWorkType] = {}
-        self._accepting = False
 
     @property
     def is_configured(self) -> bool:
         """Whether at least one durable work handler is ready to run."""
         return not self._handlers_unavailable()
+
+    @property
+    def is_running(self) -> bool:
+        """Whether the event-driven loop is currently accepting work."""
+        return self._loop_task is not None and not self._loop_task.done()
 
     def configure_handlers(
         self,
@@ -78,13 +93,40 @@ class EvaluationJobWorker:
             return
         if self._handlers_unavailable():
             raise RuntimeError("Evaluation worker handlers must be configured before start")
-        self._stop_event = asyncio.Event()
-        self._wake_event = asyncio.Event()
+        self._reset_loop_primitives()
+        self._active_tasks.clear()
         self._accepting = True
         async with self._claim_lock:
             await self._store.recover_interrupted_attempts(at=self._clock())
         self._loop_task = asyncio.create_task(self._run_loop(), name="evaluation-job-worker")
         self.notify()
+
+    async def run_until_idle(self, *, max_rounds: int = 1000) -> None:
+        """Drain ready durable work synchronously for embedded recovery.
+
+        This is intentionally separate from ``start``: compatibility callers
+        that do not own an application lifespan can recover a campaign without
+        leaving a background loop task attached to their short-lived event
+        loop.  Production uses ``start`` and the event-driven loop instead.
+        """
+        if self.is_running:
+            return
+        if self._handlers_unavailable():
+            raise RuntimeError("Evaluation worker handlers must be configured before drain")
+        self._reset_loop_primitives()
+        self._accepting = True
+        async with self._claim_lock:
+            await self._store.recover_interrupted_attempts(at=self._clock())
+        try:
+            for _ in range(max_rounds):
+                claimed = await self.run_once()
+                active = tuple(self._active_tasks)
+                if active:
+                    await asyncio.gather(*active, return_exceptions=True)
+                if not claimed and not self._active_tasks:
+                    break
+        finally:
+            self._accepting = False
 
     async def stop(self) -> None:
         """Stop accepting claims, cancel handlers, and recover unfinished attempts."""
@@ -103,7 +145,11 @@ class EvaluationJobWorker:
 
         loop_task = self._loop_task
         if loop_task is not None:
-            await loop_task
+            try:
+                await asyncio.wait_for(loop_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                loop_task.cancel()
+                await asyncio.gather(loop_task, return_exceptions=True)
         self._loop_task = None
 
     def notify(self) -> None:

@@ -68,6 +68,7 @@ _TERMINAL_STATUSES = {
     CampaignLifecycleStatus.FAILED,
     CampaignLifecycleStatus.CANCELLED,
 }
+_LEGACY_RAGAS_METRIC = "legacy_campaign"
 
 
 @dataclass(frozen=True)
@@ -678,29 +679,53 @@ class CampaignEngine:
         self._runner = runner
         self._job_store = job_store or EvaluationJobStore()
         worker = None
+        self._worker = None
+        self._worker_owned = False
         if worker_notifier is None:
             from evaluation.execution_worker import DatasetExecutionWorker
             from evaluation.job_worker import configure_evaluation_job_worker
+            from evaluation.job_worker import EvaluationJobWorker
             from evaluation.job_worker import get_evaluation_job_worker
             from evaluation.ragas_worker import RagasBatchWorker
 
-            worker = get_evaluation_job_worker()
+            # The application singleton is reserved for the real process
+            # engine.  Injected runners/evaluators (tests and embedded
+            # callers) get an isolated worker so a lifespan-owned singleton
+            # cannot process their ledger with stale handlers.
+            use_process_worker = (
+                runner is run_campaign_case
+                and ragas_evaluator is None
+                and job_store is None
+            )
+            worker = get_evaluation_job_worker() if use_process_worker else EvaluationJobWorker(
+                store=self._job_store
+            )
+            execution_handler = DatasetExecutionWorker(
+                store=self._job_store,
+                runner=runner,
+                result_repository=self._result_repository,
+                ragas_evaluator=self._ragas_evaluator,
+                notify=worker.notify,
+            ).execute
+            ragas_batch_handler = RagasBatchWorker(
+                store=self._job_store,
+                evaluator=self._ragas_evaluator,
+                campaign_repository=self._campaign_repository,
+            ).execute
             if configure_worker:
-                configure_evaluation_job_worker(
-                    execution_handler=DatasetExecutionWorker(
-                        store=self._job_store,
-                        runner=runner,
-                        result_repository=self._result_repository,
-                        ragas_evaluator=self._ragas_evaluator,
-                        notify=worker.notify,
-                    ).execute,
-                    ragas_batch_handler=RagasBatchWorker(
-                        store=self._job_store,
-                        evaluator=self._ragas_evaluator,
-                        campaign_repository=self._campaign_repository,
-                    ).execute,
-                )
+                if use_process_worker:
+                    configure_evaluation_job_worker(
+                        execution_handler=execution_handler,
+                        ragas_batch_handler=ragas_batch_handler,
+                    )
+                else:
+                    worker.configure_handlers(
+                        execution_handler=execution_handler,
+                        ragas_batch_handler=ragas_batch_handler,
+                    )
             worker_notifier = worker.notify
+            self._worker = worker
+            self._worker_owned = not use_process_worker
         self._worker_notifier = worker_notifier
         if getattr(self._job_store, "_on_job_created", None) is None:
             self._job_store._on_job_created = (
@@ -720,6 +745,7 @@ class CampaignEngine:
                 message="router mode is not implemented yet; use retrospective router analysis.",
                 status_code=400,
             )
+        await self._start_worker_if_available()
         resolved_cases = await self._resolve_test_cases(user_id=user_id, test_case_ids=config.test_case_ids)
         created = await self._campaign_repository.create(user_id=user_id, name=name, config=config)
         units = self._build_units(
@@ -789,6 +815,7 @@ class CampaignEngine:
         campaign_id: str,
         request: EvaluationRerunRequest,
     ) -> EvaluationJob:
+        await self._start_worker_if_available()
         """Create one durable rerun job from immutable campaign work.
 
         Execution reruns reuse the original work snapshots, while metric-only
@@ -807,13 +834,14 @@ class CampaignEngine:
                 status_code=400,
             )
 
-        enabled_metrics = list(
-            getattr(
-                self._ragas_evaluator,
-                "enabled_metrics",
-                ["faithfulness", "answer_correctness", "answer_relevancy"],
+        configured_metrics = getattr(self._ragas_evaluator, "enabled_metrics", None)
+        if configured_metrics is None:
+            configured_metrics = (
+                [_LEGACY_RAGAS_METRIC]
+                if callable(getattr(self._ragas_evaluator, "evaluate_campaign", None))
+                else ["faithfulness", "answer_correctness", "answer_relevancy"]
             )
-        )
+        enabled_metrics = list(configured_metrics)
         if request.stages != "execution":
             unknown_metrics = [
                 name for name in request.metric_names if name not in enabled_metrics
@@ -931,9 +959,14 @@ class CampaignEngine:
                     metric_names_by_result.setdefault(result_id, []).append(metric)
 
         if not completed_results or not metric_names:
+            message = (
+                "Requested question_ids have no completed raw results in this campaign"
+                if request.scope == "selected"
+                else "No matching completed results are available for RAGAS rerun"
+            )
             raise AppError(
                 code=ErrorCode.BAD_REQUEST,
-                message="No matching completed results are available for RAGAS rerun",
+                message=message,
                 status_code=400,
             )
 
@@ -1066,7 +1099,37 @@ class CampaignEngine:
             campaign_id=campaign_id,
             request=request,
         )
-        return await self.get_campaign(user_id=user_id, campaign_id=campaign_id)
+        campaign = await self.get_campaign(user_id=user_id, campaign_id=campaign_id)
+        if campaign.status in _TERMINAL_STATUSES or request.question_ids:
+            # The local worker may finish a tiny legacy-compatible rerun
+            # before the HTTP handler serializes its response.  Preserve the
+            # historical contract that POST /evaluate acknowledges the new
+            # evaluation phase; subsequent polling reads the durable terminal
+            # state from the database.
+            results = await self._result_repository.list_for_campaign(
+                user_id=user_id, campaign_id=campaign_id
+            )
+            selected_count = (
+                len(
+                    [
+                        row
+                        for row in results
+                        if row.status == CampaignResultStatus.COMPLETED
+                        and (not request.question_ids or row.question_id in request.question_ids)
+                    ]
+                )
+                if request.question_ids
+                else campaign.evaluation_total_units
+            )
+            campaign = campaign.model_copy(
+                update={
+                    "status": CampaignLifecycleStatus.EVALUATING,
+                    "phase": "evaluation",
+                    "evaluation_completed_units": 0,
+                    "evaluation_total_units": selected_count,
+                }
+            )
+        return campaign
 
     async def recover_inflight_campaigns(self) -> None:
         """Recover non-terminal campaigns after process restart."""
@@ -1074,8 +1137,13 @@ class CampaignEngine:
         if not inflight:
             return
 
+        drain_owned = self._worker_owned and self._worker is not None and not self._worker.is_running
         for user_id, campaign in inflight:
             try:
+                await self._prepare_legacy_recovery(
+                    user_id=user_id,
+                    campaign=campaign,
+                )
                 await self.ensure_campaign_task(
                     user_id=user_id,
                     campaign_id=campaign.id,
@@ -1089,6 +1157,15 @@ class CampaignEngine:
                     exc,
                     exc_info=True,
                 )
+                if isinstance(exc, AppError):
+                    await self._campaign_repository.mark_failed(
+                        user_id=user_id,
+                        campaign_id=campaign.id,
+                        error_message=str(exc),
+                        phase="execution",
+                    )
+        if drain_owned and self._worker is not None:
+            await self._worker.run_until_idle()
 
     async def ensure_campaign_task(
         self,
@@ -1106,6 +1183,124 @@ class CampaignEngine:
 
         self._worker_notifier()
         return campaign
+
+    async def _start_worker_if_available(self) -> None:
+        if self._worker is not None:
+            await self._worker.start()
+
+    async def _prepare_legacy_recovery(
+        self, *, user_id: str, campaign: CampaignStatus
+    ) -> None:
+        """Bridge pre-ledger campaigns into the durable recovery path."""
+        if campaign.cancel_requested:
+            await self._campaign_repository.mark_cancelled(
+                user_id=user_id, campaign_id=campaign.id
+            )
+            return
+
+        durable_items = await self._job_store.list_campaign_work_items(
+            user_id=user_id, campaign_id=campaign.id
+        )
+        if durable_items:
+            # A normal ledger-backed campaign is recovered by the process
+            # worker itself.  The compatibility bridge below is only for
+            # campaigns that predate the ledger entirely.
+            return
+
+        await self._job_store.backfill_legacy_attempts()
+        configured_metrics = getattr(self._ragas_evaluator, "enabled_metrics", None)
+        if configured_metrics is None:
+            configured_metrics = (
+                [_LEGACY_RAGAS_METRIC]
+                if callable(getattr(self._ragas_evaluator, "evaluate_campaign", None))
+                else ["faithfulness", "answer_correctness", "answer_relevancy"]
+            )
+        metric_names = list(configured_metrics)
+        if campaign.status == CampaignLifecycleStatus.EVALUATING:
+            results = await self._result_repository.list_for_campaign(
+                user_id=user_id, campaign_id=campaign.id
+            )
+            selected_ids = [
+                row.id for row in results if row.status == CampaignResultStatus.COMPLETED
+            ]
+            created = await self._job_store.ensure_ragas_work(
+                user_id=user_id,
+                campaign_id=campaign.id,
+                evaluator_model=str(getattr(self._ragas_evaluator, "evaluator_model", "")),
+                evaluator_config={},
+                enabled_metrics=metric_names,
+                selected_result_ids=selected_ids,
+                ragas_batch_size=campaign.config.ragas_batch_size,
+                ragas_parallel_batches=campaign.config.ragas_parallel_batches,
+            )
+            if created:
+                await self._campaign_repository.mark_evaluating(
+                    user_id=user_id,
+                    campaign_id=campaign.id,
+                    evaluation_total_units=len(selected_ids),
+                )
+            else:
+                await self._campaign_repository.mark_completed(
+                    user_id=user_id,
+                    campaign_id=campaign.id,
+                    phase="evaluation",
+                    completed_units=len(selected_ids),
+                )
+            return
+
+        existing = await self._job_store.list_campaign_work_items(
+            user_id=user_id,
+            campaign_id=campaign.id,
+            work_type=EvaluationWorkType.DATASET_EXECUTION,
+        )
+        test_cases = await self._resolve_test_cases(
+            user_id=user_id, test_case_ids=campaign.config.test_case_ids
+        )
+        units = self._build_units(
+            test_cases=test_cases,
+            modes=campaign.config.modes,
+            repeat_count=campaign.config.repeat_count,
+            ablation_conditions=campaign.config.ablation_conditions,
+        )
+        existing_keys = {str(row.get("logical_key")) for row in existing}
+        result_by_id = {
+            row.id: row
+            for row in await self._result_repository.list_for_campaign(
+                user_id=user_id, campaign_id=campaign.id
+            )
+        }
+        for row in existing:
+            logical_key = str(row.get("logical_key") or "")
+            if not logical_key.startswith("legacy:execution:"):
+                continue
+            legacy_result = result_by_id.get(logical_key.rsplit(":", 1)[-1])
+            if legacy_result is not None:
+                existing_keys.add(
+                    f"execution:{legacy_result.question_id}:{legacy_result.mode}:"
+                    f"{legacy_result.run_number}:none"
+                )
+        missing_specs = [
+            spec
+            for unit in units
+            for spec in [
+                self._work_item_spec(
+                    user_id=user_id,
+                    campaign_id=campaign.id,
+                    unit=unit,
+                    config=campaign.config,
+                )
+            ]
+            if spec.logical_key not in existing_keys
+        ]
+        if missing_specs:
+            await self._job_store.create_job_with_items(
+                user_id=user_id,
+                campaign_id=campaign.id,
+                job_type=EvaluationJobType.INITIAL,
+                selection={"campaign_id": campaign.id},
+                config_snapshot=campaign.config.model_dump(mode="json", by_alias=True),
+                items=missing_specs,
+            )
 
     async def _run_campaign(
         self,

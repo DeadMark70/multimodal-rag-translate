@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
 
@@ -44,6 +45,18 @@ class RagasBatchWorker:
         """Run claims grouped by metric/signature and persist every result."""
         if not claims:
             return
+
+        # Keep older evaluator adapters usable while they migrate to the
+        # checkpoint-oriented metric API.  The legacy campaign call owns its
+        # own score persistence; the ledger still terminalizes each claimed
+        # item only after that call succeeds, so a provider failure remains a
+        # failed attempt and is never promoted as a score.
+        if not callable(getattr(self._evaluator, "evaluate_metric_batch", None)):
+            legacy_evaluate = getattr(self._evaluator, "evaluate_campaign", None)
+            if callable(legacy_evaluate):
+                await self._execute_legacy_campaigns(claims, legacy_evaluate)
+                return
+            raise RuntimeError("RAGAS evaluator does not provide a supported evaluation API")
 
         if self._evaluator_llm is None and self._evaluator_embeddings is None:
             prepare = getattr(self._evaluator, "evaluator_handles", None)
@@ -100,6 +113,54 @@ class RagasBatchWorker:
         if tasks:
             await asyncio.gather(*tasks)
 
+    async def _execute_legacy_campaigns(
+        self,
+        claims: list[ClaimedEvaluationWork],
+        legacy_evaluate: Any,
+    ) -> None:
+        groups: dict[tuple[str, str, str], list[ClaimedEvaluationWork]] = {}
+        for claim in claims:
+            snapshot = claim.input_snapshot
+            user_id = str(snapshot.get("user_id") or "")
+            campaign_id = str(snapshot.get("campaign_id") or "")
+            groups.setdefault((user_id, campaign_id, claim.job_id), []).append(claim)
+
+        for (user_id, campaign_id, _job_id), group in groups.items():
+            first = group[0].input_snapshot
+            selected_id_values: list[str] = []
+            for claim in group:
+                snapshot = claim.input_snapshot
+                value = (
+                    snapshot.get("campaign_result_id")
+                    or snapshot.get("result_id")
+                    or snapshot.get("result", {}).get("id")
+                )
+                if value:
+                    selected_id_values.append(str(value))
+            selected_ids = list(dict.fromkeys(selected_id_values))
+            try:
+                await run_with_retry(
+                    legacy_evaluate,
+                    user_id=user_id,
+                    campaign_id=campaign_id,
+                    ragas_batch_size=first.get("ragas_batch_size"),
+                    ragas_parallel_batches=first.get("ragas_parallel_batches"),
+                    ragas_rpm_limit=first.get("ragas_rpm_limit"),
+                    selected_result_ids=selected_ids or None,
+                )
+                for claim in group:
+                    await self._store.complete_ragas_attempt(
+                        claim, RagasAttemptOutput(scores=[])
+                    )
+            except asyncio.CancelledError:
+                await self._cancel_claims(group)
+                await self._derive_campaign_state(group)
+                raise
+            except Exception as exc:  # noqa: BLE001
+                decision = classify_evaluation_error(exc)
+                await asyncio.gather(*(self._fail_claim(claim, decision) for claim in group))
+            await self._derive_campaign_state(group)
+
     async def _execute_chunk(
         self,
         metric_name: str,
@@ -119,7 +180,15 @@ class RagasBatchWorker:
                 raise ValueError(
                     f"RAGAS metric {metric_name!r} returned {len(values) if isinstance(values, list) else 'non-list'} values for {len(claims)} rows"
                 )
-            normalized = [self._score_value(value) for value in values]
+            normalized = [
+                self._score_value(
+                    value,
+                    allow_none=bool(
+                        getattr(self._evaluator, "allows_missing_metric_values", False)
+                    ),
+                )
+                for value in values
+            ]
         except asyncio.CancelledError:
             await self._cancel_claims(claims)
             await self._derive_campaign_state(claims)
@@ -139,6 +208,11 @@ class RagasBatchWorker:
         # transaction: a later promotion failure must not roll back checkpoints.
         try:
             for claim, value in zip(claims, normalized, strict=True):
+                if value is None:
+                    await self._store.complete_ragas_attempt(
+                        claim, RagasAttemptOutput(scores=[])
+                    )
+                    continue
                 score = {
                     "campaign_result_id": self._result_id(claim),
                     "metric_name": metric_name,
@@ -172,25 +246,15 @@ class RagasBatchWorker:
             (
                 str(claim.input_snapshot.get("user_id")),
                 str(claim.input_snapshot.get("campaign_id")),
-                claim.job_id,
             )
             for claim in claims
             if claim.input_snapshot.get("user_id") and claim.input_snapshot.get("campaign_id")
         }
-        for user_id, campaign_id, job_id in campaigns:
-            try:
-                await self._campaign_repository.derive_ragas_state(
-                    user_id=user_id,
-                    campaign_id=campaign_id,
-                    job_id=job_id,
-                )
-            except TypeError:
-                # Keep compatibility with lightweight repository doubles and
-                # older adapters that have not added the optional job filter.
-                await self._campaign_repository.derive_ragas_state(
-                    user_id=user_id,
-                    campaign_id=campaign_id,
-                )
+        for user_id, campaign_id in campaigns:
+            await self._campaign_repository.derive_ragas_state(
+                user_id=user_id,
+                campaign_id=campaign_id,
+            )
 
     async def _cancel_claims(self, claims: list[ClaimedEvaluationWork]) -> None:
         cancel = getattr(self._store, "cancel_attempt", None)
@@ -212,8 +276,12 @@ class RagasBatchWorker:
             return
 
     @staticmethod
-    def _score_value(value: Any) -> float:
-        if isinstance(value, bool) or value is None:
+    def _score_value(value: Any, *, allow_none: bool = False) -> float | None:
+        if value is None:
+            if allow_none:
+                return None
+            raise ValueError("RAGAS returned a missing metric value")
+        if isinstance(value, bool):
             raise ValueError("RAGAS returned a missing metric value")
         try:
             normalized = float(value)
@@ -267,7 +335,7 @@ class RagasBatchWorker:
     def _row_for_claim(cls, claim: ClaimedEvaluationWork) -> Any:
         snapshot = claim.input_snapshot
         raw = snapshot.get("result") or snapshot.get("result_snapshot") or snapshot.get("row")
-        if isinstance(raw, dict):
+        if isinstance(raw, Mapping):
             payload = dict(raw)
         else:
             payload = {}

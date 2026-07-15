@@ -213,12 +213,14 @@ async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
     _ensure_base_directories()
     _initialize_external_clients(_)
     await force_init_db()
-    await get_campaign_engine().recover_inflight_campaigns()
     worker = get_evaluation_job_worker()
     worker_started = False
     if worker.is_configured:
         await worker.start()
         worker_started = True
+        # The durable worker owns startup recovery.  Recovery before start
+        # only enqueues wakeups, leaving recovered items unclaimed.
+        await get_campaign_engine().recover_inflight_campaigns()
     try:
         await _initialize_rag_components()
         await _warm_up_pdf_ocr()

@@ -1265,6 +1265,7 @@ class CampaignRepository:
         user_id: str,
         campaign_id: str,
         phase: Optional[str] = None,
+        completed_units: Optional[int] = None,
     ) -> CampaignStatus:
         now = _utc_now_iso()
         return await self._update_campaign(
@@ -1275,9 +1276,17 @@ class CampaignRepository:
             completed_at=now,
             current_question_id=None,
             current_mode=None,
+            completed_units=completed_units,
         )
 
-    async def derive_execution_state(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
+    async def derive_execution_state(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        defer_completion: bool = False,
+        completion_phase: str = "execution",
+    ) -> CampaignStatus:
         """Derive durable campaign execution state from its current ledger items."""
         await init_db()
         async with connect_db() as connection:
@@ -1319,6 +1328,7 @@ class CampaignRepository:
         cancelled = int(row["cancelled"] or 0)
         unresolved = int(row["unresolved"] or 0)
         incompatible = int(row["incompatible"] or 0)
+        processed_units = total - unresolved
         # A job-scoped cancellation is a failed/missing unit for campaign
         # coverage; only the explicit campaign cancellation endpoint sets the
         # campaign's cancel_requested flag and transitions it to cancelled.
@@ -1337,7 +1347,7 @@ class CampaignRepository:
                 campaign_id=campaign_id,
                 status=CampaignLifecycleStatus.COMPLETED_WITH_ERRORS,
                 phase="execution",
-                completed_units=compatible_succeeded,
+                completed_units=processed_units,
                 error_message="Some dataset execution units failed or lacked compatible results.",
                 completed_at=_utc_now_iso(),
                 current_question_id=None,
@@ -1350,7 +1360,29 @@ class CampaignRepository:
                 error_message="No usable dataset execution result was produced.",
                 phase="execution",
             )
-        return await self.mark_completed(user_id=user_id, campaign_id=campaign_id, phase="execution")
+        if defer_completion:
+            # Let the durable worker materialize downstream RAGAS work before
+            # exposing a terminal campaign status.  The returned snapshot is
+            # intentionally terminal-like for the caller; the database row
+            # remains in its in-flight state until mark_evaluating() runs.
+            current = await self._update_campaign(
+                user_id=user_id,
+                campaign_id=campaign_id,
+                completed_units=compatible_succeeded,
+            )
+            return current.model_copy(
+                update={
+                    "status": CampaignLifecycleStatus.COMPLETED,
+                    "phase": "execution",
+                    "completed_units": compatible_succeeded,
+                }
+            )
+        return await self.mark_completed(
+            user_id=user_id,
+            campaign_id=campaign_id,
+            phase=completion_phase,
+            completed_units=compatible_succeeded,
+        )
 
     async def derive_ragas_state(
         self,
@@ -1376,7 +1408,11 @@ class CampaignRepository:
                            SUM(CASE WHEN item.status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded,
                            SUM(CASE WHEN item.status = 'failed' THEN 1 ELSE 0 END) AS failed,
                            SUM(CASE WHEN item.status IN ('pending', 'running', 'retry_wait') THEN 1 ELSE 0 END) AS unresolved,
-                           SUM(CASE WHEN item.status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled
+                           SUM(CASE WHEN item.status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled,
+                           COUNT(DISTINCT json_extract(work.input_snapshot_json, '$.campaign_result_id')) AS result_total,
+                           COUNT(DISTINCT CASE WHEN item.status = 'succeeded'
+                                               THEN json_extract(work.input_snapshot_json, '$.campaign_result_id')
+                                          END) AS result_succeeded
                     FROM evaluation_job_items AS item
                     JOIN evaluation_jobs AS job ON job.id = item.job_id
                     JOIN evaluation_work_items AS work ON work.id = item.work_item_id
@@ -1392,6 +1428,8 @@ class CampaignRepository:
         failed = int(row["failed"] or 0)
         unresolved = int(row["unresolved"] or 0)
         cancelled = int(row["cancelled"] or 0)
+        result_total = int(row["result_total"] or 0)
+        result_succeeded = int(row["result_succeeded"] or 0)
         if campaign.cancel_requested and cancelled and not unresolved:
             return await self.mark_cancelled(user_id=user_id, campaign_id=campaign_id)
         failed += cancelled
@@ -1403,8 +1441,8 @@ class CampaignRepository:
                 campaign_id=campaign_id,
                 status=CampaignLifecycleStatus.EVALUATING,
                 phase="evaluation",
-                evaluation_completed_units=succeeded,
-                evaluation_total_units=total,
+                evaluation_completed_units=result_succeeded,
+                evaluation_total_units=result_total,
             )
         if failed and succeeded:
             return await self._update_campaign(
@@ -1412,8 +1450,8 @@ class CampaignRepository:
                 campaign_id=campaign_id,
                 status=CampaignLifecycleStatus.COMPLETED_WITH_ERRORS,
                 phase="evaluation",
-                evaluation_completed_units=succeeded,
-                evaluation_total_units=total,
+                evaluation_completed_units=result_succeeded,
+                evaluation_total_units=result_total,
                 error_message="Some RAGAS metrics failed; valid checkpoints were retained.",
                 completed_at=_utc_now_iso(),
                 current_question_id=None,
@@ -1640,6 +1678,7 @@ class CampaignResultRepository:
         execution_profile: Optional[str],
         context_policy_version: Optional[str],
         run_number: int,
+        condition_id: Optional[str] = None,
         answer: str,
         contexts: list[str],
         source_doc_ids: list[str],
@@ -1661,6 +1700,7 @@ class CampaignResultRepository:
         system_version_snapshot: Optional[dict[str, Any]] = None,
         derived_metrics: Optional[dict[str, Any]] = None,
         final_answer_hash: Optional[str] = None,
+        source_attempt_id: Optional[str] = None,
     ) -> CampaignResult:
         await init_db()
         result_id = result_id or str(uuid4())
@@ -1672,14 +1712,19 @@ class CampaignResultRepository:
                     INSERT INTO campaign_results (
                         id, campaign_id, user_id, question_id, question, ground_truth,
                         ground_truth_short, key_points_json, ragas_focus_json, mode, execution_profile,
-                        context_policy_version, run_number, answer, contexts_json, source_doc_ids_json,
+                        context_policy_version, run_number, condition_id, answer, contexts_json, source_doc_ids_json,
                         expected_sources_json, latency_ms, token_usage_json, category,
                         difficulty, status, error_message, question_version, request_id,
                         started_at, completed_at, total_latency_ms, total_tokens,
                         question_snapshot_json, model_config_snapshot_json,
                         system_version_snapshot_json, derived_metrics_json, final_answer_hash,
-                        created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        source_attempt_id, created_at
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?
+                    )
                     """,
                     (
                         result_id,
@@ -1695,6 +1740,7 @@ class CampaignResultRepository:
                         execution_profile,
                         context_policy_version,
                         run_number,
+                        condition_id or "",
                         answer,
                         _json_dumps(contexts),
                         _json_dumps(source_doc_ids),
@@ -1716,6 +1762,7 @@ class CampaignResultRepository:
                         _json_dumps(system_version_snapshot or {}),
                         _json_dumps(derived_metrics or {}),
                         final_answer_hash,
+                        source_attempt_id,
                         created_at,
                     ),
                 )
@@ -1727,6 +1774,7 @@ class CampaignResultRepository:
                     question_id=question_id,
                     mode=mode,
                     run_number=run_number,
+                    condition_id=condition_id,
                 )
                 if existing is not None:
                     return existing
@@ -1741,6 +1789,7 @@ class CampaignResultRepository:
         question_id: str,
         mode: str,
         run_number: int,
+        condition_id: Optional[str] = None,
     ) -> CampaignResult | None:
         await init_db()
         async with connect_db() as connection:
@@ -1758,10 +1807,11 @@ class CampaignResultRepository:
                   AND question_id = ?
                   AND mode = ?
                   AND run_number = ?
+                  AND condition_id = ?
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
-                (campaign_id, user_id, question_id, mode, run_number),
+                (campaign_id, user_id, question_id, mode, run_number, condition_id or ""),
             )
             row = await cursor.fetchone()
         if row is None:

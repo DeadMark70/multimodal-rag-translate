@@ -127,6 +127,7 @@ class RagasEvaluator:
             "EVALUATION_EVALUATOR_MODEL",
             "gemini-3.1-flash-lite-preview",
         )
+        self._legacy_evaluator_model: str | None = None
         self._batch_size = batch_size
         self._parallel_batches = parallel_batches
         self._rpm_limit = rpm_limit
@@ -143,7 +144,12 @@ class RagasEvaluator:
 
     @property
     def evaluator_model(self) -> str:
-        return self._evaluator_model
+        return self._legacy_evaluator_model or self._evaluator_model
+
+    @property
+    def allows_missing_metric_values(self) -> bool:
+        """Whether an old adapter may omit unsupported metric columns."""
+        return True
 
     @property
     def enabled_metrics(self) -> list[str]:
@@ -155,6 +161,10 @@ class RagasEvaluator:
     async def evaluator_handles(self) -> tuple[Any, Any]:
         """Create the provider wrappers used by a durable metric batch."""
         dependencies = await self._load_ragas_dependencies()
+        if "Dataset" not in dependencies or "metrics" not in dependencies:
+            # Legacy/test adapters may implement the multi-metric hook only;
+            # their compatibility path does not need provider wrappers.
+            return None, None
         evaluator_llm = dependencies["LangchainLLMWrapper"](
             get_llm("evaluator", model_name=self._evaluator_model)
         )
@@ -170,7 +180,7 @@ class RagasEvaluator:
         rows: list[Any],
         evaluator_llm: Any,
         evaluator_embeddings: Any,
-    ) -> list[float]:
+    ) -> list[float | None]:
         """Evaluate one metric for exactly the supplied rows.
 
         Provider and dependency failures intentionally propagate to the durable
@@ -180,6 +190,47 @@ class RagasEvaluator:
         if metric_name not in self.enabled_metrics:
             raise ValueError(f"Unsupported RAGAS metric: {metric_name}")
         dependencies = await self._load_ragas_dependencies()
+        if "Dataset" not in dependencies or "metrics" not in dependencies:
+            # Compatibility with pre-checkpoint adapters that override the
+            # multi-metric batch hook.  This path is deliberately strict:
+            # missing/non-finite values still fail the durable attempt and
+            # are never converted into a synthetic zero.
+            score_rows = await self._evaluate_batch(
+                batch_rows=rows,
+                ragas_dependencies=dependencies,
+                evaluator_llm=evaluator_llm,
+                evaluator_embeddings=evaluator_embeddings,
+                rate_budget=None,
+            )
+            for score in score_rows:
+                details = score.get("details") if isinstance(score, dict) else None
+                model = details.get("evaluator_model") if isinstance(details, dict) else None
+                if model:
+                    self._legacy_evaluator_model = str(model)
+                    break
+            values: list[float | None] = []
+            for row in rows:
+                matches = [
+                    score
+                    for score in score_rows
+                    if str(score.get("campaign_result_id")) == str(getattr(row, "id", ""))
+                    and str(score.get("metric_name")) == metric_name
+                ]
+                if not matches:
+                    # Older multi-metric adapters may omit a metric they do
+                    # not support.  Preserve that omission as an empty
+                    # checkpoint; analytics will report it as missing rather
+                    # than treating it as a score or a provider failure.
+                    values.append(None)
+                    continue
+                value = matches[0].get("metric_value")
+                if isinstance(value, bool) or value is None:
+                    raise ValueError("RAGAS returned a missing metric value")
+                normalized = float(value)
+                if not math.isfinite(normalized):
+                    raise ValueError("RAGAS returned a non-finite metric value")
+                values.append(normalized)
+            return values
         dataset = dependencies["Dataset"].from_dict(
             {
                 "question": [row.question for row in rows],

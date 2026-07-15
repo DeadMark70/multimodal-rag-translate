@@ -58,6 +58,7 @@ class DatasetExecutionWorker:
 
     async def execute(self, claim: ClaimedEvaluationWork) -> None:
         """Execute one claimed unit, preserving attempts before official promotion."""
+        payload: BenchmarkExecutionResult | None = None
         try:
             unit, user_id, campaign_id, model_config = self._snapshot_inputs(claim)
             started_at = datetime.now(timezone.utc)
@@ -98,6 +99,15 @@ class DatasetExecutionWorker:
             if await self._claim_was_cancelled(claim):
                 return
             decision = classify_evaluation_error(exc)
+            if self._runner is run_campaign_case or isinstance(payload, BenchmarkExecutionResult):
+                try:
+                    await self._persist_failed_result(claim, exc)
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "Failed to persist execution failure projection",
+                        extra={"work_item_id": claim.work_item_id},
+                        exc_info=True,
+                    )
             try:
                 await self._store.fail_attempt(claim, decision, next_retry_at=None)
             except ValueError:
@@ -107,7 +117,6 @@ class DatasetExecutionWorker:
             await self._derive_campaign_state(claim)
             return
 
-        await self._derive_campaign_state(claim)
         try:
             await self._record_observability(
                 user_id=user_id,
@@ -121,9 +130,62 @@ class DatasetExecutionWorker:
                 extra={"campaign_id": campaign_id, "result_id": promoted.id},
                 exc_info=True,
             )
+        await self._derive_campaign_state(claim)
 
     async def _claim_was_cancelled(self, claim: ClaimedEvaluationWork) -> bool:
         return await self._store.get_job_item_status(claim.job_item_id) == "cancelled"
+
+    async def _persist_failed_result(
+        self, claim: ClaimedEvaluationWork, exc: Exception
+    ) -> None:
+        """Keep a visible failed result while leaving the attempt non-successful.
+
+        The durable attempt remains the source of truth for retry and promotion;
+        this projection only makes an execution failure visible to the existing
+        campaign results API.  A later successful attempt atomically replaces
+        the same unit projection in ``complete_execution_attempt``.
+        """
+        unit, user_id, campaign_id, model_config = self._snapshot_inputs(claim)
+        now = datetime.now(timezone.utc)
+        test_case = unit.test_case
+        await self._result_repository.create(
+            result_id=claim.attempt_id,
+            user_id=user_id,
+            campaign_id=campaign_id,
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            ground_truth_short=test_case.ground_truth_short,
+            key_points=list(test_case.key_points),
+            ragas_focus=list(test_case.ragas_focus),
+            mode=unit.mode,
+            execution_profile=None,
+            context_policy_version=None,
+            run_number=unit.run_number,
+            condition_id=unit.condition_id,
+            answer=f"ERROR: {exc}",
+            contexts=[],
+            source_doc_ids=[],
+            expected_sources=list(test_case.source_docs),
+            latency_ms=0,
+            token_usage={},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+            status=CampaignResultStatus.FAILED,
+            error_message=str(exc),
+            question_version=test_case.question_version,
+            request_id=None,
+            started_at=now.isoformat(),
+            completed_at=now.isoformat(),
+            total_latency_ms=0,
+            total_tokens=0,
+            question_snapshot=_build_question_snapshot(test_case),
+            model_config_snapshot=model_config,
+            system_version_snapshot={},
+            derived_metrics={},
+            final_answer_hash=_final_answer_hash(f"ERROR: {exc}"),
+            source_attempt_id=claim.attempt_id,
+        )
 
     def _snapshot_inputs(
         self, claim: ClaimedEvaluationWork
@@ -197,26 +259,35 @@ class DatasetExecutionWorker:
 
     async def _derive_campaign_state(self, claim: ClaimedEvaluationWork) -> None:
         snapshot = claim.input_snapshot
-        campaign = await self._campaign_repository.derive_execution_state(
-            user_id=str(snapshot["user_id"]), campaign_id=str(snapshot["campaign_id"])
-        )
-        if self._ragas_evaluator is None:
-            return
-        # An execution-only rerun intentionally stops after promoting the
-        # dataset result.  Combined and initial jobs continue to materialize
-        # downstream metric work from the successful official projection.
         try:
             job = await self._store.get_job(
                 user_id=str(snapshot["user_id"]), job_id=claim.job_id
             )
         except Exception:  # noqa: BLE001
             job = None
-        if job is not None and job.config_snapshot.get("skip_ragas") is True:
+        skip_ragas = bool(job is not None and job.config_snapshot.get("skip_ragas") is True)
+        configured_metrics = getattr(self._ragas_evaluator, "enabled_metrics", None)
+        if configured_metrics is None and callable(
+            getattr(self._ragas_evaluator, "evaluate_campaign", None)
+        ):
+            configured_metrics = ("legacy_campaign",)
+        enabled_metrics = list(configured_metrics or [])
+        campaign = await self._campaign_repository.derive_execution_state(
+            user_id=str(snapshot["user_id"]),
+            campaign_id=str(snapshot["campaign_id"]),
+            defer_completion=bool(enabled_metrics) and not skip_ragas,
+            completion_phase="evaluation" if not enabled_metrics and not skip_ragas else "execution",
+        )
+        if self._ragas_evaluator is None:
+            return
+        # An execution-only rerun intentionally stops after promoting the
+        # dataset result.  Combined and initial jobs continue to materialize
+        # downstream metric work from the successful official projection.
+        if skip_ragas:
             return
         if campaign.status.value not in {"completed", "completed_with_errors"}:
             return
         selected_result_ids: list[str] | None = None
-        enabled_metrics = list(getattr(self._ragas_evaluator, "enabled_metrics", []))
         if job is not None:
             raw_question_ids = job.config_snapshot.get("downstream_question_ids")
             if isinstance(raw_question_ids, list) and raw_question_ids:
