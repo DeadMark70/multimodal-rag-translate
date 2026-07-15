@@ -213,14 +213,32 @@ async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
     _ensure_base_directories()
     _initialize_external_clients(_)
     await force_init_db()
+    # Construct the production facade before inspecting the singleton worker.
+    # CampaignEngine wires the real execution/RAGAS handlers into that worker;
+    # without this call a clean process would skip startup recovery entirely.
+    engine = get_campaign_engine()
     worker = get_evaluation_job_worker()
+    # Embedded callers may use an isolated engine worker while the process
+    # singleton remains unconfigured. Keep a reference so it can be drained
+    # during recovery and stopped on shutdown, but do not eagerly start an
+    # idle stop-when-idle worker before the first campaign is submitted.
+    lifecycle_worker = worker
+    engine_worker = getattr(engine, "_worker", None)
+    if not worker.is_configured and engine_worker is not None and engine_worker.is_configured:
+        lifecycle_worker = engine_worker
     worker_started = False
-    if worker.is_configured:
-        await worker.start()
-        worker_started = True
-        # The durable worker owns startup recovery.  Recovery before start
-        # only enqueues wakeups, leaving recovered items unclaimed.
-        await get_campaign_engine().recover_inflight_campaigns()
+    if lifecycle_worker.is_configured:
+        if lifecycle_worker is worker:
+            await lifecycle_worker.start()
+            worker_started = True
+            # The durable worker owns startup recovery. Recovery before start
+            # only enqueues wakeups, leaving recovered items unclaimed.
+            await engine.recover_inflight_campaigns()
+        else:
+            # An injected/embedded engine starts its private worker when a
+            # campaign is created. Recovery can drain it synchronously when
+            # needed without creating an idle-loop race during app startup.
+            await engine.recover_inflight_campaigns()
     try:
         await _initialize_rag_components()
         await _warm_up_pdf_ocr()
@@ -228,7 +246,9 @@ async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         if worker_started:
-            await worker.stop()
+            await lifecycle_worker.stop()
+        elif lifecycle_worker is not worker and getattr(lifecycle_worker, "is_running", False):
+            await lifecycle_worker.stop()
 
 
 async def read_root() -> dict[str, str]:

@@ -68,3 +68,77 @@ async def test_app_lifespan_recovers_legacy_campaigns_and_manages_configured_wor
     engine.recover_inflight_campaigns.assert_awaited_once()
     worker.start.assert_awaited_once()
     worker.stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_configures_worker_before_cold_start_recovery() -> None:
+    """A clean process must configure the singleton before recovering work."""
+    from core import app_factory
+
+    worker = type(
+        "FakeWorker",
+        (),
+        {"is_configured": False, "start": AsyncMock(), "stop": AsyncMock()},
+    )()
+    engine = type("FakeCampaignEngine", (), {"recover_inflight_campaigns": AsyncMock()})()
+
+    def build_engine() -> object:
+        worker.is_configured = True
+        return engine
+
+    with (
+        patch("evaluation.db.force_init_db", new=AsyncMock()),
+        patch("evaluation.campaign_engine.get_campaign_engine", side_effect=build_engine) as mock_engine,
+        patch("evaluation.job_worker.get_evaluation_job_worker", return_value=worker),
+        patch.object(app_factory, "_ensure_base_directories"),
+        patch.object(app_factory, "_initialize_external_clients"),
+        patch.object(app_factory, "_initialize_rag_components", new=AsyncMock()),
+        patch.object(app_factory, "_warm_up_pdf_ocr", new=AsyncMock()),
+    ):
+        async with app_factory.app_lifespan(FastAPI()):
+            pass
+
+    mock_engine.assert_called_once_with()
+    engine.recover_inflight_campaigns.assert_awaited_once()
+    worker.start.assert_awaited_once()
+    worker.stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_manages_injected_engine_worker_when_process_worker_is_unconfigured() -> None:
+    """An isolated engine worker must not leak across embedded event loops."""
+    from core import app_factory
+
+    process_worker = type(
+        "FakeProcessWorker",
+        (),
+        {"is_configured": False, "start": AsyncMock(), "stop": AsyncMock()},
+    )()
+    engine_worker = type(
+        "FakeEngineWorker",
+        (),
+        {"is_configured": True, "start": AsyncMock(), "stop": AsyncMock()},
+    )()
+    engine = type(
+        "FakeCampaignEngine",
+        (),
+        {"_worker": engine_worker, "recover_inflight_campaigns": AsyncMock()},
+    )()
+
+    with (
+        patch("evaluation.db.force_init_db", new=AsyncMock()),
+        patch("evaluation.campaign_engine.get_campaign_engine", return_value=engine),
+        patch("evaluation.job_worker.get_evaluation_job_worker", return_value=process_worker),
+        patch.object(app_factory, "_ensure_base_directories"),
+        patch.object(app_factory, "_initialize_external_clients"),
+        patch.object(app_factory, "_initialize_rag_components", new=AsyncMock()),
+        patch.object(app_factory, "_warm_up_pdf_ocr", new=AsyncMock()),
+    ):
+        async with app_factory.app_lifespan(FastAPI()):
+            pass
+
+    engine.recover_inflight_campaigns.assert_awaited_once()
+    engine_worker.start.assert_not_awaited()
+    engine_worker.stop.assert_not_awaited()
+    process_worker.start.assert_not_awaited()
+    process_worker.stop.assert_not_awaited()

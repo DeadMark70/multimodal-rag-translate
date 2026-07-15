@@ -92,7 +92,7 @@
 - Produces: `ErrorDecision(error_type: str, retryable: bool, retry_after_seconds: float | None, safe_message: str)`.
 - Produces: `classify_evaluation_error(exc: BaseException) -> ErrorDecision` and `retry_delay_seconds(attempt_number: int, retry_after_seconds: float | None) -> float`.
 
-- [ ] **Step 1: Write schema normalization tests**
+- [x] **Step 1: Write schema normalization tests**
 
 ```python
 from evaluation.job_schemas import EvaluationRerunRequest
@@ -115,7 +115,7 @@ def test_selected_rerun_requires_question_ids() -> None:
         EvaluationRerunRequest(scope="selected", stages="execution")
 ```
 
-- [ ] **Step 2: Write transient/permanent error policy tests**
+- [x] **Step 2: Write transient/permanent error policy tests**
 
 ```python
 import httpx
@@ -147,7 +147,7 @@ def test_retry_after_takes_precedence() -> None:
     assert retry_delay_seconds(3, 17.0) == 17.0
 ```
 
-- [ ] **Step 3: Run tests and verify they fail**
+- [x] **Step 3: Run tests and verify they fail**
 
 Run:
 
@@ -157,7 +157,7 @@ Run:
 
 Expected: collection fails because `evaluation.job_schemas` and `evaluation.error_policy` do not exist.
 
-- [ ] **Step 4: Implement the exact status models and request validation**
+- [x] **Step 4: Implement the exact status models and request validation**
 
 Implement these public declarations in `evaluation/job_schemas.py`:
 
@@ -211,7 +211,7 @@ class EvaluationRerunRequest(BaseModel):
 
 Add fully typed Pydantic models for every interface listed above. `ClaimedEvaluationWork` must contain job, job-item, work-item, and attempt IDs plus the immutable input snapshot.
 
-- [ ] **Step 5: Implement explicit error classification**
+- [x] **Step 5: Implement explicit error classification**
 
 Implement `ErrorDecision`, status-code extraction through the exception chain, sanitized messages, and retry delay. Retry only timeout, transport, HTTP 408/429/5xx, Google `ResourceExhausted`/`ServiceUnavailable`, and explicit process interruption. Classify 401/403 as authentication, `ModuleNotFoundError` as missing dependency, and Pydantic/value errors as invalid configuration or dataset.
 
@@ -226,11 +226,11 @@ def retry_delay_seconds(
     return min(2.0**exponent, 60.0)
 ```
 
-- [ ] **Step 6: Run focused tests**
+- [x] **Step 6: Run focused tests**
 
 Run the Task 1 command again. Expected: all tests pass.
 
-- [ ] **Step 7: Commit Task 1**
+- [x] **Step 7: Commit Task 1**
 
 ```powershell
 git add evaluation/job_schemas.py evaluation/error_policy.py tests/test_evaluation_job_schemas.py tests/test_evaluation_error_policy.py
@@ -256,7 +256,7 @@ git commit -m "feat: define durable evaluation job states"
 - Produces: `EvaluationJobStore.recover_interrupted_attempts(*, at: datetime) -> int`.
 - Produces: `EvaluationJobStore.list_jobs(*, user_id: str, campaign_id: str) -> list[EvaluationJob]`, `get_job(*, user_id: str, job_id: str) -> EvaluationJob`, and `list_attempts(*, user_id: str, work_item_id: str) -> list[EvaluationAttempt]`.
 
-- [ ] **Step 1: Write migration and claim tests**
+- [x] **Step 1: Write migration and claim tests**
 
 ```python
 @pytest.mark.asyncio
@@ -301,7 +301,7 @@ async def test_claim_creates_running_attempt_atomically() -> None:
 
 Patch `evaluation.db.EVALUATION_DB_PATH` to a workspace-local test database and call `force_init_db()` in the fixture.
 
-- [ ] **Step 2: Run the store tests and verify failure**
+- [x] **Step 2: Run the store tests and verify failure**
 
 Run:
 
@@ -311,7 +311,7 @@ Run:
 
 Expected: FAIL because ledger tables and `EvaluationJobStore` do not exist.
 
-- [ ] **Step 3: Add the four ledger tables and indexes**
+- [x] **Step 3: Add the four ledger tables and indexes**
 
 Extend `_INIT_SQL` with `evaluation_jobs`, `evaluation_work_items`, `evaluation_job_items`, and `evaluation_attempts`, matching the approved design. Enforce:
 
@@ -331,7 +331,7 @@ ON evaluation_attempts(work_item_id, attempt_number);
 
 Add nullable `source_attempt_id` to `campaign_results` and `ragas_scores`, plus nullable `evaluation_signature` to `ragas_scores`. Add `PRAGMA busy_timeout=5000;` in `connect_db()` while retaining WAL, `synchronous=NORMAL`, and foreign keys.
 
-- [ ] **Step 4: Implement transactional job creation and claims**
+- [x] **Step 4: Implement transactional job creation and claims**
 
 `create_job_with_items` must insert one job, upsert work items by stable logical key, and create job items with a fresh retry budget. `claim_ready_items` must use `BEGIN IMMEDIATE`, select only pending or due retry-wait job items, reject a claim if another non-terminal job item already targets the same work item, create the running attempt, set `active_attempt_id`, and commit before returning claims.
 
@@ -343,11 +343,11 @@ FROM evaluation_attempts
 WHERE work_item_id = ?;
 ```
 
-- [ ] **Step 5: Implement heartbeat, failure, cancellation, and startup interruption**
+- [x] **Step 5: Implement heartbeat, failure, cancellation, and startup interruption**
 
 `fail_attempt` records sanitized error metadata. Retryable attempts below the job-item budget transition to `retry_wait` with `next_retry_at`; exhausted or permanent errors transition to `failed`. `recover_interrupted_attempts` changes all running attempts to interrupted, clears job-item active attempt IDs, and requeues eligible job items.
 
-- [ ] **Step 6: Run focused tests and lint**
+- [x] **Step 6: Run focused tests and lint**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest tests/test_evaluation_job_store.py -q -p no:cacheprovider
@@ -356,7 +356,7 @@ $env:RUFF_NO_CACHE='true'; & '.\.venv\Scripts\python.exe' -m ruff check evaluati
 
 Expected: both commands exit 0.
 
-- [ ] **Step 7: Commit Task 2**
+- [x] **Step 7: Commit Task 2**
 
 ```powershell
 git add evaluation/db.py evaluation/job_store.py tests/test_evaluation_job_store.py
@@ -381,7 +381,7 @@ git commit -m "feat: persist evaluation work ledger"
 - Produces: `complete_ragas_attempt(claim: ClaimedEvaluationWork, output: RagasAttemptOutput) -> None`.
 - Produces: `backfill_legacy_attempts() -> None`.
 
-- [ ] **Step 1: Write promotion safety tests**
+- [x] **Step 1: Write promotion safety tests**
 
 ```python
 @pytest.mark.asyncio
@@ -413,7 +413,7 @@ async def test_new_success_promotes_and_old_attempt_remains() -> None:
 
 Add equivalent RAGAS tests: a failed rerun preserves the old score; a successful compatible rerun replaces it; an incompatible signature does not enter the current aggregate.
 
-- [ ] **Step 2: Run promotion tests and verify failure**
+- [x] **Step 2: Run promotion tests and verify failure**
 
 Run:
 
@@ -423,7 +423,7 @@ Run:
 
 Expected: FAIL because promotion outputs and signature selection are absent.
 
-- [ ] **Step 3: Implement deterministic evaluation signatures**
+- [x] **Step 3: Implement deterministic evaluation signatures**
 
 Canonicalize this dictionary with `json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)` and hash it with SHA-256:
 
@@ -441,19 +441,19 @@ payload = {
 }
 ```
 
-- [ ] **Step 4: Implement atomic execution promotion**
+- [x] **Step 4: Implement atomic execution promotion**
 
 Inside one connection transaction, mark the attempt succeeded, upsert the unique campaign-result unit while keeping its stable result ID, set `source_attempt_id`, update the work-item latest-success pointer, mark the job item succeeded, and recompute job counts. Store the full historical output in `evaluation_attempts.output_json`.
 
-- [ ] **Step 5: Implement atomic RAGAS promotion without zero fallbacks**
+- [x] **Step 5: Implement atomic RAGAS promotion without zero fallbacks**
 
 Upsert official scores by `(campaign_result_id, metric_name)` only after a successful attempt. Persist `source_attempt_id` and `evaluation_signature`. Remove code paths that delete valid official scores before replacement. A failed metric attempt calls `fail_attempt` and produces no score row.
 
-- [ ] **Step 6: Backfill legacy rows idempotently**
+- [x] **Step 6: Backfill legacy rows idempotently**
 
 For each campaign with official rows lacking `source_attempt_id`, create one deterministic legacy job, stable work item, job item, and synthetic attempt. Link successful result/score rows to successful legacy attempts; represent legacy failed campaign results as failed attempts without promoting them. Re-running the migration must not create duplicates.
 
-- [ ] **Step 7: Run focused tests**
+- [x] **Step 7: Run focused tests**
 
 Run the Task 3 command without `-k`, then run:
 
@@ -463,7 +463,7 @@ Run the Task 3 command without `-k`, then run:
 
 Expected: all tests pass and existing analytics still read official tables.
 
-- [ ] **Step 8: Commit Task 3**
+- [x] **Step 8: Commit Task 3**
 
 ```powershell
 git add evaluation/job_schemas.py evaluation/job_store.py evaluation/db.py tests/test_evaluation_job_store.py tests/test_ragas_evaluator.py
@@ -484,7 +484,7 @@ git commit -m "feat: promote successful evaluation attempts"
 - Produces: `EvaluationJobWorker.start()`, `stop()`, `notify()`, and `run_once()`.
 - Produces: `get_evaluation_job_worker() -> EvaluationJobWorker`.
 
-- [ ] **Step 1: Write worker recovery and wakeup tests**
+- [x] **Step 1: Write worker recovery and wakeup tests**
 
 ```python
 @pytest.mark.asyncio
@@ -512,7 +512,7 @@ async def test_stop_does_not_claim_new_work() -> None:
     assert await worker.run_once() == 0
 ```
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest tests/test_evaluation_job_worker.py -q -p no:cacheprovider
@@ -520,17 +520,17 @@ async def test_stop_does_not_claim_new_work() -> None:
 
 Expected: FAIL because the worker does not exist.
 
-- [ ] **Step 3: Implement event-driven worker lifecycle**
+- [x] **Step 3: Implement event-driven worker lifecycle**
 
 The worker owns one loop task, one stop event, and one wake event. `start()` runs startup recovery before creating the loop. `notify()` sets the wake event. The loop drains ready work, then waits until notified or the next retry becomes due. `stop()` prevents claims, cancels active handler tasks cooperatively, marks unfinished attempts interrupted, and awaits loop shutdown.
 
 Use an injectable clock and sleep/wait function so tests never block on real retry delays.
 
-- [ ] **Step 4: Implement bounded dispatch and heartbeats**
+- [x] **Step 4: Implement bounded dispatch and heartbeats**
 
 Use separate semaphores: execution maximum 4 and RAGAS-batch maximum 2. Start one heartbeat task per active attempt, updating no more often than every 15 seconds. Always cancel and drain heartbeat tasks in `finally`.
 
-- [ ] **Step 5: Wire the worker into FastAPI lifespan**
+- [x] **Step 5: Wire the worker into FastAPI lifespan**
 
 Replace direct `recover_inflight_campaigns()` startup with:
 
@@ -547,7 +547,7 @@ finally:
 
 Keep database initialization before `worker.start()`.
 
-- [ ] **Step 6: Run focused lifecycle tests**
+- [x] **Step 6: Run focused lifecycle tests**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest tests/test_evaluation_job_worker.py tests/test_rag_startup.py -q -p no:cacheprovider
@@ -555,7 +555,7 @@ Keep database initialization before `worker.start()`.
 
 Expected: all tests pass with no leaked asyncio tasks.
 
-- [ ] **Step 7: Commit Task 4**
+- [x] **Step 7: Commit Task 4**
 
 ```powershell
 git add evaluation/job_worker.py core/app_factory.py tests/test_evaluation_job_worker.py
@@ -579,7 +579,7 @@ git commit -m "feat: run durable evaluation worker"
 - Produces: `DatasetExecutionWorker.execute(claim: ClaimedEvaluationWork) -> None`.
 - Produces: CampaignEngine methods that enqueue durable work and notify the worker.
 
-- [ ] **Step 1: Write execution checkpoint tests**
+- [x] **Step 1: Write execution checkpoint tests**
 
 ```python
 @pytest.mark.asyncio
@@ -605,7 +605,7 @@ async def test_campaign_creation_enqueues_units_without_process_local_task() -> 
     worker.notify.assert_called_once_with()
 ```
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest tests/test_evaluation_execution_worker.py tests/test_campaign_engine.py -k "durable or failed_unit" -q -p no:cacheprovider
@@ -613,25 +613,25 @@ async def test_campaign_creation_enqueues_units_without_process_local_task() -> 
 
 Expected: FAIL because execution still uses campaign-owned tasks.
 
-- [ ] **Step 3: Implement immutable execution snapshots**
+- [x] **Step 3: Implement immutable execution snapshots**
 
 When enqueueing, store the complete test-case snapshot, mode, run/repeat numbers, condition ID, ablation flags, budget, and model configuration. The worker must execute from this snapshot so later edits to the golden dataset do not change a resumed job.
 
-- [ ] **Step 4: Move unit execution into `DatasetExecutionWorker`**
+- [x] **Step 4: Move unit execution into `DatasetExecutionWorker`**
 
 Reuse existing runner and result-normalization logic. On provider exception, classify and fail the attempt. On success, build `ExecutionAttemptOutput`, call `complete_execution_attempt`, then persist observability/trace details using the promoted stable result ID. Trace failure is logged but does not roll back an already committed official result.
 
-- [ ] **Step 5: Convert `CampaignEngine` into an enqueue/query facade**
+- [x] **Step 5: Convert `CampaignEngine` into an enqueue/query facade**
 
 `create_and_start` creates the campaign, builds stable `WorkItemSpec` rows from `_build_units`, creates the initial durable job, notifies the worker, and returns. Remove `_active_tasks`, `_register_active_task`, `_get_active_task`, `_drop_active_task`, and startup reconstruction that treats any result row as completed.
 
 `cancel_campaign` delegates to the active durable job. `ensure_campaign_task` becomes a compatibility method that only notifies the worker and returns durable campaign state.
 
-- [ ] **Step 6: Add `completed_with_errors` and derive campaign state**
+- [x] **Step 6: Add `completed_with_errors` and derive campaign state**
 
 Add `COMPLETED_WITH_ERRORS` to backend status enums and terminal sets. Derive completed only when every required current job item has a compatible success; derive completed-with-errors when at least one usable result exists but unresolved failures remain; derive failed when no valid report can be produced.
 
-- [ ] **Step 7: Run campaign tests**
+- [x] **Step 7: Run campaign tests**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest tests/test_evaluation_execution_worker.py tests/test_campaign_engine.py tests/test_evaluation_pipeline.py -q -p no:cacheprovider
@@ -639,7 +639,7 @@ Add `COMPLETED_WITH_ERRORS` to backend status enums and terminal sets. Derive co
 
 Expected: all pass; recovery tests assert durable job behavior rather than process-local tasks.
 
-- [ ] **Step 8: Commit Task 5**
+- [x] **Step 8: Commit Task 5**
 
 ```powershell
 git add evaluation/execution_worker.py evaluation/campaign_engine.py evaluation/campaign_schemas.py evaluation/db.py tests/test_evaluation_execution_worker.py tests/test_campaign_engine.py
@@ -663,7 +663,7 @@ git commit -m "feat: checkpoint evaluation dataset execution"
 - Produces: `RagasBatchWorker.execute(claims: list[ClaimedEvaluationWork]) -> None`.
 - Produces: creation of RAGAS work only for current successful official campaign results.
 
-- [ ] **Step 1: Write per-metric checkpoint and partial recovery tests**
+- [x] **Step 1: Write per-metric checkpoint and partial recovery tests**
 
 ```python
 @pytest.mark.asyncio
@@ -689,7 +689,7 @@ async def test_missing_dependency_is_failure_not_completed_empty_scores() -> Non
     assert await store.count_failed_job_items(campaign_id="cmp-1") == 1
 ```
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest tests/test_evaluation_ragas_worker.py tests/test_ragas_evaluator.py -k "checkpoint or missing_dependency" -q -p no:cacheprovider
@@ -697,23 +697,23 @@ async def test_missing_dependency_is_failure_not_completed_empty_scores() -> Non
 
 Expected: FAIL because RAGAS persists only after campaign-wide completion.
 
-- [ ] **Step 3: Extract one-metric batch evaluation**
+- [x] **Step 3: Extract one-metric batch evaluation**
 
 Refactor `_evaluate_metric_async` into the public typed `evaluate_metric_batch`. It must raise provider/dependency failures to the durable worker, return exactly one value per input row, and never convert exceptions into zero arrays. Keep aggregation methods unchanged except for filtering by current official signature.
 
-- [ ] **Step 4: Implement compatible grouping and bounded batching**
+- [x] **Step 4: Implement compatible grouping and bounded batching**
 
 The worker groups claimed RAGAS items by metric name and evaluator signature, then chunks groups to configured batch size with maximum 4 by default. Outer parallelism is maximum 2. Each returned value calls `complete_ragas_attempt` independently. A whole-call exception fails each affected attempt using the same classified error.
 
-- [ ] **Step 5: Generate downstream RAGAS work idempotently**
+- [x] **Step 5: Generate downstream RAGAS work idempotently**
 
 After execution job terminalization, enumerate current official successful results and enabled metrics. Build one stable work item per `(result_id, metric, evaluation_signature)`. Do not generate work for failed execution attempts. Existing compatible successes satisfy the work unless the user explicitly requests a RAGAS rerun.
 
-- [ ] **Step 6: Remove destructive replacement and zero fallback paths**
+- [x] **Step 6: Remove destructive replacement and zero fallback paths**
 
 Delete campaign-wide score accumulation and `replace_for_campaign` calls from the active execution path. Retain repository methods only for legacy compatibility tests until no caller remains. Missing or invalid current scores must stay absent and appear in warning counts.
 
-- [ ] **Step 7: Run RAGAS and campaign regression tests**
+- [x] **Step 7: Run RAGAS and campaign regression tests**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest tests/test_evaluation_ragas_worker.py tests/test_ragas_evaluator.py tests/test_campaign_engine.py tests/test_evaluation_analytics_api.py -q -p no:cacheprovider
@@ -721,7 +721,7 @@ Delete campaign-wide score accumulation and `replace_for_campaign` calls from th
 
 Expected: all tests pass; no failed metric contributes `0.0`.
 
-- [ ] **Step 8: Commit Task 6**
+- [x] **Step 8: Commit Task 6**
 
 ```powershell
 git add evaluation/ragas_worker.py evaluation/ragas_evaluator.py evaluation/job_worker.py evaluation/campaign_engine.py tests/test_evaluation_ragas_worker.py tests/test_ragas_evaluator.py
@@ -746,7 +746,7 @@ git commit -m "feat: checkpoint RAGAS metric batches"
 - Produces: `GET /api/evaluation/work-items/{work_item_id}/attempts`.
 - Preserves: `POST /api/evaluation/campaigns/{campaign_id}/evaluate` as a RAGAS-only delegate.
 
-- [ ] **Step 1: Write ownership and rerun scope API tests**
+- [x] **Step 1: Write ownership and rerun scope API tests**
 
 ```python
 def test_failed_only_rerun_returns_durable_job(client, auth_headers, seeded_campaign) -> None:
@@ -769,7 +769,7 @@ def test_attempt_history_enforces_owner(client, other_user_headers, seeded_work_
 
 Also test selected scope validation, RAGAS-only metric selection, cancellation, and old `/evaluate` delegation.
 
-- [ ] **Step 2: Run API tests and verify failure**
+- [x] **Step 2: Run API tests and verify failure**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest tests/test_evaluation_api.py -k "rerun or job or attempt_history" -q -p no:cacheprovider
@@ -777,23 +777,23 @@ Also test selected scope validation, RAGAS-only metric selection, cancellation, 
 
 Expected: new routes return 404 or fail collection.
 
-- [ ] **Step 3: Implement engine rerun selection**
+- [x] **Step 3: Implement engine rerun selection**
 
 Resolve failed-only from current job-item state, selected from question IDs, and all from stable campaign work. For execution-and-RAGAS, enqueue execution work first; downstream RAGAS is created only after successful promotion. For RAGAS-only, select current successful official results and requested metrics.
 
-- [ ] **Step 4: Add thin authenticated routes**
+- [x] **Step 4: Add thin authenticated routes**
 
 Each route passes `user_id` into the engine/store and returns typed Pydantic responses. Unknown or cross-user IDs return the existing `AppError` 404. Route functions contain no SQL, task creation, or provider logic.
 
-- [ ] **Step 5: Delegate the legacy evaluate endpoint**
+- [x] **Step 5: Delegate the legacy evaluate endpoint**
 
 Translate omitted payload to `scope="all"`, selected question IDs to `scope="selected"`, and always set `stages="ragas"`. Return the campaign snapshot for response compatibility after creating the durable job.
 
-- [ ] **Step 6: Extend SSE terminal handling**
+- [x] **Step 6: Extend SSE terminal handling**
 
 Add `completed_with_errors` to terminal status sets and emit `campaign_completed_with_errors`. The stream continues to read durable campaign snapshots; it never owns execution recovery.
 
-- [ ] **Step 7: Run backend API tests**
+- [x] **Step 7: Run backend API tests**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest tests/test_evaluation_api.py tests/test_evaluation_pipeline.py tests/test_evaluation_analytics_api.py -q -p no:cacheprovider
@@ -801,7 +801,7 @@ Add `completed_with_errors` to terminal status sets and emit `campaign_completed
 
 Expected: all pass.
 
-- [ ] **Step 8: Commit Task 7**
+- [x] **Step 8: Commit Task 7**
 
 ```powershell
 git add evaluation/job_schemas.py evaluation/campaign_engine.py evaluation/router.py tests/test_evaluation_api.py
@@ -828,7 +828,7 @@ git commit -m "feat: expose durable evaluation reruns"
 - Produces: `createCampaignRerun`, `listCampaignJobs`, `getEvaluationJob`, `cancelEvaluationJob`, `listWorkItemAttempts`.
 - Produces: `EvaluationJobPanel` with valid/failed/retrying/interrupted/missing counts and safe attempt history.
 
-- [ ] **Step 1: Write API client contract tests**
+- [x] **Step 1: Write API client contract tests**
 
 ```typescript
 it('creates a failed-only durable rerun', async () => {
@@ -846,11 +846,11 @@ it('creates a failed-only durable rerun', async () => {
 });
 ```
 
-- [ ] **Step 2: Write UI behavior tests**
+- [x] **Step 2: Write UI behavior tests**
 
 Test that `completed_with_errors` is terminal but warning-colored, failed attempts are excluded from displayed sample counts, retry-failed calls the unified endpoint, RAGAS-only does not request execution, attempt history displays safe messages, and polling refreshes an active job after reload.
 
-- [ ] **Step 3: Run frontend tests and verify failure**
+- [x] **Step 3: Run frontend tests and verify failure**
 
 ```powershell
 npx vitest run src/services/evaluationApi.test.ts src/components/evaluation/EvaluationJobPanel.test.tsx src/components/evaluation/EvaluationResults.test.tsx src/components/evaluation/CampaignRunner.test.tsx
@@ -858,23 +858,23 @@ npx vitest run src/services/evaluationApi.test.ts src/components/evaluation/Eval
 
 Run from `D:\flutterserver\Multimodal_RAG_System`. Expected: FAIL because new types, client methods, and panel are absent.
 
-- [ ] **Step 4: Add exact TypeScript contracts**
+- [x] **Step 4: Add exact TypeScript contracts**
 
 Add `completed_with_errors` to `CampaignLifecycleStatus` and the SSE union. Add typed rerun request, job, job item counts, and attempt summary interfaces matching backend JSON field names. Do not use `Record<string, unknown>` for core status fields.
 
-- [ ] **Step 5: Implement API client methods**
+- [x] **Step 5: Implement API client methods**
 
 Use the shared authenticated `api` instance for all REST calls. Extend the SSE parser with `campaign_completed_with_errors`. Keep the existing `evaluateCampaign` export as a compatibility wrapper until callers are migrated.
 
-- [ ] **Step 6: Implement `EvaluationJobPanel`**
+- [x] **Step 6: Implement `EvaluationJobPanel`**
 
 Render one compact summary card with valid, failed, retry-wait, interrupted, and missing counts; job status; latest safe error; and actions for retry-failed, RAGAS-only, cancel, and attempt-history expansion. Disable conflicting actions while a non-terminal job targets the same campaign.
 
-- [ ] **Step 7: Integrate the panel and durable polling**
+- [x] **Step 7: Integrate the panel and durable polling**
 
 `EvaluationResults` loads campaign jobs for the selected campaign and refreshes metrics only after the selected job becomes terminal. Existing selected-question rerun uses `scope="selected", stages="ragas"`. `CampaignRunner` treats `completed_with_errors` as terminal and displays a warning rather than success styling.
 
-- [ ] **Step 8: Run focused frontend verification**
+- [x] **Step 8: Run focused frontend verification**
 
 ```powershell
 npx vitest run src/services/evaluationApi.test.ts src/components/evaluation/EvaluationJobPanel.test.tsx src/components/evaluation/EvaluationResults.test.tsx src/components/evaluation/CampaignRunner.test.tsx
@@ -884,7 +884,7 @@ npx tsc --noEmit
 
 Expected: all commands exit 0.
 
-- [ ] **Step 9: Commit Task 8 in the frontend repository**
+- [x] **Step 9: Commit Task 8 in the frontend repository**
 
 ```powershell
 git add src/types/evaluation.ts src/services/evaluationApi.ts src/services/evaluationApi.test.ts src/components/evaluation/EvaluationJobPanel.tsx src/components/evaluation/EvaluationJobPanel.test.tsx src/components/evaluation/EvaluationResults.tsx src/components/evaluation/EvaluationResults.test.tsx src/components/evaluation/CampaignRunner.tsx src/components/evaluation/CampaignRunner.test.tsx
@@ -910,7 +910,7 @@ git commit -m "feat: manage durable evaluation reruns"
 - Consumes: official success projections and signatures from Tasks 3 and 6.
 - Produces: aggregate sample counts and missing/failed warning counts that cannot include failed attempts.
 
-- [ ] **Step 1: Write aggregate safety regressions**
+- [x] **Step 1: Write aggregate safety regressions**
 
 ```python
 @pytest.mark.asyncio
@@ -924,7 +924,7 @@ async def test_aggregate_excludes_failed_attempts_and_reports_missing_sample() -
 
 Add export and delta/ECR tests proving that missing metrics never become zero and incompatible evaluator/context signatures never mix.
 
-- [ ] **Step 2: Run safety tests and verify failures**
+- [x] **Step 2: Run safety tests and verify failures**
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest tests/test_ragas_evaluator.py tests/test_evaluation_analytics_api.py -k "missing or failed_attempt or incompatible" -q -p no:cacheprovider
@@ -932,15 +932,15 @@ Add export and delta/ECR tests proving that missing metrics never become zero an
 
 Expected: at least the new warning/count assertions fail before the final projection filters are complete.
 
-- [ ] **Step 3: Finalize analytics filters and warnings**
+- [x] **Step 3: Finalize analytics filters and warnings**
 
 Every aggregate reads official projections only. RAGAS joins require the active evaluation signature. Metric dictionaries omit missing values. Add explicit `missing_metric_rows`, `failed_work_items`, and `valid_sample_count` fields to warning/summary schemas and frontend types. Keep invalid legacy rows visible as warnings but exclude them from means.
 
-- [ ] **Step 4: Update backend and frontend documentation**
+- [x] **Step 4: Update backend and frontend documentation**
 
 Document work units, attempt retention, official-result promotion, restart behavior, retry classification, default concurrency, rerun endpoints, `completed_with_errors`, statistical exclusion rules, and the unavoidable provider-response/checkpoint billing window. Update generated API documentation using the exact implemented route names.
 
-- [ ] **Step 5: Run all focused backend evaluation tests**
+- [x] **Step 5: Run all focused backend evaluation tests**
 
 ```powershell
 $env:TEST_MODE='true'; $env:USE_FAKE_PROVIDERS='true'; & '.\.venv\Scripts\python.exe' -m pytest tests/test_evaluation_job_schemas.py tests/test_evaluation_error_policy.py tests/test_evaluation_job_store.py tests/test_evaluation_job_worker.py tests/test_evaluation_execution_worker.py tests/test_evaluation_ragas_worker.py tests/test_campaign_engine.py tests/test_ragas_evaluator.py tests/test_evaluation_api.py tests/test_evaluation_pipeline.py tests/test_evaluation_analytics_api.py -q -p no:cacheprovider
@@ -948,7 +948,7 @@ $env:TEST_MODE='true'; $env:USE_FAKE_PROVIDERS='true'; & '.\.venv\Scripts\python
 
 Expected: all tests pass.
 
-- [ ] **Step 6: Run full backend verification**
+- [x] **Step 6: Run full backend verification**
 
 ```powershell
 $env:TEST_MODE='true'; $env:USE_FAKE_PROVIDERS='true'; $env:RUFF_NO_CACHE='true'; & '.\.venv\Scripts\python.exe' -m ruff check core/app_factory.py evaluation tests/test_evaluation_job_schemas.py tests/test_evaluation_error_policy.py tests/test_evaluation_job_store.py tests/test_evaluation_job_worker.py tests/test_evaluation_execution_worker.py tests/test_evaluation_ragas_worker.py tests/test_campaign_engine.py tests/test_ragas_evaluator.py tests/test_evaluation_api.py tests/test_evaluation_analytics_api.py
@@ -957,7 +957,7 @@ $env:TEST_MODE='true'; $env:USE_FAKE_PROVIDERS='true'; & '.\.venv\Scripts\python
 
 Expected: ruff exits 0 and pytest reports zero failures. Record exact passed/skipped counts; if legacy environment collection is blocked, report the exact module and exception rather than claiming full success.
 
-- [ ] **Step 7: Run full frontend verification**
+- [x] **Step 7: Run full frontend verification**
 
 From `D:\flutterserver\Multimodal_RAG_System`:
 
@@ -970,14 +970,14 @@ npm run build
 
 Expected: all commands exit 0 and Vitest reports zero failed tests.
 
-- [ ] **Step 8: Commit backend documentation and safety changes**
+- [x] **Step 8: Commit backend documentation and safety changes**
 
 ```powershell
 git add evaluation/ragas_evaluator.py evaluation/analytics.py tests/test_ragas_evaluator.py tests/test_evaluation_analytics_api.py docs/BACKEND.md docs/RELIABILITY.md docs/generated/api-surface.md
 git commit -m "docs: document durable evaluation recovery"
 ```
 
-- [ ] **Step 9: Commit frontend documentation**
+- [x] **Step 9: Commit frontend documentation**
 
 From `D:\flutterserver\Multimodal_RAG_System`:
 
@@ -995,6 +995,26 @@ git commit -m "docs: explain evaluation rerun recovery"
 3. Task 7 exposes backend contracts. Confirm OpenAPI and ownership behavior before frontend work.
 4. Task 8 updates the frontend in its separate repository.
 5. Task 9 is the release gate; do not claim completion without exact full-suite results.
+
+## Closeout Evidence (2026-07-15)
+
+- Cold-start recovery now constructs the production campaign engine before
+  checking the process worker, so a clean process configures handlers before
+  recovery. Embedded isolated workers are recovered without an idle-start race
+  and are stopped when their event loop is still running.
+- Generated API documentation is synchronized: the durable route is
+  `POST /api/evaluation/campaigns/{campaign_id}/reruns`, and `openapi.json`
+  contains all durable job, attempt, and rerun routes (85 paths; all six
+  required route families present).
+- Focused backend evaluation command from Task 9 Step 5: 127 passed; the
+  additional startup/lifecycle regression file raises the final focused run
+  to 132 passed. Ruff checks for all changed backend/runtime/test files:
+  passed.
+- Backend suite was executed from the final 124-file, 783-test collection in
+  five bounded groups because the local runner interrupts one process at about
+  60 seconds. Group totals: 247 + 122 + 143 + 127 + 144 = 783 passed.
+- Frontend verification: 72 Vitest files / 287 tests passed; lint, TypeScript
+  check, and production build passed.
 
 ## Rollback Strategy
 

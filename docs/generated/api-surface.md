@@ -9,7 +9,7 @@ Human-maintained inventory of the current backend surface.
 | `/pdfmd` | document lifecycle | `/list`, `/upload_pdf_md`, `/ocr`, `/file/{doc_id}/status`, `/file/{doc_id}`, `/file/{doc_id}/translate`, `/file/{doc_id}/retry-index`, `/file/{doc_id}/summary`, `/file/{doc_id}` DELETE |
 | `/rag` | ask and research | `/ask`, `/ask/stream`, `/research`, `/plan`, `/execute`, `/execute/stream` |
 | `/graph` | graph state, quality, diagnostics, and maintenance | `/status`, `/quality`, `/runtime-quality?campaign_id=...`, `/debug/search`, `/data`, `/documents`, `/optimize`, `/rebuild`, durable `/rebuild-full`, `/rebuild-full/status`, `/rebuild-full/resume`, document retry/purge endpoints, `/node-vector/sync`, `/node-vector/sync/status` |
-| `/api/evaluation` | evaluation runtime | `/test-cases`, `/models`, `/model-configs`, `/campaigns`, `/campaigns/{id}/results`, `/campaigns/{id}/overview`, `/campaigns/{id}/runs`, `/campaigns/{id}/mode-comparison`, `/campaigns/{id}/question-comparison`, `/campaigns/{id}/cost-latency`, `/campaigns/{id}/router-analysis`, `/campaigns/{id}/ablation`, `/campaigns/{id}/human-vs-auto`, `/campaigns/{id}/human-eval-queue`, `/campaigns/{id}/repeat-stability`, `/campaigns/{id}/errors`, `/campaigns/{id}/export`, `/campaigns/{id}/traces`, `/campaigns/{id}/metrics`, `/campaigns/{id}/evaluate`, `/campaigns/{id}/cancel`, `/campaigns/{id}/stream`, `/runs/{run_id}/*` |
+| `/api/evaluation` | evaluation runtime | `/test-cases`, `/models`, `/model-configs`, `/campaigns`, `/campaigns/{id}/results`, `/campaigns/{id}/overview`, `/campaigns/{id}/runs`, `/campaigns/{id}/mode-comparison`, `/campaigns/{id}/question-comparison`, `/campaigns/{id}/cost-latency`, `/campaigns/{id}/router-analysis`, `/campaigns/{id}/ablation`, `/campaigns/{id}/human-vs-auto`, `/campaigns/{id}/human-eval-queue`, `/campaigns/{id}/repeat-stability`, `/campaigns/{id}/errors`, `/campaigns/{id}/export`, `/campaigns/{id}/traces`, `/campaigns/{id}/metrics`, `/campaigns/{id}/evaluate`, `/campaigns/{id}/cancel`, `/campaigns/{id}/stream`, durable `/campaigns/{id}/reruns`, `/campaigns/{id}/jobs`, `/jobs/{job_id}`, `/jobs/{job_id}/items`, `/jobs/{job_id}/cancel`, `/work-items/{work_item_id}/attempts`, `/runs/{run_id}/*` |
 | `/api/conversations` | conversation persistence | legacy list/create/detail/update/delete, `/page` summary cursor list, `/{conversation_id}/messages/page`, `/{conversation_id}/messages` |
 | `/stats` | dashboard stats | `/dashboard` |
 | `/multimodal` | multimodal extraction | `/extract`, `/file/{doc_id}` DELETE |
@@ -92,7 +92,7 @@ Human-maintained inventory of the current backend surface.
 
 ### Durable Evaluation Jobs
 
-- `POST /api/evaluation/campaigns/{campaign_id}/rerun`
+- `POST /api/evaluation/campaigns/{campaign_id}/reruns`
 - `GET /api/evaluation/campaigns/{campaign_id}/jobs`
 - `GET /api/evaluation/jobs/{job_id}`
 - `GET /api/evaluation/jobs/{job_id}/items`

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TypeAlias
@@ -20,6 +21,8 @@ _EXECUTION_CONCURRENCY = 4
 _RAGAS_CONCURRENCY = 2
 _RAGAS_BATCH_SIZE = 4
 _HEARTBEAT_SECONDS = 15.0
+
+logger = logging.getLogger(__name__)
 
 
 class EvaluationJobWorker:
@@ -91,8 +94,16 @@ class EvaluationJobWorker:
 
     async def start(self) -> None:
         """Recover interrupted ledger attempts and start the event-driven loop."""
-        if self._loop_task is not None and not self._loop_task.done():
-            return
+        existing_loop = self._loop_task
+        if existing_loop is not None and not existing_loop.done():
+            # A stop-when-idle loop can observe an empty queue and set its stop
+            # event in the same scheduling window that a caller enqueues new
+            # work. Treat that loop as stale instead of returning early and
+            # leaving the newly-created item unclaimed.
+            if self._accepting and not self._stop_event.is_set():
+                return
+            existing_loop.cancel()
+            await asyncio.gather(existing_loop, return_exceptions=True)
         if self._handlers_unavailable():
             raise RuntimeError("Evaluation worker handlers must be configured before start")
         self._reset_loop_primitives()
@@ -313,7 +324,13 @@ class EvaluationJobWorker:
     def _task_finished(self, task: asyncio.Task[None]) -> None:
         self._active_tasks.pop(task, None)
         if not task.cancelled():
-            task.exception()
+            exception = task.exception()
+            if exception is not None:
+                logger.error(
+                    "Durable evaluation worker task failed: %s",
+                    exception,
+                    exc_info=(type(exception), exception, exception.__traceback__),
+                )
         self.notify()
 
     def _handlers_unavailable(self) -> bool:

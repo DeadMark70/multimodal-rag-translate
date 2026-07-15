@@ -54,11 +54,14 @@ def _make_db_path() -> Path:
 
 @contextmanager
 def _build_client(user_id: str, upload_root: Path, db_path: Path, engine: CampaignEngine):
+    process_worker = Mock(is_configured=False)
     with (
         patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
         patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
         patch("evaluation.storage.BASE_UPLOAD_FOLDER", str(upload_root)),
         patch("evaluation.db.EVALUATION_DB_PATH", db_path),
+        patch("evaluation.campaign_engine.get_campaign_engine", return_value=engine),
+        patch("evaluation.job_worker.get_evaluation_job_worker", return_value=process_worker),
         patch("evaluation.router.get_campaign_engine", return_value=engine),
     ):
         app.dependency_overrides[get_current_user_id] = lambda: user_id

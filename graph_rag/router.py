@@ -52,7 +52,6 @@ from graph_rag.schemas import (
 from graph_rag.debug import run_debug_search
 from graph_rag.quality import compute_campaign_runtime_quality, compute_graph_quality
 from graph_rag.store import GraphStore
-from pdfserviceMD.service import load_ocr_artifacts
 from pdfserviceMD.repository import get_document
 
 # Configure logging
@@ -279,6 +278,12 @@ async def start_node_vector_sync(
     """Start background manual node-vector sync job."""
     try:
         store = GraphStore(user_id)
+        active_activity = GraphMaintenanceLock(user_id).current_activity()
+        if active_activity:
+            return GraphOperationResponse(
+                status="skipped",
+                message=f"已有圖譜維護工作執行中：{active_activity}",
+            )
         maintenance = _acquire_graph_maintenance(user_id, "node_vector_sync")
         if maintenance is None:
             return GraphOperationResponse(

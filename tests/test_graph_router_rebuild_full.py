@@ -43,6 +43,7 @@ def _client() -> TestClient:
 def mock_router_maintenance_lock():
     lock = Mock()
     lock.acquire.return_value = "maintenance-owner"
+    lock.current_activity.return_value = None
     with patch("graph_rag.router.GraphMaintenanceLock", return_value=lock):
         yield lock
 
@@ -342,9 +343,12 @@ def test_start_node_vector_sync_endpoint_starts_background_task() -> None:
     mock_task.assert_awaited_once_with(TEST_USER_ID, ANY)
 
 
-def test_start_node_vector_sync_endpoint_skips_when_another_job_is_running() -> None:
+def test_start_node_vector_sync_endpoint_skips_when_another_job_is_running(
+    mock_router_maintenance_lock,
+) -> None:
     mock_store = Mock()
     mock_store.active_job_state = "rebuild_full"
+    mock_router_maintenance_lock.current_activity.return_value = "rebuild_full"
 
     with (
         patch("core.app_factory._initialize_rag_components", new=AsyncMock()),

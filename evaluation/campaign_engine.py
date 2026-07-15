@@ -768,10 +768,31 @@ class CampaignEngine:
         return CampaignCreateResponse(campaign_id=created.id, status=created.status)
 
     async def list_campaigns(self, *, user_id: str) -> list[CampaignStatus]:
-        return await self._campaign_repository.list_by_user(user_id=user_id)
+        campaigns = await self._campaign_repository.list_by_user(user_id=user_id)
+        return [await self._reconcile_read_status(user_id=user_id, campaign=campaign) for campaign in campaigns]
 
     async def get_campaign(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
-        return await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
+        campaign = await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
+        return await self._reconcile_read_status(user_id=user_id, campaign=campaign)
+
+    async def _reconcile_read_status(
+        self, *, user_id: str, campaign: CampaignStatus
+    ) -> CampaignStatus:
+        """Repair a stale evaluating projection from the durable metric ledger.
+
+        Worker callbacks are intentionally best-effort around event-loop
+        shutdowns. A read must still converge once every durable RAGAS item is
+        terminal, while unresolved work remains visibly evaluating.
+        """
+        if (
+            campaign.status == CampaignLifecycleStatus.EVALUATING
+            and campaign.evaluation_total_units > 0
+        ):
+            return await self._campaign_repository.derive_ragas_state(
+                user_id=user_id,
+                campaign_id=campaign.id,
+            )
+        return campaign
 
     async def get_results(self, *, user_id: str, campaign_id: str) -> CampaignResultsResponse:
         campaign = await self.get_campaign(user_id=user_id, campaign_id=campaign_id)

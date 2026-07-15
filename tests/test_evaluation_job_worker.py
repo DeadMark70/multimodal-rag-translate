@@ -124,6 +124,29 @@ async def test_stop_does_not_claim_new_work(store: EvaluationJobStore) -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_restarts_idle_loop_before_claiming_new_work(
+    store: EvaluationJobStore,
+) -> None:
+    """Work arriving as an idle loop shuts down must still be claimed."""
+    executor = AsyncMock()
+    worker = EvaluationJobWorker(
+        store=store,
+        execution_handler=executor,
+        ragas_handler=AsyncMock(),
+        stop_when_idle=True,
+    )
+
+    await worker.start()
+    await _wait_until(lambda: worker._loop_task is not None and worker._loop_task.done())
+    await _seed_work(store, logical_key="execution:Q1:naive:1:none")
+
+    await worker.start()
+    worker.notify()
+    await _wait_until(lambda: executor.await_count == 1)
+    await worker.stop()
+
+
+@pytest.mark.asyncio
 async def test_execution_dispatch_never_exceeds_its_limit(store: EvaluationJobStore) -> None:
     for number in range(5):
         await _seed_work(store, logical_key=f"execution:Q{number}:naive:1:none")
