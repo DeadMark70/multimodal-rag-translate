@@ -698,7 +698,8 @@ class CampaignEngine:
                 and job_store is None
             )
             worker = get_evaluation_job_worker() if use_process_worker else EvaluationJobWorker(
-                store=self._job_store
+                store=self._job_store,
+                stop_when_idle=True,
             )
             execution_handler = DatasetExecutionWorker(
                 store=self._job_store,
@@ -745,7 +746,6 @@ class CampaignEngine:
                 message="router mode is not implemented yet; use retrospective router analysis.",
                 status_code=400,
             )
-        await self._start_worker_if_available()
         resolved_cases = await self._resolve_test_cases(user_id=user_id, test_case_ids=config.test_case_ids)
         created = await self._campaign_repository.create(user_id=user_id, name=name, config=config)
         units = self._build_units(
@@ -762,6 +762,7 @@ class CampaignEngine:
             config_snapshot=config.model_dump(mode="json", by_alias=True),
             items=[self._work_item_spec(user_id=user_id, campaign_id=created.id, unit=unit, config=config) for unit in units],
         )
+        await self._start_worker_if_available()
         if self._worker_notifier is not None:
             self._worker_notifier()
         return CampaignCreateResponse(campaign_id=created.id, status=created.status)
@@ -815,7 +816,6 @@ class CampaignEngine:
         campaign_id: str,
         request: EvaluationRerunRequest,
     ) -> EvaluationJob:
-        await self._start_worker_if_available()
         """Create one durable rerun job from immutable campaign work.
 
         Execution reruns reuse the original work snapshots, while metric-only
@@ -901,6 +901,9 @@ class CampaignEngine:
                 user_id=user_id,
                 campaign_id=campaign_id,
             )
+            await self._start_worker_if_available()
+            if self._worker_notifier is not None:
+                self._worker_notifier()
             return job
 
         metric_names = list(request.metric_names) if request.metric_names else enabled_metrics
@@ -1002,6 +1005,7 @@ class CampaignEngine:
             campaign_id=campaign_id,
             evaluation_total_units=created_count,
         )
+        await self._start_worker_if_available()
         if self._worker_notifier is not None:
             self._worker_notifier()
         jobs = await self._job_store.list_jobs(user_id=user_id, campaign_id=campaign_id)

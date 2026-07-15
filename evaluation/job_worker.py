@@ -34,6 +34,7 @@ class EvaluationJobWorker:
         ragas_batch_handler: RagasBatchHandler | None = None,
         clock: Clock | None = None,
         sleep: Sleep | None = None,
+        stop_when_idle: bool = False,
     ) -> None:
         self._store = store or EvaluationJobStore(on_job_created=self.notify)
         self._execution_handler = execution_handler
@@ -41,6 +42,7 @@ class EvaluationJobWorker:
         self._ragas_batch_handler = ragas_batch_handler
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._sleep = sleep or asyncio.sleep
+        self._stop_when_idle = stop_when_idle
         self._reset_loop_primitives()
         self._loop_task: asyncio.Task[None] | None = None
         self._active_tasks: dict[asyncio.Task[None], EvaluationWorkType] = {}
@@ -248,6 +250,10 @@ class EvaluationJobWorker:
             self._wake_event.clear()
             claimed = await self.run_once()
             if self._stop_event.is_set():
+                return
+            if not claimed and self._stop_when_idle and not self._active_tasks:
+                self._accepting = False
+                self._stop_event.set()
                 return
             if claimed:
                 await asyncio.sleep(0)
