@@ -331,9 +331,17 @@ async def _build_crag_queries(
     rewrite_mode: CragRewriteMode,
 ) -> List[str]:
     if rewrite_mode == "multi_query":
-        return await transform_query_multi(question, enabled=True)
+        return await transform_query_multi(
+            question,
+            enabled=True,
+            phase="retrieval_rewrite",
+        )
     if rewrite_mode == "hyde":
-        rewritten = await transform_query_with_hyde(question, enabled=True)
+        rewritten = await transform_query_with_hyde(
+            question,
+            enabled=True,
+            phase="retrieval_rewrite",
+        )
         return [rewritten or question]
     return [question]
 
@@ -1886,14 +1894,22 @@ async def rag_answer_question(
 
     if enable_hyde:
         await _emit_progress(progress_callback, "query_expansion", {"mode": "hyde"})
-        hyde_doc = await transform_query_with_hyde(question, enabled=True)
+        hyde_doc = await transform_query_with_hyde(
+            question,
+            enabled=True,
+            phase="query_expansion",
+        )
         search_queries = [hyde_doc]
         logger.debug(f"HyDE transformed query: {hyde_doc[:100]}...")
     elif enable_multi_query:
         await _emit_progress(
             progress_callback, "query_expansion", {"mode": "multi_query"}
         )
-        search_queries = await transform_query_multi(question, enabled=True)
+        search_queries = await transform_query_multi(
+            question,
+            enabled=True,
+            phase="query_expansion",
+        )
         logger.debug(f"Multi-query generated {len(search_queries)} queries")
 
     # Step 4: Execute retrieval

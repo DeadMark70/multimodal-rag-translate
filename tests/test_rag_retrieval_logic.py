@@ -255,7 +255,11 @@ async def test_crag_multi_query_correction_uses_rrf_without_hyde() -> None:
         )
 
     assert result.answer == "corrected answer"
-    multi_query.assert_awaited_once_with("question", enabled=True)
+    multi_query.assert_awaited_once_with(
+        "question",
+        enabled=True,
+        phase="retrieval_rewrite",
+    )
     hyde.assert_not_awaited()
     assert retrieve.await_args_list[1].args[1] == ["question", "comparison variant"]
     assert {document.page_content for document in result.documents} == {

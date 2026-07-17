@@ -9,7 +9,7 @@ Provides query transformation techniques for improved retrieval:
 # Standard library
 import asyncio
 import logging
-from typing import List
+from typing import List, Literal
 
 # Third-party
 from langchain_core.documents import Document
@@ -22,6 +22,8 @@ from core.llm_usage_context import llm_accounting_phase
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+QueryTransformationPhase = Literal["query_expansion", "retrieval_rewrite"]
 
 
 class QueryTransformer:
@@ -48,6 +50,7 @@ class QueryTransformer:
     async def generate_hyde_document(
         self,
         question: str,
+        phase: QueryTransformationPhase = "query_expansion",
     ) -> str:
         """
         Generates a hypothetical document using HyDE technique.
@@ -68,7 +71,7 @@ class QueryTransformer:
                 prompt = format_rag_pipeline_prompt("hyde", question=question)
                 message = HumanMessage(content=prompt)
                 
-                with llm_accounting_phase("query_expansion"):
+                with llm_accounting_phase(phase):
                     response = await llm.ainvoke([message])
                 hyde_doc = response.content.strip()
                 
@@ -83,6 +86,7 @@ class QueryTransformer:
         self,
         question: str,
         max_queries: int = 4,
+        phase: QueryTransformationPhase = "query_expansion",
     ) -> List[str]:
         """
         Generates multiple query variations.
@@ -104,7 +108,7 @@ class QueryTransformer:
                 prompt = format_rag_pipeline_prompt("multi_query", question=question)
                 message = HumanMessage(content=prompt)
                 
-                with llm_accounting_phase("retrieval_rewrite"):
+                with llm_accounting_phase(phase):
                     response = await llm.ainvoke([message])
                 
                 # Parse numbered queries
@@ -171,6 +175,7 @@ def reciprocal_rank_fusion(
 async def transform_query_with_hyde(
     question: str,
     enabled: bool = True,
+    phase: QueryTransformationPhase = "query_expansion",
 ) -> str:
     """
     Convenience function for HyDE transformation.
@@ -186,13 +191,14 @@ async def transform_query_with_hyde(
         return question
     
     transformer = QueryTransformer()
-    return await transformer.generate_hyde_document(question)
+    return await transformer.generate_hyde_document(question, phase)
 
 
 async def transform_query_multi(
     question: str,
     enabled: bool = True,
     max_queries: int = 4,
+    phase: QueryTransformationPhase = "query_expansion",
 ) -> List[str]:
     """
     Convenience function for multi-query generation.
@@ -209,4 +215,4 @@ async def transform_query_multi(
         return [question]
     
     transformer = QueryTransformer()
-    return await transformer.generate_multi_queries(question, max_queries)
+    return await transformer.generate_multi_queries(question, max_queries, phase)
