@@ -14,6 +14,11 @@ from data_base.indexing_service import DEFAULT_PRODUCTION_INDEXING_PROFILE
 from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from evaluation.agentic_evaluation_service import AgenticEvaluationService
 from evaluation.model_capabilities import normalize_model_config_for_runtime
+from evaluation.retrieval_profiles import (
+    apply_no_hyde_policy,
+    evaluation_execution_profile,
+    locator_to_chunk_graph_hints,
+)
 from evaluation.retry import run_with_retry
 from evaluation.schemas import TestCase
 
@@ -74,10 +79,23 @@ RAG_MODES: dict[str, dict[str, Any]] = {
     "graph_provenance_gated": {
         "ablation_family": "graph_evidence",
         "graph_evidence_mode": "provenance_gated",
-        "enable_reranking": True, "enable_hyde": True, "enable_multi_query": True,
-        "enable_graph_rag": True, "graph_search_mode": "generic",
-        "graph_execution_hints": {"graph_evidence_mode": "provenance_gated", "graph_feature_flags": {"graph_raw_current_enabled": False, "graph_evidence_locator_enabled": True, "graph_provenance_gate_enabled": True, "graph_to_chunk_enabled": False, "graph_auto_gate_enabled": False}},
-        "enable_visual_verification": False, "plain_mode": False,
+        "enable_reranking": True,
+        "enable_hyde": True,
+        "enable_multi_query": True,
+        "enable_graph_rag": True,
+        "graph_search_mode": "generic",
+        "graph_execution_hints": {
+            "graph_evidence_mode": "provenance_gated",
+            "graph_feature_flags": {
+                "graph_raw_current_enabled": False,
+                "graph_evidence_locator_enabled": True,
+                "graph_provenance_gate_enabled": True,
+                "graph_to_chunk_enabled": False,
+                "graph_auto_gate_enabled": False,
+            },
+        },
+        "enable_visual_verification": False,
+        "plain_mode": False,
     },
     "graph_locator_to_chunk": {
         "ablation_family": "graph_evidence",
@@ -103,13 +121,52 @@ RAG_MODES: dict[str, dict[str, Any]] = {
     "graph_locator_claim_gate": {
         "ablation_family": "graph_evidence",
         "graph_evidence_mode": "claim_gated",
-        "enable_reranking": True, "enable_hyde": True, "enable_multi_query": True,
-        "enable_graph_rag": True, "graph_search_mode": "generic",
-        "graph_execution_hints": {"graph_evidence_mode": "claim_gated", "graph_feature_flags": {"graph_raw_current_enabled": False, "graph_evidence_locator_enabled": True, "graph_provenance_gate_enabled": True, "graph_to_chunk_enabled": True, "graph_auto_gate_enabled": False}},
-        "enable_visual_verification": False, "plain_mode": False,
+        "enable_reranking": True,
+        "enable_hyde": True,
+        "enable_multi_query": True,
+        "enable_graph_rag": True,
+        "graph_search_mode": "generic",
+        "graph_execution_hints": {
+            "graph_evidence_mode": "claim_gated",
+            "graph_feature_flags": {
+                "graph_raw_current_enabled": False,
+                "graph_evidence_locator_enabled": True,
+                "graph_provenance_gate_enabled": True,
+                "graph_to_chunk_enabled": True,
+                "graph_auto_gate_enabled": False,
+            },
+        },
+        "enable_visual_verification": False,
+        "plain_mode": False,
     },
-    "always_no_graph": {"ablation_family": "graph_usage_policy", "enable_reranking": True, "enable_hyde": True, "enable_multi_query": True, "enable_graph_rag": False, "enable_visual_verification": False, "plain_mode": False},
-    "always_graph_locator": {"ablation_family": "graph_usage_policy", "enable_reranking": True, "enable_hyde": True, "enable_multi_query": True, "enable_graph_rag": True, "graph_search_mode": "generic", "graph_execution_hints": {"graph_evidence_mode": "locator_to_chunk", "graph_manual_override": True, "graph_feature_flags": {"graph_evidence_locator_enabled": True, "graph_provenance_gate_enabled": True, "graph_to_chunk_enabled": True}}, "enable_visual_verification": False, "plain_mode": False},
+    "always_no_graph": {
+        "ablation_family": "graph_usage_policy",
+        "enable_reranking": True,
+        "enable_hyde": True,
+        "enable_multi_query": True,
+        "enable_graph_rag": False,
+        "enable_visual_verification": False,
+        "plain_mode": False,
+    },
+    "always_graph_locator": {
+        "ablation_family": "graph_usage_policy",
+        "enable_reranking": True,
+        "enable_hyde": True,
+        "enable_multi_query": True,
+        "enable_graph_rag": True,
+        "graph_search_mode": "generic",
+        "graph_execution_hints": {
+            "graph_evidence_mode": "locator_to_chunk",
+            "graph_manual_override": True,
+            "graph_feature_flags": {
+                "graph_evidence_locator_enabled": True,
+                "graph_provenance_gate_enabled": True,
+                "graph_to_chunk_enabled": True,
+            },
+        },
+        "enable_visual_verification": False,
+        "plain_mode": False,
+    },
     "router_auto_graph": {
         "ablation_family": "graph_usage_policy",
         "enable_reranking": True,
@@ -151,11 +208,100 @@ RAG_MODES: dict[str, dict[str, Any]] = {
         "enable_visual_verification": False,
         "plain_mode": False,
     },
-    "graph_local_first": {"ablation_family": "graph_query_strategy", "enable_reranking": True, "enable_hyde": True, "enable_multi_query": True, "enable_graph_rag": True, "graph_search_mode": "local", "graph_execution_hints": {"graph_evidence_mode": "locator_to_chunk", "prefer_local": True, "graph_feature_flags": {"graph_evidence_locator_enabled": True, "graph_provenance_gate_enabled": True, "graph_to_chunk_enabled": True}}, "enable_visual_verification": False, "plain_mode": False},
-    "graph_global_first": {"ablation_family": "graph_query_strategy", "enable_reranking": True, "enable_hyde": True, "enable_multi_query": True, "enable_graph_rag": True, "graph_search_mode": "global", "graph_execution_hints": {"graph_evidence_mode": "locator_to_chunk", "prefer_global": True, "graph_feature_flags": {"graph_evidence_locator_enabled": True, "graph_provenance_gate_enabled": True, "graph_to_chunk_enabled": True}}, "enable_visual_verification": False, "plain_mode": False},
-    "graph_blended": {"ablation_family": "graph_query_strategy", "enable_reranking": True, "enable_hyde": True, "enable_multi_query": True, "enable_graph_rag": True, "graph_search_mode": "hybrid", "graph_execution_hints": {"graph_evidence_mode": "locator_to_chunk", "graph_feature_flags": {"graph_evidence_locator_enabled": True, "graph_provenance_gate_enabled": True, "graph_to_chunk_enabled": True}}, "enable_visual_verification": False, "plain_mode": False},
-    "graph_path_pruned": {"ablation_family": "graph_query_strategy", "enable_reranking": True, "enable_hyde": True, "enable_multi_query": True, "enable_graph_rag": True, "graph_search_mode": "generic", "graph_execution_hints": {"graph_evidence_mode": "locator_to_chunk", "path_pruned": True, "graph_feature_flags": {"graph_evidence_locator_enabled": True, "graph_provenance_gate_enabled": True, "graph_to_chunk_enabled": True}}, "enable_visual_verification": False, "plain_mode": False},
-    "graph_planning_only": {"ablation_family": "graph_query_strategy", "enable_reranking": True, "enable_hyde": True, "enable_multi_query": True, "enable_graph_rag": True, "graph_search_mode": "generic", "graph_execution_hints": {"graph_evidence_mode": "planning_only", "prefer_global": True, "graph_feature_flags": {"graph_evidence_locator_enabled": True, "graph_provenance_gate_enabled": True, "graph_to_chunk_enabled": True}}, "enable_visual_verification": False, "plain_mode": False},
+    "graph_local_first": {
+        "ablation_family": "graph_query_strategy",
+        "enable_reranking": True,
+        "enable_hyde": True,
+        "enable_multi_query": True,
+        "enable_graph_rag": True,
+        "graph_search_mode": "local",
+        "graph_execution_hints": {
+            "graph_evidence_mode": "locator_to_chunk",
+            "prefer_local": True,
+            "graph_feature_flags": {
+                "graph_evidence_locator_enabled": True,
+                "graph_provenance_gate_enabled": True,
+                "graph_to_chunk_enabled": True,
+            },
+        },
+        "enable_visual_verification": False,
+        "plain_mode": False,
+    },
+    "graph_global_first": {
+        "ablation_family": "graph_query_strategy",
+        "enable_reranking": True,
+        "enable_hyde": True,
+        "enable_multi_query": True,
+        "enable_graph_rag": True,
+        "graph_search_mode": "global",
+        "graph_execution_hints": {
+            "graph_evidence_mode": "locator_to_chunk",
+            "prefer_global": True,
+            "graph_feature_flags": {
+                "graph_evidence_locator_enabled": True,
+                "graph_provenance_gate_enabled": True,
+                "graph_to_chunk_enabled": True,
+            },
+        },
+        "enable_visual_verification": False,
+        "plain_mode": False,
+    },
+    "graph_blended": {
+        "ablation_family": "graph_query_strategy",
+        "enable_reranking": True,
+        "enable_hyde": True,
+        "enable_multi_query": True,
+        "enable_graph_rag": True,
+        "graph_search_mode": "hybrid",
+        "graph_execution_hints": {
+            "graph_evidence_mode": "locator_to_chunk",
+            "graph_feature_flags": {
+                "graph_evidence_locator_enabled": True,
+                "graph_provenance_gate_enabled": True,
+                "graph_to_chunk_enabled": True,
+            },
+        },
+        "enable_visual_verification": False,
+        "plain_mode": False,
+    },
+    "graph_path_pruned": {
+        "ablation_family": "graph_query_strategy",
+        "enable_reranking": True,
+        "enable_hyde": True,
+        "enable_multi_query": True,
+        "enable_graph_rag": True,
+        "graph_search_mode": "generic",
+        "graph_execution_hints": {
+            "graph_evidence_mode": "locator_to_chunk",
+            "path_pruned": True,
+            "graph_feature_flags": {
+                "graph_evidence_locator_enabled": True,
+                "graph_provenance_gate_enabled": True,
+                "graph_to_chunk_enabled": True,
+            },
+        },
+        "enable_visual_verification": False,
+        "plain_mode": False,
+    },
+    "graph_planning_only": {
+        "ablation_family": "graph_query_strategy",
+        "enable_reranking": True,
+        "enable_hyde": True,
+        "enable_multi_query": True,
+        "enable_graph_rag": True,
+        "graph_search_mode": "generic",
+        "graph_execution_hints": {
+            "graph_evidence_mode": "planning_only",
+            "prefer_global": True,
+            "graph_feature_flags": {
+                "graph_evidence_locator_enabled": True,
+                "graph_provenance_gate_enabled": True,
+                "graph_to_chunk_enabled": True,
+            },
+        },
+        "enable_visual_verification": False,
+        "plain_mode": False,
+    },
     "agentic": {
         "enable_reranking": True,
         "enable_hyde": True,
@@ -166,6 +312,8 @@ RAG_MODES: dict[str, dict[str, Any]] = {
         "plain_mode": False,
     },
 }
+RAG_MODES = apply_no_hyde_policy(RAG_MODES)
+RAG_MODES["graph"]["graph_execution_hints"] = locator_to_chunk_graph_hints()
 
 
 @dataclass
@@ -254,6 +402,9 @@ async def run_campaign_case(
         answer=result.answer,
         documents=result.documents,
     )
+    execution_profile = (result.agent_trace or {}).get(
+        "execution_profile"
+    ) or evaluation_execution_profile(mode)
     return BenchmarkExecutionResult(
         question_id=test_case.id,
         question=test_case.question,
@@ -270,8 +421,10 @@ async def run_campaign_case(
         token_usage=dict(result.usage or {}),
         category=test_case.category,
         difficulty=test_case.difficulty,
-        execution_profile=(result.agent_trace or {}).get("execution_profile"),
-        context_policy_version=AGENTIC_CONTEXT_POLICY_VERSION if mode == "agentic" else CONTEXT_POLICY_VERSION,
+        execution_profile=execution_profile,
+        context_policy_version=AGENTIC_CONTEXT_POLICY_VERSION
+        if mode == "agentic"
+        else CONTEXT_POLICY_VERSION,
         agent_trace=result.agent_trace,
     )
 
@@ -358,16 +511,22 @@ def _extract_contexts(
 
     if task_order:
         for task_id in task_order:
-            task_candidates = [item for item in candidates if item["task_id"] == task_id]
+            task_candidates = [
+                item for item in candidates if item["task_id"] == task_id
+            ]
             if not task_candidates:
                 continue
-            best = sorted(task_candidates, key=lambda item: (-item["score"], item["index"]))[0]
+            best = sorted(
+                task_candidates, key=lambda item: (-item["score"], item["index"])
+            )[0]
             selected.append(best["text"])
             selected_texts.add(best["text"])
             if len(selected) >= EVALUATOR_MAX_CONTEXTS:
                 return selected
 
-    ranked_candidates = sorted(candidates, key=lambda item: (-item["score"], item["index"]))
+    ranked_candidates = sorted(
+        candidates, key=lambda item: (-item["score"], item["index"])
+    )
     for candidate in ranked_candidates:
         if candidate["text"] in selected_texts:
             continue
@@ -376,4 +535,3 @@ def _extract_contexts(
         if len(selected) >= EVALUATOR_MAX_CONTEXTS:
             break
     return selected
-

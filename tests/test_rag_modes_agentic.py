@@ -5,11 +5,18 @@ from langchain_core.documents import Document
 
 from data_base.RAG_QA_service import RAGResult
 from evaluation.agentic_evaluation_service import AGENTIC_EVAL_PROFILE
+from evaluation.retrieval_profiles import (
+    ADVANCED_EVAL_PROFILE,
+    GRAPH_ABLATION_MODES,
+    GRAPH_EVAL_PROFILE,
+    evaluation_execution_profile,
+)
 from evaluation.rag_modes import (
     AGENTIC_CONTEXT_POLICY_VERSION,
     CONTEXT_POLICY_VERSION,
     EVALUATOR_MAX_CONTEXTS,
     EVALUATOR_MAX_CONTEXT_CHARS,
+    RAG_MODES,
     _extract_contexts,
     run_campaign_case,
 )
@@ -32,7 +39,9 @@ async def test_run_campaign_case_naive_uses_plain_mode() -> None:
         usage={"total_tokens": 12},
     )
 
-    with patch("evaluation.rag_modes.run_with_retry", new=AsyncMock(return_value=mock_result)) as mock_retry:
+    with patch(
+        "evaluation.rag_modes.run_with_retry", new=AsyncMock(return_value=mock_result)
+    ) as mock_retry:
         await run_campaign_case(
             test_case=test_case,
             user_id="user-1",
@@ -71,7 +80,9 @@ async def test_run_campaign_case_graph_uses_generic_graph_mode() -> None:
         usage={"total_tokens": 21},
     )
 
-    with patch("evaluation.rag_modes.run_with_retry", new=AsyncMock(return_value=mock_result)) as mock_retry:
+    with patch(
+        "evaluation.rag_modes.run_with_retry", new=AsyncMock(return_value=mock_result)
+    ) as mock_retry:
         result = await run_campaign_case(
             test_case=test_case,
             user_id="user-1",
@@ -134,7 +145,9 @@ async def test_graph_evaluation_modes_pass_explicit_execution_snapshots(
         documents=[Document(page_content="ctx")],
     )
 
-    with patch("evaluation.rag_modes.run_with_retry", new=AsyncMock(return_value=mock_result)) as mock_retry:
+    with patch(
+        "evaluation.rag_modes.run_with_retry", new=AsyncMock(return_value=mock_result)
+    ) as mock_retry:
         await run_campaign_case(
             test_case=test_case,
             user_id="user-1",
@@ -145,7 +158,10 @@ async def test_graph_evaluation_modes_pass_explicit_execution_snapshots(
     _, kwargs = mock_retry.await_args
     hints = kwargs["graph_execution_hints"]
     assert hints["graph_evidence_mode"] == expected_evidence_mode
-    assert all(hints["graph_feature_flags"][key] is value for key, value in expected_flags.items())
+    assert all(
+        hints["graph_feature_flags"][key] is value
+        for key, value in expected_flags.items()
+    )
 
 
 @pytest.mark.asyncio
@@ -213,7 +229,9 @@ async def test_run_campaign_case_agentic_uses_evaluation_service_and_profile() -
     assert result.context_policy_version == AGENTIC_CONTEXT_POLICY_VERSION
 
 
-def test_extract_contexts_uses_answer_aware_policy_and_preserves_task_coverage() -> None:
+def test_extract_contexts_uses_answer_aware_policy_and_preserves_task_coverage() -> (
+    None
+):
     oversized = "x" * (EVALUATOR_MAX_CONTEXT_CHARS + 200)
     documents = [
         Document(
@@ -248,3 +266,73 @@ def test_extract_contexts_uses_answer_aware_policy_and_preserves_task_coverage()
     assert any("lora style adapters" in context for context in contexts)
     assert all("\n" not in context for context in contexts)
     assert all(len(context) <= EVALUATOR_MAX_CONTEXT_CHARS for context in contexts)
+
+
+def test_all_changed_evaluation_modes_disable_hyde() -> None:
+    changed_modes = {"advanced", "graph", "agentic", *GRAPH_ABLATION_MODES}
+    assert changed_modes.issubset(RAG_MODES)
+    assert all(RAG_MODES[mode]["enable_hyde"] is False for mode in changed_modes)
+
+
+def test_advanced_and_main_graph_use_multi_query() -> None:
+    assert RAG_MODES["advanced"]["enable_multi_query"] is True
+    assert RAG_MODES["graph"]["enable_multi_query"] is True
+
+
+def test_main_graph_uses_locator_to_chunk_policy() -> None:
+    hints = RAG_MODES["graph"]["graph_execution_hints"]
+    assert hints["graph_evidence_mode"] == "locator_to_chunk"
+    assert hints["graph_feature_flags"] == {
+        "graph_raw_current_enabled": False,
+        "graph_evidence_locator_enabled": True,
+        "graph_provenance_gate_enabled": True,
+        "graph_to_chunk_enabled": True,
+        "graph_auto_gate_enabled": False,
+    }
+    assert (
+        RAG_MODES["graph_raw_current"]["graph_execution_hints"]["graph_evidence_mode"]
+        == "raw_current"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "expected_profile"),
+    [
+        ("advanced", ADVANCED_EVAL_PROFILE),
+        ("graph", GRAPH_EVAL_PROFILE),
+        (
+            "graph_locator_to_chunk",
+            evaluation_execution_profile("graph_locator_to_chunk"),
+        ),
+    ],
+)
+async def test_changed_standard_modes_persist_execution_profile(
+    mode: str,
+    expected_profile: str | None,
+) -> None:
+    assert expected_profile is not None
+    test_case = EvaluationCase(
+        id="Q-profile",
+        question="Compare models",
+        ground_truth="comparison",
+        source_docs=[],
+        requires_multi_doc_reasoning=False,
+    )
+    mock_result = RAGResult(
+        answer="answer",
+        source_doc_ids=["doc-1"],
+        documents=[Document(page_content="context")],
+    )
+    with patch(
+        "evaluation.rag_modes.run_with_retry",
+        new=AsyncMock(return_value=mock_result),
+    ):
+        result = await run_campaign_case(
+            test_case=test_case,
+            user_id="user-1",
+            mode=mode,
+            model_config={"model_name": "gemini-2.5-flash"},
+        )
+
+    assert result.execution_profile == expected_profile
