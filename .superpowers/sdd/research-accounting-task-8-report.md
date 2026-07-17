@@ -46,3 +46,18 @@ Re-ran the strict and existing evaluation API suites: `19 passed`.
 Verification: `23 passed` across the strict and existing evaluation/API suites;
 Ruff check and format check passed. Third-party Pydantic deprecation warnings
 remain pre-existing environment noise.
+
+## Review correction (2026-07-18)
+
+- Per-mode operational execution cost now maps every execution scope through its
+  durable run or target identity before aggregating, so a failed or unpriced
+  retry in one mode cannot change another mode's cost or pricing status.
+- Optional context metrics are requested from durable `ragas_batch.metric_name`
+  records even when the batch is running or terminally failed without a score.
+- RAGAS scores now require an exact result-to-`source_attempt_id` match; stale
+  or cross-linked scores are excluded. Missing metric versions remain `null` and
+  are not inferred from an evaluation signature.
+
+Verification: `25 passed` across the strict and existing evaluation/API suites;
+Ruff check, format check, and `git diff --check` passed. Existing third-party
+Pydantic deprecation warnings remain.

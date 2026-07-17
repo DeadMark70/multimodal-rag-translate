@@ -281,7 +281,84 @@ async def test_mixed_campaign_keeps_execution_and_ragas_accounting_separate(
     ) == (2, 1)
     assert summary.evaluation_overhead.tokens.total_tokens == 120
     assert summary.evaluation_overhead.cost_usd == pytest.approx(0.5)
-    assert summary.modes[0].execution_cost.operational_usd is None
+    graph_mode = next(mode for mode in summary.modes if mode.mode == "graph")
+    naive_mode = next(mode for mode in summary.modes if mode.mode == "naive")
+    assert graph_mode.execution_cost.operational_usd == pytest.approx(0.2)
+    assert graph_mode.execution_cost.pricing_status == "complete"
+    assert naive_mode.execution_cost.operational_usd is None
+
+
+@pytest.mark.asyncio
+async def test_failed_context_batch_requests_null_optional_metric(
+    research_service,
+) -> None:
+    await _campaign("requested-context", ["naive"])
+    result_id = await _result("requested-context", "naive", "attempt")
+    await _official_scope("requested-context", result_id, "attempt")
+    store = EvaluationAccountingStore()
+    await store.start_scope(
+        AccountingScopeStart(
+            scope_id="failed-context-batch",
+            campaign_id="requested-context",
+            scope_type="ragas_batch",
+            scope_key="context-recall",
+            metric_name="context_recall",
+            targets=[
+                {"job_id": "ragas", "work_item_id": "context", "attempt_id": "batch"}
+            ],
+        )
+    )
+    await store.finalize_scope("failed-context-batch", "failed")
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id="requested-context"
+    )
+
+    context_recall = summary.quality["context_recall"]
+    assert context_recall.value is None
+    assert context_recall.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_cross_linked_score_attempt_is_excluded_from_its_result(
+    research_service,
+) -> None:
+    await _campaign("stale-score", ["naive"])
+    first = await _result("stale-score", "naive", "first")
+    second = await _result("stale-score", "naive", "second", run_number=2)
+    await _official_scope("stale-score", first, "first")
+    await _official_scope("stale-score", second, "second")
+    await RagasScoreRepository().replace_for_campaign(
+        user_id="user-1",
+        campaign_id="stale-score",
+        score_rows=[
+            {
+                "campaign_result_id": first,
+                "metric_name": "answer_correctness",
+                "metric_value": 0.9,
+                "source_attempt_id": "second",
+                "evaluation_signature": "sig",
+                "details": {"evaluator_model": "judge"},
+            },
+            {
+                "campaign_result_id": second,
+                "metric_name": "answer_correctness",
+                "metric_value": 0.4,
+                "source_attempt_id": "second",
+                "evaluation_signature": "sig",
+                "details": {"evaluator_model": "judge"},
+            },
+        ],
+    )
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id="stale-score"
+    )
+    observation = summary.quality["answer_correctness"]
+
+    assert observation.value == pytest.approx(0.4)
+    assert observation.valid_samples == 1
+    assert observation.metric_version is None
 
 
 @pytest.mark.asyncio

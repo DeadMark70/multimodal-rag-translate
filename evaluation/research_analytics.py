@@ -74,13 +74,22 @@ class ResearchAnalyticsService:
         events_by_scope: dict[str, list] = defaultdict(list)
         for event in events:
             events_by_scope[event.scope_id].append(event)
+        requested_metrics = _requested_metrics(scopes)
 
         modes: list[ModeResearchSummary] = []
         warnings: list[ResearchWarning] = []
         for mode in sorted({str(result.mode) for result in completed}):
             included = [result for result in completed if str(result.mode) == mode]
+            mode_results = [
+                result for result in all_results if str(result.mode) == mode
+            ]
             summary, mode_warnings = _mode_summary(
-                included, scores, scopes, events_by_scope
+                included,
+                mode_results,
+                scores,
+                scopes,
+                events_by_scope,
+                requested_metrics,
             )
             modes.append(summary)
             warnings.extend(
@@ -94,7 +103,7 @@ class ResearchAnalyticsService:
             for scope in official_scopes
             for event in events_by_scope[scope.scope_id]
         ]
-        quality = _quality_for_results(completed, scores)
+        quality = _quality_for_results(completed, scores, requested_metrics)
         tokens = _tokens(official_scopes, official_events)
         cost = _cost(
             official_events,
@@ -153,18 +162,25 @@ class ResearchAnalyticsService:
         )
 
 
-def _mode_summary(results, scores, scopes, events_by_scope):
+def _mode_summary(
+    results,
+    operational_results,
+    scores,
+    scopes,
+    events_by_scope,
+    requested_metrics,
+):
     official = _official_execution_scopes(results, scopes)
     official_events = [
         event for scope in official for event in events_by_scope[scope.scope_id]
     ]
+    operational_scopes = _execution_scopes_for_results(operational_results, scopes)
     operational = [
         event
-        for scope in scopes
-        if scope.scope_type == "execution_run"
+        for scope in operational_scopes
         for event in events_by_scope[scope.scope_id]
     ]
-    quality = _quality_for_results(results, scores)
+    quality = _quality_for_results(results, scores, requested_metrics)
     tokens = _tokens(official, official_events)
     cost = _cost(official_events, operational_events=operational)
     reasons: list[str] = []
@@ -226,10 +242,43 @@ def _official_execution_scopes(results, scopes):
     ]
 
 
-def _quality_for_results(results, scores):
+def _execution_scopes_for_results(results, scopes):
+    result_ids = {result.id for result in results}
+    attempts = {
+        result.source_attempt_id for result in results if result.source_attempt_id
+    }
+    return [
+        scope
+        for scope in scopes
+        if scope.scope_type == "execution_run"
+        and (
+            scope.run_id in result_ids
+            if scope.run_id is not None
+            else any(
+                target.campaign_result_id in result_ids or target.attempt_id in attempts
+                for target in scope.targets
+            )
+        )
+    ]
+
+
+def _requested_metrics(scopes) -> set[str]:
+    return {
+        scope.metric_name
+        for scope in scopes
+        if scope.scope_type == "ragas_batch"
+        and scope.metric_name in OPTIONAL_CONTEXT_METRICS
+    }
+
+
+def _quality_for_results(results, scores, requested_metrics):
     result_ids = {r.id for r in results}
-    attempts = {r.source_attempt_id for r in results if r.source_attempt_id}
-    requested = {
+    attempts_by_result = {
+        result.id: result.source_attempt_id
+        for result in results
+        if result.source_attempt_id
+    }
+    requested = requested_metrics | {
         row["metric_name"] for row in scores if row["campaign_result_id"] in result_ids
     }
     metric_names = (
@@ -243,7 +292,8 @@ def _quality_for_results(results, scores):
             for row in scores
             if row["metric_name"] == metric
             and row["campaign_result_id"] in result_ids
-            and row.get("source_attempt_id") in attempts
+            and row.get("source_attempt_id")
+            == attempts_by_result.get(row["campaign_result_id"])
         ]
         groups: dict[tuple[str, str, str], list] = defaultdict(list)
         for row in rows:
@@ -291,8 +341,7 @@ def _quality_for_results(results, scores):
                 else 0,
             ),
             evaluator_model=details.get("evaluator_model") or details.get("model_name"),
-            metric_version=details.get("metric_version")
-            or (chosen[2] if chosen else None),
+            metric_version=details.get("metric_version"),
         )
     return output
 
@@ -307,11 +356,17 @@ def _evaluator_identity(row) -> tuple[str, str, str]:
 
 
 def _evaluator_identities_for_results(results, scores):
-    ids = {r.id for r in results}
+    attempts_by_result = {
+        result.id: result.source_attempt_id
+        for result in results
+        if result.source_attempt_id
+    }
     return {
         _evaluator_identity(row)
         for row in scores
-        if row["campaign_result_id"] in ids
+        if row["campaign_result_id"] in attempts_by_result
+        and row.get("source_attempt_id")
+        == attempts_by_result[row["campaign_result_id"]]
         and row["metric_name"] in PRIMARY_QUALITY_METRICS
     }
 
