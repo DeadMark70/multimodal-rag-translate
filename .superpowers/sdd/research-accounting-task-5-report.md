@@ -87,3 +87,13 @@ warnings).
 - The legacy RAGAS metrics response maps a v2 `token_usage.total_tokens: null`
   to `0` only while constructing its non-null `CampaignMetricRow`; strict
   accounting projections remain null elsewhere.
+
+## Review Fixes — Rerun Return Metadata
+
+- `complete_execution_attempt()` reads the existing official result's `id` and
+  `created_at` within its transaction. An upsert conflict now returns that
+  persisted creation timestamp together with the resolved ID and current source
+  attempt, while a new row returns the timestamp just persisted for that row.
+- No post-commit repository read was reintroduced. The rerun regression test
+  verifies the returned model matches the stored result identity and creation
+  time while retaining the current attempt and output fields.

@@ -443,6 +443,28 @@ async def test_successful_rerun_promotion_keeps_old_attempt(store, fixed_now) ->
 
 
 @pytest.mark.asyncio
+async def test_successful_rerun_returns_persisted_result_metadata(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    first_claim = await _claim_execution(store, fixed_now)
+    first = await store.complete_execution_attempt(
+        first_claim, _successful_output("answer-v1")
+    )
+    persisted = await CampaignResultRepository().get(
+        user_id="user-a", campaign_id="cmp-1", result_id=first.id
+    )
+    rerun_claim = await _claim_execution_rerun(store, fixed_now)
+    rerun = await store.complete_execution_attempt(
+        rerun_claim, _successful_output("answer-v2")
+    )
+
+    assert rerun.id == persisted.id
+    assert rerun.created_at == persisted.created_at
+    assert rerun.source_attempt_id == rerun_claim.attempt_id
+    assert rerun.answer == "answer-v2"
+
+
+@pytest.mark.asyncio
 async def test_non_completed_execution_output_preserves_official_projection(
     store, fixed_now
 ) -> None:  # noqa: ANN001

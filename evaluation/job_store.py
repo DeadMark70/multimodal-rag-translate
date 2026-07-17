@@ -620,7 +620,7 @@ class EvaluationJobStore:
                     )
                 existing_cursor = await connection.execute(
                     """
-                    SELECT id FROM campaign_results
+                    SELECT id, created_at FROM campaign_results
                     WHERE campaign_id = ? AND user_id = ? AND question_id = ?
                       AND mode = ? AND run_number = ? AND condition_id = ?
                     """,
@@ -635,6 +635,11 @@ class EvaluationJobStore:
                 )
                 existing = await existing_cursor.fetchone()
                 result_id = existing["id"] if existing is not None else result.id
+                result_created_at = (
+                    _from_iso(existing["created_at"])
+                    if existing is not None
+                    else _from_iso(now_iso)
+                )
                 if accounting_scope_id is not None:
                     await self._validate_accounting_scope_target(
                         connection,
@@ -749,7 +754,11 @@ class EvaluationJobStore:
                 await connection.rollback()
                 raise
         return result.model_copy(
-            update={"id": result_id, "source_attempt_id": claim.attempt_id}
+            update={
+                "id": result_id,
+                "source_attempt_id": claim.attempt_id,
+                "created_at": result_created_at,
+            }
         )
 
     async def _validate_accounting_scope_target(
