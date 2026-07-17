@@ -311,6 +311,10 @@ async def test_graph_to_chunk_flag_uses_source_chunks_and_falls_back_on_lookup_f
         patch("data_base.RAG_QA_service._get_graph_evidence_bundle", new=bundle_mock),
         patch("data_base.RAG_QA_service.VectorStoreChunkLookup", return_value=lookup),
         patch("data_base.RAG_QA_service._get_graph_context", new=AsyncMock()) as legacy,
+        patch(
+            "data_base.RAG_QA_service._record_graph_observability",
+            new=AsyncMock(),
+        ) as record,
     ):
         result = await rag_answer_question(
             question="q",
@@ -325,3 +329,66 @@ async def test_graph_to_chunk_flag_uses_source_chunks_and_falls_back_on_lookup_f
     assert "Inferred graph summary" not in result.thought_process
     assert bundle_mock.await_args.kwargs["chunk_lookup"] is lookup
     legacy.assert_not_awaited()
+    record.assert_awaited_once()
+    details = record.await_args.kwargs["graph_context_details"]
+    assert "fallback=no_packed_graph_chunks" in details.route_decision.router_reason
+
+
+@pytest.mark.asyncio
+async def test_graph_source_expand_exception_records_safe_fallback_reason() -> None:
+    retriever = Mock()
+    vector_document = Document(
+        page_content="Vector source",
+        metadata={"doc_id": "doc-1", "chunk_id": "vector"},
+    )
+    retriever.invoke.return_value = [vector_document]
+    llm = Mock()
+    llm.ainvoke = AsyncMock(return_value=SimpleNamespace(content="answer"))
+    record = AsyncMock()
+
+    with (
+        patch("data_base.RAG_QA_service.get_llm", return_value=llm),
+        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch(
+            "data_base.RAG_QA_service.get_user_retriever",
+            new=AsyncMock(return_value=retriever),
+        ),
+        patch(
+            "data_base.RAG_QA_service.fetch_document_filenames",
+            new=AsyncMock(return_value={"doc-1": "doc.pdf"}),
+        ),
+        patch(
+            "data_base.RAG_QA_service._get_graph_evidence_bundle",
+            new=AsyncMock(side_effect=OSError("index unavailable")),
+        ),
+        patch(
+            "data_base.RAG_QA_service._get_graph_context",
+            new=AsyncMock(),
+        ) as legacy,
+        patch(
+            "data_base.RAG_QA_service._record_graph_observability",
+            new=record,
+        ),
+    ):
+        result = await rag_answer_question(
+            question="q",
+            user_id="user-1",
+            return_docs=True,
+            enable_graph_rag=True,
+            graph_execution_hints={
+                "graph_evidence_mode": "locator_to_chunk",
+                "graph_feature_flags": {
+                    "graph_evidence_locator_enabled": True,
+                    "graph_provenance_gate_enabled": True,
+                    "graph_to_chunk_enabled": True,
+                },
+            },
+        )
+
+    assert result.documents == [vector_document]
+    legacy.assert_not_awaited()
+    record.assert_awaited_once()
+    details = record.await_args.kwargs["graph_context_details"]
+    assert details.route_decision.path == "skip"
+    assert "fallback=source_expand_failed" in details.route_decision.router_reason
+    assert "index unavailable" not in details.route_decision.router_reason

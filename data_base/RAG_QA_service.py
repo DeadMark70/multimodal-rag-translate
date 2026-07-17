@@ -1288,6 +1288,8 @@ def _graph_context_details_for_bundle(
     reason_parts = []
     if graph_need_decision is not None:
         reason_parts.append(f"gate={graph_need_decision.reason}")
+    if not lifecycle.packed_item_ids:
+        reason_parts.append("fallback=no_packed_graph_chunks")
     reason_parts.extend(("strategy=source_expand", lifecycle.to_router_reason()))
     return GraphContextDetails(
         route_decision=GraphRouteDecision(
@@ -1298,6 +1300,28 @@ def _graph_context_details_for_bundle(
         matched_entity_ids=[],
         community_ids=[],
         candidate_evidence_count=candidate_count,
+        graph_latency_ms=graph_latency_ms,
+    )
+
+
+def _graph_fallback_context_details(
+    *,
+    reason: str,
+    graph_latency_ms: int,
+    lifecycle: GraphEvidenceLifecycle,
+) -> GraphContextDetails:
+    return GraphContextDetails(
+        route_decision=GraphRouteDecision(
+            query_kind="relation",
+            path="skip",
+            router_reason=(
+                f"strategy=source_expand; fallback={reason}; "
+                f"{lifecycle.to_router_reason()}"
+            ),
+        ),
+        matched_entity_ids=[],
+        community_ids=[],
+        candidate_evidence_count=len(lifecycle.candidate_item_ids),
         graph_latency_ms=graph_latency_ms,
     )
 
@@ -2075,6 +2099,7 @@ async def rag_answer_question(
         if graph_execution_strategy.strategy == "source_expand":
             chunk_lookup = VectorStoreChunkLookup()
             graph_started_at = time.perf_counter()
+            bundle: GraphEvidenceBundle | None = None
             try:
                 bundle = await _get_graph_evidence_bundle(
                     question=question,
@@ -2158,6 +2183,39 @@ async def rag_answer_question(
                 logger.warning(
                     "Graph-to-chunk expansion failed; retaining vector retrieval: %s",
                     exc,
+                )
+                candidate_item_ids = (
+                    _unique_graph_item_ids(
+                        [item.item_id for item in bundle.evidence_items]
+                    )
+                    if bundle is not None
+                    else []
+                )
+                fallback_lifecycle = GraphEvidenceLifecycle(
+                    candidate_item_ids=candidate_item_ids,
+                    resolved_item_ids=[],
+                    scope_approved_item_ids=[],
+                    scored_item_ids=[],
+                    packed_item_ids=[],
+                    used_as_locator=True,
+                    graph_to_chunk_attempted=True,
+                )
+                graph_context_details = _graph_fallback_context_details(
+                    reason="source_expand_failed",
+                    graph_latency_ms=max(
+                        int((time.perf_counter() - graph_started_at) * 1000),
+                        0,
+                    ),
+                    lifecycle=fallback_lifecycle,
+                )
+                await _record_graph_observability(
+                    question=question,
+                    graph_search_mode=graph_search_mode,
+                    graph_execution_hints=graph_execution_hints,
+                    mode_hints=mode_hints,
+                    graph_context_details=graph_context_details,
+                    graph_evidence_units=graph_evidence_units,
+                    lifecycle=fallback_lifecycle,
                 )
         elif graph_execution_strategy.strategy == "raw_legacy":
             graph_context_payload = await _get_graph_context(
