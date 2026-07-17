@@ -1152,6 +1152,68 @@ async def test_campaign_result_persists_claim_rows_and_derived_claim_metrics() -
 
 
 @pytest.mark.asyncio
+async def test_run_campaign_persists_failure_execution_profiles_directly() -> None:
+    captured_agentic_profile = "captured-agentic-failure-profile"
+
+    class CapturedAgenticFailure(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("agentic retrieval failed")
+            self.agent_trace = {
+                "question_id": "Q-FAILURE-PROFILE",
+                "question": "Which failure profile should be persisted?",
+                "mode": "agentic",
+                "execution_profile": captured_agentic_profile,
+            }
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        if kwargs["mode"] == "agentic":
+            raise CapturedAgenticFailure
+        raise RuntimeError("graph retrieval failed")
+
+    db_path = _make_db_path()
+    test_case = TestCase(
+        id="Q-FAILURE-PROFILE",
+        question="Which failure profile should be persisted?",
+        ground_truth="The executed retrieval profile",
+        category="regression",
+        difficulty="medium",
+    )
+
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        campaign = await campaign_repo.create(
+            user_id="user-a",
+            name="Direct failure profile persistence",
+            config=_campaign_config_for_test_case_ids(
+                [test_case.id],
+                modes=["graph", "agentic"],
+            ),
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+
+        await engine._run_campaign(
+            user_id="user-a",
+            campaign_id=campaign.id,
+            config=campaign.config,
+            test_cases=[test_case],
+        )
+
+        latest = await campaign_repo.get(user_id="user-a", campaign_id=campaign.id)
+        assert latest.status == CampaignLifecycleStatus.COMPLETED
+
+        results = await result_repo.list_for_campaign(
+            user_id="user-a", campaign_id=campaign.id
+        )
+        assert len(results) == 2
+        results_by_mode = {result.mode: result for result in results}
+        assert results_by_mode["graph"].status == CampaignResultStatus.FAILED
+        assert results_by_mode["graph"].execution_profile == GRAPH_EVAL_PROFILE
+        assert results_by_mode["agentic"].status == CampaignResultStatus.FAILED
+        assert results_by_mode["agentic"].execution_profile == captured_agentic_profile
+
+
+@pytest.mark.asyncio
 async def test_campaign_failure_cancels_and_drains_pending_batch_tasks() -> None:
     started = asyncio.Event()
     cancelled = asyncio.Event()
