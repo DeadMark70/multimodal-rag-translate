@@ -172,6 +172,43 @@
   - `summary_by_category`
   - `summary_by_focus`
 
+## Version-2 Evaluation Research Accounting
+
+- Version-2 accounting is durable and scope-based. Each execution attempt owns
+  one `execution_run` scope; each compatible RAGAS batch owns one
+  campaign-level `ragas_batch` scope. Every observed provider call is stored as
+  a normalized usage event with a non-overlapping token breakdown and a phase.
+- Historical campaigns are deliberately not backfilled. A completed legacy
+  result without a version-2 official execution scope remains readable, but
+  reports `token_accounting_status="incomplete_legacy"` and is not comparable.
+- Costs have separate meanings:
+  - **benchmark inference cost** includes only successful official execution
+    scopes for the displayed results;
+  - **operational execution cost** includes all execution attempts, including
+    retries and failed attempts;
+  - **RAGAS overhead** is a campaign-level evaluator cost. It is never assigned
+    to individual runs or included in either execution-cost total.
+- Quality labels in the research summary are official only when they come from
+  compatible durable `ragas_scores` rows matching the result's official source
+  attempt. Missing, failed, evaluating, or incompatible work remains nullable;
+  it is never converted to a score of zero.
+- Latency `p50` and `p95` use the nearest-rank method: sort observed successful
+  run latencies, then select `ceil(percentile * sample_count)`. Values are
+  observed samples, not interpolated estimates.
+- The response exposes independent quality, token-accounting, pricing, and
+  phase-attribution statuses. `partial`, `unknown`, and nullable values are
+  expected states for incomplete work; a mode is comparable only when all
+  required accounting, pricing, quality, evaluator-identity, and schema checks
+  pass.
+- Pricing is read from the audited snapshot configured by
+  `EVALUATION_PRICE_SNAPSHOT_PATH`. If a model or its price is unavailable,
+  price totals remain `null` and the pricing status explains why.
+- `GET /api/evaluation/campaigns/{campaign_id}/research-summary` is an
+  authenticated, campaign-owned dashboard contract. It returns strict
+  campaign/mode totals, official RAGAS observations, observed latency,
+  execution accounting, RAGAS overhead, and explicit warning/comparability
+  states without deriving proxy metrics from legacy overview data.
+
 ## Evaluator Context Policy
 
 - Evaluation no longer reuses the UI preview truncation path.
