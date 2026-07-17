@@ -138,6 +138,110 @@ def test_price_normalized_usage_keeps_unknown_model_cost_missing() -> None:
     assert priced["pricing_status"] == "unknown_model"
 
 
+def test_price_normalized_usage_rejects_partial_usage() -> None:
+    usage = normalize_provider_usage(
+        "google",
+        {
+            "prompt_token_count": 10,
+            "candidates_token_count": 4,
+            "thoughts_token_count": 3,
+            "total_token_count": 12,
+        },
+    )
+
+    priced = price_normalized_usage(
+        "audited-model",
+        usage,
+        {
+            "snapshot_id": "audited-test",
+            "currency": "USD",
+            "models": {
+                "audited-model": {
+                    "input_per_1m_usd": 1.0,
+                    "output_per_1m_usd": 2.0,
+                    "reasoning_per_1m_usd": 3.0,
+                }
+            },
+        },
+    )
+
+    assert priced["estimated_cost_usd"] is None
+    assert priced["pricing_status"] == "unavailable_usage"
+
+
+def test_price_normalized_usage_rejects_unrated_other_tokens() -> None:
+    usage = normalize_provider_usage(
+        "google",
+        {
+            "prompt_token_count": 10,
+            "candidates_token_count": 4,
+            "total_token_count": 20,
+        },
+    )
+
+    priced = price_normalized_usage(
+        "audited-model",
+        usage,
+        {
+            "snapshot_id": "audited-test",
+            "currency": "USD",
+            "models": {
+                "audited-model": {
+                    "input_per_1m_usd": 1.0,
+                    "output_per_1m_usd": 2.0,
+                    "reasoning_per_1m_usd": 3.0,
+                }
+            },
+        },
+    )
+
+    assert usage.other_tokens == 6
+    assert priced["estimated_cost_usd"] is None
+    assert priced["pricing_status"] == "missing_price"
+
+
+@pytest.mark.parametrize(
+    "snapshot_update",
+    [
+        {"input_per_1m_usd": -1.0},
+        {"output_per_1m_usd": float("nan")},
+        {"reasoning_per_1m_usd": float("inf")},
+        {"usd_to_twd": -1.0},
+        {"usd_to_twd": float("nan")},
+        {"usd_to_twd": float("inf")},
+    ],
+)
+def test_price_normalized_usage_rejects_invalid_direct_snapshot_values(
+    snapshot_update,
+) -> None:
+    usage = normalize_provider_usage(
+        "openai",
+        {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    )
+    rates = {
+        "input_per_1m_usd": 1.0,
+        "output_per_1m_usd": 2.0,
+        "reasoning_per_1m_usd": 3.0,
+    }
+    snapshot = {
+        "snapshot_id": "audited-test",
+        "currency": "USD",
+        "usd_to_twd": 32.0,
+        "models": {"audited-model": rates},
+    }
+    for key, value in snapshot_update.items():
+        if key == "usd_to_twd":
+            snapshot[key] = value
+        else:
+            rates[key] = value
+
+    priced = price_normalized_usage("audited-model", usage, snapshot)
+
+    assert priced["estimated_cost_usd"] is None
+    assert priced["estimated_cost_twd"] is None
+    assert priced["pricing_status"] == "missing_price"
+
+
 def test_load_price_snapshot_rejects_invalid_configured_json(
     tmp_path, monkeypatch
 ) -> None:

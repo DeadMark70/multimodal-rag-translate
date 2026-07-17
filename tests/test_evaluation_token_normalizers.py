@@ -39,6 +39,20 @@ def test_completion_reasoning_subset_is_not_double_counted() -> None:
     assert usage.reconciliation_status == "balanced"
 
 
+def test_openai_reasoning_exceeding_completion_is_partial() -> None:
+    usage = normalize_provider_usage(
+        "openai",
+        {
+            "prompt_tokens": 10,
+            "completion_tokens": 4,
+            "total_tokens": 20,
+            "output_token_details": {"reasoning": 5},
+        },
+    )
+
+    assert usage.reconciliation_status == "partial"
+
+
 def test_missing_usage_is_not_zero() -> None:
     usage = normalize_provider_usage("google", {})
 

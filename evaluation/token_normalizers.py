@@ -96,6 +96,16 @@ def normalize_provider_usage(
             reconciliation_status="partial",
         )
 
+    if provider_key == "openai" and reasoning_value > completion_value:
+        return NormalizedTokenUsage(
+            input_tokens=input_value,
+            output_text_tokens=output_text,
+            reasoning_tokens=reasoning_value,
+            reported_total_tokens=total,
+            usage_status="measured",
+            reconciliation_status="partial",
+        )
+
     known = input_value + output_text + reasoning_value
     if known > total:
         return NormalizedTokenUsage(

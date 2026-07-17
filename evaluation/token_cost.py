@@ -23,6 +23,7 @@ _RATE_FIELDS = (
     "output_per_1m_usd",
     "reasoning_per_1m_usd",
 )
+_OPTIONAL_RATE_FIELDS = ("other_per_1m_usd",)
 
 
 def load_price_snapshot(path: str | Path | None = None) -> dict[str, Any]:
@@ -49,6 +50,9 @@ def _validate_price_snapshot(snapshot: object) -> dict[str, Any]:
         raise ValueError("Price snapshot requires a non-empty snapshot_id")
     if snapshot.get("currency") != "USD":
         raise ValueError("Price snapshot currency must be USD")
+    usd_to_twd = snapshot.get("usd_to_twd")
+    if usd_to_twd not in (None, "") and not _is_non_negative_finite(usd_to_twd):
+        raise ValueError("Price snapshot usd_to_twd must be non-negative")
     models = snapshot.get("models")
     if not isinstance(models, dict):
         raise ValueError("Price snapshot models must be an object")
@@ -63,18 +67,34 @@ def _validate_price_snapshot(snapshot: object) -> dict[str, Any]:
             )
         for field in _RATE_FIELDS:
             value = rates.get(field)
-            if isinstance(value, bool):
+            if not _is_non_negative_finite(value):
                 raise ValueError(
                     f"Price snapshot {model_name} {field} must be non-negative"
                 )
-            try:
-                if value is None or not isfinite(float(value)) or float(value) < 0:
-                    raise ValueError
-            except (TypeError, ValueError) as exc:
+        for field in _OPTIONAL_RATE_FIELDS:
+            if field in rates and not _is_non_negative_finite(rates[field]):
                 raise ValueError(
                     f"Price snapshot {model_name} {field} must be non-negative"
-                ) from exc
+                )
     return snapshot
+
+
+def _is_non_negative_finite(value: object) -> bool:
+    if value is None or isinstance(value, bool):
+        return False
+    try:
+        return isfinite(float(value)) and float(value) >= 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _unpriced_result(snapshot_id: object, pricing_status: str) -> dict[str, Any]:
+    return {
+        "estimated_cost_usd": None,
+        "estimated_cost_twd": None,
+        "pricing_status": pricing_status,
+        "price_snapshot_id": snapshot_id,
+    }
 
 
 def price_normalized_usage(
@@ -84,36 +104,31 @@ def price_normalized_usage(
 ) -> dict[str, Any]:
     """Price measured non-overlapping usage from a validated audited snapshot."""
     snapshot_id = snapshot.get("snapshot_id")
+    try:
+        snapshot = _validate_price_snapshot(snapshot)
+    except ValueError:
+        return _unpriced_result(snapshot_id, "missing_price")
     if usage.usage_status == "missing":
-        return {
-            "estimated_cost_usd": None,
-            "estimated_cost_twd": None,
-            "pricing_status": "unavailable_usage",
-            "price_snapshot_id": snapshot_id,
-        }
+        return _unpriced_result(snapshot_id, "unavailable_usage")
+    if usage.reconciliation_status != "balanced":
+        return _unpriced_result(snapshot_id, "unavailable_usage")
     rates = (snapshot.get("models") or {}).get(model_name or "")
     if not isinstance(rates, dict):
-        return {
-            "estimated_cost_usd": None,
-            "estimated_cost_twd": None,
-            "pricing_status": "unknown_model",
-            "price_snapshot_id": snapshot_id,
-        }
+        return _unpriced_result(snapshot_id, "unknown_model")
+    if usage.other_tokens and "other_per_1m_usd" not in rates:
+        return _unpriced_result(snapshot_id, "missing_price")
     try:
         input_rate = float(rates["input_per_1m_usd"])
         output_rate = float(rates["output_per_1m_usd"])
         reasoning_rate = float(rates["reasoning_per_1m_usd"])
+        other_rate = float(rates.get("other_per_1m_usd", 0))
     except (KeyError, TypeError, ValueError):
-        return {
-            "estimated_cost_usd": None,
-            "estimated_cost_twd": None,
-            "pricing_status": "missing_price",
-            "price_snapshot_id": snapshot_id,
-        }
+        return _unpriced_result(snapshot_id, "missing_price")
     estimated_cost_usd = (
         usage.input_tokens * input_rate
         + usage.output_text_tokens * output_rate
         + usage.reasoning_tokens * reasoning_rate
+        + usage.other_tokens * other_rate
     ) / 1_000_000
     usd_to_twd = snapshot.get("usd_to_twd")
     estimated_cost_twd = (
