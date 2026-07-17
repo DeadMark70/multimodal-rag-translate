@@ -18,6 +18,9 @@ GRAPH_EVAL_PROFILE = (
 AGENTIC_EVAL_PROFILE = (
     f"agentic_eval_v8_multiquery_locator_{DEFAULT_PRODUCTION_INDEXING_PROFILE}"
 )
+AGENTIC_LEGACY_CHAT_PROFILE = (
+    f"agentic_eval_v7_semantic_router_{DEFAULT_PRODUCTION_INDEXING_PROFILE}"
+)
 
 GRAPH_ABLATION_MODES = frozenset(
     {
@@ -96,3 +99,19 @@ def evaluation_execution_profile(mode: str) -> str | None:
     if mode in GRAPH_ABLATION_MODES:
         return f"{mode}_eval_v2_multiquery_{DEFAULT_PRODUCTION_INDEXING_PROFILE}"
     return None
+
+
+def evaluation_failure_execution_profile(
+    mode: str,
+    payload: object,
+) -> str | None:
+    """Resolve a failed run's captured profile before using the mode baseline."""
+    trace = getattr(payload, "agent_trace", None)
+    if isinstance(trace, Mapping):
+        trace_profile = trace.get("execution_profile")
+        if isinstance(trace_profile, str) and trace_profile:
+            return trace_profile
+    payload_profile = getattr(payload, "execution_profile", None)
+    if isinstance(payload_profile, str) and payload_profile:
+        return payload_profile
+    return evaluation_execution_profile(mode)

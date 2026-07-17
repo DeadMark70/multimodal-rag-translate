@@ -24,11 +24,16 @@ from evaluation.campaign_engine import (
     _record_unit_root_span,
 )
 from evaluation.campaign_schemas import CampaignResult, CampaignResultStatus
-from evaluation.db import AgentTraceRepository, CampaignRepository, CampaignResultRepository
+from evaluation.db import (
+    AgentTraceRepository,
+    CampaignRepository,
+    CampaignResultRepository,
+)
 from evaluation.error_policy import classify_evaluation_error
 from evaluation.job_schemas import ClaimedEvaluationWork, ExecutionAttemptOutput
 from evaluation.job_store import EvaluationJobStore
 from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
+from evaluation.retrieval_profiles import evaluation_failure_execution_profile
 from evaluation.schemas import TestCase
 
 logger = logging.getLogger(__name__)
@@ -99,9 +104,11 @@ class DatasetExecutionWorker:
             if await self._claim_was_cancelled(claim):
                 return
             decision = classify_evaluation_error(exc)
-            if self._runner is run_campaign_case or isinstance(payload, BenchmarkExecutionResult):
+            if self._runner is run_campaign_case or isinstance(
+                payload, BenchmarkExecutionResult
+            ):
                 try:
-                    await self._persist_failed_result(claim, exc)
+                    await self._persist_failed_result(claim, exc, payload=payload)
                 except Exception:  # noqa: BLE001
                     logger.warning(
                         "Failed to persist execution failure projection",
@@ -136,7 +143,11 @@ class DatasetExecutionWorker:
         return await self._store.get_job_item_status(claim.job_item_id) == "cancelled"
 
     async def _persist_failed_result(
-        self, claim: ClaimedEvaluationWork, exc: Exception
+        self,
+        claim: ClaimedEvaluationWork,
+        exc: Exception,
+        *,
+        payload: BenchmarkExecutionResult | None = None,
     ) -> None:
         """Keep a visible failed result while leaving the attempt non-successful.
 
@@ -159,7 +170,10 @@ class DatasetExecutionWorker:
             key_points=list(test_case.key_points),
             ragas_focus=list(test_case.ragas_focus),
             mode=unit.mode,
-            execution_profile=None,
+            execution_profile=evaluation_failure_execution_profile(
+                unit.mode,
+                payload if payload is not None else exc,
+            ),
             context_policy_version=None,
             run_number=unit.run_number,
             condition_id=unit.condition_id,
@@ -200,10 +214,24 @@ class DatasetExecutionWorker:
                 test_case=test_case,
                 mode=str(snapshot["mode"]),
                 run_number=int(snapshot["run_number"]),
-                repeat_number=int(snapshot.get("repeat_number", snapshot["run_number"])),
-                condition_id=(str(snapshot["condition_id"]) if snapshot.get("condition_id") else None),
-                condition_label=(str(snapshot["condition_label"]) if snapshot.get("condition_label") else None),
-                ablation_flags=(dict(snapshot["ablation_flags"]) if snapshot.get("ablation_flags") else None),
+                repeat_number=int(
+                    snapshot.get("repeat_number", snapshot["run_number"])
+                ),
+                condition_id=(
+                    str(snapshot["condition_id"])
+                    if snapshot.get("condition_id")
+                    else None
+                ),
+                condition_label=(
+                    str(snapshot["condition_label"])
+                    if snapshot.get("condition_label")
+                    else None
+                ),
+                ablation_flags=(
+                    dict(snapshot["ablation_flags"])
+                    if snapshot.get("ablation_flags")
+                    else None
+                ),
                 budget=dict(snapshot["budget"]) if snapshot.get("budget") else None,
             ),
             user_id,
@@ -250,7 +278,9 @@ class DatasetExecutionWorker:
             total_tokens=_extract_total_tokens(payload.token_usage),
             question_snapshot=_build_question_snapshot(unit.test_case),
             model_config_snapshot=execution.model_config,
-            system_version_snapshot=_build_system_version_snapshot(unit=unit, payload=payload),
+            system_version_snapshot=_build_system_version_snapshot(
+                unit=unit, payload=payload
+            ),
             derived_metrics=_build_derived_metrics(unit=unit, payload=payload),
             final_answer_hash=_final_answer_hash(payload.answer),
             status=CampaignResultStatus.COMPLETED,
@@ -265,7 +295,9 @@ class DatasetExecutionWorker:
             )
         except Exception:  # noqa: BLE001
             job = None
-        skip_ragas = bool(job is not None and job.config_snapshot.get("skip_ragas") is True)
+        skip_ragas = bool(
+            job is not None and job.config_snapshot.get("skip_ragas") is True
+        )
         configured_metrics = getattr(self._ragas_evaluator, "enabled_metrics", None)
         if configured_metrics is None and callable(
             getattr(self._ragas_evaluator, "evaluate_campaign", None)
@@ -276,7 +308,9 @@ class DatasetExecutionWorker:
             user_id=str(snapshot["user_id"]),
             campaign_id=str(snapshot["campaign_id"]),
             defer_completion=bool(enabled_metrics) and not skip_ragas,
-            completion_phase="evaluation" if not enabled_metrics and not skip_ragas else "execution",
+            completion_phase="evaluation"
+            if not enabled_metrics and not skip_ragas
+            else "execution",
         )
         if self._ragas_evaluator is None:
             return
@@ -297,7 +331,9 @@ class DatasetExecutionWorker:
                 )
                 question_ids = {str(value) for value in raw_question_ids}
                 selected_result_ids = [
-                    result.id for result in results if result.question_id in question_ids
+                    result.id
+                    for result in results
+                    if result.question_id in question_ids
                 ]
             raw_metrics = job.config_snapshot.get("metric_names")
             if isinstance(raw_metrics, list) and raw_metrics:

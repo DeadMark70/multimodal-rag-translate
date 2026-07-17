@@ -36,6 +36,7 @@ from data_base.schemas_deep_research import (
 from evaluation.retry import run_with_retry
 from evaluation.retrieval_profiles import (
     AGENTIC_EVAL_PROFILE,
+    AGENTIC_LEGACY_CHAT_PROFILE,
     locator_to_chunk_graph_hints,
     multi_query_settings,
     no_query_expansion_settings,
@@ -60,6 +61,7 @@ MicroRoute = Literal[
     "visual_evidence_path",
 ]
 SemanticRouterMode = Literal["off", "shadow", "active"]
+AgenticRetrievalPolicy = Literal["evaluation_v8", "legacy_chat_v7"]
 
 LEGACY_SHARED_PROFILE = "legacy_shared"
 AGENTIC_INITIAL_SUBTASKS = 3
@@ -653,10 +655,17 @@ class AgenticEvaluationService(ResearchExecutionCore):
         self,
         max_concurrent_tasks: int = 3,
         default_max_iterations: int = 2,
+        retrieval_policy: AgenticRetrievalPolicy = "evaluation_v8",
     ) -> None:
         super().__init__(
             max_concurrent_tasks=max_concurrent_tasks,
             default_max_iterations=default_max_iterations,
+        )
+        self.retrieval_policy = retrieval_policy
+        self.execution_profile = (
+            AGENTIC_LEGACY_CHAT_PROFILE
+            if retrieval_policy == "legacy_chat_v7"
+            else AGENTIC_EVAL_PROFILE
         )
         self._active_question_intent: Optional[QuestionIntent] = None
         self._active_strategy_tier: Optional[StrategyTier] = None
@@ -806,10 +815,8 @@ class AgenticEvaluationService(ResearchExecutionCore):
     ) -> dict[str, Any]:
         retrieval_policy = _retrieval_policy_for_micro_route(micro_route)
         kwargs: dict[str, Any] = {
-            **no_query_expansion_settings(),
             "enable_reranking": enable_reranking,
             "enable_crag": True,
-            "crag_rewrite_mode": "multi_query",
             "plain_mode": False,
             "return_docs": True,
             "enable_visual_verification": enable_visual_verification,
@@ -823,6 +830,10 @@ class AgenticEvaluationService(ResearchExecutionCore):
                 "retrieval_policy": retrieval_policy,
             },
         }
+        evaluation_v8 = self.retrieval_policy == "evaluation_v8"
+        if evaluation_v8:
+            kwargs.update(no_query_expansion_settings())
+            kwargs["crag_rewrite_mode"] = "multi_query"
         if route_profile == "hybrid_exact":
             kwargs.update(
                 {
@@ -834,7 +845,11 @@ class AgenticEvaluationService(ResearchExecutionCore):
         elif route_profile == "hybrid_compare":
             kwargs.update(
                 {
-                    **multi_query_settings(),
+                    **(
+                        multi_query_settings()
+                        if evaluation_v8
+                        else {"enable_hyde": True, "enable_multi_query": True}
+                    ),
                     "enable_graph_rag": False,
                 }
             )
@@ -844,9 +859,16 @@ class AgenticEvaluationService(ResearchExecutionCore):
                     **no_query_expansion_settings(),
                     "enable_graph_rag": True,
                     "graph_search_mode": "generic",
-                    "graph_execution_hints": locator_to_chunk_graph_hints(
-                        stage_hint=stage_hint,
-                        task_type=task_type,
+                    "graph_execution_hints": (
+                        locator_to_chunk_graph_hints(
+                            stage_hint=stage_hint,
+                            task_type=task_type,
+                        )
+                        if evaluation_v8
+                        else self._graph_execution_hints(
+                            stage_hint=stage_hint,
+                            task_type=task_type,
+                        )
                     ),
                 }
             )
@@ -861,12 +883,23 @@ class AgenticEvaluationService(ResearchExecutionCore):
         else:  # generic_graph
             kwargs.update(
                 {
-                    **multi_query_settings(),
+                    **(
+                        multi_query_settings()
+                        if evaluation_v8
+                        else {"enable_hyde": True, "enable_multi_query": True}
+                    ),
                     "enable_graph_rag": True,
                     "graph_search_mode": "generic",
-                    "graph_execution_hints": locator_to_chunk_graph_hints(
-                        stage_hint=stage_hint,
-                        task_type=task_type,
+                    "graph_execution_hints": (
+                        locator_to_chunk_graph_hints(
+                            stage_hint=stage_hint,
+                            task_type=task_type,
+                        )
+                        if evaluation_v8
+                        else self._graph_execution_hints(
+                            stage_hint=stage_hint,
+                            task_type=task_type,
+                        )
                     ),
                 }
             )

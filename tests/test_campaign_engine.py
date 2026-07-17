@@ -31,8 +31,13 @@ from evaluation.campaign_schemas import (
 from evaluation.db import CampaignRepository, CampaignResultRepository
 from evaluation.job_store import EvaluationJobStore
 from evaluation.observability_storage import EvaluationObservabilityRepository
-from evaluation.rag_modes import BenchmarkExecutionResult, CONTEXT_POLICY_VERSION, run_campaign_case
+from evaluation.rag_modes import (
+    BenchmarkExecutionResult,
+    CONTEXT_POLICY_VERSION,
+    run_campaign_case,
+)
 from evaluation.ragas_evaluator import RagasEvaluator
+from evaluation.retrieval_profiles import GRAPH_EVAL_PROFILE
 from evaluation.retry import run_with_retry
 from evaluation.router import stream_campaign
 from evaluation.schemas import ModelConfig, TestCase
@@ -53,7 +58,9 @@ def _make_db_path() -> Path:
 
 
 @contextmanager
-def _build_client(user_id: str, upload_root: Path, db_path: Path, engine: CampaignEngine):
+def _build_client(
+    user_id: str, upload_root: Path, db_path: Path, engine: CampaignEngine
+):
     process_worker = Mock(is_configured=False)
     with (
         patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
@@ -61,7 +68,10 @@ def _build_client(user_id: str, upload_root: Path, db_path: Path, engine: Campai
         patch("evaluation.storage.BASE_UPLOAD_FOLDER", str(upload_root)),
         patch("evaluation.db.EVALUATION_DB_PATH", db_path),
         patch("evaluation.campaign_engine.get_campaign_engine", return_value=engine),
-        patch("evaluation.job_worker.get_evaluation_job_worker", return_value=process_worker),
+        patch(
+            "evaluation.job_worker.get_evaluation_job_worker",
+            return_value=process_worker,
+        ),
         patch("evaluation.router.get_campaign_engine", return_value=engine),
     ):
         app.dependency_overrides[get_current_user_id] = lambda: user_id
@@ -192,15 +202,23 @@ class FakeRagasEvaluator:
         return CampaignMetricsResponse(
             campaign=campaign,
             evaluator_model="fake-evaluator",
-            available_metrics=["faithfulness", "answer_correctness", "answer_relevancy"],
+            available_metrics=[
+                "faithfulness",
+                "answer_correctness",
+                "answer_relevancy",
+            ],
             summary_by_mode={
                 "naive": ModeMetricsSummary(
                     mode="naive",
                     sample_count=1,
                     metric_summaries={
                         "faithfulness": MetricAggregate(mean=0.5, max=0.5, stddev=0),
-                        "answer_correctness": MetricAggregate(mean=0.5, max=0.5, stddev=0),
-                        "answer_relevancy": MetricAggregate(mean=0.45, max=0.45, stddev=0),
+                        "answer_correctness": MetricAggregate(
+                            mean=0.5, max=0.5, stddev=0
+                        ),
+                        "answer_relevancy": MetricAggregate(
+                            mean=0.45, max=0.45, stddev=0
+                        ),
                     },
                     faithfulness=MetricAggregate(mean=0.5, max=0.5, stddev=0),
                     answer_correctness=MetricAggregate(mean=0.5, max=0.5, stddev=0),
@@ -217,7 +235,9 @@ class FakeRagasEvaluator:
         )
 
 
-def _wait_for_terminal_status(client: TestClient, campaign_id: str, timeout_seconds: float = 3.0) -> dict:
+def _wait_for_terminal_status(
+    client: TestClient, campaign_id: str, timeout_seconds: float = 3.0
+) -> dict:
     deadline = time.time() + timeout_seconds
     latest = {}
     while time.time() < deadline:
@@ -228,7 +248,9 @@ def _wait_for_terminal_status(client: TestClient, campaign_id: str, timeout_seco
         if latest["status"] in {"completed", "failed", "cancelled"}:
             return latest
         time.sleep(0.05)
-    raise AssertionError(f"Campaign {campaign_id} did not reach terminal state: {latest}")
+    raise AssertionError(
+        f"Campaign {campaign_id} did not reach terminal state: {latest}"
+    )
 
 
 async def _wait_for_terminal_campaign(
@@ -324,7 +346,9 @@ def test_campaign_api_runs_and_streams_results() -> None:
         assert metrics.status_code == 200
         assert metrics.json()["evaluator_model"] == "fake-evaluator"
 
-        with client.stream("GET", f"/api/evaluation/campaigns/{campaign_id}/stream") as stream_response:
+        with client.stream(
+            "GET", f"/api/evaluation/campaigns/{campaign_id}/stream"
+        ) as stream_response:
             stream_body = "".join(stream_response.iter_text())
         assert "event: campaign_snapshot" in stream_body
         assert "event: campaign_completed" in stream_body
@@ -391,7 +415,9 @@ def test_campaign_run_persists_snapshot_and_minimal_root_span() -> None:
         terminal = _wait_for_terminal_status(client, campaign_id)
         assert terminal["status"] == "completed"
 
-        results_response = client.get(f"/api/evaluation/campaigns/{campaign_id}/results")
+        results_response = client.get(
+            f"/api/evaluation/campaigns/{campaign_id}/results"
+        )
         result = results_response.json()["results"][0]
         assert result["question_version"] == "v2.0.0"
         assert result["request_id"]
@@ -401,9 +427,14 @@ def test_campaign_run_persists_snapshot_and_minimal_root_span() -> None:
         assert result["total_latency_ms"] >= 0
         assert result["total_tokens"] == 15
         assert result["question_snapshot"]["required_modalities"] == ["text", "table"]
-        assert result["question_snapshot"]["expected_evidence"][0]["evidence_id"] == "E1"
+        assert (
+            result["question_snapshot"]["expected_evidence"][0]["evidence_id"] == "E1"
+        )
         assert result["model_config_snapshot"]["model_name"] == "gemini-2.5-flash"
-        assert result["system_version_snapshot"]["context_policy_version"] == CONTEXT_POLICY_VERSION
+        assert (
+            result["system_version_snapshot"]["context_policy_version"]
+            == CONTEXT_POLICY_VERSION
+        )
         assert result["final_answer_hash"]
 
         observability = client.get(
@@ -412,7 +443,9 @@ def test_campaign_run_persists_snapshot_and_minimal_root_span() -> None:
         assert observability.status_code == 200
         trace_events = observability.json()["trace_events"]
         assert [event["status"] for event in trace_events] == ["running", "success"]
-        assert {event["stage_name"] for event in trace_events} == {"campaign_unit_execution"}
+        assert {event["stage_name"] for event in trace_events} == {
+            "campaign_unit_execution"
+        }
         llm_calls = observability.json()["llm_calls"]
         assert len(llm_calls) == 1
         assert llm_calls[0]["purpose"] == "campaign_generation"
@@ -471,7 +504,9 @@ async def test_campaign_stream_ends_for_completed_with_errors(
         async def get_campaign(self, **_kwargs):  # noqa: ANN003
             return snapshot
 
-    monkeypatch.setattr("evaluation.router.get_campaign_engine", lambda: CompletedWithErrorsEngine())
+    monkeypatch.setattr(
+        "evaluation.router.get_campaign_engine", lambda: CompletedWithErrorsEngine()
+    )
     response = await stream_campaign(campaign_id="cmp-1", user_id="user-a")
 
     async def collect_events() -> list[dict[str, str]]:
@@ -483,12 +518,16 @@ async def test_campaign_stream_ends_for_completed_with_errors(
 
 
 @pytest.mark.asyncio
-async def test_durable_campaign_creation_enqueues_units_without_process_local_task() -> None:
+async def test_durable_campaign_creation_enqueues_units_without_process_local_task() -> (
+    None
+):
     worker = Mock()
     store = AsyncMock(spec=EvaluationJobStore)
     store.create_job_with_items = AsyncMock()
     engine = CampaignEngine(job_store=store, worker_notifier=worker.notify)
-    config = _campaign_config_for_test_case_ids(["Q1", "Q2"], modes=["naive"], repeat_count=2)
+    config = _campaign_config_for_test_case_ids(
+        ["Q1", "Q2"], modes=["naive"], repeat_count=2
+    )
     resolved_cases = [
         TestCase(
             id=question_id,
@@ -499,8 +538,12 @@ async def test_durable_campaign_creation_enqueues_units_without_process_local_ta
         )
         for question_id in config.test_case_ids
     ]
-    with patch.object(engine, "_resolve_test_cases", new=AsyncMock(return_value=resolved_cases)):
-        response = await engine.create_and_start(user_id="user-a", name="durable", config=config)
+    with patch.object(
+        engine, "_resolve_test_cases", new=AsyncMock(return_value=resolved_cases)
+    ):
+        response = await engine.create_and_start(
+            user_id="user-a", name="durable", config=config
+        )
 
     assert response.status == CampaignLifecycleStatus.PENDING
     assert len(store.create_job_with_items.await_args.kwargs["items"]) == 4
@@ -676,7 +719,9 @@ async def test_recover_inflight_running_campaign_resumes_remaining_units() -> No
                 }
             ),
         ]
-        with patch.object(engine, "_resolve_test_cases", new=AsyncMock(return_value=seeded_cases)):
+        with patch.object(
+            engine, "_resolve_test_cases", new=AsyncMock(return_value=seeded_cases)
+        ):
             await engine.recover_inflight_campaigns()
             status, latest = await _wait_for_terminal_campaign(
                 campaign_repo,
@@ -762,7 +807,9 @@ async def test_completed_run_persists_snapshots_and_root_observability_span() ->
         assert latest.status == CampaignLifecycleStatus.COMPLETED
         assert latest.phase == "evaluation"
 
-        results = await result_repo.list_for_campaign(user_id="user-a", campaign_id=campaign.id)
+        results = await result_repo.list_for_campaign(
+            user_id="user-a", campaign_id=campaign.id
+        )
         assert len(results) == 1
         result = results[0]
         assert result.status == CampaignResultStatus.COMPLETED
@@ -789,19 +836,27 @@ async def test_completed_run_persists_snapshots_and_root_observability_span() ->
             "expected_evidence": [{"evidence_id": "Q-SNAPSHOT-E1", "doc_id": "doc-a"}],
             "source_docs": ["doc-a", "doc-b"],
         }
-        assert result.model_config_snapshot == campaign.config.model_preset.model_dump(mode="json")
+        assert result.model_config_snapshot == campaign.config.model_preset.model_dump(
+            mode="json"
+        )
         assert result.system_version_snapshot["execution_profile"] == "snapshot-profile"
-        assert result.system_version_snapshot["context_policy_version"] == "ctx-policy-v1"
+        assert (
+            result.system_version_snapshot["context_policy_version"] == "ctx-policy-v1"
+        )
         assert isinstance(result.derived_metrics, dict)
         assert result.final_answer_hash
 
         trace_events = await observability_repo.list_trace_events_for_run(result.id)
         assert [event.status for event in trace_events] == ["running", "success"]
-        assert all(event.stage_name == "campaign_unit_execution" for event in trace_events)
+        assert all(
+            event.stage_name == "campaign_unit_execution" for event in trace_events
+        )
         assert all(event.parent_event_id is None for event in trace_events)
         assert all(event.parent_span_id is None for event in trace_events)
         assert trace_events[0].payload["request_id"] == result.request_id
-        assert trace_events[1].duration_ms == pytest.approx(result.total_latency_ms, rel=0.2, abs=20)
+        assert trace_events[1].duration_ms == pytest.approx(
+            result.total_latency_ms, rel=0.2, abs=20
+        )
 
         llm_calls = await observability_repo.list_llm_calls_for_run(result.id)
         assert len(llm_calls) == 1
@@ -897,9 +952,15 @@ async def test_agentic_trace_persists_routing_and_tool_observability() -> None:
             ],
         )
 
-        result = (await result_repo.list_for_campaign(user_id="user-a", campaign_id=campaign.id))[0]
+        result = (
+            await result_repo.list_for_campaign(
+                user_id="user-a", campaign_id=campaign.id
+            )
+        )[0]
         trace_events = await observability_repo.list_trace_events_for_run(result.id)
-        routing_events = [event for event in trace_events if event.stage_type == "routing"]
+        routing_events = [
+            event for event in trace_events if event.stage_type == "routing"
+        ]
         assert [event.status for event in routing_events] == ["running", "success"]
 
         decisions = await observability_repo.list_routing_decisions_for_run(result.id)
@@ -962,15 +1023,25 @@ async def test_campaign_result_records_retrieval_context_and_evidence_flow() -> 
                     difficulty="medium",
                     atomic_facts=[{"atomic_fact_id": "F1", "text": "Fact A"}],
                     expected_evidence=[
-                        {"evidence_id": "E1", "doc_id": "paper-a.pdf", "atomic_fact_id": "F1"}
+                        {
+                            "evidence_id": "E1",
+                            "doc_id": "paper-a.pdf",
+                            "atomic_fact_id": "F1",
+                        }
                     ],
                     source_docs=["paper-a.pdf"],
                 )
             ],
         )
 
-        result = (await result_repo.list_for_campaign(user_id="user-a", campaign_id=campaign.id))[0]
-        retrieval_events = await observability_repo.list_retrieval_events_for_run(result.id)
+        result = (
+            await result_repo.list_for_campaign(
+                user_id="user-a", campaign_id=campaign.id
+            )
+        )[0]
+        retrieval_events = await observability_repo.list_retrieval_events_for_run(
+            result.id
+        )
         assert len(retrieval_events) == 1
         assert retrieval_events[0].query == "Where is Fact A?"
         assert retrieval_events[0].result_count == 2
@@ -991,7 +1062,9 @@ async def test_campaign_result_records_retrieval_context_and_evidence_flow() -> 
         assert len(context_packs) == 1
         assert context_packs[0].input_chunk_count == 2
         assert context_packs[0].packed_chunk_count == 2
-        assert context_packs[0].payload["selected_chunk_ids"] == [chunk.chunk_id for chunk in chunks]
+        assert context_packs[0].payload["selected_chunk_ids"] == [
+            chunk.chunk_id for chunk in chunks
+        ]
         assert context_packs[0].payload["packing_policy"] == "result_level_contexts"
         assert context_packs[0].retrieved_but_not_packed_evidence == []
         assert result.derived_metrics["gold_fact_attrition"][0]["retrieved"] is True
@@ -1060,9 +1133,16 @@ async def test_campaign_result_persists_claim_rows_and_derived_claim_metrics() -
             ],
         )
 
-        result = (await result_repo.list_for_campaign(user_id="user-a", campaign_id=campaign.id))[0]
+        result = (
+            await result_repo.list_for_campaign(
+                user_id="user-a", campaign_id=campaign.id
+            )
+        )[0]
         claims = await observability_repo.list_claims_for_run(result.id)
-        assert [claim.support_status for claim in claims] == ["supported", "unsupported"]
+        assert [claim.support_status for claim in claims] == [
+            "supported",
+            "unsupported",
+        ]
         assert claims[0].evidence == [{"chunk_id": "doc-a:1"}]
         assert claims[0].payload["support_score"] == 0.9
         assert claims[1].unsupported_reason == "No evidence found"
@@ -1303,7 +1383,9 @@ async def test_campaign_result_create_is_idempotent_on_reinsert() -> None:
         )
 
         assert first.id == second.id
-        results = await result_repo.list_for_campaign(user_id="user-a", campaign_id=campaign.id)
+        results = await result_repo.list_for_campaign(
+            user_id="user-a", campaign_id=campaign.id
+        )
         assert len(results) == 1
 
 
@@ -1460,7 +1542,9 @@ def test_campaign_manual_evaluate_can_rerun_selected_questions_only() -> None:
         )
 
 
-def test_campaign_manual_evaluate_selected_questions_without_completed_rows_returns_400() -> None:
+def test_campaign_manual_evaluate_selected_questions_without_completed_rows_returns_400() -> (
+    None
+):
     async def runner(**kwargs) -> BenchmarkExecutionResult:
         test_case = kwargs["test_case"]
         return BenchmarkExecutionResult(
@@ -1736,7 +1820,9 @@ def test_agent_trace_api_persists_and_reads_trace_payload() -> None:
         assert trace_rows[0]["execution_profile"] == AGENTIC_EVAL_PROFILE
         assert trace_rows[0]["tool_call_count"] == 1
 
-        detail = client.get(f"/api/evaluation/campaigns/{campaign_id}/results/{result_id}/trace")
+        detail = client.get(
+            f"/api/evaluation/campaigns/{campaign_id}/results/{result_id}/trace"
+        )
         assert detail.status_code == 200
         trace_detail = detail.json()
         assert trace_detail["summary"] == "trace summary"
@@ -1752,7 +1838,9 @@ def test_campaign_integration_uses_real_runner_and_real_ragas_persistence() -> N
     db_path = _make_db_path()
     rag_calls: list[dict] = []
 
-    async def fake_rag_answer_question(*, question: str, user_id: str, return_docs: bool, **kwargs) -> RAGResult:
+    async def fake_rag_answer_question(
+        *, question: str, user_id: str, return_docs: bool, **kwargs
+    ) -> RAGResult:
         assert user_id == "user-a"
         assert return_docs is True
         if kwargs.get("enable_graph_rag"):
@@ -1765,7 +1853,11 @@ def test_campaign_integration_uses_real_runner_and_real_ragas_persistence() -> N
         return RAGResult(
             answer=f"{mode} answer",
             source_doc_ids=[f"{mode}-doc"],
-            documents=[Document(page_content=f"{mode} context", metadata={"doc_id": f"{mode}-doc"})],
+            documents=[
+                Document(
+                    page_content=f"{mode} context", metadata={"doc_id": f"{mode}-doc"}
+                )
+            ],
             usage={"total_tokens": {"naive": 20, "advanced": 40, "graph": 60}[mode]},
         )
 
@@ -1804,7 +1896,9 @@ def test_campaign_integration_uses_real_runner_and_real_ragas_persistence() -> N
     agentic_result = RAGResult(
         answer="agentic answer",
         source_doc_ids=["agentic-doc"],
-        documents=[Document(page_content="agentic context", metadata={"doc_id": "agentic-doc"})],
+        documents=[
+            Document(page_content="agentic context", metadata={"doc_id": "agentic-doc"})
+        ],
         usage={"total_tokens": 120},
         thought_process="trace summary",
         tool_calls=[],
@@ -1827,10 +1921,19 @@ def test_campaign_integration_uses_real_runner_and_real_ragas_persistence() -> N
     )
 
     with (
-        patch("evaluation.rag_modes.rag_answer_question", new=AsyncMock(side_effect=fake_rag_answer_question)),
+        patch(
+            "evaluation.rag_modes.rag_answer_question",
+            new=AsyncMock(side_effect=fake_rag_answer_question),
+        ),
         patch("evaluation.rag_modes.AgenticEvaluationService") as mock_service_cls,
-        patch.object(ragas, "_load_ragas_dependencies", new=AsyncMock(return_value=_fake_ragas_dependencies())),
-        patch.object(ragas, "_evaluate_batch", new=AsyncMock(side_effect=fake_evaluate_batch)),
+        patch.object(
+            ragas,
+            "_load_ragas_dependencies",
+            new=AsyncMock(return_value=_fake_ragas_dependencies()),
+        ),
+        patch.object(
+            ragas, "_evaluate_batch", new=AsyncMock(side_effect=fake_evaluate_batch)
+        ),
     ):
         mock_service = mock_service_cls.return_value
         mock_service.run_case = AsyncMock(return_value=agentic_result)
@@ -1849,7 +1952,9 @@ def test_campaign_integration_uses_real_runner_and_real_ragas_persistence() -> N
             assert created.status_code == 200
             campaign_id = created.json()["campaign_id"]
 
-            terminal = _wait_for_terminal_status(client, campaign_id, timeout_seconds=8.0)
+            terminal = _wait_for_terminal_status(
+                client, campaign_id, timeout_seconds=8.0
+            )
             assert terminal["status"] == "completed"
             assert terminal["phase"] == "evaluation"
             assert terminal["completed_units"] == 4
@@ -1861,7 +1966,12 @@ def test_campaign_integration_uses_real_runner_and_real_ragas_persistence() -> N
             assert results.status_code == 200
             result_rows = results.json()["results"]
             assert len(result_rows) == 4
-            assert {row["mode"] for row in result_rows} == {"naive", "advanced", "graph", "agentic"}
+            assert {row["mode"] for row in result_rows} == {
+                "naive",
+                "advanced",
+                "graph",
+                "agentic",
+            }
             assert all(row["status"] == "completed" for row in result_rows)
             agentic_row = next(row for row in result_rows if row["mode"] == "agentic")
             assert agentic_row["execution_profile"] == AGENTIC_EVAL_PROFILE
@@ -1871,7 +1981,12 @@ def test_campaign_integration_uses_real_runner_and_real_ragas_persistence() -> N
             assert metrics.status_code == 200
             metrics_body = metrics.json()
             assert metrics_body["evaluator_model"] == "fake-ragas"
-            assert set(metrics_body["summary_by_mode"].keys()) == {"naive", "advanced", "graph", "agentic"}
+            assert set(metrics_body["summary_by_mode"].keys()) == {
+                "naive",
+                "advanced",
+                "graph",
+                "agentic",
+            }
             assert len(metrics_body["rows"]) == 4
 
             traces = client.get(f"/api/evaluation/campaigns/{campaign_id}/traces")
@@ -1906,7 +2021,11 @@ def test_campaign_integration_keeps_running_when_one_mode_fails() -> None:
         return RAGResult(
             answer=f"{mode} answer",
             source_doc_ids=[f"{mode}-doc"],
-            documents=[Document(page_content=f"{mode} context", metadata={"doc_id": f"{mode}-doc"})],
+            documents=[
+                Document(
+                    page_content=f"{mode} context", metadata={"doc_id": f"{mode}-doc"}
+                )
+            ],
             usage={"total_tokens": {"naive": 20, "advanced": 40}[mode]},
         )
 
@@ -1933,7 +2052,9 @@ def test_campaign_integration_keeps_running_when_one_mode_fails() -> None:
     agentic_result = RAGResult(
         answer="agentic answer",
         source_doc_ids=["agentic-doc"],
-        documents=[Document(page_content="agentic context", metadata={"doc_id": "agentic-doc"})],
+        documents=[
+            Document(page_content="agentic context", metadata={"doc_id": "agentic-doc"})
+        ],
         usage={"total_tokens": 120},
         agent_trace={
             "trace_id": "trace-2",
@@ -1954,10 +2075,19 @@ def test_campaign_integration_keeps_running_when_one_mode_fails() -> None:
     )
 
     with (
-        patch("evaluation.rag_modes.rag_answer_question", new=AsyncMock(side_effect=flaky_rag_answer_question)),
+        patch(
+            "evaluation.rag_modes.rag_answer_question",
+            new=AsyncMock(side_effect=flaky_rag_answer_question),
+        ),
         patch("evaluation.rag_modes.AgenticEvaluationService") as mock_service_cls,
-        patch.object(ragas, "_load_ragas_dependencies", new=AsyncMock(return_value=_fake_ragas_dependencies())),
-        patch.object(ragas, "_evaluate_batch", new=AsyncMock(side_effect=fake_evaluate_batch)),
+        patch.object(
+            ragas,
+            "_load_ragas_dependencies",
+            new=AsyncMock(return_value=_fake_ragas_dependencies()),
+        ),
+        patch.object(
+            ragas, "_evaluate_batch", new=AsyncMock(side_effect=fake_evaluate_batch)
+        ),
     ):
         mock_service = mock_service_cls.return_value
         mock_service.run_case = AsyncMock(return_value=agentic_result)
@@ -1976,7 +2106,9 @@ def test_campaign_integration_keeps_running_when_one_mode_fails() -> None:
             assert created.status_code == 200
             campaign_id = created.json()["campaign_id"]
 
-            terminal = _wait_for_terminal_status(client, campaign_id, timeout_seconds=8.0)
+            terminal = _wait_for_terminal_status(
+                client, campaign_id, timeout_seconds=8.0
+            )
             assert terminal["status"] == "completed"
             assert terminal["completed_units"] == 3
             assert terminal["total_units"] == 3
@@ -1989,6 +2121,7 @@ def test_campaign_integration_keeps_running_when_one_mode_fails() -> None:
             assert len(result_rows) == 3
             failed_row = next(row for row in result_rows if row["mode"] == "graph")
             assert failed_row["status"] == "failed"
+            assert failed_row["execution_profile"] == GRAPH_EVAL_PROFILE
             assert "graph retrieval blew up" in failed_row["error_message"]
 
             metrics = client.get(f"/api/evaluation/campaigns/{campaign_id}/metrics")
@@ -1998,11 +2131,9 @@ def test_campaign_integration_keeps_running_when_one_mode_fails() -> None:
             assert len(metrics_body["rows"]) == 2
 
 
-
-
-
-
-def test_campaign_runtime_model_config_preserves_thinking_level_for_level_models() -> None:
+def test_campaign_runtime_model_config_preserves_thinking_level_for_level_models() -> (
+    None
+):
     from evaluation.rag_modes import _runtime_overrides
 
     overrides = _runtime_overrides(
@@ -2022,7 +2153,9 @@ def test_campaign_runtime_model_config_preserves_thinking_level_for_level_models
     assert "thinking_budget" not in overrides
 
 
-def test_campaign_runtime_model_config_preserves_thinking_budget_for_budget_models() -> None:
+def test_campaign_runtime_model_config_preserves_thinking_budget_for_budget_models() -> (
+    None
+):
     from evaluation.rag_modes import _runtime_overrides
 
     overrides = _runtime_overrides(

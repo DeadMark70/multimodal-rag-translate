@@ -10,12 +10,18 @@ from fastapi.testclient import TestClient
 
 from core.auth import get_current_user_id
 from data_base.RAG_QA_service import RAGResult
-from data_base.agentic_chat_service import AgenticChatService
+from data_base.agentic_chat_service import (
+    AgenticChatService,
+    StreamingAgenticEvaluationService,
+)
+from data_base.indexing_service import DEFAULT_PRODUCTION_INDEXING_PROFILE
 from data_base.schemas_agentic_chat import AgenticBenchmarkStreamRequest
-from evaluation.agentic_evaluation_service import AGENTIC_EVAL_PROFILE
 from main import app
 
 TEST_USER_ID = "test-user-123"
+AGENTIC_LEGACY_CHAT_PROFILE = (
+    f"agentic_eval_v7_semantic_router_{DEFAULT_PRODUCTION_INDEXING_PROFILE}"
+)
 
 
 @pytest.mark.asyncio
@@ -81,7 +87,12 @@ async def test_execute_stream_emits_agentic_events_and_persists_trace() -> None:
             question="What is LoRA?",
             conversation_id="conv-123",
         )
-        events = [event async for event in service.execute_stream(request=request, user_id=TEST_USER_ID)]
+        events = [
+            event
+            async for event in service.execute_stream(
+                request=request, user_id=TEST_USER_ID
+            )
+        ]
 
     event_names = [event["event"] for event in events]
     assert "plan_ready" in event_names
@@ -99,15 +110,57 @@ async def test_execute_stream_emits_agentic_events_and_persists_trace() -> None:
     complete_event = next(event for event in events if event["event"] == "complete")
     payload = json.loads(complete_event["data"])
     assert payload["result"]["summary"] == "Benchmark summary"
-    assert payload["agent_trace"]["execution_profile"] == AGENTIC_EVAL_PROFILE
+    assert payload["agent_trace"]["execution_profile"] == AGENTIC_LEGACY_CHAT_PROFILE
 
     assert mock_persist.await_count == 1
     persisted = mock_persist.await_args.kwargs
     assert persisted["conversation_id"] == "conv-123"
     assert persisted["user_id"] == TEST_USER_ID
     assert persisted["metadata"]["research_engine"] == "agentic_benchmark"
+    assert persisted["metadata"]["execution_profile"] == AGENTIC_LEGACY_CHAT_PROFILE
     assert persisted["metadata"]["result"]["summary"] == "Benchmark summary"
     assert persisted["metadata"]["agent_trace"]["mode"] == "agentic"
+
+
+@pytest.mark.parametrize(
+    ("route_profile", "expected_hyde", "expected_multi_query", "expected_graph"),
+    [
+        ("hybrid_exact", False, False, False),
+        ("hybrid_compare", True, True, False),
+        ("graph_global", False, False, True),
+        ("visual_verify", False, True, False),
+        ("generic_graph", True, True, True),
+    ],
+)
+def test_public_agentic_chat_explicitly_retains_legacy_v7_retrieval_policy(
+    route_profile: str,
+    expected_hyde: bool,
+    expected_multi_query: bool,
+    expected_graph: bool,
+) -> None:
+    service = StreamingAgenticEvaluationService(emit_event=AsyncMock())
+
+    kwargs = service._route_kwargs(
+        route_profile=route_profile,
+        micro_route="broad_context_rag",
+        enable_reranking=True,
+        enable_visual_verification=False,
+        task_type="graph_analysis" if expected_graph else "rag",
+        stage_hint="exploration",
+    )
+
+    assert service.execution_profile == AGENTIC_LEGACY_CHAT_PROFILE
+    assert kwargs["enable_hyde"] is expected_hyde
+    assert kwargs["enable_multi_query"] is expected_multi_query
+    assert "crag_rewrite_mode" not in kwargs
+    assert kwargs["enable_graph_rag"] is expected_graph
+    if expected_graph:
+        assert kwargs["graph_execution_hints"] == {
+            "stage_hint": "exploration",
+            "task_type_hint": "graph_analysis",
+            "prefer_global": True,
+            "prefer_local": False,
+        }
 
 
 @contextmanager
@@ -145,9 +198,12 @@ def test_agentic_stream_endpoint_returns_sse_response() -> None:
         }
 
     fake_service = SimpleNamespace(execute_stream=fake_stream)
-    with _build_client() as client, patch(
-        "data_base.router.get_agentic_chat_service",
-        return_value=fake_service,
+    with (
+        _build_client() as client,
+        patch(
+            "data_base.router.get_agentic_chat_service",
+            return_value=fake_service,
+        ),
     ):
         response = client.post("/rag/agentic/stream", json={"question": "test"})
 

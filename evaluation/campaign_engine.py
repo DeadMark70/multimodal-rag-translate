@@ -22,7 +22,11 @@ from evaluation.campaign_schemas import (
     CampaignResultsResponse,
     CampaignStatus,
 )
-from evaluation.db import AgentTraceRepository, CampaignRepository, CampaignResultRepository
+from evaluation.db import (
+    AgentTraceRepository,
+    CampaignRepository,
+    CampaignResultRepository,
+)
 from evaluation.job_schemas import (
     EvaluationAttempt,
     EvaluationJob,
@@ -44,6 +48,7 @@ from evaluation.observability import EvaluationRunRecorder
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
 from evaluation.ragas_evaluator import RagasEvaluator
+from evaluation.retrieval_profiles import evaluation_failure_execution_profile
 from evaluation.retry import RateBudget
 from evaluation.schemas import TestCase
 from evaluation.storage import list_test_cases
@@ -192,16 +197,24 @@ def _build_derived_metrics(
         metrics["ablation_flags"] = dict(unit.ablation_flags or {})
     if isinstance(payload, Exception):
         return metrics
-    metrics.update({
-        "context_count": len(payload.contexts),
-        "source_doc_count": len(payload.source_doc_ids),
-        "expected_source_count": len(payload.expected_sources),
-    })
+    metrics.update(
+        {
+            "context_count": len(payload.contexts),
+            "source_doc_count": len(payload.source_doc_ids),
+            "expected_source_count": len(payload.expected_sources),
+        }
+    )
     trace_payload = payload.agent_trace or {}
     claims = trace_payload.get("claims") if isinstance(trace_payload, dict) else None
     if isinstance(claims, list):
-        supported = sum(1 for claim in claims if _claim_support_status(claim) == "supported")
-        unsupported = sum(1 for claim in claims if _claim_support_status(claim) in {"unsupported", "contradicted"})
+        supported = sum(
+            1 for claim in claims if _claim_support_status(claim) == "supported"
+        )
+        unsupported = sum(
+            1
+            for claim in claims
+            if _claim_support_status(claim) in {"unsupported", "contradicted"}
+        )
         total = len(claims)
         metrics.update(
             {
@@ -209,7 +222,11 @@ def _build_derived_metrics(
                 "unsupported_claim_ratio": unsupported / total if total else 0,
                 "citation_precision": supported / total if total else 0,
                 "evidence_coverage": supported / total if total else 0,
-                "repair_count": sum(1 for claim in claims if isinstance(claim, dict) and claim.get("repair_action")),
+                "repair_count": sum(
+                    1
+                    for claim in claims
+                    if isinstance(claim, dict) and claim.get("repair_action")
+                ),
             }
         )
     if unit.test_case.atomic_facts:
@@ -260,7 +277,9 @@ def _claim_support_status(claim: Any) -> str:
 
 
 def _claim_text(claim: dict[str, Any]) -> str:
-    return str(claim.get("claim_text") or claim.get("claim") or claim.get("text") or "").strip()
+    return str(
+        claim.get("claim_text") or claim.get("claim") or claim.get("text") or ""
+    ).strip()
 
 
 def _enrich_agent_trace_payload(
@@ -281,7 +300,9 @@ def _enrich_agent_trace_payload(
         enriched.setdefault("condition_id", unit.condition_id)
         enriched.setdefault("condition_label", unit.condition_label)
         enriched.setdefault("ablation_flags", dict(unit.ablation_flags or {}))
-    enriched.setdefault("trace_status", "failed" if payload.error_message else "completed")
+    enriched.setdefault(
+        "trace_status", "failed" if payload.error_message else "completed"
+    )
     enriched.setdefault("created_at", _utc_now().isoformat())
     return enriched
 
@@ -310,7 +331,11 @@ async def _record_unit_root_span(
     if unit.condition_id:
         payload["condition_id"] = unit.condition_id
         payload["condition_label"] = unit.condition_label
-    error = {"type": "CampaignUnitFailed", "message": "Campaign unit failed"} if failed else {}
+    error = (
+        {"type": "CampaignUnitFailed", "message": "Campaign unit failed"}
+        if failed
+        else {}
+    )
     try:
         await repository.record_trace_events(
             [
@@ -386,7 +411,11 @@ async def _record_unit_llm_usage(
 
     model_name = execution.model_config.get("model_name")
     provider = execution.model_config.get("provider")
-    if provider is None and isinstance(model_name, str) and model_name.startswith("gemini"):
+    if (
+        provider is None
+        and isinstance(model_name, str)
+        and model_name.startswith("gemini")
+    ):
         provider = "google"
 
     recorder = EvaluationRunRecorder(
@@ -445,9 +474,13 @@ async def _record_unit_research_observability(
         decision_payload.setdefault("router_version", "retrospective-v1")
         decision_payload.setdefault("router_type", "retrospective")
         decision_payload.setdefault("selected_mode", execution.unit.mode)
-        decision_payload.setdefault("selected_strategy_tier", trace_payload.get("strategy_tier"))
+        decision_payload.setdefault(
+            "selected_strategy_tier", trace_payload.get("strategy_tier")
+        )
         decision_payload.setdefault("routing_reason", decision_payload.get("reason"))
-        decision_payload.setdefault("routing_features", decision_payload.get("features", {}))
+        decision_payload.setdefault(
+            "routing_features", decision_payload.get("features", {})
+        )
         decision_payload.setdefault("fallback_used", False)
         decision_payload.setdefault("manual_override", False)
         decision_payload.setdefault("actual_router_execution_enabled", False)
@@ -470,8 +503,10 @@ async def _record_unit_research_observability(
                     span_id=routing_span.span_id,
                     selected_mode=execution.unit.mode,
                     analysis_type="retrospective",
-                    confidence=decision_payload.get("confidence") or trace_payload.get("semantic_gate_score"),
-                    reason=decision_payload.get("routing_reason") or decision_payload.get("reason"),
+                    confidence=decision_payload.get("confidence")
+                    or trace_payload.get("semantic_gate_score"),
+                    reason=decision_payload.get("routing_reason")
+                    or decision_payload.get("reason"),
                     payload=decision_payload,
                     created_at=created_at,
                 )
@@ -486,18 +521,33 @@ async def _record_unit_research_observability(
                 if not isinstance(tool_call, dict):
                     continue
                 action = tool_call.get("action")
-                tool_name = str(tool_call.get("tool_name") or tool_call.get("name") or action or step.get("step_type") or "tool")
+                tool_name = str(
+                    tool_call.get("tool_name")
+                    or tool_call.get("name")
+                    or action
+                    or step.get("step_type")
+                    or "tool"
+                )
                 payload = {
                     "step_id": step.get("step_id"),
                     "step_type": step.get("step_type"),
                     "subtask_id": tool_call.get("subtask_id") or step.get("subtask_id"),
-                    "tool_type": tool_call.get("tool_type") or step.get("step_type") or "tool",
+                    "tool_type": tool_call.get("tool_type")
+                    or step.get("step_type")
+                    or "tool",
                     "started_at": tool_call.get("started_at") or step.get("started_at"),
                     "ended_at": tool_call.get("ended_at") or step.get("completed_at"),
-                    "duration_ms": tool_call.get("duration_ms") or tool_call.get("latency_ms"),
-                    "input_summary": tool_call.get("input_summary") or tool_call.get("input_summary_json") or {},
-                    "output_summary": tool_call.get("output_summary") or tool_call.get("output_summary_json") or {},
-                    "error": tool_call.get("error") or tool_call.get("error_json") or {},
+                    "duration_ms": tool_call.get("duration_ms")
+                    or tool_call.get("latency_ms"),
+                    "input_summary": tool_call.get("input_summary")
+                    or tool_call.get("input_summary_json")
+                    or {},
+                    "output_summary": tool_call.get("output_summary")
+                    or tool_call.get("output_summary_json")
+                    or {},
+                    "error": tool_call.get("error")
+                    or tool_call.get("error_json")
+                    or {},
                     "index": index,
                 }
                 await recorder.record_tool_call(
@@ -508,7 +558,8 @@ async def _record_unit_research_observability(
                         span_id=root_span_id,
                         tool_name=tool_name,
                         action=str(action) if action else None,
-                        latency_ms=tool_call.get("latency_ms") or tool_call.get("duration_ms"),
+                        latency_ms=tool_call.get("latency_ms")
+                        or tool_call.get("duration_ms"),
                         status=_trace_event_status(tool_call.get("status")),
                         payload=payload,
                         created_at=created_at,
@@ -517,7 +568,9 @@ async def _record_unit_research_observability(
 
     retrieval_event_id = str(uuid4())
     expected_evidence = list(execution.unit.test_case.expected_evidence)
-    expected_sources = list(execution.payload.expected_sources or execution.unit.test_case.source_docs)
+    expected_sources = list(
+        execution.payload.expected_sources or execution.unit.test_case.source_docs
+    )
     matched_expected = [
         item
         for item in expected_evidence
@@ -529,7 +582,11 @@ async def _record_unit_research_observability(
     ]
     chunks: list[EvaluationRetrievalChunk] = []
     for index, context in enumerate(execution.payload.contexts, start=1):
-        doc_id = execution.payload.source_doc_ids[index - 1] if index - 1 < len(execution.payload.source_doc_ids) else None
+        doc_id = (
+            execution.payload.source_doc_ids[index - 1]
+            if index - 1 < len(execution.payload.source_doc_ids)
+            else None
+        )
         chunk_id = f"{run_id}:chunk:{index}"
         expected_match = expected_evidence_matches_doc(
             doc_id=doc_id,
@@ -548,7 +605,8 @@ async def _record_unit_research_observability(
                 rank_before_rerank=index,
                 rank_after_rerank=index,
                 used_in_context=True,
-                used_in_answer=expected_match or text_mentions_fact(execution.payload.answer, context),
+                used_in_answer=expected_match
+                or text_mentions_fact(execution.payload.answer, context),
                 expected_evidence_match=expected_match,
                 excerpt=context[:500],
                 content_hash=content_hash(context),
@@ -556,7 +614,9 @@ async def _record_unit_research_observability(
                 created_at=created_at,
             )
         )
-    hit_rate = (len(matched_expected) / len(expected_evidence)) if expected_evidence else 0
+    hit_rate = (
+        (len(matched_expected) / len(expected_evidence)) if expected_evidence else 0
+    )
     await recorder.record_retrieval_event(
         EvaluationRetrievalEvent(
             retrieval_event_id=retrieval_event_id,
@@ -591,7 +651,8 @@ async def _record_unit_research_observability(
     retrieved_but_not_packed = [
         {"doc_id": item.get("doc_id"), "evidence_id": item.get("evidence_id")}
         for item in expected_evidence
-        if str(item.get("doc_id") or "") not in {chunk.doc_id for chunk in chunks if chunk.expected_evidence_match}
+        if str(item.get("doc_id") or "")
+        not in {chunk.doc_id for chunk in chunks if chunk.expected_evidence_match}
     ]
     await recorder.record_context_pack(
         EvaluationContextPack(
@@ -601,13 +662,17 @@ async def _record_unit_research_observability(
             span_id=root_span_id,
             input_chunk_count=len(chunks),
             packed_chunk_count=len(selected_chunk_ids),
-            token_count=sum(estimate_tokens(context) for context in execution.payload.contexts),
+            token_count=sum(
+                estimate_tokens(context) for context in execution.payload.contexts
+            ),
             retrieved_but_not_packed_evidence=retrieved_but_not_packed,
             payload={
                 "selected_chunk_ids": selected_chunk_ids,
                 "dropped_chunk_ids": [],
                 "token_budget": execution.model_config.get("max_input_tokens"),
-                "estimated_tokens": sum(estimate_tokens(context) for context in execution.payload.contexts),
+                "estimated_tokens": sum(
+                    estimate_tokens(context) for context in execution.payload.contexts
+                ),
                 "packing_policy": "result_level_contexts",
                 "drop_reasons": {},
                 "instrumentation_depth": "result_level",
@@ -634,11 +699,13 @@ async def _record_unit_research_observability(
                     claim_type=claim.get("claim_type") or claim.get("type"),
                     support_status=_claim_support_status(claim),
                     evidence=claim.get("evidence") or claim.get("evidence_rows") or [],
-                    unsupported_reason=claim.get("unsupported_reason") or claim.get("reason"),
+                    unsupported_reason=claim.get("unsupported_reason")
+                    or claim.get("reason"),
                     payload={
                         "support_score": claim.get("support_score"),
                         "evidence_chunk_ids": claim.get("evidence_chunk_ids") or [],
-                        "contradicting_chunk_ids": claim.get("contradicting_chunk_ids") or [],
+                        "contradicting_chunk_ids": claim.get("contradicting_chunk_ids")
+                        or [],
                         "verifier_model": claim.get("verifier_model"),
                         "repair_action": claim.get("repair_action"),
                         "post_repair_status": claim.get("post_repair_status"),
@@ -697,9 +764,13 @@ class CampaignEngine:
                 and ragas_evaluator is None
                 and job_store is None
             )
-            worker = get_evaluation_job_worker() if use_process_worker else EvaluationJobWorker(
-                store=self._job_store,
-                stop_when_idle=True,
+            worker = (
+                get_evaluation_job_worker()
+                if use_process_worker
+                else EvaluationJobWorker(
+                    store=self._job_store,
+                    stop_when_idle=True,
+                )
             )
             execution_handler = DatasetExecutionWorker(
                 store=self._job_store,
@@ -746,8 +817,12 @@ class CampaignEngine:
                 message="router mode is not implemented yet; use retrospective router analysis.",
                 status_code=400,
             )
-        resolved_cases = await self._resolve_test_cases(user_id=user_id, test_case_ids=config.test_case_ids)
-        created = await self._campaign_repository.create(user_id=user_id, name=name, config=config)
+        resolved_cases = await self._resolve_test_cases(
+            user_id=user_id, test_case_ids=config.test_case_ids
+        )
+        created = await self._campaign_repository.create(
+            user_id=user_id, name=name, config=config
+        )
         units = self._build_units(
             test_cases=resolved_cases,
             modes=config.modes,
@@ -760,7 +835,12 @@ class CampaignEngine:
             job_type=EvaluationJobType.INITIAL,
             selection={"campaign_id": created.id},
             config_snapshot=config.model_dump(mode="json", by_alias=True),
-            items=[self._work_item_spec(user_id=user_id, campaign_id=created.id, unit=unit, config=config) for unit in units],
+            items=[
+                self._work_item_spec(
+                    user_id=user_id, campaign_id=created.id, unit=unit, config=config
+                )
+                for unit in units
+            ],
         )
         await self._start_worker_if_available()
         if self._worker_notifier is not None:
@@ -769,10 +849,15 @@ class CampaignEngine:
 
     async def list_campaigns(self, *, user_id: str) -> list[CampaignStatus]:
         campaigns = await self._campaign_repository.list_by_user(user_id=user_id)
-        return [await self._reconcile_read_status(user_id=user_id, campaign=campaign) for campaign in campaigns]
+        return [
+            await self._reconcile_read_status(user_id=user_id, campaign=campaign)
+            for campaign in campaigns
+        ]
 
     async def get_campaign(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
-        campaign = await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
+        campaign = await self._campaign_repository.get(
+            user_id=user_id, campaign_id=campaign_id
+        )
         return await self._reconcile_read_status(user_id=user_id, campaign=campaign)
 
     async def _reconcile_read_status(
@@ -794,18 +879,30 @@ class CampaignEngine:
             )
         return campaign
 
-    async def get_results(self, *, user_id: str, campaign_id: str) -> CampaignResultsResponse:
+    async def get_results(
+        self, *, user_id: str, campaign_id: str
+    ) -> CampaignResultsResponse:
         campaign = await self.get_campaign(user_id=user_id, campaign_id=campaign_id)
-        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        results = await self._result_repository.list_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
         return CampaignResultsResponse(campaign=campaign, results=results)
 
-    async def get_metrics(self, *, user_id: str, campaign_id: str) -> CampaignMetricsResponse:
+    async def get_metrics(
+        self, *, user_id: str, campaign_id: str
+    ) -> CampaignMetricsResponse:
         campaign = await self.get_campaign(user_id=user_id, campaign_id=campaign_id)
-        return await self._ragas_evaluator.get_metrics(user_id=user_id, campaign=campaign)
+        return await self._ragas_evaluator.get_metrics(
+            user_id=user_id, campaign=campaign
+        )
 
-    async def list_traces(self, *, user_id: str, campaign_id: str) -> list[AgentTraceSummary]:
+    async def list_traces(
+        self, *, user_id: str, campaign_id: str
+    ) -> list[AgentTraceSummary]:
         await self.get_campaign(user_id=user_id, campaign_id=campaign_id)
-        return await self._trace_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        return await self._trace_repository.list_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
 
     async def get_trace(
         self,
@@ -821,14 +918,24 @@ class CampaignEngine:
             campaign_result_id=campaign_result_id,
         )
 
-    async def cancel_campaign(self, *, user_id: str, campaign_id: str) -> CampaignStatus:
-        campaign = await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
+    async def cancel_campaign(
+        self, *, user_id: str, campaign_id: str
+    ) -> CampaignStatus:
+        campaign = await self._campaign_repository.get(
+            user_id=user_id, campaign_id=campaign_id
+        )
         if campaign.status in _TERMINAL_STATUSES:
             return campaign
 
-        await self._campaign_repository.request_cancel(user_id=user_id, campaign_id=campaign_id)
-        await self._job_store.cancel_campaign_jobs(user_id=user_id, campaign_id=campaign_id)
-        return await self._campaign_repository.mark_cancelled(user_id=user_id, campaign_id=campaign_id)
+        await self._campaign_repository.request_cancel(
+            user_id=user_id, campaign_id=campaign_id
+        )
+        await self._job_store.cancel_campaign_jobs(
+            user_id=user_id, campaign_id=campaign_id
+        )
+        return await self._campaign_repository.mark_cancelled(
+            user_id=user_id, campaign_id=campaign_id
+        )
 
     async def create_rerun(
         self,
@@ -844,7 +951,9 @@ class CampaignEngine:
         worker creates downstream RAGAS work after an execution rerun promotes
         a result, so a combined rerun never evaluates an uncommitted payload.
         """
-        campaign = await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
+        campaign = await self._campaign_repository.get(
+            user_id=user_id, campaign_id=campaign_id
+        )
         if campaign.status in {
             CampaignLifecycleStatus.RUNNING,
             CampaignLifecycleStatus.EVALUATING,
@@ -881,7 +990,9 @@ class CampaignEngine:
                 campaign_id=campaign_id,
                 work_type=EvaluationWorkType.DATASET_EXECUTION,
             )
-            selected_rows = self._select_rerun_work_rows(rows, request=request, kind="execution")
+            selected_rows = self._select_rerun_work_rows(
+                rows, request=request, kind="execution"
+            )
             if not selected_rows:
                 raise AppError(
                     code=ErrorCode.BAD_REQUEST,
@@ -910,7 +1021,9 @@ class CampaignEngine:
                 job_type=EvaluationJobType.RERUN,
                 selection=request.model_dump(mode="json"),
                 config_snapshot={
-                    "campaign_config": campaign.config.model_dump(mode="json", by_alias=True),
+                    "campaign_config": campaign.config.model_dump(
+                        mode="json", by_alias=True
+                    ),
                     "stages": request.stages,
                     "skip_ragas": request.stages == "execution",
                     "metric_names": list(request.metric_names),
@@ -927,7 +1040,9 @@ class CampaignEngine:
                 self._worker_notifier()
             return job
 
-        metric_names = list(request.metric_names) if request.metric_names else enabled_metrics
+        metric_names = (
+            list(request.metric_names) if request.metric_names else enabled_metrics
+        )
         unknown_metrics = [name for name in metric_names if name not in enabled_metrics]
         if unknown_metrics:
             raise AppError(
@@ -947,12 +1062,15 @@ class CampaignEngine:
         completed_results = [
             row
             for row in results
-            if row.status == CampaignResultStatus.COMPLETED and row.source_attempt_id is not None
+            if row.status == CampaignResultStatus.COMPLETED
+            and row.source_attempt_id is not None
         ]
         metric_names_by_result: dict[str, list[str]] | None = None
         if request.scope == "selected":
             question_ids = set(request.question_ids)
-            completed_results = [row for row in completed_results if row.question_id in question_ids]
+            completed_results = [
+                row for row in completed_results if row.question_id in question_ids
+            ]
         elif request.scope == "failed_only":
             failed_rows = await self._job_store.list_campaign_work_items(
                 user_id=user_id,
@@ -976,7 +1094,9 @@ class CampaignEngine:
                 )
             ]
             failed_metric_names = {metric for _, metric in failed_keys}
-            metric_names = [metric for metric in metric_names if metric in failed_metric_names]
+            metric_names = [
+                metric for metric in metric_names if metric in failed_metric_names
+            ]
             metric_names_by_result = {}
             for result_id, metric in failed_keys:
                 if metric in metric_names:
@@ -996,7 +1116,9 @@ class CampaignEngine:
 
         existing_jobs = {
             job.job_id
-            for job in await self._job_store.list_jobs(user_id=user_id, campaign_id=campaign_id)
+            for job in await self._job_store.list_jobs(
+                user_id=user_id, campaign_id=campaign_id
+            )
         }
         selected_result_ids = [row.id for row in completed_results]
         created_count = await self._job_store.ensure_ragas_work(
@@ -1105,7 +1227,9 @@ class CampaignEngine:
     async def list_attempts(
         self, *, user_id: str, work_item_id: str
     ) -> list[EvaluationAttempt]:
-        return await self._job_store.list_attempts(user_id=user_id, work_item_id=work_item_id)
+        return await self._job_store.list_attempts(
+            user_id=user_id, work_item_id=work_item_id
+        )
 
     async def evaluate_campaign(
         self,
@@ -1140,7 +1264,10 @@ class CampaignEngine:
                         row
                         for row in results
                         if row.status == CampaignResultStatus.COMPLETED
-                        and (not request.question_ids or row.question_id in request.question_ids)
+                        and (
+                            not request.question_ids
+                            or row.question_id in request.question_ids
+                        )
                     ]
                 )
                 if request.question_ids
@@ -1162,7 +1289,11 @@ class CampaignEngine:
         if not inflight:
             return
 
-        drain_owned = self._worker_owned and self._worker is not None and not self._worker.is_running
+        drain_owned = (
+            self._worker_owned
+            and self._worker is not None
+            and not self._worker.is_running
+        )
         for user_id, campaign in inflight:
             try:
                 await self._prepare_legacy_recovery(
@@ -1246,12 +1377,16 @@ class CampaignEngine:
                 user_id=user_id, campaign_id=campaign.id
             )
             selected_ids = [
-                row.id for row in results if row.status == CampaignResultStatus.COMPLETED
+                row.id
+                for row in results
+                if row.status == CampaignResultStatus.COMPLETED
             ]
             created = await self._job_store.ensure_ragas_work(
                 user_id=user_id,
                 campaign_id=campaign.id,
-                evaluator_model=str(getattr(self._ragas_evaluator, "evaluator_model", "")),
+                evaluator_model=str(
+                    getattr(self._ragas_evaluator, "evaluator_model", "")
+                ),
                 evaluator_config={},
                 enabled_metrics=metric_names,
                 selected_result_ids=selected_ids,
@@ -1340,7 +1475,9 @@ class CampaignEngine:
     ) -> None:
         batch_tasks: list[asyncio.Task] = []
         try:
-            await self._campaign_repository.mark_running(user_id=user_id, campaign_id=campaign_id)
+            await self._campaign_repository.mark_running(
+                user_id=user_id, campaign_id=campaign_id
+            )
             pending_units = units
             if pending_units is None:
                 pending_units = self._build_units(
@@ -1356,8 +1493,12 @@ class CampaignEngine:
             )
 
             for offset in range(0, len(pending_units), config.batch_size):
-                if await self._campaign_repository.is_cancel_requested(user_id=user_id, campaign_id=campaign_id):
-                    await self._campaign_repository.mark_cancelled(user_id=user_id, campaign_id=campaign_id)
+                if await self._campaign_repository.is_cancel_requested(
+                    user_id=user_id, campaign_id=campaign_id
+                ):
+                    await self._campaign_repository.mark_cancelled(
+                        user_id=user_id, campaign_id=campaign_id
+                    )
                     return
 
                 batch = pending_units[offset : offset + config.batch_size]
@@ -1412,7 +1553,9 @@ class CampaignEngine:
         except asyncio.CancelledError:
             await _cancel_and_drain_tasks(batch_tasks)
             if user_id and campaign_id:
-                await self._campaign_repository.mark_cancelled(user_id=user_id, campaign_id=campaign_id)
+                await self._campaign_repository.mark_cancelled(
+                    user_id=user_id, campaign_id=campaign_id
+                )
             raise
         except Exception as exc:  # noqa: BLE001
             await _cancel_and_drain_tasks(batch_tasks)
@@ -1453,10 +1596,17 @@ class CampaignEngine:
                 phase="evaluation",
             )
         except asyncio.CancelledError:
-            await self._campaign_repository.mark_cancelled(user_id=user_id, campaign_id=campaign_id)
+            await self._campaign_repository.mark_cancelled(
+                user_id=user_id, campaign_id=campaign_id
+            )
             raise
         except Exception as exc:  # noqa: BLE001
-            logger.error("Campaign %s evaluation rerun failed: %s", campaign_id, exc, exc_info=True)
+            logger.error(
+                "Campaign %s evaluation rerun failed: %s",
+                campaign_id,
+                exc,
+                exc_info=True,
+            )
             await self._campaign_repository.mark_failed(
                 user_id=user_id,
                 campaign_id=campaign_id,
@@ -1474,10 +1624,16 @@ class CampaignEngine:
         ragas_parallel_batches: int,
         ragas_rpm_limit: int,
     ) -> None:
-        results = await self._result_repository.list_for_campaign(user_id=user_id, campaign_id=campaign_id)
-        completed_results = [row for row in results if row.status == CampaignResultStatus.COMPLETED]
+        results = await self._result_repository.list_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
+        completed_results = [
+            row for row in results if row.status == CampaignResultStatus.COMPLETED
+        ]
         if not completed_results:
-            await self._campaign_repository.mark_completed(user_id=user_id, campaign_id=campaign_id)
+            await self._campaign_repository.mark_completed(
+                user_id=user_id, campaign_id=campaign_id
+            )
             return
 
         await self._campaign_repository.mark_evaluating(
@@ -1597,7 +1753,9 @@ class CampaignEngine:
             if isinstance(payload, BenchmarkExecutionResult)
             else None
         )
-        system_version_snapshot = _build_system_version_snapshot(unit=unit, payload=payload)
+        system_version_snapshot = _build_system_version_snapshot(
+            unit=unit, payload=payload
+        )
         derived_metrics = _build_derived_metrics(unit=unit, payload=payload)
 
         if isinstance(payload, Exception):
@@ -1612,9 +1770,10 @@ class CampaignEngine:
                 key_points=list(unit.test_case.key_points),
                 ragas_focus=list(unit.test_case.ragas_focus),
                 mode=unit.mode,
-                execution_profile=(
-                    getattr(payload, "agent_trace", {}) or {}
-                ).get("execution_profile"),
+                execution_profile=evaluation_failure_execution_profile(
+                    unit.mode,
+                    payload,
+                ),
                 context_policy_version=None,
                 run_number=unit.run_number,
                 answer=f"ERROR: {payload}",
@@ -1696,7 +1855,9 @@ class CampaignEngine:
             token_usage=payload.token_usage,
             category=payload.category,
             difficulty=payload.difficulty,
-            status=CampaignResultStatus.COMPLETED if not payload.error_message else CampaignResultStatus.FAILED,
+            status=CampaignResultStatus.COMPLETED
+            if not payload.error_message
+            else CampaignResultStatus.FAILED,
             error_message=payload.error_message,
             question_version=unit.test_case.question_version,
             request_id=execution.request_id,
@@ -1750,8 +1911,12 @@ class CampaignEngine:
             )
         return created
 
-    async def _resolve_test_cases(self, *, user_id: str, test_case_ids: list[str]) -> list[TestCase]:
-        available = [TestCase.model_validate(item) for item in await list_test_cases(user_id)]
+    async def _resolve_test_cases(
+        self, *, user_id: str, test_case_ids: list[str]
+    ) -> list[TestCase]:
+        available = [
+            TestCase.model_validate(item) for item in await list_test_cases(user_id)
+        ]
         by_id = {item.id: item for item in available}
         selected: list[TestCase] = []
         missing: list[str] = []
@@ -1783,8 +1948,12 @@ class CampaignEngine:
             condition_count = len(ablation_conditions)
             for repeat_number in range(1, repeat_count + 1):
                 for test_case in test_cases:
-                    for condition_index, condition in enumerate(ablation_conditions, start=1):
-                        stored_run_number = ((repeat_number - 1) * condition_count) + condition_index
+                    for condition_index, condition in enumerate(
+                        ablation_conditions, start=1
+                    ):
+                        stored_run_number = (
+                            (repeat_number - 1) * condition_count
+                        ) + condition_index
                         units.append(
                             CampaignUnit(
                                 test_case=test_case,
@@ -1794,7 +1963,9 @@ class CampaignEngine:
                                 condition_id=condition.condition_id,
                                 condition_label=condition.label,
                                 ablation_flags=dict(condition.ablation_flags),
-                                budget=dict(condition.budget) if condition.budget else None,
+                                budget=dict(condition.budget)
+                                if condition.budget
+                                else None,
                             )
                         )
             return units
@@ -1848,4 +2019,3 @@ def get_campaign_engine() -> CampaignEngine:
             configure_worker=not get_evaluation_job_worker().is_configured
         )
     return _campaign_engine
-

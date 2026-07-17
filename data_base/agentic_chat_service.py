@@ -28,7 +28,6 @@ from data_base.sse_events import (
     format_sse_event,
 )
 from evaluation.agentic_evaluation_service import (
-    AGENTIC_EVAL_PROFILE,
     AGENTIC_IMAGE_ANALYSIS_ENABLED,
     AgenticEvaluationService,
     _append_trace_step,
@@ -68,6 +67,7 @@ class StreamingAgenticEvaluationService(AgenticEvaluationService):
         super().__init__(
             max_concurrent_tasks=max_concurrent_tasks,
             default_max_iterations=default_max_iterations,
+            retrieval_policy="legacy_chat_v7",
         )
         self._emit_event = emit_event
         self.trace_steps: list[dict[str, Any]] = []
@@ -198,7 +198,9 @@ class StreamingAgenticEvaluationService(AgenticEvaluationService):
                     route_profile=route_profile,
                     micro_route=predicted_micro_route,
                     evidence_units=evidence_units,
-                    visual_verification_meta=dict(result.visual_verification_meta or {}),
+                    visual_verification_meta=dict(
+                        result.visual_verification_meta or {}
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001
                 sub_result = SubTaskExecutionResult(
@@ -351,8 +353,7 @@ class StreamingAgenticEvaluationService(AgenticEvaluationService):
             raw_text=result.detailed_answer,
             token_usage={
                 "total_tokens": sum(
-                    int(sub.usage.get("total_tokens", 0))
-                    for sub in result.sub_tasks
+                    int(sub.usage.get("total_tokens", 0)) for sub in result.sub_tasks
                 )
             },
             metadata={
@@ -386,21 +387,25 @@ class StreamingAgenticEvaluationService(AgenticEvaluationService):
             if sub.route_profile:
                 route_profiles.append(sub.route_profile)
             visual_meta = dict(sub.visual_verification_meta or {})
-            visual_verification_attempted = (
-                visual_verification_attempted
-                or bool(visual_meta.get("visual_verification_attempted"))
+            visual_verification_attempted = visual_verification_attempted or bool(
+                visual_meta.get("visual_verification_attempted")
             )
-            visual_tool_call_count += int(visual_meta.get("visual_tool_call_count", 0) or 0)
-            visual_force_fallback_used = (
-                visual_force_fallback_used
-                or bool(visual_meta.get("visual_force_fallback_used"))
+            visual_tool_call_count += int(
+                visual_meta.get("visual_tool_call_count", 0) or 0
+            )
+            visual_force_fallback_used = visual_force_fallback_used or bool(
+                visual_meta.get("visual_force_fallback_used")
             )
 
         dominant_route_profile = route_profiles[0] if route_profiles else None
         coverage_status = self._coverage_status(result.sub_tasks)
         coverage_gaps = self._coverage_gaps(result.sub_tasks)
-        supported_claim_count = int(result.critic_summary.get("supported_claim_count", 0))
-        unsupported_claim_count = int(result.critic_summary.get("unsupported_claim_count", 0))
+        supported_claim_count = int(
+            result.critic_summary.get("supported_claim_count", 0)
+        )
+        unsupported_claim_count = int(
+            result.critic_summary.get("unsupported_claim_count", 0)
+        )
 
         return _finalize_trace_payload(
             question_id=question_id,
@@ -423,7 +428,10 @@ class StreamingAgenticEvaluationService(AgenticEvaluationService):
             visual_tool_call_count=visual_tool_call_count,
             visual_force_fallback_used=visual_force_fallback_used,
             classifier_decision=dict(self._classifier_decision),
-            complexity_score=int(self._classifier_decision.get("complexity_score", 0) or 0) or None,
+            complexity_score=int(
+                self._classifier_decision.get("complexity_score", 0) or 0
+            )
+            or None,
             tier_shift=self._tier_shift,
             pruned_followups=self._pruned_followups_total,
             semantic_gate_score=self._last_semantic_gate_score,
@@ -445,7 +453,9 @@ class AgenticChatService:
             await queue.put(event)
 
         async def run_pipeline() -> None:
-            service = StreamingAgenticEvaluationService(emit_event=emit_event, max_concurrent_tasks=3)
+            service = StreamingAgenticEvaluationService(
+                emit_event=emit_event, max_concurrent_tasks=3
+            )
             question_intent = classify_question_intent(request.question)
             semantic_complexity_score = 3
             classifier_decision: dict[str, Any] = {
@@ -457,14 +467,18 @@ class AgenticChatService:
             }
 
             if service._semantic_router_mode in {"shadow", "active"}:
-                semantic_decision = await classify_question_intent_semantic(request.question)
+                semantic_decision = await classify_question_intent_semantic(
+                    request.question
+                )
                 classifier_decision = semantic_decision.model_dump(mode="json")
                 semantic_complexity_score = semantic_decision.complexity_score
 
             if service._semantic_router_mode == "active":
-                question_intent = str(classifier_decision.get("intent") or question_intent)
-                strategy_tier, subtask_limit, max_drilldown_iterations = _strategy_config_from_complexity(
-                    semantic_complexity_score
+                question_intent = str(
+                    classifier_decision.get("intent") or question_intent
+                )
+                strategy_tier, subtask_limit, max_drilldown_iterations = (
+                    _strategy_config_from_complexity(semantic_complexity_score)
                 )
             else:
                 strategy_tier = _strategy_tier_for_intent(question_intent)
@@ -510,7 +524,10 @@ class AgenticChatService:
                             "complexity_score": semantic_complexity_score,
                             "subtask_limit": subtask_limit,
                             "max_iterations": max_drilldown_iterations,
-                            "sub_tasks": [task.model_dump(mode="json") for task in plan_response.sub_tasks],
+                            "sub_tasks": [
+                                task.model_dump(mode="json")
+                                for task in plan_response.sub_tasks
+                            ],
                         },
                     )
                 )
@@ -535,7 +552,10 @@ class AgenticChatService:
                         "subtask_limit": subtask_limit,
                         "max_drilldown_iterations": max_drilldown_iterations,
                         "required_coverage": list(service._required_coverage),
-                        "sub_tasks": [task.model_dump(mode="json") for task in plan_response.sub_tasks],
+                        "sub_tasks": [
+                            task.model_dump(mode="json")
+                            for task in plan_response.sub_tasks
+                        ],
                     },
                 )
 
@@ -579,7 +599,9 @@ class AgenticChatService:
                     )
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.error("Agentic benchmark chat stream failed: %s", exc, exc_info=True)
+                logger.error(
+                    "Agentic benchmark chat stream failed: %s", exc, exc_info=True
+                )
                 await emit_event(
                     format_sse_event(
                         SSEEventType.ERROR,
@@ -623,7 +645,7 @@ class AgenticChatService:
             metadata_payload: dict[str, Any] = {
                 "research_engine": "agentic_benchmark",
                 "engine": "agentic_benchmark",
-                "execution_profile": AGENTIC_EVAL_PROFILE,
+                "execution_profile": trace_payload.get("execution_profile"),
                 "original_question": request.question,
                 "result": result.model_dump(mode="json"),
                 "agent_trace": trace_payload,

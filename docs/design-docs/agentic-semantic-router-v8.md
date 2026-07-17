@@ -17,4 +17,4 @@ The micro-router still decides whether GraphRAG is required. Once selected, grap
 
 ## Compatibility
 
-Ordinary chat and user-facing Deep Research retain their previous defaults. Historical v7 and unprofiled rows remain readable and are not compared as if they used the v8 retrieval policy.
+Evaluation Center selects v8 by default. Public `/rag/agentic/stream` explicitly selects the legacy v7 chat policy: `hybrid_compare` and `generic_graph` retain HyDE plus Multi-Query, CRAG retains its HyDE rewrite default, and graph routes retain generic research hints instead of locator-to-chunk hints. User-facing Deep Research also retains its previous defaults. Historical v7 and unprofiled rows remain readable and are not compared as if they used the v8 retrieval policy.
