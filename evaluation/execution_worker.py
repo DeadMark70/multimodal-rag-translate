@@ -24,7 +24,6 @@ from evaluation.campaign_engine import (
     _build_system_version_snapshot,
     _duration_ms,
     _enrich_agent_trace_payload,
-    _extract_total_tokens,
     _final_answer_hash,
     _record_unit_llm_usage,
     _record_unit_research_observability,
@@ -132,14 +131,13 @@ class DatasetExecutionWorker:
                 result = self._successful_result(
                     campaign_id=campaign_id,
                     execution=execution,
+                    total_tokens=token_summary.total_tokens,
                 )
                 promoted = await self._store.complete_execution_attempt(
-                    claim, ExecutionAttemptOutput(result=result)
+                    claim,
+                    ExecutionAttemptOutput(result=result),
+                    accounting_scope_id=scope.scope_id,
                 )
-                await self._accounting_store.mark_targets_official(
-                    scope.scope_id, {claim.attempt_id: promoted.id}
-                )
-                await self._accounting_store.finalize_scope(scope.scope_id, "completed")
             except asyncio.CancelledError:
                 await self._accounting_store.finalize_scope(scope.scope_id, "cancelled")
                 raise
@@ -290,6 +288,7 @@ class DatasetExecutionWorker:
         *,
         campaign_id: str,
         execution: ExecutedCampaignUnit,
+        total_tokens: int | None = None,
     ) -> CampaignResult:
         unit = execution.unit
         payload = execution.payload
@@ -321,7 +320,7 @@ class DatasetExecutionWorker:
             started_at=execution.started_at,
             completed_at=execution.completed_at,
             total_latency_ms=execution.total_latency_ms,
-            total_tokens=_extract_total_tokens(payload.token_usage),
+            total_tokens=total_tokens,
             question_snapshot=_build_question_snapshot(unit.test_case),
             model_config_snapshot=execution.model_config,
             system_version_snapshot=_build_system_version_snapshot(

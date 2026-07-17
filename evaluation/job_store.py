@@ -54,7 +54,9 @@ def build_evaluation_signature(
         "ground_truth_hash": ground_truth_hash,
         "context_metrics_enabled": context_metrics_enabled,
     }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    canonical = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
     return sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -72,8 +74,9 @@ def build_ragas_batch_group_key(
     answer = result.answer or ""
     answer_hash = sha256(answer.encode("utf-8")).hexdigest()
     context_hash = sha256(
-        json.dumps(result.contexts or [], ensure_ascii=False, separators=(",", ":"))
-        .encode("utf-8")
+        json.dumps(
+            result.contexts or [], ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
     ).hexdigest()
     payload = {
         "final_answer_hash": answer_hash,
@@ -86,8 +89,11 @@ def build_ragas_batch_group_key(
         "ground_truth_hash": ground_truth_hash,
         "context_metrics_enabled": context_metrics_enabled,
     }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    canonical = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
     return sha256(canonical.encode("utf-8")).hexdigest()
+
 
 class EvaluationJobStore:
     """Persist jobs, immutable work inputs, and append-only attempts."""
@@ -150,7 +156,14 @@ class EvaluationJobStore:
                         ) VALUES (?, ?, ?, 'pending', ?, NULL, NULL, ?, ?)
                         ON CONFLICT(job_id, work_item_id) DO NOTHING
                         """,
-                        (str(uuid4()), job_id, work_item_id, spec.max_attempts, now, now),
+                        (
+                            str(uuid4()),
+                            job_id,
+                            work_item_id,
+                            spec.max_attempts,
+                            now,
+                            now,
+                        ),
                     )
                 await connection.commit()
             except BaseException:
@@ -209,11 +222,15 @@ class EvaluationJobStore:
         effective_batch_size = ragas_batch_size
         if effective_batch_size is None:
             raw_batch_size = effective_config.get("ragas_batch_size")
-            effective_batch_size = int(raw_batch_size) if raw_batch_size is not None else None
+            effective_batch_size = (
+                int(raw_batch_size) if raw_batch_size is not None else None
+            )
         effective_parallel_batches = ragas_parallel_batches
         if effective_parallel_batches is None:
             raw_parallel = effective_config.get("ragas_parallel_batches")
-            effective_parallel_batches = int(raw_parallel) if raw_parallel is not None else None
+            effective_parallel_batches = (
+                int(raw_parallel) if raw_parallel is not None else None
+            )
         batch_config = dict(effective_config)
         if effective_batch_size is not None:
             batch_config["ragas_batch_size"] = effective_batch_size
@@ -230,7 +247,9 @@ class EvaluationJobStore:
                     if metric_names_by_result is not None
                     else enabled_metrics
                 )
-                for metric_name in dict.fromkeys(str(name) for name in metrics_for_result):
+                for metric_name in dict.fromkeys(
+                    str(name) for name in metrics_for_result
+                ):
                     signature = build_evaluation_signature(
                         result=result,
                         evaluator_model=evaluator_model,
@@ -254,7 +273,11 @@ class EvaluationJobStore:
                         (result.id, metric_name),
                     )
                     score = await score_cursor.fetchone()
-                    if not force and score is not None and score["evaluation_signature"] == signature:
+                    if (
+                        not force
+                        and score is not None
+                        and score["evaluation_signature"] == signature
+                    ):
                         continue
                     logical_key = f"ragas:{result.id}:{metric_name}:{signature}"
                     if not force:
@@ -446,7 +469,9 @@ class EvaluationJobStore:
             await connection.execute("BEGIN IMMEDIATE")
             try:
                 row = await self._active_claim_row(connection, claim)
-                retry = decision.retryable and row["attempt_count"] < row["max_attempts"]
+                retry = (
+                    decision.retryable and row["attempt_count"] < row["max_attempts"]
+                )
                 item_status = "retry_wait" if retry else "failed"
                 retry_at = _as_iso(next_retry_at) if retry and next_retry_at else None
                 if retry and retry_at is None:
@@ -465,7 +490,12 @@ class EvaluationJobStore:
                         safe_error_message = ?
                     WHERE id = ?
                     """,
-                    (now_iso, decision.error_type, decision.safe_message, claim.attempt_id),
+                    (
+                        now_iso,
+                        decision.error_type,
+                        decision.safe_message,
+                        claim.attempt_id,
+                    ),
                 )
                 await connection.execute(
                     """
@@ -566,6 +596,8 @@ class EvaluationJobStore:
         self,
         claim: ClaimedEvaluationWork,
         output: ExecutionAttemptOutput,
+        *,
+        accounting_scope_id: str | None = None,
     ) -> CampaignResult:
         """Atomically retain successful output and promote its official result."""
         now_iso = _as_iso(datetime.now(timezone.utc))
@@ -578,11 +610,14 @@ class EvaluationJobStore:
             try:
                 await self._active_claim_row(connection, claim)
                 job_cursor = await connection.execute(
-                    "SELECT user_id, campaign_id FROM evaluation_jobs WHERE id = ?", (claim.job_id,)
+                    "SELECT user_id, campaign_id FROM evaluation_jobs WHERE id = ?",
+                    (claim.job_id,),
                 )
                 job = await job_cursor.fetchone()
                 if job is None or result.campaign_id != job["campaign_id"]:
-                    raise ValueError("execution output does not belong to the claimed campaign")
+                    raise ValueError(
+                        "execution output does not belong to the claimed campaign"
+                    )
                 existing_cursor = await connection.execute(
                     """
                     SELECT id FROM campaign_results
@@ -600,6 +635,13 @@ class EvaluationJobStore:
                 )
                 existing = await existing_cursor.fetchone()
                 result_id = existing["id"] if existing is not None else result.id
+                if accounting_scope_id is not None:
+                    await self._validate_accounting_scope_target(
+                        connection,
+                        accounting_scope_id=accounting_scope_id,
+                        campaign_id=job["campaign_id"],
+                        claim=claim,
+                    )
                 await connection.execute(
                     """
                     INSERT INTO campaign_results (
@@ -654,7 +696,11 @@ class EvaluationJobStore:
                 )
                 await connection.execute(
                     "UPDATE evaluation_attempts SET status = 'succeeded', finished_at = ?, output_json = ? WHERE id = ?",
-                    (now_iso, _json_dumps(output.model_dump(mode="json")), claim.attempt_id),
+                    (
+                        now_iso,
+                        _json_dumps(output.model_dump(mode="json")),
+                        claim.attempt_id,
+                    ),
                 )
                 await connection.execute(
                     "UPDATE evaluation_work_items SET latest_success_attempt_id = ? WHERE id = ?",
@@ -669,7 +715,35 @@ class EvaluationJobStore:
                     """,
                     (now_iso, claim.job_item_id),
                 )
-                await self._recompute_campaign_counts(connection, campaign_id=job["campaign_id"])
+                if accounting_scope_id is not None:
+                    target_cursor = await connection.execute(
+                        """UPDATE evaluation_accounting_scope_targets
+                           SET is_official = 1, campaign_result_id = ?
+                           WHERE scope_id = ? AND job_id = ? AND work_item_id = ?
+                             AND attempt_id = ? AND is_official = 0""",
+                        (
+                            result_id,
+                            accounting_scope_id,
+                            claim.job_id,
+                            claim.work_item_id,
+                            claim.attempt_id,
+                        ),
+                    )
+                    if target_cursor.rowcount != 1:
+                        raise ValueError(
+                            "accounting scope target could not be promoted"
+                        )
+                    scope_cursor = await connection.execute(
+                        """UPDATE evaluation_accounting_scopes
+                           SET status = 'completed', completed_at = ?, updated_at = ?
+                           WHERE scope_id = ? AND campaign_id = ? AND status = 'running'""",
+                        (now_iso, now_iso, accounting_scope_id, job["campaign_id"]),
+                    )
+                    if scope_cursor.rowcount != 1:
+                        raise ValueError("accounting scope could not be completed")
+                await self._recompute_campaign_counts(
+                    connection, campaign_id=job["campaign_id"]
+                )
                 await connection.commit()
             except BaseException:
                 await connection.rollback()
@@ -677,6 +751,38 @@ class EvaluationJobStore:
         return await CampaignResultRepository().get(
             user_id=job["user_id"], campaign_id=job["campaign_id"], result_id=result_id
         )
+
+    async def _validate_accounting_scope_target(
+        self,
+        connection,
+        *,
+        accounting_scope_id: str,
+        campaign_id: str,
+        claim: ClaimedEvaluationWork,
+    ) -> None:
+        scope_cursor = await connection.execute(
+            """SELECT scope_id FROM evaluation_accounting_scopes
+               WHERE scope_id = ? AND campaign_id = ? AND scope_type = 'execution_run'
+                 AND status = 'running'""",
+            (accounting_scope_id, campaign_id),
+        )
+        if await scope_cursor.fetchone() is None:
+            raise ValueError("accounting scope does not match the claimed execution")
+        target_cursor = await connection.execute(
+            """SELECT 1 FROM evaluation_accounting_scope_targets
+               WHERE scope_id = ? AND job_id = ? AND work_item_id = ?
+                 AND attempt_id = ? AND is_official = 0""",
+            (
+                accounting_scope_id,
+                claim.job_id,
+                claim.work_item_id,
+                claim.attempt_id,
+            ),
+        )
+        if await target_cursor.fetchone() is None:
+            raise ValueError(
+                "accounting scope target does not match the claimed execution"
+            )
 
     async def complete_ragas_attempt(
         self,
@@ -691,7 +797,8 @@ class EvaluationJobStore:
             try:
                 await self._active_claim_row(connection, claim)
                 job_cursor = await connection.execute(
-                    "SELECT user_id, campaign_id FROM evaluation_jobs WHERE id = ?", (claim.job_id,)
+                    "SELECT user_id, campaign_id FROM evaluation_jobs WHERE id = ?",
+                    (claim.job_id,),
                 )
                 job = await job_cursor.fetchone()
                 if job is None:
@@ -705,19 +812,18 @@ class EvaluationJobStore:
                         (result_id, job["campaign_id"], job["user_id"]),
                     )
                     if await result_cursor.fetchone() is None:
-                        raise ValueError("RAGAS score does not belong to the claimed campaign")
+                        raise ValueError(
+                            "RAGAS score does not belong to the claimed campaign"
+                        )
                     existing_cursor = await connection.execute(
                         "SELECT evaluation_signature FROM ragas_scores WHERE campaign_result_id = ? AND metric_name = ?",
                         (result_id, metric_name),
                     )
                     existing = await existing_cursor.fetchone()
-                    if (
-                        existing is not None
-                        and (
-                            existing["evaluation_signature"] is None
-                            or signature is None
-                            or existing["evaluation_signature"] != signature
-                        )
+                    if existing is not None and (
+                        existing["evaluation_signature"] is None
+                        or signature is None
+                        or existing["evaluation_signature"] != signature
                     ):
                         continue
                     await connection.execute(
@@ -734,14 +840,25 @@ class EvaluationJobStore:
                             created_at = excluded.created_at
                         """,
                         (
-                            str(uuid4()), job["campaign_id"], result_id, job["user_id"], metric_name,
-                            float(score["metric_value"]), _json_dumps(score.get("details", {})),
-                            claim.attempt_id, signature, now_iso,
+                            str(uuid4()),
+                            job["campaign_id"],
+                            result_id,
+                            job["user_id"],
+                            metric_name,
+                            float(score["metric_value"]),
+                            _json_dumps(score.get("details", {})),
+                            claim.attempt_id,
+                            signature,
+                            now_iso,
                         ),
                     )
                 await connection.execute(
                     "UPDATE evaluation_attempts SET status = 'succeeded', finished_at = ?, output_json = ? WHERE id = ?",
-                    (now_iso, _json_dumps(output.model_dump(mode="json")), claim.attempt_id),
+                    (
+                        now_iso,
+                        _json_dumps(output.model_dump(mode="json")),
+                        claim.attempt_id,
+                    ),
                 )
                 await connection.execute(
                     "UPDATE evaluation_work_items SET latest_success_attempt_id = ? WHERE id = ?",
@@ -751,7 +868,9 @@ class EvaluationJobStore:
                     "UPDATE evaluation_job_items SET status = 'succeeded', active_attempt_id = NULL, next_retry_at = NULL, updated_at = ? WHERE id = ?",
                     (now_iso, claim.job_item_id),
                 )
-                await self._recompute_campaign_counts(connection, campaign_id=job["campaign_id"])
+                await self._recompute_campaign_counts(
+                    connection, campaign_id=job["campaign_id"]
+                )
                 await connection.commit()
             except BaseException:
                 await connection.rollback()
@@ -774,7 +893,12 @@ class EvaluationJobStore:
                     )
                 ).fetchall()
                 for campaign in campaigns:
-                    job_id = str(uuid5(NAMESPACE_URL, f"evaluation-legacy:{campaign['campaign_id']}"))
+                    job_id = str(
+                        uuid5(
+                            NAMESPACE_URL,
+                            f"evaluation-legacy:{campaign['campaign_id']}",
+                        )
+                    )
                     await connection.execute(
                         """
                         INSERT INTO evaluation_jobs (id, user_id, campaign_id, job_type, selection_json, config_snapshot_json, created_at)
@@ -790,10 +914,17 @@ class EvaluationJobStore:
                         )
                     ).fetchall()
                     for row in rows:
-                        succeeded = row["status"] == CampaignResultStatus.COMPLETED.value
+                        succeeded = (
+                            row["status"] == CampaignResultStatus.COMPLETED.value
+                        )
                         attempt_id = await self._insert_legacy_attempt(
-                            connection, job_id=job_id, campaign_id=campaign["campaign_id"],
-                            kind="execution", key=row["id"], succeeded=succeeded, now_iso=now_iso,
+                            connection,
+                            job_id=job_id,
+                            campaign_id=campaign["campaign_id"],
+                            kind="execution",
+                            key=row["id"],
+                            succeeded=succeeded,
+                            now_iso=now_iso,
                         )
                         if succeeded:
                             await connection.execute(
@@ -808,15 +939,21 @@ class EvaluationJobStore:
                     ).fetchall()
                     for score in scores:
                         attempt_id = await self._insert_legacy_attempt(
-                            connection, job_id=job_id, campaign_id=campaign["campaign_id"],
-                            kind="ragas", key=f"{score['campaign_result_id']}:{score['metric_name']}",
-                            succeeded=True, now_iso=now_iso,
+                            connection,
+                            job_id=job_id,
+                            campaign_id=campaign["campaign_id"],
+                            kind="ragas",
+                            key=f"{score['campaign_result_id']}:{score['metric_name']}",
+                            succeeded=True,
+                            now_iso=now_iso,
                         )
                         await connection.execute(
                             "UPDATE ragas_scores SET source_attempt_id = ? WHERE id = ? AND source_attempt_id IS NULL",
                             (attempt_id, score["id"]),
                         )
-                    await self._recompute_campaign_counts(connection, campaign_id=campaign["campaign_id"])
+                    await self._recompute_campaign_counts(
+                        connection, campaign_id=campaign["campaign_id"]
+                    )
                 await connection.commit()
             except BaseException:
                 await connection.rollback()
@@ -851,7 +988,11 @@ class EvaluationJobStore:
                         """,
                         (at_iso, row["attempt_id"]),
                     )
-                    item_status = "pending" if row["attempt_count"] < row["max_attempts"] else "failed"
+                    item_status = (
+                        "pending"
+                        if row["attempt_count"] < row["max_attempts"]
+                        else "failed"
+                    )
                     await connection.execute(
                         """
                         UPDATE evaluation_job_items
@@ -888,7 +1029,8 @@ class EvaluationJobStore:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
-                "SELECT * FROM evaluation_jobs WHERE id = ? AND user_id = ?", (job_id, user_id)
+                "SELECT * FROM evaluation_jobs WHERE id = ? AND user_id = ?",
+                (job_id, user_id),
             )
             row = await cursor.fetchone()
         if row is None:
@@ -963,7 +1105,9 @@ class EvaluationJobStore:
                         question_id=_snapshot_question_id(snapshot),
                         metric_name=_snapshot_metric_name(snapshot),
                         latest_attempt=(
-                            _row_to_attempt(attempt_row) if attempt_row is not None else None
+                            _row_to_attempt(attempt_row)
+                            if attempt_row is not None
+                            else None
                         ),
                     )
                 )
@@ -1280,9 +1424,15 @@ class EvaluationJobStore:
         succeeded: bool,
         now_iso: str,
     ) -> str:
-        work_item_id = str(uuid5(NAMESPACE_URL, f"evaluation-legacy-work:{campaign_id}:{kind}:{key}"))
-        job_item_id = str(uuid5(NAMESPACE_URL, f"evaluation-legacy-job-item:{job_id}:{work_item_id}"))
-        attempt_id = str(uuid5(NAMESPACE_URL, f"evaluation-legacy-attempt:{job_item_id}"))
+        work_item_id = str(
+            uuid5(NAMESPACE_URL, f"evaluation-legacy-work:{campaign_id}:{kind}:{key}")
+        )
+        job_item_id = str(
+            uuid5(NAMESPACE_URL, f"evaluation-legacy-job-item:{job_id}:{work_item_id}")
+        )
+        attempt_id = str(
+            uuid5(NAMESPACE_URL, f"evaluation-legacy-attempt:{job_item_id}")
+        )
         status = "succeeded" if succeeded else "failed"
         work_type = "dataset_execution" if kind == "execution" else "ragas_metric"
         await connection.execute(
@@ -1294,9 +1444,13 @@ class EvaluationJobStore:
             ON CONFLICT(campaign_id, logical_key) DO NOTHING
             """,
             (
-                work_item_id, campaign_id, f"legacy:{kind}:{key}", work_type,
+                work_item_id,
+                campaign_id,
+                f"legacy:{kind}:{key}",
+                work_type,
                 _json_dumps({"legacy": True, "key": key}),
-                attempt_id if succeeded else None, now_iso,
+                attempt_id if succeeded else None,
+                now_iso,
             ),
         )
         await connection.execute(
@@ -1319,7 +1473,13 @@ class EvaluationJobStore:
             ON CONFLICT(id) DO NOTHING
             """,
             (
-                attempt_id, job_id, job_item_id, work_item_id, status, now_iso, now_iso,
+                attempt_id,
+                job_id,
+                job_item_id,
+                work_item_id,
+                status,
+                now_iso,
+                now_iso,
                 None if succeeded else "legacy_failed",
                 None if succeeded else "Legacy evaluation result was unsuccessful.",
                 _json_dumps({"legacy": True, "key": key}),
@@ -1388,7 +1548,8 @@ class EvaluationJobStore:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
-                f"SELECT COUNT(*) AS count FROM {table} WHERE campaign_id = ?", (campaign_id,)
+                f"SELECT COUNT(*) AS count FROM {table} WHERE campaign_id = ?",
+                (campaign_id,),
             )
             return (await cursor.fetchone())["count"]
 
@@ -1410,20 +1571,43 @@ def _campaign_result_values(
     created_at: str,
 ) -> tuple[Any, ...]:
     return (
-        result_id, result.campaign_id, user_id, result.question_id, result.question,
-        result.ground_truth, result.ground_truth_short, _json_dumps(result.key_points),
-        _json_dumps(result.ragas_focus), result.mode, result.execution_profile,
-        result.context_policy_version, result.run_number, result.condition_id or "", result.answer,
-        _json_dumps(result.contexts), _json_dumps(result.source_doc_ids),
-        _json_dumps(result.expected_sources), result.latency_ms, _json_dumps(result.token_usage),
-        result.category, result.difficulty, result.status.value, result.error_message,
-        result.question_version, result.request_id,
+        result_id,
+        result.campaign_id,
+        user_id,
+        result.question_id,
+        result.question,
+        result.ground_truth,
+        result.ground_truth_short,
+        _json_dumps(result.key_points),
+        _json_dumps(result.ragas_focus),
+        result.mode,
+        result.execution_profile,
+        result.context_policy_version,
+        result.run_number,
+        result.condition_id or "",
+        result.answer,
+        _json_dumps(result.contexts),
+        _json_dumps(result.source_doc_ids),
+        _json_dumps(result.expected_sources),
+        result.latency_ms,
+        _json_dumps(result.token_usage),
+        result.category,
+        result.difficulty,
+        result.status.value,
+        result.error_message,
+        result.question_version,
+        result.request_id,
         _as_iso(result.started_at) if result.started_at else None,
         _as_iso(result.completed_at) if result.completed_at else None,
-        result.total_latency_ms, 0 if result.total_tokens is None else result.total_tokens,
-        _json_dumps(result.question_snapshot), _json_dumps(result.model_config_snapshot),
-        _json_dumps(result.system_version_snapshot), _json_dumps(result.derived_metrics),
-        result.final_answer_hash, source_attempt_id, created_at,
+        result.total_latency_ms,
+        0 if result.total_tokens is None else result.total_tokens,
+        _json_dumps(result.question_snapshot),
+        _json_dumps(result.model_config_snapshot),
+        _json_dumps(result.system_version_snapshot),
+        _json_dumps(result.derived_metrics),
+        result.final_answer_hash,
+        source_attempt_id,
+        created_at,
     )
 
 
@@ -1446,7 +1630,9 @@ def _snapshot_question_id(snapshot: Any) -> str | None:
     for key in ("test_case", "result"):
         nested = snapshot.get(key)
         if isinstance(nested, Mapping):
-            value = nested.get("id") if key == "test_case" else nested.get("question_id")
+            value = (
+                nested.get("id") if key == "test_case" else nested.get("question_id")
+            )
             if isinstance(value, str) and value:
                 return value
     return None
@@ -1485,7 +1671,9 @@ def _row_to_attempt(row: aiosqlite.Row) -> EvaluationAttempt:
             if row["last_heartbeat_at"] is not None
             else None
         ),
-        finished_at=_from_iso(row["finished_at"]) if row["finished_at"] is not None else None,
+        finished_at=_from_iso(row["finished_at"])
+        if row["finished_at"] is not None
+        else None,
         error_type=row["error_type"],
         safe_error_message=row["safe_error_message"],
     )

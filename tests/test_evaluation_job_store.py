@@ -15,7 +15,13 @@ from evaluation.campaign_schemas import (
     CampaignResult,
     CampaignResultStatus,
 )
-from evaluation.db import CampaignRepository, CampaignResultRepository, RagasScoreRepository
+from evaluation.accounting_runtime import start_execution_scope
+from evaluation.accounting_store import EvaluationAccountingStore
+from evaluation.db import (
+    CampaignRepository,
+    CampaignResultRepository,
+    RagasScoreRepository,
+)
 from evaluation.error_policy import ErrorDecision
 from evaluation.job_schemas import (
     ExecutionAttemptOutput,
@@ -29,7 +35,8 @@ from evaluation.ragas_worker import RagasBatchWorker
 @pytest_asyncio.fixture
 async def store(monkeypatch):  # noqa: ANN001
     database_path = (
-        Path(__file__).resolve().parent.parent / ".test-artifacts"
+        Path(__file__).resolve().parent.parent
+        / ".test-artifacts"
         / f"evaluation-ledger-{uuid4().hex}.db"
     )
     database_path.parent.mkdir(exist_ok=True)
@@ -74,7 +81,9 @@ def fixed_now() -> datetime:
     return datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
 
 
-def _spec(*, logical_key: str = "execution:Q1:naive:1:none", max_attempts: int = 3) -> WorkItemSpec:
+def _spec(
+    *, logical_key: str = "execution:Q1:naive:1:none", max_attempts: int = 3
+) -> WorkItemSpec:
     return WorkItemSpec(
         work_type="dataset_execution",
         logical_key=logical_key,
@@ -130,6 +139,58 @@ async def _claim_execution_rerun(store, now: datetime):  # noqa: ANN001
 
 
 @pytest.mark.asyncio
+async def test_complete_execution_attempt_atomically_promotes_accounting_scope(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    claim = await _claim_execution(store, fixed_now)
+    accounting_store = EvaluationAccountingStore()
+    scope = await start_execution_scope(
+        store=accounting_store,
+        campaign_id="cmp-1",
+        run_id="run-1",
+        job_id=claim.job_id,
+        work_item_id=claim.work_item_id,
+        attempt_id=claim.attempt_id,
+    )
+
+    result = await store.complete_execution_attempt(
+        claim,
+        _successful_output("answer"),
+        accounting_scope_id=scope.scope_id,
+    )
+
+    stored_scope = await accounting_store.get_scope(scope.scope_id)
+    assert stored_scope.status == "completed"
+    assert stored_scope.targets[0].is_official is True
+    assert stored_scope.targets[0].campaign_result_id == result.id
+
+
+@pytest.mark.asyncio
+async def test_invalid_accounting_scope_rolls_back_execution_promotion(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    claim = await _claim_execution(store, fixed_now)
+
+    with pytest.raises(ValueError, match="accounting scope"):
+        await store.complete_execution_attempt(
+            claim,
+            _successful_output("answer"),
+            accounting_scope_id="missing-scope",
+        )
+
+    assert (
+        await CampaignResultRepository().list_for_campaign(
+            user_id="user-a", campaign_id="cmp-1"
+        )
+        == []
+    )
+    attempts = await store.list_attempts(
+        user_id="user-a", work_item_id=claim.work_item_id
+    )
+    assert attempts[-1].status.value == "running"
+
+
+@pytest.mark.asyncio
 async def test_create_job_notifies_post_commit_producer_hook(store) -> None:  # noqa: ANN001
     notifications: list[None] = []
 
@@ -151,7 +212,9 @@ async def test_create_job_notifies_post_commit_producer_hook(store) -> None:  # 
     assert notifications == [None]
 
 
-def test_ragas_batch_group_key_is_shared_while_result_signatures_remain_distinct() -> None:
+def test_ragas_batch_group_key_is_shared_while_result_signatures_remain_distinct() -> (
+    None
+):
     first = CampaignResult(
         id="result-1",
         campaign_id="cmp-1",
@@ -176,12 +239,12 @@ def test_ragas_batch_group_key_is_shared_while_result_signatures_remain_distinct
         "context_metrics_enabled": False,
     }
 
-    assert build_evaluation_signature(result=first, **kwargs) != build_evaluation_signature(
-        result=second, **kwargs
-    )
-    assert build_ragas_batch_group_key(result=first, **kwargs) == build_ragas_batch_group_key(
-        result=second, **kwargs
-    )
+    assert build_evaluation_signature(
+        result=first, **kwargs
+    ) != build_evaluation_signature(result=second, **kwargs)
+    assert build_ragas_batch_group_key(
+        result=first, **kwargs
+    ) == build_ragas_batch_group_key(result=second, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -221,17 +284,22 @@ async def test_ensure_ragas_work_assigns_one_shared_batch_key_to_compatible_resu
             )
             await connection.commit()
 
-    assert await store.ensure_ragas_work(
-        user_id="user-a",
-        campaign_id="cmp-1",
-        evaluator_model="evaluator",
-        evaluator_config={"temperature": 0},
-        enabled_metrics=["faithfulness"],
-        ragas_batch_size=4,
-        ragas_parallel_batches=1,
-    ) == 4
+    assert (
+        await store.ensure_ragas_work(
+            user_id="user-a",
+            campaign_id="cmp-1",
+            evaluator_model="evaluator",
+            evaluator_config={"temperature": 0},
+            enabled_metrics=["faithfulness"],
+            ragas_batch_size=4,
+            ragas_parallel_batches=1,
+        )
+        == 4
+    )
 
-    claims = await store.claim_ready_items(limit=4, now=fixed_now, work_type="ragas_metric")
+    claims = await store.claim_ready_items(
+        limit=4, now=fixed_now, work_type="ragas_metric"
+    )
     assert len(claims) == 4
     assert len({claim.input_snapshot["evaluation_signature"] for claim in claims}) == 4
     assert len({claim.input_snapshot["batch_group_key"] for claim in claims}) == 1
@@ -250,7 +318,9 @@ async def test_ensure_ragas_work_assigns_one_shared_batch_key_to_compatible_resu
 
 
 @pytest.mark.asyncio
-async def test_derive_ragas_state_preserves_terminal_campaign_cancellation(store, fixed_now) -> None:  # noqa: ANN001
+async def test_derive_ragas_state_preserves_terminal_campaign_cancellation(
+    store, fixed_now
+) -> None:  # noqa: ANN001
     async with evaluation_db.connect_db() as connection:
         await connection.execute(
             "UPDATE campaigns SET config_json = ? WHERE id = ?",
@@ -307,9 +377,13 @@ async def test_derive_ragas_state_preserves_terminal_campaign_cancellation(store
 
 
 @pytest.mark.asyncio
-async def test_failed_rerun_preserves_previous_success_projection(store, fixed_now) -> None:  # noqa: ANN001
+async def test_failed_rerun_preserves_previous_success_projection(
+    store, fixed_now
+) -> None:  # noqa: ANN001
     first_claim = await _claim_execution(store, fixed_now)
-    first = await store.complete_execution_attempt(first_claim, _successful_output("answer-v1"))
+    first = await store.complete_execution_attempt(
+        first_claim, _successful_output("answer-v1")
+    )
     rerun_claim = await _claim_execution_rerun(store, fixed_now)
     await store.fail_attempt(
         rerun_claim,
@@ -327,16 +401,25 @@ async def test_failed_rerun_preserves_previous_success_projection(store, fixed_n
 @pytest.mark.asyncio
 async def test_successful_rerun_promotion_keeps_old_attempt(store, fixed_now) -> None:  # noqa: ANN001
     first_claim = await _claim_execution(store, fixed_now)
-    first = await store.complete_execution_attempt(first_claim, _successful_output("answer-v1"))
+    first = await store.complete_execution_attempt(
+        first_claim, _successful_output("answer-v1")
+    )
     second_claim = await _claim_execution_rerun(store, fixed_now)
-    second = await store.complete_execution_attempt(second_claim, _successful_output("answer-v2"))
+    second = await store.complete_execution_attempt(
+        second_claim, _successful_output("answer-v2")
+    )
 
     assert second.id == first.id
     assert second.answer == "answer-v2"
     assert second.source_attempt_id == second_claim.attempt_id
-    assert len(
-        await store.list_attempts(user_id="user-a", work_item_id=second_claim.work_item_id)
-    ) == 2
+    assert (
+        len(
+            await store.list_attempts(
+                user_id="user-a", work_item_id=second_claim.work_item_id
+            )
+        )
+        == 2
+    )
 
 
 @pytest.mark.asyncio
@@ -344,7 +427,9 @@ async def test_non_completed_execution_output_preserves_official_projection(
     store, fixed_now
 ) -> None:  # noqa: ANN001
     first_claim = await _claim_execution(store, fixed_now)
-    first = await store.complete_execution_attempt(first_claim, _successful_output("answer-v1"))
+    first = await store.complete_execution_attempt(
+        first_claim, _successful_output("answer-v1")
+    )
     rerun_claim = await _claim_execution_rerun(store, fixed_now)
     failed_output = _successful_output("bad-answer").model_copy(
         update={
@@ -371,7 +456,9 @@ async def test_non_completed_execution_output_preserves_official_projection(
 @pytest.mark.asyncio
 async def test_incompatible_signature_preserves_current_score(store, fixed_now) -> None:  # noqa: ANN001
     execution_claim = await _claim_execution(store, fixed_now)
-    result = await store.complete_execution_attempt(execution_claim, _successful_output("answer-v1"))
+    result = await store.complete_execution_attempt(
+        execution_claim, _successful_output("answer-v1")
+    )
     ragas_spec = WorkItemSpec(
         work_type="ragas_metric",
         logical_key="ragas:Q1:naive:1:faithfulness",
@@ -379,28 +466,50 @@ async def test_incompatible_signature_preserves_current_score(store, fixed_now) 
         max_attempts=1,
     )
     await store.create_job_with_items(
-        user_id="user-a", campaign_id="cmp-1", job_type="initial", selection={},
-        config_snapshot={}, items=[ragas_spec]
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="initial",
+        selection={},
+        config_snapshot={},
+        items=[ragas_spec],
     )
     first_claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
     await store.complete_ragas_attempt(
         first_claim,
-        RagasAttemptOutput(scores=[{
-            "campaign_result_id": result.id, "metric_name": "faithfulness",
-            "metric_value": 0.8, "details": {}, "evaluation_signature": "compatible",
-        }]),
+        RagasAttemptOutput(
+            scores=[
+                {
+                    "campaign_result_id": result.id,
+                    "metric_name": "faithfulness",
+                    "metric_value": 0.8,
+                    "details": {},
+                    "evaluation_signature": "compatible",
+                }
+            ]
+        ),
     )
     await store.create_job_with_items(
-        user_id="user-a", campaign_id="cmp-1", job_type="rerun", selection={},
-        config_snapshot={}, items=[ragas_spec]
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="rerun",
+        selection={},
+        config_snapshot={},
+        items=[ragas_spec],
     )
     rerun_claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
     await store.complete_ragas_attempt(
         rerun_claim,
-        RagasAttemptOutput(scores=[{
-            "campaign_result_id": result.id, "metric_name": "faithfulness",
-            "metric_value": 0.1, "details": {}, "evaluation_signature": "incompatible",
-        }]),
+        RagasAttemptOutput(
+            scores=[
+                {
+                    "campaign_result_id": result.id,
+                    "metric_name": "faithfulness",
+                    "metric_value": 0.1,
+                    "details": {},
+                    "evaluation_signature": "incompatible",
+                }
+            ]
+        ),
     )
 
     async with evaluation_db.connect_db() as connection:
@@ -418,7 +527,9 @@ async def test_incompatible_signature_preserves_current_score(store, fixed_now) 
 @pytest.mark.asyncio
 async def test_legacy_null_signature_preserves_current_score(store, fixed_now) -> None:  # noqa: ANN001
     execution_claim = await _claim_execution(store, fixed_now)
-    result = await store.complete_execution_attempt(execution_claim, _successful_output("answer-v1"))
+    result = await store.complete_execution_attempt(
+        execution_claim, _successful_output("answer-v1")
+    )
     ragas_spec = WorkItemSpec(
         work_type="ragas_metric",
         logical_key="ragas:Q1:naive:1:faithfulness",
@@ -426,16 +537,27 @@ async def test_legacy_null_signature_preserves_current_score(store, fixed_now) -
         max_attempts=1,
     )
     await store.create_job_with_items(
-        user_id="user-a", campaign_id="cmp-1", job_type="initial", selection={},
-        config_snapshot={}, items=[ragas_spec]
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="initial",
+        selection={},
+        config_snapshot={},
+        items=[ragas_spec],
     )
     first_claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
     await store.complete_ragas_attempt(
         first_claim,
-        RagasAttemptOutput(scores=[{
-            "campaign_result_id": result.id, "metric_name": "faithfulness",
-            "metric_value": 0.8, "details": {}, "evaluation_signature": "compatible",
-        }]),
+        RagasAttemptOutput(
+            scores=[
+                {
+                    "campaign_result_id": result.id,
+                    "metric_name": "faithfulness",
+                    "metric_value": 0.8,
+                    "details": {},
+                    "evaluation_signature": "compatible",
+                }
+            ]
+        ),
     )
     async with evaluation_db.connect_db() as connection:
         await connection.execute(
@@ -445,16 +567,27 @@ async def test_legacy_null_signature_preserves_current_score(store, fixed_now) -
         )
         await connection.commit()
     await store.create_job_with_items(
-        user_id="user-a", campaign_id="cmp-1", job_type="rerun", selection={},
-        config_snapshot={}, items=[ragas_spec]
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="rerun",
+        selection={},
+        config_snapshot={},
+        items=[ragas_spec],
     )
     rerun_claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
     await store.complete_ragas_attempt(
         rerun_claim,
-        RagasAttemptOutput(scores=[{
-            "campaign_result_id": result.id, "metric_name": "faithfulness",
-            "metric_value": 0.1, "details": {}, "evaluation_signature": "compatible",
-        }]),
+        RagasAttemptOutput(
+            scores=[
+                {
+                    "campaign_result_id": result.id,
+                    "metric_name": "faithfulness",
+                    "metric_value": 0.1,
+                    "details": {},
+                    "evaluation_signature": "compatible",
+                }
+            ]
+        ),
     )
 
     async with evaluation_db.connect_db() as connection:
@@ -472,7 +605,9 @@ async def test_legacy_null_signature_preserves_current_score(store, fixed_now) -
 @pytest.mark.asyncio
 async def test_failed_ragas_rerun_preserves_current_score(store, fixed_now) -> None:  # noqa: ANN001
     execution_claim = await _claim_execution(store, fixed_now)
-    result = await store.complete_execution_attempt(execution_claim, _successful_output("answer-v1"))
+    result = await store.complete_execution_attempt(
+        execution_claim, _successful_output("answer-v1")
+    )
     ragas_spec = WorkItemSpec(
         work_type="ragas_metric",
         logical_key="ragas:Q1:naive:1:faithfulness",
@@ -480,20 +615,35 @@ async def test_failed_ragas_rerun_preserves_current_score(store, fixed_now) -> N
         max_attempts=1,
     )
     await store.create_job_with_items(
-        user_id="user-a", campaign_id="cmp-1", job_type="initial", selection={},
-        config_snapshot={}, items=[ragas_spec]
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="initial",
+        selection={},
+        config_snapshot={},
+        items=[ragas_spec],
     )
     first_claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
     await store.complete_ragas_attempt(
         first_claim,
-        RagasAttemptOutput(scores=[{
-            "campaign_result_id": result.id, "metric_name": "faithfulness",
-            "metric_value": 0.8, "details": {}, "evaluation_signature": "compatible",
-        }]),
+        RagasAttemptOutput(
+            scores=[
+                {
+                    "campaign_result_id": result.id,
+                    "metric_name": "faithfulness",
+                    "metric_value": 0.8,
+                    "details": {},
+                    "evaluation_signature": "compatible",
+                }
+            ]
+        ),
     )
     await store.create_job_with_items(
-        user_id="user-a", campaign_id="cmp-1", job_type="rerun", selection={},
-        config_snapshot={}, items=[ragas_spec]
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="rerun",
+        selection={},
+        config_snapshot={},
+        items=[ragas_spec],
     )
     rerun_claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
     await store.fail_attempt(
@@ -517,7 +667,9 @@ async def test_failed_ragas_rerun_preserves_current_score(store, fixed_now) -> N
 @pytest.mark.asyncio
 async def test_compatible_ragas_rerun_replaces_current_score(store, fixed_now) -> None:  # noqa: ANN001
     execution_claim = await _claim_execution(store, fixed_now)
-    result = await store.complete_execution_attempt(execution_claim, _successful_output("answer-v1"))
+    result = await store.complete_execution_attempt(
+        execution_claim, _successful_output("answer-v1")
+    )
     ragas_spec = WorkItemSpec(
         work_type="ragas_metric",
         logical_key="ragas:Q1:naive:1:faithfulness",
@@ -525,28 +677,50 @@ async def test_compatible_ragas_rerun_replaces_current_score(store, fixed_now) -
         max_attempts=1,
     )
     await store.create_job_with_items(
-        user_id="user-a", campaign_id="cmp-1", job_type="initial", selection={},
-        config_snapshot={}, items=[ragas_spec]
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="initial",
+        selection={},
+        config_snapshot={},
+        items=[ragas_spec],
     )
     first_claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
     await store.complete_ragas_attempt(
         first_claim,
-        RagasAttemptOutput(scores=[{
-            "campaign_result_id": result.id, "metric_name": "faithfulness",
-            "metric_value": 0.8, "details": {}, "evaluation_signature": "compatible",
-        }]),
+        RagasAttemptOutput(
+            scores=[
+                {
+                    "campaign_result_id": result.id,
+                    "metric_name": "faithfulness",
+                    "metric_value": 0.8,
+                    "details": {},
+                    "evaluation_signature": "compatible",
+                }
+            ]
+        ),
     )
     await store.create_job_with_items(
-        user_id="user-a", campaign_id="cmp-1", job_type="rerun", selection={},
-        config_snapshot={}, items=[ragas_spec]
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="rerun",
+        selection={},
+        config_snapshot={},
+        items=[ragas_spec],
     )
     rerun_claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
     await store.complete_ragas_attempt(
         rerun_claim,
-        RagasAttemptOutput(scores=[{
-            "campaign_result_id": result.id, "metric_name": "faithfulness",
-            "metric_value": 0.1, "details": {}, "evaluation_signature": "compatible",
-        }]),
+        RagasAttemptOutput(
+            scores=[
+                {
+                    "campaign_result_id": result.id,
+                    "metric_name": "faithfulness",
+                    "metric_value": 0.1,
+                    "details": {},
+                    "evaluation_signature": "compatible",
+                }
+            ]
+        ),
     )
 
     async with evaluation_db.connect_db() as connection:
@@ -591,12 +765,14 @@ async def test_backfill_legacy_attempts_is_idempotent(store) -> None:  # noqa: A
     await RagasScoreRepository().replace_for_campaign(
         user_id="user-a",
         campaign_id="cmp-1",
-        score_rows=[{
-            "campaign_result_id": legacy.id,
-            "metric_name": "faithfulness",
-            "metric_value": 0.6,
-            "details": {},
-        }],
+        score_rows=[
+            {
+                "campaign_result_id": legacy.id,
+                "metric_name": "faithfulness",
+                "metric_value": 0.6,
+                "details": {},
+            }
+        ],
     )
 
     await store.backfill_legacy_attempts()
@@ -605,16 +781,20 @@ async def test_backfill_legacy_attempts_is_idempotent(store) -> None:  # noqa: A
     async with evaluation_db.connect_db() as connection:
         result = await (
             await connection.execute(
-                "SELECT source_attempt_id FROM campaign_results WHERE id = ?", (legacy.id,)
+                "SELECT source_attempt_id FROM campaign_results WHERE id = ?",
+                (legacy.id,),
             )
         ).fetchone()
         score = await (
             await connection.execute(
-                "SELECT source_attempt_id FROM ragas_scores WHERE campaign_result_id = ?", (legacy.id,)
+                "SELECT source_attempt_id FROM ragas_scores WHERE campaign_result_id = ?",
+                (legacy.id,),
             )
         ).fetchone()
         attempt_count = await (
-            await connection.execute("SELECT COUNT(*) AS count FROM evaluation_attempts")
+            await connection.execute(
+                "SELECT COUNT(*) AS count FROM evaluation_attempts"
+            )
         ).fetchone()
     assert result["source_attempt_id"] is not None
     assert score["source_attempt_id"] is not None
@@ -622,7 +802,9 @@ async def test_backfill_legacy_attempts_is_idempotent(store) -> None:  # noqa: A
 
 
 @pytest.mark.asyncio
-async def test_create_job_reuses_stable_work_item_and_creates_new_job_item(store) -> None:  # noqa: ANN001
+async def test_create_job_reuses_stable_work_item_and_creates_new_job_item(
+    store,
+) -> None:  # noqa: ANN001
     spec = _spec()
 
     first = await store.create_job_with_items(
@@ -668,7 +850,9 @@ async def test_claim_creates_running_attempt_atomically(store, fixed_now) -> Non
 
 
 @pytest.mark.asyncio
-async def test_retryable_failure_requeues_only_below_its_job_item_budget(store, fixed_now) -> None:  # noqa: ANN001
+async def test_retryable_failure_requeues_only_below_its_job_item_budget(
+    store, fixed_now
+) -> None:  # noqa: ANN001
     await store.create_job_with_items(
         user_id="user-a",
         campaign_id="cmp-1",
@@ -831,7 +1015,9 @@ async def test_claim_skips_blocked_same_work_items_before_applying_limit(
 
 
 @pytest.mark.asyncio
-async def test_cancel_and_startup_recovery_preserve_attempt_history(store, fixed_now) -> None:  # noqa: ANN001
+async def test_cancel_and_startup_recovery_preserve_attempt_history(
+    store, fixed_now
+) -> None:  # noqa: ANN001
     await store.create_job_with_items(
         user_id="user-a",
         campaign_id="cmp-1",
@@ -859,7 +1045,10 @@ async def test_cancel_and_startup_recovery_preserve_attempt_history(store, fixed
     )
     running_claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
 
-    assert await store.recover_interrupted_attempts(at=fixed_now + timedelta(minutes=5)) == 1
+    assert (
+        await store.recover_interrupted_attempts(at=fixed_now + timedelta(minutes=5))
+        == 1
+    )
     attempts = await store.list_attempts(
         user_id="user-a", work_item_id=running_claim.work_item_id
     )
@@ -870,8 +1059,12 @@ async def test_cancel_and_startup_recovery_preserve_attempt_history(store, fixed
 @pytest.mark.asyncio
 async def test_additive_migration_adds_result_provenance_columns(store) -> None:  # noqa: ANN001
     async with evaluation_db.connect_db() as connection:
-        campaign_result_columns = await evaluation_db._table_columns(connection, "campaign_results")
-        ragas_score_columns = await evaluation_db._table_columns(connection, "ragas_scores")
+        campaign_result_columns = await evaluation_db._table_columns(
+            connection, "campaign_results"
+        )
+        ragas_score_columns = await evaluation_db._table_columns(
+            connection, "ragas_scores"
+        )
 
     assert "source_attempt_id" in campaign_result_columns
     assert "condition_id" in campaign_result_columns
@@ -929,7 +1122,9 @@ async def test_list_job_items_is_job_scoped_and_includes_latest_safe_attempt(
     assert items[0].latest_attempt is not None
     assert items[0].latest_attempt.attempt_id == claimed.attempt_id
     assert items[0].latest_attempt.safe_error_message is None
-    assert (await store.get_job(user_id="user-a", job_id=created.job_id)).missing_items == 0
+    assert (
+        await store.get_job(user_id="user-a", job_id=created.job_id)
+    ).missing_items == 0
     with pytest.raises(AppError) as exc_info:
         await store.list_job_items(user_id="user-b", job_id=created.job_id)
     assert exc_info.value.code is ErrorCode.NOT_FOUND

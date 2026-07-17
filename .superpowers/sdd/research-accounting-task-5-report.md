@@ -48,3 +48,32 @@ command was rerun with approved escalation and completed normally.
 The focused suite still emits pre-existing `storage3` Pydantic deprecation
 warnings. No full repository suite was run because this task's requested
 verification scope is execution/runtime/job-worker accounting.
+
+## Review Fixes — Atomic Promotion and Strict Token Projection
+
+- `EvaluationJobStore.complete_execution_attempt()` now accepts optional,
+  keyword-only `accounting_scope_id`. When supplied, it validates the running
+  execution scope and target against the active claim, promotes the target, and
+  completes the scope within the existing `BEGIN IMMEDIATE` transaction. Any
+  identity, lifecycle, or row-count mismatch rolls back the result, attempt,
+  work item, and accounting writes together.
+- Execution workers now use that atomic path and have no success-path
+  post-commit accounting writes.
+- Scope summaries treat callback `status='failed'` as partial even if it has
+  measured tokens. The v2 result projection has `total_tokens: null` for
+  unavailable or partial aggregates; zero-valued category fields are not
+  synthesized for an unobserved scope. The legacy SQL column remains its
+  backward-compatible `0` sentinel, which the v2 read projection converts back
+  to `None` only when the persisted token payload explicitly says null.
+- Added regression tests for atomic promotion/rollback, provider failure and
+  cancellation without official results, missing usage, persistence failure,
+  and failed callbacks with measured usage.
+
+Verification for the review fixes:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_evaluation_accounting_store.py tests/test_evaluation_accounting_runtime.py tests/test_evaluation_execution_worker.py tests/test_evaluation_job_worker.py tests/test_evaluation_job_store.py -q
+```
+
+Result: `52 passed` (with the same pre-existing `storage3` deprecation
+warnings).

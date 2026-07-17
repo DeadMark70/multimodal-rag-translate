@@ -201,6 +201,12 @@ async def test_failed_attempt_scope_is_not_official(store: EvaluationJobStore) -
     scope = (await accounting_store.list_campaign_scopes("cmp-1"))[0]
     assert scope.status == "failed"
     assert all(not target.is_official for target in scope.targets)
+    assert (
+        await evaluation_db.CampaignResultRepository().list_for_campaign(
+            user_id="user-a", campaign_id="cmp-1"
+        )
+        == []
+    )
 
 
 @pytest.mark.asyncio
@@ -221,6 +227,12 @@ async def test_cancelled_attempt_scope_is_cancelled(store: EvaluationJobStore) -
 
     scope = (await accounting_store.list_campaign_scopes("cmp-1"))[0]
     assert scope.status == "cancelled"
+    assert (
+        await evaluation_db.CampaignResultRepository().list_for_campaign(
+            user_id="user-a", campaign_id="cmp-1"
+        )
+        == []
+    )
 
 
 @pytest.mark.asyncio
@@ -261,6 +273,36 @@ async def test_usage_persistence_error_keeps_completed_scope_and_partial_result(
     )[0]
     assert scope.status == "completed"
     assert result.token_usage["token_accounting_status"] == "partial"
+
+
+@pytest.mark.asyncio
+async def test_missing_usage_does_not_project_synthetic_zero_tokens(
+    store: EvaluationJobStore,
+) -> None:
+    async def runner(**runtime_inputs):  # noqa: ANN003
+        return _successful_payload(
+            question_id=runtime_inputs["test_case"].id,
+            mode=runtime_inputs["mode"],
+            answer="42",
+        )
+
+    worker = DatasetExecutionWorker(
+        store=store,
+        runner=runner,
+        accounting_store=EvaluationAccountingStore(),
+        price_snapshot=TEST_PRICE_SNAPSHOT,
+    )
+    await worker.execute(await _claim_seeded_execution(store))
+
+    result = (
+        await evaluation_db.CampaignResultRepository().list_for_campaign(
+            user_id="user-a", campaign_id="cmp-1"
+        )
+    )[0]
+    assert result.total_tokens is None
+    assert result.token_usage["total_tokens"] is None
+    assert "input_tokens" not in result.token_usage
+    assert result.token_usage["token_accounting_status"] == "unavailable"
 
 
 @pytest.mark.asyncio

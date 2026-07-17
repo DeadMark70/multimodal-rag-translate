@@ -23,7 +23,11 @@ from evaluation.campaign_schemas import (
     CampaignResultStatus,
     CampaignStatus,
 )
-from evaluation.trace_schemas import AgentTraceDetail, AgentTraceSummary, summarize_agent_trace
+from evaluation.trace_schemas import (
+    AgentTraceDetail,
+    AgentTraceSummary,
+    summarize_agent_trace,
+)
 
 EVALUATION_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "evaluation.db"
 _UNSET = object()
@@ -761,7 +765,9 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         )
     attempt_columns = await _table_columns(connection, "evaluation_attempts")
     if "output_json" not in attempt_columns:
-        await connection.execute("ALTER TABLE evaluation_attempts ADD COLUMN output_json TEXT")
+        await connection.execute(
+            "ALTER TABLE evaluation_attempts ADD COLUMN output_json TEXT"
+        )
 
     ragas_score_columns = await _table_columns(connection, "ragas_scores")
     if "source_attempt_id" not in ragas_score_columns:
@@ -1047,16 +1053,24 @@ def _row_to_campaign_status(row: aiosqlite.Row) -> CampaignStatus:
         error_message=row["error_message"],
         cancel_requested=bool(row["cancel_requested"]),
         created_at=datetime.fromisoformat(row["created_at"]),
-        started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
-        completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
+        started_at=datetime.fromisoformat(row["started_at"])
+        if row["started_at"]
+        else None,
+        completed_at=datetime.fromisoformat(row["completed_at"])
+        if row["completed_at"]
+        else None,
         updated_at=datetime.fromisoformat(row["updated_at"]),
     )
 
 
 def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
-    execution_profile = row["execution_profile"] if "execution_profile" in row.keys() else None
+    execution_profile = (
+        row["execution_profile"] if "execution_profile" in row.keys() else None
+    )
     context_policy_version = (
-        row["context_policy_version"] if "context_policy_version" in row.keys() else None
+        row["context_policy_version"]
+        if "context_policy_version" in row.keys()
+        else None
     )
     question_snapshot = (
         _json_loads(row["question_snapshot_json"], {})
@@ -1089,9 +1103,19 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
         if "completed_at" in row.keys() and row["completed_at"]
         else None
     )
-    total_latency_ms = row["total_latency_ms"] if "total_latency_ms" in row.keys() else None
+    total_latency_ms = (
+        row["total_latency_ms"] if "total_latency_ms" in row.keys() else None
+    )
     total_tokens = row["total_tokens"] if "total_tokens" in row.keys() else None
-    final_answer_hash = row["final_answer_hash"] if "final_answer_hash" in row.keys() else None
+    token_usage = _json_loads(row["token_usage_json"], {})
+    if (
+        token_usage.get("accounting_schema_version") == "2"
+        and token_usage.get("total_tokens") is None
+    ):
+        total_tokens = None
+    final_answer_hash = (
+        row["final_answer_hash"] if "final_answer_hash" in row.keys() else None
+    )
     snapshot_missing = (
         request_id is None
         and started_at is None
@@ -1114,9 +1138,15 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
         question_id=row["question_id"],
         question=row["question"],
         ground_truth=row["ground_truth"],
-        ground_truth_short=row["ground_truth_short"] if "ground_truth_short" in row.keys() else None,
-        key_points=_json_loads(row["key_points_json"], []) if "key_points_json" in row.keys() else [],
-        ragas_focus=_json_loads(row["ragas_focus_json"], []) if "ragas_focus_json" in row.keys() else [],
+        ground_truth_short=row["ground_truth_short"]
+        if "ground_truth_short" in row.keys()
+        else None,
+        key_points=_json_loads(row["key_points_json"], [])
+        if "key_points_json" in row.keys()
+        else [],
+        ragas_focus=_json_loads(row["ragas_focus_json"], [])
+        if "ragas_focus_json" in row.keys()
+        else [],
         mode=row["mode"],
         execution_profile=execution_profile,
         context_policy_version=context_policy_version,
@@ -1126,16 +1156,20 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
             if isinstance(derived_metrics.get("repeat_number"), int)
             else row["run_number"]
         ),
-        condition_id=(row["condition_id"] or None) if "condition_id" in row.keys() else None,
+        condition_id=(row["condition_id"] or None)
+        if "condition_id" in row.keys()
+        else None,
         answer=row["answer"],
         contexts=_json_loads(row["contexts_json"], []),
         source_doc_ids=_json_loads(row["source_doc_ids_json"], []),
         expected_sources=_json_loads(row["expected_sources_json"], []),
         latency_ms=row["latency_ms"],
-        token_usage=_json_loads(row["token_usage_json"], {}),
+        token_usage=token_usage,
         category=row["category"],
         difficulty=row["difficulty"],
-        question_version=row["question_version"] if "question_version" in row.keys() else None,
+        question_version=row["question_version"]
+        if "question_version" in row.keys()
+        else None,
         request_id=request_id,
         started_at=started_at,
         completed_at=completed_at,
@@ -1189,7 +1223,9 @@ def _normalize_route_profile(value: Any) -> Any:
 
 def _normalize_trace_route_profiles(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(payload)
-    normalized["route_profile"] = _normalize_route_profile(normalized.get("route_profile"))
+    normalized["route_profile"] = _normalize_route_profile(
+        normalized.get("route_profile")
+    )
     steps = normalized.get("steps")
     if isinstance(steps, list):
         for step in steps:
@@ -1197,7 +1233,9 @@ def _normalize_trace_route_profiles(payload: dict[str, Any]) -> dict[str, Any]:
                 continue
             metadata = step.get("metadata")
             if isinstance(metadata, dict):
-                metadata["route_profile"] = _normalize_route_profile(metadata.get("route_profile"))
+                metadata["route_profile"] = _normalize_route_profile(
+                    metadata.get("route_profile")
+                )
     return normalized
 
 
@@ -1235,7 +1273,9 @@ class CampaignRepository:
         await init_db()
         campaign_id = str(uuid4())
         now = _utc_now_iso()
-        total_units = len(config.test_case_ids) * len(config.modes) * config.repeat_count
+        total_units = (
+            len(config.test_case_ids) * len(config.modes) * config.repeat_count
+        )
         async with connect_db() as connection:
             await connection.execute(
                 """
@@ -1433,7 +1473,9 @@ class CampaignRepository:
             return await self._update_campaign(
                 user_id=user_id,
                 campaign_id=campaign_id,
-                status=CampaignLifecycleStatus.PENDING if total == 0 else CampaignLifecycleStatus.RUNNING,
+                status=CampaignLifecycleStatus.PENDING
+                if total == 0
+                else CampaignLifecycleStatus.RUNNING,
                 phase="execution",
                 completed_units=compatible_succeeded,
             )
@@ -1530,7 +1572,9 @@ class CampaignRepository:
             return await self.mark_cancelled(user_id=user_id, campaign_id=campaign_id)
         failed += cancelled
         if total == 0:
-            return await self.mark_completed(user_id=user_id, campaign_id=campaign_id, phase="evaluation")
+            return await self.mark_completed(
+                user_id=user_id, campaign_id=campaign_id, phase="evaluation"
+            )
         if unresolved:
             return await self._update_campaign(
                 user_id=user_id,
@@ -1560,7 +1604,9 @@ class CampaignRepository:
                 error_message="No RAGAS metric result was produced.",
                 phase="evaluation",
             )
-        return await self.mark_completed(user_id=user_id, campaign_id=campaign_id, phase="evaluation")
+        return await self.mark_completed(
+            user_id=user_id, campaign_id=campaign_id, phase="evaluation"
+        )
 
     async def mark_failed(
         self,
@@ -1875,7 +1921,9 @@ class CampaignResultRepository:
                 if existing is not None:
                     return existing
                 raise exc
-        return await self.get(user_id=user_id, campaign_id=campaign_id, result_id=result_id)
+        return await self.get(
+            user_id=user_id, campaign_id=campaign_id, result_id=result_id
+        )
 
     async def get_by_unit(
         self,
@@ -1907,7 +1955,14 @@ class CampaignResultRepository:
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
-                (campaign_id, user_id, question_id, mode, run_number, condition_id or ""),
+                (
+                    campaign_id,
+                    user_id,
+                    question_id,
+                    mode,
+                    run_number,
+                    condition_id or "",
+                ),
             )
             row = await cursor.fetchone()
         if row is None:
@@ -1986,7 +2041,10 @@ class AgentTraceRepository:
         normalized_payload = _normalize_trace_route_profiles(trace_payload)
         steps = normalized_payload.get("steps", [])
         tool_call_count = sum(len(step.get("tool_calls", [])) for step in steps)
-        total_tokens = sum(int(step.get("token_usage", {}).get("total_tokens", 0) or 0) for step in steps)
+        total_tokens = sum(
+            int(step.get("token_usage", {}).get("total_tokens", 0) or 0)
+            for step in steps
+        )
         detail = AgentTraceDetail.model_validate(
             {
                 "trace_id": normalized_payload.get("trace_id") or str(uuid4()),
@@ -1997,20 +2055,36 @@ class AgentTraceRepository:
                 "mode": normalized_payload.get("mode"),
                 "execution_profile": (
                     normalized_payload.get("execution_profile")
-                    or (LEGACY_SHARED_PROFILE if normalized_payload.get("mode") == "agentic" else None)
+                    or (
+                        LEGACY_SHARED_PROFILE
+                        if normalized_payload.get("mode") == "agentic"
+                        else None
+                    )
                 ),
                 "question_intent": normalized_payload.get("question_intent"),
                 "strategy_tier": normalized_payload.get("strategy_tier"),
                 "route_profile": normalized_payload.get("route_profile"),
                 "required_coverage": normalized_payload.get("required_coverage", []),
                 "coverage_gaps": normalized_payload.get("coverage_gaps", []),
-                "subtask_coverage_status": normalized_payload.get("subtask_coverage_status", {}),
-                "supported_claim_count": normalized_payload.get("supported_claim_count", 0),
-                "unsupported_claim_count": normalized_payload.get("unsupported_claim_count", 0),
+                "subtask_coverage_status": normalized_payload.get(
+                    "subtask_coverage_status", {}
+                ),
+                "supported_claim_count": normalized_payload.get(
+                    "supported_claim_count", 0
+                ),
+                "unsupported_claim_count": normalized_payload.get(
+                    "unsupported_claim_count", 0
+                ),
                 "claims": normalized_payload.get("claims", []),
-                "visual_verification_attempted": normalized_payload.get("visual_verification_attempted", False),
-                "visual_tool_call_count": normalized_payload.get("visual_tool_call_count", 0),
-                "visual_force_fallback_used": normalized_payload.get("visual_force_fallback_used", False),
+                "visual_verification_attempted": normalized_payload.get(
+                    "visual_verification_attempted", False
+                ),
+                "visual_tool_call_count": normalized_payload.get(
+                    "visual_tool_call_count", 0
+                ),
+                "visual_force_fallback_used": normalized_payload.get(
+                    "visual_force_fallback_used", False
+                ),
                 "run_number": normalized_payload.get("run_number", 1),
                 "trace_status": normalized_payload.get("trace_status", "completed"),
                 "summary": normalized_payload.get("summary", ""),
@@ -2204,6 +2278,3 @@ class RagasScoreRepository:
             }
             for row in rows
         ]
-
-
-

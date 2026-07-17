@@ -19,7 +19,9 @@ from evaluation.accounting_schemas import (
 from evaluation.db import connect_db, init_db
 
 
-_TERMINAL_SCOPE_STATUSES = frozenset({"completed", "failed", "interrupted", "cancelled"})
+_TERMINAL_SCOPE_STATUSES = frozenset(
+    {"completed", "failed", "interrupted", "cancelled"}
+)
 
 
 class AccountingScopeNotFoundError(LookupError):
@@ -42,24 +44,35 @@ class ScopeTokenSummary(BaseModel):
     output_text_tokens: int = 0
     reasoning_tokens: int = 0
     other_tokens: int = 0
-    total_tokens: int = 0
+    total_tokens: int | None = None
     observed_call_count: int = 0
     measured_call_count: int = 0
     missing_usage_call_count: int = 0
     failed_call_count: int = 0
     reconciliation_status: str = "unavailable"
 
-    def as_legacy_usage(self, *, accounting_schema_version: str) -> dict[str, int | str]:
-        """Return the backward-compatible token usage projection for a result."""
-        return {
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_text_tokens,
-            "output_text_tokens": self.output_text_tokens,
-            "reasoning_tokens": self.reasoning_tokens,
-            "other_tokens": self.other_tokens,
-            "total_tokens": self.total_tokens,
+    def as_legacy_usage(
+        self, *, accounting_schema_version: str
+    ) -> dict[str, int | str | None]:
+        """Return a strict token projection without synthetic aggregate totals."""
+        usage: dict[str, int | str] = {
             "accounting_schema_version": accounting_schema_version,
+            "total_tokens": None,
         }
+        if self.observed_call_count == 0:
+            return usage
+        usage.update(
+            {
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_text_tokens,
+                "output_text_tokens": self.output_text_tokens,
+                "reasoning_tokens": self.reasoning_tokens,
+                "other_tokens": self.other_tokens,
+            }
+        )
+        if self.reconciliation_status == "balanced" and self.total_tokens is not None:
+            usage["total_tokens"] = self.total_tokens
+        return usage
 
 
 class EvaluationAccountingStore:
@@ -123,7 +136,9 @@ class EvaluationAccountingStore:
             )
             scope = await cursor.fetchone()
             if scope is None:
-                raise AccountingScopeNotFoundError(f"Accounting scope not found: {event.scope_id}")
+                raise AccountingScopeNotFoundError(
+                    f"Accounting scope not found: {event.scope_id}"
+                )
             if (
                 scope["campaign_id"],
                 scope["scope_type"],
@@ -165,10 +180,14 @@ class EvaluationAccountingStore:
                 )
             await connection.commit()
 
-    async def finalize_scope(self, scope_id: str, status: ScopeStatus) -> AccountingScope:
+    async def finalize_scope(
+        self, scope_id: str, status: ScopeStatus
+    ) -> AccountingScope:
         """Set a scope to a terminal status."""
         if status not in _TERMINAL_SCOPE_STATUSES:
-            raise ValueError("Accounting scopes can only be finalized with a terminal status")
+            raise ValueError(
+                "Accounting scopes can only be finalized with a terminal status"
+            )
         now = _utc_now_iso()
         await init_db()
         async with connect_db() as connection:
@@ -203,7 +222,10 @@ class EvaluationAccountingStore:
                 raise AccountingScopeTargetNotFoundError(
                     f"Target attempts do not belong to accounting scope {scope_id}: {missing}"
                 )
-            for attempt_id, campaign_result_id in campaign_result_ids_by_attempt_id.items():
+            for (
+                attempt_id,
+                campaign_result_id,
+            ) in campaign_result_ids_by_attempt_id.items():
                 await connection.execute(
                     """UPDATE evaluation_accounting_scope_targets
                        SET is_official = 1, campaign_result_id = ?
@@ -231,7 +253,8 @@ class EvaluationAccountingStore:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
-                "SELECT * FROM evaluation_accounting_scopes WHERE scope_id = ?", (scope_id,)
+                "SELECT * FROM evaluation_accounting_scopes WHERE scope_id = ?",
+                (scope_id,),
             )
             row = await cursor.fetchone()
             if row is None:
@@ -250,7 +273,9 @@ class EvaluationAccountingStore:
             )
             rows = await cursor.fetchall()
             scopes = [
-                _scope_from_row(row, await _load_scope_targets(connection, row["scope_id"]))
+                _scope_from_row(
+                    row, await _load_scope_targets(connection, row["scope_id"])
+                )
                 for row in rows
             ]
         return scopes
@@ -282,7 +307,7 @@ class EvaluationAccountingStore:
                            AS total_tokens,
                        COALESCE(SUM(usage_status = 'measured'), 0) AS measured_call_count,
                        COALESCE(SUM(usage_status = 'missing'), 0) AS missing_usage_call_count,
-                       COALESCE(SUM(usage_status = 'failed'), 0) AS failed_call_count,
+                       COALESCE(SUM(status = 'failed'), 0) AS failed_call_count,
                        COALESCE(SUM(reconciliation_status != 'balanced'), 0) AS unbalanced_call_count
                    FROM evaluation_usage_events WHERE scope_id = ?""",
                 (scope_id,),
@@ -291,7 +316,11 @@ class EvaluationAccountingStore:
         observed = int(row["observed_call_count"])
         if observed == 0:
             reconciliation_status = "unavailable"
-        elif row["missing_usage_call_count"] or row["failed_call_count"] or row["unbalanced_call_count"]:
+        elif (
+            row["missing_usage_call_count"]
+            or row["failed_call_count"]
+            or row["unbalanced_call_count"]
+        ):
             reconciliation_status = "partial"
         else:
             reconciliation_status = "balanced"
@@ -301,7 +330,9 @@ class EvaluationAccountingStore:
             output_text_tokens=row["output_text_tokens"],
             reasoning_tokens=row["reasoning_tokens"],
             other_tokens=row["other_tokens"],
-            total_tokens=row["total_tokens"],
+            total_tokens=row["total_tokens"]
+            if reconciliation_status == "balanced"
+            else None,
             observed_call_count=observed,
             measured_call_count=row["measured_call_count"],
             missing_usage_call_count=row["missing_usage_call_count"],
@@ -320,9 +351,12 @@ async def _load_scope_targets(connection, scope_id: str) -> list[AccountingScope
     rows = await cursor.fetchall()
     return [
         AccountingScopeTarget(
-            campaign_result_id=row["campaign_result_id"], job_id=row["job_id"],
-            work_item_id=row["work_item_id"], attempt_id=row["attempt_id"],
-            metric_name=row["metric_name"], is_official=bool(row["is_official"]),
+            campaign_result_id=row["campaign_result_id"],
+            job_id=row["job_id"],
+            work_item_id=row["work_item_id"],
+            attempt_id=row["attempt_id"],
+            metric_name=row["metric_name"],
+            is_official=bool(row["is_official"]),
         )
         for row in rows
     ]
@@ -330,35 +364,66 @@ async def _load_scope_targets(connection, scope_id: str) -> list[AccountingScope
 
 def _scope_from_row(row, targets: list[AccountingScopeTarget]) -> AccountingScope:
     return AccountingScope(
-        scope_id=row["scope_id"], campaign_id=row["campaign_id"], scope_type=row["scope_type"],
-        scope_key=row["scope_key"], run_id=row["run_id"], metric_name=row["metric_name"],
-        accounting_schema_version=row["accounting_schema_version"], status=row["status"],
-        observed_call_count=row["observed_call_count"], measured_call_count=row["measured_call_count"],
+        scope_id=row["scope_id"],
+        campaign_id=row["campaign_id"],
+        scope_type=row["scope_type"],
+        scope_key=row["scope_key"],
+        run_id=row["run_id"],
+        metric_name=row["metric_name"],
+        accounting_schema_version=row["accounting_schema_version"],
+        status=row["status"],
+        observed_call_count=row["observed_call_count"],
+        measured_call_count=row["measured_call_count"],
         missing_usage_call_count=row["missing_usage_call_count"],
         unclassified_phase_call_count=row["unclassified_phase_call_count"],
-        started_at=row["started_at"], completed_at=row["completed_at"], created_at=row["created_at"],
-        updated_at=row["updated_at"], targets=targets,
+        started_at=row["started_at"],
+        completed_at=row["completed_at"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        targets=targets,
     )
 
 
 def _event_from_row(row) -> UsageEvent:
-    return UsageEvent.model_validate({
-        **dict(row),
-        "raw_usage": json.loads(row["raw_usage_json"]),
-        "error": json.loads(row["error_json"]),
-    })
+    return UsageEvent.model_validate(
+        {
+            **dict(row),
+            "raw_usage": json.loads(row["raw_usage_json"]),
+            "error": json.loads(row["error_json"]),
+        }
+    )
 
 
 def _usage_event_values(event: UsageEventCreate) -> tuple:
     return (
-        event.usage_event_id, event.scope_id, event.campaign_id, event.scope_type, event.scope_key,
-        event.run_id, event.provider_run_id, event.phase, event.purpose, event.metric_name,
-        event.provider, event.model_name, event.input_tokens, event.output_text_tokens,
-        event.reasoning_tokens, event.other_tokens, event.reported_total_tokens,
-        json.dumps(event.raw_usage, separators=(",", ":")), event.usage_status,
-        event.reconciliation_status, event.estimated_cost_usd, event.estimated_cost_twd,
-        event.pricing_status, event.price_snapshot_id, event.latency_ms, event.status,
-        json.dumps(event.error, separators=(",", ":")), event.created_at.isoformat(),
+        event.usage_event_id,
+        event.scope_id,
+        event.campaign_id,
+        event.scope_type,
+        event.scope_key,
+        event.run_id,
+        event.provider_run_id,
+        event.phase,
+        event.purpose,
+        event.metric_name,
+        event.provider,
+        event.model_name,
+        event.input_tokens,
+        event.output_text_tokens,
+        event.reasoning_tokens,
+        event.other_tokens,
+        event.reported_total_tokens,
+        json.dumps(event.raw_usage, separators=(",", ":")),
+        event.usage_status,
+        event.reconciliation_status,
+        event.estimated_cost_usd,
+        event.estimated_cost_twd,
+        event.pricing_status,
+        event.price_snapshot_id,
+        event.latency_ms,
+        event.status,
+        json.dumps(event.error, separators=(",", ":")),
+        event.created_at.isoformat(),
     )
 
 
