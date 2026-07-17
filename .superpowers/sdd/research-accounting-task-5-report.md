@@ -77,3 +77,13 @@ Verification for the review fixes:
 
 Result: `52 passed` (with the same pre-existing `storage3` deprecation
 warnings).
+
+## Review Fixes — Post-Commit Closure
+
+- `complete_execution_attempt()` now returns a `model_copy()` of its already
+  persisted result with the resolved official result ID and source attempt ID.
+  It performs no await after the transaction commit, so cancellation or a
+  repository read error cannot affect the completed accounting scope.
+- The legacy RAGAS metrics response maps a v2 `token_usage.total_tokens: null`
+  to `0` only while constructing its non-null `CampaignMetricRow`; strict
+  accounting projections remain null elsewhere.

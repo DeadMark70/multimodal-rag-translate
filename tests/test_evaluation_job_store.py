@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
@@ -163,6 +164,25 @@ async def test_complete_execution_attempt_atomically_promotes_accounting_scope(
     assert stored_scope.status == "completed"
     assert stored_scope.targets[0].is_official is True
     assert stored_scope.targets[0].campaign_result_id == result.id
+
+
+@pytest.mark.asyncio
+async def test_complete_execution_attempt_does_not_read_repository_after_commit(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    claim = await _claim_execution(store, fixed_now)
+    with patch.object(
+        CampaignResultRepository,
+        "get",
+        new=AsyncMock(side_effect=AssertionError("post-commit repository read")),
+    ) as get:
+        result = await store.complete_execution_attempt(
+            claim, _successful_output("answer")
+        )
+
+    assert get.await_count == 0
+    assert result.id == "worker-result-id"
+    assert result.source_attempt_id == claim.attempt_id
 
 
 @pytest.mark.asyncio

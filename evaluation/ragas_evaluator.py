@@ -519,7 +519,7 @@ class RagasEvaluator:
                         context_policy_versions.get(result.id)
                         or result.context_policy_version
                     ),
-                    total_tokens=int(result.token_usage.get("total_tokens", 0)),
+                    total_tokens=int(result.token_usage.get("total_tokens") or 0),
                     metric_values=metric_values,
                     invalid_metrics=invalid_map.get(result.id, {}),
                     invalid_reasons=invalid_reasons_map.get(result.id, {}),

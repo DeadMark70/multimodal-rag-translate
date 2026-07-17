@@ -205,6 +205,30 @@ async def test_ragas_evaluator_aggregates_summaries_reference_sources_and_groupi
     assert response.summary_by_focus["answer_relevancy"].sample_count == 1
 
 
+@pytest.mark.asyncio
+async def test_ragas_metrics_map_v2_null_total_tokens_to_legacy_zero():
+    result = _result("r1", "naive", 0)
+    result.token_usage = {"accounting_schema_version": "2", "total_tokens": None}
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository([result]),
+        score_repository=FakeScoreRepository(
+            [
+                {
+                    "campaign_result_id": "r1",
+                    "metric_name": "faithfulness",
+                    "metric_value": 0.4,
+                    "details": {},
+                }
+            ]
+        ),
+        evaluator_model="fake",
+    )
+
+    response = await evaluator.get_metrics(user_id="user-a", campaign=_campaign_status())
+
+    assert response.rows[0].total_tokens == 0
+
+
 def test_benchmark_results_ragas_fixture_has_aligned_columns():
     fixture = _fixture_json("benchmark_results_ragas.json")
 

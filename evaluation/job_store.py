@@ -748,8 +748,8 @@ class EvaluationJobStore:
             except BaseException:
                 await connection.rollback()
                 raise
-        return await CampaignResultRepository().get(
-            user_id=job["user_id"], campaign_id=job["campaign_id"], result_id=result_id
+        return result.model_copy(
+            update={"id": result_id, "source_attempt_id": claim.attempt_id}
         )
 
     async def _validate_accounting_scope_target(
