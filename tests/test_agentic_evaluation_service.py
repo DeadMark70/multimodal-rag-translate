@@ -84,12 +84,18 @@ async def test_generate_agentic_plan_figure_flow_uses_single_initial_subtask() -
 
 
 @pytest.mark.asyncio
-async def test_generate_agentic_plan_figure_flow_anchors_original_question_and_filters_broad_aux() -> None:
+async def test_generate_agentic_plan_figure_flow_anchors_original_question_and_filters_broad_aux() -> (
+    None
+):
     service = AgenticEvaluationService()
     generated_plan = ResearchPlan(
         original_question="請重建 MICCSS CSS 流程並說明翻轉分支與 SiamSSM 累加機制",
         sub_tasks=[
-            SubTask(id=1, question="What is the overall architecture of nnMamba?", task_type="rag"),
+            SubTask(
+                id=1,
+                question="What is the overall architecture of nnMamba?",
+                task_type="rag",
+            ),
             SubTask(
                 id=2,
                 question="Reconstruct MICCSS CSS branch order and SiamSSM accumulation flow",
@@ -109,11 +115,19 @@ async def test_generate_agentic_plan_figure_flow_anchors_original_question_and_f
         )
 
     assert len(response.sub_tasks) == 2
-    assert response.sub_tasks[0].question == "請重建 MICCSS CSS 流程並說明翻轉分支與 SiamSSM 累加機制"
-    assert response.sub_tasks[1].question == "Reconstruct MICCSS CSS branch order and SiamSSM accumulation flow"
+    assert (
+        response.sub_tasks[0].question
+        == "請重建 MICCSS CSS 流程並說明翻轉分支與 SiamSSM 累加機制"
+    )
+    assert (
+        response.sub_tasks[1].question
+        == "Reconstruct MICCSS CSS branch order and SiamSSM accumulation flow"
+    )
 
 
-def test_route_profile_benchmark_initial_round_prefers_numeric_only_generic_graph() -> None:
+def test_route_profile_benchmark_initial_round_prefers_numeric_only_generic_graph() -> (
+    None
+):
     numeric_graph_route = _route_profile_for_task(
         strategy_tier="tier_3_multi_hop_analysis",
         question_intent="benchmark_data",
@@ -213,9 +227,7 @@ def test_classify_question_intent_keeps_methodology_compare_out_of_benchmark() -
         "根據論文方法描述，比較 U-Mamba 與 Weak-Mamba-UNet 在模型角色與監督機制上的核心差異，"
         "並說明 three-view cross-supervision 與 pseudo-label Dice supervision。"
     )
-    q4_like = (
-        "請結合文獻中的 Params 與 FLOPs 報告，裁決 Mamba 在 3D 醫療分割是否具最高計算效率。"
-    )
+    q4_like = "請結合文獻中的 Params 與 FLOPs 報告，裁決 Mamba 在 3D 醫療分割是否具最高計算效率。"
     assert classify_question_intent(q6_like) == "comparison_disambiguation"
     assert classify_question_intent(q4_like) == "benchmark_data"
 
@@ -292,7 +304,10 @@ async def test_run_case_uses_dedicated_agentic_execution_constraints() -> None:
     async def passthrough(func, **kwargs):
         return await func(**kwargs)
 
-    with patch("evaluation.agentic_evaluation_service.run_with_retry", new=AsyncMock(side_effect=passthrough)):
+    with patch(
+        "evaluation.agentic_evaluation_service.run_with_retry",
+        new=AsyncMock(side_effect=passthrough),
+    ):
         result = await service.run_case(
             question_id="Q1",
             question="What changed?",
@@ -389,7 +404,9 @@ def test_agentic_route_kwargs_use_multi_query_and_locator_policy(
 
 
 @pytest.mark.asyncio
-async def test_agentic_drilldown_uses_structured_fact_state_for_followup_context() -> None:
+async def test_agentic_drilldown_uses_structured_fact_state_for_followup_context() -> (
+    None
+):
     service = AgenticEvaluationService()
     service._active_question_intent = "benchmark_data"
     service._active_strategy_tier = "tier_2_structured_compare"
@@ -418,16 +435,19 @@ async def test_agentic_drilldown_uses_structured_fact_state_for_followup_context
         )
     ]
 
-    with patch("evaluation.agentic_evaluation_service.TaskPlanner") as mock_planner_cls, patch.object(
-        service,
-        "_extract_atomic_facts",
-        new=AsyncMock(
-            return_value=[
-                AtomicFact(
-                    claim="Model A reports Dice 0.90 and Model B reports Dice 0.87.",
-                    source_doc_ids=["doc-1"],
-                )
-            ]
+    with (
+        patch("evaluation.agentic_evaluation_service.TaskPlanner") as mock_planner_cls,
+        patch.object(
+            service,
+            "_extract_atomic_facts",
+            new=AsyncMock(
+                return_value=[
+                    AtomicFact(
+                        claim="Model A reports Dice 0.90 and Model B reports Dice 0.87.",
+                        source_doc_ids=["doc-1"],
+                    )
+                ]
+            ),
         ),
     ):
         mock_planner = mock_planner_cls.return_value
@@ -443,8 +463,12 @@ async def test_agentic_drilldown_uses_structured_fact_state_for_followup_context
         )
 
     assert iterations == 0
-    current_findings = mock_planner.create_followup_tasks.await_args.kwargs["current_findings"]
+    current_findings = mock_planner.create_followup_tasks.await_args.kwargs[
+        "current_findings"
+    ]
     assert "Structured Fact State" in current_findings
-    assert "Model A reports Dice 0.90 and Model B reports Dice 0.87." in current_findings
+    assert (
+        "Model A reports Dice 0.90 and Model B reports Dice 0.87." in current_findings
+    )
     assert "Visual Verification Findings" in current_findings
     assert "potential_terms=XYZ" in current_findings

@@ -65,13 +65,19 @@ LEGACY_SHARED_PROFILE = "legacy_shared"
 AGENTIC_INITIAL_SUBTASKS = 3
 AGENTIC_FIGURE_FLOW_INITIAL_SUBTASKS = 2
 AGENTIC_IMAGE_ANALYSIS_ENABLED = True
-_SEMANTIC_ROUTER_MODE_RAW = str(os.getenv("AGENTIC_SEMANTIC_ROUTER_MODE", "active") or "active").strip().lower()
+_SEMANTIC_ROUTER_MODE_RAW = (
+    str(os.getenv("AGENTIC_SEMANTIC_ROUTER_MODE", "active") or "active").strip().lower()
+)
 AGENTIC_SEMANTIC_ROUTER_MODE: SemanticRouterMode = (
-    _SEMANTIC_ROUTER_MODE_RAW if _SEMANTIC_ROUTER_MODE_RAW in {"off", "shadow", "active"} else "active"
+    _SEMANTIC_ROUTER_MODE_RAW
+    if _SEMANTIC_ROUTER_MODE_RAW in {"off", "shadow", "active"}
+    else "active"
 )
 _CLAIM_SPLIT_RE = re.compile(r"(?<=[。！？.!?])\s+")
 _TOKEN_RE = re.compile(r"[a-z0-9_]+", re.IGNORECASE)
-_NUMERIC_TOKEN_RE = re.compile(r"\b\d+(\.\d+)?\s*(%|x|m|k|g|ms|s|fps|gb|mb)?\b", re.IGNORECASE)
+_NUMERIC_TOKEN_RE = re.compile(
+    r"\b\d+(\.\d+)?\s*(%|x|m|k|g|ms|s|fps|gb|mb)?\b", re.IGNORECASE
+)
 _BENCHMARK_NUMERIC_KEYWORDS = (
     "dice",
     "score",
@@ -181,8 +187,17 @@ def _normalize_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, An
     normalized: list[dict[str, Any]] = []
     for index, call in enumerate(tool_calls):
         payload = dict(call or {})
-        status = "failed" if payload.get("success") is False or payload.get("status") == "failed" else "completed"
-        action = str(payload.get("action") or payload.get("name") or payload.get("tool") or f"tool_{index + 1}")
+        status = (
+            "failed"
+            if payload.get("success") is False or payload.get("status") == "failed"
+            else "completed"
+        )
+        action = str(
+            payload.get("action")
+            or payload.get("name")
+            or payload.get("tool")
+            or f"tool_{index + 1}"
+        )
         normalized.append(
             AgentTraceToolCall(
                 index=index,
@@ -190,7 +205,12 @@ def _normalize_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, An
                 status=status,
                 payload=payload,
                 result_preview=_preview(
-                    str(payload.get("result") or payload.get("output") or payload.get("error") or "")
+                    str(
+                        payload.get("result")
+                        or payload.get("output")
+                        or payload.get("error")
+                        or ""
+                    )
                 ),
             ).model_dump(mode="json")
         )
@@ -237,7 +257,9 @@ def _initial_subtask_limit(question_intent: QuestionIntent) -> int:
     return AGENTIC_INITIAL_SUBTASKS
 
 
-def _strategy_config_from_complexity(complexity_score: int) -> tuple[StrategyTier, int, int]:
+def _strategy_config_from_complexity(
+    complexity_score: int,
+) -> tuple[StrategyTier, int, int]:
     normalized = max(1, min(5, int(complexity_score)))
     if normalized == 1:
         return "tier_1_detail_lookup", 1, 0
@@ -266,7 +288,11 @@ def _subtask_limit_for_strategy(
     if strategy_tier == "tier_1_detail_lookup":
         return 1
     if strategy_tier == "tier_2_structured_compare":
-        return AGENTIC_FIGURE_FLOW_INITIAL_SUBTASKS if question_intent == "figure_flow" else 2
+        return (
+            AGENTIC_FIGURE_FLOW_INITIAL_SUBTASKS
+            if question_intent == "figure_flow"
+            else 2
+        )
     return AGENTIC_INITIAL_SUBTASKS
 
 
@@ -296,7 +322,9 @@ def _semantic_router_mode() -> SemanticRouterMode:
 
 def _is_numeric_benchmark_subtask(*, task_type: str, task_question: str) -> bool:
     question_lower = task_question.lower()
-    has_numeric_keyword = any(keyword in question_lower for keyword in _BENCHMARK_NUMERIC_KEYWORDS)
+    has_numeric_keyword = any(
+        keyword in question_lower for keyword in _BENCHMARK_NUMERIC_KEYWORDS
+    )
     has_numeric_token = bool(_NUMERIC_TOKEN_RE.search(question_lower))
     has_methodology_exclusion = any(
         phrase in question_lower for phrase in _BENCHMARK_NUMERIC_EXCLUSION_PHRASES
@@ -325,9 +353,13 @@ def _micro_route_for_task(
     task_question: str,
 ) -> MicroRoute:
     lowered = task_question.lower()
-    if question_intent == "figure_flow" or any(token in lowered for token in _VISUAL_PATH_KEYWORDS):
+    if question_intent == "figure_flow" or any(
+        token in lowered for token in _VISUAL_PATH_KEYWORDS
+    ):
         return "visual_evidence_path"
-    if any(token in lowered for token in _DIRECT_POINT_KEYWORDS) or _is_numeric_benchmark_subtask(
+    if any(
+        token in lowered for token in _DIRECT_POINT_KEYWORDS
+    ) or _is_numeric_benchmark_subtask(
         task_type=task_type,
         task_question=task_question,
     ):
@@ -357,7 +389,9 @@ def _route_profile_for_task(
     if micro_route == "direct_point_access":
         return "hybrid_exact"
     if micro_route == "broad_context_rag":
-        if _needs_graph_route_for_benchmark(task_type=task_type, task_question=task_question):
+        if _needs_graph_route_for_benchmark(
+            task_type=task_type, task_question=task_question
+        ):
             return "generic_graph"
         if task_type == "graph_analysis":
             return "graph_global"
@@ -509,7 +543,9 @@ def _coverage_keywords() -> dict[str, tuple[str, ...]]:
     }
 
 
-def _is_figure_flow_auxiliary_task(*, original_question: str, candidate_question: str) -> bool:
+def _is_figure_flow_auxiliary_task(
+    *, original_question: str, candidate_question: str
+) -> bool:
     candidate_lower = candidate_question.strip().lower()
     original_lower = original_question.strip().lower()
     if not candidate_lower or candidate_lower == original_lower:
@@ -571,7 +607,9 @@ def _finalize_trace_payload(
     semantic_gate_score: Optional[float] = None,
 ) -> dict[str, Any]:
     tool_call_count = sum(len(step.get("tool_calls", [])) for step in steps)
-    total_tokens = sum(int(step.get("token_usage", {}).get("total_tokens", 0) or 0) for step in steps)
+    total_tokens = sum(
+        int(step.get("token_usage", {}).get("total_tokens", 0) or 0) for step in steps
+    )
     return {
         "trace_id": str(uuid4()),
         "question_id": question_id,
@@ -678,7 +716,9 @@ class AgenticEvaluationService(ResearchExecutionCore):
             fact_tokens = _tokenize(fact.claim)
             if not fact_tokens:
                 continue
-            overlap = len(question_tokens & fact_tokens) / max(1, len(question_tokens | fact_tokens))
+            overlap = len(question_tokens & fact_tokens) / max(
+                1, len(question_tokens | fact_tokens)
+            )
             if overlap > best:
                 best = overlap
         return best
@@ -704,7 +744,9 @@ class AgenticEvaluationService(ResearchExecutionCore):
             if '"duplicate": true' in lowered:
                 return True
             if "```" in content:
-                match = re.search(r"```(?:json)?\s*(.*?)\s*```", content, re.DOTALL | re.IGNORECASE)
+                match = re.search(
+                    r"```(?:json)?\s*(.*?)\s*```", content, re.DOTALL | re.IGNORECASE
+                )
                 if match and '"duplicate"' in match.group(1).lower():
                     return '"duplicate": true' in match.group(1).lower()
             return False
@@ -724,7 +766,12 @@ class AgenticEvaluationService(ResearchExecutionCore):
         support_ratio = float(gate_meta.get("claim_support_ratio", 0.0) or 0.0)
         semantic_score = float(gate_meta.get("semantic_gate_score", 0.0) or 0.0)
 
-        if not coverage_gaps and support_ratio >= 0.65 and semantic_score >= 0.70 and current_rank > 1:
+        if (
+            not coverage_gaps
+            and support_ratio >= 0.65
+            and semantic_score >= 0.70
+            and current_rank > 1
+        ):
             self._active_strategy_tier = self._tier_from_rank(current_rank - 1)
             self._active_max_iterations = _drilldown_iterations_for_strategy(
                 strategy_tier=self._active_strategy_tier,
@@ -732,7 +779,11 @@ class AgenticEvaluationService(ResearchExecutionCore):
             )
             self._tier_shift = "downshift"
             return "downshift"
-        if coverage_gaps and (support_ratio < 0.35 or semantic_score < 0.45) and current_rank < 3:
+        if (
+            coverage_gaps
+            and (support_ratio < 0.35 or semantic_score < 0.45)
+            and current_rank < 3
+        ):
             self._active_strategy_tier = self._tier_from_rank(current_rank + 1)
             self._active_max_iterations = _drilldown_iterations_for_strategy(
                 strategy_tier=self._active_strategy_tier,
@@ -934,7 +985,9 @@ class AgenticEvaluationService(ResearchExecutionCore):
                     route_profile=route_profile,
                     micro_route=predicted_micro_route,
                     evidence_units=evidence_units,
-                    visual_verification_meta=dict(result.visual_verification_meta or {}),
+                    visual_verification_meta=dict(
+                        result.visual_verification_meta or {}
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001
                 return SubTaskExecutionResult(
@@ -1015,7 +1068,9 @@ class AgenticEvaluationService(ResearchExecutionCore):
                     "claim_id": f"C{idx}",
                     "text": claim_text,
                     "evidence_ids": evidence_ids,
-                    "support_level": _support_level(top_units[0][0]) if top_units else "none",
+                    "support_level": _support_level(top_units[0][0])
+                    if top_units
+                    else "none",
                     "supported": bool(evidence_ids),
                 }
             )
@@ -1031,7 +1086,9 @@ class AgenticEvaluationService(ResearchExecutionCore):
     ) -> ResearchPlanResponse:
         """Generate the dedicated evaluation baseline plan for agentic RAG."""
         effective_intent = question_intent or classify_question_intent(question)
-        effective_strategy_tier = strategy_tier or _strategy_tier_for_intent(effective_intent)
+        effective_strategy_tier = strategy_tier or _strategy_tier_for_intent(
+            effective_intent
+        )
         subtask_limit = self._active_subtask_limit or _subtask_limit_for_strategy(
             strategy_tier=effective_strategy_tier,
             question_intent=effective_intent,
@@ -1131,13 +1188,22 @@ class AgenticEvaluationService(ResearchExecutionCore):
         )
 
         evidence_units = self._evidence_index(all_results)
-        claims, supported_claim_count, unsupported_claim_count = self._claim_evidence_map(
-            answer=report.detailed_answer,
-            evidence_units=evidence_units,
+        claims, supported_claim_count, unsupported_claim_count = (
+            self._claim_evidence_map(
+                answer=report.detailed_answer,
+                evidence_units=evidence_units,
+            )
         )
-        if supported_claim_count > 0 and unsupported_claim_count > supported_claim_count:
-            supported_claims = [claim["text"] for claim in claims if claim.get("supported")]
-            report.detailed_answer = "\n".join(f"- {claim}" for claim in supported_claims)
+        if (
+            supported_claim_count > 0
+            and unsupported_claim_count > supported_claim_count
+        ):
+            supported_claims = [
+                claim["text"] for claim in claims if claim.get("supported")
+            ]
+            report.detailed_answer = "\n".join(
+                f"- {claim}" for claim in supported_claims
+            )
 
         all_sources = list(set(src for result in all_results for src in result.sources))
         fact_state = await self._refresh_fact_state(all_results)
@@ -1223,8 +1289,10 @@ class AgenticEvaluationService(ResearchExecutionCore):
         complete_ratio = complete_count / len(results)
         claim_support_ratio = supported_claims / max(1, total_claims)
         relevance_ratio = relevance_hits / len(results)
-        coverage_score = 1.0 if not self._required_coverage else 1.0 - (
-            len(coverage_gaps) / max(1, len(self._required_coverage))
+        coverage_score = (
+            1.0
+            if not self._required_coverage
+            else 1.0 - (len(coverage_gaps) / max(1, len(self._required_coverage)))
         )
         semantic_gate_score = (
             (0.45 * complete_ratio)
@@ -1250,7 +1318,9 @@ class AgenticEvaluationService(ResearchExecutionCore):
             "semantic_gate_score": semantic_gate_score,
         }
 
-    def _is_gap_targeted_followup(self, *, question: str, coverage_gaps: list[str]) -> bool:
+    def _is_gap_targeted_followup(
+        self, *, question: str, coverage_gaps: list[str]
+    ) -> bool:
         if not coverage_gaps:
             return True
         lowered = question.lower()
@@ -1267,7 +1337,10 @@ class AgenticEvaluationService(ResearchExecutionCore):
         min_complete_ratio: float = 0.67,
         current_iteration: int = -1,
     ) -> bool:
-        if self._active_strategy_tier == "tier_1_detail_lookup" and (self._active_max_iterations or 0) <= 0:
+        if (
+            self._active_strategy_tier == "tier_1_detail_lookup"
+            and (self._active_max_iterations or 0) <= 0
+        ):
             return True
         gate_pass, _gate_meta = self._retrieval_quality_gate(
             results,
@@ -1290,7 +1363,9 @@ class AgenticEvaluationService(ResearchExecutionCore):
             return 0
 
         effective_max_iterations = max_iterations
-        followup_cap = _followup_cap_for_strategy(self._active_strategy_tier or "tier_1_detail_lookup")
+        followup_cap = _followup_cap_for_strategy(
+            self._active_strategy_tier or "tier_1_detail_lookup"
+        )
         planner = TaskPlanner(max_subtasks=followup_cap, enable_graph_planning=False)
         fact_state: list[AtomicFact] = await self._refresh_fact_state(current_results)
 
@@ -1299,20 +1374,27 @@ class AgenticEvaluationService(ResearchExecutionCore):
             gate_pass, gate_meta = self._retrieval_quality_gate(current_results)
             if iteration == 1:
                 shift = self._adjust_strategy_after_exploration(gate_meta=gate_meta)
-                followup_cap = _followup_cap_for_strategy(self._active_strategy_tier or "tier_1_detail_lookup")
-                planner = TaskPlanner(max_subtasks=followup_cap, enable_graph_planning=False)
+                followup_cap = _followup_cap_for_strategy(
+                    self._active_strategy_tier or "tier_1_detail_lookup"
+                )
+                planner = TaskPlanner(
+                    max_subtasks=followup_cap, enable_graph_planning=False
+                )
                 if shift == "upshift" and self._active_strategy_tier:
                     effective_max_iterations = max(
                         effective_max_iterations,
                         _drilldown_iterations_for_strategy(
                             strategy_tier=self._active_strategy_tier,
-                            question_intent=self._active_question_intent or "general_research",
+                            question_intent=self._active_question_intent
+                            or "general_research",
                         ),
                     )
             if gate_pass:
                 return iteration - 1
 
-            coverage_gaps = list(gate_meta.get("coverage_gaps") or self._coverage_gaps(current_results))
+            coverage_gaps = list(
+                gate_meta.get("coverage_gaps") or self._coverage_gaps(current_results)
+            )
             if not coverage_gaps:
                 return iteration - 1
 
@@ -1374,7 +1456,9 @@ class AgenticEvaluationService(ResearchExecutionCore):
             current_results.extend(executed)
             fact_state = await self._refresh_fact_state(executed, fact_state)
 
-            if self._should_skip_drilldown(current_results, current_iteration=iteration):
+            if self._should_skip_drilldown(
+                current_results, current_iteration=iteration
+            ):
                 return iteration
             iteration += 1
 
@@ -1403,8 +1487,8 @@ class AgenticEvaluationService(ResearchExecutionCore):
 
         if self._semantic_router_mode == "active":
             question_intent = semantic_decision.intent
-            strategy_tier, subtask_limit, max_drilldown_iterations = _strategy_config_from_complexity(
-                semantic_decision.complexity_score
+            strategy_tier, subtask_limit, max_drilldown_iterations = (
+                _strategy_config_from_complexity(semantic_decision.complexity_score)
             )
         else:
             strategy_tier = _strategy_tier_for_intent(question_intent)
@@ -1458,7 +1542,9 @@ class AgenticEvaluationService(ResearchExecutionCore):
                     "subtask_limit": subtask_limit,
                     "max_drilldown_iterations": max_drilldown_iterations,
                     "required_coverage": list(required_coverage),
-                    "sub_tasks": [task.model_dump(mode="json") for task in plan_response.sub_tasks],
+                    "sub_tasks": [
+                        task.model_dump(mode="json") for task in plan_response.sub_tasks
+                    ],
                 },
             )
 
@@ -1506,10 +1592,17 @@ class AgenticEvaluationService(ResearchExecutionCore):
                         )
                         seen_contexts.add(context)
 
-                if sub_result.iteration > 0 and sub_result.iteration not in seen_iterations:
+                if (
+                    sub_result.iteration > 0
+                    and sub_result.iteration not in seen_iterations
+                ):
                     seen_iterations.add(sub_result.iteration)
                     drilldown_count = len(
-                        [item for item in result_response.sub_tasks if item.iteration == sub_result.iteration]
+                        [
+                            item
+                            for item in result_response.sub_tasks
+                            if item.iteration == sub_result.iteration
+                        ]
                     )
                     _append_trace_step(
                         trace_steps,
@@ -1521,7 +1614,9 @@ class AgenticEvaluationService(ResearchExecutionCore):
                         metadata={
                             "iteration": sub_result.iteration,
                             "task_count": drilldown_count,
-                            "coverage_gaps": self._coverage_gaps(result_response.sub_tasks),
+                            "coverage_gaps": self._coverage_gaps(
+                                result_response.sub_tasks
+                            ),
                         },
                     )
 
@@ -1572,8 +1667,12 @@ class AgenticEvaluationService(ResearchExecutionCore):
 
             coverage_status = self._coverage_status(result_response.sub_tasks)
             coverage_gaps = self._coverage_gaps(result_response.sub_tasks)
-            supported_claim_count = int(result_response.critic_summary.get("supported_claim_count", 0))
-            unsupported_claim_count = int(result_response.critic_summary.get("unsupported_claim_count", 0))
+            supported_claim_count = int(
+                result_response.critic_summary.get("supported_claim_count", 0)
+            )
+            unsupported_claim_count = int(
+                result_response.critic_summary.get("unsupported_claim_count", 0)
+            )
             dominant_route_profile = route_profiles[0] if route_profiles else None
             trace_summary = result_response.summary or "Agentic research completed"
             _append_trace_step(
@@ -1697,4 +1796,3 @@ class AgenticEvaluationService(ResearchExecutionCore):
             self._active_max_iterations = None
             self._required_coverage = []
             self._classifier_decision = {}
-
