@@ -188,3 +188,98 @@ async def test_rag_answer_question_formats_prompt_from_registry() -> None:
 
     assert "What does the document say?" in result.thought_process
     assert "retrieved context" in result.thought_process
+
+
+def test_rag_answer_question_preserves_hyde_crag_default() -> None:
+    signature = inspect.signature(rag_answer_question)
+    assert signature.parameters["crag_rewrite_mode"].default == "hyde"
+
+
+@pytest.mark.asyncio
+async def test_crag_multi_query_correction_uses_rrf_without_hyde() -> None:
+    initial = Document(page_content="weak evidence", metadata={"doc_id": "doc-1"})
+    corrected_a = Document(
+        page_content="model A evidence", metadata={"doc_id": "doc-1"}
+    )
+    corrected_b = Document(
+        page_content="model B evidence", metadata={"doc_id": "doc-2"}
+    )
+    retriever = Mock()
+    llm = Mock()
+    llm.ainvoke = AsyncMock(return_value=SimpleNamespace(content="corrected answer"))
+    retrieve = AsyncMock(
+        side_effect=[
+            [[initial]],
+            [[corrected_a], [corrected_b, corrected_a]],
+        ]
+    )
+
+    with (
+        patch("data_base.RAG_QA_service.get_llm", return_value=llm),
+        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch(
+            "data_base.RAG_QA_service.get_user_retriever",
+            new=AsyncMock(return_value=retriever),
+        ),
+        patch(
+            "data_base.RAG_QA_service.invoke_retriever_queries_async",
+            new=retrieve,
+        ),
+        patch(
+            "data_base.RAG_QA_service.transform_query_multi",
+            new=AsyncMock(return_value=["question", "comparison variant"]),
+        ) as multi_query,
+        patch(
+            "data_base.RAG_QA_service.transform_query_with_hyde",
+            new=AsyncMock(return_value="hypothetical answer"),
+        ) as hyde,
+        patch(
+            "data_base.RAG_QA_service.DocumentReranker.is_initialized",
+            return_value=False,
+        ),
+        patch(
+            "agents.evaluator.RAGEvaluator.grade_documents",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "data_base.RAG_QA_service.fetch_document_filenames",
+            new=AsyncMock(return_value={"doc-1": "a.pdf", "doc-2": "b.pdf"}),
+        ),
+    ):
+        result = await rag_answer_question(
+            question="question",
+            user_id="user-1",
+            enable_crag=True,
+            crag_rewrite_mode="multi_query",
+            return_docs=True,
+        )
+
+    assert result.answer == "corrected answer"
+    multi_query.assert_awaited_once_with("question", enabled=True)
+    hyde.assert_not_awaited()
+    assert retrieve.await_args_list[1].args[1] == ["question", "comparison variant"]
+    assert {document.page_content for document in result.documents} == {
+        "model A evidence",
+        "model B evidence",
+    }
+
+
+@pytest.mark.asyncio
+async def test_crag_none_correction_reuses_original_question() -> None:
+    from data_base.RAG_QA_service import _build_crag_queries
+
+    with (
+        patch(
+            "data_base.RAG_QA_service.transform_query_multi",
+            new=AsyncMock(),
+        ) as multi_query,
+        patch(
+            "data_base.RAG_QA_service.transform_query_with_hyde",
+            new=AsyncMock(),
+        ) as hyde,
+    ):
+        queries = await _build_crag_queries("original", "none")
+
+    assert queries == ["original"]
+    multi_query.assert_not_awaited()
+    hyde.assert_not_awaited()

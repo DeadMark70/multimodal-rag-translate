@@ -312,6 +312,19 @@ def _graph_execution_strategy(
 
 
 ProgressCallback = Callable[[str, Optional[Dict[str, Any]]], Awaitable[None]]
+CragRewriteMode = Literal["hyde", "multi_query", "none"]
+
+
+async def _build_crag_queries(
+    question: str,
+    rewrite_mode: CragRewriteMode,
+) -> List[str]:
+    if rewrite_mode == "multi_query":
+        return await transform_query_multi(question, enabled=True)
+    if rewrite_mode == "hyde":
+        rewritten = await transform_query_with_hyde(question, enabled=True)
+        return [rewritten or question]
+    return [question]
 
 
 async def _emit_progress(
@@ -1712,6 +1725,7 @@ async def rag_answer_question(
     enable_visual_verification: bool = False,
     plain_mode: bool = True,
     progress_callback: Optional[ProgressCallback] = None,
+    crag_rewrite_mode: CragRewriteMode = "hyde",
 ) -> Union[Tuple[str, List[str]], RAGResult]:
     """
     Performs multimodal RAG question answering for a specific user.
@@ -1747,6 +1761,8 @@ async def rag_answer_question(
                     including additive `retrieval_policy` overrides.
         enable_visual_verification: If True, enable Re-Act loop for image details.
         plain_mode: If True, force plain retriever/prompt behavior for native baseline.
+        crag_rewrite_mode: Corrective query policy used only when CRAG rejects
+                           the initial retrieval. Defaults to legacy HyDE.
 
     Returns:
         Tuple of (answer, doc_ids) or RAGResult if return_docs=True.
@@ -1910,12 +1926,17 @@ async def rag_answer_question(
                     {"status": "rewriting_query"},
                 )
 
-                refined_query = await transform_query_with_hyde(question, enabled=True)
-                corrected_queries = [refined_query] if refined_query else [question]
+                corrected_queries = await _build_crag_queries(
+                    question,
+                    crag_rewrite_mode,
+                )
                 corrected_batches = await invoke_retriever_queries_async(
                     retriever, corrected_queries
                 )
-                corrected_docs = corrected_batches[0] if corrected_batches else []
+                if len(corrected_batches) == 1:
+                    corrected_docs = corrected_batches[0]
+                else:
+                    corrected_docs = reciprocal_rank_fusion(corrected_batches)
 
                 if doc_ids:
                     doc_id_set = set(doc_ids)
