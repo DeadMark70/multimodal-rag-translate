@@ -19,6 +19,7 @@ from typing import Any, Optional, Protocol, runtime_checkable
 import httpx
 
 from core.llm_factory import LLMPurpose, get_llm as get_real_llm
+from core.llm_usage_context import emit_direct_usage
 
 logger = logging.getLogger(__name__)
 
@@ -77,9 +78,16 @@ class _FakeLLM:
         self._purpose = purpose
 
     async def ainvoke(self, _messages: Any) -> _FakeLLMResponse:
-        return _FakeLLMResponse(
+        response = _FakeLLMResponse(
             f"[TEST_MODE] Fake provider response for purpose={self._purpose}"
         )
+        await emit_direct_usage(
+            purpose=self._purpose,
+            provider="fake",
+            model_name=self.model,
+            raw_usage=response.usage_metadata,
+        )
+        return response
 
 
 class FakeLLMProvider:

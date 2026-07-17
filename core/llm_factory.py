@@ -18,6 +18,7 @@ from typing import Any, Literal, Optional
 # Third-party
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from core.llm_usage_callback import EvaluationUsageCallback
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -254,7 +255,11 @@ def _get_llm_cached(
         config,
     )
 
-    return ChatGoogleGenerativeAI(model=model, **config)
+    return ChatGoogleGenerativeAI(
+        model=model,
+        callbacks=[EvaluationUsageCallback(purpose=purpose, provider="google")],
+        **config,
+    )
 
 
 def get_llm(purpose: LLMPurpose, model_name: str = None) -> ChatGoogleGenerativeAI:
