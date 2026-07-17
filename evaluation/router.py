@@ -13,6 +13,7 @@ from sse_starlette.sse import EventSourceResponse
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
 from evaluation.analytics import EvaluationAnalyticsService
+from evaluation.accounting_schemas import CampaignResearchSummaryResponse
 from evaluation.campaign_engine import get_campaign_engine
 from evaluation.campaign_schemas import (
     AblationResponse,
@@ -49,6 +50,7 @@ from evaluation.campaign_schemas import (
     RunTraceResponse,
 )
 from evaluation.model_capabilities import normalize_model_config_for_storage
+from evaluation.research_analytics import ResearchAnalyticsService
 from evaluation.model_discovery import list_available_models
 from evaluation.db import CampaignResultRepository
 from evaluation.job_schemas import (
@@ -148,8 +150,12 @@ class ModelConfigCreateRequest(BaseModel):
     thinking_include_thoughts: bool = False
 
 
-def _to_sse_event(event_name: str, payload: BaseModel | dict[str, Any]) -> dict[str, str]:
-    body = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
+def _to_sse_event(
+    event_name: str, payload: BaseModel | dict[str, Any]
+) -> dict[str, str]:
+    body = (
+        payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
+    )
     return {
         "event": event_name,
         "data": json.dumps(body, ensure_ascii=False),
@@ -157,11 +163,17 @@ def _to_sse_event(event_name: str, payload: BaseModel | dict[str, Any]) -> dict[
 
 
 _ANALYTICS_SERVICE = EvaluationAnalyticsService()
+_RESEARCH_ANALYTICS_SERVICE = ResearchAnalyticsService()
 
 
 def get_evaluation_analytics_service() -> EvaluationAnalyticsService:
     """Factory for evaluation analytics service."""
     return _ANALYTICS_SERVICE
+
+
+def get_research_analytics_service() -> ResearchAnalyticsService:
+    """Factory for strict research-accounting analytics."""
+    return _RESEARCH_ANALYTICS_SERVICE
 
 
 async def _preserve_omitted_test_case_metadata(
@@ -181,7 +193,11 @@ async def _preserve_omitted_test_case_metadata(
 
     existing_cases = await list_test_cases(user_id)
     existing = next(
-        (item for item in existing_cases if isinstance(item, dict) and item.get("id") == test_case_id),
+        (
+            item
+            for item in existing_cases
+            if isinstance(item, dict) and item.get("id") == test_case_id
+        ),
         None,
     )
     if not existing:
@@ -217,7 +233,9 @@ async def create_or_import_test_case(
     if isinstance(payload, TestCaseImportRequest):
         imported, total = await import_test_cases(
             user_id=user_id,
-            questions_to_import=[item.model_dump(exclude_none=True) for item in payload.questions],
+            questions_to_import=[
+                item.model_dump(exclude_none=True) for item in payload.questions
+            ],
             metadata=payload.metadata,
         )
         return ImportResult(imported=imported, total=total)
@@ -294,7 +312,9 @@ async def post_model_config(
     """Create one model config preset."""
     created = await create_model_config(
         user_id=user_id,
-        model_config=normalize_model_config_for_storage(payload.model_dump(exclude_none=False)),
+        model_config=normalize_model_config_for_storage(
+            payload.model_dump(exclude_none=False)
+        ),
     )
     return ModelConfig.model_validate(created)
 
@@ -316,7 +336,9 @@ async def put_model_config(
     updated = await update_model_config(
         user_id=user_id,
         config_id=config_id,
-        model_config=normalize_model_config_for_storage(payload.model_dump(exclude_none=False)),
+        model_config=normalize_model_config_for_storage(
+            payload.model_dump(exclude_none=False)
+        ),
     )
     return ModelConfig.model_validate(updated)
 
@@ -364,7 +386,22 @@ async def get_campaign_results(
     return await engine.get_results(user_id=user_id, campaign_id=campaign_id)
 
 
-@router.get("/campaigns/{campaign_id}/overview", response_model=CampaignOverviewResponse)
+@router.get(
+    "/campaigns/{campaign_id}/research-summary",
+    response_model=CampaignResearchSummaryResponse,
+)
+async def get_campaign_research_summary(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: ResearchAnalyticsService = Depends(get_research_analytics_service),
+) -> CampaignResearchSummaryResponse:
+    """Fetch the strict version-2 research accounting summary."""
+    return await analytics.get_summary(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get(
+    "/campaigns/{campaign_id}/overview", response_model=CampaignOverviewResponse
+)
 async def get_campaign_research_overview(
     campaign_id: str,
     user_id: str = Depends(get_current_user_id),
@@ -384,7 +421,10 @@ async def get_campaign_research_runs(
     return await analytics.list_campaign_runs(user_id=user_id, campaign_id=campaign_id)
 
 
-@router.get("/campaigns/{campaign_id}/analytics-dashboard", response_model=CampaignAnalyticsDashboardResponse)
+@router.get(
+    "/campaigns/{campaign_id}/analytics-dashboard",
+    response_model=CampaignAnalyticsDashboardResponse,
+)
 async def get_campaign_analytics_dashboard(
     campaign_id: str,
     user_id: str = Depends(get_current_user_id),
@@ -394,7 +434,9 @@ async def get_campaign_analytics_dashboard(
     return await analytics.analytics_dashboard(user_id=user_id, campaign_id=campaign_id)
 
 
-@router.get("/campaigns/{campaign_id}/mode-comparison", response_model=ModeComparisonResponse)
+@router.get(
+    "/campaigns/{campaign_id}/mode-comparison", response_model=ModeComparisonResponse
+)
 async def get_campaign_mode_comparison(
     campaign_id: str,
     user_id: str = Depends(get_current_user_id),
@@ -404,7 +446,10 @@ async def get_campaign_mode_comparison(
     return await analytics.mode_comparison(user_id=user_id, campaign_id=campaign_id)
 
 
-@router.get("/campaigns/{campaign_id}/question-comparison", response_model=QuestionComparisonResponse)
+@router.get(
+    "/campaigns/{campaign_id}/question-comparison",
+    response_model=QuestionComparisonResponse,
+)
 async def get_campaign_question_comparison(
     campaign_id: str,
     user_id: str = Depends(get_current_user_id),
@@ -424,7 +469,9 @@ async def get_campaign_cost_latency(
     return await analytics.cost_latency(user_id=user_id, campaign_id=campaign_id)
 
 
-@router.get("/campaigns/{campaign_id}/router-analysis", response_model=RouterAnalysisResponse)
+@router.get(
+    "/campaigns/{campaign_id}/router-analysis", response_model=RouterAnalysisResponse
+)
 async def get_campaign_router_analysis(
     campaign_id: str,
     user_id: str = Depends(get_current_user_id),
@@ -444,7 +491,9 @@ async def get_campaign_ablation(
     return await analytics.ablation(user_id=user_id, campaign_id=campaign_id)
 
 
-@router.get("/campaigns/{campaign_id}/human-vs-auto", response_model=HumanVsAutoResponse)
+@router.get(
+    "/campaigns/{campaign_id}/human-vs-auto", response_model=HumanVsAutoResponse
+)
 async def get_campaign_human_vs_auto(
     campaign_id: str,
     user_id: str = Depends(get_current_user_id),
@@ -454,7 +503,9 @@ async def get_campaign_human_vs_auto(
     return await analytics.human_vs_auto(user_id=user_id, campaign_id=campaign_id)
 
 
-@router.get("/campaigns/{campaign_id}/human-eval-queue", response_model=HumanEvalQueueResponse)
+@router.get(
+    "/campaigns/{campaign_id}/human-eval-queue", response_model=HumanEvalQueueResponse
+)
 async def get_campaign_human_eval_queue(
     campaign_id: str,
     user_id: str = Depends(get_current_user_id),
@@ -472,10 +523,14 @@ async def post_run_human_rating(
     analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
 ) -> HumanRatingResponse:
     """Store one human rubric score row for a run owned by the current user."""
-    return await analytics.create_human_rating(user_id=user_id, run_id=run_id, request=payload)
+    return await analytics.create_human_rating(
+        user_id=user_id, run_id=run_id, request=payload
+    )
 
 
-@router.get("/campaigns/{campaign_id}/repeat-stability", response_model=RepeatStabilitySummary)
+@router.get(
+    "/campaigns/{campaign_id}/repeat-stability", response_model=RepeatStabilitySummary
+)
 async def get_campaign_repeat_stability(
     campaign_id: str,
     user_id: str = Depends(get_current_user_id),
@@ -503,7 +558,9 @@ async def post_campaign_export(
     analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
 ) -> ExportCampaignResponse:
     """Export one campaign with explicit redaction controls."""
-    return await analytics.export_campaign(user_id=user_id, campaign_id=campaign_id, request=payload)
+    return await analytics.export_campaign(
+        user_id=user_id, campaign_id=campaign_id, request=payload
+    )
 
 
 @router.get("/runs/{run_id}/trace", response_model=RunTraceResponse)
@@ -651,7 +708,9 @@ async def get_campaign_run_observability(
     """Fetch normalized observability details for one campaign run."""
     engine = get_campaign_engine()
     await engine.get_campaign(user_id=user_id, campaign_id=campaign_id)
-    await CampaignResultRepository().get(user_id=user_id, campaign_id=campaign_id, result_id=run_id)
+    await CampaignResultRepository().get(
+        user_id=user_id, campaign_id=campaign_id, result_id=run_id
+    )
 
     repository = EvaluationObservabilityRepository()
     trace_events = [
@@ -794,7 +853,9 @@ async def cancel_evaluation_job(
     return await engine.cancel_job(user_id=user_id, job_id=job_id)
 
 
-@router.get("/work-items/{work_item_id}/attempts", response_model=list[EvaluationAttempt])
+@router.get(
+    "/work-items/{work_item_id}/attempts", response_model=list[EvaluationAttempt]
+)
 async def get_work_item_attempts(
     work_item_id: str,
     user_id: str = Depends(get_current_user_id),
@@ -843,7 +904,9 @@ async def stream_campaign(
 
         while True:
             await asyncio.sleep(1)
-            current = await engine.get_campaign(user_id=user_id, campaign_id=campaign_id)
+            current = await engine.get_campaign(
+                user_id=user_id, campaign_id=campaign_id
+            )
             progress_state = (
                 current.status,
                 current.phase,
@@ -876,9 +939,3 @@ async def stream_campaign(
                 return
 
     return EventSourceResponse(event_generator())
-
-
-
-
-
-

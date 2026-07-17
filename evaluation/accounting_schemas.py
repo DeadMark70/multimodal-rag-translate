@@ -10,6 +10,95 @@ ScopeStatus = Literal["running", "completed", "failed", "interrupted", "cancelle
 UsageStatus = Literal["measured", "missing", "failed"]
 ReconciliationStatus = Literal["balanced", "partial", "unavailable"]
 PricingStatus = Literal["priced", "unknown_model", "missing_price", "unavailable_usage"]
+QualityStatus = Literal["complete", "evaluating", "partial", "failed", "not_requested"]
+TokenAccountingStatus = Literal["complete", "partial", "incomplete_legacy"]
+ResearchPricingStatus = Literal["complete", "partial", "unknown"]
+PhaseAttributionStatus = Literal["complete", "partial", "not_available"]
+
+
+class MetricObservation(BaseModel):
+    value: float | None = None
+    status: QualityStatus
+    valid_samples: int = 0
+    missing_samples: int = 0
+    failed_samples: int = 0
+    evaluator_model: str | None = None
+    metric_version: str | None = None
+
+
+class LatencySummary(BaseModel):
+    mean_ms: float | None = None
+    p50_ms: float | None = None
+    p95_ms: float | None = None
+    sample_count: int = 0
+    method: Literal["nearest_rank"] = "nearest_rank"
+    low_sample_size: bool = False
+
+
+class TokenBreakdown(BaseModel):
+    input_tokens: int | None = None
+    output_text_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    other_tokens: int | None = None
+    total_tokens: int | None = None
+    by_phase: dict[str, int] = Field(default_factory=dict)
+    accounting_status: TokenAccountingStatus
+    phase_attribution_status: PhaseAttributionStatus
+
+
+class CostSummary(BaseModel):
+    benchmark_usd: float | None = None
+    operational_usd: float | None = None
+    pricing_status: ResearchPricingStatus
+    priced_call_count: int = 0
+    unpriced_call_count: int = 0
+
+
+class ModeResearchSummary(BaseModel):
+    mode: str
+    sample_count: int
+    comparable: bool
+    not_comparable_reasons: list[str] = Field(default_factory=list)
+    quality: dict[str, MetricObservation] = Field(default_factory=dict)
+    latency: LatencySummary
+    tokens: TokenBreakdown
+    execution_cost: CostSummary
+
+
+class EvaluationOverheadSummary(BaseModel):
+    tokens: TokenBreakdown
+    cost_usd: float | None = None
+    pricing_status: ResearchPricingStatus
+    evaluator_models: list[str] = Field(default_factory=list)
+    metric_names: list[str] = Field(default_factory=list)
+    batch_count: int = 0
+    retry_count: int = 0
+
+
+class ResearchWarning(BaseModel):
+    code: str
+    message: str
+    mode: str | None = None
+
+
+class CampaignResearchSummaryResponse(BaseModel):
+    campaign_id: str
+    research_schema_version: Literal["2"] = "2"
+    completed_run_count: int
+    total_run_count: int
+    failed_run_count: int
+    quality_status: QualityStatus
+    token_accounting_status: TokenAccountingStatus
+    pricing_status: ResearchPricingStatus
+    phase_attribution_status: PhaseAttributionStatus
+    sample_count: int
+    quality: dict[str, MetricObservation] = Field(default_factory=dict)
+    latency: LatencySummary
+    tokens: TokenBreakdown
+    execution_cost: CostSummary
+    modes: list[ModeResearchSummary]
+    evaluation_overhead: EvaluationOverheadSummary
+    warnings: list[ResearchWarning] = Field(default_factory=list)
 
 
 class AccountingScopeTarget(BaseModel):
@@ -33,7 +122,9 @@ class AccountingScopeStart(BaseModel):
 
     @model_validator(mode="after")
     def validate_scope_shape(self) -> "AccountingScopeStart":
-        if self.scope_type == "execution_run" and (not self.run_id or len(self.targets) != 1):
+        if self.scope_type == "execution_run" and (
+            not self.run_id or len(self.targets) != 1
+        ):
             raise ValueError("execution_run requires run_id and exactly one target")
         if self.scope_type == "ragas_batch" and not self.metric_name:
             raise ValueError("ragas_batch requires metric_name")
