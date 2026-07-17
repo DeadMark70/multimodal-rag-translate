@@ -96,6 +96,7 @@ async def _execution_scope(
     tokens: int = 15,
     cost: float | None = 0.1,
     pricing_status: str = "priced",
+    scope_run_id: str | None = None,
 ) -> None:
     store = EvaluationAccountingStore()
     await store.start_scope(
@@ -104,7 +105,7 @@ async def _execution_scope(
             campaign_id=campaign_id,
             scope_type="execution_run",
             scope_key=attempt,
-            run_id=result_id,
+            run_id=scope_run_id or result_id,
             targets=[
                 {
                     "job_id": "job-1",
@@ -123,7 +124,7 @@ async def _execution_scope(
             campaign_id=campaign_id,
             scope_type="execution_run",
             scope_key=attempt,
-            run_id=result_id,
+            run_id=scope_run_id or result_id,
             phase="answer_generation",
             purpose="evaluation",
             input_tokens=tokens - 5,
@@ -164,6 +165,24 @@ async def test_missing_faithfulness_stays_null_and_primary_metrics_are_present(
     await _campaign("partial", ["naive"])
     result_id = await _result("partial", "naive", "attempt-1")
     await _official_scope("partial", result_id, "attempt-1")
+    store = EvaluationAccountingStore()
+    await store.start_scope(
+        AccountingScopeStart(
+            scope_id="failed-faithfulness",
+            campaign_id="partial",
+            scope_type="ragas_batch",
+            scope_key="faithfulness",
+            metric_name="faithfulness",
+            targets=[
+                {
+                    "job_id": "ragas",
+                    "work_item_id": "faithfulness",
+                    "attempt_id": "faithfulness-attempt",
+                }
+            ],
+        )
+    )
+    await store.finalize_scope("failed-faithfulness", "failed")
     await RagasScoreRepository().replace_for_campaign(
         user_id="user-1",
         campaign_id="partial",
@@ -232,6 +251,7 @@ async def test_mixed_campaign_keeps_execution_and_ragas_accounting_separate(
         tokens=45,
         cost=None,
         pricing_status="missing_price",
+        scope_run_id="execution-worker-retry-uuid",
     )
     store = EvaluationAccountingStore()
     await store.start_scope(
@@ -286,6 +306,7 @@ async def test_mixed_campaign_keeps_execution_and_ragas_accounting_separate(
     assert graph_mode.execution_cost.operational_usd == pytest.approx(0.2)
     assert graph_mode.execution_cost.pricing_status == "complete"
     assert naive_mode.execution_cost.operational_usd is None
+    assert naive_mode.execution_cost.pricing_status == "partial"
 
 
 @pytest.mark.asyncio
@@ -317,6 +338,41 @@ async def test_failed_context_batch_requests_null_optional_metric(
     context_recall = summary.quality["context_recall"]
     assert context_recall.value is None
     assert context_recall.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_running_ragas_batches_mark_primary_and_optional_metrics_evaluating(
+    research_service,
+) -> None:
+    await _campaign("active-work", ["naive"])
+    result_id = await _result("active-work", "naive", "attempt")
+    await _official_scope("active-work", result_id, "attempt")
+    store = EvaluationAccountingStore()
+    for metric_name in ("answer_correctness", "context_precision"):
+        await store.start_scope(
+            AccountingScopeStart(
+                scope_id=f"running-{metric_name}",
+                campaign_id="active-work",
+                scope_type="ragas_batch",
+                scope_key=metric_name,
+                metric_name=metric_name,
+                targets=[
+                    {
+                        "job_id": "ragas",
+                        "work_item_id": metric_name,
+                        "attempt_id": f"attempt-{metric_name}",
+                    }
+                ],
+            )
+        )
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id="active-work"
+    )
+
+    assert summary.quality["answer_correctness"].status == "evaluating"
+    assert summary.quality["context_precision"].status == "evaluating"
+    assert summary.quality["faithfulness"].status == "not_requested"
 
 
 @pytest.mark.asyncio

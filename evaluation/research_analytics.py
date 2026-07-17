@@ -253,8 +253,7 @@ def _execution_scopes_for_results(results, scopes):
         if scope.scope_type == "execution_run"
         and (
             scope.run_id in result_ids
-            if scope.run_id is not None
-            else any(
+            or any(
                 target.campaign_result_id in result_ids or target.attempt_id in attempts
                 for target in scope.targets
             )
@@ -262,25 +261,28 @@ def _execution_scopes_for_results(results, scopes):
     ]
 
 
-def _requested_metrics(scopes) -> set[str]:
-    return {
-        scope.metric_name
-        for scope in scopes
-        if scope.scope_type == "ragas_batch"
-        and scope.metric_name in OPTIONAL_CONTEXT_METRICS
-    }
+def _requested_metrics(scopes) -> dict[str, set[str]]:
+    requested: dict[str, set[str]] = defaultdict(set)
+    for scope in scopes:
+        if scope.scope_type == "ragas_batch" and scope.metric_name in (
+            *PRIMARY_QUALITY_METRICS,
+            *OPTIONAL_CONTEXT_METRICS,
+        ):
+            requested[scope.metric_name].add(scope.status)
+    return dict(requested)
 
 
-def _quality_for_results(results, scores, requested_metrics):
+def _quality_for_results(results, scores, requested_work):
     result_ids = {r.id for r in results}
     attempts_by_result = {
         result.id: result.source_attempt_id
         for result in results
         if result.source_attempt_id
     }
-    requested = requested_metrics | {
+    score_requested = {
         row["metric_name"] for row in scores if row["campaign_result_id"] in result_ids
     }
+    requested = set(requested_work) | score_requested
     metric_names = (
         *PRIMARY_QUALITY_METRICS,
         *(m for m in OPTIONAL_CONTEXT_METRICS if m in requested),
@@ -315,29 +317,27 @@ def _quality_for_results(results, scores, requested_metrics):
         ]
         missing = len(results) - len({row["campaign_result_id"] for row in compatible})
         details = compatible[0].get("details", {}) if compatible else {}
-        missing_primary_after_evaluation = metric in PRIMARY_QUALITY_METRICS and bool(
-            requested
+        work_statuses = requested_work.get(metric, set())
+        no_value_status = (
+            "evaluating"
+            if "running" in work_statuses
+            else "failed"
+            if work_statuses or metric in score_requested
+            else "not_requested"
         )
         output[metric] = MetricObservation(
             value=mean(values) if values else None,
             status="complete"
             if values and not missing
-            else (
-                "partial"
-                if values
-                else (
-                    "failed"
-                    if metric in requested or missing_primary_after_evaluation
-                    else "not_requested"
-                )
-            ),
+            else "partial"
+            if values
+            else no_value_status,
             valid_samples=len(values),
             missing_samples=max(0, missing),
             failed_samples=max(
                 0,
                 len(results) - len(values)
-                if (metric in requested or missing_primary_after_evaluation)
-                and not values
+                if no_value_status == "failed" and not values
                 else 0,
             ),
             evaluator_model=details.get("evaluator_model") or details.get("model_name"),

@@ -61,3 +61,18 @@ remain pre-existing environment noise.
 Verification: `25 passed` across the strict and existing evaluation/API suites;
 Ruff check, format check, and `git diff --check` passed. Existing third-party
 Pydantic deprecation warnings remain.
+
+## Active-work classification correction (2026-07-18)
+
+- Execution scope mode attribution now unions durable `run_id` and target
+  (`campaign_result_id` / `attempt_id`) matches. This preserves failed retry
+  attribution when an execution worker stores its own UUID in `run_id`.
+- Strict quality work state now derives from every primary and optional
+  `ragas_batch` scope: no score with a running scope is `evaluating`; no score
+  with terminal requested work is `failed`; only absent work is `not_requested`.
+- If observed scores exist, `complete` and `partial` retain precedence over
+  background work status so available measurements are never hidden.
+
+Verification: `26 passed` across the strict and existing evaluation/API suites;
+Ruff check, format check, and `git diff --check` passed. Existing third-party
+Pydantic deprecation warnings remain.
