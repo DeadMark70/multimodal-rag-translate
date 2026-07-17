@@ -8,6 +8,7 @@ from pathlib import Path
 import secrets
 from typing import Optional
 
+from core.process_liveness import is_process_alive
 from graph_rag.store import GraphStore
 
 
@@ -58,7 +59,7 @@ class GraphMaintenanceLock:
         if payload is None:
             return None
         process_id = payload.get("process_id")
-        if isinstance(process_id, int) and not self._process_is_alive(process_id):
+        if isinstance(process_id, int) and not is_process_alive(process_id):
             self.path.unlink(missing_ok=True)
             return None
         activity = payload.get("activity")
@@ -70,7 +71,7 @@ class GraphMaintenanceLock:
             self.path.unlink(missing_ok=True)
             return True
         process_id = payload.get("process_id")
-        if isinstance(process_id, int) and not self._process_is_alive(process_id):
+        if isinstance(process_id, int) and not is_process_alive(process_id):
             self.path.unlink(missing_ok=True)
             return True
         return False
@@ -83,15 +84,3 @@ class GraphMaintenanceLock:
         except (OSError, json.JSONDecodeError):
             return None
         return payload if isinstance(payload, dict) else None
-
-    @staticmethod
-    def _process_is_alive(process_id: int) -> bool:
-        try:
-            os.kill(process_id, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        except OSError:
-            return False
-        return True

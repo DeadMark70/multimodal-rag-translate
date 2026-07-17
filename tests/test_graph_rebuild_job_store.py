@@ -83,7 +83,9 @@ def test_status_aggregates_terminal_document_counts(tmp_path: Path) -> None:
     assert status.live_graph_unchanged is True
 
 
-def test_status_reports_live_graph_changed_only_after_publication(tmp_path: Path) -> None:
+def test_status_reports_live_graph_changed_only_after_publication(
+    tmp_path: Path,
+) -> None:
     store = GraphRebuildJobStore("user-1", rebuild_root=tmp_path)
     running = store.create_job(SOURCES)
     running.state = "running"
@@ -113,7 +115,9 @@ def test_only_one_store_can_acquire_runner_lease(tmp_path: Path) -> None:
     assert first.load(manifest.job_id).lease is not None
 
 
-def test_stale_running_job_becomes_interrupted_without_starting_work(tmp_path: Path) -> None:
+def test_stale_running_job_becomes_interrupted_without_starting_work(
+    tmp_path: Path,
+) -> None:
     store = GraphRebuildJobStore(
         "user-1",
         rebuild_root=tmp_path,
@@ -128,7 +132,9 @@ def test_stale_running_job_becomes_interrupted_without_starting_work(tmp_path: P
         heartbeat_at=old_time,
     )
     store.save(manifest)
-    (tmp_path / manifest.job_id / "runner.lock").write_text("dead-runner", encoding="utf-8")
+    (tmp_path / manifest.job_id / "runner.lock").write_text(
+        "dead-runner", encoding="utf-8"
+    )
 
     reconciled = store.reconcile_status(store.load_current())
 
@@ -137,7 +143,9 @@ def test_stale_running_job_becomes_interrupted_without_starting_work(tmp_path: P
     assert not (tmp_path / manifest.job_id / "runner.lock").exists()
 
 
-def test_dead_process_job_becomes_interrupted_without_waiting_for_ttl(tmp_path: Path) -> None:
+def test_dead_process_job_becomes_interrupted_without_waiting_for_ttl(
+    tmp_path: Path,
+) -> None:
     store = GraphRebuildJobStore("user-1", rebuild_root=tmp_path)
     manifest = store.create_job(SOURCES)
     now = datetime.now(timezone.utc)
@@ -171,7 +179,9 @@ def test_only_lease_owner_can_release_runner_lock(tmp_path: Path) -> None:
     assert store.load(manifest.job_id).lease is None
 
 
-def test_saving_stale_manifest_does_not_erase_newer_lease_heartbeat(tmp_path: Path) -> None:
+def test_saving_stale_manifest_does_not_erase_newer_lease_heartbeat(
+    tmp_path: Path,
+) -> None:
     store = GraphRebuildJobStore("user-1", rebuild_root=tmp_path)
     manifest = store.create_job(SOURCES)
     owner_token = store.acquire_lease(manifest.job_id)

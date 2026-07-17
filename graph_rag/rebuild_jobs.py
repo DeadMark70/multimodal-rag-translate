@@ -12,6 +12,7 @@ import shutil
 from typing import Any, Optional
 from uuid import uuid4
 
+from core.process_liveness import is_process_alive
 from graph_rag.schemas import (
     GraphRebuildDocument,
     GraphRebuildLease,
@@ -55,7 +56,9 @@ class GraphRebuildJobStore:
         if source_markdown is not None:
             expected_ids = {document.doc_id for document in documents}
             if set(source_markdown) != expected_ids:
-                raise ValueError("Frozen GraphRAG sources do not match the rebuild documents")
+                raise ValueError(
+                    "Frozen GraphRAG sources do not match the rebuild documents"
+                )
             for document in documents:
                 document.source_markdown_sha256 = self._content_hash(
                     source_markdown[document.doc_id]
@@ -133,7 +136,9 @@ class GraphRebuildJobStore:
             raise ValueError("Graph rebuild job does not belong to this user")
         return manifest
 
-    def save(self, manifest: GraphRebuildManifest, *, preserve_lease: bool = True) -> None:
+    def save(
+        self, manifest: GraphRebuildManifest, *, preserve_lease: bool = True
+    ) -> None:
         """Atomically persist a manifest and mark it as the current job."""
         if manifest.user_id != self.user_id:
             raise ValueError("Cannot save a graph rebuild job for another user")
@@ -152,18 +157,28 @@ class GraphRebuildJobStore:
 
     def to_status(self, manifest: GraphRebuildManifest) -> GraphRebuildStatusResponse:
         """Project a manifest to frontend-safe aggregate progress."""
-        counts = {state: 0 for state in ("indexed", "empty", "failed", "partial", "pending")}
+        counts = {
+            state: 0 for state in ("indexed", "empty", "failed", "partial", "pending")
+        }
         for document in manifest.documents:
             if document.state in counts:
                 counts[document.state] += 1
 
         total = len(manifest.documents)
-        processed = counts["indexed"] + counts["empty"] + counts["failed"] + counts["partial"]
+        processed = (
+            counts["indexed"] + counts["empty"] + counts["failed"] + counts["partial"]
+        )
         current_document = next(
-            (document for document in manifest.documents if document.doc_id == manifest.current_doc_id),
+            (
+                document
+                for document in manifest.documents
+                if document.doc_id == manifest.current_doc_id
+            ),
             None,
         )
-        public_documents = [self._public_document(document) for document in manifest.documents]
+        public_documents = [
+            self._public_document(document) for document in manifest.documents
+        ]
         return GraphRebuildStatusResponse(
             job_id=manifest.job_id,
             state=manifest.state,
@@ -237,20 +252,27 @@ class GraphRebuildJobStore:
         self.save(manifest, preserve_lease=False)
         return True
 
-    def reconcile_status(self, manifest: Optional[GraphRebuildManifest]) -> Optional[GraphRebuildManifest]:
+    def reconcile_status(
+        self, manifest: Optional[GraphRebuildManifest]
+    ) -> Optional[GraphRebuildManifest]:
         """Turn a stale running job into manual-resume state without doing work."""
         if manifest is None or manifest.state != "running" or manifest.lease is None:
             return manifest
         lock_path = self._lock_path(manifest.job_id)
-        lock_process_id = self._lock_process_id(lock_path) if lock_path.exists() else None
-        if lock_process_id is not None and not self._process_is_alive(lock_process_id):
+        lock_process_id = (
+            self._lock_process_id(lock_path) if lock_path.exists() else None
+        )
+        if lock_process_id is not None and not is_process_alive(lock_process_id):
             stale = True
         else:
             stale = manifest.lease.heartbeat_at + self.lease_ttl < self._now()
         if not stale:
             return manifest
 
-        if lock_path.exists() and self._lock_owner_token(lock_path) == manifest.lease.owner_token:
+        if (
+            lock_path.exists()
+            and self._lock_owner_token(lock_path) == manifest.lease.owner_token
+        ):
             lock_path.unlink()
         manifest.state = "interrupted"
         manifest.lease = None
@@ -258,7 +280,9 @@ class GraphRebuildJobStore:
         self.save(manifest, preserve_lease=False)
         return manifest
 
-    def reset_failed_documents(self, manifest: GraphRebuildManifest) -> GraphRebuildManifest:
+    def reset_failed_documents(
+        self, manifest: GraphRebuildManifest
+    ) -> GraphRebuildManifest:
         """Prepare only failed/partial documents for a new retry cycle."""
         for document in manifest.documents:
             if document.state in {"failed", "partial"}:
@@ -395,19 +419,6 @@ class GraphRebuildJobStore:
             return None
         process_id = payload.get("process_id") if isinstance(payload, dict) else None
         return process_id if isinstance(process_id, int) and process_id > 0 else None
-
-    @staticmethod
-    def _process_is_alive(process_id: int) -> bool:
-        try:
-            os.kill(process_id, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        except OSError:
-            # Windows reports an invalid/nonexistent PID as WinError 87.
-            return False
-        return True
 
     @staticmethod
     def _atomic_write_json(path: Path, payload: object) -> None:
