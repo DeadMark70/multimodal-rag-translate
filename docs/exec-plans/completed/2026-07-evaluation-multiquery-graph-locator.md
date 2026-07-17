@@ -10,13 +10,16 @@
 - Multi-Query drives intended expansion and Agentic CRAG correction.
 - Main Graph and Agentic graph routes resolve graph evidence to source chunks.
 - `graph_raw_current` remains the legacy control.
-- Changed result rows carry versioned execution profiles.
+- Public Agentic chat retains its pre-v8 retrieval policy; the v8 policy is scoped to Evaluation Center.
+- Successful and failed result rows carry versioned execution profiles, including captured trace profiles when available.
+- Graph maintenance uses a non-destructive Windows process-liveness probe.
 
 ## Verification
 
-- Focused pytest: `122 passed, 23 warnings in 7.65s` (exit 0).
+- Final focused pytest: `45 passed, 25 warnings in 10.38s` (exit 0).
 - Ruff check: `All checks passed!` (exit 0).
-- Ruff format: `9 files already formatted` (exit 0).
-- Full backend pytest command: `.\\.venv\\Scripts\\python.exe -m pytest tests -q`.
-- Full backend pytest: `805 passed, 57 warnings in 73.44s (0:01:13)` (exit 0).
+- Ruff format: `10 files already formatted` (exit 0).
+- Full backend pytest command: `.\\.venv\\Scripts\\python.exe -m pytest`.
+- Full backend pytest: `817 passed, 58 warnings in 89.54s (0:01:29)` (exit 0).
 - The earlier interruption was traced to Windows use of `os.kill(pid, 0)` in Graph maintenance liveness checks and resolved by commit `7da6156`.
+- Final whole-change review found and resolved public-chat policy leakage and missing failure-path profiles in commit `b85f719`; direct campaign-engine coverage was added in commit `403374a` and re-review approved it with no remaining findings.
