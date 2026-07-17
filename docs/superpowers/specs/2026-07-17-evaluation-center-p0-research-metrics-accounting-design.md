@@ -67,12 +67,7 @@ An accounting scope proves that instrumentation was active for a specific durabl
 - `scope_type`: `execution_run` or `ragas_batch`
 - `scope_key`: run ID for execution or a stable batch identity for RAGAS
 - `run_id`: nullable; populated only for execution scopes
-- `job_id`
-- `work_item_id`
-- `attempt_id`
-- `source_attempt_id`: nullable until an execution attempt becomes official
 - `metric_name`: nullable; populated for RAGAS scoring scopes
-- `target_result_ids_json`: empty for execution; populated for a RAGAS batch
 - `accounting_schema_version`: `2` for this design
 - `status`: `running`, `completed`, `failed`, `interrupted`, or `cancelled`
 - `observed_call_count`
@@ -86,6 +81,19 @@ An accounting scope proves that instrumentation was active for a specific durabl
 
 The scope row is created before provider work begins and finalized after the attempt ends. Startup recovery marks a scope left in `running` as `interrupted`. The absence of a version-2 scope for an old campaign is affirmative evidence of `incomplete_legacy`, not evidence of zero usage.
 
+Add `evaluation_accounting_scope_targets` to represent the one execution attempt or the many durable RAGAS attempts covered by a scope:
+
+- `scope_id`
+- `campaign_result_id`: nullable until an execution attempt is promoted
+- `job_id`
+- `work_item_id`
+- `attempt_id`
+- `metric_name`: nullable for execution targets
+- `is_official`: false until an execution result or RAGAS score is promoted from this attempt
+- `created_at`
+
+An execution scope has exactly one target. A RAGAS batch scope has one target per claimed metric work item. This relation is the source for official-attempt filtering, retry accounting, and batch traceability; the batch cost itself remains on the shared scope and is never divided among its targets.
+
 ## 7. Usage Ledger
 
 Add `evaluation_usage_events`. One row represents one actual provider model call:
@@ -96,9 +104,6 @@ Add `evaluation_usage_events`. One row represents one actual provider model call
 - `scope_type`
 - `scope_key`
 - `run_id`: nullable
-- `job_id`
-- `work_item_id`
-- `attempt_id`
 - `provider_run_id`: nullable callback/provider run identifier
 - `phase`
 - `purpose`: the logical `get_llm()` purpose
