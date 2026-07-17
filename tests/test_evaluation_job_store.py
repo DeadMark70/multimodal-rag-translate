@@ -164,6 +164,7 @@ async def test_complete_execution_attempt_atomically_promotes_accounting_scope(
         job_id=claim.job_id,
         work_item_id=claim.work_item_id,
         attempt_id=claim.attempt_id,
+        mode="naive",
     )
 
     result = await store.complete_execution_attempt(
@@ -351,6 +352,59 @@ async def test_ensure_ragas_work_assigns_one_shared_batch_key_to_compatible_resu
     batch_evaluator = BatchEvaluator()
     await RagasBatchWorker(store=store, evaluator=batch_evaluator).execute(claims)
     assert batch_evaluator.calls == [4]
+
+
+@pytest.mark.asyncio
+async def test_ragas_compatibility_signature_separates_context_policies(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    repository = CampaignResultRepository()
+    for index, context_policy_version in enumerate(("policy-v1", "policy-v2"), start=1):
+        await repository.create(
+            result_id=f"policy-result-{index}",
+            user_id="user-a",
+            campaign_id="cmp-1",
+            question_id=f"Q{index}",
+            question="Question",
+            ground_truth="Ground truth",
+            ground_truth_short="Ground truth",
+            key_points=[],
+            ragas_focus=[],
+            mode="naive",
+            execution_profile=None,
+            context_policy_version=context_policy_version,
+            run_number=index,
+            answer="Answer",
+            contexts=["Context"],
+            source_doc_ids=[],
+            expected_sources=[],
+            latency_ms=1,
+            token_usage={"total_tokens": 1},
+            category=None,
+            difficulty=None,
+            status=CampaignResultStatus.COMPLETED,
+            source_attempt_id=f"policy-attempt-{index}",
+        )
+
+    assert (
+        await store.ensure_ragas_work(
+            user_id="user-a",
+            campaign_id="cmp-1",
+            evaluator_model="evaluator",
+            evaluator_config={"temperature": 0},
+            enabled_metrics=["faithfulness"],
+        )
+        == 2
+    )
+    claims = await store.claim_ready_items(
+        limit=2, now=fixed_now, work_type="ragas_metric"
+    )
+
+    assert len(claims) == 2
+    assert len({claim.input_snapshot["evaluation_signature"] for claim in claims}) == 2
+    assert (
+        len({claim.input_snapshot["compatibility_signature"] for claim in claims}) == 2
+    )
 
 
 @pytest.mark.asyncio

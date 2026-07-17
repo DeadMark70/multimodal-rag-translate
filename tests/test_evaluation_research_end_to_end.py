@@ -14,10 +14,8 @@ from core.auth import get_current_user_id
 from core.llm_usage_context import (
     emit_direct_usage,
     llm_accounting_phase,
-    llm_accounting_scope,
 )
 import evaluation.db as evaluation_db
-from evaluation.accounting_runtime import start_execution_scope
 from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.db import RagasScoreRepository
 from evaluation.execution_worker import DatasetExecutionWorker
@@ -122,6 +120,7 @@ async def _seed_claims(store: EvaluationJobStore) -> list[ClaimedEvaluationWork]
                     "repeat_number": 1,
                     "model_config": {"model_name": "test-model"},
                 },
+                max_attempts=2 if mode == "naive" else 1,
             )
             for mode in EXPECTED_PHASES
         ],
@@ -129,8 +128,15 @@ async def _seed_claims(store: EvaluationJobStore) -> list[ClaimedEvaluationWork]
     return await store.claim_ready_items(limit=4, now=datetime.now(UTC))
 
 
-def _runner(**inputs):  # noqa: ANN003
-    async def run() -> BenchmarkExecutionResult:
+class _ExecutionRunner:
+    def __init__(self) -> None:
+        self.attempts_by_mode: dict[str, int] = {}
+
+    async def __call__(self, **inputs) -> BenchmarkExecutionResult:  # noqa: ANN003
+        mode = inputs["mode"]
+        attempt_number = self.attempts_by_mode.get(mode, 0) + 1
+        self.attempts_by_mode[mode] = attempt_number
+        fail = mode == "naive" and attempt_number == 1
         for phase in EXPECTED_PHASES[inputs["mode"]]:
             with llm_accounting_phase(phase):
                 await emit_direct_usage(
@@ -142,7 +148,11 @@ def _runner(**inputs):  # noqa: ANN003
                         "output_tokens": 5,
                         "total_tokens": 15,
                     },
+                    status="failed" if fail else "success",
+                    error={"type": "deterministic_timeout"} if fail else {},
                 )
+        if fail:
+            raise TimeoutError("deterministic retryable execution failure")
         return BenchmarkExecutionResult(
             question_id=inputs["test_case"].id,
             question=inputs["test_case"].question,
@@ -151,8 +161,6 @@ def _runner(**inputs):  # noqa: ANN003
             answer="The evaluated answer.",
         )
 
-    return run()
-
 
 @pytest.mark.asyncio
 async def test_research_summary_accounts_for_every_mode_and_ragas_overhead(
@@ -160,41 +168,53 @@ async def test_research_summary_accounts_for_every_mode_and_ragas_overhead(
 ) -> None:
     claims = await _seed_claims(durable_store)
     accounting_store = EvaluationAccountingStore()
+    runner = _ExecutionRunner()
     worker = DatasetExecutionWorker(
         store=durable_store,
-        runner=_runner,
+        runner=runner,
         accounting_store=accounting_store,
         price_snapshot=PRICE_SNAPSHOT,
     )
     for claim in claims:
         await worker.execute(claim)
 
+    first_naive_claim = next(
+        claim for claim in claims if claim.input_snapshot["mode"] == "naive"
+    )
+    assert (
+        await durable_store.get_job_item_status(first_naive_claim.job_item_id)
+        == "retry_wait"
+    )
+    first_attempts = await durable_store.list_attempts(
+        user_id="user-e2e", work_item_id=first_naive_claim.work_item_id
+    )
+    assert [attempt.status for attempt in first_attempts] == ["failed"]
+    assert [attempt.error_type for attempt in first_attempts] == ["timeout"]
+
+    retry_at = await durable_store.next_ready_at()
+    assert retry_at is not None
+    retry_claims = await durable_store.claim_ready_items(limit=1, now=retry_at)
+    assert len(retry_claims) == 1
+    retry_claim = retry_claims[0]
+    assert retry_claim.work_item_id == first_naive_claim.work_item_id
+    assert retry_claim.job_item_id == first_naive_claim.job_item_id
+    assert retry_claim.attempt_number == 2
+    await worker.execute(retry_claim)
+    assert (
+        await durable_store.get_job_item_status(retry_claim.job_item_id) == "succeeded"
+    )
+    attempts = await durable_store.list_attempts(
+        user_id="user-e2e", work_item_id=retry_claim.work_item_id
+    )
+    assert [attempt.status for attempt in attempts] == ["failed", "succeeded"]
+
     results = await evaluation_db.CampaignResultRepository().list_for_campaign(
         user_id="user-e2e", campaign_id="campaign-e2e"
     )
     assert {result.mode for result in results} == set(EXPECTED_PHASES)
-
     retried_result = next(result for result in results if result.mode == "naive")
-    failed_retry = await start_execution_scope(
-        store=accounting_store,
-        campaign_id="campaign-e2e",
-        run_id=retried_result.id,
-        job_id="failed-retry-job",
-        work_item_id="failed-retry-work",
-        attempt_id="failed-retry-attempt",
-        price_snapshot=PRICE_SNAPSHOT,
-    )
-    with llm_accounting_scope(failed_retry.context):
-        with llm_accounting_phase("answer_generation"):
-            await emit_direct_usage(
-                purpose="evaluation_retry",
-                provider="google",
-                model_name="test-model",
-                raw_usage={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
-                status="failed",
-                error={"type": "deterministic_retry_failure"},
-            )
-    await accounting_store.finalize_scope(failed_retry.scope_id, "failed")
+    assert retried_result.source_attempt_id == retry_claim.attempt_id
+    assert retried_result.source_attempt_id != first_naive_claim.attempt_id
 
     assert (
         await durable_store.ensure_ragas_work(
@@ -274,16 +294,21 @@ async def test_research_summary_accounts_for_every_mode_and_ragas_overhead(
             == (10, 5, 15)
             for event in events_by_scope[scope.scope_id]
         )
+        assert [target.mode for target in scope.targets] == [result.mode]
     ragas_scopes = [scope for scope in scopes if scope.scope_type == "ragas_batch"]
     failed_retry_scope = next(
         scope
         for scope in scopes
         if scope.scope_type == "execution_run"
-        and scope.scope_id == failed_retry.scope_id
+        and any(
+            target.attempt_id == first_naive_claim.attempt_id
+            for target in scope.targets
+        )
     )
     assert failed_retry_scope.status == "failed"
     assert not any(target.is_official for target in failed_retry_scope.targets)
-    assert [event.status for event in events_by_scope[failed_retry.scope_id]] == [
+    assert [target.mode for target in failed_retry_scope.targets] == ["naive"]
+    assert [event.status for event in events_by_scope[failed_retry_scope.scope_id]] == [
         "failed"
     ]
     assert {scope.metric_name for scope in ragas_scopes} == {

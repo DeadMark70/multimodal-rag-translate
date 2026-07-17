@@ -159,6 +159,36 @@ async def test_legacy_campaign_is_visible_but_not_comparable(research_service) -
 
 
 @pytest.mark.asyncio
+async def test_unattributable_older_v2_execution_scope_fails_closed(
+    research_service,
+) -> None:
+    await _campaign("missing-mode", ["naive"])
+    result_id = await _result("missing-mode", "naive", "official-attempt")
+    await _official_scope("missing-mode", result_id, "official-attempt")
+    await _execution_scope(
+        "missing-mode",
+        "unknown-result",
+        "unknown-attempt",
+        official=False,
+        scope_status="failed",
+        scope_run_id="unknown-run",
+    )
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id="missing-mode"
+    )
+
+    assert summary.token_accounting_status == "partial"
+    assert summary.phase_attribution_status == "partial"
+    assert summary.modes[0].tokens.accounting_status == "partial"
+    assert summary.modes[0].comparable is False
+    assert "incomplete_accounting" in summary.modes[0].not_comparable_reasons
+    assert any(
+        warning.code == "missing_mode_attribution" for warning in summary.warnings
+    )
+
+
+@pytest.mark.asyncio
 async def test_missing_faithfulness_stays_null_and_primary_metrics_are_present(
     research_service,
 ) -> None:
@@ -465,6 +495,59 @@ async def test_mixed_evaluator_metadata_excludes_incompatible_scores_and_marks_m
     assert mode.comparable is False
     assert "evaluator_metadata_mismatch" in mode.not_comparable_reasons
     assert any(
+        warning.code == "evaluator_metadata_mismatch" for warning in summary.warnings
+    )
+
+
+@pytest.mark.asyncio
+async def test_fully_scored_primary_metrics_compare_each_evaluator_cohort_separately(
+    research_service,
+) -> None:
+    await _campaign("fully-scored", ["naive"])
+    results = [
+        await _result(
+            "fully-scored",
+            "naive",
+            f"attempt-{index}",
+            run_number=index,
+        )
+        for index in range(1, 6)
+    ]
+    for index, result_id in enumerate(results, start=1):
+        await _official_scope("fully-scored", result_id, f"attempt-{index}")
+
+    metrics = ("answer_correctness", "faithfulness", "answer_relevancy")
+    await RagasScoreRepository().replace_for_campaign(
+        user_id="user-1",
+        campaign_id="fully-scored",
+        score_rows=[
+            {
+                "campaign_result_id": result_id,
+                "metric_name": metric_name,
+                "metric_value": 0.8,
+                "source_attempt_id": f"attempt-{index}",
+                "evaluation_signature": f"input-{metric_name}-{index}",
+                "details": {
+                    "evaluator_model": "judge",
+                    "metric_version": "v1",
+                    "compatibility_signature": f"policy-{metric_name}",
+                },
+            }
+            for index, result_id in enumerate(results, start=1)
+            for metric_name in metrics
+        ],
+    )
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id="fully-scored"
+    )
+    mode = summary.modes[0]
+
+    assert all(mode.quality[metric].status == "complete" for metric in metrics)
+    assert all(mode.quality[metric].valid_samples == 5 for metric in metrics)
+    assert mode.comparable is True
+    assert "evaluator_metadata_mismatch" not in mode.not_comparable_reasons
+    assert not any(
         warning.code == "evaluator_metadata_mismatch" for warning in summary.warnings
     )
 

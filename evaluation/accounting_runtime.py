@@ -87,6 +87,7 @@ async def start_execution_scope(
     job_id: str,
     work_item_id: str,
     attempt_id: str,
+    mode: str,
     sink: EvaluationAccountingSink | None = None,
     price_snapshot: dict[str, Any] | None = None,
 ) -> ExecutionAccountingSession:
@@ -107,6 +108,7 @@ async def start_execution_scope(
                     job_id=job_id,
                     work_item_id=work_item_id,
                     attempt_id=attempt_id,
+                    mode=mode,
                 )
             ],
         )

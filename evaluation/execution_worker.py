@@ -89,6 +89,7 @@ class DatasetExecutionWorker:
                 job_id=claim.job_id,
                 work_item_id=claim.work_item_id,
                 attempt_id=claim.attempt_id,
+                mode=unit.mode,
             )
             try:
                 with llm_accounting_scope(scope.context):

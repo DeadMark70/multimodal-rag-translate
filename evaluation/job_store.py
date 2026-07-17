@@ -66,6 +66,7 @@ def build_evaluator_compatibility_signature(
     evaluator_config: dict[str, Any],
     metric_name: str,
     metric_version: str,
+    context_policy_version: str | None,
     context_metrics_enabled: bool,
 ) -> str:
     """Return the evaluator-policy identity shared by comparable score rows."""
@@ -74,6 +75,7 @@ def build_evaluator_compatibility_signature(
         "evaluator_config": evaluator_config,
         "metric_name": metric_name,
         "metric_version": metric_version,
+        "context_policy_version": context_policy_version,
         "context_metrics_enabled": context_metrics_enabled,
     }
     canonical = json.dumps(
@@ -287,6 +289,7 @@ class EvaluationJobStore:
                         evaluator_config=effective_config,
                         metric_name=metric_name,
                         metric_version=metric_version,
+                        context_policy_version=result.context_policy_version,
                         context_metrics_enabled=context_metrics_enabled,
                     )
                     batch_group_key = build_ragas_batch_group_key(

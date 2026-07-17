@@ -75,21 +75,27 @@ class ResearchAnalyticsService:
         for event in events:
             events_by_scope[event.scope_id].append(event)
         requested_metrics = _requested_metrics(scopes)
+        execution_scope_modes = {
+            scope.scope_id: _execution_scope_mode(scope, all_results)
+            for scope in scopes
+            if scope.scope_type == "execution_run"
+        }
+        has_unattributed_execution_scopes = any(
+            mode is None for mode in execution_scope_modes.values()
+        )
 
         modes: list[ModeResearchSummary] = []
         warnings: list[ResearchWarning] = []
         for mode in sorted({str(result.mode) for result in completed}):
             included = [result for result in completed if str(result.mode) == mode]
-            mode_results = [
-                result for result in all_results if str(result.mode) == mode
-            ]
             summary, mode_warnings = _mode_summary(
                 included,
-                mode_results,
                 scores,
                 scopes,
                 events_by_scope,
                 requested_metrics,
+                execution_scope_modes,
+                has_unattributed_execution_scopes,
             )
             modes.append(summary)
             warnings.extend(
@@ -105,6 +111,8 @@ class ResearchAnalyticsService:
         ]
         quality = _quality_for_results(completed, scores, requested_metrics)
         tokens = _tokens(official_scopes, official_events)
+        if has_unattributed_execution_scopes:
+            tokens = _partial_for_missing_mode_attribution(tokens)
         cost = _cost(
             official_events,
             operational_events=[
@@ -164,17 +172,21 @@ class ResearchAnalyticsService:
 
 def _mode_summary(
     results,
-    operational_results,
     scores,
     scopes,
     events_by_scope,
     requested_metrics,
+    execution_scope_modes,
+    has_unattributed_execution_scopes,
 ):
     official = _official_execution_scopes(results, scopes)
     official_events = [
         event for scope in official for event in events_by_scope[scope.scope_id]
     ]
-    operational_scopes = _execution_scopes_for_results(operational_results, scopes)
+    mode = str(results[0].mode)
+    operational_scopes = [
+        scope for scope in scopes if execution_scope_modes.get(scope.scope_id) == mode
+    ]
     operational = [
         event
         for scope in operational_scopes
@@ -182,9 +194,18 @@ def _mode_summary(
     ]
     quality = _quality_for_results(results, scores, requested_metrics)
     tokens = _tokens(official, official_events)
+    if has_unattributed_execution_scopes:
+        tokens = _partial_for_missing_mode_attribution(tokens)
     cost = _cost(official_events, operational_events=operational)
     reasons: list[str] = []
     warnings = []
+    if has_unattributed_execution_scopes:
+        warnings.append(
+            (
+                "missing_mode_attribution",
+                "An execution scope has no durable mode and cannot be attributed exactly.",
+            )
+        )
     if tokens.accounting_status == "incomplete_legacy":
         reasons.append("legacy_accounting")
     elif tokens.accounting_status != "complete":
@@ -196,8 +217,8 @@ def _mode_summary(
         for item in quality.values()
     ):
         reasons.append("incomplete_quality")
-    evaluator_identities = _evaluator_identities_for_results(results, scores)
-    if len(evaluator_identities) > 1:
+    evaluator_identities = _evaluator_identities_by_metric(results, scores)
+    if any(len(identities) > 1 for identities in evaluator_identities.values()):
         reasons.append("evaluator_metadata_mismatch")
         warnings.append(
             (
@@ -242,23 +263,27 @@ def _official_execution_scopes(results, scopes):
     ]
 
 
-def _execution_scopes_for_results(results, scopes):
-    result_ids = {result.id for result in results}
-    attempts = {
-        result.source_attempt_id for result in results if result.source_attempt_id
-    }
-    return [
-        scope
-        for scope in scopes
-        if scope.scope_type == "execution_run"
-        and (
-            scope.run_id in result_ids
-            or any(
-                target.campaign_result_id in result_ids or target.attempt_id in attempts
-                for target in scope.targets
+def _execution_scope_mode(scope, results) -> str | None:
+    durable_modes = {str(target.mode) for target in scope.targets if target.mode}
+    if len(durable_modes) == 1:
+        return next(iter(durable_modes))
+    if durable_modes:
+        return None
+
+    matching_modes = {
+        str(result.mode)
+        for result in results
+        if scope.run_id == result.id
+        or any(
+            target.campaign_result_id == result.id
+            or (
+                result.source_attempt_id
+                and target.attempt_id == result.source_attempt_id
             )
+            for target in scope.targets
         )
-    ]
+    }
+    return next(iter(matching_modes)) if len(matching_modes) == 1 else None
 
 
 def _requested_metrics(scopes) -> dict[str, set[str]]:
@@ -358,20 +383,23 @@ def _evaluator_identity(row) -> tuple[str, str, str]:
     )
 
 
-def _evaluator_identities_for_results(results, scores):
+def _evaluator_identities_by_metric(results, scores):
     attempts_by_result = {
         result.id: result.source_attempt_id
         for result in results
         if result.source_attempt_id
     }
-    return {
-        _evaluator_identity(row)
-        for row in scores
-        if row["campaign_result_id"] in attempts_by_result
-        and row.get("source_attempt_id")
-        == attempts_by_result[row["campaign_result_id"]]
-        and row["metric_name"] in PRIMARY_QUALITY_METRICS
-    }
+    identities: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
+    for row in scores:
+        result_id = row["campaign_result_id"]
+        metric_name = row["metric_name"]
+        if (
+            result_id in attempts_by_result
+            and row.get("source_attempt_id") == attempts_by_result[result_id]
+            and metric_name in PRIMARY_QUALITY_METRICS
+        ):
+            identities[metric_name].add(_evaluator_identity(row))
+    return identities
 
 
 def _latency(values):
@@ -435,6 +463,18 @@ def _tokens(scopes, events, legacy_status="incomplete_legacy"):
         else None
     )
     return TokenBreakdown(**values)
+
+
+def _partial_for_missing_mode_attribution(tokens: TokenBreakdown) -> TokenBreakdown:
+    if tokens.accounting_status == "incomplete_legacy":
+        return tokens
+    return tokens.model_copy(
+        update={
+            "accounting_status": "partial",
+            "phase_attribution_status": "partial",
+            "total_tokens": None,
+        }
+    )
 
 
 def _cost(events, *, operational_events):

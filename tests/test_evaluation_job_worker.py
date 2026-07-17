@@ -141,6 +141,7 @@ async def test_start_interrupts_running_accounting_scopes_before_recovery(
         job_id=claim.job_id,
         work_item_id=claim.work_item_id,
         attempt_id=claim.attempt_id,
+        mode="naive",
     )
     worker = EvaluationJobWorker(
         store=store,

@@ -75,8 +75,11 @@ async def test_sink_normalizes_prices_and_preserves_callback_event_id(
         job_id="job-1",
         work_item_id="item-1",
         attempt_id="attempt-1",
+        mode="naive",
         price_snapshot=TEST_PRICE_SNAPSHOT,
     )
+    stored_scope = await store.get_scope(scope.scope_id)
+    assert [target.mode for target in stored_scope.targets] == ["naive"]
     raw = RawLlmUsageEvent(
         usage_event_id="event-1",
         scope_id=scope.scope_id,
@@ -119,6 +122,7 @@ async def test_sink_keeps_partial_usage_unpriced(
         job_id="job-1",
         work_item_id="item-1",
         attempt_id="attempt-1",
+        mode="naive",
         price_snapshot=TEST_PRICE_SNAPSHOT,
     )
     sink = EvaluationAccountingSink(store=store, price_snapshot=TEST_PRICE_SNAPSHOT)

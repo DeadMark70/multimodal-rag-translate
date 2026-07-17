@@ -201,6 +201,7 @@ async def test_failed_attempt_scope_is_not_official(store: EvaluationJobStore) -
     scope = (await accounting_store.list_campaign_scopes("cmp-1"))[0]
     assert scope.status == "failed"
     assert all(not target.is_official for target in scope.targets)
+    assert [target.mode for target in scope.targets] == ["naive"]
     assert (
         await evaluation_db.CampaignResultRepository().list_for_campaign(
             user_id="user-a", campaign_id="cmp-1"

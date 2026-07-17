@@ -106,6 +106,7 @@ class AccountingScopeTarget(BaseModel):
     job_id: str
     work_item_id: str
     attempt_id: str
+    mode: str | None = None
     metric_name: str | None = None
     is_official: bool = False
 

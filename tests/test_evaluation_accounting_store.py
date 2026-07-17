@@ -42,7 +42,12 @@ def _execution_scope() -> AccountingScopeStart:
         scope_key="run-1",
         run_id="run-1",
         targets=[
-            {"job_id": "job-1", "work_item_id": "work-1", "attempt_id": "attempt-1"}
+            {
+                "job_id": "job-1",
+                "work_item_id": "work-1",
+                "attempt_id": "attempt-1",
+                "mode": "naive",
+            }
         ],
     )
 
@@ -102,6 +107,15 @@ async def test_record_event_updates_scope_counters_atomically(accounting_store):
     assert scope.observed_call_count == 1
     assert scope.measured_call_count == 1
     assert scope.missing_usage_call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_execution_target_mode_round_trips_durably(accounting_store):
+    await accounting_store.start_scope(_execution_scope())
+
+    scope = await accounting_store.get_scope("scope-1")
+
+    assert [target.mode for target in scope.targets] == ["naive"]
 
 
 @pytest.mark.asyncio

@@ -178,6 +178,12 @@
   one `execution_run` scope; each compatible RAGAS batch owns one
   campaign-level `ragas_batch` scope. Every observed provider call is stored as
   a normalized usage event with a non-overlapping token breakdown and a phase.
+- Every new execution target durably records the mode frozen in its work-item
+  input. This attributes successful, failed, and retried attempts to the same
+  mode without relying on a promoted result. Older targets with `mode=null`
+  are used only when an existing result ID or official attempt ID determines
+  exactly one mode; otherwise campaign and per-mode accounting become partial,
+  the modes are non-comparable, and no mode or cost is guessed.
 - Historical campaigns are deliberately not backfilled. A completed legacy
   result without a version-2 official execution scope remains readable, but
   reports `token_accounting_status="incomplete_legacy"` and is not comparable.
@@ -195,9 +201,11 @@
 - RAGAS keeps two distinct signatures. `evaluation_signature` is a per-result
   currentness key that includes result/content identity and drives durable work
   idempotency. `compatibility_signature` identifies only the evaluator policy
-  (model/configuration, metric name/version, and policy knobs) and is used to
-  form comparable research cohorts. Legacy scores without the compatibility
-  signature fall back strictly to identical raw evaluation signatures.
+  (model/configuration, metric name/version, context-policy version, and policy
+  knobs) and is used to form comparable research cohorts. Cohort compatibility
+  is checked independently per metric so valid metric-specific signatures do
+  not conflict. Legacy scores without the compatibility signature fall back
+  strictly to identical raw evaluation signatures.
 - Latency `p50` and `p95` use the nearest-rank method: sort observed successful
   run latencies, then select `ceil(percentile * sample_count)`. Values are
   observed samples, not interpolated estimates.

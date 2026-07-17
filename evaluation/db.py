@@ -378,6 +378,7 @@ CREATE TABLE IF NOT EXISTS evaluation_accounting_scope_targets (
     job_id TEXT NOT NULL,
     work_item_id TEXT NOT NULL,
     attempt_id TEXT NOT NULL,
+    mode TEXT,
     metric_name TEXT,
     is_official INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -777,6 +778,13 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
     if "evaluation_signature" not in ragas_score_columns:
         await connection.execute(
             "ALTER TABLE ragas_scores ADD COLUMN evaluation_signature TEXT"
+        )
+    accounting_target_columns = await _table_columns(
+        connection, "evaluation_accounting_scope_targets"
+    )
+    if "mode" not in accounting_target_columns:
+        await connection.execute(
+            "ALTER TABLE evaluation_accounting_scope_targets ADD COLUMN mode TEXT"
         )
     campaign_result_research_columns = {
         "question_version": "TEXT",

@@ -105,14 +105,15 @@ class EvaluationAccountingStore:
                 await connection.execute(
                     """INSERT INTO evaluation_accounting_scope_targets (
                            scope_id, campaign_result_id, job_id, work_item_id, attempt_id,
-                           metric_name, is_official, created_at
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                           mode, metric_name, is_official, created_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         request.scope_id,
                         target.campaign_result_id,
                         target.job_id,
                         target.work_item_id,
                         target.attempt_id,
+                        target.mode,
                         target.metric_name,
                         int(target.is_official),
                         now,
@@ -343,7 +344,7 @@ class EvaluationAccountingStore:
 
 async def _load_scope_targets(connection, scope_id: str) -> list[AccountingScopeTarget]:
     cursor = await connection.execute(
-        """SELECT campaign_result_id, job_id, work_item_id, attempt_id, metric_name, is_official
+        """SELECT campaign_result_id, job_id, work_item_id, attempt_id, mode, metric_name, is_official
            FROM evaluation_accounting_scope_targets
            WHERE scope_id = ? ORDER BY created_at ASC, attempt_id ASC""",
         (scope_id,),
@@ -355,6 +356,7 @@ async def _load_scope_targets(connection, scope_id: str) -> list[AccountingScope
             job_id=row["job_id"],
             work_item_id=row["work_item_id"],
             attempt_id=row["attempt_id"],
+            mode=row["mode"],
             metric_name=row["metric_name"],
             is_official=bool(row["is_official"]),
         )
