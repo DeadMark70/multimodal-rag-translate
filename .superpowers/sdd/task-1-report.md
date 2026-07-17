@@ -1,224 +1,115 @@
-# Task 1 Report: Graph Evidence Anchor Contract
+# Task 1: Shared Evaluation Retrieval Policy Report
 
-## Outcome
+## Implementation summary
 
-Implemented the Task 1 anchor contract in the isolated worktree and committed it as:
+Added a dependency-neutral `evaluation.retrieval_profiles` policy module for
+Evaluation Center execution paths. It exposes fresh query-expansion settings,
+source-backed locator-to-chunk graph hints, a non-mutating no-HyDE normalizer,
+and versioned execution profiles for changed evaluation modes. No ordinary chat
+or Deep Research execution code was modified.
 
-- `0fd5116` `feat: define graph evidence anchor contract`
+## Files changed
 
-## Files Changed
+- `evaluation/retrieval_profiles.py`
+- `tests/test_evaluation_retrieval_profiles.py`
+- `.superpowers/sdd/task-1-report.md`
 
-- `graph_rag/schemas.py`
-  - Added `GraphEvidenceMode`.
-  - Added `EvidenceAnchor` with computed `provenance_status`.
-- `graph_rag/feature_flags.py`
-  - Added `GraphFeatureFlags`.
-  - Added `get_graph_feature_flags(...)`.
-- `graph_rag/anchor_resolver.py`
-  - Added `ChunkLookup` protocol.
-  - Added `AnchorResolutionResult`.
-  - Added `ChunkAnchorResolver.resolve(user_id, anchor)`.
-- `tests/test_graph_anchor_contract.py`
-  - Added contract tests for evidence modes, anchor serialization, flag defaults/snapshots, hash mismatch, and fuzzy quote resolution.
-- `docs/BACKEND.md`
-  - Documented the split between legacy `graph_raw_current` and the provenance-aware evidence-locator path.
+## RED evidence
 
-## TDD Record
-
-### Red
-
-Ran the required focused test command before implementing production code:
+Command:
 
 ```powershell
-$env:TEST_MODE='true'; $env:USE_FAKE_PROVIDERS='true'; D:\flutterserver\pdftopng\.venv\Scripts\python.exe -m pytest tests\test_graph_anchor_contract.py -q
+.\.venv\Scripts\python.exe -m pytest tests/test_evaluation_retrieval_profiles.py -q
 ```
 
-Observed expected failure during collection:
+Output:
 
-- `ModuleNotFoundError: No module named 'graph_rag.anchor_resolver'`
+```text
+==================================== ERRORS ====================================
+________ ERROR collecting tests/test_evaluation_retrieval_profiles.py _________
+ImportError while importing test module 'D:\flutterserver\pdftopng\tests\test_evaluation_retrieval_profiles.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+C:\Users\user\AppData\Local\Programs\Python\Python313\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_evaluation_retrieval_profiles.py:1: in <module>
+    from evaluation.retrieval_profiles import (
+E   ModuleNotFoundError: No module named 'evaluation.retrieval_profiles'
+=========================== short test summary info ===========================
+ERROR tests/test_evaluation_retrieval_profiles.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.24s
+```
 
-This confirmed the test was failing because the new Task 1 contract had not been implemented yet.
+## GREEN evidence
 
-### Green
-
-After implementing the minimal production code, reran the focused tests:
+Focused policy command:
 
 ```powershell
-$env:TEST_MODE='true'; $env:USE_FAKE_PROVIDERS='true'; D:\flutterserver\pdftopng\.venv\Scripts\python.exe -m pytest tests\test_graph_anchor_contract.py -q
+.\.venv\Scripts\python.exe -m pytest tests/test_evaluation_retrieval_profiles.py -q
 ```
 
-Result:
+Output:
 
-- `8 passed`
-- One pytest cache warning from the linked worktree filesystem; no test failures.
+```text
+....                                                                     [100%]
+4 passed in 4.96s
+```
 
-## Verification
-
-### Pytest
+Evaluation-area regression command:
 
 ```powershell
-$env:TEST_MODE='true'; $env:USE_FAKE_PROVIDERS='true'; D:\flutterserver\pdftopng\.venv\Scripts\python.exe -m pytest tests\test_graph_anchor_contract.py -q
+.\.venv\Scripts\python.exe -m pytest tests/test_evaluation_retrieval_profiles.py tests/test_rag_retrieval_logic.py tests/test_query_transformer.py tests/test_rag_modes_agentic.py tests/test_agentic_evaluation_service.py tests/test_graph_context_packing.py tests/test_graph_auto_gate.py tests/test_graph_evidence_bundle_wrapper.py tests/test_evaluation_graph_events.py tests/test_research_execution_core_generic.py tests/test_deep_research.py -q
 ```
 
-Result:
+Output:
 
-- Pass
-- `8 passed, 1 warning in 0.31s`
+```text
+........................................................................ [ 66%]
+....................................                                     [100%]
+108 passed, 23 warnings in 7.09s
+```
 
-### Ruff
+The 23 warnings are pre-existing third-party `storage3` Pydantic v2
+deprecation warnings; the command exited successfully.
 
-The exact ruff command initially failed because ruff could not create its cache directory inside the linked worktree:
+## Lint and formatting
+
+Command:
 
 ```powershell
-D:\flutterserver\pdftopng\.venv\Scripts\python.exe -m ruff check graph_rag\schemas.py graph_rag\feature_flags.py graph_rag\anchor_resolver.py tests\test_graph_anchor_contract.py
+.\.venv\Scripts\python.exe -m ruff check evaluation/retrieval_profiles.py tests/test_evaluation_retrieval_profiles.py
+.\.venv\Scripts\python.exe -m ruff format --check evaluation/retrieval_profiles.py tests/test_evaluation_retrieval_profiles.py
 ```
 
-Initial failure reason:
+Output:
 
-- cache initialization error
-- filesystem permission denied for cache path creation
-
-Reran the same focused check with `RUFF_CACHE_DIR` pointed at the user temp directory:
-
-```powershell
-$env:RUFF_CACHE_DIR='C:\Users\user\AppData\Local\Temp\codex-ruff-cache'; D:\flutterserver\pdftopng\.venv\Scripts\python.exe -m ruff check graph_rag\schemas.py graph_rag\feature_flags.py graph_rag\anchor_resolver.py tests\test_graph_anchor_contract.py
+```text
+All checks passed!
+2 files already formatted
 ```
 
-Result:
+The initial sandboxed Ruff attempt could not create `.ruff_cache`; rerunning
+the exact checks outside the sandbox produced the successful result above.
 
-- Pass
-- `All checks passed!`
+## Self-review
 
-## Constraint Check
+- Verified all requested exports and exact profile naming conventions are
+  present.
+- Confirmed `apply_no_hyde_policy()` deep-copies supplied mode settings before
+  changing only the specified Evaluation Center modes.
+- Confirmed graph hints explicitly disable automatic gating and keep locator
+  evidence/provenance/chunk flags enabled.
+- Confirmed the focused 108-test regression set, including Deep Research
+  coverage, passes without modifying chat or Deep Research behavior.
+- `git diff --check` completed without whitespace errors.
 
-- Kept `NetworkX` untouched.
-- Did not remove or rewrite `graph_raw_current`.
-- Did not change prompts.
-- Preserved router/service boundaries.
-- Added `provenance_status` to every `EvidenceAnchor`.
-- Added `resolution_status` and `verification_status` to resolved anchor results.
-- Did not make graph summaries or unprovenanced relations eligible as final evidence.
+## Commit
 
-## Notes
+`feat(evaluation): centralize retrieval policies`
 
-- `ChunkAnchorResolver` verifies quote matches when quote text is available and reports `quote_mismatch` instead of assuming verification succeeded.
-- The worktree still has the untracked `.superpowers/` task artifact directory, which is expected for the report file.
+## Concerns
 
-## Review Finding Fix: 2026-07-09
-
-### Scope
-
-- `graph_rag/anchor_resolver.py`
-- `tests/test_graph_anchor_contract.py`
-
-### Changes
-
-- Added wrong-document rejection coverage for `chunk_id` and fuzzy-quote candidates.
-- Updated the fuzzy-quote contract test to assert `verification_status == "quote_match"`.
-- Hardened `ChunkAnchorResolver` to validate candidate metadata with `data_base.document_metadata.matches_document_id(...)` before accepting any lookup result.
-- Wrong-document candidates now fall through to an unresolved result with:
-  - `resolution_status = "unresolved"`
-  - `verification_status = "not_checked"`
-  - `reason = "doc_id_mismatch"`
-- Successful fuzzy-quote resolution now reports `verification_status = "quote_match"` as required by the contract.
-
-### TDD Record
-
-#### Red
-
-Ran the required focused test command after adding the regression coverage:
-
-```powershell
-$env:TEST_MODE='true'; $env:USE_FAKE_PROVIDERS='true'; D:\flutterserver\pdftopng\.venv\Scripts\python.exe -m pytest tests\test_graph_anchor_contract.py -q
-```
-
-Observed expected failures before the resolver fix:
-
-- `test_anchor_resolver_fuzzy_quote_match`
-- `test_anchor_resolver_rejects_chunk_id_from_wrong_document`
-- `test_anchor_resolver_rejects_fuzzy_quote_from_wrong_document`
-
-Summary:
-
-- `3 failed, 7 passed, 2 warnings`
-
-#### Green
-
-Reran the same focused test command after the resolver change:
-
-```powershell
-$env:TEST_MODE='true'; $env:USE_FAKE_PROVIDERS='true'; D:\flutterserver\pdftopng\.venv\Scripts\python.exe -m pytest tests\test_graph_anchor_contract.py -q
-```
-
-Summary:
-
-- `10 passed, 1 warning in 0.30s`
-
-### Lint Verification
-
-```powershell
-$env:RUFF_CACHE_DIR='C:\Users\user\AppData\Local\Temp\codex-ruff-cache'; D:\flutterserver\pdftopng\.venv\Scripts\python.exe -m ruff check graph_rag\anchor_resolver.py tests\test_graph_anchor_contract.py
-```
-
-Summary:
-
-- `All checks passed!`
-
-## Re-review Finding Fix: fuzzy quote verification on same-document candidates
-
-### Scope
-
-- `graph_rag/anchor_resolver.py`
-- `tests/test_graph_anchor_contract.py`
-
-### Changes
-
-- Added a regression case for a same-document fuzzy candidate whose `page_content` does not contain the exact quoted sentence.
-- Changed fuzzy lookup resolution to use `_verification_status(anchor, document)` instead of hard-coding `verification_status="quote_match"`.
-- Tightened the existing fuzzy-match fixture so the positive-path test remains a real exact-quote match.
-
-### TDD Record
-
-#### Red
-
-Added the regression test first and ran:
-
-```powershell
-$env:TEST_MODE='true'; $env:USE_FAKE_PROVIDERS='true'; D:\flutterserver\pdftopng\.venv\Scripts\python.exe -m pytest tests\test_graph_anchor_contract.py -q
-```
-
-Observed the expected failure before the production change:
-
-- `test_anchor_resolver_fuzzy_quote_mismatch_same_document`
-- expected `quote_mismatch`
-- actual `quote_match`
-
-Summary:
-
-- `1 failed, 10 passed, 2 warnings in 0.43s`
-
-#### Green
-
-After the resolver change and fixture correction, reran:
-
-```powershell
-$env:TEST_MODE='true'; $env:USE_FAKE_PROVIDERS='true'; D:\flutterserver\pdftopng\.venv\Scripts\python.exe -m pytest tests\test_graph_anchor_contract.py -q
-```
-
-Summary:
-
-- `11 passed, 1 warning in 0.31s`
-
-### Lint Verification
-
-```powershell
-$env:RUFF_CACHE_DIR='C:\Users\user\AppData\Local\Temp\codex-ruff-cache'; D:\flutterserver\pdftopng\.venv\Scripts\python.exe -m ruff check graph_rag\anchor_resolver.py tests\test_graph_anchor_contract.py
-```
-
-Summary:
-
-- `All checks passed!`
-
-### Notes
-
-- The remaining pytest warning is the existing linked-worktree cache write warning under `output\test_tmp\.pytest_cache`; it did not affect test execution.
+None. The only non-clean test output was the unrelated third-party deprecation
+warnings noted above.
