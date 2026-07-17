@@ -63,7 +63,11 @@ from data_base.query_transformer import (
 from data_base.repository import fetch_document_filenames
 from data_base.parent_child_store import ParentDocumentStore
 from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
-from graph_rag.anchor_resolver import ChunkAnchorResolver, ChunkLookup, VectorStoreChunkLookup
+from graph_rag.anchor_resolver import (
+    ChunkAnchorResolver,
+    ChunkLookup,
+    VectorStoreChunkLookup,
+)
 from graph_rag.feature_flags import get_graph_feature_flags
 from graph_rag.generic_mode import (
     GenericGraphRouter,
@@ -260,7 +264,9 @@ def _classify_graph_need(
             0.8,
             "relationship or claim-scope query",
         )
-    return GraphNeedDecision(False, "skip", False, False, 0.3, "no graph-specific intent")
+    return GraphNeedDecision(
+        False, "skip", False, False, 0.3, "no graph-specific intent"
+    )
 
 
 def _graph_execution_strategy(
@@ -299,8 +305,12 @@ def _graph_execution_strategy(
         if not gate_decision.use_graph:
             return GraphExecutionStrategy("skip", gate_decision, "auto_gate_skip")
         if flags.graph_to_chunk_enabled:
-            return GraphExecutionStrategy("source_expand", gate_decision, "auto_source_expand")
-        return GraphExecutionStrategy("skip", gate_decision, "auto_requires_source_expand")
+            return GraphExecutionStrategy(
+                "source_expand", gate_decision, "auto_source_expand"
+            )
+        return GraphExecutionStrategy(
+            "skip", gate_decision, "auto_requires_source_expand"
+        )
 
     if flags.graph_to_chunk_enabled:
         return GraphExecutionStrategy("source_expand", None, "source_expand_enabled")
@@ -845,7 +855,9 @@ async def _get_graph_evidence_bundle(
                 store,
                 question,
                 max_communities=decision.max_communities,
-                level=1 if (has_hierarchy and decision.query_kind == "summary") else None,
+                level=1
+                if (has_hierarchy and decision.query_kind == "summary")
+                else None,
             )
         return merge_graph_evidence_bundle(
             hints=hints,
@@ -949,10 +961,16 @@ def _to_graph_evidence_documents(evidence_units: List[GraphEvidence]) -> List[Do
     return evidence_documents
 
 
-def _summarize_graph_evidence_for_log(evidence_units: List[GraphEvidence]) -> dict[str, object]:
+def _summarize_graph_evidence_for_log(
+    evidence_units: List[GraphEvidence],
+) -> dict[str, object]:
     return {
-        "node_count": sum(1 for item in evidence_units if item.evidence_type == "local_node"),
-        "edge_count": sum(1 for item in evidence_units if item.evidence_type == "local_edge"),
+        "node_count": sum(
+            1 for item in evidence_units if item.evidence_type == "local_node"
+        ),
+        "edge_count": sum(
+            1 for item in evidence_units if item.evidence_type == "local_edge"
+        ),
         "community_count": sum(
             1
             for item in evidence_units
@@ -982,7 +1000,9 @@ def _filter_graph_query_hints(
         return GraphQueryHints()
     allowed_keys = GraphQueryHints.__dataclass_fields__.keys()
     filtered = {
-        key: value for key, value in graph_execution_hints.items() if key in allowed_keys
+        key: value
+        for key, value in graph_execution_hints.items()
+        if key in allowed_keys
     }
     return GraphQueryHints(**filtered)
 
@@ -1073,8 +1093,22 @@ def _oracle_graph_decision(
 
 
 _CLAIM_SCOPE_STOPWORDS = {
-    "a", "an", "and", "are", "does", "for", "how", "in", "is", "of", "the",
-    "to", "use", "what", "which", "with",
+    "a",
+    "an",
+    "and",
+    "are",
+    "does",
+    "for",
+    "how",
+    "in",
+    "is",
+    "of",
+    "the",
+    "to",
+    "use",
+    "what",
+    "which",
+    "with",
 }
 
 
@@ -1091,7 +1125,12 @@ def _claim_scope_approves_chunk(question: str, chunk: Any) -> bool:
     evidence_text = " ".join(
         filter(
             None,
-            (item.evidence_quote, item.summary, item.relation_type, chunk.document.page_content),
+            (
+                item.evidence_quote,
+                item.summary,
+                item.relation_type,
+                chunk.document.page_content,
+            ),
         )
     ).lower()
     return any(term in evidence_text for term in query_terms)
@@ -1172,7 +1211,10 @@ def _unique_graph_item_ids(item_ids: List[str]) -> List[str]:
 
 def _graph_item_ids_from_documents(documents: List[Document]) -> List[str]:
     return _unique_graph_item_ids(
-        [str(document.metadata.get("graph_evidence_item_id") or "") for document in documents]
+        [
+            str(document.metadata.get("graph_evidence_item_id") or "")
+            for document in documents
+        ]
     )
 
 
@@ -1198,7 +1240,9 @@ def _build_graph_evidence_items(
         relation_path: List[str] = []
         source_doc_ids = [str(item) for item in metadata.get("doc_ids", []) if item]
         source_chunk_ids = [str(item) for item in metadata.get("chunk_ids", []) if item]
-        pages = [int(item) for item in metadata.get("pages", []) if isinstance(item, int)]
+        pages = [
+            int(item) for item in metadata.get("pages", []) if isinstance(item, int)
+        ]
         asset_ids = [str(item) for item in metadata.get("asset_ids", []) if item]
 
         if unit.evidence_type == "local_node":
@@ -1262,7 +1306,9 @@ def _graph_evidence_units_from_bundle(
                 evidence_type=evidence_type,
                 text=item.evidence_quote or item.summary,
                 score=item.confidence,
-                token_estimate=estimate_token_count(item.evidence_quote or item.summary),
+                token_estimate=estimate_token_count(
+                    item.evidence_quote or item.summary
+                ),
                 metadata={
                     "doc_ids": list(item.source_doc_ids),
                     "chunk_ids": list(item.source_chunk_ids),
@@ -1283,7 +1329,11 @@ def _graph_context_details_for_bundle(
     graph_latency_ms: int,
 ) -> GraphContextDetails:
     """Expose structured bundle counts through the existing graph-event contract."""
-    route = bundle.route if bundle.route in {"local-first", "global-first", "blended"} else "local-first"
+    route = (
+        bundle.route
+        if bundle.route in {"local-first", "global-first", "blended"}
+        else "local-first"
+    )
     candidate_count = len(lifecycle.candidate_item_ids)
     reason_parts = []
     if graph_need_decision is not None:
@@ -1337,7 +1387,9 @@ async def _record_graph_observability(
     lifecycle: Optional[GraphEvidenceLifecycle] = None,
 ) -> None:
     summary = _summarize_graph_evidence_for_log(graph_evidence_units)
-    evaluation_metadata = _normalize_evaluation_metadata(mode_hints, graph_execution_hints)
+    evaluation_metadata = _normalize_evaluation_metadata(
+        mode_hints, graph_execution_hints
+    )
     if not evaluation_metadata:
         logger.debug(
             "Graph retrieval observability skipped because evaluation metadata was absent: %s",
@@ -1395,12 +1447,19 @@ async def _record_graph_observability(
     resolved_item_ids = (
         set(lifecycle.resolved_item_ids)
         if lifecycle is not None
-        else {unit.evidence_id for unit in graph_evidence_units if unit.metadata.get("chunk_ids")}
+        else {
+            unit.evidence_id
+            for unit in graph_evidence_units
+            if unit.metadata.get("chunk_ids")
+        }
     )
     resolved_candidate_item_ids = candidate_item_ids.intersection(resolved_item_ids)
     candidate_count = len(candidate_item_ids)
     graph_snapshot_version = evaluation_metadata.get("graph_snapshot_version")
-    if not graph_snapshot_version and graph_context_details.graph_index_version is not None:
+    if (
+        not graph_snapshot_version
+        and graph_context_details.graph_index_version is not None
+    ):
         graph_snapshot_version = f"index-v{graph_context_details.graph_index_version}"
     graph_schema_version = evaluation_metadata.get("graph_schema_version")
     if not graph_schema_version and feature_flags.get("graph_schema_v1_enabled"):
@@ -1417,8 +1476,12 @@ async def _record_graph_observability(
         graph_route=graph_context_details.route_decision.path,
         router_reason=graph_context_details.route_decision.router_reason,
         graph_feature_flags=feature_flags,
-        graph_snapshot_version=str(graph_snapshot_version) if graph_snapshot_version else None,
-        graph_schema_version=str(graph_schema_version) if graph_schema_version else None,
+        graph_snapshot_version=str(graph_snapshot_version)
+        if graph_snapshot_version
+        else None,
+        graph_schema_version=str(graph_schema_version)
+        if graph_schema_version
+        else None,
         graph_extraction_prompt_version=(
             str(evaluation_metadata.get("graph_extraction_prompt_version"))
             if evaluation_metadata.get("graph_extraction_prompt_version")
@@ -2008,7 +2071,9 @@ async def rag_answer_question(
     graph_evidence_units: List[GraphEvidence] = []
     graph_context_details: Optional[GraphContextDetails] = None
     graph_evidence_documents_for_return: List[Document] = []
-    graph_flags = get_graph_feature_flags(_graph_feature_flag_config(graph_execution_hints))
+    graph_flags = get_graph_feature_flags(
+        _graph_feature_flag_config(graph_execution_hints)
+    )
     graph_execution_strategy: Optional[GraphExecutionStrategy] = None
     if enable_graph_rag:
         asset_probe_result = (
@@ -2122,11 +2187,16 @@ async def rag_answer_question(
                     ]
                 else:
                     scoped_chunks = resolved_chunks
-                if _graph_evidence_mode(
-                    mode_hints,
-                    graph_execution_hints,
-                    _normalize_evaluation_metadata(mode_hints, graph_execution_hints),
-                ) == "claim_gated":
+                if (
+                    _graph_evidence_mode(
+                        mode_hints,
+                        graph_execution_hints,
+                        _normalize_evaluation_metadata(
+                            mode_hints, graph_execution_hints
+                        ),
+                    )
+                    == "claim_gated"
+                ):
                     scoped_chunks = [
                         chunk
                         for chunk in scoped_chunks
@@ -2227,7 +2297,9 @@ async def rag_answer_question(
                 return_details=return_docs,
             )
             if return_docs:
-                graph_context, graph_evidence_units, graph_context_details = graph_context_payload
+                graph_context, graph_evidence_units, graph_context_details = (
+                    graph_context_payload
+                )
                 graph_evidence_documents_for_return = _to_graph_evidence_documents(
                     graph_evidence_units
                 )

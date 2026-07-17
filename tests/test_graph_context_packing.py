@@ -74,7 +74,9 @@ def test_merge_vector_and_graph_docs_marks_overlap_and_interleaves_graph_only() 
     assert merged[1].metadata["selected_by"] == "both"
 
 
-def test_merge_vector_and_graph_docs_preserves_vector_documents_without_chunk_ids() -> None:
+def test_merge_vector_and_graph_docs_preserves_vector_documents_without_chunk_ids() -> (
+    None
+):
     vector_without_id = Document(
         page_content="Vector without ID",
         metadata={"doc_id": "doc-1", "chunk_index": 1, "rank": 1},
@@ -184,13 +186,20 @@ def test_merge_vector_and_graph_docs_uses_document_and_chunk_identity() -> None:
 
 def test_merge_vector_and_graph_docs_enforces_strict_graph_only_ratio() -> None:
     vector_docs = [
-        Document(page_content=f"Vector {index}", metadata={"doc_id": "doc-1", "chunk_id": f"v-{index}"})
+        Document(
+            page_content=f"Vector {index}",
+            metadata={"doc_id": "doc-1", "chunk_id": f"v-{index}"},
+        )
         for index in range(2)
     ]
     graph_docs = [
         Document(
             page_content=f"Graph {index}",
-            metadata={"doc_id": "doc-2", "chunk_id": f"g-{index}", "selected_by": "graph"},
+            metadata={
+                "doc_id": "doc-2",
+                "chunk_id": f"g-{index}",
+                "selected_by": "graph",
+            },
         )
         for index in range(4)
     ]
@@ -230,7 +239,9 @@ async def test_graph_to_chunk_flag_disabled_preserves_legacy_graph_wrapper() -> 
     ]
     llm = Mock()
     llm.ainvoke = AsyncMock(return_value=SimpleNamespace(content="answer"))
-    legacy_context = AsyncMock(return_value=("=== Graph Evidence ===\nLegacy", [], None))
+    legacy_context = AsyncMock(
+        return_value=("=== Graph Evidence ===\nLegacy", [], None)
+    )
 
     with (
         patch("data_base.RAG_QA_service.get_llm", return_value=llm),
@@ -263,7 +274,9 @@ async def test_graph_to_chunk_flag_disabled_preserves_legacy_graph_wrapper() -> 
 
 
 @pytest.mark.asyncio
-async def test_graph_to_chunk_flag_uses_source_chunks_and_falls_back_on_lookup_failure() -> None:
+async def test_graph_to_chunk_flag_uses_source_chunks_and_falls_back_on_lookup_failure() -> (
+    None
+):
     retriever = Mock()
     vector_document = Document(
         page_content="Vector source", metadata={"doc_id": "doc-1", "chunk_id": "vector"}
