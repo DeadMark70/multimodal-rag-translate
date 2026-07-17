@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 # Local application
 from core.providers import get_llm
+from core.llm_usage_context import llm_accounting_phase
 from core.prompt_loader import format_agentic_rag_prompt
 
 # Configure logging
@@ -256,10 +257,11 @@ async def classify_question_intent_semantic(
     fallback = _heuristic_semantic_decision(question)
     try:
         llm = get_llm("planner")
-        response = await asyncio.wait_for(
-            llm.ainvoke([HumanMessage(content=format_agentic_rag_prompt("intent_classifier", question=question))]),
-            timeout=timeout_seconds,
-        )
+        with llm_accounting_phase("agent_planning"):
+            response = await asyncio.wait_for(
+                llm.ainvoke([HumanMessage(content=format_agentic_rag_prompt("intent_classifier", question=question))]),
+                timeout=timeout_seconds,
+            )
     except asyncio.TimeoutError:
         fallback.source = "timeout_fallback"
         fallback.rationale = "LLM timeout, fallback to heuristic classifier"
@@ -501,7 +503,8 @@ class TaskPlanner:
                 
                 message = HumanMessage(content=prompt)
                 
-                response = await llm.ainvoke([message])
+                with llm_accounting_phase("agent_planning"):
+                    response = await llm.ainvoke([message])
                 subtasks = self._parse_subtasks(response.content)
                 
                 if not subtasks:
@@ -638,7 +641,8 @@ class TaskPlanner:
                 )
                 
                 message = HumanMessage(content=prompt)
-                response = await llm.ainvoke([message])
+                with llm_accounting_phase("agent_planning"):
+                    response = await llm.ainvoke([message])
                 
                 # Check if no follow-up needed
                 content = response.content.strip()
@@ -740,7 +744,8 @@ class TaskPlanner:
                 )
                 
                 message = HumanMessage(content=prompt)
-                response = await llm.ainvoke([message])
+                with llm_accounting_phase("retrieval_rewrite"):
+                    response = await llm.ainvoke([message])
                 
                 refined_query = response.content.strip()
                 

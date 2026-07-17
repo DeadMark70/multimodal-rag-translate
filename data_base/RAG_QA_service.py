@@ -42,6 +42,7 @@ from langchain_core.messages import HumanMessage
 
 # Local application
 from core.llm_factory import get_llm_usage_metrics
+from core.llm_usage_context import llm_accounting_phase
 from core.providers import get_llm
 from core.prompt_loader import format_prompt
 from data_base.context_packing import (
@@ -498,7 +499,8 @@ async def _execute_visual_verification_loop(
         from langchain_core.messages import HumanMessage
 
         synth_message = HumanMessage(content=synthesis_prompt)
-        synth_response = await llm.ainvoke([synth_message])
+        with llm_accounting_phase("visual_verification"):
+            synth_response = await llm.ainvoke([synth_message])
         response = synth_response.content
 
         logger.info(f"Visual verification synthesis completed (iteration {iteration})")
@@ -2470,7 +2472,8 @@ async def rag_answer_question(
                 "document_count": len(docs),
             },
         )
-        response = await llm.ainvoke([message])
+        with llm_accounting_phase("answer_generation"):
+            response = await llm.ainvoke([message])
         answer = response.content
         usage_metadata = get_llm_usage_metrics(response)
         visual_verification_meta = {

@@ -12,6 +12,7 @@ from agents.evaluator import RAGEvaluator
 from agents.planner import SubTask, TaskPlanner
 from agents.synthesizer import SubTaskResult, synthesize_results
 from core.providers import get_llm
+from core.llm_usage_context import llm_accounting_phase
 from core.prompt_loader import format_agentic_rag_prompt
 from data_base.RAG_QA_service import rag_answer_question
 from data_base.schemas_deep_research import (
@@ -266,7 +267,8 @@ class ResearchExecutionCore:
                 source_doc_ids=", ".join(source_ids) if source_ids else "(none)",
                 answer=result.answer[:2400],
             )
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            with llm_accounting_phase("agent_planning"):
+                response = await llm.ainvoke([HumanMessage(content=prompt)])
             parsed = self._parse_json_payload(self._response_text(getattr(response, "content", "")))
             facts = self._normalize_atomic_facts(
                 parsed,

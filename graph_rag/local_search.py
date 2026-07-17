@@ -15,6 +15,7 @@ from langchain_core.messages import HumanMessage
 
 # Local application
 from core.llm_factory import graph_rag_llm_runtime_override
+from core.llm_usage_context import llm_accounting_phase
 from core.providers import get_llm
 from core.prompt_loader import format_graph_rag_prompt
 from graph_rag.anchor_resolver import ChunkAnchorResolver
@@ -61,7 +62,8 @@ async def identify_query_entities(question: str) -> List[str]:
         with graph_rag_llm_runtime_override("graph_extraction"):
             llm = get_llm("graph_extraction")
             prompt = format_graph_rag_prompt("entity_identification", question=question)
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            with llm_accounting_phase("graph_reasoning"):
+                response = await llm.ainvoke([HumanMessage(content=prompt)])
         
         # Parse response (one entity per line)
         entities = []

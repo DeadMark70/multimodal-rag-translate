@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 # Local application
 from core.providers import get_llm
+from core.llm_usage_context import llm_accounting_phase
 from core.prompt_loader import format_agentic_rag_prompt
 
 # Configure logging
@@ -238,7 +239,8 @@ class RAGEvaluator:
                 )
                 
                 message = HumanMessage(content=prompt)
-                response = await llm.ainvoke([message])
+                with llm_accounting_phase("agent_planning"):
+                    response = await llm.ainvoke([message])
                 
                 result = response.content.strip().upper()
                 
@@ -302,7 +304,8 @@ class RAGEvaluator:
                 )
                 
                 message = HumanMessage(content=prompt)
-                response = await llm.ainvoke([message])
+                with llm_accounting_phase("agent_planning"):
+                    response = await llm.ainvoke([message])
                 
                 result = response.content.strip().upper()
                 
@@ -377,7 +380,8 @@ class RAGEvaluator:
                 )
                 
                 message = HumanMessage(content=prompt)
-                response = await llm.ainvoke([message])
+                with llm_accounting_phase("agent_planning"):
+                    response = await llm.ainvoke([message])
                 
                 # Parse JSON response
                 scores = self._parse_json_response(response.content)
@@ -484,7 +488,8 @@ class RAGEvaluator:
                 )
                 
                 message = HumanMessage(content=prompt)
-                response = await llm.ainvoke([message])
+                with llm_accounting_phase("agent_planning"):
+                    response = await llm.ainvoke([message])
                 
                 # Parse JSON response
                 scores = self._parse_json_response(response.content)

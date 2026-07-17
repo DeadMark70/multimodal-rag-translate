@@ -18,6 +18,7 @@ from typing import Literal, Optional
 from langchain_core.messages import HumanMessage
 
 from core.llm_factory import graph_rag_llm_runtime_override
+from core.llm_usage_context import llm_accounting_phase
 from core.providers import get_llm
 from core.prompt_loader import format_graph_rag_prompt
 from graph_rag.llm_response import response_content_to_text
@@ -262,15 +263,16 @@ class GenericGraphRouter:
         try:
             with graph_rag_llm_runtime_override("graph_extraction"):
                 llm = get_llm("graph_extraction")
-                response = await llm.ainvoke(
-                    [
-                        HumanMessage(
-                            content=format_graph_rag_prompt(
-                                "generic_router",
-                                question=question,
-                                stage_hint=hints.stage_hint or "none",
-                                task_type_hint=hints.task_type_hint or "none",
-                                prefer_global=str(hints.prefer_global).lower(),
+                with llm_accounting_phase("graph_reasoning"):
+                    response = await llm.ainvoke(
+                        [
+                            HumanMessage(
+                                content=format_graph_rag_prompt(
+                                    "generic_router",
+                                    question=question,
+                                    stage_hint=hints.stage_hint or "none",
+                                    task_type_hint=hints.task_type_hint or "none",
+                                    prefer_global=str(hints.prefer_global).lower(),
                                 prefer_local=str(hints.prefer_local).lower(),
                                 has_communities=str(has_communities).lower(),
                             )

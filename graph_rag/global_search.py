@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage
 
 # Local application
 from core.llm_factory import graph_rag_llm_runtime_override
+from core.llm_usage_context import llm_accounting_phase
 from core.providers import get_llm
 from core.prompt_loader import format_graph_rag_prompt
 from graph_rag.generic_mode import GraphEvidence, estimate_token_count
@@ -112,7 +113,8 @@ async def query_community(
                 summary=community.summary,
                 entities=entity_str,
             )
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            with llm_accounting_phase("graph_reasoning"):
+                response = await llm.ainvoke([HumanMessage(content=prompt)])
         answer = response_content_to_text(response.content)
         
         # Skip non-answers
@@ -160,7 +162,8 @@ async def synthesize_answers(
                 question=question,
                 community_answers=answers_str,
             )
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            with llm_accounting_phase("graph_reasoning"):
+                response = await llm.ainvoke([HumanMessage(content=prompt)])
         return response_content_to_text(response.content)
         
     except Exception as e:

@@ -20,6 +20,7 @@ from langchain_core.messages import HumanMessage
 
 # Local application
 from core.providers import get_llm
+from core.llm_usage_context import llm_accounting_phase
 from .schemas import VisualElement, VisualElementType
 
 # Configure logging
@@ -233,7 +234,8 @@ class ImageSummarizer:
             
             try:
                 llm = get_llm("image_caption")
-                response = await llm.ainvoke([message])
+                with llm_accounting_phase("visual_verification"):
+                    response = await llm.ainvoke([message])
                 element.summary = response.content
                 
                 # 5. 儲存到快取
@@ -384,7 +386,8 @@ class ImageSummarizer:
             
             try:
                 llm = get_llm("visual_verification")
-                response = await llm.ainvoke([message])
+                with llm_accounting_phase("visual_verification"):
+                    response = await llm.ainvoke([message])
                 
                 logger.info(f"Re-examined image: {os.path.basename(image_path)}")
                 return response.content

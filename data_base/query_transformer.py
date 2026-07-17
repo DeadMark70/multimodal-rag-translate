@@ -18,6 +18,7 @@ from langchain_core.messages import HumanMessage
 # Local application
 from core.providers import get_llm
 from core.prompt_loader import format_rag_pipeline_prompt
+from core.llm_usage_context import llm_accounting_phase
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -67,7 +68,8 @@ class QueryTransformer:
                 prompt = format_rag_pipeline_prompt("hyde", question=question)
                 message = HumanMessage(content=prompt)
                 
-                response = await llm.ainvoke([message])
+                with llm_accounting_phase("query_expansion"):
+                    response = await llm.ainvoke([message])
                 hyde_doc = response.content.strip()
                 
                 logger.debug(f"Generated HyDE document: {hyde_doc[:100]}...")
@@ -102,7 +104,8 @@ class QueryTransformer:
                 prompt = format_rag_pipeline_prompt("multi_query", question=question)
                 message = HumanMessage(content=prompt)
                 
-                response = await llm.ainvoke([message])
+                with llm_accounting_phase("retrieval_rewrite"):
+                    response = await llm.ainvoke([message])
                 
                 # Parse numbered queries
                 queries = [question]  # Always include original

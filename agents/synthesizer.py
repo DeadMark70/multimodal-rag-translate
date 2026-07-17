@@ -17,6 +17,7 @@ from pydantic import BaseModel
 # Local application
 from agents.planner import QuestionIntent, classify_question_intent
 from core.providers import get_llm
+from core.llm_usage_context import llm_accounting_phase
 from core.prompt_loader import format_agentic_rag_prompt
 
 # Configure logging
@@ -159,7 +160,8 @@ class ResultSynthesizer:
             sub_results=self._format_arbitration_input(sub_results),
         )
         try:
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            with llm_accounting_phase("agent_synthesis"):
+                response = await llm.ainvoke([HumanMessage(content=prompt)])
             statement = (getattr(response, "content", "") or "").strip()
             if _is_no_conflict_statement(statement):
                 return _NO_CONFLICT_SENTINEL
@@ -343,7 +345,8 @@ class ResultSynthesizer:
                     logger.info("Conflict arbitration injected into synthesizer prompt")
                 
                 message = HumanMessage(content=prompt)
-                response = await llm.ainvoke([message])
+                with llm_accounting_phase("agent_synthesis"):
+                    response = await llm.ainvoke([message])
                 
                 report = self._parse_report(
                     response.content,

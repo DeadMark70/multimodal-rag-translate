@@ -23,6 +23,7 @@ from agents.planner import (
 )
 from agents.synthesizer import SubTaskResult, synthesize_results
 from core.providers import get_llm
+from core.llm_usage_context import llm_accounting_phase
 from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from data_base.research_execution_core import ResearchExecutionCore
 from data_base.schemas_deep_research import (
@@ -744,10 +745,11 @@ class AgenticEvaluationService(ResearchExecutionCore):
         prompt = _DUPLICATE_FOLLOWUP_PROMPT.format(task=question, facts=facts_text)
         try:
             llm = get_llm("planner")
-            response = await asyncio.wait_for(
-                llm.ainvoke([HumanMessage(content=prompt)]),
-                timeout=0.35,
-            )
+            with llm_accounting_phase("agent_planning"):
+                response = await asyncio.wait_for(
+                    llm.ainvoke([HumanMessage(content=prompt)]),
+                    timeout=0.35,
+                )
             content = str(getattr(response, "content", "")).strip()
             lowered = content.lower()
             if '"duplicate": true' in lowered:
