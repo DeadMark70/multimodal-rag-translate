@@ -750,6 +750,7 @@ class CampaignEngine:
         self._worker_owned = False
         if worker_notifier is None:
             from evaluation.execution_worker import DatasetExecutionWorker
+            from evaluation.accounting_store import EvaluationAccountingStore
             from evaluation.job_worker import configure_evaluation_job_worker
             from evaluation.job_worker import EvaluationJobWorker
             from evaluation.job_worker import get_evaluation_job_worker
@@ -764,6 +765,7 @@ class CampaignEngine:
                 and ragas_evaluator is None
                 and job_store is None
             )
+            accounting_store = EvaluationAccountingStore()
             worker = (
                 get_evaluation_job_worker()
                 if use_process_worker
@@ -783,6 +785,7 @@ class CampaignEngine:
                 store=self._job_store,
                 evaluator=self._ragas_evaluator,
                 campaign_repository=self._campaign_repository,
+                accounting_store=accounting_store,
             ).execute
             if configure_worker:
                 if use_process_worker:

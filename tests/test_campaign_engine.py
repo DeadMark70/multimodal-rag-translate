@@ -17,6 +17,8 @@ from langchain_core.documents import Document
 import pytest
 
 from core.auth import get_current_user_id
+from core.llm_usage_context import emit_direct_usage
+from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.agentic_evaluation_service import AGENTIC_EVAL_PROFILE
 from evaluation.campaign_engine import CampaignEngine
 from evaluation.campaign_schemas import (
@@ -353,6 +355,59 @@ def test_campaign_api_runs_and_streams_results() -> None:
         assert "event: campaign_snapshot" in stream_body
         assert "event: campaign_completed" in stream_body
         assert fake_ragas.evaluate_calls
+
+
+def test_production_engine_wires_ragas_accounting_scope_and_event() -> None:
+    class BatchEvaluator:
+        enabled_metrics = ("faithfulness",)
+        evaluator_model = "test-evaluator"
+
+        async def evaluate_metric_batch(self, metric_name, rows, llm, embeddings):  # noqa: ANN001
+            await emit_direct_usage(
+                purpose="ragas_evaluator",
+                provider="google",
+                model_name="test-evaluator",
+                raw_usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+            return [0.5] * len(rows)
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="answer",
+            contexts=["ctx"],
+            source_doc_ids=[],
+            expected_sources=[],
+            latency_ms=1,
+            token_usage={},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+        )
+
+    engine = CampaignEngine(runner=runner, ragas_evaluator=BatchEvaluator())
+    upload_root, db_path = _make_upload_root(), _make_db_path()
+    with _build_client("user-a", upload_root, db_path, engine) as client:
+        _create_test_case(client)
+        campaign_id = client.post(
+            "/api/evaluation/campaigns",
+            json=_campaign_payload(
+                name="Accounting", test_case_ids=["Q1"], modes=["naive"]
+            ),
+        ).json()["campaign_id"]
+        terminal = _wait_for_terminal_status(client, campaign_id)
+        assert terminal["evaluation_completed_units"] == 1
+        scopes = asyncio.run(
+            EvaluationAccountingStore().list_campaign_scopes(campaign_id)
+        )
+        events = asyncio.run(
+            EvaluationAccountingStore().list_campaign_events(campaign_id)
+        )
+    assert len([scope for scope in scopes if scope.scope_type == "ragas_batch"]) == 1
+    assert len(events) == 1
 
 
 def test_campaign_run_persists_snapshot_and_minimal_root_span() -> None:

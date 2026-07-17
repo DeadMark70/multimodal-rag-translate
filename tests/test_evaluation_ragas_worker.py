@@ -64,6 +64,11 @@ async def accounting_store(
                VALUES ('campaign-1', 'user-1', NULL, 'pending', '{}', ?, ?)""",
             (now, now),
         )
+        await connection.execute(
+            """INSERT INTO campaigns (id, user_id, name, status, config_json, created_at, updated_at)
+               VALUES ('campaign-2', 'user-1', NULL, 'pending', '{}', ?, ?)""",
+            (now, now),
+        )
         for index in range(3):
             await connection.execute(
                 """INSERT INTO campaign_results (
@@ -145,6 +150,18 @@ class AccountingFakeEvaluator(FakeEvaluator):
         )
 
 
+class PromotionStore(FakeStore):
+    def __init__(self, promoted_counts: list[int]) -> None:
+        super().__init__()
+        self.promoted_counts = promoted_counts
+
+    async def complete_ragas_attempt(
+        self, claim: ClaimedEvaluationWork, output: RagasAttemptOutput
+    ) -> int:
+        await super().complete_ragas_attempt(claim, output)
+        return self.promoted_counts.pop(0)
+
+
 @pytest.mark.asyncio
 async def test_ragas_batch_records_one_shared_scope_for_all_claims(
     accounting_store: EvaluationAccountingStore,
@@ -218,6 +235,72 @@ async def test_cancelled_ragas_batch_retains_events_without_official_targets(
     assert scope.status == "cancelled"
     assert not any(target.is_official for target in scope.targets)
     assert len(await accounting_store.list_campaign_events("campaign-1")) == 1
+
+
+@pytest.mark.asyncio
+async def test_ragas_only_marks_targets_with_promoted_scores(
+    accounting_store: EvaluationAccountingStore,
+) -> None:
+    store = PromotionStore([1, 0])
+    worker = RagasBatchWorker(
+        store=store,
+        evaluator=AccountingFakeEvaluator(results=[[0.8, 0.7]]),
+        accounting_store=accounting_store,
+        price_snapshot=TEST_PRICE_SNAPSHOT,
+    )
+
+    await worker.execute([_claim(0), _claim(1)])
+
+    targets = (await accounting_store.list_campaign_scopes("campaign-1"))[0].targets
+    assert [target.is_official for target in targets] == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_ragas_missing_scores_leave_targets_unofficial(
+    accounting_store: EvaluationAccountingStore,
+) -> None:
+    evaluator = AccountingFakeEvaluator(results=[[None]])
+    evaluator.allows_missing_metric_values = True
+    worker = RagasBatchWorker(
+        store=PromotionStore([0]),
+        evaluator=evaluator,
+        accounting_store=accounting_store,
+        price_snapshot=TEST_PRICE_SNAPSHOT,
+    )
+
+    await worker.execute([_claim(0)])
+
+    assert (
+        not (await accounting_store.list_campaign_scopes("campaign-1"))[0]
+        .targets[0]
+        .is_official
+    )
+
+
+@pytest.mark.asyncio
+async def test_ragas_batches_do_not_share_accounting_scopes_across_campaigns(
+    accounting_store: EvaluationAccountingStore,
+) -> None:
+    base = _claim(1)
+    second = base.model_copy(
+        update={
+            "input_snapshot": dict(
+                base.model_dump(mode="json")["input_snapshot"],
+                campaign_id="campaign-2",
+            )
+        }
+    )
+    worker = RagasBatchWorker(
+        store=PromotionStore([1, 1]),
+        evaluator=AccountingFakeEvaluator(results=[[0.8], [0.7]]),
+        accounting_store=accounting_store,
+        price_snapshot=TEST_PRICE_SNAPSHOT,
+    )
+
+    await worker.execute([_claim(0), second])
+
+    assert len(await accounting_store.list_campaign_scopes("campaign-1")) == 1
+    assert len(await accounting_store.list_campaign_scopes("campaign-2")) == 1
 
 
 @pytest.mark.asyncio

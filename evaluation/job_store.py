@@ -797,9 +797,10 @@ class EvaluationJobStore:
         self,
         claim: ClaimedEvaluationWork,
         output: RagasAttemptOutput,
-    ) -> None:
+    ) -> int:
         """Atomically retain a successful metric attempt and safely promote scores."""
         now_iso = _as_iso(datetime.now(timezone.utc))
+        promoted_score_count = 0
         await init_db()
         async with connect_db() as connection:
             await connection.execute("BEGIN IMMEDIATE")
@@ -861,6 +862,7 @@ class EvaluationJobStore:
                             now_iso,
                         ),
                     )
+                    promoted_score_count += 1
                 await connection.execute(
                     "UPDATE evaluation_attempts SET status = 'succeeded', finished_at = ?, output_json = ? WHERE id = ?",
                     (
@@ -884,6 +886,7 @@ class EvaluationJobStore:
             except BaseException:
                 await connection.rollback()
                 raise
+        return promoted_score_count
 
     async def backfill_legacy_attempts(self) -> None:
         """Link pre-ledger official projections to deterministic synthetic attempts."""
