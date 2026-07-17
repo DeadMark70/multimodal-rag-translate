@@ -15,6 +15,8 @@ from evaluation.agentic_evaluation_service import (
     AGENTIC_EVAL_PROFILE,
     AGENTIC_IMAGE_ANALYSIS_ENABLED,
     AgenticEvaluationService,
+    MicroRoute,
+    RouteProfile,
     _drilldown_iterations_for_strategy,
     _is_numeric_benchmark_subtask,
     _micro_route_for_task,
@@ -305,6 +307,7 @@ async def test_run_case_uses_dedicated_agentic_execution_constraints() -> None:
     assert len(request.sub_tasks) == 3
     assert result.answer == "final answer"
     assert result.agent_trace["execution_profile"] == AGENTIC_EVAL_PROFILE
+    assert AGENTIC_EVAL_PROFILE.startswith("agentic_eval_v8_multiquery_locator_")
     assert result.agent_trace["strategy_tier"] == "tier_1_detail_lookup"
 
 
@@ -344,19 +347,45 @@ async def test_synthesize_execution_results_forces_single_task_synthesis_lite() 
     assert response.detailed_answer == "A -> B -> C"
 
 
-def test_route_kwargs_always_enable_crag_for_agentic_execution() -> None:
+@pytest.mark.parametrize(
+    ("route_profile", "micro_route", "expected_multi_query", "expected_graph"),
+    [
+        ("hybrid_exact", "direct_point_access", False, False),
+        ("hybrid_compare", "broad_context_rag", True, False),
+        ("graph_global", "broad_context_rag", False, True),
+        ("visual_verify", "visual_evidence_path", True, False),
+        ("generic_graph", "broad_context_rag", True, True),
+    ],
+)
+def test_agentic_route_kwargs_use_multi_query_and_locator_policy(
+    route_profile: RouteProfile,
+    micro_route: MicroRoute,
+    expected_multi_query: bool,
+    expected_graph: bool,
+) -> None:
     service = AgenticEvaluationService()
     kwargs = service._route_kwargs(
-        route_profile="hybrid_compare",
-        micro_route="broad_context_rag",
+        route_profile=route_profile,
+        micro_route=micro_route,
         enable_reranking=True,
         enable_visual_verification=False,
-        task_type="rag",
+        task_type="graph_analysis" if expected_graph else "rag",
         stage_hint="exploration",
     )
+
+    assert kwargs["enable_hyde"] is False
+    assert kwargs["enable_multi_query"] is expected_multi_query
     assert kwargs["enable_crag"] is True
+    assert kwargs["crag_rewrite_mode"] == "multi_query"
     assert kwargs["plain_mode"] is False
-    assert kwargs["mode_hints"]["retrieval_policy"]["target_k"] == 8
+    assert kwargs["mode_hints"]["retrieval_policy"]["target_k"] in {4, 8}
+    if expected_graph:
+        hints = kwargs["graph_execution_hints"]
+        assert hints["graph_evidence_mode"] == "locator_to_chunk"
+        assert hints["graph_feature_flags"]["graph_to_chunk_enabled"] is True
+        assert hints["graph_feature_flags"]["graph_raw_current_enabled"] is False
+    else:
+        assert kwargs["enable_graph_rag"] is False
 
 
 @pytest.mark.asyncio

@@ -23,7 +23,6 @@ from agents.planner import (
 )
 from agents.synthesizer import SubTaskResult, synthesize_results
 from core.providers import get_llm
-from data_base.indexing_service import DEFAULT_PRODUCTION_INDEXING_PROFILE
 from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from data_base.research_execution_core import ResearchExecutionCore
 from data_base.schemas_deep_research import (
@@ -35,6 +34,12 @@ from data_base.schemas_deep_research import (
     SubTaskExecutionResult,
 )
 from evaluation.retry import run_with_retry
+from evaluation.retrieval_profiles import (
+    AGENTIC_EVAL_PROFILE,
+    locator_to_chunk_graph_hints,
+    multi_query_settings,
+    no_query_expansion_settings,
+)
 from evaluation.trace_schemas import AgentTraceToolCall
 
 StrategyTier = Literal[
@@ -56,7 +61,6 @@ MicroRoute = Literal[
 ]
 SemanticRouterMode = Literal["off", "shadow", "active"]
 
-AGENTIC_EVAL_PROFILE = f"agentic_eval_v7_semantic_router_{DEFAULT_PRODUCTION_INDEXING_PROFILE}"
 LEGACY_SHARED_PROFILE = "legacy_shared"
 AGENTIC_INITIAL_SUBTASKS = 3
 AGENTIC_FIGURE_FLOW_INITIAL_SUBTASKS = 2
@@ -751,8 +755,10 @@ class AgenticEvaluationService(ResearchExecutionCore):
     ) -> dict[str, Any]:
         retrieval_policy = _retrieval_policy_for_micro_route(micro_route)
         kwargs: dict[str, Any] = {
+            **no_query_expansion_settings(),
             "enable_reranking": enable_reranking,
             "enable_crag": True,
+            "crag_rewrite_mode": "multi_query",
             "plain_mode": False,
             "return_docs": True,
             "enable_visual_verification": enable_visual_verification,
@@ -769,28 +775,25 @@ class AgenticEvaluationService(ResearchExecutionCore):
         if route_profile == "hybrid_exact":
             kwargs.update(
                 {
+                    **no_query_expansion_settings(),
                     "enable_reranking": False,
-                    "enable_hyde": False,
-                    "enable_multi_query": False,
                     "enable_graph_rag": False,
                 }
             )
         elif route_profile == "hybrid_compare":
             kwargs.update(
                 {
-                    "enable_hyde": True,
-                    "enable_multi_query": True,
+                    **multi_query_settings(),
                     "enable_graph_rag": False,
                 }
             )
         elif route_profile == "graph_global":
             kwargs.update(
                 {
-                    "enable_hyde": False,
-                    "enable_multi_query": False,
+                    **no_query_expansion_settings(),
                     "enable_graph_rag": True,
                     "graph_search_mode": "generic",
-                    "graph_execution_hints": self._graph_execution_hints(
+                    "graph_execution_hints": locator_to_chunk_graph_hints(
                         stage_hint=stage_hint,
                         task_type=task_type,
                     ),
@@ -799,8 +802,7 @@ class AgenticEvaluationService(ResearchExecutionCore):
         elif route_profile == "visual_verify":
             kwargs.update(
                 {
-                    "enable_hyde": False,
-                    "enable_multi_query": True,
+                    **multi_query_settings(),
                     "enable_graph_rag": False,
                     "enable_visual_verification": True,
                 }
@@ -808,11 +810,10 @@ class AgenticEvaluationService(ResearchExecutionCore):
         else:  # generic_graph
             kwargs.update(
                 {
-                    "enable_hyde": True,
-                    "enable_multi_query": True,
+                    **multi_query_settings(),
                     "enable_graph_rag": True,
                     "graph_search_mode": "generic",
-                    "graph_execution_hints": self._graph_execution_hints(
+                    "graph_execution_hints": locator_to_chunk_graph_hints(
                         stage_hint=stage_hint,
                         task_type=task_type,
                     ),
@@ -1696,5 +1697,4 @@ class AgenticEvaluationService(ResearchExecutionCore):
             self._active_max_iterations = None
             self._required_coverage = []
             self._classifier_decision = {}
-
 
