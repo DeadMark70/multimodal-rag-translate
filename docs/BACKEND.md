@@ -130,7 +130,17 @@
 - `/rag/ask` and `/rag/ask/stream` now reuse one RAG pipeline execution even when evaluation is enabled:
   - retrieval/documents from the first pass are reused for evaluator metrics
   - chat no longer pays for a second `rag_answer_question(...)` call just to compute `return_docs=True`
-- Evaluation `agentic` uses a dedicated baseline (`agentic_eval_v7_semantic_router_semantic_contextual`) distinct from user-facing Deep Research:
+- Evaluation retrieval expansion is mode-scoped:
+  - `naive` keeps the plain no-expansion baseline
+  - `advanced` uses Multi-Query plus hybrid retrieval/reranking
+  - main `graph` uses Multi-Query plus provenance-gated locator-to-chunk evidence
+  - every Graph ablation disables HyDE while retaining its named graph intervention
+  - `graph_raw_current` is the only intentional raw-legacy graph control
+- Evaluation `agentic` uses `agentic_eval_v8_multiquery_locator_recursive_baseline`:
+  - no Agentic route invokes HyDE
+  - compare/visual/generic-graph routes use Multi-Query
+  - CRAG corrective retrieval uses Multi-Query with original-question fallback
+  - selected graph routes resolve graph evidence to source chunks
   - main-question semantic classifier (LLM + timeout/parse fallback to heuristic)
   - complexity-to-strategy mapping for initial tier/subtask/iteration budget
   - sub-task micro-routing (`direct_point_access`, `broad_context_rag`, `visual_evidence_path`) mapped into existing route profiles

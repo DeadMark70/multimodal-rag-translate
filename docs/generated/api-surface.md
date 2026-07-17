@@ -48,7 +48,9 @@ Human-maintained inventory of the current backend surface.
   - `summary_by_focus`
 - `GET /api/evaluation/models` is bearer-auth protected (no anonymous model discovery).
 - Dataset tooling lives in `evaluation/dataset_generator.py` and derives `ragas_ready.json` from the master dataset.
-- Evaluation `agentic` is a dedicated baseline profile (`agentic_eval_v7_semantic_router_semantic_contextual`), not a generic alias for user Deep Research; it now adds semantic classifier routing, complexity-based strategy budgeting, micro-routing with retrieval policy hints, dynamic tier shift, reverse-pruning, and additive trace telemetry under `AGENTIC_SEMANTIC_ROUTER_MODE=off|shadow|active`, with agentic context policy rows versioned as `v4_semantic_router_gate`.
+- Evaluation retrieval profiles are versioned per changed mode: `advanced_eval_v2_multiquery_recursive_baseline`, `graph_eval_v2_multiquery_locator_recursive_baseline`, `<ablation_mode>_eval_v2_multiquery_recursive_baseline`, and `agentic_eval_v8_multiquery_locator_recursive_baseline`.
+- Evaluation Advanced, Graph family, and Agentic disable HyDE. Main Graph and Agentic graph routes use provenance-gated locator-to-chunk evidence; `graph_raw_current` remains the explicit raw-legacy control.
+- Agentic CRAG corrective retrieval uses Multi-Query and falls back to the original question when query generation fails.
 - Deep Research + evaluation `agentic` execution responses now carry structured fact persistence fields (`sub_tasks[].atomic_facts` and top-level `fact_state`) used for follow-up planning context during drill-down.
 - Normalized observability detail tables back the research dashboard:
   - `evaluation_trace_events`

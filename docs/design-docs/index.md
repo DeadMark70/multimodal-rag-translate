@@ -9,3 +9,4 @@ Purpose: durable subsystem decisions and architecture boundaries.
 - `docs/design-docs/conversation-persistence.md`: conversation/message persistence rules
 - `docs/design-docs/evaluation-runtime.md`: evaluation storage, traces, metrics, and stream model
 - `docs/design-docs/agentic-semantic-router-v7.md`: benchmark-only semantic router rollout, complexity mapping, micro-routing, and fallback guarantees
+- `docs/design-docs/agentic-semantic-router-v8.md`: HyDE-free Multi-Query routing, CRAG correction, and locator-to-chunk Graph evidence
