@@ -123,3 +123,42 @@ async def start_execution_scope(
             sink=accounting_sink,
         ),
     )
+
+
+async def start_ragas_batch_scope(
+    *,
+    store: EvaluationAccountingStore,
+    campaign_id: str,
+    metric_name: str,
+    scope_key: str,
+    targets: list[AccountingScopeTarget],
+    sink: EvaluationAccountingSink | None = None,
+    price_snapshot: dict[str, Any] | None = None,
+) -> ExecutionAccountingSession:
+    """Start one shared, campaign-level RAGAS batch accounting scope."""
+    scope_id = str(uuid4())
+    accounting_sink = sink or EvaluationAccountingSink(
+        store=store, price_snapshot=price_snapshot
+    )
+    await store.start_scope(
+        AccountingScopeStart(
+            scope_id=scope_id,
+            campaign_id=campaign_id,
+            scope_type="ragas_batch",
+            scope_key=scope_key,
+            metric_name=metric_name,
+            targets=targets,
+        )
+    )
+    return ExecutionAccountingSession(
+        scope_id=scope_id,
+        context=LlmAccountingContext(
+            scope_id=scope_id,
+            campaign_id=campaign_id,
+            scope_type="ragas_batch",
+            scope_key=scope_key,
+            run_id=None,
+            metric_name=metric_name,
+            sink=accounting_sink,
+        ),
+    )

@@ -425,7 +425,9 @@ def test_campaign_run_persists_snapshot_and_minimal_root_span() -> None:
         assert result["completed_at"]
         assert result["latency_ms"] == 42.5
         assert result["total_latency_ms"] >= 0
-        assert result["total_tokens"] == 15
+        assert result["total_tokens"] is None
+        assert result["token_usage"]["accounting_schema_version"] == "2"
+        assert result["token_usage"]["token_accounting_status"] == "unavailable"
         assert result["question_snapshot"]["required_modalities"] == ["text", "table"]
         assert (
             result["question_snapshot"]["expected_evidence"][0]["evidence_id"] == "E1"
@@ -450,9 +452,9 @@ def test_campaign_run_persists_snapshot_and_minimal_root_span() -> None:
         assert len(llm_calls) == 1
         assert llm_calls[0]["purpose"] == "campaign_generation"
         assert llm_calls[0]["model_name"] == "gemini-2.5-flash"
-        assert llm_calls[0]["prompt_tokens"] == 10
-        assert llm_calls[0]["completion_tokens"] == 5
-        assert llm_calls[0]["total_tokens"] == 15
+        assert llm_calls[0]["prompt_tokens"] == 0
+        assert llm_calls[0]["completion_tokens"] == 0
+        assert llm_calls[0]["total_tokens"] == 0
         assert llm_calls[0]["span_id"] == trace_events[0]["span_id"]
 
         wrong_run = client.get(

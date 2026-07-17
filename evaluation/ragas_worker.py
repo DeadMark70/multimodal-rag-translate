@@ -7,7 +7,15 @@ import math
 from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
+from uuid import uuid4
 
+from core.llm_usage_context import llm_accounting_phase, llm_accounting_scope
+from evaluation.accounting_runtime import (
+    EvaluationAccountingSink,
+    start_ragas_batch_scope,
+)
+from evaluation.accounting_schemas import AccountingScopeTarget
+from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.error_policy import classify_evaluation_error
 from evaluation.job_schemas import ClaimedEvaluationWork, RagasAttemptOutput
 from evaluation.job_store import EvaluationJobStore
@@ -30,6 +38,8 @@ class RagasBatchWorker:
         evaluator_llm: Any = None,
         evaluator_embeddings: Any = None,
         campaign_repository: Any | None = None,
+        accounting_store: EvaluationAccountingStore | None = None,
+        price_snapshot: dict[str, Any] | None = None,
         batch_size: int = 4,
         parallel_batches: int = 2,
     ) -> None:
@@ -38,6 +48,14 @@ class RagasBatchWorker:
         self._evaluator_llm = evaluator_llm
         self._evaluator_embeddings = evaluator_embeddings
         self._campaign_repository = campaign_repository
+        self._accounting_store = accounting_store
+        self._accounting_sink = (
+            EvaluationAccountingSink(
+                store=accounting_store, price_snapshot=price_snapshot
+            )
+            if accounting_store is not None
+            else None
+        )
         self._batch_size = max(1, min(8, batch_size))
         self._parallel_batches = max(1, min(8, parallel_batches))
 
@@ -56,7 +74,9 @@ class RagasBatchWorker:
             if callable(legacy_evaluate):
                 await self._execute_legacy_campaigns(claims, legacy_evaluate)
                 return
-            raise RuntimeError("RAGAS evaluator does not provide a supported evaluation API")
+            raise RuntimeError(
+                "RAGAS evaluator does not provide a supported evaluation API"
+            )
 
         if self._evaluator_llm is None and self._evaluator_embeddings is None:
             prepare = getattr(self._evaluator, "evaluator_handles", None)
@@ -75,13 +95,23 @@ class RagasBatchWorker:
                     await self._derive_campaign_state(claims)
                     return
 
-        groups: dict[tuple[str, str | None, int, int], list[ClaimedEvaluationWork]] = {}
+        groups: dict[
+            tuple[str, str, str | None, int, int], list[ClaimedEvaluationWork]
+        ] = {}
         for claim in claims:
             metric_name, signature = self._metric_and_signature(claim)
             batch_group_key = self._batch_group_key(claim, signature)
             batch_size, parallel_batches = self._batch_config(claim)
+            campaign_id = str(claim.input_snapshot.get("campaign_id") or "")
             groups.setdefault(
-                (metric_name, batch_group_key, batch_size, parallel_batches), []
+                (
+                    campaign_id,
+                    metric_name,
+                    batch_group_key,
+                    batch_size,
+                    parallel_batches,
+                ),
+                [],
             ).append(claim)
 
         # A single worker-wide semaphore bounds provider calls across all
@@ -91,19 +121,30 @@ class RagasBatchWorker:
         global_semaphore = asyncio.Semaphore(2)
 
         async def run_chunk(
+            campaign_id: str,
             metric_name: str,
             batch_group_key: str | None,
             chunk: list[ClaimedEvaluationWork],
         ) -> None:
             async with global_semaphore:
-                await self._execute_chunk(metric_name, batch_group_key, chunk)
+                await self._execute_chunk(
+                    campaign_id, metric_name, batch_group_key, chunk, invocation_id
+                )
 
         tasks: list[asyncio.Task[None]] = []
-        for (metric_name, batch_group_key, batch_size, parallel_batches), group in groups.items():
+        invocation_id = str(uuid4())
+        for (
+            campaign_id,
+            metric_name,
+            batch_group_key,
+            batch_size,
+            parallel_batches,
+        ), group in groups.items():
             for offset in range(0, len(group), batch_size):
                 tasks.append(
                     asyncio.create_task(
                         run_chunk(
+                            campaign_id,
                             metric_name,
                             batch_group_key,
                             group[offset : offset + batch_size],
@@ -158,24 +199,62 @@ class RagasBatchWorker:
                 raise
             except Exception as exc:  # noqa: BLE001
                 decision = classify_evaluation_error(exc)
-                await asyncio.gather(*(self._fail_claim(claim, decision) for claim in group))
+                await asyncio.gather(
+                    *(self._fail_claim(claim, decision) for claim in group)
+                )
             await self._derive_campaign_state(group)
 
     async def _execute_chunk(
         self,
+        campaign_id: str,
         metric_name: str,
         batch_group_key: str | None,
         claims: list[ClaimedEvaluationWork],
+        invocation_id: str,
     ) -> None:
         rows = [self._row_for_claim(claim) for claim in claims]
+        scope = None
         try:
-            values = await run_with_retry(
-                self._evaluator.evaluate_metric_batch,
-                metric_name,
-                rows,
-                self._evaluator_llm,
-                self._evaluator_embeddings,
-            )
+            if self._accounting_store is not None:
+                scope = await start_ragas_batch_scope(
+                    store=self._accounting_store,
+                    sink=self._accounting_sink,
+                    campaign_id=campaign_id,
+                    metric_name=metric_name,
+                    scope_key=self._ragas_scope_key(
+                        campaign_id, metric_name, batch_group_key, claims, invocation_id
+                    ),
+                    targets=[
+                        AccountingScopeTarget(
+                            campaign_result_id=self._result_id(claim),
+                            job_id=claim.job_id,
+                            work_item_id=claim.work_item_id,
+                            attempt_id=claim.attempt_id,
+                            metric_name=metric_name,
+                        )
+                        for claim in claims
+                    ],
+                )
+            if scope is None:
+                values = await run_with_retry(
+                    self._evaluator.evaluate_metric_batch,
+                    metric_name,
+                    rows,
+                    self._evaluator_llm,
+                    self._evaluator_embeddings,
+                )
+            else:
+                with (
+                    llm_accounting_scope(scope.context),
+                    llm_accounting_phase("ragas_scoring"),
+                ):
+                    values = await run_with_retry(
+                        self._evaluator.evaluate_metric_batch,
+                        metric_name,
+                        rows,
+                        self._evaluator_llm,
+                        self._evaluator_embeddings,
+                    )
             if not isinstance(values, list) or len(values) != len(claims):
                 raise ValueError(
                     f"RAGAS metric {metric_name!r} returned {len(values) if isinstance(values, list) else 'non-list'} values for {len(claims)} rows"
@@ -190,16 +269,17 @@ class RagasBatchWorker:
                 for value in values
             ]
         except asyncio.CancelledError:
+            if scope is not None:
+                await self._accounting_store.finalize_scope(scope.scope_id, "cancelled")
             await self._cancel_claims(claims)
             await self._derive_campaign_state(claims)
             raise
         except Exception as exc:  # noqa: BLE001
+            if scope is not None:
+                await self._accounting_store.finalize_scope(scope.scope_id, "failed")
             decision = classify_evaluation_error(exc)
             await asyncio.gather(
-                *(
-                    self._fail_claim(claim, decision)
-                    for claim in claims
-                )
+                *(self._fail_claim(claim, decision) for claim in claims)
             )
             await self._derive_campaign_state(claims)
             return
@@ -212,28 +292,41 @@ class RagasBatchWorker:
                     await self._store.complete_ragas_attempt(
                         claim, RagasAttemptOutput(scores=[])
                     )
-                    continue
-                score = {
-                    "campaign_result_id": self._result_id(claim),
-                    "metric_name": metric_name,
-                    "metric_value": value,
-                    "evaluation_signature": claim.input_snapshot.get(
-                        "evaluation_signature"
-                    ),
-                    "details": {
-                        "evaluator_model": getattr(self._evaluator, "evaluator_model", None),
-                        "question_id": self._row_for_claim(claim).question_id,
-                        "invalid_metric": False,
-                        "batch_group_key": batch_group_key,
-                    },
-                }
-                try:
+                else:
+                    score = {
+                        "campaign_result_id": self._result_id(claim),
+                        "metric_name": metric_name,
+                        "metric_value": value,
+                        "evaluation_signature": claim.input_snapshot.get(
+                            "evaluation_signature"
+                        ),
+                        "details": {
+                            "evaluator_model": getattr(
+                                self._evaluator, "evaluator_model", None
+                            ),
+                            "question_id": self._row_for_claim(claim).question_id,
+                            "invalid_metric": False,
+                            "batch_group_key": batch_group_key,
+                        },
+                    }
                     await self._store.complete_ragas_attempt(
                         claim, RagasAttemptOutput(scores=[score])
                     )
-                except Exception as exc:  # noqa: BLE001
-                    await self._fail_claim(claim, classify_evaluation_error(exc))
+                if scope is not None:
+                    await self._accounting_store.mark_targets_official(
+                        scope.scope_id, {claim.attempt_id: self._result_id(claim)}
+                    )
+            if scope is not None:
+                await self._accounting_store.finalize_scope(scope.scope_id, "completed")
+        except Exception as exc:  # noqa: BLE001
+            if scope is not None:
+                await self._accounting_store.finalize_scope(scope.scope_id, "failed")
+            decision = classify_evaluation_error(exc)
+            for claim in claims:
+                await self._fail_claim(claim, decision)
         except asyncio.CancelledError:
+            if scope is not None:
+                await self._accounting_store.finalize_scope(scope.scope_id, "cancelled")
             await self._cancel_claims(claims)
             await self._derive_campaign_state(claims)
             raise
@@ -248,7 +341,8 @@ class RagasBatchWorker:
                 str(claim.input_snapshot.get("campaign_id")),
             )
             for claim in claims
-            if claim.input_snapshot.get("user_id") and claim.input_snapshot.get("campaign_id")
+            if claim.input_snapshot.get("user_id")
+            and claim.input_snapshot.get("campaign_id")
         }
         for user_id, campaign_id in campaigns:
             await self._campaign_repository.derive_ragas_state(
@@ -274,6 +368,25 @@ class RagasBatchWorker:
         except ValueError:
             # Cancellation/recovery may have already terminalized the claim.
             return
+
+    @staticmethod
+    def _ragas_scope_key(
+        campaign_id: str,
+        metric_name: str,
+        batch_group_key: str | None,
+        claims: list[ClaimedEvaluationWork],
+        invocation_id: str,
+    ) -> str:
+        attempt_ids = ",".join(sorted(claim.attempt_id for claim in claims))
+        return "|".join(
+            (
+                campaign_id,
+                metric_name,
+                batch_group_key or "",
+                attempt_ids,
+                invocation_id,
+            )
+        )
 
     @staticmethod
     def _score_value(value: Any, *, allow_none: bool = False) -> float | None:
@@ -329,16 +442,26 @@ class RagasBatchWorker:
     @staticmethod
     def _result_id(claim: ClaimedEvaluationWork) -> str:
         snapshot = claim.input_snapshot
-        return str(snapshot.get("campaign_result_id") or snapshot.get("result_id") or snapshot.get("result", {}).get("id"))
+        return str(
+            snapshot.get("campaign_result_id")
+            or snapshot.get("result_id")
+            or snapshot.get("result", {}).get("id")
+        )
 
     @classmethod
     def _row_for_claim(cls, claim: ClaimedEvaluationWork) -> Any:
         snapshot = claim.input_snapshot
-        raw = snapshot.get("result") or snapshot.get("result_snapshot") or snapshot.get("row")
+        raw = (
+            snapshot.get("result")
+            or snapshot.get("result_snapshot")
+            or snapshot.get("row")
+        )
         if isinstance(raw, Mapping):
             payload = dict(raw)
         else:
             payload = {}
         payload.setdefault("id", cls._result_id(claim))
-        payload.setdefault("question_id", str(snapshot.get("question_id") or payload["id"]))
+        payload.setdefault(
+            "question_id", str(snapshot.get("question_id") or payload["id"])
+        )
         return SimpleNamespace(**payload)
