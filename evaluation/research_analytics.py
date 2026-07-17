@@ -7,7 +7,7 @@ it does not reuse the legacy analytics projection or RAGAS evaluator.
 from __future__ import annotations
 
 import math
-from collections import Counter, defaultdict
+from collections import defaultdict
 from statistics import mean
 
 from evaluation.accounting_schemas import (
@@ -168,6 +168,7 @@ def _mode_summary(results, scores, scopes, events_by_scope):
     tokens = _tokens(official, official_events)
     cost = _cost(official_events, operational_events=operational)
     reasons: list[str] = []
+    warnings = []
     if tokens.accounting_status == "incomplete_legacy":
         reasons.append("legacy_accounting")
     elif tokens.accounting_status != "complete":
@@ -179,12 +180,17 @@ def _mode_summary(results, scores, scopes, events_by_scope):
         for item in quality.values()
     ):
         reasons.append("incomplete_quality")
-    signatures = _signatures_for_results(results, scores)
-    if len(signatures) > 1:
-        reasons.append("evaluator_signature_mismatch")
+    evaluator_identities = _evaluator_identities_for_results(results, scores)
+    if len(evaluator_identities) > 1:
+        reasons.append("evaluator_metadata_mismatch")
+        warnings.append(
+            (
+                "evaluator_metadata_mismatch",
+                "Evaluator model, metric version, or signature differs across scores.",
+            )
+        )
     if any(scope.accounting_schema_version != "2" for scope in official):
         reasons.append("accounting_schema_version_mismatch")
-    warnings = []
     if len(results) < 5:
         warnings.append(
             ("low_sample_size", "Fewer than five official executions are included.")
@@ -239,10 +245,18 @@ def _quality_for_results(results, scores):
             and row["campaign_result_id"] in result_ids
             and row.get("source_attempt_id") in attempts
         ]
-        signatures = Counter(str(row.get("evaluation_signature") or "") for row in rows)
-        chosen = signatures.most_common(1)[0][0] if signatures else None
+        groups: dict[tuple[str, str, str], list] = defaultdict(list)
+        for row in rows:
+            groups[_evaluator_identity(row)].append(row)
+        chosen = (
+            min(groups, key=lambda identity: (-len(groups[identity]), identity))
+            if groups
+            else None
+        )
         compatible = [
-            row for row in rows if str(row.get("evaluation_signature") or "") == chosen
+            row
+            for row in rows
+            if chosen is not None and _evaluator_identity(row) == chosen
         ]
         values = [
             float(row["metric_value"])
@@ -251,8 +265,8 @@ def _quality_for_results(results, scores):
         ]
         missing = len(results) - len({row["campaign_result_id"] for row in compatible})
         details = compatible[0].get("details", {}) if compatible else {}
-        missing_primary_after_evaluation = (
-            metric in PRIMARY_QUALITY_METRICS and bool(requested)
+        missing_primary_after_evaluation = metric in PRIMARY_QUALITY_METRICS and bool(
+            requested
         )
         output[metric] = MetricObservation(
             value=mean(values) if values else None,
@@ -272,19 +286,30 @@ def _quality_for_results(results, scores):
             failed_samples=max(
                 0,
                 len(results) - len(values)
-                if (metric in requested or missing_primary_after_evaluation) and not values
+                if (metric in requested or missing_primary_after_evaluation)
+                and not values
                 else 0,
             ),
             evaluator_model=details.get("evaluator_model") or details.get("model_name"),
-            metric_version=details.get("metric_version") or chosen,
+            metric_version=details.get("metric_version")
+            or (chosen[2] if chosen else None),
         )
     return output
 
 
-def _signatures_for_results(results, scores):
+def _evaluator_identity(row) -> tuple[str, str, str]:
+    details = row.get("details") or {}
+    return (
+        str(details.get("evaluator_model") or details.get("model_name") or ""),
+        str(details.get("metric_version") or ""),
+        str(row.get("evaluation_signature") or ""),
+    )
+
+
+def _evaluator_identities_for_results(results, scores):
     ids = {r.id for r in results}
     return {
-        str(row.get("evaluation_signature") or "")
+        _evaluator_identity(row)
         for row in scores
         if row["campaign_result_id"] in ids
         and row["metric_name"] in PRIMARY_QUALITY_METRICS

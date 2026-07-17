@@ -27,3 +27,22 @@ The focused fixtures cover contract/percentile/API behaviour. Broader literal du
 Added durable-repository regression fixtures for a legacy completed run without a v2 scope and a partially evaluated v2 run. The latter proves primary metrics remain present and an absent faithfulness result remains `null` with `failed` status after evaluation activity has begun.
 
 Re-ran the strict and existing evaluation API suites: `19 passed`.
+
+## Completion edge coverage (2026-07-18)
+
+- Added a durable mixed-mode campaign fixture that proves official successful
+  execution scopes exclusively provide benchmark tokens/cost, while every
+  execution attempt remains in operational pricing. RAGAS batch usage remains
+  evaluation overhead and never contributes to execution tokens or cost.
+- Quality aggregation now selects a deterministic compatible group by evaluator
+  model, metric version, and evaluation signature. Incompatible rows are not
+  averaged and make the mode non-comparable with an explicit warning.
+- Added unequal mode sample-count coverage proving campaign aggregates use raw
+  included runs, including nearest-rank percentiles and requested-only optional
+  context metrics.
+- Added an HTTP ownership fixture: a campaign owned by another user returns 404;
+  nullable response values remain JSON `null`.
+
+Verification: `23 passed` across the strict and existing evaluation/API suites;
+Ruff check and format check passed. Third-party Pydantic deprecation warnings
+remain pre-existing environment noise.
