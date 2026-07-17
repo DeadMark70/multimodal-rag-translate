@@ -83,10 +83,12 @@ class EvaluationUsageCallback(AsyncCallbackHandler):
         if start is None:
             return
         try:
+            response = kwargs.get("response")
+            usage = _extract_usage(response) if isinstance(response, LLMResult) else {}
             await self._emit(
                 start,
                 run_id,
-                {},
+                usage,
                 None,
                 "failed",
                 {"type": type(error).__name__},

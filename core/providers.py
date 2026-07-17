@@ -67,7 +67,7 @@ class _FakeLLMResponse:
 
     def __init__(self, content: str) -> None:
         self.content = content
-        self.usage_metadata = {"total_tokens": 0}
+        self.usage_metadata: dict[str, int] = {}
 
 
 class _FakeLLM:
@@ -107,7 +107,9 @@ class RealDatalabProvider:
     """Production Datalab provider backed by HTTP API calls."""
 
     def __init__(self) -> None:
-        self._api_url = os.getenv("DATALAB_API_URL", "https://www.datalab.to/api/v1/marker")
+        self._api_url = os.getenv(
+            "DATALAB_API_URL", "https://www.datalab.to/api/v1/marker"
+        )
         self._api_key = os.getenv("DATALAB_API_KEY", "")
         self._timeout = 300.0
 
@@ -143,7 +145,9 @@ class RealDatalabProvider:
                 submit_response.raise_for_status()
                 submit_data = submit_response.json()
 
-                if submit_data.get("status") == "complete" or submit_data.get("markdown"):
+                if submit_data.get("status") == "complete" or submit_data.get(
+                    "markdown"
+                ):
                     return submit_data
 
                 request_check_url = submit_data.get("request_check_url")
@@ -203,7 +207,9 @@ class RealDatalabProvider:
                     f"Datalab layout API returned {exc.response.status_code}: {exc.response.text}"
                 ) from exc
             except httpx.RequestError as exc:
-                raise ProviderError(f"Datalab layout API request failed: {exc}") from exc
+                raise ProviderError(
+                    f"Datalab layout API request failed: {exc}"
+                ) from exc
 
 
 class FakeDatalabProvider:

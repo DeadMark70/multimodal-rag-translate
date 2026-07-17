@@ -23,6 +23,7 @@ from core.llm_usage_context import (
     llm_accounting_scope,
 )
 from core.providers import configure_providers, get_llm
+from evaluation.token_normalizers import normalize_provider_usage
 
 
 class MemorySink:
@@ -196,6 +197,59 @@ async def test_fake_provider_emits_direct_event_only_in_scope() -> None:
     assert len(sink.events) == 1
     assert sink.events[0].provider == "fake"
     assert sink.events[0].phase == "fake_call"
+
+
+@pytest.mark.asyncio
+async def test_fake_provider_preserves_missing_usage_for_normalization() -> None:
+    configure_providers(use_fake=True)
+    fake = get_llm("rag_qa")
+    sink = MemorySink()
+
+    with llm_accounting_scope(_context(sink)):
+        response = await fake.ainvoke([])
+
+    assert response.usage_metadata == {}
+    assert sink.events[0].raw_usage == {}
+    usage = normalize_provider_usage(sink.events[0].provider, sink.events[0].raw_usage)
+    assert usage.usage_status == "missing"
+    assert usage.reported_total_tokens is None
+
+
+@pytest.mark.asyncio
+async def test_error_callback_preserves_observed_partial_usage() -> None:
+    sink = MemorySink()
+    callback = EvaluationUsageCallback(purpose="rag_qa", provider="google")
+    provider_run_id = uuid4()
+    partial_response = LLMResult(
+        generations=[
+            [
+                ChatGeneration(
+                    message=AIMessage(
+                        content="partial",
+                        usage_metadata={
+                            "input_tokens": 4,
+                            "output_tokens": 1,
+                            "total_tokens": 5,
+                        },
+                    )
+                )
+            ]
+        ]
+    )
+
+    with llm_accounting_scope(_context(sink)):
+        await callback.on_chat_model_start(
+            {}, [[AIMessage(content="prompt")]], run_id=provider_run_id
+        )
+        await callback.on_llm_error(
+            RuntimeError("stream interrupted"),
+            run_id=provider_run_id,
+            response=partial_response,
+        )
+
+    assert len(sink.events) == 1
+    assert sink.events[0].status == "failed"
+    assert sink.events[0].raw_usage["total_tokens"] == 5
 
 
 @pytest.mark.asyncio
