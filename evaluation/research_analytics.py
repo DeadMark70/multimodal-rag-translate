@@ -251,6 +251,9 @@ def _quality_for_results(results, scores):
         ]
         missing = len(results) - len({row["campaign_result_id"] for row in compatible})
         details = compatible[0].get("details", {}) if compatible else {}
+        missing_primary_after_evaluation = (
+            metric in PRIMARY_QUALITY_METRICS and bool(requested)
+        )
         output[metric] = MetricObservation(
             value=mean(values) if values else None,
             status="complete"
@@ -258,13 +261,19 @@ def _quality_for_results(results, scores):
             else (
                 "partial"
                 if values
-                else ("failed" if metric in requested else "not_requested")
+                else (
+                    "failed"
+                    if metric in requested or missing_primary_after_evaluation
+                    else "not_requested"
+                )
             ),
             valid_samples=len(values),
             missing_samples=max(0, missing),
             failed_samples=max(
                 0,
-                len(results) - len(values) if metric in requested and not values else 0,
+                len(results) - len(values)
+                if (metric in requested or missing_primary_after_evaluation) and not values
+                else 0,
             ),
             evaluator_model=details.get("evaluator_model") or details.get("model_name"),
             metric_version=details.get("metric_version") or chosen,

@@ -21,3 +21,9 @@ Result: all checks passed.
 ## Remaining risk
 
 The focused fixtures cover contract/percentile/API behaviour. Broader literal durable-DB fixtures for retry, mixed evaluator signatures, and failed RAGAS work-item state should be expanded before frontend rollout.
+
+## Follow-up hardening
+
+Added durable-repository regression fixtures for a legacy completed run without a v2 scope and a partially evaluated v2 run. The latter proves primary metrics remain present and an absent faithfulness result remains `null` with `failed` status after evaluation activity has begun.
+
+Re-ran the strict and existing evaluation API suites: `19 passed`.
