@@ -22,6 +22,18 @@ from evaluation.db import connect_db, init_db
 _TERMINAL_SCOPE_STATUSES = frozenset({"completed", "failed", "interrupted", "cancelled"})
 
 
+class AccountingScopeNotFoundError(LookupError):
+    """Raised when an event references an accounting scope that does not exist."""
+
+
+class AccountingScopeMismatchError(ValueError):
+    """Raised when event metadata differs from its durable accounting scope."""
+
+
+class AccountingScopeTargetNotFoundError(ValueError):
+    """Raised when a requested official target is not owned by the scope."""
+
+
 class ScopeTokenSummary(BaseModel):
     """Token totals and completeness derived from events in one scope."""
 
@@ -105,6 +117,23 @@ class EvaluationAccountingStore:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
+                """SELECT campaign_id, scope_type, scope_key, run_id
+                   FROM evaluation_accounting_scopes WHERE scope_id = ?""",
+                (event.scope_id,),
+            )
+            scope = await cursor.fetchone()
+            if scope is None:
+                raise AccountingScopeNotFoundError(f"Accounting scope not found: {event.scope_id}")
+            if (
+                scope["campaign_id"],
+                scope["scope_type"],
+                scope["scope_key"],
+                scope["run_id"],
+            ) != (event.campaign_id, event.scope_type, event.scope_key, event.run_id):
+                raise AccountingScopeMismatchError(
+                    "Usage event metadata does not match its accounting scope"
+                )
+            cursor = await connection.execute(
                 """INSERT OR IGNORE INTO evaluation_usage_events (
                        usage_event_id, scope_id, campaign_id, scope_type, scope_key, run_id,
                        provider_run_id, phase, purpose, metric_name, provider, model_name,
@@ -160,6 +189,20 @@ class EvaluationAccountingStore:
             return
         await init_db()
         async with connect_db() as connection:
+            attempt_ids = tuple(campaign_result_ids_by_attempt_id)
+            placeholders = ", ".join("?" for _ in attempt_ids)
+            cursor = await connection.execute(
+                f"""SELECT attempt_id FROM evaluation_accounting_scope_targets
+                    WHERE scope_id = ? AND attempt_id IN ({placeholders})""",
+                (scope_id, *attempt_ids),
+            )
+            found_attempt_ids = {row["attempt_id"] for row in await cursor.fetchall()}
+            missing_attempt_ids = set(attempt_ids) - found_attempt_ids
+            if missing_attempt_ids:
+                missing = ", ".join(sorted(missing_attempt_ids))
+                raise AccountingScopeTargetNotFoundError(
+                    f"Target attempts do not belong to accounting scope {scope_id}: {missing}"
+                )
             for attempt_id, campaign_result_id in campaign_result_ids_by_attempt_id.items():
                 await connection.execute(
                     """UPDATE evaluation_accounting_scope_targets

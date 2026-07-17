@@ -88,6 +88,33 @@ async def test_record_event_is_idempotent_with_its_counter_update(accounting_sto
 
 
 @pytest.mark.asyncio
+async def test_record_event_rejects_scope_metadata_mismatch(accounting_store):
+    await accounting_store.start_scope(_execution_scope())
+    event = _usage_event(phase="answer_generation")
+    event.campaign_id = "other-campaign"
+
+    with pytest.raises(ValueError, match="does not match"):
+        await accounting_store.record_event(event)
+
+    scope = await accounting_store.get_scope("scope-1")
+    assert scope.observed_call_count == 0
+    assert await accounting_store.list_campaign_events("campaign-1") == []
+
+
+@pytest.mark.asyncio
+async def test_mark_targets_official_is_atomic_when_an_attempt_is_unknown(accounting_store):
+    await accounting_store.start_scope(_ragas_scope(target_count=2))
+
+    with pytest.raises(ValueError, match="do not belong"):
+        await accounting_store.mark_targets_official(
+            "ragas-scope", {"attempt-0": "result-0", "missing-attempt": "result-x"}
+        )
+
+    scope = await accounting_store.get_scope("ragas-scope")
+    assert all(target.is_official is False for target in scope.targets)
+
+
+@pytest.mark.asyncio
 async def test_ragas_scope_keeps_multiple_targets_without_cost_allocation(accounting_store):
     scope = _ragas_scope(target_count=3)
     await accounting_store.start_scope(scope)
