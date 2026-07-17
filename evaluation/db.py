@@ -348,6 +348,72 @@ CREATE TABLE IF NOT EXISTS evaluation_attempts (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_attempt_number
 ON evaluation_attempts(work_item_id, attempt_number);
 
+CREATE TABLE IF NOT EXISTS evaluation_accounting_scopes (
+    scope_id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL,
+    scope_type TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    run_id TEXT,
+    metric_name TEXT,
+    accounting_schema_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    observed_call_count INTEGER NOT NULL DEFAULT 0,
+    measured_call_count INTEGER NOT NULL DEFAULT 0,
+    missing_usage_call_count INTEGER NOT NULL DEFAULT 0,
+    unclassified_phase_call_count INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_accounting_scope_targets (
+    scope_id TEXT NOT NULL,
+    campaign_result_id TEXT,
+    job_id TEXT NOT NULL,
+    work_item_id TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    metric_name TEXT,
+    is_official INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(scope_id, attempt_id),
+    FOREIGN KEY(scope_id) REFERENCES evaluation_accounting_scopes(scope_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_usage_events (
+    usage_event_id TEXT PRIMARY KEY,
+    scope_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    scope_type TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    run_id TEXT,
+    provider_run_id TEXT,
+    phase TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    metric_name TEXT,
+    provider TEXT,
+    model_name TEXT,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_text_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    other_tokens INTEGER NOT NULL DEFAULT 0,
+    reported_total_tokens INTEGER,
+    raw_usage_json TEXT NOT NULL DEFAULT '{}',
+    usage_status TEXT NOT NULL,
+    reconciliation_status TEXT NOT NULL,
+    estimated_cost_usd REAL,
+    estimated_cost_twd REAL,
+    pricing_status TEXT NOT NULL,
+    price_snapshot_id TEXT,
+    latency_ms REAL,
+    status TEXT NOT NULL,
+    error_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(scope_id) REFERENCES evaluation_accounting_scopes(scope_id) ON DELETE CASCADE,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS evaluation_trace_events (
     event_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
@@ -897,6 +963,36 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_eval_graph_evidence_items_event
         ON evaluation_graph_evidence_items(graph_event_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_accounting_scopes_campaign_type_status
+        ON evaluation_accounting_scopes(campaign_id, scope_type, status)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_usage_events_scope_created
+        ON evaluation_usage_events(scope_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_usage_events_run_phase
+        ON evaluation_usage_events(run_id, phase)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_accounting_targets_attempt_official
+        ON evaluation_accounting_scope_targets(attempt_id, is_official)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_usage_events_campaign_metric
+        ON evaluation_usage_events(campaign_id, metric_name)
         """
     )
 
