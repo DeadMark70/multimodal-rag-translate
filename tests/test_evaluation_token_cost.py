@@ -4,7 +4,13 @@ from unittest.mock import Mock
 import pytest
 
 from evaluation.observability import EvaluationRunRecorder
-from evaluation.token_cost import normalize_llm_usage, price_llm_usage
+from evaluation.token_cost import (
+    load_price_snapshot,
+    normalize_llm_usage,
+    price_llm_usage,
+    price_normalized_usage,
+)
+from evaluation.token_normalizers import normalize_provider_usage
 
 
 class FakeLlmCallRepository:
@@ -50,7 +56,9 @@ def test_normalize_llm_usage_accepts_multiple_provider_shapes() -> None:
     }
 
 
-def test_price_llm_usage_uses_snapshot_rates_and_returns_none_for_unknown_model() -> None:
+def test_price_llm_usage_uses_snapshot_rates_and_returns_none_for_unknown_model() -> (
+    None
+):
     usage = {
         "prompt_tokens": 1000,
         "completion_tokens": 500,
@@ -80,7 +88,88 @@ def test_price_llm_usage_uses_snapshot_rates_and_returns_none_for_unknown_model(
         "price_snapshot_id": "local-test",
     }
 
-    assert price_llm_usage(model_name="unknown", usage=usage)["estimated_cost_usd"] is None
+    assert (
+        price_llm_usage(model_name="unknown", usage=usage)["estimated_cost_usd"] is None
+    )
+
+
+def test_price_normalized_usage_charges_non_overlapping_categories() -> None:
+    usage = normalize_provider_usage(
+        "openai",
+        {
+            "prompt_tokens": 1_000_000,
+            "completion_tokens": 3_000_000,
+            "total_tokens": 4_000_000,
+            "output_token_details": {"reasoning": 1_000_000},
+        },
+    )
+
+    priced = price_normalized_usage(
+        "openai-test",
+        usage,
+        {
+            "snapshot_id": "audited-test",
+            "currency": "USD",
+            "usd_to_twd": 32.0,
+            "models": {
+                "openai-test": {
+                    "input_per_1m_usd": 1.0,
+                    "output_per_1m_usd": 2.0,
+                    "reasoning_per_1m_usd": 3.0,
+                }
+            },
+        },
+    )
+
+    assert priced == {
+        "estimated_cost_usd": pytest.approx(8.0),
+        "estimated_cost_twd": pytest.approx(256.0),
+        "pricing_status": "priced",
+        "price_snapshot_id": "audited-test",
+    }
+
+
+def test_price_normalized_usage_keeps_unknown_model_cost_missing() -> None:
+    usage = normalize_provider_usage("google", {"total_token_count": 0})
+
+    priced = price_normalized_usage("unknown", usage, load_price_snapshot())
+
+    assert priced["estimated_cost_usd"] is None
+    assert priced["pricing_status"] == "unknown_model"
+
+
+def test_load_price_snapshot_rejects_invalid_configured_json(
+    tmp_path, monkeypatch
+) -> None:
+    snapshot_path = tmp_path / "invalid-prices.json"
+    snapshot_path.write_text(
+        '{"snapshot_id": "bad", "currency": "TWD"}', encoding="utf-8"
+    )
+    monkeypatch.setenv("EVALUATION_PRICE_SNAPSHOT_PATH", str(snapshot_path))
+
+    with pytest.raises(ValueError, match="currency"):
+        load_price_snapshot()
+
+
+def test_load_price_snapshot_rejects_non_finite_rates(tmp_path) -> None:
+    snapshot_path = tmp_path / "non-finite-prices.json"
+    snapshot_path.write_text(
+        """{
+            "snapshot_id": "bad-rate",
+            "currency": "USD",
+            "models": {
+                "test": {
+                    "input_per_1m_usd": 1,
+                    "output_per_1m_usd": 2,
+                    "reasoning_per_1m_usd": "NaN"
+                }
+            }
+        }""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="reasoning_per_1m_usd"):
+        load_price_snapshot(snapshot_path)
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import os
+from math import isfinite
+from pathlib import Path
 from typing import Any
+
+from evaluation.token_normalizers import NormalizedTokenUsage
 
 
 DEFAULT_PRICE_SNAPSHOT: dict[str, Any] = {
@@ -11,6 +17,114 @@ DEFAULT_PRICE_SNAPSHOT: dict[str, Any] = {
     "usd_to_twd": None,
     "models": {},
 }
+
+_RATE_FIELDS = (
+    "input_per_1m_usd",
+    "output_per_1m_usd",
+    "reasoning_per_1m_usd",
+)
+
+
+def load_price_snapshot(path: str | Path | None = None) -> dict[str, Any]:
+    """Load and validate an audited USD price snapshot.
+
+    An explicit path takes precedence over ``EVALUATION_PRICE_SNAPSHOT_PATH``.
+    With neither configured, the deliberately unpriced local snapshot is used.
+    """
+    configured_path = path or os.getenv("EVALUATION_PRICE_SNAPSHOT_PATH")
+    if not configured_path:
+        return dict(DEFAULT_PRICE_SNAPSHOT)
+    try:
+        snapshot = json.loads(Path(configured_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid evaluation price snapshot JSON") from exc
+    return _validate_price_snapshot(snapshot)
+
+
+def _validate_price_snapshot(snapshot: object) -> dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        raise ValueError("Price snapshot must be a JSON object")
+    snapshot_id = snapshot.get("snapshot_id")
+    if not isinstance(snapshot_id, str) or not snapshot_id.strip():
+        raise ValueError("Price snapshot requires a non-empty snapshot_id")
+    if snapshot.get("currency") != "USD":
+        raise ValueError("Price snapshot currency must be USD")
+    models = snapshot.get("models")
+    if not isinstance(models, dict):
+        raise ValueError("Price snapshot models must be an object")
+    for model_name, rates in models.items():
+        if (
+            not isinstance(model_name, str)
+            or not model_name
+            or not isinstance(rates, dict)
+        ):
+            raise ValueError(
+                "Price snapshot models must map model names to rate objects"
+            )
+        for field in _RATE_FIELDS:
+            value = rates.get(field)
+            if isinstance(value, bool):
+                raise ValueError(
+                    f"Price snapshot {model_name} {field} must be non-negative"
+                )
+            try:
+                if value is None or not isfinite(float(value)) or float(value) < 0:
+                    raise ValueError
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Price snapshot {model_name} {field} must be non-negative"
+                ) from exc
+    return snapshot
+
+
+def price_normalized_usage(
+    model_name: str | None,
+    usage: NormalizedTokenUsage,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Price measured non-overlapping usage from a validated audited snapshot."""
+    snapshot_id = snapshot.get("snapshot_id")
+    if usage.usage_status == "missing":
+        return {
+            "estimated_cost_usd": None,
+            "estimated_cost_twd": None,
+            "pricing_status": "unavailable_usage",
+            "price_snapshot_id": snapshot_id,
+        }
+    rates = (snapshot.get("models") or {}).get(model_name or "")
+    if not isinstance(rates, dict):
+        return {
+            "estimated_cost_usd": None,
+            "estimated_cost_twd": None,
+            "pricing_status": "unknown_model",
+            "price_snapshot_id": snapshot_id,
+        }
+    try:
+        input_rate = float(rates["input_per_1m_usd"])
+        output_rate = float(rates["output_per_1m_usd"])
+        reasoning_rate = float(rates["reasoning_per_1m_usd"])
+    except (KeyError, TypeError, ValueError):
+        return {
+            "estimated_cost_usd": None,
+            "estimated_cost_twd": None,
+            "pricing_status": "missing_price",
+            "price_snapshot_id": snapshot_id,
+        }
+    estimated_cost_usd = (
+        usage.input_tokens * input_rate
+        + usage.output_text_tokens * output_rate
+        + usage.reasoning_tokens * reasoning_rate
+    ) / 1_000_000
+    usd_to_twd = snapshot.get("usd_to_twd")
+    estimated_cost_twd = (
+        estimated_cost_usd * float(usd_to_twd) if usd_to_twd not in (None, "") else None
+    )
+    return {
+        "estimated_cost_usd": estimated_cost_usd,
+        "estimated_cost_twd": estimated_cost_twd,
+        "pricing_status": "priced",
+        "price_snapshot_id": snapshot_id,
+    }
 
 
 def _coerce_int(value: Any) -> int:
@@ -45,7 +159,9 @@ def normalize_llm_usage(raw_usage: Any) -> dict[str, int]:
         or usage.get("output_tokens")
         or usage.get("candidates_token_count")
     )
-    total_tokens = _coerce_int(usage.get("total_tokens") or usage.get("total_token_count"))
+    total_tokens = _coerce_int(
+        usage.get("total_tokens") or usage.get("total_token_count")
+    )
     if total_tokens == 0 and (prompt_tokens or completion_tokens):
         total_tokens = prompt_tokens + completion_tokens
     reasoning_tokens = _coerce_int(
@@ -83,15 +199,12 @@ def price_llm_usage(
 
     input_rate = float(rates.get("input_per_1m_usd") or 0)
     output_rate = float(rates.get("output_per_1m_usd") or 0)
-    estimated_cost_usd = (
-        (usage.get("prompt_tokens", 0) / 1_000_000) * input_rate
-        + (usage.get("completion_tokens", 0) / 1_000_000) * output_rate
-    )
+    estimated_cost_usd = (usage.get("prompt_tokens", 0) / 1_000_000) * input_rate + (
+        usage.get("completion_tokens", 0) / 1_000_000
+    ) * output_rate
     usd_to_twd = snapshot.get("usd_to_twd")
     estimated_cost_twd = (
-        estimated_cost_usd * float(usd_to_twd)
-        if usd_to_twd not in (None, "")
-        else None
+        estimated_cost_usd * float(usd_to_twd) if usd_to_twd not in (None, "") else None
     )
     return {
         "estimated_cost_usd": estimated_cost_usd,
