@@ -23,8 +23,9 @@ class FakeStore:
 
     async def complete_ragas_attempt(
         self, claim: ClaimedEvaluationWork, output: RagasAttemptOutput
-    ) -> None:
+    ) -> int:
         self.completed.append((claim, output))
+        return len(output.scores)
 
     async def fail_attempt(
         self,
@@ -162,6 +163,13 @@ class PromotionStore(FakeStore):
         return self.promoted_counts.pop(0)
 
 
+class UnconfirmedPromotionStore(FakeStore):
+    async def complete_ragas_attempt(
+        self, claim: ClaimedEvaluationWork, output: RagasAttemptOutput
+    ) -> None:
+        await super().complete_ragas_attempt(claim, output)
+
+
 @pytest.mark.asyncio
 async def test_ragas_batch_records_one_shared_scope_for_all_claims(
     accounting_store: EvaluationAccountingStore,
@@ -264,6 +272,26 @@ async def test_ragas_missing_scores_leave_targets_unofficial(
     worker = RagasBatchWorker(
         store=PromotionStore([0]),
         evaluator=evaluator,
+        accounting_store=accounting_store,
+        price_snapshot=TEST_PRICE_SNAPSHOT,
+    )
+
+    await worker.execute([_claim(0)])
+
+    assert (
+        not (await accounting_store.list_campaign_scopes("campaign-1"))[0]
+        .targets[0]
+        .is_official
+    )
+
+
+@pytest.mark.asyncio
+async def test_ragas_unconfirmed_promotion_leaves_target_unofficial(
+    accounting_store: EvaluationAccountingStore,
+) -> None:
+    worker = RagasBatchWorker(
+        store=UnconfirmedPromotionStore(),
+        evaluator=AccountingFakeEvaluator(results=[[0.8]]),
         accounting_store=accounting_store,
         price_snapshot=TEST_PRICE_SNAPSHOT,
     )

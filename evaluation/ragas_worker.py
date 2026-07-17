@@ -312,9 +312,7 @@ class RagasBatchWorker:
                     promoted_score_count = await self._store.complete_ragas_attempt(
                         claim, RagasAttemptOutput(scores=[score])
                     )
-                if scope is not None and self._did_promote_scores(
-                    promoted_score_count, score_count=0 if value is None else 1
-                ):
+                if scope is not None and self._did_promote_scores(promoted_score_count):
                     await self._accounting_store.mark_targets_official(
                         scope.scope_id, {claim.attempt_id: self._result_id(claim)}
                     )
@@ -372,10 +370,8 @@ class RagasBatchWorker:
             return
 
     @staticmethod
-    def _did_promote_scores(result: object, *, score_count: int) -> bool:
-        """Interpret new promotion counts while tolerating legacy store fakes."""
-        if result is None:
-            return score_count > 0
+    def _did_promote_scores(result: object) -> bool:
+        """Only a durable store's explicit positive score count is official."""
         return isinstance(result, int) and not isinstance(result, bool) and result > 0
 
     @staticmethod
