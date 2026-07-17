@@ -183,7 +183,10 @@
   mode without relying on a promoted result. Older targets with `mode=null`
   are used only when an existing result ID or official attempt ID determines
   exactly one mode; otherwise campaign and per-mode accounting become partial,
-  the modes are non-comparable, and no mode or cost is guessed.
+  the modes are non-comparable, and no mode or cost is guessed. Affected modes
+  retain their known benchmark cost but expose `operational_usd=null` with
+  partial pricing; the campaign can still report complete operational pricing
+  because it includes every execution event without assigning it to a mode.
 - Historical campaigns are deliberately not backfilled. A completed legacy
   result without a version-2 official execution scope remains readable, but
   reports `token_accounting_status="incomplete_legacy"` and is not comparable.

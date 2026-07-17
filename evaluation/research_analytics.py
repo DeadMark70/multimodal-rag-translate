@@ -197,6 +197,10 @@ def _mode_summary(
     if has_unattributed_execution_scopes:
         tokens = _partial_for_missing_mode_attribution(tokens)
     cost = _cost(official_events, operational_events=operational)
+    if has_unattributed_execution_scopes:
+        cost = cost.model_copy(
+            update={"operational_usd": None, "pricing_status": "partial"}
+        )
     reasons: list[str] = []
     warnings = []
     if has_unattributed_execution_scopes:

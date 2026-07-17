@@ -183,6 +183,17 @@ async def test_unattributable_older_v2_execution_scope_fails_closed(
     assert summary.modes[0].tokens.accounting_status == "partial"
     assert summary.modes[0].comparable is False
     assert "incomplete_accounting" in summary.modes[0].not_comparable_reasons
+    assert "incomplete_pricing" in summary.modes[0].not_comparable_reasons
+    assert summary.modes[0].execution_cost.benchmark_usd == pytest.approx(0.1)
+    assert summary.modes[0].execution_cost.operational_usd is None
+    assert summary.modes[0].execution_cost.pricing_status == "partial"
+    assert summary.modes[0].execution_cost.priced_call_count == 1
+    assert summary.modes[0].execution_cost.unpriced_call_count == 0
+    assert summary.execution_cost.benchmark_usd == pytest.approx(0.1)
+    assert summary.execution_cost.operational_usd == pytest.approx(0.2)
+    assert summary.execution_cost.pricing_status == "complete"
+    assert summary.execution_cost.priced_call_count == 2
+    assert summary.execution_cost.unpriced_call_count == 0
     assert any(
         warning.code == "missing_mode_attribution" for warning in summary.warnings
     )
