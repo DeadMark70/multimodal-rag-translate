@@ -192,6 +192,12 @@
   compatible durable `ragas_scores` rows matching the result's official source
   attempt. Missing, failed, evaluating, or incompatible work remains nullable;
   it is never converted to a score of zero.
+- RAGAS keeps two distinct signatures. `evaluation_signature` is a per-result
+  currentness key that includes result/content identity and drives durable work
+  idempotency. `compatibility_signature` identifies only the evaluator policy
+  (model/configuration, metric name/version, and policy knobs) and is used to
+  form comparable research cohorts. Legacy scores without the compatibility
+  signature fall back strictly to identical raw evaluation signatures.
 - Latency `p50` and `p95` use the nearest-rank method: sort observed successful
   run latencies, then select `ceil(percentile * sample_count)`. Values are
   observed samples, not interpolated estimates.

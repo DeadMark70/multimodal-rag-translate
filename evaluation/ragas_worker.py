@@ -307,6 +307,12 @@ class RagasBatchWorker:
                             "question_id": self._row_for_claim(claim).question_id,
                             "invalid_metric": False,
                             "batch_group_key": batch_group_key,
+                            "metric_version": claim.input_snapshot.get(
+                                "metric_version"
+                            ),
+                            "compatibility_signature": claim.input_snapshot.get(
+                                "compatibility_signature"
+                            ),
                         },
                     }
                     promoted_score_count = await self._store.complete_ragas_attempt(

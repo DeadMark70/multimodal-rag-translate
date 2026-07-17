@@ -348,10 +348,13 @@ def _quality_for_results(results, scores, requested_work):
 
 def _evaluator_identity(row) -> tuple[str, str, str]:
     details = row.get("details") or {}
+    compatibility_signature = details.get("compatibility_signature")
+    if not compatibility_signature:
+        compatibility_signature = row.get("evaluation_signature") or ""
     return (
         str(details.get("evaluator_model") or details.get("model_name") or ""),
         str(details.get("metric_version") or ""),
-        str(row.get("evaluation_signature") or ""),
+        str(compatibility_signature),
     )
 
 

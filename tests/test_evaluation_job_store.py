@@ -139,6 +139,18 @@ async def _claim_execution_rerun(store, now: datetime):  # noqa: ANN001
     return (await store.claim_ready_items(limit=1, now=now))[0]
 
 
+def _ragas_spec(result: CampaignResult) -> WorkItemSpec:
+    return WorkItemSpec(
+        work_type="ragas_metric",
+        logical_key="ragas:Q1:naive:1:faithfulness",
+        input_snapshot={
+            "campaign_result_id": result.id,
+            "result": result.model_dump(mode="json"),
+        },
+        max_attempts=1,
+    )
+
+
 @pytest.mark.asyncio
 async def test_complete_execution_attempt_atomically_promotes_accounting_scope(
     store, fixed_now
@@ -322,6 +334,10 @@ async def test_ensure_ragas_work_assigns_one_shared_batch_key_to_compatible_resu
     )
     assert len(claims) == 4
     assert len({claim.input_snapshot["evaluation_signature"] for claim in claims}) == 4
+    assert (
+        len({claim.input_snapshot["compatibility_signature"] for claim in claims}) == 1
+    )
+    assert {claim.input_snapshot["metric_version"] for claim in claims} == {"v1"}
     assert len({claim.input_snapshot["batch_group_key"] for claim in claims}) == 1
 
     class BatchEvaluator:
@@ -501,12 +517,7 @@ async def test_incompatible_signature_preserves_current_score(store, fixed_now) 
     result = await store.complete_execution_attempt(
         execution_claim, _successful_output("answer-v1")
     )
-    ragas_spec = WorkItemSpec(
-        work_type="ragas_metric",
-        logical_key="ragas:Q1:naive:1:faithfulness",
-        input_snapshot={"campaign_result_id": result.id},
-        max_attempts=1,
-    )
+    ragas_spec = _ragas_spec(result)
     await store.create_job_with_items(
         user_id="user-a",
         campaign_id="cmp-1",
@@ -563,7 +574,61 @@ async def test_incompatible_signature_preserves_current_score(store, fixed_now) 
             )
         ).fetchone()
     assert row["metric_value"] == 0.8
-    assert row["source_attempt_id"] == first_claim.attempt_id
+    assert row["source_attempt_id"] == execution_claim.attempt_id
+    assert row["source_attempt_id"] != first_claim.attempt_id
+
+
+@pytest.mark.asyncio
+async def test_ragas_promotion_rejects_stale_execution_source(store, fixed_now) -> None:  # noqa: ANN001
+    execution_claim = await _claim_execution(store, fixed_now)
+    result = await store.complete_execution_attempt(
+        execution_claim, _successful_output("answer-v1")
+    )
+    stale_result = result.model_copy(update={"source_attempt_id": "stale-attempt"})
+    spec = WorkItemSpec(
+        work_type="ragas_metric",
+        logical_key="ragas:Q1:naive:1:faithfulness:stale-source",
+        input_snapshot={
+            "campaign_result_id": result.id,
+            "result": stale_result.model_dump(mode="json"),
+        },
+        max_attempts=1,
+    )
+    await store.create_job_with_items(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="initial",
+        selection={},
+        config_snapshot={},
+        items=[spec],
+    )
+    claim = (await store.claim_ready_items(limit=1, now=fixed_now))[0]
+
+    with pytest.raises(ValueError, match="official execution source attempt"):
+        await store.complete_ragas_attempt(
+            claim,
+            RagasAttemptOutput(
+                scores=[
+                    {
+                        "campaign_result_id": result.id,
+                        "metric_name": "faithfulness",
+                        "metric_value": 0.8,
+                        "evaluation_signature": "sig-v1",
+                    }
+                ]
+            ),
+        )
+
+    assert (
+        await RagasScoreRepository().list_for_campaign(
+            user_id="user-a", campaign_id="cmp-1"
+        )
+        == []
+    )
+    attempts = await store.list_attempts(
+        user_id="user-a", work_item_id=claim.work_item_id
+    )
+    assert attempts[-1].status == "running"
 
 
 @pytest.mark.asyncio
@@ -572,12 +637,7 @@ async def test_legacy_null_signature_preserves_current_score(store, fixed_now) -
     result = await store.complete_execution_attempt(
         execution_claim, _successful_output("answer-v1")
     )
-    ragas_spec = WorkItemSpec(
-        work_type="ragas_metric",
-        logical_key="ragas:Q1:naive:1:faithfulness",
-        input_snapshot={"campaign_result_id": result.id},
-        max_attempts=1,
-    )
+    ragas_spec = _ragas_spec(result)
     await store.create_job_with_items(
         user_id="user-a",
         campaign_id="cmp-1",
@@ -641,7 +701,8 @@ async def test_legacy_null_signature_preserves_current_score(store, fixed_now) -
             )
         ).fetchone()
     assert row["metric_value"] == 0.8
-    assert row["source_attempt_id"] == first_claim.attempt_id
+    assert row["source_attempt_id"] == execution_claim.attempt_id
+    assert row["source_attempt_id"] != first_claim.attempt_id
 
 
 @pytest.mark.asyncio
@@ -650,12 +711,7 @@ async def test_failed_ragas_rerun_preserves_current_score(store, fixed_now) -> N
     result = await store.complete_execution_attempt(
         execution_claim, _successful_output("answer-v1")
     )
-    ragas_spec = WorkItemSpec(
-        work_type="ragas_metric",
-        logical_key="ragas:Q1:naive:1:faithfulness",
-        input_snapshot={"campaign_result_id": result.id},
-        max_attempts=1,
-    )
+    ragas_spec = _ragas_spec(result)
     await store.create_job_with_items(
         user_id="user-a",
         campaign_id="cmp-1",
@@ -703,7 +759,8 @@ async def test_failed_ragas_rerun_preserves_current_score(store, fixed_now) -> N
             )
         ).fetchone()
     assert row["metric_value"] == 0.8
-    assert row["source_attempt_id"] == first_claim.attempt_id
+    assert row["source_attempt_id"] == execution_claim.attempt_id
+    assert row["source_attempt_id"] != first_claim.attempt_id
 
 
 @pytest.mark.asyncio
@@ -712,12 +769,7 @@ async def test_compatible_ragas_rerun_replaces_current_score(store, fixed_now) -
     result = await store.complete_execution_attempt(
         execution_claim, _successful_output("answer-v1")
     )
-    ragas_spec = WorkItemSpec(
-        work_type="ragas_metric",
-        logical_key="ragas:Q1:naive:1:faithfulness",
-        input_snapshot={"campaign_result_id": result.id},
-        max_attempts=1,
-    )
+    ragas_spec = _ragas_spec(result)
     await store.create_job_with_items(
         user_id="user-a",
         campaign_id="cmp-1",
@@ -774,7 +826,16 @@ async def test_compatible_ragas_rerun_replaces_current_score(store, fixed_now) -
             )
         ).fetchone()
     assert row["metric_value"] == 0.1
-    assert row["source_attempt_id"] == rerun_claim.attempt_id
+    assert row["source_attempt_id"] == execution_claim.attempt_id
+    assert row["source_attempt_id"] != rerun_claim.attempt_id
+    attempts = await store.list_attempts(
+        user_id="user-a", work_item_id=rerun_claim.work_item_id
+    )
+    assert [attempt.attempt_id for attempt in attempts] == [
+        first_claim.attempt_id,
+        rerun_claim.attempt_id,
+    ]
+    assert [attempt.status for attempt in attempts] == ["succeeded", "succeeded"]
 
 
 @pytest.mark.asyncio

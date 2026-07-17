@@ -60,6 +60,28 @@ def build_evaluation_signature(
     return sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def build_evaluator_compatibility_signature(
+    *,
+    evaluator_model: str,
+    evaluator_config: dict[str, Any],
+    metric_name: str,
+    metric_version: str,
+    context_metrics_enabled: bool,
+) -> str:
+    """Return the evaluator-policy identity shared by comparable score rows."""
+    payload = {
+        "evaluator_model": evaluator_model,
+        "evaluator_config": evaluator_config,
+        "metric_name": metric_name,
+        "metric_version": metric_version,
+        "context_metrics_enabled": context_metrics_enabled,
+    }
+    canonical = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def build_ragas_batch_group_key(
     *,
     result: CampaignResult,
@@ -250,6 +272,7 @@ class EvaluationJobStore:
                 for metric_name in dict.fromkeys(
                     str(name) for name in metrics_for_result
                 ):
+                    context_metrics_enabled = metric_name.startswith("context_")
                     signature = build_evaluation_signature(
                         result=result,
                         evaluator_model=evaluator_model,
@@ -257,7 +280,14 @@ class EvaluationJobStore:
                         metric_name=metric_name,
                         metric_version=metric_version,
                         ground_truth_hash=ground_truth_hash,
-                        context_metrics_enabled=metric_name.startswith("context_"),
+                        context_metrics_enabled=context_metrics_enabled,
+                    )
+                    compatibility_signature = build_evaluator_compatibility_signature(
+                        evaluator_model=evaluator_model,
+                        evaluator_config=effective_config,
+                        metric_name=metric_name,
+                        metric_version=metric_version,
+                        context_metrics_enabled=context_metrics_enabled,
                     )
                     batch_group_key = build_ragas_batch_group_key(
                         result=result,
@@ -266,7 +296,7 @@ class EvaluationJobStore:
                         metric_name=metric_name,
                         metric_version=metric_version,
                         ground_truth_hash=ground_truth_hash,
-                        context_metrics_enabled=metric_name.startswith("context_"),
+                        context_metrics_enabled=context_metrics_enabled,
                     )
                     score_cursor = await connection.execute(
                         "SELECT evaluation_signature FROM ragas_scores WHERE campaign_result_id = ? AND metric_name = ?",
@@ -302,7 +332,9 @@ class EvaluationJobStore:
                                 "campaign_id": campaign_id,
                                 "campaign_result_id": result.id,
                                 "metric_name": metric_name,
+                                "metric_version": metric_version,
                                 "evaluation_signature": signature,
+                                "compatibility_signature": compatibility_signature,
                                 "batch_group_key": batch_group_key,
                                 "ragas_batch_size": effective_batch_size,
                                 "ragas_parallel_batches": effective_parallel_batches,
@@ -817,13 +849,28 @@ class EvaluationJobStore:
                     result_id = str(score["campaign_result_id"])
                     metric_name = str(score["metric_name"])
                     signature = score.get("evaluation_signature")
+                    snapshot_result = claim.input_snapshot.get("result")
+                    source_attempt_id = (
+                        snapshot_result.get("source_attempt_id")
+                        if isinstance(snapshot_result, Mapping)
+                        else None
+                    )
+                    if not isinstance(source_attempt_id, str) or not source_attempt_id:
+                        raise ValueError(
+                            "RAGAS claim is missing the official execution source attempt"
+                        )
                     result_cursor = await connection.execute(
-                        "SELECT 1 FROM campaign_results WHERE id = ? AND campaign_id = ? AND user_id = ?",
+                        "SELECT source_attempt_id FROM campaign_results WHERE id = ? AND campaign_id = ? AND user_id = ?",
                         (result_id, job["campaign_id"], job["user_id"]),
                     )
-                    if await result_cursor.fetchone() is None:
+                    result_row = await result_cursor.fetchone()
+                    if result_row is None:
                         raise ValueError(
                             "RAGAS score does not belong to the claimed campaign"
+                        )
+                    if result_row["source_attempt_id"] != source_attempt_id:
+                        raise ValueError(
+                            "RAGAS claim does not match the official execution source attempt"
                         )
                     existing_cursor = await connection.execute(
                         "SELECT evaluation_signature FROM ragas_scores WHERE campaign_result_id = ? AND metric_name = ?",
@@ -857,7 +904,7 @@ class EvaluationJobStore:
                             metric_name,
                             float(score["metric_value"]),
                             _json_dumps(score.get("details", {})),
-                            claim.attempt_id,
+                            source_attempt_id,
                             signature,
                             now_iso,
                         ),
