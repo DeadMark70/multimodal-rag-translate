@@ -281,7 +281,9 @@ The response is a strict typed contract rather than an open dictionary. It conta
 
 - `campaign_id`
 - `research_schema_version`
+- completed, total, and failed execution counts
 - campaign quality, token, pricing, and phase-attribution statuses
+- campaign-level official quality observations, latency summary, normalized tokens, and execution costs
 - per-mode research summaries
 - campaign-level RAGAS evaluation overhead
 - operational totals
@@ -313,6 +315,8 @@ Display independent badges for quality, token accounting, pricing, and phase att
 ### 15.2 Quality cards and mode comparison
 
 Display only official RAGAS values under correctness, faithfulness, and relevance labels. `N/A` values include their status and valid, missing, and failed sample counts. The frontend does not calculate a fallback from claim metrics.
+
+Top-level campaign cards use campaign aggregates supplied by `research-summary`; they do not average per-mode rows in React.
 
 ### 15.3 Cost versus quality
 
