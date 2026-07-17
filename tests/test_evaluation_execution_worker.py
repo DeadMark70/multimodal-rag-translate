@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -13,6 +14,9 @@ import pytest
 import pytest_asyncio
 
 import evaluation.db as evaluation_db
+from core.llm_usage_callback import emit_direct_usage
+from core.llm_usage_context import llm_accounting_phase
+from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.execution_worker import DatasetExecutionWorker
 from evaluation.job_schemas import EvaluationWorkType, WorkItemSpec
 from evaluation.job_store import EvaluationJobStore
@@ -21,6 +25,20 @@ from evaluation.retrieval_profiles import (
     ADVANCED_EVAL_PROFILE,
     AGENTIC_EVAL_PROFILE,
 )
+
+
+TEST_PRICE_SNAPSHOT = {
+    "snapshot_id": "test-v1",
+    "currency": "USD",
+    "usd_to_twd": None,
+    "models": {
+        "test-model": {
+            "input_per_1m_usd": 1.0,
+            "output_per_1m_usd": 2.0,
+            "reasoning_per_1m_usd": 0.0,
+        }
+    },
+}
 
 
 @pytest_asyncio.fixture
@@ -119,6 +137,130 @@ def _successful_payload(
         mode=mode,
         answer=answer,
     )
+
+
+@pytest.mark.asyncio
+async def test_execution_worker_promotes_ledger_total_not_payload_total(
+    store: EvaluationJobStore,
+) -> None:
+    async def runner(**runtime_inputs):  # noqa: ANN003
+        for phase, usage in [
+            (
+                "query_expansion",
+                {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+            ),
+            (
+                "answer_generation",
+                {"input_tokens": 20, "output_tokens": 5, "total_tokens": 25},
+            ),
+        ]:
+            with llm_accounting_phase(phase):
+                await emit_direct_usage(
+                    purpose="rag_qa",
+                    provider="google",
+                    model_name="test-model",
+                    raw_usage=usage,
+                    status="success",
+                    error={},
+                )
+        payload = _successful_payload(
+            question_id=runtime_inputs["test_case"].id,
+            mode=runtime_inputs["mode"],
+            answer="42",
+        )
+        payload.token_usage = {"total_tokens": 999}
+        return payload
+
+    worker = DatasetExecutionWorker(
+        store=store,
+        runner=runner,
+        accounting_store=EvaluationAccountingStore(),
+        price_snapshot=TEST_PRICE_SNAPSHOT,
+    )
+    await worker.execute(await _claim_seeded_execution(store))
+
+    results = await evaluation_db.CampaignResultRepository().list_for_campaign(
+        user_id="user-a", campaign_id="cmp-1"
+    )
+    assert results[0].total_tokens == 37
+    assert results[0].token_usage["accounting_schema_version"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_failed_attempt_scope_is_not_official(store: EvaluationJobStore) -> None:
+    accounting_store = EvaluationAccountingStore()
+    worker = DatasetExecutionWorker(
+        store=store,
+        runner=AsyncMock(side_effect=RuntimeError("provider failed")),
+        accounting_store=accounting_store,
+        price_snapshot=TEST_PRICE_SNAPSHOT,
+    )
+
+    await worker.execute(await _claim_seeded_execution(store))
+
+    scope = (await accounting_store.list_campaign_scopes("cmp-1"))[0]
+    assert scope.status == "failed"
+    assert all(not target.is_official for target in scope.targets)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_attempt_scope_is_cancelled(store: EvaluationJobStore) -> None:
+    async def runner(**_runtime_inputs):  # noqa: ANN003
+        raise asyncio.CancelledError
+
+    accounting_store = EvaluationAccountingStore()
+    worker = DatasetExecutionWorker(
+        store=store,
+        runner=runner,
+        accounting_store=accounting_store,
+        price_snapshot=TEST_PRICE_SNAPSHOT,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker.execute(await _claim_seeded_execution(store))
+
+    scope = (await accounting_store.list_campaign_scopes("cmp-1"))[0]
+    assert scope.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_usage_persistence_error_keeps_completed_scope_and_partial_result(
+    store: EvaluationJobStore,
+) -> None:
+    class FailingEventStore(EvaluationAccountingStore):
+        async def record_event(self, event) -> None:  # noqa: ANN001
+            raise RuntimeError("accounting unavailable")
+
+    async def runner(**runtime_inputs):  # noqa: ANN003
+        await emit_direct_usage(
+            purpose="rag_qa",
+            provider="google",
+            model_name="test-model",
+            raw_usage={"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+        )
+        return _successful_payload(
+            question_id=runtime_inputs["test_case"].id,
+            mode=runtime_inputs["mode"],
+            answer="42",
+        )
+
+    accounting_store = FailingEventStore()
+    worker = DatasetExecutionWorker(
+        store=store,
+        runner=runner,
+        accounting_store=accounting_store,
+        price_snapshot=TEST_PRICE_SNAPSHOT,
+    )
+    await worker.execute(await _claim_seeded_execution(store))
+
+    scope = (await accounting_store.list_campaign_scopes("cmp-1"))[0]
+    result = (
+        await evaluation_db.CampaignResultRepository().list_for_campaign(
+            user_id="user-a", campaign_id="cmp-1"
+        )
+    )[0]
+    assert scope.status == "completed"
+    assert result.token_usage["token_accounting_status"] == "partial"
 
 
 @pytest.mark.asyncio

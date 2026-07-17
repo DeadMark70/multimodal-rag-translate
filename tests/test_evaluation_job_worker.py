@@ -14,6 +14,8 @@ import pytest
 import pytest_asyncio
 
 import evaluation.db as evaluation_db
+from evaluation.accounting_runtime import start_execution_scope
+from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.job_schemas import EvaluationWorkType, WorkItemSpec
 from evaluation.job_store import EvaluationJobStore
 from evaluation.job_worker import EvaluationJobWorker, get_evaluation_job_worker
@@ -25,7 +27,9 @@ async def store(
 ) -> EvaluationJobStore:
     artifacts_dir = Path(__file__).resolve().parent.parent / ".test-artifacts"
     artifacts_dir.mkdir(exist_ok=True)
-    database_path = Path(mkdtemp(prefix="evaluation-worker-", dir=artifacts_dir)) / "worker.db"
+    database_path = (
+        Path(mkdtemp(prefix="evaluation-worker-", dir=artifacts_dir)) / "worker.db"
+    )
     monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", database_path)
     try:
         await evaluation_db.force_init_db()
@@ -41,7 +45,11 @@ async def store(
             await connection.commit()
         yield EvaluationJobStore()
     finally:
-        for path in (database_path, database_path.with_suffix(".db-shm"), database_path.with_suffix(".db-wal")):
+        for path in (
+            database_path,
+            database_path.with_suffix(".db-shm"),
+            database_path.with_suffix(".db-wal"),
+        ):
             path.unlink(missing_ok=True)
         rmtree(database_path.parent, ignore_errors=True)
 
@@ -81,7 +89,9 @@ async def _seed_running_attempt(store: EvaluationJobStore, *, logical_key: str) 
 async def _seed_successful_work(store: EvaluationJobStore, *, logical_key: str) -> None:
     await _seed_work(store, logical_key=logical_key, max_attempts=1)
     claim = (
-        await store.claim_ready_items(limit=1, now=datetime(2026, 7, 14, tzinfo=timezone.utc))
+        await store.claim_ready_items(
+            limit=1, now=datetime(2026, 7, 14, tzinfo=timezone.utc)
+        )
     )[0]
     await store.cancel_attempt(claim, safe_message="Fixture success substitute")
 
@@ -101,7 +111,9 @@ async def test_start_recovers_running_attempt_and_executes_only_unresolved_work(
     await _seed_running_attempt(store, logical_key="execution:Q1:naive:1:none")
     await _seed_successful_work(store, logical_key="execution:Q2:naive:1:none")
     executor = AsyncMock()
-    worker = EvaluationJobWorker(store=store, execution_handler=executor, ragas_handler=AsyncMock())
+    worker = EvaluationJobWorker(
+        store=store, execution_handler=executor, ragas_handler=AsyncMock()
+    )
 
     await worker.start()
     worker.notify()
@@ -112,8 +124,42 @@ async def test_start_recovers_running_attempt_and_executes_only_unresolved_work(
 
 
 @pytest.mark.asyncio
+async def test_start_interrupts_running_accounting_scopes_before_recovery(
+    store: EvaluationJobStore,
+) -> None:
+    await _seed_work(store, logical_key="execution:Q1:naive:1:none")
+    claim = (
+        await store.claim_ready_items(
+            limit=1, now=datetime(2026, 7, 14, tzinfo=timezone.utc)
+        )
+    )[0]
+    accounting_store = EvaluationAccountingStore()
+    scope = await start_execution_scope(
+        store=accounting_store,
+        campaign_id="cmp-1",
+        run_id="run-1",
+        job_id=claim.job_id,
+        work_item_id=claim.work_item_id,
+        attempt_id=claim.attempt_id,
+    )
+    worker = EvaluationJobWorker(
+        store=store,
+        execution_handler=AsyncMock(),
+        ragas_handler=AsyncMock(),
+        accounting_store=accounting_store,
+    )
+
+    await worker.start()
+    await worker.stop()
+
+    assert (await accounting_store.get_scope(scope.scope_id)).status == "interrupted"
+
+
+@pytest.mark.asyncio
 async def test_stop_does_not_claim_new_work(store: EvaluationJobStore) -> None:
-    worker = EvaluationJobWorker(store=store, execution_handler=AsyncMock(), ragas_handler=AsyncMock())
+    worker = EvaluationJobWorker(
+        store=store, execution_handler=AsyncMock(), ragas_handler=AsyncMock()
+    )
 
     await worker.start()
     await worker.stop()
@@ -137,7 +183,9 @@ async def test_start_restarts_idle_loop_before_claiming_new_work(
     )
 
     await worker.start()
-    await _wait_until(lambda: worker._loop_task is not None and worker._loop_task.done())
+    await _wait_until(
+        lambda: worker._loop_task is not None and worker._loop_task.done()
+    )
     await _seed_work(store, logical_key="execution:Q1:naive:1:none")
 
     await worker.start()
@@ -147,7 +195,9 @@ async def test_start_restarts_idle_loop_before_claiming_new_work(
 
 
 @pytest.mark.asyncio
-async def test_execution_dispatch_never_exceeds_its_limit(store: EvaluationJobStore) -> None:
+async def test_execution_dispatch_never_exceeds_its_limit(
+    store: EvaluationJobStore,
+) -> None:
     for number in range(5):
         await _seed_work(store, logical_key=f"execution:Q{number}:naive:1:none")
     release = asyncio.Event()
@@ -161,7 +211,9 @@ async def test_execution_dispatch_never_exceeds_its_limit(store: EvaluationJobSt
         await release.wait()
         active -= 1
 
-    worker = EvaluationJobWorker(store=store, execution_handler=execute, ragas_handler=AsyncMock())
+    worker = EvaluationJobWorker(
+        store=store, execution_handler=execute, ragas_handler=AsyncMock()
+    )
     await worker.start()
     worker.notify()
     await _wait_until(lambda: active == 4)
@@ -228,7 +280,9 @@ async def test_unconfigured_singleton_refuses_to_start(
 
 
 @pytest.mark.asyncio
-async def test_stop_cancels_active_handler_and_recovers_its_attempt(store: EvaluationJobStore) -> None:
+async def test_stop_cancels_active_handler_and_recovers_its_attempt(
+    store: EvaluationJobStore,
+) -> None:
     await _seed_work(store, logical_key="execution:Q1:naive:1:none")
     started = asyncio.Event()
     cancelled = asyncio.Event()
@@ -243,7 +297,9 @@ async def test_stop_cancels_active_handler_and_recovers_its_attempt(store: Evalu
             cancelled.set()
             raise
 
-    worker = EvaluationJobWorker(store=store, execution_handler=execute, ragas_handler=AsyncMock())
+    worker = EvaluationJobWorker(
+        store=store, execution_handler=execute, ragas_handler=AsyncMock()
+    )
     await worker.start()
     worker.notify()
     await asyncio.wait_for(started.wait(), timeout=1)
@@ -251,7 +307,9 @@ async def test_stop_cancels_active_handler_and_recovers_its_attempt(store: Evalu
 
     assert cancelled.is_set()
     assert len(work_item_ids) == 1
-    attempts = await store.list_attempts(user_id="user-a", work_item_id=work_item_ids[0])
+    attempts = await store.list_attempts(
+        user_id="user-a", work_item_id=work_item_ids[0]
+    )
     assert [attempt.status for attempt in attempts] == ["interrupted"]
     claim = (await store.claim_ready_items(limit=1, now=datetime.now(timezone.utc)))[0]
     assert claim.attempt_number == 2

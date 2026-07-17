@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from core.llm_usage_context import llm_accounting_scope
+from evaluation.accounting_runtime import (
+    EvaluationAccountingSink,
+    start_execution_scope,
+)
+from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.campaign_engine import (
     CampaignUnit,
     CampaignRunner,
@@ -52,6 +59,8 @@ class DatasetExecutionWorker:
         trace_repository: AgentTraceRepository | None = None,
         ragas_evaluator: Any | None = None,
         notify: Any | None = None,
+        accounting_store: EvaluationAccountingStore | None = None,
+        price_snapshot: dict[str, Any] | None = None,
     ) -> None:
         self._store = store or EvaluationJobStore()
         self._runner = runner
@@ -60,6 +69,10 @@ class DatasetExecutionWorker:
         self._trace_repository = trace_repository or AgentTraceRepository()
         self._ragas_evaluator = ragas_evaluator
         self._notify = notify
+        self._accounting_store = accounting_store or EvaluationAccountingStore()
+        self._accounting_sink = EvaluationAccountingSink(
+            store=self._accounting_store, price_snapshot=price_snapshot
+        )
 
     async def execute(self, claim: ClaimedEvaluationWork) -> None:
         """Execute one claimed unit, preserving attempts before official promotion."""
@@ -68,38 +81,71 @@ class DatasetExecutionWorker:
             unit, user_id, campaign_id, model_config = self._snapshot_inputs(claim)
             started_at = datetime.now(timezone.utc)
             started_perf = time.perf_counter()
-            payload = await self._runner(
-                test_case=unit.test_case,
-                user_id=user_id,
-                mode=unit.mode,
-                model_config=model_config,
-                run_number=unit.repeat_number,
-                ablation_flags=unit.ablation_flags,
-                budget=unit.budget,
-            )
-            completed_at = datetime.now(timezone.utc)
-            total_latency_ms = max((time.perf_counter() - started_perf) * 1000, 0)
-            if total_latency_ms <= 0:
-                total_latency_ms = _duration_ms(started_at, completed_at)
-            if payload.error_message:
-                raise RuntimeError(payload.error_message)
-            execution = ExecutedCampaignUnit(
-                unit=unit,
-                payload=payload,
-                run_id=str(uuid4()),
-                request_id=str(uuid4()),
-                started_at=started_at,
-                completed_at=completed_at,
-                total_latency_ms=total_latency_ms,
-                model_config=model_config,
-            )
-            result = self._successful_result(
+            run_id = str(uuid4())
+            scope = await start_execution_scope(
+                store=self._accounting_store,
+                sink=self._accounting_sink,
                 campaign_id=campaign_id,
-                execution=execution,
+                run_id=run_id,
+                job_id=claim.job_id,
+                work_item_id=claim.work_item_id,
+                attempt_id=claim.attempt_id,
             )
-            promoted = await self._store.complete_execution_attempt(
-                claim, ExecutionAttemptOutput(result=result)
-            )
+            try:
+                with llm_accounting_scope(scope.context):
+                    payload = await self._runner(
+                        test_case=unit.test_case,
+                        user_id=user_id,
+                        mode=unit.mode,
+                        model_config=model_config,
+                        run_number=unit.repeat_number,
+                        ablation_flags=unit.ablation_flags,
+                        budget=unit.budget,
+                    )
+                completed_at = datetime.now(timezone.utc)
+                total_latency_ms = max((time.perf_counter() - started_perf) * 1000, 0)
+                if total_latency_ms <= 0:
+                    total_latency_ms = _duration_ms(started_at, completed_at)
+                if payload.error_message:
+                    raise RuntimeError(payload.error_message)
+                token_summary = await self._accounting_store.summarize_scope_tokens(
+                    scope.scope_id
+                )
+                payload.token_usage = token_summary.as_legacy_usage(
+                    accounting_schema_version="2"
+                )
+                payload.token_usage["token_accounting_status"] = (
+                    "partial"
+                    if scope.context.persistence_error_count
+                    else token_summary.reconciliation_status
+                )
+                execution = ExecutedCampaignUnit(
+                    unit=unit,
+                    payload=payload,
+                    run_id=run_id,
+                    request_id=str(uuid4()),
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    total_latency_ms=total_latency_ms,
+                    model_config=model_config,
+                )
+                result = self._successful_result(
+                    campaign_id=campaign_id,
+                    execution=execution,
+                )
+                promoted = await self._store.complete_execution_attempt(
+                    claim, ExecutionAttemptOutput(result=result)
+                )
+                await self._accounting_store.mark_targets_official(
+                    scope.scope_id, {claim.attempt_id: promoted.id}
+                )
+                await self._accounting_store.finalize_scope(scope.scope_id, "completed")
+            except asyncio.CancelledError:
+                await self._accounting_store.finalize_scope(scope.scope_id, "cancelled")
+                raise
+            except Exception:
+                await self._accounting_store.finalize_scope(scope.scope_id, "failed")
+                raise
         except Exception as exc:  # noqa: BLE001
             if await self._claim_was_cancelled(claim):
                 return
