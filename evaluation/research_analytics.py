@@ -83,6 +83,7 @@ class ResearchAnalyticsService:
         has_unattributed_execution_scopes = any(
             mode is None for mode in execution_scope_modes.values()
         )
+        canonical_identities = _canonical_identities_by_metric(completed, scores)
 
         modes: list[ModeResearchSummary] = []
         warnings: list[ResearchWarning] = []
@@ -96,6 +97,7 @@ class ResearchAnalyticsService:
                 requested_metrics,
                 execution_scope_modes,
                 has_unattributed_execution_scopes,
+                canonical_identities,
             )
             modes.append(summary)
             warnings.extend(
@@ -109,7 +111,13 @@ class ResearchAnalyticsService:
             for scope in official_scopes
             for event in events_by_scope[scope.scope_id]
         ]
-        quality = _quality_for_results(completed, scores, requested_metrics)
+        quality = _quality_for_results(
+            completed,
+            scores,
+            requested_metrics,
+            scopes,
+            canonical_identities,
+        )
         tokens = _tokens(official_scopes, official_events)
         if has_unattributed_execution_scopes:
             tokens = _partial_for_missing_mode_attribution(tokens)
@@ -178,6 +186,7 @@ def _mode_summary(
     requested_metrics,
     execution_scope_modes,
     has_unattributed_execution_scopes,
+    canonical_identities,
 ):
     official = _official_execution_scopes(results, scopes)
     official_events = [
@@ -192,7 +201,13 @@ def _mode_summary(
         for scope in operational_scopes
         for event in events_by_scope[scope.scope_id]
     ]
-    quality = _quality_for_results(results, scores, requested_metrics)
+    quality = _quality_for_results(
+        results,
+        scores,
+        requested_metrics,
+        scopes,
+        canonical_identities,
+    )
     tokens = _tokens(official, official_events)
     if has_unattributed_execution_scopes:
         tokens = _partial_for_missing_mode_attribution(tokens)
@@ -221,8 +236,7 @@ def _mode_summary(
         for item in quality.values()
     ):
         reasons.append("incomplete_quality")
-    evaluator_identities = _evaluator_identities_by_metric(results, scores)
-    if any(len(identities) > 1 for identities in evaluator_identities.values()):
+    if _has_noncanonical_current_scores(results, scores, canonical_identities):
         reasons.append("evaluator_metadata_mismatch")
         warnings.append(
             (
@@ -301,7 +315,13 @@ def _requested_metrics(scopes) -> dict[str, set[str]]:
     return dict(requested)
 
 
-def _quality_for_results(results, scores, requested_work):
+def _quality_for_results(
+    results,
+    scores,
+    requested_work,
+    scopes,
+    canonical_identities,
+):
     result_ids = {r.id for r in results}
     attempts_by_result = {
         result.id: result.source_attempt_id
@@ -326,49 +346,55 @@ def _quality_for_results(results, scores, requested_work):
             and row.get("source_attempt_id")
             == attempts_by_result.get(row["campaign_result_id"])
         ]
-        groups: dict[tuple[str, str, str], list] = defaultdict(list)
-        for row in rows:
-            groups[_evaluator_identity(row)].append(row)
-        chosen = (
-            min(groups, key=lambda identity: (-len(groups[identity]), identity))
-            if groups
-            else None
-        )
+        chosen = canonical_identities.get(metric)
         compatible = [
             row
             for row in rows
             if chosen is not None and _evaluator_identity(row) == chosen
         ]
-        values = [
-            float(row["metric_value"])
+        values_by_result = {
+            row["campaign_result_id"]: float(row["metric_value"])
             for row in compatible
             if row.get("metric_value") is not None
+        }
+        work_states = _ragas_work_states_by_result(results, scopes, metric)
+        classifications = {
+            result.id: _quality_sample_state(
+                result.id,
+                values_by_result,
+                work_states,
+            )
+            for result in results
+        }
+        values = [
+            values_by_result[result_id]
+            for result_id, state in classifications.items()
+            if state == "valid"
         ]
-        missing = len(results) - len({row["campaign_result_id"] for row in compatible})
+        valid_samples = sum(state == "valid" for state in classifications.values())
+        failed_samples = sum(state == "failed" for state in classifications.values())
+        missing_samples = sum(state == "missing" for state in classifications.values())
         details = compatible[0].get("details", {}) if compatible else {}
-        work_statuses = requested_work.get(metric, set())
-        no_value_status = (
-            "evaluating"
-            if "running" in work_statuses
+        states = set(classifications.values())
+        status = (
+            "complete"
+            if valid_samples == len(results)
+            else "partial"
+            if valid_samples
+            else "evaluating"
+            if "evaluating" in states
             else "failed"
-            if work_statuses or metric in score_requested
+            if "failed" in states
             else "not_requested"
+            if metric not in requested_work and metric not in score_requested
+            else "partial"
         )
         output[metric] = MetricObservation(
             value=mean(values) if values else None,
-            status="complete"
-            if values and not missing
-            else "partial"
-            if values
-            else no_value_status,
-            valid_samples=len(values),
-            missing_samples=max(0, missing),
-            failed_samples=max(
-                0,
-                len(results) - len(values)
-                if no_value_status == "failed" and not values
-                else 0,
-            ),
+            status=status,
+            valid_samples=valid_samples,
+            missing_samples=missing_samples,
+            failed_samples=failed_samples,
             evaluator_model=details.get("evaluator_model") or details.get("model_name"),
             metric_version=details.get("metric_version"),
         )
@@ -385,6 +411,104 @@ def _evaluator_identity(row) -> tuple[str, str, str]:
         str(details.get("metric_version") or ""),
         str(compatibility_signature),
     )
+
+
+def _canonical_identities_by_metric(results, scores) -> dict[str, tuple[str, str, str]]:
+    attempts_by_result = {
+        result.id: result.source_attempt_id
+        for result in results
+        if result.source_attempt_id
+    }
+    grouped: dict[str, dict[tuple[str, str, str], set[str]]] = defaultdict(
+        lambda: defaultdict(set)
+    )
+    for row in scores:
+        result_id = row["campaign_result_id"]
+        if (
+            result_id in attempts_by_result
+            and row.get("source_attempt_id") == attempts_by_result[result_id]
+        ):
+            grouped[row["metric_name"]][_evaluator_identity(row)].add(result_id)
+    return {
+        metric: min(
+            identities,
+            key=lambda identity: (-len(identities[identity]), identity),
+        )
+        for metric, identities in grouped.items()
+        if identities
+    }
+
+
+def _has_noncanonical_current_scores(results, scores, canonical_identities) -> bool:
+    attempts_by_result = {
+        result.id: result.source_attempt_id
+        for result in results
+        if result.source_attempt_id
+    }
+    return any(
+        row["campaign_result_id"] in attempts_by_result
+        and row.get("source_attempt_id")
+        == attempts_by_result[row["campaign_result_id"]]
+        and row["metric_name"] in canonical_identities
+        and _evaluator_identity(row) != canonical_identities[row["metric_name"]]
+        for row in scores
+    )
+
+
+def _ragas_work_states_by_result(results, scopes, metric_name) -> dict[str, str]:
+    results_by_attempt = {
+        result.source_attempt_id: result.id
+        for result in results
+        if result.source_attempt_id
+    }
+    result_ids = {result.id for result in results}
+    states: dict[str, str] = {}
+    fallback_statuses: list[str] = []
+    for scope in scopes:
+        if scope.scope_type != "ragas_batch" or scope.metric_name != metric_name:
+            continue
+        matched = False
+        for target in scope.targets:
+            result_id = target.campaign_result_id or results_by_attempt.get(
+                target.attempt_id
+            )
+            if result_id not in result_ids:
+                continue
+            matched = True
+            _set_ragas_work_state(states, result_id, scope.status)
+        if not matched:
+            fallback_statuses.append(scope.status)
+    if fallback_statuses:
+        for result_id in result_ids:
+            if result_id not in states:
+                for scope_status in fallback_statuses:
+                    _set_ragas_work_state(states, result_id, scope_status)
+    return states
+
+
+def _set_ragas_work_state(states, result_id, scope_status) -> None:
+    state = (
+        "failed"
+        if scope_status in {"failed", "interrupted", "cancelled"}
+        else "evaluating"
+        if scope_status == "running"
+        else None
+    )
+    if state is None:
+        return
+    current = states.get(result_id)
+    if current != "failed" and (state == "failed" or current is None):
+        states[result_id] = state
+
+
+def _quality_sample_state(result_id, values_by_result, work_states) -> str:
+    if work_states.get(result_id) == "failed":
+        return "failed"
+    if result_id in values_by_result:
+        return "valid"
+    if work_states.get(result_id) == "evaluating":
+        return "evaluating"
+    return "missing"
 
 
 def _evaluator_identities_by_metric(results, scores):
@@ -431,13 +555,26 @@ def _tokens(scopes, events, legacy_status="incomplete_legacy"):
         for e in events
     )
     status = "complete" if complete else "partial"
-    phase_complete = complete and all(e.phase != "unclassified" for e in events)
-    if not events:
+    measured = [
+        event
+        for event in events
+        if event.usage_status == "measured"
+        and event.reconciliation_status == "balanced"
+    ]
+    if not measured:
         return TokenBreakdown(
-            accounting_status="partial", phase_attribution_status="not_available"
+            input_tokens=None,
+            output_text_tokens=None,
+            reasoning_tokens=None,
+            other_tokens=None,
+            total_tokens=None,
+            by_phase={},
+            accounting_status="partial",
+            phase_attribution_status="not_available",
         )
+    phase_complete = complete and all(e.phase != "unclassified" for e in measured)
     phase = defaultdict(int)
-    for event in events:
+    for event in measured:
         phase[event.phase] += (
             event.input_tokens
             + event.output_text_tokens
@@ -445,10 +582,10 @@ def _tokens(scopes, events, legacy_status="incomplete_legacy"):
             + event.other_tokens
         )
     values = dict(
-        input_tokens=sum(e.input_tokens for e in events),
-        output_text_tokens=sum(e.output_text_tokens for e in events),
-        reasoning_tokens=sum(e.reasoning_tokens for e in events),
-        other_tokens=sum(e.other_tokens for e in events),
+        input_tokens=sum(e.input_tokens for e in measured),
+        output_text_tokens=sum(e.output_text_tokens for e in measured),
+        reasoning_tokens=sum(e.reasoning_tokens for e in measured),
+        other_tokens=sum(e.other_tokens for e in measured),
         by_phase=dict(sorted(phase.items())),
         accounting_status=status,
         phase_attribution_status="complete" if phase_complete else "partial",

@@ -97,6 +97,8 @@ async def _execution_scope(
     cost: float | None = 0.1,
     pricing_status: str = "priced",
     scope_run_id: str | None = None,
+    usage_status: str = "measured",
+    reconciliation_status: str = "balanced",
 ) -> None:
     store = EvaluationAccountingStore()
     await store.start_scope(
@@ -127,11 +129,11 @@ async def _execution_scope(
             run_id=scope_run_id or result_id,
             phase="answer_generation",
             purpose="evaluation",
-            input_tokens=tokens - 5,
-            output_text_tokens=5,
-            reported_total_tokens=tokens,
-            usage_status="measured",
-            reconciliation_status="balanced",
+            input_tokens=tokens - 5 if usage_status == "measured" else 0,
+            output_text_tokens=5 if usage_status == "measured" else 0,
+            reported_total_tokens=tokens if usage_status == "measured" else None,
+            usage_status=usage_status,
+            reconciliation_status=reconciliation_status,
             estimated_cost_usd=cost,
             pricing_status=pricing_status,
             created_at=datetime.now(timezone.utc),
@@ -142,6 +144,34 @@ async def _execution_scope(
 
 async def _official_scope(campaign_id: str, result_id: str, attempt: str) -> None:
     await _execution_scope(campaign_id, result_id, attempt, official=True)
+
+
+def _primary_score_rows(
+    result_attempts: list[tuple[str, str]],
+    *,
+    evaluator_model: str = "judge-v1",
+    compatibility_signature: str = "policy-a",
+) -> list[dict]:
+    return [
+        {
+            "campaign_result_id": result_id,
+            "metric_name": metric_name,
+            "metric_value": 0.8,
+            "source_attempt_id": attempt,
+            "evaluation_signature": f"{attempt}-{metric_name}",
+            "details": {
+                "evaluator_model": evaluator_model,
+                "metric_version": "v1",
+                "compatibility_signature": compatibility_signature,
+            },
+        }
+        for result_id, attempt in result_attempts
+        for metric_name in (
+            "answer_correctness",
+            "faithfulness",
+            "answer_relevancy",
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -156,6 +186,193 @@ async def test_legacy_campaign_is_visible_but_not_comparable(research_service) -
     assert summary.execution_cost.benchmark_usd is None
     assert summary.modes[0].comparable is False
     assert "legacy_accounting" in summary.modes[0].not_comparable_reasons
+
+
+@pytest.mark.asyncio
+async def test_missing_usage_keeps_all_token_categories_nullable(
+    research_service,
+) -> None:
+    await _campaign("missing-usage", ["naive"])
+    result_id = await _result("missing-usage", "naive", "missing-attempt")
+    await _execution_scope(
+        "missing-usage",
+        result_id,
+        "missing-attempt",
+        official=True,
+        tokens=0,
+        cost=None,
+        pricing_status="unavailable_usage",
+        usage_status="missing",
+        reconciliation_status="unavailable",
+    )
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id="missing-usage"
+    )
+
+    assert summary.tokens.input_tokens is None
+    assert summary.tokens.output_text_tokens is None
+    assert summary.tokens.reasoning_tokens is None
+    assert summary.tokens.other_tokens is None
+    assert summary.tokens.total_tokens is None
+    assert summary.tokens.by_phase == {}
+    assert summary.tokens.accounting_status == "partial"
+    assert summary.tokens.phase_attribution_status == "not_available"
+
+
+@pytest.mark.asyncio
+async def test_mixed_usage_reports_measured_subtotals_without_total(
+    research_service,
+) -> None:
+    await _campaign("mixed-usage", ["naive"])
+    result_id = await _result("mixed-usage", "naive", "mixed-attempt")
+    await _official_scope("mixed-usage", result_id, "mixed-attempt")
+    await EvaluationAccountingStore().record_event(
+        UsageEventCreate(
+            usage_event_id="event-mixed-missing",
+            scope_id="scope-mixed-attempt",
+            campaign_id="mixed-usage",
+            scope_type="execution_run",
+            scope_key="mixed-attempt",
+            run_id=result_id,
+            phase="answer_generation",
+            purpose="evaluation",
+            usage_status="missing",
+            reconciliation_status="unavailable",
+            pricing_status="unavailable_usage",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id="mixed-usage"
+    )
+
+    assert summary.tokens.input_tokens == 10
+    assert summary.tokens.output_text_tokens == 5
+    assert summary.tokens.total_tokens is None
+    assert summary.tokens.by_phase == {"answer_generation": 15}
+    assert summary.tokens.accounting_status == "partial"
+
+
+@pytest.mark.asyncio
+async def test_campaign_cohort_rejects_modes_scored_by_different_evaluators(
+    research_service,
+) -> None:
+    await _campaign("mixed-cohorts", ["naive", "graph"])
+    naive = await _result("mixed-cohorts", "naive", "naive-attempt")
+    graph = await _result("mixed-cohorts", "graph", "graph-attempt")
+    await _official_scope("mixed-cohorts", naive, "naive-attempt")
+    await _official_scope("mixed-cohorts", graph, "graph-attempt")
+    await RagasScoreRepository().replace_for_campaign(
+        user_id="user-1",
+        campaign_id="mixed-cohorts",
+        score_rows=(
+            _primary_score_rows([(naive, "naive-attempt")])
+            + _primary_score_rows(
+                [(graph, "graph-attempt")],
+                evaluator_model="judge-v2",
+                compatibility_signature="policy-b",
+            )
+        ),
+    )
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id="mixed-cohorts"
+    )
+
+    assert sum(mode.comparable for mode in summary.modes) <= 1
+    assert any(
+        "evaluator_metadata_mismatch" in mode.not_comparable_reasons
+        for mode in summary.modes
+    )
+
+
+@pytest.mark.asyncio
+async def test_campaign_cohort_keeps_modes_comparable_when_identity_is_shared(
+    research_service,
+) -> None:
+    await _campaign("shared-cohort", ["naive", "graph"])
+    naive = await _result("shared-cohort", "naive", "naive-attempt")
+    graph = await _result("shared-cohort", "graph", "graph-attempt")
+    await _official_scope("shared-cohort", naive, "naive-attempt")
+    await _official_scope("shared-cohort", graph, "graph-attempt")
+    await RagasScoreRepository().replace_for_campaign(
+        user_id="user-1",
+        campaign_id="shared-cohort",
+        score_rows=_primary_score_rows(
+            [(naive, "naive-attempt"), (graph, "graph-attempt")]
+        ),
+    )
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id="shared-cohort"
+    )
+
+    assert all(mode.comparable for mode in summary.modes)
+
+
+@pytest.mark.asyncio
+async def test_terminal_ragas_failure_is_counted_per_result_not_as_missing(
+    research_service,
+) -> None:
+    await _campaign("per-result-failure", ["naive"])
+    results = [
+        await _result(
+            "per-result-failure", "naive", f"attempt-{index}", run_number=index
+        )
+        for index in range(1, 6)
+    ]
+    for index, result_id in enumerate(results, start=1):
+        await _official_scope("per-result-failure", result_id, f"attempt-{index}")
+    await RagasScoreRepository().replace_for_campaign(
+        user_id="user-1",
+        campaign_id="per-result-failure",
+        score_rows=[
+            {
+                "campaign_result_id": result_id,
+                "metric_name": "faithfulness",
+                "metric_value": 0.8,
+                "source_attempt_id": f"attempt-{index}",
+                "evaluation_signature": f"attempt-{index}-faithfulness",
+                "details": {
+                    "evaluator_model": "judge-v1",
+                    "metric_version": "v1",
+                    "compatibility_signature": "policy-a",
+                },
+            }
+            for index, result_id in enumerate(results[:4], start=1)
+        ],
+    )
+    store = EvaluationAccountingStore()
+    await store.start_scope(
+        AccountingScopeStart(
+            scope_id="failed-fifth-faithfulness",
+            campaign_id="per-result-failure",
+            scope_type="ragas_batch",
+            scope_key="faithfulness-fifth",
+            metric_name="faithfulness",
+            targets=[
+                {
+                    "campaign_result_id": results[4],
+                    "job_id": "ragas",
+                    "work_item_id": "faithfulness-fifth",
+                    "attempt_id": "attempt-5",
+                }
+            ],
+        )
+    )
+    await store.finalize_scope("failed-fifth-faithfulness", "failed")
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id="per-result-failure"
+    )
+    observation = summary.quality["faithfulness"]
+
+    assert observation.valid_samples == 4
+    assert observation.failed_samples == 1
+    assert observation.missing_samples == 0
+    assert observation.status == "partial"
 
 
 @pytest.mark.asyncio

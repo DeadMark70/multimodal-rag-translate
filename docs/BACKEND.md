@@ -190,6 +190,12 @@
 - Historical campaigns are deliberately not backfilled. A completed legacy
   result without a version-2 official execution scope remains readable, but
   reports `token_accounting_status="incomplete_legacy"` and is not comparable.
+- Token category and phase values are calculated only from events with
+  `usage_status="measured"` and `reconciliation_status="balanced"`. When no
+  such event exists, every token category and total is `null`, `by_phase` is
+  empty, accounting is partial, and phase attribution is unavailable. Mixed
+  measured/missing usage retains only the known measured subtotals while the
+  total remains `null` and accounting remains partial.
 - Costs have separate meanings:
   - **benchmark inference cost** includes only successful official execution
     scopes for the displayed results;
@@ -209,6 +215,15 @@
   is checked independently per metric so valid metric-specific signatures do
   not conflict. Legacy scores without the compatibility signature fall back
   strictly to identical raw evaluation signatures.
+- For every metric, analytics selects one deterministic campaign-level
+  evaluator identity from official current scores: the identity covering the
+  most result IDs wins, then lexical identity breaks ties. Campaign and mode
+  aggregates use that same cohort; a mode with current noncanonical scores is
+  marked `evaluator_metadata_mismatch` and is not comparable.
+- Quality sample counts are per-result classifications. A result is exactly one
+  of valid, evaluating, failed, or missing for each metric; a terminal RAGAS
+  target failure takes precedence over a score, contributes to
+  `failed_samples`, and is never included in `missing_samples`.
 - Latency `p50` and `p95` use the nearest-rank method: sort observed successful
   run latencies, then select `ceil(percentile * sample_count)`. Values are
   observed samples, not interpolated estimates.
