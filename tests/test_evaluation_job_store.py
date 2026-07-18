@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import sqlite3
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -25,11 +27,17 @@ from evaluation.db import (
 )
 from evaluation.error_policy import ErrorDecision
 from evaluation.job_schemas import (
+    EvaluationJobType,
     ExecutionAttemptOutput,
+    EvaluationWorkType,
     RagasAttemptOutput,
     WorkItemSpec,
 )
-from evaluation.job_store import build_evaluation_signature, build_ragas_batch_group_key
+from evaluation.job_store import (
+    EvaluationJobStore,
+    build_evaluation_signature,
+    build_ragas_batch_group_key,
+)
 from evaluation.ragas_worker import RagasBatchWorker
 
 
@@ -60,8 +68,6 @@ async def store(monkeypatch):  # noqa: ANN001
                 ),
             )
             await connection.commit()
-
-        from evaluation.job_store import EvaluationJobStore
 
         yield EvaluationJobStore()
     finally:
@@ -149,6 +155,46 @@ def _ragas_spec(result: CampaignResult) -> WorkItemSpec:
         },
         max_attempts=1,
     )
+
+
+async def _create_official_ragas_result(*, result_id: str) -> CampaignResult:
+    return await CampaignResultRepository().create(
+        result_id=result_id,
+        user_id="user-a",
+        campaign_id="cmp-1",
+        question_id="Q1",
+        question="Question",
+        ground_truth="Ground truth",
+        ground_truth_short="Ground truth",
+        key_points=[],
+        ragas_focus=[],
+        mode="naive",
+        execution_profile=None,
+        context_policy_version="policy-v1",
+        run_number=1,
+        answer="Answer",
+        contexts=["Context"],
+        source_doc_ids=[],
+        expected_sources=[],
+        latency_ms=1,
+        token_usage={"total_tokens": 1},
+        category=None,
+        difficulty=None,
+        status=CampaignResultStatus.COMPLETED,
+        source_attempt_id="attempt-1",
+    )
+
+
+async def _job_count() -> int:
+    async with evaluation_db.connect_db() as connection:
+        cursor = await connection.execute("SELECT COUNT(*) FROM evaluation_jobs")
+        return int((await cursor.fetchone())[0])
+
+
+async def _job_item_count() -> int:
+    async with evaluation_db.connect_db() as connection:
+        cursor = await connection.execute("SELECT COUNT(*) FROM evaluation_job_items")
+        return int((await cursor.fetchone())[0])
 
 
 @pytest.mark.asyncio
@@ -243,6 +289,66 @@ async def test_create_job_notifies_post_commit_producer_hook(store) -> None:  # 
     )
 
     assert notifications == [None]
+
+
+@pytest.mark.asyncio
+async def test_atomic_notification_exposes_evaluating_campaign_and_distinct_result_total(
+    store: EvaluationJobStore,
+) -> None:
+    result = await _create_official_ragas_result(result_id="ragas-result-1")
+    observed: list[tuple[str, int, int, int]] = []
+
+    def observe_committed_state() -> None:
+        with closing(sqlite3.connect(evaluation_db.EVALUATION_DB_PATH)) as connection:
+            campaign = connection.execute(
+                "SELECT status, evaluation_completed_units, evaluation_total_units "
+                "FROM campaigns WHERE id = ? AND user_id = ?",
+                ("cmp-1", "user-a"),
+            ).fetchone()
+            pending = connection.execute(
+                "SELECT COUNT(*) FROM evaluation_job_items WHERE status = 'pending'"
+            ).fetchone()[0]
+        assert campaign is not None
+        observed.append((*campaign, pending))
+
+    created = await EvaluationJobStore(
+        on_job_created=observe_committed_state
+    ).ensure_ragas_work(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        evaluator_model="judge-v1",
+        evaluator_config={},
+        enabled_metrics=("faithfulness", "answer_correctness"),
+    )
+
+    assert result.id == "ragas-result-1"
+    assert created == 2
+    assert observed == [("evaluating", 0, 1, 2)]
+
+
+@pytest.mark.asyncio
+async def test_atomic_ragas_creation_rolls_back_when_campaign_is_not_owned(
+    store: EvaluationJobStore,
+) -> None:
+    ragas_spec = WorkItemSpec(
+        work_type=EvaluationWorkType.RAGAS_METRIC,
+        logical_key="ragas:result-1:faithfulness:signature-v1",
+        input_snapshot={"campaign_result_id": "result-1"},
+    )
+
+    with pytest.raises(ValueError, match="owned campaign"):
+        await store.create_job_with_items(
+            user_id="wrong-user",
+            campaign_id="cmp-1",
+            job_type=EvaluationJobType.INITIAL,
+            selection={"stage": "ragas"},
+            config_snapshot={},
+            items=(ragas_spec,),
+            ragas_evaluation_total_units=1,
+        )
+
+    assert await _job_count() == 0
+    assert await _job_item_count() == 0
 
 
 def test_ragas_batch_group_key_is_shared_while_result_signatures_remain_distinct() -> (

@@ -398,11 +398,6 @@ class DatasetExecutionWorker:
             ragas_parallel_batches=ragas_parallel_batches,
         )
         if created:
-            await self._campaign_repository.mark_evaluating(
-                user_id=str(snapshot["user_id"]),
-                campaign_id=str(snapshot["campaign_id"]),
-                evaluation_total_units=created,
-            )
             if self._notify is not None:
                 self._notify()
 

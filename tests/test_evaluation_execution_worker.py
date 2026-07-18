@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 from shutil import rmtree
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
@@ -18,7 +19,11 @@ from core.llm_usage_callback import emit_direct_usage
 from core.llm_usage_context import llm_accounting_phase
 from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.execution_worker import DatasetExecutionWorker
-from evaluation.job_schemas import EvaluationWorkType, WorkItemSpec
+from evaluation.job_schemas import (
+    ClaimedEvaluationWork,
+    EvaluationWorkType,
+    WorkItemSpec,
+)
 from evaluation.job_store import EvaluationJobStore
 from evaluation.rag_modes import BenchmarkExecutionResult
 from evaluation.retrieval_profiles import (
@@ -137,6 +142,45 @@ def _successful_payload(
         mode=mode,
         answer=answer,
     )
+
+
+@pytest.mark.asyncio
+async def test_derive_campaign_state_notifies_materialized_ragas_without_late_transition() -> (
+    None
+):
+    campaign_repository = SimpleNamespace(
+        derive_execution_state=AsyncMock(
+            return_value=SimpleNamespace(
+                status=SimpleNamespace(value="completed"), config=None
+            )
+        ),
+        mark_evaluating=AsyncMock(),
+    )
+    store = SimpleNamespace(
+        get_job=AsyncMock(return_value=SimpleNamespace(config_snapshot={})),
+        ensure_ragas_work=AsyncMock(return_value=1),
+    )
+    notify = Mock()
+    worker = DatasetExecutionWorker(
+        store=store,
+        campaign_repository=campaign_repository,
+        ragas_evaluator=SimpleNamespace(
+            enabled_metrics=("faithfulness",), evaluator_model="judge-v1"
+        ),
+        notify=notify,
+    )
+    claim = ClaimedEvaluationWork(
+        job_id="job-1",
+        job_item_id="job-item-1",
+        work_item_id="work-item-1",
+        attempt_id="attempt-1",
+        input_snapshot={"user_id": "user-a", "campaign_id": "cmp-1"},
+    )
+
+    await worker._derive_campaign_state(claim)
+
+    campaign_repository.mark_evaluating.assert_not_awaited()
+    notify.assert_called_once()
 
 
 @pytest.mark.asyncio

@@ -1146,11 +1146,6 @@ class CampaignEngine:
                 message="No RAGAS work was created for rerun",
                 status_code=400,
             )
-        await self._campaign_repository.mark_evaluating(
-            user_id=user_id,
-            campaign_id=campaign_id,
-            evaluation_total_units=created_count,
-        )
         await self._start_worker_if_available()
         if self._worker_notifier is not None:
             self._worker_notifier()
@@ -1396,13 +1391,7 @@ class CampaignEngine:
                 ragas_batch_size=campaign.config.ragas_batch_size,
                 ragas_parallel_batches=campaign.config.ragas_parallel_batches,
             )
-            if created:
-                await self._campaign_repository.mark_evaluating(
-                    user_id=user_id,
-                    campaign_id=campaign.id,
-                    evaluation_total_units=len(selected_ids),
-                )
-            else:
+            if not created:
                 await self._campaign_repository.mark_completed(
                     user_id=user_id,
                     campaign_id=campaign.id,

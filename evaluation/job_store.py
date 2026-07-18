@@ -143,6 +143,7 @@ class EvaluationJobStore:
         selection: dict[str, Any],
         config_snapshot: dict[str, Any],
         items: Sequence[WorkItemSpec],
+        ragas_evaluation_total_units: int | None = None,
     ) -> EvaluationJob:
         """Create a job and fresh job-item retry budgets for stable work keys."""
         await init_db()
@@ -189,6 +190,26 @@ class EvaluationJobStore:
                             now,
                         ),
                     )
+                if ragas_evaluation_total_units is not None:
+                    cursor = await connection.execute(
+                        """
+                        UPDATE campaigns
+                        SET status = 'evaluating', phase = 'evaluation',
+                            evaluation_completed_units = 0, evaluation_total_units = ?,
+                            error_message = NULL, completed_at = NULL, updated_at = ?
+                        WHERE id = ? AND user_id = ? AND cancel_requested = 0
+                        """,
+                        (
+                            ragas_evaluation_total_units,
+                            now,
+                            campaign_id,
+                            user_id,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise ValueError(
+                            "RAGAS work requires exactly one owned campaign"
+                        )
                 await connection.commit()
             except BaseException:
                 await connection.rollback()
@@ -348,6 +369,13 @@ class EvaluationJobStore:
                     )
         if not specs:
             return 0
+        target_result_ids = {
+            str(spec.input_snapshot["campaign_result_id"])
+            for spec in specs
+            if spec.input_snapshot.get("campaign_result_id")
+        }
+        if not target_result_ids:
+            raise ValueError("RAGAS work requires campaign result targets")
         await self.create_job_with_items(
             user_id=user_id,
             campaign_id=campaign_id,
@@ -361,6 +389,7 @@ class EvaluationJobStore:
                 "ragas_parallel_batches": effective_parallel_batches,
             },
             items=specs,
+            ragas_evaluation_total_units=len(target_result_ids),
         )
         return len(specs)
 
