@@ -504,7 +504,7 @@ def _ragas_work_states_by_result(
             if result_id not in campaign_result_ids:
                 continue
             has_campaign_target = True
-            if result_id in result_ids:
+            if not target.is_official and result_id in result_ids:
                 _set_ragas_work_state(states, result_id, scope.status)
         if not has_campaign_target:
             fallback_statuses.append(scope.status)

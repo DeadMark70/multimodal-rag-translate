@@ -205,3 +205,77 @@ async def test_failed_callback_with_measured_usage_makes_summary_partial(
     assert (
         summary.as_legacy_usage(accounting_schema_version="2")["total_tokens"] is None
     )
+
+
+@pytest.mark.asyncio
+async def test_missing_only_scope_keeps_legacy_token_categories_unknown(
+    accounting_store,
+) -> None:
+    await accounting_store.start_scope(_execution_scope())
+    event = _usage_event(phase="answer_generation")
+    event.input_tokens = 0
+    event.output_text_tokens = 0
+    event.reported_total_tokens = None
+    event.usage_status = "missing"
+    event.reconciliation_status = "unavailable"
+    await accounting_store.record_event(event)
+
+    usage = (await accounting_store.summarize_scope_tokens("scope-1")).as_legacy_usage(
+        accounting_schema_version="2"
+    )
+
+    assert usage == {
+        "accounting_schema_version": "2",
+        "input_tokens": None,
+        "output_tokens": None,
+        "output_text_tokens": None,
+        "reasoning_tokens": None,
+        "other_tokens": None,
+        "total_tokens": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_partial_scope_projects_only_balanced_measured_categories(
+    accounting_store,
+) -> None:
+    await accounting_store.start_scope(_execution_scope())
+    await accounting_store.record_event(_usage_event(phase="answer_generation"))
+    missing = _usage_event(phase="answer_generation")
+    missing.input_tokens = 0
+    missing.output_text_tokens = 0
+    missing.reported_total_tokens = None
+    missing.usage_status = "missing"
+    missing.reconciliation_status = "unavailable"
+    await accounting_store.record_event(missing)
+
+    summary = await accounting_store.summarize_scope_tokens("scope-1")
+    usage = summary.as_legacy_usage(accounting_schema_version="2")
+
+    assert summary.reconciliation_status == "partial"
+    assert usage["input_tokens"] == 10
+    assert usage["output_tokens"] == 5
+    assert usage["total_tokens"] is None
+
+
+@pytest.mark.asyncio
+async def test_balanced_zero_usage_remains_known_in_legacy_projection(
+    accounting_store,
+) -> None:
+    await accounting_store.start_scope(_execution_scope())
+    event = _usage_event(phase="answer_generation")
+    event.input_tokens = 0
+    event.output_text_tokens = 0
+    event.reported_total_tokens = 0
+    await accounting_store.record_event(event)
+
+    usage = (await accounting_store.summarize_scope_tokens("scope-1")).as_legacy_usage(
+        accounting_schema_version="2"
+    )
+
+    assert usage["input_tokens"] == 0
+    assert usage["output_tokens"] == 0
+    assert usage["output_text_tokens"] == 0
+    assert usage["reasoning_tokens"] == 0
+    assert usage["other_tokens"] == 0
+    assert usage["total_tokens"] == 0

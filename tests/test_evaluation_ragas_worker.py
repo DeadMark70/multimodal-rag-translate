@@ -173,6 +173,16 @@ class UnconfirmedPromotionStore(FakeStore):
         await super().complete_ragas_attempt(claim, output)
 
 
+class LaterPromotionFailureStore(FakeStore):
+    async def complete_ragas_attempt(
+        self, claim: ClaimedEvaluationWork, output: RagasAttemptOutput
+    ) -> int:
+        if self.completed:
+            raise RuntimeError("later promotion failed")
+        await super().complete_ragas_attempt(claim, output)
+        return 1
+
+
 @pytest.mark.asyncio
 async def test_ragas_batch_records_one_shared_scope_for_all_claims(
     accounting_store: EvaluationAccountingStore,
@@ -331,6 +341,27 @@ async def test_ragas_unconfirmed_promotion_leaves_target_unofficial(
         .targets[0]
         .is_official
     )
+
+
+@pytest.mark.asyncio
+async def test_shared_scope_failure_preserves_already_official_target(
+    accounting_store: EvaluationAccountingStore,
+) -> None:
+    store = LaterPromotionFailureStore()
+    worker = RagasBatchWorker(
+        store=store,
+        evaluator=AccountingFakeEvaluator(results=[[0.8, 0.7]]),
+        accounting_store=accounting_store,
+        price_snapshot=TEST_PRICE_SNAPSHOT,
+    )
+
+    await worker.execute([_claim(0), _claim(1)])
+
+    scope = (await accounting_store.list_campaign_scopes("campaign-1"))[0]
+    assert scope.status == "failed"
+    assert [target.is_official for target in scope.targets] == [True, False]
+    assert [claim.attempt_id for claim, _ in store.completed] == ["attempt-0"]
+    assert [claim.attempt_id for claim, _ in store.failed] == ["attempt-0", "attempt-1"]
 
 
 @pytest.mark.asyncio

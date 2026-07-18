@@ -468,6 +468,64 @@ async def test_targeted_ragas_failure_does_not_leak_across_modes(
 
 
 @pytest.mark.asyncio
+async def test_failed_shared_ragas_scope_preserves_official_target_mode(
+    research_service,
+) -> None:
+    await _campaign("shared-ragas-failure", ["naive", "graph"])
+    naive = await _result("shared-ragas-failure", "naive", "naive-attempt")
+    graph = await _result("shared-ragas-failure", "graph", "graph-attempt")
+    await _official_scope("shared-ragas-failure", naive, "naive-attempt")
+    await _official_scope("shared-ragas-failure", graph, "graph-attempt")
+    await RagasScoreRepository().replace_for_campaign(
+        user_id="user-1",
+        campaign_id="shared-ragas-failure",
+        score_rows=_primary_score_rows([(naive, "naive-attempt")]),
+    )
+    store = EvaluationAccountingStore()
+    await store.start_scope(
+        AccountingScopeStart(
+            scope_id="failed-shared-faithfulness",
+            campaign_id="shared-ragas-failure",
+            scope_type="ragas_batch",
+            scope_key="shared-faithfulness",
+            metric_name="faithfulness",
+            targets=[
+                {
+                    "campaign_result_id": naive,
+                    "job_id": "ragas",
+                    "work_item_id": "naive-faithfulness",
+                    "attempt_id": "naive-attempt",
+                    "is_official": True,
+                },
+                {
+                    "campaign_result_id": graph,
+                    "job_id": "ragas",
+                    "work_item_id": "graph-faithfulness",
+                    "attempt_id": "graph-attempt",
+                },
+            ],
+        )
+    )
+    await store.finalize_scope("failed-shared-faithfulness", "failed")
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id="shared-ragas-failure"
+    )
+    by_mode = {mode.mode: mode for mode in summary.modes}
+
+    naive_quality = by_mode["naive"].quality["faithfulness"]
+    graph_quality = by_mode["graph"].quality["faithfulness"]
+    assert naive_quality.valid_samples == 1
+    assert naive_quality.failed_samples == 0
+    assert naive_quality.missing_samples == 0
+    assert naive_quality.status == "complete"
+    assert graph_quality.valid_samples == 0
+    assert graph_quality.failed_samples == 1
+    assert graph_quality.missing_samples == 0
+    assert graph_quality.status == "failed"
+
+
+@pytest.mark.asyncio
 async def test_unattributable_older_v2_execution_scope_fails_closed(
     research_service,
 ) -> None:

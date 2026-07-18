@@ -47,6 +47,7 @@ class ScopeTokenSummary(BaseModel):
     total_tokens: int | None = None
     observed_call_count: int = 0
     measured_call_count: int = 0
+    balanced_measured_call_count: int = 0
     missing_usage_call_count: int = 0
     failed_call_count: int = 0
     reconciliation_status: str = "unavailable"
@@ -55,11 +56,21 @@ class ScopeTokenSummary(BaseModel):
         self, *, accounting_schema_version: str
     ) -> dict[str, int | str | None]:
         """Return a strict token projection without synthetic aggregate totals."""
-        usage: dict[str, int | str] = {
+        usage: dict[str, int | str | None] = {
             "accounting_schema_version": accounting_schema_version,
             "total_tokens": None,
         }
-        if self.observed_call_count == 0:
+        if self.balanced_measured_call_count == 0:
+            if self.observed_call_count:
+                usage.update(
+                    {
+                        "input_tokens": None,
+                        "output_tokens": None,
+                        "output_text_tokens": None,
+                        "reasoning_tokens": None,
+                        "other_tokens": None,
+                    }
+                )
             return usage
         usage.update(
             {
@@ -318,13 +329,27 @@ class EvaluationAccountingStore:
             cursor = await connection.execute(
                 """SELECT
                        COUNT(*) AS observed_call_count,
-                       COALESCE(SUM(input_tokens), 0) AS input_tokens,
-                       COALESCE(SUM(output_text_tokens), 0) AS output_text_tokens,
-                       COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
-                       COALESCE(SUM(other_tokens), 0) AS other_tokens,
-                       COALESCE(SUM(input_tokens + output_text_tokens + reasoning_tokens + other_tokens), 0)
+                       COALESCE(SUM(CASE WHEN usage_status = 'measured'
+                                           AND reconciliation_status = 'balanced'
+                                         THEN input_tokens ELSE 0 END), 0) AS input_tokens,
+                       COALESCE(SUM(CASE WHEN usage_status = 'measured'
+                                           AND reconciliation_status = 'balanced'
+                                         THEN output_text_tokens ELSE 0 END), 0) AS output_text_tokens,
+                       COALESCE(SUM(CASE WHEN usage_status = 'measured'
+                                           AND reconciliation_status = 'balanced'
+                                         THEN reasoning_tokens ELSE 0 END), 0) AS reasoning_tokens,
+                       COALESCE(SUM(CASE WHEN usage_status = 'measured'
+                                           AND reconciliation_status = 'balanced'
+                                         THEN other_tokens ELSE 0 END), 0) AS other_tokens,
+                       COALESCE(SUM(CASE WHEN usage_status = 'measured'
+                                           AND reconciliation_status = 'balanced'
+                                         THEN input_tokens + output_text_tokens + reasoning_tokens + other_tokens
+                                         ELSE 0 END), 0)
                            AS total_tokens,
                        COALESCE(SUM(usage_status = 'measured'), 0) AS measured_call_count,
+                       COALESCE(SUM(usage_status = 'measured'
+                                    AND reconciliation_status = 'balanced'), 0)
+                           AS balanced_measured_call_count,
                        COALESCE(SUM(usage_status = 'missing'), 0) AS missing_usage_call_count,
                        COALESCE(SUM(status = 'failed'), 0) AS failed_call_count,
                        COALESCE(SUM(reconciliation_status != 'balanced'), 0) AS unbalanced_call_count
@@ -354,6 +379,7 @@ class EvaluationAccountingStore:
             else None,
             observed_call_count=observed,
             measured_call_count=row["measured_call_count"],
+            balanced_measured_call_count=row["balanced_measured_call_count"],
             missing_usage_call_count=row["missing_usage_call_count"],
             failed_call_count=row["failed_call_count"],
             reconciliation_status=reconciliation_status,

@@ -227,9 +227,11 @@
   aggregates use that same cohort; a mode with current noncanonical scores is
   marked `evaluator_metadata_mismatch` and is not comparable.
 - Quality sample counts are per-result classifications. A result is exactly one
-  of valid, evaluating, failed, or missing for each metric; a terminal RAGAS
-  target failure takes precedence over a score, contributes to
-  `failed_samples`, and is never included in `missing_samples`.
+  of valid, evaluating, failed, or missing for each metric. A terminal RAGAS
+  target failure takes precedence over a score only while that target is not
+  official; a durably official target retains its current compatible score if
+  a later shared scope fails. Failed non-official targets contribute to
+  `failed_samples` and are never included in `missing_samples`.
 - Latency `p50` and `p95` use the nearest-rank method: sort observed successful
   run latencies, then select `ceil(percentile * sample_count)`. Values are
   observed samples, not interpolated estimates.
