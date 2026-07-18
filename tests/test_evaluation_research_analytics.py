@@ -376,6 +376,53 @@ async def test_terminal_ragas_failure_is_counted_per_result_not_as_missing(
 
 
 @pytest.mark.asyncio
+async def test_targeted_ragas_failure_does_not_leak_across_modes(
+    research_service,
+) -> None:
+    await _campaign("isolated-ragas-failure", ["naive", "graph"])
+    naive = await _result("isolated-ragas-failure", "naive", "naive-attempt")
+    graph = await _result("isolated-ragas-failure", "graph", "graph-attempt")
+    await _official_scope("isolated-ragas-failure", naive, "naive-attempt")
+    await _official_scope("isolated-ragas-failure", graph, "graph-attempt")
+    await RagasScoreRepository().replace_for_campaign(
+        user_id="user-1",
+        campaign_id="isolated-ragas-failure",
+        score_rows=_primary_score_rows(
+            [(naive, "naive-attempt"), (graph, "graph-attempt")]
+        ),
+    )
+    store = EvaluationAccountingStore()
+    await store.start_scope(
+        AccountingScopeStart(
+            scope_id="failed-naive-faithfulness",
+            campaign_id="isolated-ragas-failure",
+            scope_type="ragas_batch",
+            scope_key="naive-faithfulness",
+            metric_name="faithfulness",
+            targets=[
+                {
+                    "campaign_result_id": naive,
+                    "job_id": "ragas",
+                    "work_item_id": "naive-faithfulness",
+                    "attempt_id": "naive-attempt",
+                }
+            ],
+        )
+    )
+    await store.finalize_scope("failed-naive-faithfulness", "failed")
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id="isolated-ragas-failure"
+    )
+    by_mode = {mode.mode: mode for mode in summary.modes}
+
+    assert by_mode["naive"].quality["faithfulness"].failed_samples == 1
+    assert by_mode["graph"].quality["faithfulness"].valid_samples == 1
+    assert by_mode["graph"].quality["faithfulness"].failed_samples == 0
+    assert by_mode["graph"].quality["faithfulness"].value == pytest.approx(0.8)
+
+
+@pytest.mark.asyncio
 async def test_unattributable_older_v2_execution_scope_fails_closed(
     research_service,
 ) -> None:

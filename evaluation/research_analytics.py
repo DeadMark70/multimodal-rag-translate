@@ -98,6 +98,7 @@ class ResearchAnalyticsService:
                 execution_scope_modes,
                 has_unattributed_execution_scopes,
                 canonical_identities,
+                all_results,
             )
             modes.append(summary)
             warnings.extend(
@@ -117,6 +118,7 @@ class ResearchAnalyticsService:
             requested_metrics,
             scopes,
             canonical_identities,
+            all_results,
         )
         tokens = _tokens(official_scopes, official_events)
         if has_unattributed_execution_scopes:
@@ -187,6 +189,7 @@ def _mode_summary(
     execution_scope_modes,
     has_unattributed_execution_scopes,
     canonical_identities,
+    campaign_results,
 ):
     official = _official_execution_scopes(results, scopes)
     official_events = [
@@ -207,6 +210,7 @@ def _mode_summary(
         requested_metrics,
         scopes,
         canonical_identities,
+        campaign_results,
     )
     tokens = _tokens(official, official_events)
     if has_unattributed_execution_scopes:
@@ -321,6 +325,7 @@ def _quality_for_results(
     requested_work,
     scopes,
     canonical_identities,
+    campaign_results,
 ):
     result_ids = {r.id for r in results}
     attempts_by_result = {
@@ -357,7 +362,12 @@ def _quality_for_results(
             for row in compatible
             if row.get("metric_value") is not None
         }
-        work_states = _ragas_work_states_by_result(results, scopes, metric)
+        work_states = _ragas_work_states_by_result(
+            results,
+            scopes,
+            metric,
+            campaign_results,
+        )
         classifications = {
             result.id: _quality_sample_state(
                 result.id,
@@ -455,28 +465,35 @@ def _has_noncanonical_current_scores(results, scores, canonical_identities) -> b
     )
 
 
-def _ragas_work_states_by_result(results, scopes, metric_name) -> dict[str, str]:
-    results_by_attempt = {
+def _ragas_work_states_by_result(
+    results,
+    scopes,
+    metric_name,
+    campaign_results,
+) -> dict[str, str]:
+    campaign_results_by_attempt = {
         result.source_attempt_id: result.id
-        for result in results
+        for result in campaign_results
         if result.source_attempt_id
     }
     result_ids = {result.id for result in results}
+    campaign_result_ids = {result.id for result in campaign_results}
     states: dict[str, str] = {}
     fallback_statuses: list[str] = []
     for scope in scopes:
         if scope.scope_type != "ragas_batch" or scope.metric_name != metric_name:
             continue
-        matched = False
+        has_campaign_target = False
         for target in scope.targets:
-            result_id = target.campaign_result_id or results_by_attempt.get(
+            result_id = target.campaign_result_id or campaign_results_by_attempt.get(
                 target.attempt_id
             )
-            if result_id not in result_ids:
+            if result_id not in campaign_result_ids:
                 continue
-            matched = True
-            _set_ragas_work_state(states, result_id, scope.status)
-        if not matched:
+            has_campaign_target = True
+            if result_id in result_ids:
+                _set_ragas_work_state(states, result_id, scope.status)
+        if not has_campaign_target:
             fallback_statuses.append(scope.status)
     if fallback_statuses:
         for result_id in result_ids:
@@ -509,25 +526,6 @@ def _quality_sample_state(result_id, values_by_result, work_states) -> str:
     if work_states.get(result_id) == "evaluating":
         return "evaluating"
     return "missing"
-
-
-def _evaluator_identities_by_metric(results, scores):
-    attempts_by_result = {
-        result.id: result.source_attempt_id
-        for result in results
-        if result.source_attempt_id
-    }
-    identities: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
-    for row in scores:
-        result_id = row["campaign_result_id"]
-        metric_name = row["metric_name"]
-        if (
-            result_id in attempts_by_result
-            and row.get("source_attempt_id") == attempts_by_result[result_id]
-            and metric_name in PRIMARY_QUALITY_METRICS
-        ):
-            identities[metric_name].add(_evaluator_identity(row))
-    return identities
 
 
 def _latency(values):
