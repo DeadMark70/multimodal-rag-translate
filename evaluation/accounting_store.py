@@ -86,8 +86,9 @@ class EvaluationAccountingStore:
             await connection.execute(
                 """INSERT INTO evaluation_accounting_scopes (
                        scope_id, campaign_id, scope_type, scope_key, run_id, metric_name,
-                       accounting_schema_version, status, started_at, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)""",
+                       accounting_schema_version, status, retry_count, started_at, created_at,
+                       updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', 0, ?, ?, ?)""",
                 (
                     request.scope_id,
                     request.campaign_id,
@@ -121,6 +122,23 @@ class EvaluationAccountingStore:
                 )
             await connection.commit()
         return await self.get_scope(request.scope_id)
+
+    async def increment_scope_retry(self, scope_id: str) -> None:
+        """Durably count one scheduled retry for a running RAGAS batch scope."""
+        now = _utc_now_iso()
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """UPDATE evaluation_accounting_scopes
+                   SET retry_count = COALESCE(retry_count, 0) + 1, updated_at = ?
+                   WHERE scope_id = ? AND scope_type = 'ragas_batch' AND status = 'running'""",
+                (now, scope_id),
+            )
+            if cursor.rowcount != 1:
+                raise AccountingScopeMismatchError(
+                    "Retry counter requires exactly one running ragas_batch scope"
+                )
+            await connection.commit()
 
     async def record_event(self, event: UsageEventCreate) -> None:
         """Persist one callback event and its counter effects in one transaction.
@@ -378,6 +396,7 @@ def _scope_from_row(row, targets: list[AccountingScopeTarget]) -> AccountingScop
         measured_call_count=row["measured_call_count"],
         missing_usage_call_count=row["missing_usage_call_count"],
         unclassified_phase_call_count=row["unclassified_phase_call_count"],
+        retry_count=row["retry_count"],
         started_at=row["started_at"],
         completed_at=row["completed_at"],
         created_at=row["created_at"],

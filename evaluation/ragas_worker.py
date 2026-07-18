@@ -244,6 +244,13 @@ class RagasBatchWorker:
                     self._evaluator_embeddings,
                 )
             else:
+
+                async def increment_retry(
+                    attempt_number: int, error: BaseException
+                ) -> None:
+                    del attempt_number, error
+                    await self._accounting_store.increment_scope_retry(scope.scope_id)
+
                 with (
                     llm_accounting_scope(scope.context),
                     llm_accounting_phase("ragas_scoring"),
@@ -254,6 +261,7 @@ class RagasBatchWorker:
                         rows,
                         self._evaluator_llm,
                         self._evaluator_embeddings,
+                        on_retry=increment_retry,
                     )
             if not isinstance(values, list) or len(values) != len(claims):
                 raise ValueError(

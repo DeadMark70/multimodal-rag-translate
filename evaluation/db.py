@@ -365,6 +365,7 @@ CREATE TABLE IF NOT EXISTS evaluation_accounting_scopes (
     measured_call_count INTEGER NOT NULL DEFAULT 0,
     missing_usage_call_count INTEGER NOT NULL DEFAULT 0,
     unclassified_phase_call_count INTEGER NOT NULL DEFAULT 0,
+    retry_count INTEGER DEFAULT 0 CHECK (retry_count >= 0),
     started_at TEXT NOT NULL,
     completed_at TEXT,
     created_at TEXT NOT NULL,
@@ -785,6 +786,13 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
     if "mode" not in accounting_target_columns:
         await connection.execute(
             "ALTER TABLE evaluation_accounting_scope_targets ADD COLUMN mode TEXT"
+        )
+    accounting_scope_columns = await _table_columns(
+        connection, "evaluation_accounting_scopes"
+    )
+    if "retry_count" not in accounting_scope_columns:
+        await connection.execute(
+            "ALTER TABLE evaluation_accounting_scopes ADD COLUMN retry_count INTEGER"
         )
     campaign_result_research_columns = {
         "question_version": "TEXT",

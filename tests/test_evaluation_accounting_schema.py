@@ -1,7 +1,10 @@
+from datetime import UTC, datetime
+
 import pytest
 
 from evaluation import db as evaluation_db
 from evaluation.accounting_schemas import AccountingScopeStart
+from evaluation.accounting_store import EvaluationAccountingStore
 
 
 def test_execution_scope_requires_one_target() -> None:
@@ -48,6 +51,9 @@ async def test_init_db_creates_accounting_tables(tmp_path, monkeypatch) -> None:
         target_columns = await evaluation_db._table_columns(
             connection, "evaluation_accounting_scope_targets"
         )
+        scope_columns = await evaluation_db._table_columns(
+            connection, "evaluation_accounting_scopes"
+        )
 
     assert names == {
         "evaluation_accounting_scopes",
@@ -55,6 +61,7 @@ async def test_init_db_creates_accounting_tables(tmp_path, monkeypatch) -> None:
         "evaluation_usage_events",
     }
     assert "mode" in target_columns
+    assert "retry_count" in scope_columns
 
 
 @pytest.mark.asyncio
@@ -93,3 +100,38 @@ async def test_existing_accounting_targets_gain_nullable_mode_additively(
 
     assert "mode" in columns
     assert mode_row[3] == 0
+
+
+@pytest.mark.asyncio
+async def test_legacy_accounting_scope_retry_count_remains_unknown_after_migration(
+    tmp_path, monkeypatch
+) -> None:
+    database_path = tmp_path / "legacy.db"
+    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", database_path)
+
+    legacy_sql = evaluation_db._INIT_SQL.replace(
+        "    retry_count INTEGER DEFAULT 0 CHECK (retry_count >= 0),\n", ""
+    )
+    now = datetime.now(UTC).isoformat()
+    async with evaluation_db.connect_db() as connection:
+        await connection.executescript(legacy_sql)
+        await connection.execute(
+            """INSERT INTO campaigns (id, user_id, name, status, config_json, created_at, updated_at)
+               VALUES ('campaign-1', 'user-1', 'Legacy', 'completed', '{}', ?, ?)""",
+            (now, now),
+        )
+        await connection.execute(
+            """INSERT INTO evaluation_accounting_scopes (
+                   scope_id, campaign_id, scope_type, scope_key, accounting_schema_version,
+                   status, started_at, created_at, updated_at
+               ) VALUES ('legacy-ragas', 'campaign-1', 'ragas_batch', 'legacy', '2',
+                         'completed', ?, ?, ?)""",
+            (now, now, now),
+        )
+        await connection.commit()
+
+    await evaluation_db.force_init_db()
+
+    scope = await EvaluationAccountingStore().get_scope("legacy-ragas")
+
+    assert scope.retry_count is None

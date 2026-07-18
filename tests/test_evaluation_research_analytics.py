@@ -184,8 +184,53 @@ async def test_legacy_campaign_is_visible_but_not_comparable(research_service) -
     assert summary.token_accounting_status == "incomplete_legacy"
     assert summary.tokens.total_tokens is None
     assert summary.execution_cost.benchmark_usd is None
+    assert summary.evaluation_overhead.retry_count == 0
     assert summary.modes[0].comparable is False
     assert "legacy_accounting" in summary.modes[0].not_comparable_reasons
+
+
+@pytest.mark.asyncio
+async def test_ragas_retry_count_uses_durable_values_and_warns_when_legacy_unknown(
+    research_service,
+) -> None:
+    await _campaign("ragas-retries", ["naive"])
+    store = EvaluationAccountingStore()
+    for scope_id in ("known-retries", "unknown-retries"):
+        await store.start_scope(
+            AccountingScopeStart(
+                scope_id=scope_id,
+                campaign_id="ragas-retries",
+                scope_type="ragas_batch",
+                scope_key=scope_id,
+                metric_name="faithfulness",
+                targets=[
+                    {
+                        "job_id": "ragas",
+                        "work_item_id": scope_id,
+                        "attempt_id": scope_id,
+                    }
+                ],
+            )
+        )
+    await store.increment_scope_retry("known-retries")
+    known_summary = await research_service.get_summary(
+        user_id="user-1", campaign_id="ragas-retries"
+    )
+    assert known_summary.evaluation_overhead.retry_count == 1
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            "UPDATE evaluation_accounting_scopes SET retry_count = NULL WHERE scope_id = 'unknown-retries'"
+        )
+        await connection.commit()
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id="ragas-retries"
+    )
+
+    assert summary.evaluation_overhead.retry_count is None
+    assert any(
+        warning.code == "unknown_ragas_retry_count" for warning in summary.warnings
+    )
 
 
 @pytest.mark.asyncio

@@ -72,7 +72,7 @@ class EvaluationOverheadSummary(BaseModel):
     evaluator_models: list[str] = Field(default_factory=list)
     metric_names: list[str] = Field(default_factory=list)
     batch_count: int = 0
-    retry_count: int = 0
+    retry_count: int | None = Field(default=None, ge=0)
 
 
 class ResearchWarning(BaseModel):
@@ -145,6 +145,7 @@ class AccountingScope(BaseModel):
     measured_call_count: int = 0
     missing_usage_call_count: int = 0
     unclassified_phase_call_count: int = 0
+    retry_count: int | None = Field(default=None, ge=0)
     started_at: datetime
     completed_at: datetime | None = None
     created_at: datetime

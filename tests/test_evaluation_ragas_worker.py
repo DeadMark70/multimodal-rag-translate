@@ -14,6 +14,7 @@ from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.error_policy import ErrorDecision
 from evaluation.job_schemas import ClaimedEvaluationWork, RagasAttemptOutput
 from evaluation.ragas_worker import RagasBatchWorker
+from tenacity import wait_none
 
 
 class FakeStore:
@@ -140,11 +141,13 @@ class AccountingFakeEvaluator(FakeEvaluator):
     async def evaluate_metric_batch(
         self, metric_name, rows, evaluator_llm, evaluator_embeddings
     ):  # noqa: ANN001
+        failed = isinstance(self.results[0], BaseException)
         await emit_direct_usage(
             purpose="ragas_evaluator",
             provider="google",
             model_name="test-evaluator",
             raw_usage={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            status="failed" if failed else "completed",
         )
         return await super().evaluate_metric_batch(
             metric_name, rows, evaluator_llm, evaluator_embeddings
@@ -202,10 +205,11 @@ async def test_ragas_batch_records_one_shared_scope_for_all_claims(
 
 @pytest.mark.asyncio
 async def test_ragas_retry_cost_stays_operational_overhead(
-    accounting_store: EvaluationAccountingStore,
+    accounting_store: EvaluationAccountingStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from google.api_core.exceptions import ServiceUnavailable
 
+    monkeypatch.setattr("evaluation.retry.wait_exponential", lambda **_: wait_none())
     evaluator = AccountingFakeEvaluator(results=[ServiceUnavailable("retry"), [0.8]])
     worker = RagasBatchWorker(
         store=FakeStore(),
@@ -218,10 +222,34 @@ async def test_ragas_retry_cost_stays_operational_overhead(
 
     events = await accounting_store.list_campaign_events("campaign-1")
     assert len(events) == 2
+    assert [event.status for event in events] == ["failed", "success"]
     assert sum(event.estimated_cost_usd or 0 for event in events) == pytest.approx(0.02)
     assert all(
         event.phase == "ragas_scoring" and event.run_id is None for event in events
     )
+    scope = (await accounting_store.list_campaign_scopes("campaign-1"))[0]
+    assert scope.retry_count == 1
+
+
+@pytest.mark.asyncio
+async def test_exhausted_ragas_retries_persist_only_scheduled_retries(
+    accounting_store: EvaluationAccountingStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from google.api_core.exceptions import ServiceUnavailable
+
+    monkeypatch.setattr("evaluation.retry.wait_exponential", lambda **_: wait_none())
+    worker = RagasBatchWorker(
+        store=FakeStore(),
+        evaluator=AccountingFakeEvaluator(results=[ServiceUnavailable("retry")] * 5),
+        accounting_store=accounting_store,
+        price_snapshot=TEST_PRICE_SNAPSHOT,
+    )
+
+    await worker.execute([_claim(0)])
+
+    scope = (await accounting_store.list_campaign_scopes("campaign-1"))[0]
+    assert scope.status == "failed"
+    assert scope.retry_count == 4
 
 
 @pytest.mark.asyncio

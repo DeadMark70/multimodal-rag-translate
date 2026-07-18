@@ -140,6 +140,21 @@ class ResearchAnalyticsService:
             overhead_scopes, overhead_events, legacy_status="partial"
         )
         overhead_cost = _cost(overhead_events, operational_events=overhead_events)
+        retry_count = (
+            None
+            if any(scope.retry_count is None for scope in overhead_scopes)
+            else sum(scope.retry_count or 0 for scope in overhead_scopes)
+        )
+        if retry_count is None:
+            warnings.append(
+                ResearchWarning(
+                    code="unknown_ragas_retry_count",
+                    message=(
+                        "RAGAS retry counts are unavailable for one or more historical "
+                        "accounting scopes."
+                    ),
+                )
+            )
         overhead = EvaluationOverheadSummary(
             tokens=overhead_tokens,
             cost_usd=overhead_cost.operational_usd,
@@ -151,9 +166,7 @@ class ResearchAnalyticsService:
                 {s.metric_name for s in overhead_scopes if s.metric_name}
             ),
             batch_count=len(overhead_scopes),
-            retry_count=max(
-                0, len(overhead_scopes) - len({s.scope_key for s in overhead_scopes})
-            ),
+            retry_count=retry_count,
         )
         latency = _latency(
             [r.total_latency_ms for r in completed if r.total_latency_ms is not None]

@@ -187,6 +187,12 @@
   retain their known benchmark cost but expose `operational_usd=null` with
   partial pricing; the campaign can still report complete operational pricing
   because it includes every execution event without assigning it to a mode.
+- Each fresh `ragas_batch` accounting scope starts with `retry_count=0` and
+  durably increments once for every scheduled evaluator retry (not for the
+  terminal attempt). Historical scopes migrated before this counter existed
+  retain `retry_count=null`; research-summary aggregation then returns a null
+  overhead retry count and the `unknown_ragas_retry_count` warning rather than
+  guessing from batch keys.
 - Historical campaigns are deliberately not backfilled. A completed legacy
   result without a version-2 official execution scope remains readable, but
   reports `token_accounting_status="incomplete_legacy"` and is not comparable.

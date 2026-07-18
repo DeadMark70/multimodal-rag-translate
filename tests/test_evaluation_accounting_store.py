@@ -110,6 +110,23 @@ async def test_record_event_updates_scope_counters_atomically(accounting_store):
 
 
 @pytest.mark.asyncio
+async def test_fresh_scope_starts_with_known_zero_retries(accounting_store):
+    scope = await accounting_store.start_scope(_ragas_scope(target_count=1))
+
+    assert scope.retry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_ragas_scope_retry_increments_are_durable_and_atomic(accounting_store):
+    await accounting_store.start_scope(_ragas_scope(target_count=1))
+
+    await accounting_store.increment_scope_retry("ragas-scope")
+    await accounting_store.increment_scope_retry("ragas-scope")
+
+    assert (await accounting_store.get_scope("ragas-scope")).retry_count == 2
+
+
+@pytest.mark.asyncio
 async def test_execution_target_mode_round_trips_durably(accounting_store):
     await accounting_store.start_scope(_execution_scope())
 

@@ -80,6 +80,7 @@ def test_research_summary_requires_auth_and_serializes_nulls() -> None:
         body = response.json()
         assert body["tokens"]["total_tokens"] is None
         assert body["execution_cost"]["benchmark_usd"] is None
+        assert body["evaluation_overhead"]["retry_count"] is None
     finally:
         app.dependency_overrides = {}
 
