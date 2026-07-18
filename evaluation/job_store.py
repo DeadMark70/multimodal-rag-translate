@@ -31,6 +31,9 @@ from evaluation.job_schemas import (
 
 JobCreatedNotifier = Callable[[], None]
 
+EVALUATOR_COMPATIBILITY_SIGNATURE_VERSION = "v2"
+LEGACY_EVALUATOR_COMPATIBILITY_SIGNATURE_VERSION = "v1"
+
 
 def build_evaluation_signature(
     *,
@@ -66,10 +69,37 @@ def build_evaluator_compatibility_signature(
     evaluator_config: dict[str, Any],
     metric_name: str,
     metric_version: str,
+    context_metrics_enabled: bool,
+) -> str:
+    """Return the evaluator-policy identity shared by comparable score rows.
+
+    The context policy belongs to the system-under-test, not the RAGAS
+    evaluator. It remains part of the per-result evaluation signature, but it
+    must not split quality scores across retrieval modes.
+    """
+    payload = {
+        "evaluator_model": evaluator_model,
+        "evaluator_config": evaluator_config,
+        "metric_name": metric_name,
+        "metric_version": metric_version,
+        "context_metrics_enabled": context_metrics_enabled,
+    }
+    canonical = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def build_legacy_evaluator_compatibility_signature(
+    *,
+    evaluator_model: str,
+    evaluator_config: dict[str, Any],
+    metric_name: str,
+    metric_version: str,
     context_policy_version: str | None,
     context_metrics_enabled: bool,
 ) -> str:
-    """Return the evaluator-policy identity shared by comparable score rows."""
+    """Recreate the v1 identity used by scores persisted before v2."""
     payload = {
         "evaluator_model": evaluator_model,
         "evaluator_config": evaluator_config,
@@ -310,7 +340,6 @@ class EvaluationJobStore:
                         evaluator_config=effective_config,
                         metric_name=metric_name,
                         metric_version=metric_version,
-                        context_policy_version=result.context_policy_version,
                         context_metrics_enabled=context_metrics_enabled,
                     )
                     batch_group_key = build_ragas_batch_group_key(
@@ -359,6 +388,7 @@ class EvaluationJobStore:
                                 "metric_version": metric_version,
                                 "evaluation_signature": signature,
                                 "compatibility_signature": compatibility_signature,
+                                "compatibility_signature_version": EVALUATOR_COMPATIBILITY_SIGNATURE_VERSION,
                                 "batch_group_key": batch_group_key,
                                 "ragas_batch_size": effective_batch_size,
                                 "ragas_parallel_batches": effective_parallel_batches,

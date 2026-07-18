@@ -18,7 +18,10 @@ from evaluation.accounting_schemas import AccountingScopeTarget
 from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.error_policy import classify_evaluation_error
 from evaluation.job_schemas import ClaimedEvaluationWork, RagasAttemptOutput
-from evaluation.job_store import EvaluationJobStore
+from evaluation.job_store import (
+    EvaluationJobStore,
+    LEGACY_EVALUATOR_COMPATIBILITY_SIGNATURE_VERSION,
+)
 from evaluation.retry import run_with_retry
 
 
@@ -320,6 +323,10 @@ class RagasBatchWorker:
                             ),
                             "compatibility_signature": claim.input_snapshot.get(
                                 "compatibility_signature"
+                            ),
+                            "compatibility_signature_version": claim.input_snapshot.get(
+                                "compatibility_signature_version",
+                                LEGACY_EVALUATOR_COMPATIBILITY_SIGNATURE_VERSION,
                             ),
                         },
                     }

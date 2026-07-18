@@ -484,6 +484,32 @@ async def test_batch_group_key_batches_distinct_result_signatures_and_preserves_
 
 
 @pytest.mark.asyncio
+async def test_legacy_claim_keeps_v1_compatibility_version() -> None:
+    store = FakeStore()
+    worker = RagasBatchWorker(
+        store=store,
+        evaluator=FakeEvaluator([[0.5]]),
+    )
+
+    claim = _claim(0)
+    snapshot = claim.model_dump(mode="json")["input_snapshot"]
+    claim = claim.model_copy(
+        update={
+            "input_snapshot": dict(
+                snapshot,
+                compatibility_signature="legacy-context-sensitive-signature",
+            )
+        }
+    )
+
+    await worker.execute([claim])
+
+    assert store.completed[0][1].scores[0]["details"][
+        "compatibility_signature_version"
+    ] == "v1"
+
+
+@pytest.mark.asyncio
 async def test_provider_parallelism_is_bounded_across_compatible_groups() -> None:
     store = FakeStore()
 

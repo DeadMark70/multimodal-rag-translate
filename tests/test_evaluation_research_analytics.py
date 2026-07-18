@@ -1,6 +1,7 @@
 """Strict research-summary contract regression tests using durable repositories."""
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -14,13 +15,87 @@ from evaluation.db import (
     CampaignResultRepository,
     RagasScoreRepository,
 )
-from evaluation.research_analytics import ResearchAnalyticsService, nearest_rank
+from evaluation.research_analytics import (
+    ResearchAnalyticsService,
+    _evaluator_identity,
+    nearest_rank,
+)
+from evaluation.job_store import build_legacy_evaluator_compatibility_signature
 from evaluation.schemas import ModelConfig
 
 
 def test_nearest_rank_percentiles_are_observed_values() -> None:
     assert nearest_rank([100, 200, 300, 400, 500], 0.50) == 300
     assert nearest_rank([100, 200, 300, 400, 500], 0.95) == 500
+
+
+def test_legacy_identity_preserves_evaluator_config_differences() -> None:
+    result = SimpleNamespace(context_policy_version="v3")
+
+    def identity_for(config: dict) -> tuple[str, str, str]:
+        signature = build_legacy_evaluator_compatibility_signature(
+            evaluator_model="judge-v1",
+            evaluator_config=config,
+            metric_name="faithfulness",
+            metric_version="v1",
+            context_policy_version="v3",
+            context_metrics_enabled=False,
+        )
+        return _evaluator_identity(
+            {
+                "metric_name": "faithfulness",
+                "details": {
+                    "evaluator_model": "judge-v1",
+                    "metric_version": "v1",
+                    "compatibility_signature": signature,
+                },
+                "_work_metadata": [
+                    {
+                        "compatibility_signature": signature,
+                        "evaluator_model": "judge-v1",
+                        "metric_version": "v1",
+                        "evaluator_config": config,
+                    }
+                ],
+            },
+            result,
+        )
+
+    assert identity_for({"temperature": 0}) != identity_for({"temperature": 1})
+
+
+def test_legacy_identity_fails_closed_on_score_metadata_mismatch() -> None:
+    result = SimpleNamespace(context_policy_version="v3")
+    signature = build_legacy_evaluator_compatibility_signature(
+        evaluator_model="judge-v2",
+        evaluator_config={},
+        metric_name="faithfulness",
+        metric_version="v1",
+        context_policy_version="v3",
+        context_metrics_enabled=False,
+    )
+
+    identity = _evaluator_identity(
+        {
+            "metric_name": "faithfulness",
+            "details": {
+                "evaluator_model": "judge-v1",
+                "metric_version": "v1",
+                "compatibility_signature": signature,
+            },
+            "_work_metadata": [
+                {
+                    "compatibility_signature": signature,
+                    "evaluator_model": "judge-v2",
+                    "metric_version": "v1",
+                    "evaluator_config": {},
+                }
+            ],
+        },
+        result,
+    )
+
+    assert identity == ("judge-v1", "v1", signature)
 
 
 @pytest_asyncio.fixture
@@ -57,6 +132,7 @@ async def _result(
     latency: float = 100.0,
     run_number: int = 1,
     status: CampaignResultStatus = CampaignResultStatus.COMPLETED,
+    context_policy_version: str = "v2",
 ) -> str:
     result = await CampaignResultRepository().create(
         user_id="user-1",
@@ -69,7 +145,7 @@ async def _result(
         ragas_focus=[],
         mode=mode,
         execution_profile="v2",
-        context_policy_version="v2",
+        context_policy_version=context_policy_version,
         run_number=run_number,
         answer="A",
         contexts=[],
@@ -355,6 +431,95 @@ async def test_campaign_cohort_keeps_modes_comparable_when_identity_is_shared(
     )
 
     assert all(mode.comparable for mode in summary.modes)
+
+
+@pytest.mark.asyncio
+async def test_legacy_context_policy_signatures_do_not_hide_agentic_scores(
+    research_service, monkeypatch
+) -> None:
+    """Historical v3/v4 context-policy hashes remain visible to the summary."""
+    await _campaign("legacy-context-cohort", ["naive", "agentic"])
+    naive = await _result(
+        "legacy-context-cohort",
+        "naive",
+        "naive-attempt",
+        context_policy_version="v3",
+    )
+    agentic = await _result(
+        "legacy-context-cohort",
+        "agentic",
+        "agentic-attempt",
+        context_policy_version="v4",
+    )
+    await _official_scope("legacy-context-cohort", naive, "naive-attempt")
+    await _official_scope("legacy-context-cohort", agentic, "agentic-attempt")
+
+    legacy_rows = []
+    work_metadata = []
+    for result_id, attempt, context_policy in (
+        (naive, "naive-attempt", "v3"),
+        (agentic, "agentic-attempt", "v4"),
+    ):
+        for metric_name in (
+            "answer_correctness",
+            "faithfulness",
+            "answer_relevancy",
+        ):
+            signature = build_legacy_evaluator_compatibility_signature(
+                evaluator_model="judge-v1",
+                evaluator_config={},
+                metric_name=metric_name,
+                metric_version="v1",
+                context_policy_version=context_policy,
+                context_metrics_enabled=False,
+            )
+            legacy_rows.append(
+                {
+                    "campaign_result_id": result_id,
+                    "metric_name": metric_name,
+                    "metric_value": 0.8,
+                    "source_attempt_id": attempt,
+                    "evaluation_signature": f"{attempt}-{metric_name}",
+                    "details": {
+                        "evaluator_model": "judge-v1",
+                        "metric_version": "v1",
+                        "compatibility_signature": signature,
+                    },
+                }
+            )
+            work_metadata.append(
+                {
+                    "campaign_result_id": result_id,
+                    "metric_name": metric_name,
+                    "metric_version": "v1",
+                    "compatibility_signature": signature,
+                    "evaluator_model": "judge-v1",
+                    "evaluator_config": {},
+                }
+            )
+    await RagasScoreRepository().replace_for_campaign(
+        user_id="user-1",
+        campaign_id="legacy-context-cohort",
+        score_rows=legacy_rows,
+    )
+    async def legacy_metadata(*, user_id: str, campaign_id: str) -> list[dict]:
+        return work_metadata
+
+    monkeypatch.setattr(
+        research_service._ragas_scores,
+        "list_work_metadata_for_campaign",
+        legacy_metadata,
+    )
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id="legacy-context-cohort"
+    )
+
+    agentic_summary = next(mode for mode in summary.modes if mode.mode == "agentic")
+    assert agentic_summary.quality["answer_correctness"].valid_samples == 1
+    assert agentic_summary.quality["faithfulness"].valid_samples == 1
+    assert agentic_summary.quality["answer_relevancy"].valid_samples == 1
+    assert "evaluator_metadata_mismatch" not in agentic_summary.not_comparable_reasons
 
 
 @pytest.mark.asyncio
@@ -848,6 +1013,7 @@ async def test_mixed_evaluator_metadata_excludes_incompatible_scores_and_marks_m
                     "evaluator_model": "judge",
                     "metric_version": "v1",
                     "compatibility_signature": "policy-a",
+                    "compatibility_signature_version": "v2",
                 },
             },
             {
@@ -860,6 +1026,7 @@ async def test_mixed_evaluator_metadata_excludes_incompatible_scores_and_marks_m
                     "evaluator_model": "judge",
                     "metric_version": "v1",
                     "compatibility_signature": "policy-b",
+                    "compatibility_signature_version": "v2",
                 },
             },
         ],

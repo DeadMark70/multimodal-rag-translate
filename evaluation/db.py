@@ -2187,6 +2187,53 @@ class AgentTraceRepository:
 class RagasScoreRepository:
     """Persistence for per-result RAGAS metrics."""
 
+    async def list_work_metadata_for_campaign(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return immutable RAGAS work/job metadata for legacy identity repair."""
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT work.input_snapshot_json, job.config_snapshot_json
+                FROM evaluation_work_items AS work
+                JOIN evaluation_job_items AS item ON item.work_item_id = work.id
+                JOIN evaluation_jobs AS job ON job.id = item.job_id
+                WHERE work.campaign_id = ?
+                  AND job.campaign_id = ?
+                  AND job.user_id = ?
+                  AND work.work_type = 'ragas_metric'
+                ORDER BY job.created_at ASC, work.created_at ASC
+                """,
+                (campaign_id, campaign_id, user_id),
+            )
+            rows = await cursor.fetchall()
+        metadata: list[dict[str, Any]] = []
+        for row in rows:
+            snapshot = _json_loads(row["input_snapshot_json"], {})
+            config = _json_loads(row["config_snapshot_json"], {})
+            if not isinstance(snapshot, dict) or not isinstance(config, dict):
+                continue
+            metadata.append(
+                {
+                    "campaign_result_id": snapshot.get("campaign_result_id"),
+                    "metric_name": snapshot.get("metric_name"),
+                    "metric_version": snapshot.get("metric_version"),
+                    "compatibility_signature": snapshot.get(
+                        "compatibility_signature"
+                    ),
+                    "compatibility_signature_version": snapshot.get(
+                        "compatibility_signature_version"
+                    ),
+                    "evaluator_model": config.get("evaluator_model"),
+                    "evaluator_config": config.get("evaluator_config"),
+                }
+            )
+        return metadata
+
     async def _insert_score_rows(
         self,
         *,

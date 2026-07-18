@@ -461,7 +461,7 @@ async def test_ensure_ragas_work_assigns_one_shared_batch_key_to_compatible_resu
 
 
 @pytest.mark.asyncio
-async def test_ragas_compatibility_signature_separates_context_policies(
+async def test_ragas_compatibility_signature_ignores_context_policies(
     store, fixed_now
 ) -> None:  # noqa: ANN001
     repository = CampaignResultRepository()
@@ -509,8 +509,11 @@ async def test_ragas_compatibility_signature_separates_context_policies(
     assert len(claims) == 2
     assert len({claim.input_snapshot["evaluation_signature"] for claim in claims}) == 2
     assert (
-        len({claim.input_snapshot["compatibility_signature"] for claim in claims}) == 2
+        len({claim.input_snapshot["compatibility_signature"] for claim in claims}) == 1
     )
+    assert {
+        claim.input_snapshot["compatibility_signature_version"] for claim in claims
+    } == {"v2"}
 
 
 @pytest.mark.asyncio

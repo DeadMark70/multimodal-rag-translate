@@ -27,9 +27,32 @@ from evaluation.db import (
     CampaignResultRepository,
     RagasScoreRepository,
 )
+from evaluation.job_store import (
+    EVALUATOR_COMPATIBILITY_SIGNATURE_VERSION,
+    build_legacy_evaluator_compatibility_signature,
+    build_evaluator_compatibility_signature,
+)
 
 PRIMARY_QUALITY_METRICS = ("answer_correctness", "faithfulness", "answer_relevancy")
 OPTIONAL_CONTEXT_METRICS = ("context_precision", "context_recall")
+
+
+def _attach_work_metadata(scores, work_metadata):
+    by_key: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for metadata in work_metadata:
+        result_id = metadata.get("campaign_result_id")
+        metric_name = metadata.get("metric_name")
+        if result_id and metric_name:
+            by_key[(str(result_id), str(metric_name))].append(metadata)
+    return [
+        {
+            **row,
+            "_work_metadata": by_key.get(
+                (str(row["campaign_result_id"]), str(row["metric_name"])), []
+            ),
+        }
+        for row in scores
+    ]
 
 
 def nearest_rank(values: list[float], percentile: float) -> float | None:
@@ -69,6 +92,10 @@ class ResearchAnalyticsService:
         scores = await self._ragas_scores.list_for_campaign(
             user_id=user_id, campaign_id=campaign_id
         )
+        work_metadata = await self._ragas_scores.list_work_metadata_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
+        scores = _attach_work_metadata(scores, work_metadata)
         scopes = await self._accounting.list_campaign_scopes(campaign_id)
         events = await self._accounting.list_campaign_events(campaign_id)
         events_by_scope: dict[str, list] = defaultdict(list)
@@ -341,6 +368,7 @@ def _quality_for_results(
     campaign_results,
 ):
     result_ids = {r.id for r in results}
+    results_by_id = {r.id: r for r in results}
     attempts_by_result = {
         result.id: result.source_attempt_id
         for result in results
@@ -368,7 +396,9 @@ def _quality_for_results(
         compatible = [
             row
             for row in rows
-            if chosen is not None and _evaluator_identity(row) == chosen
+            if chosen is not None
+            and _evaluator_identity(row, results_by_id.get(row["campaign_result_id"]))
+            == chosen
         ]
         values_by_result = {
             row["campaign_result_id"]: float(row["metric_value"])
@@ -424,16 +454,81 @@ def _quality_for_results(
     return output
 
 
-def _evaluator_identity(row) -> tuple[str, str, str]:
+def _evaluator_identity(row, result=None) -> tuple[str, str, str]:
     details = row.get("details") or {}
     compatibility_signature = details.get("compatibility_signature")
+    signature_version = details.get("compatibility_signature_version")
+    model = str(details.get("evaluator_model") or details.get("model_name") or "")
+    metric_version = str(details.get("metric_version") or "")
+    if signature_version != EVALUATOR_COMPATIBILITY_SIGNATURE_VERSION:
+        legacy_identity = _legacy_context_policy_identity(
+            row=row,
+            result=result,
+            evaluator_model=model,
+            metric_version=metric_version,
+        )
+        if legacy_identity is not None:
+            return legacy_identity
     if not compatibility_signature:
         compatibility_signature = row.get("evaluation_signature") or ""
     return (
-        str(details.get("evaluator_model") or details.get("model_name") or ""),
-        str(details.get("metric_version") or ""),
+        model,
+        metric_version,
         str(compatibility_signature),
     )
+
+
+def _legacy_context_policy_identity(
+    *,
+    row,
+    result,
+    evaluator_model: str,
+    metric_version: str,
+) -> tuple[str, str, str] | None:
+    """Normalize a v1 score only when its durable work item verifies the hash."""
+    if result is None or not result.context_policy_version:
+        return None
+    details = row.get("details") or {}
+    stored_signature = details.get("compatibility_signature")
+    if not stored_signature:
+        return None
+    for metadata in row.get("_work_metadata", []):
+        evaluator_config = metadata.get("evaluator_config")
+        metadata_model = metadata.get("evaluator_model") or evaluator_model
+        metadata_metric_version = metadata.get("metric_version") or metric_version
+        if (
+            metadata.get("compatibility_signature") != stored_signature
+            or not metadata_model
+            or not metadata_metric_version
+            or not isinstance(evaluator_config, dict)
+            or not evaluator_model
+            or not metric_version
+            or str(metadata_model) != evaluator_model
+            or str(metadata_metric_version) != metric_version
+        ):
+            continue
+        expected_signature = build_legacy_evaluator_compatibility_signature(
+            evaluator_model=str(metadata_model),
+            evaluator_config=evaluator_config,
+            metric_name=str(row["metric_name"]),
+            metric_version=str(metadata_metric_version),
+            context_policy_version=result.context_policy_version,
+            context_metrics_enabled=str(row["metric_name"]).startswith("context_"),
+        )
+        if expected_signature == stored_signature:
+            normalized_signature = build_evaluator_compatibility_signature(
+                evaluator_model=str(metadata_model),
+                evaluator_config=evaluator_config,
+                metric_name=str(row["metric_name"]),
+                metric_version=str(metadata_metric_version),
+                context_metrics_enabled=str(row["metric_name"]).startswith("context_"),
+            )
+            return (
+                str(metadata_model),
+                str(metadata_metric_version),
+                normalized_signature,
+            )
+    return None
 
 
 def _canonical_identities_by_metric(results, scores) -> dict[str, tuple[str, str, str]]:
@@ -445,13 +540,16 @@ def _canonical_identities_by_metric(results, scores) -> dict[str, tuple[str, str
     grouped: dict[str, dict[tuple[str, str, str], set[str]]] = defaultdict(
         lambda: defaultdict(set)
     )
+    results_by_id = {result.id: result for result in results}
     for row in scores:
         result_id = row["campaign_result_id"]
         if (
             result_id in attempts_by_result
             and row.get("source_attempt_id") == attempts_by_result[result_id]
         ):
-            grouped[row["metric_name"]][_evaluator_identity(row)].add(result_id)
+            grouped[row["metric_name"]][
+                _evaluator_identity(row, results_by_id.get(result_id))
+            ].add(result_id)
     return {
         metric: min(
             identities,
@@ -468,12 +566,16 @@ def _has_noncanonical_current_scores(results, scores, canonical_identities) -> b
         for result in results
         if result.source_attempt_id
     }
+    results_by_id = {result.id: result for result in results}
     return any(
         row["campaign_result_id"] in attempts_by_result
         and row.get("source_attempt_id")
         == attempts_by_result[row["campaign_result_id"]]
         and row["metric_name"] in canonical_identities
-        and _evaluator_identity(row) != canonical_identities[row["metric_name"]]
+        and _evaluator_identity(
+            row, results_by_id.get(row["campaign_result_id"])
+        )
+        != canonical_identities[row["metric_name"]]
         for row in scores
     )
 
