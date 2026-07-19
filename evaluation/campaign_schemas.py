@@ -275,7 +275,7 @@ class QuestionModeComparison(BaseModel):
     faithfulness: float | None = Field(default=None, ge=0, le=1)
     answer_relevancy: float | None = Field(default=None, ge=0, le=1)
     mean_latency_ms: float | None = Field(default=None, ge=0)
-    total_tokens: int | None = Field(default=None, ge=0)
+    mean_tokens: float | None = Field(default=None, ge=0)
     quality_status: QuestionMetricStatus = "not_available"
     accounting_status: QuestionAccountingStatus = "not_available"
 
@@ -301,6 +301,10 @@ class QuestionComparisonRow(BaseModel):
 
 class QuestionComparisonResponse(AnalyticsAggregateResponse):
     """Question-level comparison analytics."""
+
+
+class ResearchQuestionComparisonResponse(AnalyticsAggregateResponse):
+    """Strict research-accounting question comparison analytics."""
 
     rows: list[QuestionComparisonRow] = Field(default_factory=list)
 

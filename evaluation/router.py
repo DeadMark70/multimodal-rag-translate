@@ -38,6 +38,7 @@ from evaluation.campaign_schemas import (
     HumanVsAutoResponse,
     ModeComparisonResponse,
     QuestionComparisonResponse,
+    ResearchQuestionComparisonResponse,
     RepeatStabilitySummary,
     RouterAnalysisResponse,
     RunClaimsResponse,
@@ -461,13 +462,13 @@ async def get_campaign_question_comparison(
 
 @router.get(
     "/campaigns/{campaign_id}/research-question-comparison",
-    response_model=QuestionComparisonResponse,
+    response_model=ResearchQuestionComparisonResponse,
 )
 async def get_campaign_research_question_comparison(
     campaign_id: str,
     user_id: str = Depends(get_current_user_id),
     analytics: ResearchAnalyticsService = Depends(get_research_analytics_service),
-) -> QuestionComparisonResponse:
+) -> ResearchQuestionComparisonResponse:
     """Fetch strict per-question/per-mode comparison analytics."""
     return await analytics.get_question_comparison(
         user_id=user_id, campaign_id=campaign_id

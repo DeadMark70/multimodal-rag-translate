@@ -23,9 +23,9 @@ from evaluation.accounting_schemas import (
 from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.campaign_schemas import (
     CampaignResultStatus,
-    QuestionComparisonResponse,
     QuestionComparisonRow,
     QuestionModeComparison,
+    ResearchQuestionComparisonResponse,
 )
 from evaluation.db import (
     CampaignRepository,
@@ -87,7 +87,7 @@ class ResearchAnalyticsService:
     async def get_summary(
         self, *, user_id: str, campaign_id: str
     ) -> CampaignResearchSummaryResponse:
-        await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
+        campaign = await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
         all_results = await self._results.list_for_campaign(
             user_id=user_id, campaign_id=campaign_id
         )
@@ -226,9 +226,9 @@ class ResearchAnalyticsService:
 
     async def get_question_comparison(
         self, *, user_id: str, campaign_id: str
-    ) -> QuestionComparisonResponse:
+    ) -> ResearchQuestionComparisonResponse:
         """Return measured question/mode comparisons with strict null semantics."""
-        await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
+        campaign = await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
         all_results = await self._results.list_for_campaign(
             user_id=user_id, campaign_id=campaign_id
         )
@@ -240,6 +240,17 @@ class ResearchAnalyticsService:
         scores = await self._ragas_scores.list_for_campaign(
             user_id=user_id, campaign_id=campaign_id
         )
+        work_metadata = await self._ragas_scores.list_work_metadata_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
+        scores = _attach_work_metadata(scores, work_metadata)
+        canonical_identities = _canonical_identities_by_metric(completed, scores)
+        result_by_id = {str(result.id): result for result in completed}
+        attempts_by_result = {
+            str(result.id): result.source_attempt_id
+            for result in completed
+            if result.source_attempt_id
+        }
         scopes = await self._accounting.list_campaign_scopes(campaign_id)
         events = await self._accounting.list_campaign_events(campaign_id)
         events_by_scope: dict[str, list] = defaultdict(list)
@@ -248,11 +259,19 @@ class ResearchAnalyticsService:
 
         score_map: dict[str, dict[str, float]] = defaultdict(dict)
         for score in scores:
+            result_id = str(score.get("campaign_result_id"))
+            metric_name = str(score.get("metric_name"))
+            if (
+                result_id not in attempts_by_result
+                or score.get("source_attempt_id") != attempts_by_result[result_id]
+                or metric_name not in canonical_identities
+                or _evaluator_identity(score, result_by_id.get(result_id))
+                != canonical_identities[metric_name]
+            ):
+                continue
             value = score.get("metric_value")
             if isinstance(value, (int, float)):
-                score_map[str(score["campaign_result_id"])][
-                    str(score["metric_name"])
-                ] = float(value)
+                score_map[result_id][metric_name] = float(value)
 
         official_scopes = _official_execution_scopes(completed, scopes)
         tokens_by_result: dict[str, TokenBreakdown] = {}
@@ -274,6 +293,13 @@ class ResearchAnalyticsService:
         for result in completed:
             results_by_question[str(result.question_id)].append(result)
 
+        configured_modes = list(
+            getattr(getattr(campaign, "config", None), "modes", None) or []
+        )
+        configured_modes.extend(
+            str(result.mode) for result in all_results if str(result.mode) not in configured_modes
+        )
+
         rows: list[QuestionComparisonRow] = []
         warnings: list[str] = []
         for question_id, question_results in sorted(results_by_question.items()):
@@ -283,9 +309,14 @@ class ResearchAnalyticsService:
 
             mode_rows: list[QuestionModeComparison] = []
             mode_quality: dict[str, dict[str, float | None]] = {}
-            mode_tokens: dict[str, int | None] = {}
+            mode_tokens: dict[str, float | None] = {}
             mode_accounting: dict[str, str] = {}
-            for mode, mode_results in sorted(by_mode_results.items()):
+            modes_for_question = sorted(
+                {str(mode) for mode in configured_modes}
+                | set(by_mode_results.keys())
+            )
+            for mode in modes_for_question:
+                mode_results = by_mode_results.get(mode, [])
                 mode_quality[mode] = {}
                 for metric in PRIMARY_QUALITY_METRICS:
                     values = [
@@ -312,8 +343,8 @@ class ResearchAnalyticsService:
                     and item.accounting_status == "complete"
                     and item.total_tokens is not None
                 ]
-                if len(complete_tokens) == len(mode_results):
-                    mode_tokens[mode] = int(mean(complete_tokens))
+                if mode_results and len(complete_tokens) == len(mode_results):
+                    mode_tokens[mode] = mean(complete_tokens)
                     accounting_status = "complete"
                 elif any(item is not None for item in token_values):
                     mode_tokens[mode] = None
@@ -340,7 +371,7 @@ class ResearchAnalyticsService:
                         mean_latency_ms=mean(latency_values)
                         if latency_values
                         else None,
-                        total_tokens=mode_tokens[mode],
+                        mean_tokens=mode_tokens[mode],
                         quality_status=quality_status,
                         accounting_status=accounting_status,
                     )
@@ -351,11 +382,18 @@ class ResearchAnalyticsService:
                 (row for row in mode_rows if row.mode == "naive"), None
             )
             target = next(
-                (row for row in mode_rows if row.mode == best_mode), None
+                (
+                    row
+                    for row in mode_rows
+                    if row.mode == best_mode and row.mode != "naive"
+                ),
+                None,
             )
             comparability_reason: str | None = None
             if baseline is None:
                 comparability_reason = "baseline_missing"
+            elif target is None:
+                comparability_reason = "comparison_mode_missing"
             elif baseline.quality_status != "complete" or (
                 target is not None and target.quality_status != "complete"
             ):
@@ -390,11 +428,11 @@ class ResearchAnalyticsService:
                 else None
             )
             delta_tokens = (
-                target.total_tokens - baseline.total_tokens
+                target.mean_tokens - baseline.mean_tokens
                 if target
                 and baseline
-                and target.total_tokens is not None
-                and baseline.total_tokens is not None
+                and target.mean_tokens is not None
+                and baseline.mean_tokens is not None
                 else None
             )
             ecr = (
@@ -434,13 +472,13 @@ class ResearchAnalyticsService:
                     ),
                     by_mode=mode_rows,
                     delta_correctness=delta_correctness
-                    if comparability_reason != "incomplete_quality"
+                    if comparability_reason not in {"incomplete_quality", "comparison_mode_missing"}
                     else None,
                     delta_faithfulness=delta_faithfulness
-                    if comparability_reason != "incomplete_quality"
+                    if comparability_reason not in {"incomplete_quality", "comparison_mode_missing"}
                     else None,
                     delta_latency_ms=delta_latency
-                    if comparability_reason != "incomplete_quality"
+                    if comparability_reason not in {"incomplete_quality", "comparison_mode_missing"}
                     else None,
                     delta_tokens=delta_tokens
                     if comparability_reason is None
@@ -464,7 +502,7 @@ class ResearchAnalyticsService:
             if comparability_reason:
                 warnings.append(f"{question_id}: {comparability_reason}")
 
-        return QuestionComparisonResponse(
+        return ResearchQuestionComparisonResponse(
             campaign_id=campaign_id,
             analysis_unit="question",
             sample_count=len(completed),
@@ -749,7 +787,7 @@ def _legacy_context_policy_identity(
     metric_version: str,
 ) -> tuple[str, str, str] | None:
     """Normalize a v1 score only when its durable work item verifies the hash."""
-    if result is None or not result.context_policy_version:
+    if result is None or not getattr(result, "context_policy_version", None):
         return None
     details = row.get("details") or {}
     stored_signature = details.get("compatibility_signature")
@@ -918,15 +956,21 @@ def _latency(values):
 
 def _best_quality_mode(rows: list[QuestionModeComparison]) -> str | None:
     """Choose a deterministic quality winner without using mode ordering."""
-    candidates = [row for row in rows if row.answer_correctness is not None]
+    candidates = [
+        row
+        for row in rows
+        if row.quality_status == "complete"
+        and row.answer_correctness is not None
+        and row.faithfulness is not None
+    ]
     if not candidates:
         return None
     winner = sorted(
         candidates,
         key=lambda row: (
             -float(row.answer_correctness or 0),
-            -float(row.faithfulness or 0),
-            row.total_tokens if row.total_tokens is not None else float("inf"),
+            -float(row.faithfulness),
+            row.mean_tokens if row.mean_tokens is not None else float("inf"),
             str(row.mode),
         ),
     )[0]

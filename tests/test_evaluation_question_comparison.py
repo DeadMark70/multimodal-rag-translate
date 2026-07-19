@@ -63,11 +63,15 @@ def _event(result_id: str, *, partial: bool = False):
 
 
 class _Campaigns:
+    def __init__(self, modes=None):
+        self.modes = modes
+
     async def get(self, *, user_id: str, campaign_id: str):
         return SimpleNamespace(
             id=campaign_id,
             status="completed",
             updated_at=datetime.now(timezone.utc),
+            config=SimpleNamespace(modes=self.modes or []),
         )
 
 
@@ -82,13 +86,29 @@ class _Results:
 class _Scores:
     async def list_for_campaign(self, **kwargs):
         return [
-            {"campaign_result_id": "naive-1", "metric_name": "answer_correctness", "metric_value": 0.5},
-            {"campaign_result_id": "naive-1", "metric_name": "faithfulness", "metric_value": 0.8},
-            {"campaign_result_id": "naive-1", "metric_name": "answer_relevancy", "metric_value": 0.7},
-            {"campaign_result_id": "agentic-1", "metric_name": "answer_correctness", "metric_value": 0.9},
-            {"campaign_result_id": "agentic-1", "metric_name": "faithfulness", "metric_value": 0.8},
-            {"campaign_result_id": "agentic-1", "metric_name": "answer_relevancy", "metric_value": 0.6},
+            self._row("naive-1", "answer_correctness", 0.5),
+            self._row("naive-1", "faithfulness", 0.8),
+            self._row("naive-1", "answer_relevancy", 0.7),
+            self._row("agentic-1", "answer_correctness", 0.9),
+            self._row("agentic-1", "faithfulness", 0.8),
+            self._row("agentic-1", "answer_relevancy", 0.6),
         ]
+
+    @staticmethod
+    def _row(result_id: str, metric_name: str, metric_value: float):
+        return {
+            "campaign_result_id": result_id,
+            "metric_name": metric_name,
+            "metric_value": metric_value,
+            "source_attempt_id": f"attempt-{result_id}",
+            "evaluation_signature": "sig-1",
+            "details": {
+                "evaluator_model": "eval-v1",
+                "metric_version": "v1",
+                "compatibility_signature": "sig-1",
+                "compatibility_signature_version": "2",
+            },
+        }
 
     async def list_work_metadata_for_campaign(self, **kwargs):
         return []
@@ -126,3 +146,47 @@ async def test_question_comparison_is_measured_and_fail_closed():
     assert row.evidence_coverage is None
     assert row.unsupported_claim_ratio is None
     assert row.comparability_reason == "incomplete_accounting"
+
+
+@pytest.mark.asyncio
+async def test_missing_comparison_mode_never_becomes_zero_delta():
+    service = ResearchAnalyticsService(
+        campaigns=_Campaigns(["naive", "agentic"]),
+        results=_Results([_result("naive-1", "naive", 0.5)]),
+        ragas_scores=_Scores(),
+        accounting=_Accounting(),
+    )
+
+    row = (await service.get_question_comparison(user_id="user-1", campaign_id="campaign-1")).rows[0]
+
+    assert row.best_quality_mode == "naive"
+    assert row.delta_correctness is None
+    assert row.delta_faithfulness is None
+    assert row.comparability_reason == "comparison_mode_missing"
+
+
+@pytest.mark.asyncio
+async def test_partial_quality_mode_cannot_win_best_mode():
+    class PartialScores(_Scores):
+        async def list_for_campaign(self, **kwargs):
+            return [
+                row
+                for row in await super().list_for_campaign(**kwargs)
+                if not (
+                    row["campaign_result_id"] == "agentic-1"
+                    and row["metric_name"] == "faithfulness"
+                )
+            ]
+
+    service = ResearchAnalyticsService(
+        campaigns=_Campaigns(["naive", "agentic"]),
+        results=_Results([_result("naive-1", "naive", 0.5), _result("agentic-1", "agentic", 0.9)]),
+        ragas_scores=PartialScores(),
+        accounting=_Accounting(),
+    )
+
+    row = (await service.get_question_comparison(user_id="user-1", campaign_id="campaign-1")).rows[0]
+
+    assert row.best_quality_mode == "naive"
+    assert row.delta_correctness is None
+    assert row.comparability_reason == "comparison_mode_missing"
