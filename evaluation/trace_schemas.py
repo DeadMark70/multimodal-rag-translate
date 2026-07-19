@@ -335,14 +335,15 @@ def summarize_agent_trace(detail: AgentTraceDetail) -> AgentTraceSummary:
     """Derive a list-friendly summary from a persisted detail payload."""
 
     subtask_steps = [step for step in detail.steps if step.step_type == "sub_task_execution"]
-    drilldown_depth = max(
-        [
-            int(step.metadata.get("iteration", 0) or 0)
-            for step in detail.steps
-            if step.phase == "drilldown"
-        ]
-        or [0]
-    )
+    drilldown_iterations: list[int] = []
+    for step in detail.steps:
+        if step.phase != "drilldown":
+            continue
+        try:
+            drilldown_iterations.append(int(step.metadata.get("iteration", 0) or 0))
+        except (TypeError, ValueError):
+            continue
+    drilldown_depth = max(drilldown_iterations or [0])
     graph_tool_call_count = sum(
         1
         for step in detail.steps
