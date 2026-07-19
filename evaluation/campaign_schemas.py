@@ -260,8 +260,49 @@ class ModeComparisonResponse(AnalyticsAggregateResponse):
     """Mode-level comparison analytics."""
 
 
+QuestionMetricStatus = Literal[
+    "complete", "partial", "not_available", "not_instrumented"
+]
+QuestionAccountingStatus = Literal["complete", "partial", "not_available"]
+
+
+class QuestionModeComparison(BaseModel):
+    """Measured quality, latency, and token values for one question/mode."""
+
+    mode: CampaignMode
+    sample_count: int = Field(default=0, ge=0)
+    answer_correctness: float | None = Field(default=None, ge=0, le=1)
+    faithfulness: float | None = Field(default=None, ge=0, le=1)
+    answer_relevancy: float | None = Field(default=None, ge=0, le=1)
+    mean_latency_ms: float | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+    quality_status: QuestionMetricStatus = "not_available"
+    accounting_status: QuestionAccountingStatus = "not_available"
+
+
+class QuestionComparisonRow(BaseModel):
+    """Trustworthy comparison values for one independent question."""
+
+    question_id: str
+    category: str | None = None
+    difficulty: str | None = None
+    required_modalities: list[str] | None = None
+    by_mode: list[QuestionModeComparison] = Field(default_factory=list)
+    delta_correctness: float | None = None
+    delta_faithfulness: float | None = None
+    delta_latency_ms: float | None = None
+    delta_tokens: float | None = None
+    ecr_correctness: float | None = None
+    best_quality_mode: CampaignMode | None = None
+    evidence_coverage: float | None = Field(default=None, ge=0, le=1)
+    unsupported_claim_ratio: float | None = Field(default=None, ge=0, le=1)
+    comparability_reason: str | None = None
+
+
 class QuestionComparisonResponse(AnalyticsAggregateResponse):
     """Question-level comparison analytics."""
+
+    rows: list[QuestionComparisonRow] = Field(default_factory=list)
 
 
 class CostLatencyResponse(AnalyticsAggregateResponse):

@@ -21,7 +21,12 @@ from evaluation.accounting_schemas import (
     TokenBreakdown,
 )
 from evaluation.accounting_store import EvaluationAccountingStore
-from evaluation.campaign_schemas import CampaignResultStatus
+from evaluation.campaign_schemas import (
+    CampaignResultStatus,
+    QuestionComparisonResponse,
+    QuestionComparisonRow,
+    QuestionModeComparison,
+)
 from evaluation.db import (
     CampaignRepository,
     CampaignResultRepository,
@@ -217,6 +222,263 @@ class ResearchAnalyticsService:
             modes=modes,
             evaluation_overhead=overhead,
             warnings=warnings,
+        )
+
+    async def get_question_comparison(
+        self, *, user_id: str, campaign_id: str
+    ) -> QuestionComparisonResponse:
+        """Return measured question/mode comparisons with strict null semantics."""
+        await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
+        all_results = await self._results.list_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
+        completed = [
+            result
+            for result in all_results
+            if result.status == CampaignResultStatus.COMPLETED
+        ]
+        scores = await self._ragas_scores.list_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
+        scopes = await self._accounting.list_campaign_scopes(campaign_id)
+        events = await self._accounting.list_campaign_events(campaign_id)
+        events_by_scope: dict[str, list] = defaultdict(list)
+        for event in events:
+            events_by_scope[event.scope_id].append(event)
+
+        score_map: dict[str, dict[str, float]] = defaultdict(dict)
+        for score in scores:
+            value = score.get("metric_value")
+            if isinstance(value, (int, float)):
+                score_map[str(score["campaign_result_id"])][
+                    str(score["metric_name"])
+                ] = float(value)
+
+        official_scopes = _official_execution_scopes(completed, scopes)
+        tokens_by_result: dict[str, TokenBreakdown] = {}
+        for scope in official_scopes:
+            result_ids = {
+                target.campaign_result_id
+                for target in scope.targets
+                if target.is_official and target.campaign_result_id
+            }
+            if scope.run_id:
+                result_ids.add(scope.run_id)
+            if not result_ids:
+                continue
+            breakdown = _tokens([scope], events_by_scope[scope.scope_id])
+            for result_id in result_ids:
+                tokens_by_result[str(result_id)] = breakdown
+
+        results_by_question: dict[str, list] = defaultdict(list)
+        for result in completed:
+            results_by_question[str(result.question_id)].append(result)
+
+        rows: list[QuestionComparisonRow] = []
+        warnings: list[str] = []
+        for question_id, question_results in sorted(results_by_question.items()):
+            by_mode_results: dict[str, list] = defaultdict(list)
+            for result in question_results:
+                by_mode_results[str(result.mode)].append(result)
+
+            mode_rows: list[QuestionModeComparison] = []
+            mode_quality: dict[str, dict[str, float | None]] = {}
+            mode_tokens: dict[str, int | None] = {}
+            mode_accounting: dict[str, str] = {}
+            for mode, mode_results in sorted(by_mode_results.items()):
+                mode_quality[mode] = {}
+                for metric in PRIMARY_QUALITY_METRICS:
+                    values = [
+                        score_map.get(str(result.id), {}).get(metric)
+                        for result in mode_results
+                    ]
+                    present = [value for value in values if value is not None]
+                    mode_quality[mode][metric] = (
+                        mean(present) if present and len(present) == len(values) else None
+                    )
+                latency_values = [
+                    result.total_latency_ms
+                    if result.total_latency_ms is not None
+                    else result.latency_ms
+                    for result in mode_results
+                ]
+                token_values = [
+                    tokens_by_result.get(str(result.id)) for result in mode_results
+                ]
+                complete_tokens = [
+                    item.total_tokens
+                    for item in token_values
+                    if item is not None
+                    and item.accounting_status == "complete"
+                    and item.total_tokens is not None
+                ]
+                if len(complete_tokens) == len(mode_results):
+                    mode_tokens[mode] = int(mean(complete_tokens))
+                    accounting_status = "complete"
+                elif any(item is not None for item in token_values):
+                    mode_tokens[mode] = None
+                    accounting_status = "partial"
+                else:
+                    mode_tokens[mode] = None
+                    accounting_status = "not_available"
+                mode_accounting[mode] = accounting_status
+                quality_values = list(mode_quality[mode].values())
+                quality_status = (
+                    "complete"
+                    if all(value is not None for value in quality_values)
+                    else "partial"
+                    if any(value is not None for value in quality_values)
+                    else "not_available"
+                )
+                mode_rows.append(
+                    QuestionModeComparison(
+                        mode=mode,
+                        sample_count=len(mode_results),
+                        answer_correctness=mode_quality[mode]["answer_correctness"],
+                        faithfulness=mode_quality[mode]["faithfulness"],
+                        answer_relevancy=mode_quality[mode]["answer_relevancy"],
+                        mean_latency_ms=mean(latency_values)
+                        if latency_values
+                        else None,
+                        total_tokens=mode_tokens[mode],
+                        quality_status=quality_status,
+                        accounting_status=accounting_status,
+                    )
+                )
+
+            best_mode = _best_quality_mode(mode_rows)
+            baseline = next(
+                (row for row in mode_rows if row.mode == "naive"), None
+            )
+            target = next(
+                (row for row in mode_rows if row.mode == best_mode), None
+            )
+            comparability_reason: str | None = None
+            if baseline is None:
+                comparability_reason = "baseline_missing"
+            elif baseline.quality_status != "complete" or (
+                target is not None and target.quality_status != "complete"
+            ):
+                comparability_reason = "incomplete_quality"
+            elif baseline.accounting_status != "complete" or (
+                target is not None and target.accounting_status != "complete"
+            ):
+                comparability_reason = "incomplete_accounting"
+
+            delta_correctness = (
+                target.answer_correctness - baseline.answer_correctness
+                if target
+                and baseline
+                and target.answer_correctness is not None
+                and baseline.answer_correctness is not None
+                else None
+            )
+            delta_faithfulness = (
+                target.faithfulness - baseline.faithfulness
+                if target
+                and baseline
+                and target.faithfulness is not None
+                and baseline.faithfulness is not None
+                else None
+            )
+            delta_latency = (
+                target.mean_latency_ms - baseline.mean_latency_ms
+                if target
+                and baseline
+                and target.mean_latency_ms is not None
+                and baseline.mean_latency_ms is not None
+                else None
+            )
+            delta_tokens = (
+                target.total_tokens - baseline.total_tokens
+                if target
+                and baseline
+                and target.total_tokens is not None
+                and baseline.total_tokens is not None
+                else None
+            )
+            ecr = (
+                1000 * delta_correctness / delta_tokens
+                if delta_correctness is not None
+                and delta_tokens is not None
+                and delta_tokens > 0
+                else None
+            )
+
+            first = question_results[0]
+            snapshot = first.question_snapshot if isinstance(first.question_snapshot, dict) else {}
+            derived = [
+                getattr(result, "derived_metrics", {})
+                for result in question_results
+                if isinstance(getattr(result, "derived_metrics", {}), dict)
+            ]
+            evidence_values = [
+                item.get("evidence_coverage")
+                for item in derived
+                if isinstance(item.get("evidence_coverage"), (int, float))
+            ]
+            unsupported_values = [
+                item.get("unsupported_claim_ratio")
+                for item in derived
+                if isinstance(item.get("unsupported_claim_ratio"), (int, float))
+            ]
+            rows.append(
+                QuestionComparisonRow(
+                    question_id=question_id,
+                    category=getattr(first, "category", None),
+                    difficulty=getattr(first, "difficulty", None),
+                    required_modalities=(
+                        list(snapshot["required_modalities"])
+                        if isinstance(snapshot.get("required_modalities"), list)
+                        else None
+                    ),
+                    by_mode=mode_rows,
+                    delta_correctness=delta_correctness
+                    if comparability_reason != "incomplete_quality"
+                    else None,
+                    delta_faithfulness=delta_faithfulness
+                    if comparability_reason != "incomplete_quality"
+                    else None,
+                    delta_latency_ms=delta_latency
+                    if comparability_reason != "incomplete_quality"
+                    else None,
+                    delta_tokens=delta_tokens
+                    if comparability_reason is None
+                    else None,
+                    ecr_correctness=ecr if comparability_reason is None else None,
+                    best_quality_mode=best_mode,
+                    evidence_coverage=(
+                        mean(evidence_values)
+                        if evidence_values and len(evidence_values) == len(question_results)
+                        else None
+                    ),
+                    unsupported_claim_ratio=(
+                        mean(unsupported_values)
+                        if unsupported_values
+                        and len(unsupported_values) == len(question_results)
+                        else None
+                    ),
+                    comparability_reason=comparability_reason,
+                )
+            )
+            if comparability_reason:
+                warnings.append(f"{question_id}: {comparability_reason}")
+
+        return QuestionComparisonResponse(
+            campaign_id=campaign_id,
+            analysis_unit="question",
+            sample_count=len(completed),
+            independent_question_count=len(rows),
+            repeat_count=max(
+                (int(getattr(result, "repeat_number", 1) or 1) for result in completed),
+                default=0,
+            ),
+            sample_note=(
+                f"n = {len(completed)} execution samples = {len(rows)} questions."
+            ),
+            warnings=warnings,
+            rows=rows,
+            summaries={row.question_id: row.model_dump(mode="json") for row in rows},
         )
 
 
@@ -652,6 +914,23 @@ def _latency(values):
         sample_count=len(values),
         low_sample_size=0 < len(values) < 5,
     )
+
+
+def _best_quality_mode(rows: list[QuestionModeComparison]) -> str | None:
+    """Choose a deterministic quality winner without using mode ordering."""
+    candidates = [row for row in rows if row.answer_correctness is not None]
+    if not candidates:
+        return None
+    winner = sorted(
+        candidates,
+        key=lambda row: (
+            -float(row.answer_correctness or 0),
+            -float(row.faithfulness or 0),
+            row.total_tokens if row.total_tokens is not None else float("inf"),
+            str(row.mode),
+        ),
+    )[0]
+    return str(winner.mode)
 
 
 def _tokens(scopes, events, legacy_status="incomplete_legacy"):

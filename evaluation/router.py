@@ -459,6 +459,21 @@ async def get_campaign_question_comparison(
     return await analytics.question_comparison(user_id=user_id, campaign_id=campaign_id)
 
 
+@router.get(
+    "/campaigns/{campaign_id}/research-question-comparison",
+    response_model=QuestionComparisonResponse,
+)
+async def get_campaign_research_question_comparison(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: ResearchAnalyticsService = Depends(get_research_analytics_service),
+) -> QuestionComparisonResponse:
+    """Fetch strict per-question/per-mode comparison analytics."""
+    return await analytics.get_question_comparison(
+        user_id=user_id, campaign_id=campaign_id
+    )
+
+
 @router.get("/campaigns/{campaign_id}/cost-latency", response_model=CostLatencyResponse)
 async def get_campaign_cost_latency(
     campaign_id: str,
