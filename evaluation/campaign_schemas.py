@@ -260,6 +260,31 @@ class ModeComparisonResponse(AnalyticsAggregateResponse):
     """Mode-level comparison analytics."""
 
 
+class AgentBehaviorRow(BaseModel):
+    """One run's trace-backed behavior metrics."""
+
+    run_id: str
+    campaign_id: str
+    question_id: str
+    mode: CampaignMode
+    repeat_number: int = Field(default=1, ge=1)
+    trace_status: str
+    subtasks: int | None = Field(default=None, ge=0)
+    tool_calls: int | None = Field(default=None, ge=0)
+    visual_calls: int | None = Field(default=None, ge=0)
+    graph_calls: int | None = Field(default=None, ge=0)
+    drilldown_depth: int | None = Field(default=None, ge=0)
+    correctness: float | None = Field(default=None, ge=0, le=1)
+    faithfulness: float | None = Field(default=None, ge=0, le=1)
+    total_tokens: int | None = Field(default=None, ge=0)
+
+
+class AgentBehaviorResponse(AnalyticsAggregateResponse):
+    """Trace-backed per-run agent behavior analytics."""
+
+    rows: list[AgentBehaviorRow] = Field(default_factory=list)
+
+
 QuestionMetricStatus = Literal[
     "complete", "partial", "not_available", "not_instrumented"
 ]

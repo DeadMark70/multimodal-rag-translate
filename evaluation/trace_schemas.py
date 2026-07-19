@@ -317,6 +317,9 @@ class AgentTraceSummary(BaseModel):
     summary: str = ""
     step_count: int = Field(default=0, ge=0)
     tool_call_count: int = Field(default=0, ge=0)
+    subtask_count: int = Field(default=0, ge=0)
+    drilldown_depth: int = Field(default=0, ge=0)
+    graph_tool_call_count: int = Field(default=0, ge=0)
     visual_verification_attempted: bool = False
     visual_tool_call_count: int = Field(default=0, ge=0)
     visual_force_fallback_used: bool = False
@@ -330,6 +333,22 @@ class AgentTraceSummary(BaseModel):
 
 def summarize_agent_trace(detail: AgentTraceDetail) -> AgentTraceSummary:
     """Derive a list-friendly summary from a persisted detail payload."""
+
+    subtask_steps = [step for step in detail.steps if step.step_type == "sub_task_execution"]
+    drilldown_depth = max(
+        [
+            int(step.metadata.get("iteration", 0) or 0)
+            for step in detail.steps
+            if step.phase == "drilldown"
+        ]
+        or [0]
+    )
+    graph_tool_call_count = sum(
+        1
+        for step in detail.steps
+        for tool_call in step.tool_calls
+        if "graph" in f"{tool_call.action} {tool_call.payload}".lower()
+    )
 
     return AgentTraceSummary(
         trace_id=detail.trace_id,
@@ -346,6 +365,9 @@ def summarize_agent_trace(detail: AgentTraceDetail) -> AgentTraceSummary:
         summary=detail.summary,
         step_count=detail.step_count,
         tool_call_count=detail.tool_call_count,
+        subtask_count=len(subtask_steps),
+        drilldown_depth=drilldown_depth,
+        graph_tool_call_count=graph_tool_call_count,
         visual_verification_attempted=detail.visual_verification_attempted,
         visual_tool_call_count=detail.visual_tool_call_count,
         visual_force_fallback_used=detail.visual_force_fallback_used,

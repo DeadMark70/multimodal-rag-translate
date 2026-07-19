@@ -22,12 +22,15 @@ from evaluation.accounting_schemas import (
 )
 from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.campaign_schemas import (
+    AgentBehaviorResponse,
+    AgentBehaviorRow,
     CampaignResultStatus,
     QuestionComparisonRow,
     QuestionModeComparison,
     ResearchQuestionComparisonResponse,
 )
 from evaluation.db import (
+    AgentTraceRepository,
     CampaignRepository,
     CampaignResultRepository,
     RagasScoreRepository,
@@ -78,11 +81,13 @@ class ResearchAnalyticsService:
         results: CampaignResultRepository | None = None,
         ragas_scores: RagasScoreRepository | None = None,
         accounting: EvaluationAccountingStore | None = None,
+        traces: AgentTraceRepository | None = None,
     ) -> None:
         self._campaigns = campaigns or CampaignRepository()
         self._results = results or CampaignResultRepository()
         self._ragas_scores = ragas_scores or RagasScoreRepository()
         self._accounting = accounting or EvaluationAccountingStore()
+        self._traces = traces or AgentTraceRepository()
 
     async def get_summary(
         self, *, user_id: str, campaign_id: str
@@ -544,6 +549,55 @@ class ResearchAnalyticsService:
             warnings=warnings,
             rows=rows,
             summaries={row.question_id: row.model_dump(mode="json") for row in rows},
+        )
+
+    async def get_agent_behavior(
+        self, *, user_id: str, campaign_id: str
+    ) -> AgentBehaviorResponse:
+        """Return trace-backed behavior rows for every persisted campaign run."""
+        await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
+        results = await self._results.list_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
+        traces = await self._traces.list_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
+        traces_by_result = {trace.campaign_result_id: trace for trace in traces}
+        rows: list[AgentBehaviorRow] = []
+        for result in results:
+            trace = traces_by_result.get(result.id)
+            metrics = result.derived_metrics or {}
+            rows.append(
+                AgentBehaviorRow(
+                    run_id=result.id,
+                    campaign_id=result.campaign_id,
+                    question_id=result.question_id,
+                    mode=result.mode,
+                    repeat_number=result.repeat_number,
+                    trace_status=trace.trace_status if trace else "not_instrumented",
+                    subtasks=trace.subtask_count if trace else None,
+                    tool_calls=trace.tool_call_count if trace else None,
+                    visual_calls=trace.visual_tool_call_count if trace else None,
+                    graph_calls=trace.graph_tool_call_count if trace else None,
+                    drilldown_depth=trace.drilldown_depth if trace else None,
+                    correctness=_derived_correctness(metrics),
+                    faithfulness=_optional_metric(metrics.get("supported_claim_ratio")),
+                    total_tokens=(
+                        result.total_tokens
+                        if isinstance(result.total_tokens, int) and result.total_tokens >= 0
+                        else None
+                    ),
+                )
+            )
+        return AgentBehaviorResponse(
+            campaign_id=campaign_id,
+            analysis_unit="execution",
+            sample_count=len(rows),
+            independent_question_count=len({row.question_id for row in rows}),
+            repeat_count=max((row.repeat_number for row in rows), default=0),
+            sample_note="Trace-backed per-run behavior; missing traces remain N/A.",
+            rows=rows,
+            summaries={},
         )
 
 
@@ -1124,3 +1178,12 @@ def _overall_quality_status(quality):
     if statuses <= {"failed", "not_requested"}:
         return "failed"
     return "partial"
+
+
+def _optional_metric(value) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and math.isfinite(float(value)) else None
+
+
+def _derived_correctness(metrics: dict) -> float | None:
+    unsupported = _optional_metric(metrics.get("unsupported_claim_ratio"))
+    return None if unsupported is None else max(0.0, min(1.0, 1.0 - unsupported))

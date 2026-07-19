@@ -342,6 +342,13 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
         assert observability.json()["evidence_coverage"][0]["atomic_fact_id"] == "F1"
         assert observability.json()["evidence_coverage"][0]["retrieved"] is True
 
+        behavior = client.get(f"/api/evaluation/campaigns/{campaign_id}/agent-behavior")
+        assert behavior.status_code == 200
+        behavior_rows = behavior.json()["rows"]
+        assert behavior_rows[0]["run_id"] == run_id
+        assert behavior_rows[0]["question_id"] == "Q-ANALYTICS"
+        assert behavior_rows[0]["trace_status"] in {"completed", "not_instrumented"}
+
         diff = client.get(f"/api/evaluation/runs/{run_id}/diff?baseline_run_id={run_id}")
         assert diff.status_code == 200
         assert diff.json()["run_id"] == run_id

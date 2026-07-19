@@ -16,6 +16,7 @@ from evaluation.analytics import EvaluationAnalyticsService
 from evaluation.accounting_schemas import CampaignResearchSummaryResponse
 from evaluation.campaign_engine import get_campaign_engine
 from evaluation.campaign_schemas import (
+    AgentBehaviorResponse,
     AblationResponse,
     CampaignAnalyticsDashboardResponse,
     CampaignErrorsResponse,
@@ -474,6 +475,19 @@ async def get_campaign_research_question_comparison(
     return await analytics.get_question_comparison(
         user_id=user_id, campaign_id=campaign_id
     )
+
+
+@router.get(
+    "/campaigns/{campaign_id}/agent-behavior",
+    response_model=AgentBehaviorResponse,
+)
+async def get_campaign_agent_behavior(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: ResearchAnalyticsService = Depends(get_research_analytics_service),
+) -> AgentBehaviorResponse:
+    """Return trace-backed per-run behavior without placeholder fallbacks."""
+    return await analytics.get_agent_behavior(user_id=user_id, campaign_id=campaign_id)
 
 
 @router.get("/campaigns/{campaign_id}/cost-latency", response_model=CostLatencyResponse)
