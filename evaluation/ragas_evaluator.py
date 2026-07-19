@@ -125,7 +125,10 @@ class RagasEvaluator:
         self._score_repository = score_repository or RagasScoreRepository()
         self._evaluator_model = evaluator_model or os.getenv(
             "EVALUATION_EVALUATOR_MODEL",
-            "gemini-3.1-flash-lite-preview",
+            # The preview model was shut down on 2026-05-25. Keep the
+            # evaluator on the stable replacement unless deployment config
+            # explicitly selects another supported model.
+            "gemini-3.1-flash-lite",
         )
         self._legacy_evaluator_model: str | None = None
         self._batch_size = batch_size
@@ -394,6 +397,37 @@ class RagasEvaluator:
             user_id=user_id,
             campaign_id=campaign.id,
         )
+        work_metadata_loader = getattr(
+            self._score_repository, "list_work_metadata_for_campaign", None
+        )
+        work_metadata = (
+            await work_metadata_loader(user_id=user_id, campaign_id=campaign.id)
+            if callable(work_metadata_loader)
+            else []
+        )
+        metadata_by_score: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(
+            list
+        )
+        for metadata in work_metadata:
+            if not isinstance(metadata, dict):
+                continue
+            result_id = metadata.get("campaign_result_id")
+            metric_name = metadata.get("metric_name")
+            if result_id and metric_name:
+                metadata_by_score[(str(result_id), str(metric_name))].append(metadata)
+        score_rows = [
+            {
+                **score_row,
+                "_work_metadata": metadata_by_score.get(
+                    (
+                        str(score_row.get("campaign_result_id")),
+                        str(score_row.get("metric_name")),
+                    ),
+                    [],
+                ),
+            }
+            for score_row in score_rows
+        ]
         results = await self._result_repository.list_for_campaign(
             user_id=user_id, campaign_id=campaign.id
         )
@@ -584,18 +618,51 @@ class RagasEvaluator:
         if result is None:
             return False
         ground_truth = result.ground_truth_short or result.ground_truth or ""
-        expected_signature = build_evaluation_signature(
-            result=result,
-            evaluator_model=self._evaluator_model,
-            evaluator_config=evaluator_config or {},
-            metric_name=str(score_row.get("metric_name")),
-            metric_version="v1",
-            ground_truth_hash=hashlib.sha256(ground_truth.encode("utf-8")).hexdigest(),
-            context_metrics_enabled=str(score_row.get("metric_name", "")).startswith(
-                "context_"
-            ),
+        metric_name = str(score_row.get("metric_name"))
+
+        # Keep already-persisted scores visible after an evaluator model
+        # rotation. Historical candidates must come from immutable work/job
+        # metadata; mutable score details are intentionally not sufficient to
+        # establish an evaluator identity.
+        ground_truth_hash = hashlib.sha256(ground_truth.encode("utf-8")).hexdigest()
+        context_metrics_enabled = metric_name.startswith("context_")
+        candidates = [
+            (
+                self._evaluator_model,
+                evaluator_config or {},
+                "v1",
+            )
+        ]
+        for metadata in score_row.get("_work_metadata", []):
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("evaluation_signature") != signature:
+                continue
+            model = metadata.get("evaluator_model")
+            config = metadata.get("evaluator_config")
+            if not model or not isinstance(config, dict):
+                continue
+            candidates.append(
+                (
+                    str(model),
+                    config,
+                    str(metadata.get("metric_version") or "v1"),
+                )
+            )
+
+        return any(
+            signature
+            == build_evaluation_signature(
+                result=result,
+                evaluator_model=model,
+                evaluator_config=config,
+                metric_name=metric_name,
+                metric_version=version,
+                ground_truth_hash=ground_truth_hash,
+                context_metrics_enabled=context_metrics_enabled,
+            )
+            for model, config, version in candidates
         )
-        return signature == expected_signature
 
     async def _load_ragas_dependencies(self) -> dict[str, Any]:
         # Lazy import avoids sandbox-time network fetches during module import.

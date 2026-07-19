@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from datetime import datetime, timezone
@@ -19,10 +20,22 @@ from evaluation.campaign_schemas import (
     CampaignStatus,
 )
 from evaluation.db import CampaignResultRepository, RagasScoreRepository
+from evaluation.job_store import build_evaluation_signature
 from evaluation.ragas_evaluator import PRIMARY_RAGAS_METRICS, RagasEvaluator, _clean_metric
 from evaluation.schemas import ModelConfig
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "bergen"
+
+
+def test_default_evaluator_uses_supported_stable_gemini_model(monkeypatch) -> None:
+    monkeypatch.delenv("EVALUATION_EVALUATOR_MODEL", raising=False)
+
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository([]),
+        score_repository=FakeScoreRepository([]),
+    )
+
+    assert evaluator.evaluator_model == "gemini-3.1-flash-lite"
 
 
 class FakeResultRepository:
@@ -34,11 +47,21 @@ class FakeResultRepository:
 
 
 class FakeScoreRepository:
-    def __init__(self, scores: list[dict]) -> None:
+    def __init__(
+        self,
+        scores: list[dict],
+        work_metadata: list[dict] | None = None,
+    ) -> None:
         self._scores = scores
+        self._work_metadata = work_metadata or []
 
     async def list_for_campaign(self, *, user_id: str, campaign_id: str) -> list[dict]:
         return list(self._scores)
+
+    async def list_work_metadata_for_campaign(
+        self, *, user_id: str, campaign_id: str
+    ) -> list[dict]:
+        return list(self._work_metadata)
 
     async def replace_for_campaign(self, *, user_id: str, campaign_id: str, score_rows: list[dict]) -> None:
         self._upsert(score_rows)
@@ -227,6 +250,99 @@ async def test_ragas_metrics_map_v2_null_total_tokens_to_legacy_zero():
     response = await evaluator.get_metrics(user_id="user-a", campaign=_campaign_status())
 
     assert response.rows[0].total_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_get_metrics_keeps_scores_from_previous_evaluator_model():
+    result = _result("r-preview", "naive", 120)
+    old_model = "gemini-3.1-flash-lite-preview"
+    metric_name = "faithfulness"
+    ground_truth_hash = hashlib.sha256(
+        result.ground_truth.encode("utf-8")
+    ).hexdigest()
+    old_signature = build_evaluation_signature(
+        result=result,
+        evaluator_model=old_model,
+        evaluator_config={},
+        metric_name=metric_name,
+        metric_version="v1",
+        ground_truth_hash=ground_truth_hash,
+        context_metrics_enabled=False,
+    )
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository([result]),
+        score_repository=FakeScoreRepository(
+            [
+                {
+                    "campaign_result_id": result.id,
+                    "metric_name": metric_name,
+                    "metric_value": 0.82,
+                    "evaluation_signature": old_signature,
+                    "details": {
+                        "evaluator_model": old_model,
+                        "metric_version": "v1",
+                    },
+                }
+            ],
+            work_metadata=[
+                {
+                    "campaign_result_id": result.id,
+                    "metric_name": metric_name,
+                    "evaluation_signature": old_signature,
+                    "metric_version": "v1",
+                    "evaluator_model": old_model,
+                    "evaluator_config": {},
+                }
+            ],
+        ),
+    )
+
+    response = await evaluator.get_metrics(
+        user_id="user-a",
+        campaign=_campaign_status(modes=["naive"]),
+    )
+
+    assert len(response.rows) == 1
+    assert response.rows[0].metric_values[metric_name] == pytest.approx(0.82)
+
+
+@pytest.mark.asyncio
+async def test_get_metrics_rejects_historical_signature_without_work_provenance():
+    result = _result("r-unverified", "naive", 120)
+    old_model = "gemini-3.1-flash-lite-preview"
+    metric_name = "faithfulness"
+    old_signature = build_evaluation_signature(
+        result=result,
+        evaluator_model=old_model,
+        evaluator_config={},
+        metric_name=metric_name,
+        metric_version="v1",
+        ground_truth_hash=hashlib.sha256(
+            result.ground_truth.encode("utf-8")
+        ).hexdigest(),
+        context_metrics_enabled=False,
+    )
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository([result]),
+        score_repository=FakeScoreRepository(
+            [
+                {
+                    "campaign_result_id": result.id,
+                    "metric_name": metric_name,
+                    "metric_value": 0.82,
+                    "evaluation_signature": old_signature,
+                    "details": {"evaluator_model": old_model},
+                }
+            ]
+        ),
+    )
+
+    response = await evaluator.get_metrics(
+        user_id="user-a",
+        campaign=_campaign_status(modes=["naive"]),
+    )
+
+    assert response.rows == []
 
 
 def test_benchmark_results_ragas_fixture_has_aligned_columns():

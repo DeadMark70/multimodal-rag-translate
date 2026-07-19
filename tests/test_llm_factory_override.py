@@ -48,6 +48,10 @@ def test_get_llm_graph_rag_defaults_use_gemini_31_flash_lite() -> None:
 
     assert mock_chat.call_args_list[0].kwargs["model"] == "gemini-3.1-flash-lite"
     assert mock_chat.call_args_list[1].kwargs["model"] == "gemini-3.1-flash-lite"
+    assert (
+        mock_chat.call_args_list[0].kwargs["callbacks"][0].model_name
+        == "gemini-3.1-flash-lite"
+    )
 
 
 def test_get_graph_rag_runtime_overrides_use_budget_for_2_5_models() -> None:

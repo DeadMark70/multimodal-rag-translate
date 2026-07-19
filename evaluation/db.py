@@ -2221,6 +2221,7 @@ class RagasScoreRepository:
                 {
                     "campaign_result_id": snapshot.get("campaign_result_id"),
                     "metric_name": snapshot.get("metric_name"),
+                    "evaluation_signature": snapshot.get("evaluation_signature"),
                     "metric_version": snapshot.get("metric_version"),
                     "compatibility_signature": snapshot.get(
                         "compatibility_signature"

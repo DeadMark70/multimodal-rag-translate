@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from time import monotonic
 from typing import Any
@@ -28,10 +29,20 @@ class _StartState:
 class EvaluationUsageCallback(AsyncCallbackHandler):
     """Capture usage while an evaluation accounting context is active."""
 
-    def __init__(self, *, purpose: str, provider: str | None) -> None:
+    def __init__(
+        self,
+        *,
+        purpose: str,
+        provider: str | None,
+        model_name: str | None = None,
+    ) -> None:
         super().__init__()
         self.purpose = purpose
         self.provider = provider
+        # LangChain provider responses do not consistently expose the model
+        # name. Keep the factory-resolved value as a deterministic accounting
+        # identity for token attribution and trace diagnostics.
+        self.model_name = model_name
         self._starts: dict[UUID, _StartState] = {}
 
     async def on_chat_model_start(
@@ -85,13 +96,18 @@ class EvaluationUsageCallback(AsyncCallbackHandler):
         try:
             response = kwargs.get("response")
             usage = _extract_usage(response) if isinstance(response, LLMResult) else {}
+            model_name = (
+                _extract_model_name(response)
+                if isinstance(response, LLMResult)
+                else None
+            )
             await self._emit(
                 start,
                 run_id,
                 usage,
-                None,
+                model_name,
                 "failed",
-                {"type": type(error).__name__},
+                _safe_error_details(error),
             )
         finally:
             self._starts.pop(run_id, None)
@@ -113,7 +129,7 @@ class EvaluationUsageCallback(AsyncCallbackHandler):
             purpose=self.purpose,
             provider=self.provider,
             raw_usage=usage,
-            model_name=model_name,
+            model_name=model_name or self.model_name,
             provider_run_id=str(run_id),
             latency_ms=(monotonic() - start.started_at) * 1000,
             status=status,
@@ -136,8 +152,64 @@ def _extract_usage(response: LLMResult) -> dict[str, Any]:
 
 def _extract_model_name(response: LLMResult) -> str | None:
     llm_output = response.llm_output or {}
-    for key in ("model_name", "model"):
+    for key in ("model_name", "model", "model_version"):
         value = llm_output.get(key)
-        if isinstance(value, str):
+        if isinstance(value, str) and value:
             return value
+
+    for generation_group in response.generations:
+        for generation in generation_group:
+            for metadata in (
+                getattr(generation, "generation_info", None),
+                getattr(getattr(generation, "message", None), "response_metadata", None),
+            ):
+                if not isinstance(metadata, dict):
+                    continue
+                for key in ("model_name", "model", "model_version"):
+                    value = metadata.get(key)
+                    if isinstance(value, str) and value:
+                        return value
     return None
+
+
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_QUERY_SECRET_RE = re.compile(
+    r"(?i)([?&](?:api[_-]?key|access[_-]?token|token|key)=)([^&#\s]+)"
+)
+_KEY_VALUE_RE = re.compile(
+    r'''(?ix)
+    (?P<prefix>
+        ["']?(?:api[_-]?key|access[_-]?token|token|password|secret|x-goog-api-key)["']?
+        \s*(?:=|:)\s*
+    )
+    (?P<quote>["']?)
+    (?P<value>[^"'\s,;&}]+)
+    '''
+)
+
+
+def _redact_sensitive_message(message: str) -> str:
+    message = _BEARER_RE.sub("Bearer [REDACTED]", message)
+    message = _QUERY_SECRET_RE.sub(r"\1[REDACTED]", message)
+    return _KEY_VALUE_RE.sub(
+        lambda match: f'{match.group("prefix")}{match.group("quote")}[REDACTED]',
+        message,
+    )
+
+
+def _safe_error_details(error: BaseException) -> dict[str, Any]:
+    """Return useful provider diagnostics without leaking credentials."""
+    message = str(error).strip()
+    if message:
+        message = _redact_sensitive_message(message)[:1000]
+
+    details: dict[str, Any] = {"type": type(error).__name__}
+    if message:
+        details["message"] = message
+
+    for attribute in ("status_code", "status", "code"):
+        value = getattr(error, attribute, None)
+        if isinstance(value, int) and 100 <= value <= 599:
+            details["status_code"] = value
+            break
+    return details

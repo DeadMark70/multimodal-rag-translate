@@ -130,6 +130,77 @@ async def test_callback_records_only_inside_active_scope() -> None:
 
 
 @pytest.mark.asyncio
+async def test_callback_uses_configured_model_name_for_token_attribution() -> None:
+    sink = MemorySink()
+    callback = EvaluationUsageCallback(
+        purpose="graph_extraction",
+        provider="google",
+        model_name="gemini-3.1-flash-lite",
+    )
+
+    with llm_accounting_scope(_context(sink)):
+        await simulate_callback(
+            callback,
+            usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        )
+
+    assert sink.events[0].model_name == "gemini-3.1-flash-lite"
+
+
+@pytest.mark.asyncio
+async def test_error_callback_records_redacted_diagnostic_message() -> None:
+    sink = MemorySink()
+    callback = EvaluationUsageCallback(
+        purpose="graph_extraction",
+        provider="google",
+        model_name="gemini-3.1-flash-lite",
+    )
+    provider_run_id = uuid4()
+
+    with llm_accounting_scope(_context(sink)):
+        await callback.on_chat_model_start(
+            {}, [[AIMessage(content="prompt")]], run_id=provider_run_id
+        )
+        await callback.on_llm_error(
+            RuntimeError("400 api_key=super-secret-token: request failed"),
+            run_id=provider_run_id,
+        )
+
+    assert sink.events[0].model_name == "gemini-3.1-flash-lite"
+    assert sink.events[0].error["type"] == "RuntimeError"
+    assert "message" in sink.events[0].error
+    assert "super-secret-token" not in sink.events[0].error["message"]
+    assert "[REDACTED]" in sink.events[0].error["message"]
+
+
+@pytest.mark.asyncio
+async def test_error_callback_redacts_json_bearer_and_query_secrets() -> None:
+    sink = MemorySink()
+    callback = EvaluationUsageCallback(
+        purpose="graph_extraction",
+        provider="google",
+        model_name="gemini-3.1-flash-lite",
+    )
+    provider_run_id = uuid4()
+    message = (
+        'Authorization: Bearer bearer-secret, '
+        '{"api_key":"json-secret","access_token":"token-secret"}, '
+        "https://api.example.test/generate?key=url-secret&x=1"
+    )
+
+    with llm_accounting_scope(_context(sink)):
+        await callback.on_chat_model_start(
+            {}, [[AIMessage(content="prompt")]], run_id=provider_run_id
+        )
+        await callback.on_llm_error(RuntimeError(message), run_id=provider_run_id)
+
+    safe_message = sink.events[0].error["message"]
+    for secret in ("bearer-secret", "json-secret", "token-secret", "url-secret"):
+        assert secret not in safe_message
+    assert safe_message.count("[REDACTED]") >= 4
+
+
+@pytest.mark.asyncio
 async def test_concurrent_contexts_do_not_mix() -> None:
     left, right = MemorySink(), MemorySink()
 

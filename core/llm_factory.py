@@ -257,7 +257,13 @@ def _get_llm_cached(
 
     return ChatGoogleGenerativeAI(
         model=model,
-        callbacks=[EvaluationUsageCallback(purpose=purpose, provider="google")],
+        callbacks=[
+            EvaluationUsageCallback(
+                purpose=purpose,
+                provider="google",
+                model_name=model,
+            )
+        ],
         **config,
     )
 
