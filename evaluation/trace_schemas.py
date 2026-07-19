@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -179,6 +179,7 @@ class EvaluationClaim(BaseModel):
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     unsupported_reason: Optional[str] = None
     payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class EvaluationRunSummary(BaseModel):
