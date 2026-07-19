@@ -269,6 +269,7 @@ class AgentBehaviorRow(BaseModel):
     mode: CampaignMode
     repeat_number: int = Field(default=1, ge=1)
     trace_status: str
+    accounting_status: Literal["complete", "partial", "not_available"] = "not_available"
     subtasks: int | None = Field(default=None, ge=0)
     tool_calls: int | None = Field(default=None, ge=0)
     visual_calls: int | None = Field(default=None, ge=0)
@@ -276,6 +277,8 @@ class AgentBehaviorRow(BaseModel):
     drilldown_depth: int | None = Field(default=None, ge=0)
     correctness: float | None = Field(default=None, ge=0, le=1)
     faithfulness: float | None = Field(default=None, ge=0, le=1)
+    unsupported_claim_ratio: float | None = Field(default=None, ge=0, le=1)
+    supported_claim_ratio: float | None = Field(default=None, ge=0, le=1)
     total_tokens: int | None = Field(default=None, ge=0)
 
 

@@ -810,6 +810,11 @@ async def get_campaign_run_observability(
             if isinstance(result.derived_metrics.get("gold_fact_attrition"), list)
             else None
         ),
+        evidence_coverage_status=(
+            "complete"
+            if isinstance(result.derived_metrics.get("gold_fact_attrition"), list)
+            else "not_instrumented"
+        ),
         run_summary=EvaluationRunSummary(
             run_id=run_id,
             campaign_id=campaign_id,

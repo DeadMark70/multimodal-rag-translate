@@ -233,6 +233,9 @@ class EvaluationRunObservabilityDetail(BaseModel):
     claims: list[EvaluationClaim] = Field(default_factory=list)
     human_ratings: list[EvaluationHumanRating] = Field(default_factory=list)
     evidence_coverage: Optional[list[dict[str, Any]]] = None
+    evidence_coverage_status: Literal[
+        "complete", "partial", "not_available", "not_instrumented"
+    ] = "not_available"
     run_summary: Optional[EvaluationRunSummary] = None
 
 

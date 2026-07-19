@@ -559,14 +559,79 @@ class ResearchAnalyticsService:
         results = await self._results.list_for_campaign(
             user_id=user_id, campaign_id=campaign_id
         )
+        completed = [
+            result for result in results if result.status == CampaignResultStatus.COMPLETED
+        ]
         traces = await self._traces.list_for_campaign(
             user_id=user_id, campaign_id=campaign_id
         )
         traces_by_result = {trace.campaign_result_id: trace for trace in traces}
+        scores = await self._ragas_scores.list_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
+        work_metadata = await self._ragas_scores.list_work_metadata_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
+        scores = _attach_work_metadata(scores, work_metadata)
+        canonical_identities = _canonical_identities_by_metric(completed, scores)
+        result_by_id = {str(result.id): result for result in completed}
+        attempts_by_result = {
+            str(result.id): result.source_attempt_id
+            for result in completed
+            if result.source_attempt_id
+        }
+        score_map: dict[str, dict[str, float]] = defaultdict(dict)
+        for score in scores:
+            result_id = str(score.get("campaign_result_id"))
+            metric_name = str(score.get("metric_name"))
+            if (
+                result_id not in attempts_by_result
+                or score.get("source_attempt_id") != attempts_by_result[result_id]
+                or metric_name not in canonical_identities
+                or _evaluator_identity(score, result_by_id.get(result_id))
+                != canonical_identities[metric_name]
+            ):
+                continue
+            value = score.get("metric_value")
+            if isinstance(value, (int, float)):
+                score_map[result_id][metric_name] = float(value)
+        scopes = await self._accounting.list_campaign_scopes(campaign_id)
+        events = await self._accounting.list_campaign_events(campaign_id)
+        events_by_scope: dict[str, list] = defaultdict(list)
+        for event in events:
+            events_by_scope[event.scope_id].append(event)
         rows: list[AgentBehaviorRow] = []
         for result in results:
             trace = traces_by_result.get(result.id)
             metrics = result.derived_metrics or {}
+            run_scopes = [
+                scope
+                for scope in scopes
+                if scope.scope_type == "execution_run"
+                and scope.accounting_schema_version == "2"
+                and any(
+                    target.is_official
+                    and (
+                        scope.run_id == result.id
+                        or target.campaign_result_id == result.id
+                    )
+                    for target in scope.targets
+                )
+            ]
+            token_breakdown = _tokens(
+                run_scopes,
+                [
+                    event
+                    for scope in run_scopes
+                    for event in events_by_scope[scope.scope_id]
+                ],
+            )
+            token_status = (
+                "not_available"
+                if token_breakdown.accounting_status == "incomplete_legacy"
+                else token_breakdown.accounting_status
+            )
+            quality_scores = score_map.get(str(result.id), {})
             rows.append(
                 AgentBehaviorRow(
                     run_id=result.id,
@@ -574,19 +639,28 @@ class ResearchAnalyticsService:
                     question_id=result.question_id,
                     mode=result.mode,
                     repeat_number=result.repeat_number,
-                    trace_status=trace.trace_status if trace else "not_instrumented",
+                    trace_status=(
+                        trace.trace_status
+                        if trace
+                        else "not_applicable"
+                        if result.mode != "agentic"
+                        else "not_instrumented"
+                    ),
+                    accounting_status=token_status,
                     subtasks=trace.subtask_count if trace else None,
                     tool_calls=trace.tool_call_count if trace else None,
                     visual_calls=trace.visual_tool_call_count if trace else None,
                     graph_calls=trace.graph_tool_call_count if trace else None,
                     drilldown_depth=trace.drilldown_depth if trace else None,
-                    correctness=_derived_correctness(metrics),
-                    faithfulness=_optional_metric(metrics.get("supported_claim_ratio")),
-                    total_tokens=(
-                        result.total_tokens
-                        if isinstance(result.total_tokens, int) and result.total_tokens >= 0
-                        else None
+                    correctness=quality_scores.get("answer_correctness"),
+                    faithfulness=quality_scores.get("faithfulness"),
+                    unsupported_claim_ratio=_optional_metric(
+                        metrics.get("unsupported_claim_ratio")
                     ),
+                    supported_claim_ratio=_optional_metric(
+                        metrics.get("supported_claim_ratio")
+                    ),
+                    total_tokens=token_breakdown.total_tokens,
                 )
             )
         return AgentBehaviorResponse(
