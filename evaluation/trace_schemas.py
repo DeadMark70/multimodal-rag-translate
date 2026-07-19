@@ -231,6 +231,7 @@ class EvaluationRunObservabilityDetail(BaseModel):
     routing_decisions: list[EvaluationRoutingDecision] = Field(default_factory=list)
     claims: list[EvaluationClaim] = Field(default_factory=list)
     human_ratings: list[EvaluationHumanRating] = Field(default_factory=list)
+    evidence_coverage: Optional[list[dict[str, Any]]] = None
     run_summary: Optional[EvaluationRunSummary] = None
 
 

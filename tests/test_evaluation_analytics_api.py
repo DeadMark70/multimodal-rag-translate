@@ -339,6 +339,8 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
             "partial",
             "not_available",
         }
+        assert observability.json()["evidence_coverage"][0]["atomic_fact_id"] == "F1"
+        assert observability.json()["evidence_coverage"][0]["retrieved"] is True
 
         diff = client.get(f"/api/evaluation/runs/{run_id}/diff?baseline_run_id={run_id}")
         assert diff.status_code == 200

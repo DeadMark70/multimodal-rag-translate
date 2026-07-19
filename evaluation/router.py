@@ -791,6 +791,11 @@ async def get_campaign_run_observability(
         routing_decisions=routing_decisions,
         claims=claims,
         human_ratings=human_ratings,
+        evidence_coverage=(
+            result.derived_metrics.get("gold_fact_attrition")
+            if isinstance(result.derived_metrics.get("gold_fact_attrition"), list)
+            else None
+        ),
         run_summary=EvaluationRunSummary(
             run_id=run_id,
             campaign_id=campaign_id,
