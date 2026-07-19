@@ -224,6 +224,33 @@ class ResearchAnalyticsService:
             warnings=warnings,
         )
 
+    async def get_run_token_breakdown(self, *, campaign_id: str, run_id: str) -> TokenBreakdown:
+        """Return strict accounting for one selected execution run."""
+        scopes = await self._accounting.list_campaign_scopes(campaign_id)
+        events = await self._accounting.list_campaign_events(campaign_id)
+        run_scopes = [
+            scope
+            for scope in scopes
+            if scope.scope_type == "execution_run"
+            and scope.run_id == run_id
+            and scope.accounting_schema_version == "2"
+            and any(target.is_official for target in scope.targets)
+        ]
+        if not run_scopes:
+            return TokenBreakdown(
+                total_tokens=None,
+                accounting_status="incomplete_legacy",
+                phase_attribution_status="not_available",
+            )
+        events_by_scope: dict[str, list] = defaultdict(list)
+        for event in events:
+            if event.scope_id in {scope.scope_id for scope in run_scopes}:
+                events_by_scope[event.scope_id].append(event)
+        return _tokens(
+            run_scopes,
+            [event for rows in events_by_scope.values() for event in rows],
+        )
+
     async def get_question_comparison(
         self, *, user_id: str, campaign_id: str
     ) -> ResearchQuestionComparisonResponse:

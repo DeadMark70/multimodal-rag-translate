@@ -84,6 +84,7 @@ from evaluation.storage import (
 from evaluation.trace_schemas import (
     AgentTraceDetail,
     AgentTraceSummary,
+    EvaluationRunSummary,
     EvaluationRunObservabilityDetail,
 )
 
@@ -720,12 +721,16 @@ async def get_campaign_run_observability(
     campaign_id: str,
     run_id: str,
     user_id: str = Depends(get_current_user_id),
+    analytics: ResearchAnalyticsService = Depends(get_research_analytics_service),
 ) -> EvaluationRunObservabilityDetail:
     """Fetch normalized observability details for one campaign run."""
     engine = get_campaign_engine()
     await engine.get_campaign(user_id=user_id, campaign_id=campaign_id)
-    await CampaignResultRepository().get(
+    result = await CampaignResultRepository().get(
         user_id=user_id, campaign_id=campaign_id, result_id=run_id
+    )
+    token_breakdown = await analytics.get_run_token_breakdown(
+        campaign_id=campaign_id, run_id=run_id
     )
 
     repository = EvaluationObservabilityRepository()
@@ -786,6 +791,26 @@ async def get_campaign_run_observability(
         routing_decisions=routing_decisions,
         claims=claims,
         human_ratings=human_ratings,
+        run_summary=EvaluationRunSummary(
+            run_id=run_id,
+            campaign_id=campaign_id,
+            question_id=result.question_id,
+            mode=result.mode,
+            repeat_number=result.repeat_number,
+            answer_preview=result.answer[:500] if result.answer else None,
+            latency_ms=(
+                result.total_latency_ms
+                if result.total_latency_ms is not None
+                else result.latency_ms
+            ),
+            total_tokens=token_breakdown.total_tokens,
+            accounting_status=(
+                token_breakdown.accounting_status
+                if token_breakdown.accounting_status != "incomplete_legacy"
+                else "not_available"
+            ),
+            created_at=result.created_at,
+        ),
     )
 
 

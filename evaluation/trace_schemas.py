@@ -179,6 +179,20 @@ class EvaluationClaim(BaseModel):
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     unsupported_reason: Optional[str] = None
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvaluationRunSummary(BaseModel):
+    """Selected-run identity and strict token projection."""
+
+    run_id: str = Field(min_length=1)
+    campaign_id: str = Field(min_length=1)
+    question_id: str = Field(min_length=1)
+    mode: CampaignMode
+    repeat_number: int = Field(default=1, ge=1)
+    answer_preview: Optional[str] = None
+    latency_ms: Optional[float] = Field(default=None, ge=0)
+    total_tokens: Optional[int] = Field(default=None, ge=0)
+    accounting_status: Literal["complete", "partial", "not_available"] = "not_available"
     created_at: datetime
 
 
@@ -217,6 +231,7 @@ class EvaluationRunObservabilityDetail(BaseModel):
     routing_decisions: list[EvaluationRoutingDecision] = Field(default_factory=list)
     claims: list[EvaluationClaim] = Field(default_factory=list)
     human_ratings: list[EvaluationHumanRating] = Field(default_factory=list)
+    run_summary: Optional[EvaluationRunSummary] = None
 
 
 class AgentTraceToolCall(BaseModel):

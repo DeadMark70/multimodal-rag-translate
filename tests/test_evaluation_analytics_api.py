@@ -327,6 +327,19 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
         assert client.get(f"/api/evaluation/runs/{run_id}/graph").json()["tool_calls"][0]["tool_name"] == "graph_search"
         assert client.get(f"/api/evaluation/runs/{run_id}/visual").json()["tool_calls"] == []
 
+        observability = client.get(
+            f"/api/evaluation/campaigns/{campaign_id}/runs/{run_id}/observability"
+        )
+        assert observability.status_code == 200
+        assert observability.json()["run_summary"]["run_id"] == run_id
+        assert observability.json()["run_summary"]["question_id"] == "Q-ANALYTICS"
+        assert observability.json()["run_summary"]["answer_preview"] == "Fact A is in paper A."
+        assert observability.json()["run_summary"]["accounting_status"] in {
+            "complete",
+            "partial",
+            "not_available",
+        }
+
         diff = client.get(f"/api/evaluation/runs/{run_id}/diff?baseline_run_id={run_id}")
         assert diff.status_code == 200
         assert diff.json()["run_id"] == run_id
