@@ -273,8 +273,9 @@ def _mode_summary(
         reasons.append("legacy_accounting")
     elif tokens.accounting_status != "complete":
         reasons.append("incomplete_accounting")
-    if cost.pricing_status != "complete":
-        reasons.append("incomplete_pricing")
+    # Token-only evaluations do not require a monetary price list. Pricing is
+    # still returned as an independent optional status, but unknown/partial
+    # USD accounting must not make otherwise valid mode results incomparable.
     if any(
         item.status != "complete" or item.valid_samples == 0
         for item in quality.values()

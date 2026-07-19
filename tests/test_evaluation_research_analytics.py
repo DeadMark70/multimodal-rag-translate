@@ -434,6 +434,37 @@ async def test_campaign_cohort_keeps_modes_comparable_when_identity_is_shared(
 
 
 @pytest.mark.asyncio
+async def test_unknown_monetary_pricing_does_not_block_token_only_comparison(
+    research_service,
+) -> None:
+    await _campaign("token-only", ["graph"])
+    result_id = await _result("token-only", "graph", "graph-attempt")
+    await _execution_scope(
+        "token-only",
+        result_id,
+        "graph-attempt",
+        official=True,
+        cost=None,
+        pricing_status="unknown_model",
+    )
+    await RagasScoreRepository().replace_for_campaign(
+        user_id="user-1",
+        campaign_id="token-only",
+        score_rows=_primary_score_rows([(result_id, "graph-attempt")]),
+    )
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id="token-only"
+    )
+    mode = summary.modes[0]
+
+    assert mode.comparable is True
+    assert "incomplete_pricing" not in mode.not_comparable_reasons
+    assert mode.execution_cost.pricing_status == "partial"
+    assert mode.tokens.total_tokens == 15
+
+
+@pytest.mark.asyncio
 async def test_legacy_context_policy_signatures_do_not_hide_agentic_scores(
     research_service, monkeypatch
 ) -> None:
@@ -715,7 +746,7 @@ async def test_unattributable_older_v2_execution_scope_fails_closed(
     assert summary.modes[0].tokens.accounting_status == "partial"
     assert summary.modes[0].comparable is False
     assert "incomplete_accounting" in summary.modes[0].not_comparable_reasons
-    assert "incomplete_pricing" in summary.modes[0].not_comparable_reasons
+    assert "incomplete_pricing" not in summary.modes[0].not_comparable_reasons
     assert summary.modes[0].execution_cost.benchmark_usd == pytest.approx(0.1)
     assert summary.modes[0].execution_cost.operational_usd is None
     assert summary.modes[0].execution_cost.pricing_status == "partial"

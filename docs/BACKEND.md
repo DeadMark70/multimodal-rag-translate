@@ -238,11 +238,20 @@
 - The response exposes independent quality, token-accounting, pricing, and
   phase-attribution statuses. `partial`, `unknown`, and nullable values are
   expected states for incomplete work; a mode is comparable only when all
-  required accounting, pricing, quality, evaluator-identity, and schema checks
-  pass.
+  token-accounting, quality, evaluator-identity, and schema checks pass.
+  Monetary pricing is optional and never blocks token-only comparability.
 - Pricing is read from the audited snapshot configured by
   `EVALUATION_PRICE_SNAPSHOT_PATH`. If a model or its price is unavailable,
   price totals remain `null` and the pricing status explains why.
+- Pricing is optional for token-focused evaluations: leaving
+  `EVALUATION_PRICE_SNAPSHOT_PATH` unset intentionally keeps monetary totals
+  unknown and does not invalidate token accounting or mode comparison.
+- The default RAGAS evaluator is the stable `gemini-3.1-flash-lite`. The old
+  `gemini-3.1-flash-lite-preview` model was shut down and should not be selected
+  in deployment configuration. Existing score rows retain their exact
+  historical evaluator signature and remain readable only when durable
+  work/job metadata can verify the persisted model/configuration; new work
+  uses the stable model.
 - `GET /api/evaluation/campaigns/{campaign_id}/research-summary` is an
   authenticated, campaign-owned dashboard contract. It returns strict
   campaign/mode totals, official RAGAS observations, observed latency,
