@@ -184,6 +184,16 @@ def test_get_llm_usage_metrics_reads_reasoning_tokens() -> None:
     }
 
 
+def test_get_graph_rag_runtime_overrides_support_models_prefixed_gemini_3() -> None:
+    assert get_graph_rag_runtime_overrides(
+        "community_summary",
+        model_name="models/gemini-3.1-flash-lite",
+    ) == {
+        "thinking_level": "low",
+        "include_thoughts": False,
+    }
+
+
 def test_graph_runtime_override_respects_disabled_setup_for_outer_25_model() -> None:
     clear_llm_cache()
     with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
@@ -237,6 +247,31 @@ def test_graph_runtime_override_preserves_enabled_level_for_outer_gemini_3() -> 
     assert kwargs["model"] == "gemini-3.1-flash-lite"
     assert kwargs["thinking_level"] == "high"
     assert "thinking_budget" not in kwargs
+
+
+def test_setup_model_remains_authoritative_over_conflicting_graph_model_argument() -> None:
+    clear_llm_cache()
+    with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
+        mock_chat.return_value.model = "gemini-2.5-flash-lite"
+        with llm_runtime_override(
+            model_name="gemini-2.5-flash-lite",
+            thinking_enabled=True,
+            thinking_budget=4096,
+            thinking_level="high",
+        ):
+            with graph_rag_llm_runtime_override(
+                "community_summary",
+                model_name="gemini-3.1-flash-lite",
+            ):
+                get_llm(
+                    "community_summary",
+                    model_name="gemini-3.1-flash-lite",
+                )
+
+    kwargs = mock_chat.call_args.kwargs
+    assert kwargs["model"] == "gemini-2.5-flash-lite"
+    assert kwargs["thinking_budget"] == 4096
+    assert "thinking_level" not in kwargs
 
 
 def test_evaluation_setup_disabled_thinking_reaches_graph_llm_without_controls() -> None:

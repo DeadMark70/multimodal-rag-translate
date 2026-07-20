@@ -128,9 +128,10 @@ def get_graph_rag_runtime_overrides(
 ) -> dict[str, Any]:
     """Return model-family-aware thinking overrides for GraphRAG calls."""
     model = _resolve_model_name(purpose, model_name=model_name)
+    capability = get_thinking_capability(model)
     overrides: dict[str, Any] = {"include_thoughts": False}
 
-    if model.startswith("gemini-3"):
+    if capability.control_type == "level":
         overrides["thinking_level"] = _GRAPH_RAG_THINKING_LEVELS[purpose][extraction_profile]
     else:
         overrides["thinking_budget"] = _GRAPH_RAG_THINKING_BUDGETS[purpose]
@@ -147,9 +148,11 @@ def graph_rag_llm_runtime_override(
 ):
     """Apply Setup-compatible thinking config for GraphRAG calls."""
     context = _runtime_llm_overrides.get()
-    active_model = model_name or context.get("model_name")
     setup_thinking = context.get("thinking_enabled")
     if setup_thinking is not None:
+        # An active Evaluation Setup is authoritative, even if a nested caller
+        # supplies a stale or conflicting model_name argument.
+        active_model = context.get("model_name") or model_name
         effective_model = active_model or _resolve_model_name(purpose, model_name=model_name)
         capability = get_thinking_capability(str(effective_model))
         overrides: dict[str, Any] = {
@@ -167,6 +170,7 @@ def graph_rag_llm_runtime_override(
             yield
         return
 
+    active_model = model_name or context.get("model_name")
     with llm_runtime_override(
         clear=("thinking_budget", "thinking_level"),
         **get_graph_rag_runtime_overrides(
@@ -301,7 +305,8 @@ def get_llm(purpose: LLMPurpose, model_name: str = None) -> ChatGoogleGenerative
     request-scoped model settings safely.
     """
     overrides = _runtime_llm_overrides.get()
-    effective_model = model_name or overrides.get("model_name")
+    setup_model = overrides.get("model_name") if "thinking_enabled" in overrides else None
+    effective_model = setup_model or model_name or overrides.get("model_name")
     return _get_llm_cached(
         purpose=purpose,
         model_name=effective_model,
