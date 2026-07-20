@@ -383,6 +383,9 @@ async def test_mixed_usage_reports_measured_subtotals_without_total(
     assert summary.tokens.measured_call_count == 1
     assert summary.tokens.missing_usage_call_count == 1
     assert summary.tokens.unbalanced_call_count == 0
+    assert summary.tokens.missing_usage_by_phase == {"answer_generation": 1}
+    assert summary.tokens.missing_usage_by_purpose == {"evaluation": 1}
+    assert summary.tokens.missing_usage_by_provider == {"unknown": 1}
     assert any(w.code == "missing_usage" for w in summary.warnings)
 
 

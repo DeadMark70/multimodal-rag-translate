@@ -780,10 +780,19 @@ def _token_warning_tuples(tokens: TokenBreakdown) -> list[tuple[str, str]]:
             )
         )
     if tokens.missing_usage_call_count:
+        dimensions = "; ".join(
+            _format_usage_gap_dimension(label, values)
+            for label, values in (
+                ("phase", tokens.missing_usage_by_phase),
+                ("purpose", tokens.missing_usage_by_purpose),
+                ("provider", tokens.missing_usage_by_provider),
+            )
+            if values
+        )
         warnings.append(
             (
                 "missing_usage",
-                f"{tokens.missing_usage_call_count} LLM call(s) did not report token usage.",
+                f"{tokens.missing_usage_call_count} LLM call(s) did not report token usage. {dimensions}",
             )
         )
     if tokens.unbalanced_call_count:
@@ -801,6 +810,13 @@ def _token_warning_tuples(tokens: TokenBreakdown) -> list[tuple[str, str]]:
             )
         )
     return warnings
+
+
+def _format_usage_gap_dimension(label: str, values: dict[str, int]) -> str:
+    if not values:
+        return ""
+    detail = ", ".join(f"{key}={count}" for key, count in values.items())
+    return f"by {label}: {detail}"
 
 
 def _official_execution_scopes(results, scopes):
@@ -1187,6 +1203,9 @@ def _tokens(scopes, events, legacy_status="incomplete_legacy"):
     unclassified_phase_call_count = sum(
         event.phase == "unclassified" for event in events
     )
+    missing_usage_by_phase = _usage_gap_dimension(events, "phase")
+    missing_usage_by_purpose = _usage_gap_dimension(events, "purpose")
+    missing_usage_by_provider = _usage_gap_dimension(events, "provider")
     complete = all(
         s.status == "completed"
         and s.observed_call_count == s.measured_call_count
@@ -1216,6 +1235,9 @@ def _tokens(scopes, events, legacy_status="incomplete_legacy"):
             missing_usage_call_count=missing_usage_call_count,
             unbalanced_call_count=unbalanced_call_count,
             unclassified_phase_call_count=unclassified_phase_call_count,
+            missing_usage_by_phase=missing_usage_by_phase,
+            missing_usage_by_purpose=missing_usage_by_purpose,
+            missing_usage_by_provider=missing_usage_by_provider,
             accounting_status="partial",
             phase_attribution_status="not_available",
         )
@@ -1239,6 +1261,9 @@ def _tokens(scopes, events, legacy_status="incomplete_legacy"):
         missing_usage_call_count=missing_usage_call_count,
         unbalanced_call_count=unbalanced_call_count,
         unclassified_phase_call_count=unclassified_phase_call_count,
+        missing_usage_by_phase=missing_usage_by_phase,
+        missing_usage_by_purpose=missing_usage_by_purpose,
+        missing_usage_by_provider=missing_usage_by_provider,
         accounting_status=status,
         phase_attribution_status="complete" if phase_complete else "partial",
     )
@@ -1256,6 +1281,17 @@ def _tokens(scopes, events, legacy_status="incomplete_legacy"):
         else None
     )
     return TokenBreakdown(**values)
+
+
+def _usage_gap_dimension(events, attribute: str) -> dict[str, int]:
+    gaps: defaultdict[str, int] = defaultdict(int)
+    for event in events:
+        if event.usage_status != "missing":
+            continue
+        value = getattr(event, attribute, None)
+        label = str(value or "unknown")
+        gaps[label] += 1
+    return dict(sorted(gaps.items()))
 
 
 def _partial_for_missing_mode_attribution(tokens: TokenBreakdown) -> TokenBreakdown:

@@ -134,7 +134,13 @@ async def _seed_trace_event(campaign_id: str, run_id: str) -> None:
     )
 
 
-async def _seed_graph_observability(campaign_id: str, run_id: str) -> None:
+async def _seed_graph_observability(
+    campaign_id: str,
+    run_id: str,
+    *,
+    graph_route: str = "local_first",
+    router_reason: str = "test",
+) -> None:
     repository = EvaluationObservabilityRepository()
     now = datetime.now(timezone.utc)
     await repository.record_graph_event(
@@ -146,8 +152,8 @@ async def _seed_graph_observability(campaign_id: str, run_id: str) -> None:
             graph_query="graph query",
             graph_search_mode="local",
             graph_evidence_mode="locator_to_chunk",
-            graph_route="local_first",
-            router_reason="test",
+            graph_route=graph_route,
+            router_reason=router_reason,
             graph_feature_flags={"enabled": True},
             matched_entity_ids=["entity-1"],
             node_count=2,
@@ -359,6 +365,28 @@ def test_run_observability_projects_graph_events_and_evidence_items(tmp_path) ->
             assert body["graph_observability_status"] == "recorded"
             assert body["graph_events"][0]["graph_route"] == "local_first"
             assert body["graph_evidence_items"][0]["source_chunk_ids"] == ["chunk-1"]
+
+
+def test_run_observability_marks_persisted_graph_fallback(tmp_path) -> None:
+    upload_root = _make_upload_root()
+    db_path = tmp_path / "evaluation.db"
+
+    with patch.object(evaluation_db, "EVALUATION_DB_PATH", db_path):
+        asyncio.run(_seed_campaign("campaign-fallback", "user-a"))
+        asyncio.run(_seed_campaign_result("campaign-fallback", "run-fallback", "user-a"))
+        asyncio.run(
+            _seed_graph_observability(
+                "campaign-fallback",
+                "run-fallback",
+                graph_route="skip",
+                router_reason="strategy=source_expand; fallback=no_packed_graph_chunks",
+            )
+        )
+
+        with _build_client("user-a", upload_root) as client:
+            response = client.get("/api/evaluation/campaigns/campaign-fallback/runs/run-fallback/observability")
+            assert response.status_code == 200
+            assert response.json()["graph_observability_status"] == "fallback"
 
 
 def test_model_config_crud_and_validation() -> None:

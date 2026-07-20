@@ -805,8 +805,17 @@ async def get_campaign_run_observability(
         for item in await repository.list_human_ratings_for_run(run_id)
         if item.campaign_id == campaign_id
     ]
-    graph_observability_status = "recorded" if graph_events else "not_instrumented"
-    if not graph_events:
+    graph_observability_status = "not_instrumented"
+    if graph_events:
+        graph_observability_status = "recorded"
+        if any(
+            event.graph_route.lower() in {"skip", "fallback"}
+            or "fallback=" in (event.router_reason or "").lower()
+            or "fallback" in event.graph_route.lower()
+            for event in graph_events
+        ):
+            graph_observability_status = "fallback"
+    else:
         for event in retrieval_events:
             payload = event.payload
             if not isinstance(payload, dict):

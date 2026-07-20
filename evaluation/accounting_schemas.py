@@ -47,6 +47,9 @@ class TokenBreakdown(BaseModel):
     missing_usage_call_count: int = Field(default=0, ge=0)
     unbalanced_call_count: int = Field(default=0, ge=0)
     unclassified_phase_call_count: int = Field(default=0, ge=0)
+    missing_usage_by_phase: dict[str, int] = Field(default_factory=dict)
+    missing_usage_by_purpose: dict[str, int] = Field(default_factory=dict)
+    missing_usage_by_provider: dict[str, int] = Field(default_factory=dict)
     accounting_status: TokenAccountingStatus
     phase_attribution_status: PhaseAttributionStatus
 
