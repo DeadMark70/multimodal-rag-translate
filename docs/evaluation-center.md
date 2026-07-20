@@ -27,8 +27,8 @@ not a measured zero.
 | --- | --- | --- |
 | Campaign Overview | `GET /api/evaluation/campaigns/{campaign_id}/research-summary` | Official campaign RAGAS observations, strict token accounting, latency, and warnings |
 | Question Analysis | `GET /api/evaluation/campaigns/{campaign_id}/research-question-comparison` | Per-question/per-mode RAGAS, measured latency, and complete token comparisons |
-| Run Trace | `GET /api/evaluation/campaigns/{campaign_id}/runs/{run_id}/observability` | Selected-run summary, trace events, and selected-run accounting |
-| Retrieval Evidence | Selected-run observability projection | Nullable retrieval scores/flags and `evidence_coverage_status` |
+| Run Trace | `GET /api/evaluation/campaigns/{campaign_id}/runs/{run_id}/observability` | Selected-run summary, lifecycle-folded trace events, and accounting diagnostics |
+| Retrieval Evidence | Selected-run observability projection | Nullable retrieval scores/flags, `evidence_coverage_status`, and explicit GraphRAG status/events/evidence |
 | Agent Behavior | `GET /api/evaluation/campaigns/{campaign_id}/agent-behavior` | Bulk trace aggregation per run, durable RAGAS values, and strict token status |
 | Claim Evidence | Selected-run observability projection | Persisted claim extraction only; absent extraction remains unavailable |
 | Router Lab | `GET /api/evaluation/campaigns/{campaign_id}/router-analysis` | Retrospective decisions; actual route outcomes are unavailable unless actual router runs exist |
@@ -51,3 +51,11 @@ research comparison.
 - Retrospective router rows describe recorded decisions, not actual router
   executions. Saved tokens, quality loss/gain, and regret are `N/A` without
   actual router-run data.
+- A GraphRAG mode label alone is not proof that traversal occurred. The selected
+  run must contain `graph_events`/`graph_evidence_items`; otherwise the UI shows
+  `not_instrumented` (or an explicit `fallback` reason).
+- A pair of `running` and terminal trace rows for the same span is one lifecycle,
+  not two executions. The UI folds that pair by default and preserves the raw
+  rows behind the lifecycle disclosure.
+- Router retrospective rows carry `question_id`, `run_id`, and `repeat_number`
+  so repeated questions and modes remain distinguishable.
