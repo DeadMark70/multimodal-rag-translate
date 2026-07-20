@@ -28,7 +28,7 @@
 - \`normalize_model_config_for_runtime()\` will expose \`thinking_enabled\` for nested consumers.
 - \`graph_rag_llm_runtime_override()\` will derive final parameters from the active request context.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add this model capability test:
 
@@ -51,7 +51,7 @@ Add Graph factory tests for these cases:
 
 Use the existing \`clear_llm_cache\`, \`llm_runtime_override\`, \`graph_rag_llm_runtime_override\`, \`get_llm\`, \`patch("core.llm_factory.ChatGoogleGenerativeAI")\` test pattern.
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run:
 
@@ -70,7 +70,7 @@ Expected: the new \`thinking_enabled\` assertion and the nested Graph tests fail
 - \`llm_runtime_override()\` accepts a \`clear\` keyword containing keys to remove before applying nested overrides.
 - \`graph_rag_llm_runtime_override()\` uses the active \`model_name\` and \`thinking_enabled\` when present.
 
-- [ ] **Step 1: Preserve explicit thinking state**
+- [x] **Step 1: Preserve explicit thinking state**
 
 Initialize normalized runtime values with:
 
@@ -83,7 +83,7 @@ Initialize normalized runtime values with:
 
 Keep existing capability-specific normalization only when this flag is true.
 
-- [ ] **Step 2: Add safe nested key clearing**
+- [x] **Step 2: Add safe nested key clearing**
 
 Change the context manager signature to:
 
@@ -91,7 +91,7 @@ Change the context manager signature to:
 
 Copy the current context, remove each key in \`clear\`, then apply non-None overrides. Existing callers without \`clear\` must behave identically.
 
-- [ ] **Step 3: Make GraphRAG use the active Setup model**
+- [x] **Step 3: Make GraphRAG use the active Setup model**
 
 Inside \`graph_rag_llm_runtime_override\`:
 - use the explicit \`model_name\` argument, then current context \`model_name\`, then the non-evaluation Graph default;
@@ -102,7 +102,7 @@ Inside \`graph_rag_llm_runtime_override\`:
 
 The effective model passed by \`get_llm\` must remain the Setup model.
 
-- [ ] **Step 4: Run the new tests and verify GREEN**
+- [x] **Step 4: Run the new tests and verify GREEN**
 
 Run the Task 1 command. Expected: all new tests pass.
 
@@ -111,11 +111,11 @@ Run the Task 1 command. Expected: all new tests pass.
 **Files:**
 - Modify: \`tests/test_llm_factory_override.py\`
 
-- [ ] **Step 1: Test the actual evaluation normalization path**
+- [x] **Step 1: Test the actual evaluation normalization path**
 
 Create a setup dictionary matching the report (\`gemini-2.5-flash-lite\`, temperature 0.7, top_p 0.95, top_k 64, max output 8192, thinking_mode false, budget 8192), pass it through \`normalize_model_config_for_runtime\`, enter \`llm_runtime_override(**setup)\`, then enter \`graph_rag_llm_runtime_override("community_summary")\` and call \`get_llm\`. Assert the constructor model is \`gemini-2.5-flash-lite\) and neither thinking key is present.
 
-- [ ] **Step 2: Run focused regression tests**
+- [x] **Step 2: Run focused regression tests**
 
 Run:
 
@@ -128,19 +128,19 @@ Expected: all tests pass.
 **Files:**
 - Modify: \`docs/evaluation-center.md\` only if the Setup-authority rule is not already documented.
 
-- [ ] **Step 1: Run backend evaluation regression tests**
+- [x] **Step 1: Run backend evaluation regression tests**
 
     .venv\Scripts\python.exe -m pytest tests/test_model_capabilities.py tests/test_llm_factory_override.py tests/test_llm_usage_callback.py tests/test_evaluation_research_end_to_end.py -q
 
 Expected: all pass.
 
-- [ ] **Step 2: Run the full backend suite**
+- [x] **Step 2: Run the full backend suite**
 
     .venv\Scripts\python.exe -m pytest -q
 
 Expected: no new failures. Keep any pre-existing local environment-key mismatch separate from this fix.
 
-- [ ] **Step 3: Review and commit only implementation files**
+- [x] **Step 3: Review and commit only implementation files**
 
     git diff --check
     git add core/llm_factory.py evaluation/model_capabilities.py tests/test_llm_factory_override.py tests/test_model_capabilities.py tests/test_llm_usage_callback.py docs/evaluation-center.md

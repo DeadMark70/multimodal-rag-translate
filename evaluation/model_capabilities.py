@@ -122,9 +122,10 @@ def normalize_model_config_for_runtime(model_config: dict[str, Any]) -> dict[str
         for key in _BASE_RUNTIME_KEYS
         if model_config.get(key) is not None
     }
+    runtime["thinking_enabled"] = bool(model_config.get("thinking_mode"))
     capability = get_thinking_capability(str(model_config.get("model_name") or ""))
 
-    if not model_config.get("thinking_mode") or not capability.supported:
+    if not runtime["thinking_enabled"] or not capability.supported:
         return runtime
 
     if capability.control_type == "budget":

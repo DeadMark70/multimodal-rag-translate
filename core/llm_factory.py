@@ -19,6 +19,7 @@ from typing import Any, Literal, Optional
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from core.llm_usage_callback import EvaluationUsageCallback
+from evaluation.model_capabilities import get_thinking_capability
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ def set_session_model_override(model_name: Optional[str]) -> None:
 
 
 @contextmanager
-def llm_runtime_override(**overrides: Any):
+def llm_runtime_override(*, clear: tuple[str, ...] = (), **overrides: Any):
     """
     Apply request-scoped runtime overrides for nested LLM calls.
 
@@ -91,6 +92,8 @@ def llm_runtime_override(**overrides: Any):
     model parameters into each other.
     """
     current = dict(_runtime_llm_overrides.get())
+    for key in clear:
+        current.pop(key, None)
     merged = {**current, **{key: value for key, value in overrides.items() if value is not None}}
     token: Token[dict[str, Any]] = _runtime_llm_overrides.set(merged)
     try:
@@ -142,13 +145,35 @@ def graph_rag_llm_runtime_override(
     model_name: Optional[str] = None,
     extraction_profile: ExtractionProfile = "standard",
 ):
-    """Apply the correct thinking config for the current GraphRAG model family."""
+    """Apply Setup-compatible thinking config for GraphRAG calls."""
+    context = _runtime_llm_overrides.get()
+    active_model = model_name or context.get("model_name")
+    setup_thinking = context.get("thinking_enabled")
+    if setup_thinking is not None:
+        effective_model = active_model or _resolve_model_name(purpose, model_name=model_name)
+        capability = get_thinking_capability(str(effective_model))
+        overrides: dict[str, Any] = {
+            "include_thoughts": bool(context.get("include_thoughts", False)),
+        }
+        if setup_thinking:
+            if capability.control_type == "budget" and context.get("thinking_budget") is not None:
+                overrides["thinking_budget"] = context["thinking_budget"]
+            elif capability.control_type == "level" and context.get("thinking_level") is not None:
+                overrides["thinking_level"] = context["thinking_level"]
+        with llm_runtime_override(
+            clear=("thinking_budget", "thinking_level"),
+            **overrides,
+        ):
+            yield
+        return
+
     with llm_runtime_override(
+        clear=("thinking_budget", "thinking_level"),
         **get_graph_rag_runtime_overrides(
             purpose,
-            model_name=model_name,
+            model_name=active_model,
             extraction_profile=extraction_profile,
-        )
+        ),
     ):
         yield
 

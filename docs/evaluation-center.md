@@ -21,6 +21,16 @@ Legacy runs are never backfilled by guessing from answer text, empty arrays,
 claim ratios, lifecycle events, or generic result totals. A missing value is
 not a measured zero.
 
+## Evaluation Setup runtime contract
+
+During evaluation execution, the selected Evaluation Setup model and thinking
+controls are authoritative for every mode, including GraphRAG subcalls. When
+`thinking_mode` is disabled, no nested GraphRAG override may add
+`thinking_budget` or `thinking_level`. When it is enabled, Gemini 2.5-family
+models use only `thinking_budget`, while Gemini 3-family models use only
+`thinking_level`. Graph-specific defaults apply only to non-evaluation calls
+that have no active Setup runtime context.
+
 ## Panel data sources
 
 | Panel | Route / projection | Canonical fields |

@@ -10,7 +10,9 @@ from core.llm_factory import (
     get_llm,
     get_llm_usage_metrics,
     graph_rag_llm_runtime_override,
+    llm_runtime_override,
 )
+from evaluation.model_capabilities import normalize_model_config_for_runtime
 
 def test_get_llm_default_model():
     """Tests that get_llm returns the default model when no override is provided."""
@@ -180,3 +182,85 @@ def test_get_llm_usage_metrics_reads_reasoning_tokens() -> None:
         "total_tokens": 140,
         "reasoning_tokens": 24,
     }
+
+
+def test_graph_runtime_override_respects_disabled_setup_for_outer_25_model() -> None:
+    clear_llm_cache()
+    with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
+        mock_chat.return_value.model = "gemini-2.5-flash-lite"
+        with llm_runtime_override(
+            model_name="gemini-2.5-flash-lite",
+            thinking_enabled=False,
+        ):
+            with graph_rag_llm_runtime_override("community_summary"):
+                get_llm("community_summary")
+
+    kwargs = mock_chat.call_args.kwargs
+    assert kwargs["model"] == "gemini-2.5-flash-lite"
+    assert "thinking_level" not in kwargs
+    assert "thinking_budget" not in kwargs
+
+
+def test_graph_runtime_override_preserves_enabled_budget_for_outer_25_model() -> None:
+    clear_llm_cache()
+    with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
+        mock_chat.return_value.model = "gemini-2.5-flash-lite"
+        with llm_runtime_override(
+            model_name="gemini-2.5-flash-lite",
+            thinking_enabled=True,
+            thinking_budget=4096,
+            thinking_level="high",
+        ):
+            with graph_rag_llm_runtime_override("community_summary"):
+                get_llm("community_summary")
+
+    kwargs = mock_chat.call_args.kwargs
+    assert kwargs["model"] == "gemini-2.5-flash-lite"
+    assert kwargs["thinking_budget"] == 4096
+    assert "thinking_level" not in kwargs
+
+
+def test_graph_runtime_override_preserves_enabled_level_for_outer_gemini_3() -> None:
+    clear_llm_cache()
+    with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
+        mock_chat.return_value.model = "gemini-3.1-flash-lite"
+        with llm_runtime_override(
+            model_name="gemini-3.1-flash-lite",
+            thinking_enabled=True,
+            thinking_budget=4096,
+            thinking_level="high",
+        ):
+            with graph_rag_llm_runtime_override("community_summary"):
+                get_llm("community_summary")
+
+    kwargs = mock_chat.call_args.kwargs
+    assert kwargs["model"] == "gemini-3.1-flash-lite"
+    assert kwargs["thinking_level"] == "high"
+    assert "thinking_budget" not in kwargs
+
+
+def test_evaluation_setup_disabled_thinking_reaches_graph_llm_without_controls() -> None:
+    setup = normalize_model_config_for_runtime(
+        {
+            "model_name": "gemini-2.5-flash-lite",
+            "temperature": 0.7,
+            "top_p": 0.95,
+            "top_k": 64,
+            "max_output_tokens": 8192,
+            "thinking_mode": False,
+            "thinking_budget": 8192,
+            "thinking_level": None,
+        }
+    )
+
+    clear_llm_cache()
+    with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
+        mock_chat.return_value.model = "gemini-2.5-flash-lite"
+        with llm_runtime_override(**setup):
+            with graph_rag_llm_runtime_override("community_summary"):
+                get_llm("community_summary")
+
+    kwargs = mock_chat.call_args.kwargs
+    assert kwargs["model"] == setup["model_name"]
+    assert "thinking_budget" not in kwargs
+    assert "thinking_level" not in kwargs

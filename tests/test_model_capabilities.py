@@ -46,6 +46,7 @@ def test_runtime_normalization_budget_model_drops_level() -> None:
     )
 
     assert runtime["thinking_budget"] == 8192
+    assert runtime["thinking_enabled"] is True
     assert "thinking_level" not in runtime
 
 
@@ -64,6 +65,7 @@ def test_runtime_normalization_level_model_drops_budget() -> None:
     )
 
     assert runtime["thinking_level"] == "high"
+    assert runtime["thinking_enabled"] is True
     assert "thinking_budget" not in runtime
 
 
@@ -81,5 +83,20 @@ def test_runtime_normalization_no_thinking_mode_removes_thinking_fields() -> Non
         }
     )
 
+    assert "thinking_budget" not in runtime
+    assert "thinking_level" not in runtime
+
+
+def test_runtime_normalization_exposes_explicit_thinking_disabled_state() -> None:
+    runtime = normalize_model_config_for_runtime(
+        {
+            "model_name": "gemini-2.5-flash-lite",
+            "thinking_mode": False,
+            "thinking_budget": 8192,
+            "thinking_level": "high",
+        }
+    )
+
+    assert runtime["thinking_enabled"] is False
     assert "thinking_budget" not in runtime
     assert "thinking_level" not in runtime
