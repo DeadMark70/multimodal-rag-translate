@@ -61,6 +61,44 @@ def test_missing_usage_is_not_zero() -> None:
     assert usage.reconciliation_status == "unavailable"
 
 
+def test_nested_usage_metadata_is_normalized_without_inference() -> None:
+    usage = normalize_provider_usage(
+        "google",
+        {
+            "usage": {
+                "prompt_token_count": 12,
+                "candidates_token_count": 5,
+                "total_token_count": 17,
+            }
+        },
+    )
+
+    assert usage.input_tokens == 12
+    assert usage.output_text_tokens == 5
+    assert usage.reported_total_tokens == 17
+    assert usage.usage_status == "measured"
+    assert usage.reconciliation_status == "balanced"
+
+
+def test_nested_token_usage_alias_is_normalized_without_inference() -> None:
+    usage = normalize_provider_usage(
+        "openai",
+        {
+            "token_usage": {
+                "prompt_tokens": 8,
+                "completion_tokens": 3,
+                "total_tokens": 11,
+            }
+        },
+    )
+
+    assert usage.input_tokens == 8
+    assert usage.output_text_tokens == 3
+    assert usage.reported_total_tokens == 11
+    assert usage.usage_status == "measured"
+    assert usage.reconciliation_status == "balanced"
+
+
 def test_usage_with_overlapping_categories_is_partial() -> None:
     usage = normalize_provider_usage(
         "google",

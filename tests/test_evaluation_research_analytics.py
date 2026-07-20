@@ -339,6 +339,11 @@ async def test_missing_usage_keeps_all_token_categories_nullable(
     assert summary.tokens.by_phase == {}
     assert summary.tokens.accounting_status == "partial"
     assert summary.tokens.phase_attribution_status == "not_available"
+    assert summary.tokens.observed_call_count == 1
+    assert summary.tokens.measured_call_count == 0
+    assert summary.tokens.missing_usage_call_count == 1
+    assert summary.tokens.unbalanced_call_count == 0
+    assert summary.tokens.unclassified_phase_call_count == 0
 
 
 @pytest.mark.asyncio
@@ -374,6 +379,11 @@ async def test_mixed_usage_reports_measured_subtotals_without_total(
     assert summary.tokens.total_tokens is None
     assert summary.tokens.by_phase == {"answer_generation": 15}
     assert summary.tokens.accounting_status == "partial"
+    assert summary.tokens.observed_call_count == 2
+    assert summary.tokens.measured_call_count == 1
+    assert summary.tokens.missing_usage_call_count == 1
+    assert summary.tokens.unbalanced_call_count == 0
+    assert any(w.code == "missing_usage" for w in summary.warnings)
 
 
 @pytest.mark.asyncio

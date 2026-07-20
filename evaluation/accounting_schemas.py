@@ -42,6 +42,11 @@ class TokenBreakdown(BaseModel):
     other_tokens: int | None = None
     total_tokens: int | None = None
     by_phase: dict[str, int] = Field(default_factory=dict)
+    observed_call_count: int = Field(default=0, ge=0)
+    measured_call_count: int = Field(default=0, ge=0)
+    missing_usage_call_count: int = Field(default=0, ge=0)
+    unbalanced_call_count: int = Field(default=0, ge=0)
+    unclassified_phase_call_count: int = Field(default=0, ge=0)
     accounting_status: TokenAccountingStatus
     phase_attribution_status: PhaseAttributionStatus
 

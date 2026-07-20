@@ -160,6 +160,10 @@ class ResearchAnalyticsService:
         tokens = _tokens(official_scopes, official_events)
         if has_unattributed_execution_scopes:
             tokens = _partial_for_missing_mode_attribution(tokens)
+        warnings.extend(
+            ResearchWarning(code=code, message=message)
+            for code, message in _token_warning_tuples(tokens)
+        )
         cost = _cost(
             official_events,
             operational_events=[
@@ -746,6 +750,7 @@ def _mode_summary(
         )
     if any(scope.accounting_schema_version != "2" for scope in official):
         reasons.append("accounting_schema_version_mismatch")
+    warnings.extend(_token_warning_tuples(tokens))
     if len(results) < 5:
         warnings.append(
             ("low_sample_size", "Fewer than five official executions are included.")
@@ -762,6 +767,40 @@ def _mode_summary(
         tokens=tokens,
         execution_cost=cost,
     ), warnings
+
+
+def _token_warning_tuples(tokens: TokenBreakdown) -> list[tuple[str, str]]:
+    """Return stable, non-sensitive reasons for incomplete token accounting."""
+    warnings: list[tuple[str, str]] = []
+    if tokens.observed_call_count == 0 and tokens.accounting_status != "incomplete_legacy":
+        warnings.append(
+            (
+                "no_usage_events",
+                "No durable LLM usage events were recorded for this accounting scope.",
+            )
+        )
+    if tokens.missing_usage_call_count:
+        warnings.append(
+            (
+                "missing_usage",
+                f"{tokens.missing_usage_call_count} LLM call(s) did not report token usage.",
+            )
+        )
+    if tokens.unbalanced_call_count:
+        warnings.append(
+            (
+                "unbalanced_usage",
+                f"{tokens.unbalanced_call_count} measured LLM call(s) could not be reconciled to a complete total.",
+            )
+        )
+    if tokens.unclassified_phase_call_count:
+        warnings.append(
+            (
+                "unclassified_phase",
+                f"{tokens.unclassified_phase_call_count} LLM call(s) have no explicit accounting phase.",
+            )
+        )
+    return warnings
 
 
 def _official_execution_scopes(results, scopes):
@@ -1137,6 +1176,17 @@ def _tokens(scopes, events, legacy_status="incomplete_legacy"):
         return TokenBreakdown(
             accounting_status=legacy_status, phase_attribution_status="not_available"
         )
+    observed_call_count = len(events)
+    measured_call_count = sum(event.usage_status == "measured" for event in events)
+    missing_usage_call_count = sum(event.usage_status == "missing" for event in events)
+    unbalanced_call_count = sum(
+        event.usage_status == "measured"
+        and event.reconciliation_status != "balanced"
+        for event in events
+    )
+    unclassified_phase_call_count = sum(
+        event.phase == "unclassified" for event in events
+    )
     complete = all(
         s.status == "completed"
         and s.observed_call_count == s.measured_call_count
@@ -1161,6 +1211,11 @@ def _tokens(scopes, events, legacy_status="incomplete_legacy"):
             other_tokens=None,
             total_tokens=None,
             by_phase={},
+            observed_call_count=observed_call_count,
+            measured_call_count=measured_call_count,
+            missing_usage_call_count=missing_usage_call_count,
+            unbalanced_call_count=unbalanced_call_count,
+            unclassified_phase_call_count=unclassified_phase_call_count,
             accounting_status="partial",
             phase_attribution_status="not_available",
         )
@@ -1179,6 +1234,11 @@ def _tokens(scopes, events, legacy_status="incomplete_legacy"):
         reasoning_tokens=sum(e.reasoning_tokens for e in measured),
         other_tokens=sum(e.other_tokens for e in measured),
         by_phase=dict(sorted(phase.items())),
+        observed_call_count=observed_call_count,
+        measured_call_count=measured_call_count,
+        missing_usage_call_count=missing_usage_call_count,
+        unbalanced_call_count=unbalanced_call_count,
+        unclassified_phase_call_count=unclassified_phase_call_count,
         accounting_status=status,
         phase_attribution_status="complete" if phase_complete else "partial",
     )

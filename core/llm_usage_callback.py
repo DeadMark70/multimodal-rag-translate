@@ -146,7 +146,11 @@ def _extract_usage(response: LLMResult) -> dict[str, Any]:
             if isinstance(usage, dict):
                 return usage
     llm_output = response.llm_output or {}
-    usage = llm_output.get("usage_metadata") or llm_output.get("usage")
+    usage = (
+        llm_output.get("usage_metadata")
+        or llm_output.get("usage")
+        or llm_output.get("token_usage")
+    )
     return dict(usage) if isinstance(usage, dict) else {}
 
 

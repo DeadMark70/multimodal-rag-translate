@@ -42,6 +42,12 @@ def extract_usage_dict(raw_usage: object) -> dict[str, Any]:
     usage = getattr(raw_usage, "usage_metadata", raw_usage)
     if isinstance(raw_usage, dict) and "usage_metadata" in raw_usage:
         usage = raw_usage["usage_metadata"]
+    if isinstance(usage, dict):
+        for nested_key in ("usage", "token_usage"):
+            nested = usage.get(nested_key)
+            if isinstance(nested, dict):
+                usage = nested
+                break
     if hasattr(usage, "model_dump"):
         usage = usage.model_dump()
     elif hasattr(usage, "dict"):

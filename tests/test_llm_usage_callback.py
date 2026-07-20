@@ -15,7 +15,7 @@ from langchain_core.outputs import (
 )
 from pydantic import BaseModel
 
-from core.llm_usage_callback import EvaluationUsageCallback
+from core.llm_usage_callback import EvaluationUsageCallback, _extract_usage
 from core.llm_usage_context import (
     LlmAccountingContext,
     current_llm_accounting_context,
@@ -366,3 +366,18 @@ async def test_streaming_terminal_usage_emits_one_combined_event() -> None:
     assert "".join(str(chunk.content) for chunk in chunks) == "ok"
     assert len(sink.events) == 1
     assert sink.events[0].raw_usage["total_tokens"] == 3
+
+
+def test_callback_extracts_nested_provider_usage_alias() -> None:
+    response = LLMResult(
+        generations=[],
+        llm_output={
+            "token_usage": {
+                "prompt_tokens": 7,
+                "completion_tokens": 3,
+                "total_tokens": 10,
+            }
+        },
+    )
+
+    assert _extract_usage(response) == response.llm_output["token_usage"]
