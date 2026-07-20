@@ -415,7 +415,12 @@ class EvaluationAnalyticsService:
         if list_for_campaign is not None:
             grouped = await list_for_campaign(context.campaign_id)
             return [
-                _dump(item)
+                {
+                    **_dump(item),
+                    "question_id": result.question_id,
+                    "repeat_number": _repeat_number(result),
+                    "run_id": result.id,
+                }
                 for result in context.results
                 for item in grouped.get(result.id, [])
                 if item.campaign_id == context.campaign_id
@@ -426,7 +431,12 @@ class EvaluationAnalyticsService:
         decisions: list[dict[str, Any]] = []
         for result in context.results:
             decisions.extend(
-                _dump(item)
+                {
+                    **_dump(item),
+                    "question_id": result.question_id,
+                    "repeat_number": _repeat_number(result),
+                    "run_id": result.id,
+                }
                 for item in await self._observability_repository.list_routing_decisions_for_run(result.id)
                 if item.campaign_id == context.campaign_id
             )
