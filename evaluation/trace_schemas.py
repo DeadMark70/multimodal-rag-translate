@@ -7,7 +7,9 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from evaluation.accounting_schemas import TokenBreakdown
 from evaluation.campaign_schemas import CampaignMode
+from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
 
 TracePhase = Literal["planning", "execution", "drilldown", "evaluation", "synthesis"]
 TraceStatus = Literal["completed", "partial", "failed"]
@@ -230,12 +232,16 @@ class EvaluationRunObservabilityDetail(BaseModel):
     context_packs: list[EvaluationContextPack] = Field(default_factory=list)
     tool_calls: list[EvaluationToolCall] = Field(default_factory=list)
     routing_decisions: list[EvaluationRoutingDecision] = Field(default_factory=list)
+    graph_events: list[EvaluationGraphEvent] = Field(default_factory=list)
+    graph_evidence_items: list[EvaluationGraphEvidenceItem] = Field(default_factory=list)
+    graph_observability_status: Literal["recorded", "fallback", "not_instrumented"] = "not_instrumented"
     claims: list[EvaluationClaim] = Field(default_factory=list)
     human_ratings: list[EvaluationHumanRating] = Field(default_factory=list)
     evidence_coverage: Optional[list[dict[str, Any]]] = None
     evidence_coverage_status: Literal[
         "complete", "partial", "not_available", "not_instrumented"
     ] = "not_available"
+    accounting_diagnostics: TokenBreakdown
     run_summary: Optional[EvaluationRunSummary] = None
 
 

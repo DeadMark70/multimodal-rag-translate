@@ -768,6 +768,18 @@ async def get_campaign_run_observability(
         for item in await repository.list_retrieval_chunks_for_run(run_id)
         if item.campaign_id == campaign_id
     ]
+    graph_events = [
+        item
+        for item in await repository.list_graph_events_for_run(run_id)
+        if item.campaign_id == campaign_id
+    ]
+    graph_evidence_items = [
+        item
+        for item in await repository.list_graph_evidence_items_for_run(run_id)
+        if any(
+            event.graph_event_id == item.graph_event_id for event in graph_events
+        )
+    ]
     context_packs = [
         item
         for item in await repository.list_context_packs_for_run(run_id)
@@ -793,6 +805,18 @@ async def get_campaign_run_observability(
         for item in await repository.list_human_ratings_for_run(run_id)
         if item.campaign_id == campaign_id
     ]
+    graph_observability_status = "recorded" if graph_events else "not_instrumented"
+    if not graph_events:
+        for event in retrieval_events:
+            payload = event.payload
+            if not isinstance(payload, dict):
+                continue
+            fallback_reason = payload.get("graph_fallback_reason") or payload.get(
+                "fallback_reason"
+            )
+            if payload.get("graph_fallback_used") or fallback_reason:
+                graph_observability_status = "fallback"
+                break
     return EvaluationRunObservabilityDetail(
         run_id=run_id,
         campaign_id=campaign_id,
@@ -800,11 +824,15 @@ async def get_campaign_run_observability(
         llm_calls=llm_calls,
         retrieval_events=retrieval_events,
         retrieval_chunks=retrieval_chunks,
+        graph_events=graph_events,
+        graph_evidence_items=graph_evidence_items,
+        graph_observability_status=graph_observability_status,
         context_packs=context_packs,
         tool_calls=tool_calls,
         routing_decisions=routing_decisions,
         claims=claims,
         human_ratings=human_ratings,
+        accounting_diagnostics=token_breakdown,
         evidence_coverage=(
             result.derived_metrics.get("gold_fact_attrition")
             if isinstance(result.derived_metrics.get("gold_fact_attrition"), list)

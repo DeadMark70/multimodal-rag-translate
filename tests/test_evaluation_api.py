@@ -292,6 +292,14 @@ def test_run_observability_endpoint_returns_only_owned_campaign_rows(tmp_path) -
             assert body["run_id"] == "run-1"
             assert len(body["trace_events"]) == 1
             assert body["trace_events"][0]["stage_name"] == "retrieve"
+            assert body["graph_events"] == []
+            assert body["graph_evidence_items"] == []
+            assert body["graph_observability_status"] == "not_instrumented"
+            assert body["accounting_diagnostics"]["accounting_status"] in {
+                "complete",
+                "partial",
+                "incomplete_legacy",
+            }
 
             cross_campaign = client.get("/api/evaluation/campaigns/campaign-other/runs/run-1/observability")
             assert cross_campaign.status_code == 404
