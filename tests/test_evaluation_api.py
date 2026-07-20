@@ -22,7 +22,7 @@ from evaluation.db import CampaignResultRepository
 from evaluation.job_schemas import EvaluationJob, EvaluationJobType, EvaluationWorkType
 from evaluation.job_store import EvaluationJobStore
 from evaluation.observability_storage import EvaluationObservabilityRepository
-from evaluation.schemas import AvailableModel
+from evaluation.schemas import AvailableModel, EvaluationGraphEvent, EvaluationGraphEvidenceItem
 from evaluation.trace_schemas import EvaluationTraceEvent
 from main import app
 
@@ -129,6 +129,44 @@ async def _seed_trace_event(campaign_id: str, run_id: str) -> None:
             retry_count=0,
             payload={"query_hash": "hash-1"},
             error={},
+            created_at=now,
+        )
+    )
+
+
+async def _seed_graph_observability(campaign_id: str, run_id: str) -> None:
+    repository = EvaluationObservabilityRepository()
+    now = datetime.now(timezone.utc)
+    await repository.record_graph_event(
+        EvaluationGraphEvent(
+            graph_event_id=f"{run_id}-graph-1",
+            run_id=run_id,
+            campaign_id=campaign_id,
+            span_id=f"{run_id}-span-graph",
+            graph_query="graph query",
+            graph_search_mode="local",
+            graph_evidence_mode="locator_to_chunk",
+            graph_route="local_first",
+            router_reason="test",
+            graph_feature_flags={"enabled": True},
+            matched_entity_ids=["entity-1"],
+            node_count=2,
+            edge_count=1,
+            path_count=1,
+            graph_to_chunk_success_rate=1.0,
+            created_at=now,
+        )
+    )
+    await repository.record_graph_evidence_item(
+        EvaluationGraphEvidenceItem(
+            graph_evidence_item_id=f"{run_id}-graph-evidence-1",
+            graph_event_id=f"{run_id}-graph-1",
+            node_ids=["entity-1"],
+            source_doc_ids=["doc-1"],
+            source_chunk_ids=["chunk-1"],
+            provenance_status="full",
+            packed_in_context=True,
+            used_in_answer=True,
             created_at=now,
         )
     )
@@ -303,6 +341,24 @@ def test_run_observability_endpoint_returns_only_owned_campaign_rows(tmp_path) -
 
             cross_campaign = client.get("/api/evaluation/campaigns/campaign-other/runs/run-1/observability")
             assert cross_campaign.status_code == 404
+
+
+def test_run_observability_projects_graph_events_and_evidence_items(tmp_path) -> None:
+    upload_root = _make_upload_root()
+    db_path = tmp_path / "evaluation.db"
+
+    with patch.object(evaluation_db, "EVALUATION_DB_PATH", db_path):
+        asyncio.run(_seed_campaign("campaign-graph", "user-a"))
+        asyncio.run(_seed_campaign_result("campaign-graph", "run-graph", "user-a"))
+        asyncio.run(_seed_graph_observability("campaign-graph", "run-graph"))
+
+        with _build_client("user-a", upload_root) as client:
+            response = client.get("/api/evaluation/campaigns/campaign-graph/runs/run-graph/observability")
+            assert response.status_code == 200
+            body = response.json()
+            assert body["graph_observability_status"] == "recorded"
+            assert body["graph_events"][0]["graph_route"] == "local_first"
+            assert body["graph_evidence_items"][0]["source_chunk_ids"] == ["chunk-1"]
 
 
 def test_model_config_crud_and_validation() -> None:
