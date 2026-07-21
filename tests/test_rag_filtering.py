@@ -125,3 +125,25 @@ def test_unavailable_reranker_keeps_legacy_candidates_and_uses_none_scores() -> 
         ],
         "rejected_candidates": [],
     }
+
+
+def test_unavailable_reranker_preserves_all_thirteen_filtered_documents() -> None:
+    documents = [
+        Document(page_content=f"Document {index}", metadata={"doc_id": str(index)})
+        for index in range(13)
+    ]
+
+    result = filter_and_rerank_retrieval(
+        "question",
+        RagRetrievalResult(documents=documents),
+        enable_reranking=True,
+        reranker_available=False,
+        max_candidates=12,
+    )
+
+    assert result.documents == documents
+    assert result.metadata["reranking"]["candidate_count"] == 13
+    assert [row["metadata"]["doc_id"] for row in result.metadata["reranking"]["pre_rerank_ranks"]] == [
+        str(index) for index in range(13)
+    ]
+    assert result.metadata["reranking"]["rejected_candidates"] == []

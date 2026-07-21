@@ -6,9 +6,7 @@ with enhanced reranking and query transformation.
 """
 
 # Standard library
-import asyncio
 import base64
-import json
 import logging
 import os
 import re
@@ -18,7 +16,6 @@ from datetime import datetime, timezone
 from typing import (
     List,
     Any,
-    Set,
     Optional,
     Tuple,
     NamedTuple,
@@ -38,13 +35,10 @@ if TYPE_CHECKING:
 # Third-party
 from fastapi.concurrency import run_in_threadpool
 from langchain_core.documents import Document
-from langchain_core.messages import HumanMessage
 
 # Local application
-from core.llm_factory import get_llm_usage_metrics
-from core.llm_usage_context import llm_accounting_phase
 from core.providers import get_llm
-from core.prompt_loader import format_prompt
+from core.llm_factory import get_llm_usage_metrics  # noqa: F401 - compatibility seam
 from data_base.document_metadata import get_document_id
 from data_base.rag_generation import (
     generate_legacy_answer_from_evidence,
@@ -75,7 +69,7 @@ from data_base.query_transformer import (
     transform_query_with_hyde,
     transform_query_multi,
 )
-from data_base.repository import fetch_document_filenames
+from data_base.repository import fetch_document_filenames  # noqa: F401 - compatibility seam
 from data_base.parent_child_store import ParentDocumentStore
 from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
 from graph_rag.anchor_resolver import (
@@ -126,9 +120,6 @@ DEFAULT_GRAPH_LOCAL_MAX_NODES = 20
 _llm_initialized = False
 
 # Visual verification Re-Act loop settings
-MAX_VISUAL_ITERATIONS = 2  # Prevent infinite loops
-
-
 class RAGResult(NamedTuple):
     """Result from RAG question answering with optional documents."""
 
@@ -371,117 +362,6 @@ async def get_user_retriever(user_id: str, k: int = 3, plain_mode: bool = False)
 def _parse_visual_tool_request(response: str) -> Optional[Dict[str, str]]:
     """Backward-compatible facade for the extracted legacy parser."""
     return parse_legacy_visual_tool_request(response)
-
-
-async def _deprecated_visual_verification_loop(
-    initial_response: str,
-    context: str,
-    question: str,
-    user_id: str,
-    llm: Any,
-    source_doc_ids: List[str],
-    image_paths: Optional[List[str]] = None,
-    force_once_if_not_triggered: bool = False,
-) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
-    """
-    Re-Act loop for visual verification.
-
-    If LLM requests VERIFY_IMAGE, execute the tool and re-prompt for synthesis.
-
-    Args:
-        initial_response: First LLM response (may contain tool request).
-        context: Original context text.
-        question: User's question.
-        user_id: User ID for visual tool.
-        llm: LLM instance for synthesis call.
-        source_doc_ids: Source document IDs for logging.
-
-    Returns:
-        Tuple of (final answer, tool_results, visual_meta) after visual verification.
-    """
-    response = initial_response
-    iteration = 0
-    tool_results: List[Dict[str, Any]] = []
-    attempted = False
-    forced_fallback_used = False
-    force_pending = bool(force_once_if_not_triggered and image_paths)
-
-    while iteration < MAX_VISUAL_ITERATIONS:
-        tool_request = _parse_visual_tool_request(response)
-        tool_request_is_forced = False
-        if not tool_request and force_pending:
-            tool_request = {
-                "action": "VERIFY_IMAGE",
-                "path": image_paths[0],
-                "question": question,
-            }
-            tool_request_is_forced = True
-            forced_fallback_used = True
-            force_pending = False
-            logger.info(
-                "Visual verification forced fallback triggered for image-aware route"
-            )
-        elif tool_request:
-            force_pending = False
-
-        if not tool_request:
-            break  # No tool request, return as-is
-
-        iteration += 1
-        attempted = True
-        logger.info(
-            f"Visual verification iteration {iteration}: {tool_request.get('question', '')[:50]}"
-        )
-
-        # Execute visual tool
-        from data_base.visual_tools import verify_image_details
-
-        result = await verify_image_details(
-            image_path=tool_request.get("path", ""),
-            question=tool_request.get("question", ""),
-            user_id=user_id,
-        )
-
-        tool_results.append(
-            {
-                "action": "VERIFY_IMAGE",
-                "path": tool_request.get("path"),
-                "question": tool_request.get("question"),
-                "success": result.get("success"),
-                "result": result.get("result")
-                if result["success"]
-                else result.get("error"),
-                "forced_once": tool_request_is_forced,
-            }
-        )
-
-        # Build synthesis prompt with tool results
-        results_json = json.dumps(tool_results, ensure_ascii=False, indent=2)
-        synthesis_prompt = format_prompt(
-            "visual_verification_synthesis",
-            context=context,
-            question=question,
-            initial_response=initial_response,
-            verification_results=results_json,
-        )
-
-        from langchain_core.messages import HumanMessage
-
-        synth_message = HumanMessage(content=synthesis_prompt)
-        with llm_accounting_phase("visual_verification"):
-            synth_response = await llm.ainvoke([synth_message])
-        response = synth_response.content
-
-        logger.info(f"Visual verification synthesis completed (iteration {iteration})")
-        if tool_request_is_forced:
-            break
-
-    visual_meta = {
-        "visual_verification_attempted": attempted,
-        "visual_tool_call_count": len(tool_results),
-        "visual_force_fallback_used": forced_fallback_used,
-    }
-    return response, tool_results, visual_meta
 
 
 async def initialize_llm_service() -> None:
@@ -2106,209 +1986,3 @@ async def rag_answer_question(
             visual_verification_meta=generated.visual_verification_meta,
         )
     return (generated.answer, source_doc_ids)
-
-    # The following legacy body is retained temporarily solely as source history
-    # for this reviewable extraction; it is unreachable after the delegation.
-
-    # Step 6: Separate data, label sources, and deduplicate
-    text_context: List[str] = []
-    image_paths: Set[str] = set()
-    source_doc_ids: Set[str] = set()
-
-    # Build doc_id to filename mapping for labeling
-    doc_id_to_name = {}
-
-    # Collect unique doc_ids first
-    unique_doc_ids = set()
-    for doc in docs:
-        doc_id = get_document_id(doc.metadata)
-        if doc_id:
-            unique_doc_ids.add(doc_id)
-
-    # Query database for actual filenames if we have doc_ids
-    if unique_doc_ids:
-        try:
-            doc_id_to_name = await fetch_document_filenames(list(unique_doc_ids))
-            logger.debug(f"Fetched filenames: {doc_id_to_name}")
-        except Exception as e:
-            logger.warning(f"Failed to fetch filenames from DB: {e}")
-
-    # Fallback for any doc_ids not found in DB
-    for doc in docs:
-        doc_id = get_document_id(doc.metadata)
-        if doc_id and doc_id not in doc_id_to_name:
-            filename = (
-                doc.metadata.get("file_name")
-                or doc.metadata.get("source_file")
-                or f"文件-{doc_id[:8]}"
-            )
-            doc_id_to_name[doc_id] = filename
-
-    # Group chunks by source document (anti-hallucination strategy)
-    chunks_by_doc: dict[str, List[str]] = {}
-
-    for doc in docs:
-        source = doc.metadata.get("source", "text")
-
-        # Track source doc_ids
-        doc_id = get_document_id(doc.metadata)
-        if doc_id:
-            source_doc_ids.add(doc_id)
-
-        # Get source label for this chunk
-        source_label = doc_id_to_name.get(doc_id, "未知來源") if doc_id else "未知來源"
-
-        # Initialize list for this document if needed
-        if source_label not in chunks_by_doc:
-            chunks_by_doc[source_label] = []
-
-        if source == "image":
-            img_path = doc.metadata.get("image_path")
-            if img_path and os.path.exists(img_path):
-                image_paths.add(img_path)
-                # Normalize path for Markdown compatibility (Windows backslash -> forward slash)
-                normalized_path = img_path.replace("\\", "/")
-                # Include image path in text context for LLM to reference
-                if doc.page_content:
-                    chunks_by_doc[source_label].append(
-                        f"[圖片摘要] (路徑: {normalized_path})\n{doc.page_content}"
-                    )
-            elif doc.page_content:
-                # No valid image path, just include summary
-                chunks_by_doc[source_label].append(f"[圖片摘要] {doc.page_content}")
-        else:
-            if doc.page_content:
-                chunks_by_doc[source_label].append(doc.page_content)
-
-    # Build document-grouped context (each document's content is kept together)
-    for filename, chunks in chunks_by_doc.items():
-        file_section = f"=== 來源文件：{filename} ===\n（以下內容僅來自此文件，請勿與其他文件混淆）\n\n"
-        file_section += "\n\n".join(chunks)
-        text_context.append(file_section)
-
-    # Step 7: Process images (limit count to avoid token explosion)
-    MAX_IMAGES = 3
-    image_list = list(image_paths)[:MAX_IMAGES]
-    encoded_images: List[str] = []
-
-    if image_list:
-        encoded_candidates = await asyncio.gather(
-            *(run_in_threadpool(_encode_image, img_path) for img_path in image_list)
-        )
-        encoded_images = [image for image in encoded_candidates if image]
-
-    logger.debug(f"Text chunks: {len(text_context)}, Images: {len(encoded_images)}")
-
-    # Step 8: Build interleaved multimodal message
-    # Group text chunks with their associated images for clearer context
-    context_text = (
-        "\n\n---\n\n".join(text_context) if text_context else "(無文字背景資訊)"
-    )
-
-    # Format conversation history if provided
-    history_text = _format_history_for_prompt(history)
-    history_section = f"\n{history_text}\n" if history_text else ""
-
-    # Format graph context if available
-    graph_section = f"\n{graph_context}\n" if graph_context else ""
-    intent_constraints = _intent_constraints_for_prompt(question, mode_hints)
-
-    if plain_mode:
-        prompt_text = format_prompt(
-            "plain_rag_answer",
-            context_text=context_text,
-            graph_section=graph_section,
-            history_section=history_section,
-            question=question,
-            intent_constraints=intent_constraints,
-        )
-    else:
-        visual_instruction = (
-            format_prompt("visual_tool_instruction")
-            if enable_visual_verification and image_paths
-            else ""
-        )
-        prompt_text = format_prompt(
-            "advanced_rag_answer",
-            context_text=context_text,
-            graph_section=graph_section,
-            history_section=history_section,
-            question=question,
-            intent_constraints=intent_constraints,
-            visual_instruction=visual_instruction,
-        )
-
-    # Build content list
-    message_content: List[Any] = [{"type": "text", "text": prompt_text}]
-
-    # Add images
-    for b64_img in encoded_images:
-        message_content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"},
-            }
-        )
-
-    message = HumanMessage(content=message_content)
-
-    # Step 9: Call LLM
-    try:
-        await _emit_progress(
-            progress_callback,
-            "answer_generation",
-            {
-                "image_count": len(encoded_images),
-                "document_count": len(docs),
-            },
-        )
-        with llm_accounting_phase("answer_generation"):
-            response = await llm.ainvoke([message])
-        answer = response.content
-        usage_metadata = get_llm_usage_metrics(response)
-        visual_verification_meta = {
-            "visual_verification_attempted": False,
-            "visual_tool_call_count": 0,
-            "visual_force_fallback_used": False,
-        }
-        if enable_visual_verification and not image_paths:
-            visual_verification_meta["visual_not_applicable"] = True
-
-        # Step 10: Visual Verification Re-Act Loop (Phase 9)
-        tool_calls = []
-        if enable_visual_verification and image_paths:
-            (
-                answer,
-                tool_calls,
-                visual_verification_meta,
-            ) = await _deprecated_visual_verification_loop(
-                initial_response=answer,
-                context=context_text,
-                question=question,
-                user_id=user_id,
-                llm=llm,
-                source_doc_ids=list(source_doc_ids),
-                image_paths=image_list,
-                force_once_if_not_triggered=True,
-            )
-            # Note: Usage from visual verification loop is not currently aggregated into usage_metadata
-
-        if return_docs:
-            return RAGResult(
-                answer,
-                list(source_doc_ids),
-                [*docs, *graph_evidence_documents_for_return],
-                usage_metadata,
-                thought_process=prompt_text,  # Capture the prompt as thought trace
-                tool_calls=tool_calls,
-                visual_verification_meta=visual_verification_meta,
-            )
-        return (answer, list(source_doc_ids))
-
-    except (RuntimeError, ValueError, OSError) as e:
-        logger.error(f"LLM error for user {user_id}: {e}", exc_info=True)
-        if return_docs:
-            return RAGResult(
-                "抱歉，處理您的問題時發生錯誤。", list(source_doc_ids), docs, {}
-            )
-        return ("抱歉，處理您的問題時發生錯誤。", list(source_doc_ids))

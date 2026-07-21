@@ -61,7 +61,7 @@ def filter_and_rerank_retrieval(
     )
     rerank_candidates = (
         _limit_rerank_candidates(filtered_documents, max_candidates)
-        if enable_reranking
+        if enable_reranking and availability
         else list(filtered_documents)
     )
     candidate_rejections = _candidate_limit_rejections(

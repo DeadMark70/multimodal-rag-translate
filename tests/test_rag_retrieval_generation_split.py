@@ -212,6 +212,8 @@ def test_legacy_wrapper_delegates_generation_without_exposing_visual_synthesis()
 
     assert "generate_legacy_answer_from_evidence(" in wrapper_source
     assert "_execute_visual_verification_loop" not in wrapper_source
+    assert "_deprecated_visual_verification_loop" not in wrapper_source
+    assert "The following legacy body is retained temporarily" not in wrapper_source
     assert "_execute_legacy_visual_verification_loop" in generation_source
 
 
