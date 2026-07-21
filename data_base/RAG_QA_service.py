@@ -56,6 +56,13 @@ from data_base.vector_store_manager import (
     invoke_retriever_queries_async,
 )
 from data_base.reranker import DocumentReranker
+from data_base.rag_filtering import (
+    RERANK_CANDIDATE_LIMIT as _RERANK_CANDIDATE_LIMIT,
+    RERANK_TARGET_K as _RERANK_TARGET_K,
+    filter_and_rerank_retrieval,
+    limit_rerank_candidates,
+    rerank_documents_for_generation,
+)
 from data_base.rag_retrieval import retrieve_hybrid_documents
 from data_base.query_transformer import (
     transform_query_with_hyde,
@@ -1626,14 +1633,6 @@ def _intent_constraints_for_prompt(
 _MIN_CHUNK_LENGTH = 100  # Minimum characters to trigger expansion
 _MAX_EXPANDED_CHUNKS = 5  # Maximum number of chunks to expand
 _MAX_TOTAL_CHARS = 15000  # Maximum total characters after expansion
-_RERANK_TARGET_K = 8
-_RERANK_CANDIDATE_LIMIT = 12
-_RERANK_NOISE_KEYWORDS = (
-    "SAM",
-    "Segment Anything",
-    "Interactive Segmentation",
-    "SegVol",
-)
 
 
 def _expand_short_chunks(
@@ -1736,72 +1735,21 @@ def _expand_short_chunks(
     return expanded_docs
 
 
-def _query_explicitly_requests_noise_topics(question: str) -> bool:
-    """Return True when the query is explicitly about known noisy topics."""
-    query_lower = question.lower()
-    return any(keyword.lower() in query_lower for keyword in _RERANK_NOISE_KEYWORDS)
-
-
-def _is_noise_document(doc: Document) -> bool:
-    """Detect documents that match known noisy-topic heuristics."""
-    content_sample = doc.page_content[:500]
-    filename = doc.metadata.get("file_name") or doc.metadata.get("source_file") or ""
-    return any(
-        keyword in content_sample or keyword in filename
-        for keyword in _RERANK_NOISE_KEYWORDS
-    )
-
-
 def _rerank_documents_for_generation(
     question: str,
     documents: List[Document],
     target_k: int = _RERANK_TARGET_K,
 ) -> List[Document]:
-    """Rerank candidates and prefer non-noise documents before backfilling."""
-    if not documents or not DocumentReranker.is_initialized():
-        return documents[:target_k]
-
-    reranker = DocumentReranker.get_instance()
-    scored_docs = reranker.rerank_with_scores(question, documents, len(documents))
-    if not scored_docs:
-        return documents[:target_k]
-
-    if _query_explicitly_requests_noise_topics(question):
-        return [doc for doc, _ in scored_docs[:target_k]]
-
-    non_noise_docs = [
-        (doc, score) for doc, score in scored_docs if not _is_noise_document(doc)
-    ]
-    noise_docs = [(doc, score) for doc, score in scored_docs if _is_noise_document(doc)]
-
-    selected = list(non_noise_docs[:target_k])
-    if len(selected) < target_k:
-        selected.extend(noise_docs[: target_k - len(selected)])
-
-    logger.debug(
-        "Reranker selection complete: total=%s clean=%s noisy=%s selected=%s",
-        len(scored_docs),
-        len(non_noise_docs),
-        len(noise_docs),
-        len(selected),
-    )
-    return [doc for doc, _ in selected]
+    """Compatibility facade for selection now owned by ``rag_filtering``."""
+    return rerank_documents_for_generation(question, documents, target_k)
 
 
 def _limit_rerank_candidates(
     documents: List[Document],
     max_candidates: int = _RERANK_CANDIDATE_LIMIT,
 ) -> List[Document]:
-    """Cap reranker candidates to reduce peak inference memory usage."""
-    if len(documents) <= max_candidates:
-        return documents
-
-    logger.info(
-        "Capping reranker candidates from %s to %s for memory stability",
-        len(documents),
-        max_candidates,
-    )
-    return documents[:max_candidates]
+    """Compatibility facade for the retrieval-boundary candidate cap."""
+    return limit_rerank_candidates(documents, max_candidates)
 
 
 async def rag_answer_question(
@@ -1914,30 +1862,36 @@ async def rag_answer_question(
             return RAGResult("抱歉，在知識庫中找不到相關資訊。", [], [])
         return ("抱歉，在知識庫中找不到相關資訊。", [])
 
-    # Step 4.5: Filter by doc_ids if specified (before reranking for efficiency)
-    if doc_ids:
-        doc_id_set = set(doc_ids)
-        filtered_docs = [d for d in docs if get_document_id(d.metadata) in doc_id_set]
-        docs = filtered_docs
-
-        if not docs:
-            if return_docs:
-                return RAGResult(
-                    "抱歉，在指定的文件中找不到相關資訊。", list(doc_ids), []
-                )
-            return ("抱歉，在指定的文件中找不到相關資訊。", list(doc_ids))
-
-        # Debug: Count chunks per doc_id
-        doc_chunk_count = {}
-        for d in docs:
-            did = get_document_id(d.metadata) or "unknown"
-            doc_chunk_count[did] = doc_chunk_count.get(did, 0) + 1
-        logger.info(f"Multi-doc retrieval: {doc_chunk_count}")
-
-    # Step 5: Rerank with local document reranker (or fair multi-doc selection)
+    # Step 4.5-5: Keep candidate filtering and reranking inside the retrieval
+    # boundary.  CRAG and graph location intentionally remain later stages.
     target_k = int(retrieval_policy.get("target_k", _RERANK_TARGET_K))
     reranker_available = DocumentReranker.is_initialized()
-    rerank_candidates = _limit_rerank_candidates(docs) if enable_reranking else docs
+    selection_result = await run_in_threadpool(
+        filter_and_rerank_retrieval,
+        question,
+        retrieval_result,
+        doc_ids=doc_ids,
+        enable_reranking=enable_reranking,
+        reranker_available=reranker_available,
+        target_k=target_k,
+        max_candidates=_RERANK_CANDIDATE_LIMIT,
+    )
+    docs = selection_result.documents
+    reranking_metadata = selection_result.metadata["reranking"]
+
+    if doc_ids and not docs:
+        if return_docs:
+            return RAGResult(
+                "抱歉，在指定的文件中找不到相關資訊。", list(doc_ids), []
+            )
+        return ("抱歉，在指定的文件中找不到相關資訊。", list(doc_ids))
+
+    if doc_ids:
+        doc_chunk_count = {}
+        for document in docs:
+            document_id = get_document_id(document.metadata) or "unknown"
+            doc_chunk_count[document_id] = doc_chunk_count.get(document_id, 0) + 1
+        logger.info(f"Multi-doc retrieval: {doc_chunk_count}")
 
     if enable_reranking:
         await _emit_progress(
@@ -1945,47 +1899,18 @@ async def rag_answer_question(
             "reranking",
             {
                 "reranker_available": reranker_available,
-                "document_count": len(docs),
-                "candidate_count": len(rerank_candidates),
+                "document_count": len(
+                    selection_result.metadata["filtering"]["post_filter_ranks"]
+                ),
+                "candidate_count": reranking_metadata["candidate_count"],
             },
         )
 
-    if enable_reranking and reranker_available and len(rerank_candidates) > 0:
-        docs = await run_in_threadpool(
-            _rerank_documents_for_generation,
-            question,
-            rerank_candidates,
-            target_k,
-        )
-        logger.debug("Reranked to top %s documents", len(docs))
-    elif enable_reranking and not reranker_available:
+    if enable_reranking and not reranker_available:
         logger.info(
             "Reranking requested but inactive: %s",
             DocumentReranker.runtime_metadata(reason="runtime_not_initialized"),
         )
-    elif doc_ids and len(doc_ids) > 1:
-        # Multi-doc fair selection (unchanged)
-        docs_per_source = max(2, target_k // len(doc_ids))
-        selected_docs = []
-        docs_by_id = {}
-
-        for d in docs:
-            did = get_document_id(d.metadata) or "unknown"
-            if did not in docs_by_id:
-                docs_by_id[did] = []
-            docs_by_id[did].append(d)
-
-        # Take top N from each source
-        for did in doc_ids:
-            if did in docs_by_id:
-                selected_docs.extend(docs_by_id[did][:docs_per_source])
-
-        docs = selected_docs[:target_k]
-        logger.info(
-            f"Multi-doc fair selection: {len(docs)} docs from {len(docs_by_id)} sources"
-        )
-    else:
-        docs = docs[:target_k]
 
     # Step 5.4: Corrective Retrieval Guard (CRAG, opt-in only)
     if enable_crag and docs:
