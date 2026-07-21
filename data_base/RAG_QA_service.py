@@ -63,11 +63,16 @@ from data_base.rag_filtering import (
     limit_rerank_candidates,
     rerank_documents_for_generation,
 )
+from data_base.rag_crag import (
+    CragRewriteMode,
+    build_crag_queries,
+    judge_retrieved_documents,
+    run_corrective_retrieval,
+)
 from data_base.rag_retrieval import retrieve_hybrid_documents
 from data_base.query_transformer import (
     transform_query_with_hyde,
     transform_query_multi,
-    reciprocal_rank_fusion,
 )
 from data_base.repository import fetch_document_filenames
 from data_base.parent_child_store import ParentDocumentStore
@@ -331,27 +336,19 @@ def _graph_execution_strategy(
 
 
 ProgressCallback = Callable[[str, Optional[Dict[str, Any]]], Awaitable[None]]
-CragRewriteMode = Literal["hyde", "multi_query", "none"]
 
 
 async def _build_crag_queries(
     question: str,
     rewrite_mode: CragRewriteMode,
 ) -> List[str]:
-    if rewrite_mode == "multi_query":
-        return await transform_query_multi(
-            question,
-            enabled=True,
-            phase="retrieval_rewrite",
-        )
-    if rewrite_mode == "hyde":
-        rewritten = await transform_query_with_hyde(
-            question,
-            enabled=True,
-            phase="retrieval_rewrite",
-        )
-        return [rewritten or question]
-    return [question]
+    """Compatibility facade for callers of the extracted CRAG rewrite policy."""
+    return await build_crag_queries(
+        question,
+        rewrite_mode,
+        hyde_transformer=transform_query_with_hyde,
+        multi_query_transformer=transform_query_multi,
+    )
 
 
 async def _emit_progress(
@@ -1915,66 +1912,35 @@ async def rag_answer_question(
     # Step 5.4: Corrective Retrieval Guard (CRAG, opt-in only)
     if enable_crag and docs:
         try:
-            from agents.evaluator import RAGEvaluator
-
-            evaluator = RAGEvaluator()
-            is_relevant = await evaluator.grade_documents(
-                question=question, documents=docs
+            crag_result = await run_corrective_retrieval(
+                question=question,
+                documents=docs,
+                retriever=retriever,
+                judge=judge_retrieved_documents,
+                rewrite_mode=crag_rewrite_mode,
+                doc_ids=doc_ids,
+                enable_reranking=enable_reranking,
+                reranker_available=reranker_available,
+                target_k=target_k,
+                progress_callback=progress_callback,
+                hyde_transformer=transform_query_with_hyde,
+                multi_query_transformer=transform_query_multi,
+                query_executor=invoke_retriever_queries_async,
+                rerank_documents=_rerank_documents_for_generation,
+                limit_rerank_candidates=_limit_rerank_candidates,
             )
-            if not is_relevant:
-                logger.info(
-                    "CRAG guard detected low relevance for question '%s'; triggering corrective retrieval",
-                    question[:120],
-                )
+            if crag_result.status == "insufficient":
                 await _emit_progress(
                     progress_callback,
                     "crag_correction",
-                    {"status": "rewriting_query"},
+                    {"status": "insufficient_retrieval"},
                 )
-
-                corrected_queries = await _build_crag_queries(
-                    question,
-                    crag_rewrite_mode,
-                )
-                corrected_batches = await invoke_retriever_queries_async(
-                    retriever, corrected_queries
-                )
-                if len(corrected_batches) == 1:
-                    corrected_docs = corrected_batches[0]
-                else:
-                    corrected_docs = reciprocal_rank_fusion(corrected_batches)
-
-                if doc_ids:
-                    doc_id_set = set(doc_ids)
-                    corrected_docs = [
-                        document
-                        for document in corrected_docs
-                        if get_document_id(document.metadata) in doc_id_set
-                    ]
-
-                if corrected_docs and enable_reranking and reranker_available:
-                    corrected_candidates = _limit_rerank_candidates(corrected_docs)
-                    corrected_docs = await run_in_threadpool(
-                        _rerank_documents_for_generation,
-                        question,
-                        corrected_candidates,
-                        target_k,
-                    )
-                elif corrected_docs:
-                    corrected_docs = corrected_docs[:target_k]
-
-                if not corrected_docs:
-                    await _emit_progress(
-                        progress_callback,
-                        "crag_correction",
-                        {"status": "insufficient_retrieval"},
-                    )
-                    crag_message = "抱歉，檢索守衛判定目前檢索內容關聯性不足，請調整問題或補充文件後再試。"
-                    if return_docs:
-                        return RAGResult(crag_message, list(doc_ids or []), [])
-                    return (crag_message, list(doc_ids or []))
-
-                docs = corrected_docs
+                crag_message = "抱歉，檢索守衛判定目前檢索內容關聯性不足，請調整問題或補充文件後再試。"
+                if return_docs:
+                    return RAGResult(crag_message, list(doc_ids or []), [])
+                return (crag_message, list(doc_ids or []))
+            docs = crag_result.documents
+            if crag_result.correction_applied:
                 await _emit_progress(
                     progress_callback,
                     "crag_correction",
