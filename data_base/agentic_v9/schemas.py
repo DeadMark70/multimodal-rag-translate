@@ -22,6 +22,9 @@ ResponseStatus = Literal["complete", "qualified_partial", "insufficient"]
 EvidenceSupportType = Literal[
     "direct", "calculated", "scope_constraint", "contradictory"
 ]
+EvidenceValidationStatus = Literal[
+    "deterministic_valid", "quote_bound", "invalid"
+]
 ClaimSupportType = Literal["direct", "calculated", "comparative_inference", "qualified"]
 ScopeMatch = Literal["same", "different", "unknown"]
 SlotResolutionStatus = Literal[
@@ -200,6 +203,7 @@ class EvidencePacket(BaseModel):
     rounding_mode: str | None = None
     extractor_version: str | None = None
     prompt_version: str | None = None
+    validation_status: EvidenceValidationStatus = "deterministic_valid"
 
 
 class SlotResolution(BaseModel):

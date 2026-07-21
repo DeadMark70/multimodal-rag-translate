@@ -191,3 +191,33 @@ async def test_invalid_curator_packet_is_dropped_without_a_second_repair_call() 
 
     assert result == []
     assert len(invoker.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_high_risk_curator_prose_is_handed_to_final_claims_not_evidence() -> None:
+    item = _item(
+        "E1",
+        "Model A outperforms Model B on the held-out dataset.",
+        slot_ids=["method"],
+    )
+    invoker = _RecordingInvoker(
+        {
+            "packets": [
+                {
+                    "source_evidence_id": "E1",
+                    "slot_ids": ["method"],
+                    "statement": "Model A outperforms Model B on the held-out dataset.",
+                }
+            ]
+        }
+    )
+    extractor = EvidenceExtractor(invoker)
+
+    result = await extractor.extract(
+        _contract(_slot("method", "Describe the source conclusion.")),
+        [item],
+        repairs_complete=True,
+    )
+
+    assert result == []
+    assert extractor.final_claims[0].premise_evidence_ids == ["E1"]

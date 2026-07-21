@@ -10,7 +10,17 @@ from typing import Any
 
 from core.prompt_loader import format_agentic_rag_prompt
 from data_base.agentic_v9.evidence_pool import EvidencePoolEntry, EvidencePoolItem
-from data_base.agentic_v9.schemas import EvidencePacket, LlmInvoker, QueryContract, RequiredSlot
+from data_base.agentic_v9.schemas import (
+    EvidencePacket,
+    FinalClaim,
+    LlmInvoker,
+    QueryContract,
+    RequiredSlot,
+)
+from data_base.agentic_v9.evidence_validator import (
+    validate_deterministic_packet,
+    validate_prose_packet,
+)
 
 
 _NUMBER = re.compile(r"(?<![\w.])([+-]?(?:\d+(?:\.\d+)?|\.\d+))(?:\s*([A-Za-z%µ]+))?(?![\w.])")
@@ -26,6 +36,12 @@ class EvidenceExtractor:
 
     def __init__(self, budgeted_invoker: LlmInvoker | None = None) -> None:
         self._invoker = budgeted_invoker
+        self._final_claims: list[FinalClaim] = []
+
+    @property
+    def final_claims(self) -> tuple[FinalClaim, ...]:
+        """Return high-risk prose reserved for the final-claim verifier."""
+        return tuple(self._final_claims)
 
     def extract_deterministic(
         self,
@@ -50,6 +66,7 @@ class EvidenceExtractor:
         question: str = "",
     ) -> list[EvidencePacket]:
         """Finish deterministic work, then curate the remaining prose slots once."""
+        self._final_claims.clear()
         items = _as_items(pool)
         packets = self.extract_deterministic(contract, items)
         unresolved = [
@@ -98,7 +115,12 @@ class EvidenceExtractor:
             )
         except Exception:
             return []
-        return _parse_curated_packets(response, slots=slots, items=items)
+        return _parse_curated_packets(
+            response,
+            slots=slots,
+            items=items,
+            final_claims=self._final_claims,
+        )
 
 
 def extract_numeric_packets(
@@ -112,7 +134,7 @@ def extract_numeric_packets(
             if source_text[max(0, match.start() - 8) : match.start()].casefold().endswith("table "):
                 continue
             literal, unit = match.groups()
-            packets.append(
+            result = validate_deterministic_packet(
                 _derived_packet(
                     item.packet,
                     evidence_id=f"det:{item.packet.evidence_id}:number:{index}",
@@ -123,8 +145,11 @@ def extract_numeric_packets(
                     unit=unit,
                     display_precision=_precision(literal),
                     extractor_version="v9-deterministic-1",
-                )
+                ),
+                source_text=source_text,
             )
+            if result.packet is not None:
+                packets.append(result.packet)
     return packets
 
 
@@ -163,7 +188,7 @@ def _extract_structured_packets(
         source_text = _source_text(item)
         for pattern_index, pattern in enumerate(patterns):
             for match_index, match in enumerate(pattern.finditer(source_text)):
-                packets.append(
+                result = validate_deterministic_packet(
                     _derived_packet(
                         item.packet,
                         evidence_id=(
@@ -172,8 +197,11 @@ def _extract_structured_packets(
                         slot_ids=[slot.slot_id],
                         statement=match.group(0).strip(),
                         extractor_version="v9-deterministic-1",
-                    )
+                    ),
+                    source_text=source_text,
                 )
+                if result.packet is not None:
+                    packets.append(result.packet)
     return packets
 
 
@@ -245,7 +273,11 @@ def _render_source_evidence(items: Sequence[EvidencePoolItem]) -> str:
 
 
 def _parse_curated_packets(
-    response: Any, *, slots: Sequence[RequiredSlot], items: Sequence[EvidencePoolItem]
+    response: Any,
+    *,
+    slots: Sequence[RequiredSlot],
+    items: Sequence[EvidencePoolItem],
+    final_claims: list[FinalClaim] | None = None,
 ) -> list[EvidencePacket]:
     content = getattr(response, "content", response)
     if isinstance(content, bytes):
@@ -281,9 +313,7 @@ def _parse_curated_packets(
         ):
             continue
         item = by_id[source_id]
-        if statement not in _source_text(item):
-            continue
-        packets.append(
+        result = validate_prose_packet(
             _derived_packet(
                 item.packet,
                 evidence_id=f"curated:{source_id}:{':'.join(slot_ids)}",
@@ -291,8 +321,14 @@ def _parse_curated_packets(
                 statement=statement,
                 extractor_version="v9-prose-curator-1",
                 prompt_version="1",
-            )
+            ),
+            source=item.packet,
+            source_text=_source_text(item),
         )
+        if result.packet is not None:
+            packets.append(result.packet)
+        elif result.final_claim is not None and final_claims is not None:
+            final_claims.append(result.final_claim)
     return packets
 
 
