@@ -23,7 +23,7 @@ EvidenceSupportType = Literal[
     "direct", "calculated", "scope_constraint", "contradictory"
 ]
 EvidenceValidationStatus = Literal[
-    "deterministic_valid", "quote_bound", "invalid"
+    "deterministic_valid", "quote_bound", "derived_non_evidence", "invalid"
 ]
 ClaimSupportType = Literal["direct", "calculated", "comparative_inference", "qualified"]
 ScopeMatch = Literal["same", "different", "unknown"]

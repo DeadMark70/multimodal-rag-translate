@@ -48,7 +48,7 @@ class _RouteBudget:
 
 _ROUTE_BUDGETS: dict[AgenticV9Route, _RouteBudget] = {
     "single_lookup": _RouteBudget(1, 0, 2, 30_000),
-    "bounded_compare": _RouteBudget(1, 1, 2, 40_000),
+    "bounded_compare": _RouteBudget(2, 1, 2, 40_000),
     "exact_structured": _RouteBudget(1, 1, 2, 40_000),
     "multi_document_exact": _RouteBudget(2, 1, 2, 50_000),
     "multi_hop": _RouteBudget(2, 1, 2, 50_000),

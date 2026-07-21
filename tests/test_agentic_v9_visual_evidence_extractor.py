@@ -57,7 +57,13 @@ def _asset(
 ) -> VisualAssetCandidate:
     return VisualAssetCandidate(
         asset_id=asset_id,
-        source=EvidenceSource(doc_id=doc_id, asset_id=asset_id),
+        source=EvidenceSource(
+            doc_id=doc_id,
+            chunk_id="chunk-1",
+            parent_id="parent-1",
+            asset_id=asset_id,
+            document_name="paper-a.pdf",
+        ),
         pdf_page_index=page,
         slot_ids=slot_ids or ["primary"],
         figure_id=figure_id,
@@ -196,6 +202,46 @@ async def test_extractor_invokes_only_v9_visual_phase_with_locator_bound_packet_
     assert "answer" not in result.model_dump()
 
 
+def test_locator_selects_only_one_deterministic_page_per_asset() -> None:
+    task = _task()
+    result = AssetLocator().locate(
+        task=task,
+        assets=[
+            _asset("figure-1", page=5),
+            _asset("figure-1", page=2),
+            _asset("figure-2", page=3),
+        ],
+    )
+
+    assert [(item.asset_id, item.pdf_page_index) for item in result.located_assets] == [
+        ("figure-1", 5),
+        ("figure-2", 3),
+    ]
+    assert [(item.asset_id, item.reason) for item in result.dropped_assets] == [
+        ("figure-1", "duplicate_asset_page"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_extractor_fails_closed_without_visual_task_authorization() -> None:
+    task = _task(visual_required=False)
+    asset = _asset("figure-1")
+    invoker = RecordingInvoker(_packet_json(asset))
+
+    result = await VisualEvidenceExtractor(invoker).extract(
+        task=task,
+        assets=[asset],
+        question_fragment="mIoU",
+    )
+
+    assert result.packets == ()
+    assert result.located_assets == ()
+    assert [(item.asset_id, item.reason) for item in result.dropped_assets] == [
+        ("figure-1", "visual_not_required"),
+    ]
+    assert invoker.calls == []
+
+
 @pytest.mark.asyncio
 async def test_extractor_rejects_visual_output_that_contains_an_answer_field() -> None:
     task = _task()
@@ -212,6 +258,28 @@ async def test_extractor_rejects_visual_output_that_contains_an_answer_field() -
     assert result.packets == ()
     assert [(item.asset_id, item.reason) for item in result.dropped_assets] == [
         ("figure-1", "invalid_evidence_packet")
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["chunk_id", "parent_id", "document_name"])
+async def test_extractor_rejects_visual_output_with_rewritten_source_provenance(
+    field: str,
+) -> None:
+    task = _task()
+    asset = _asset("figure-1")
+    response = json.loads(_packet_json(asset))
+    response["source"][field] = f"rewritten-{field}"
+
+    result = await VisualEvidenceExtractor(RecordingInvoker(response)).extract(
+        task=task,
+        assets=[asset],
+        question_fragment="mIoU",
+    )
+
+    assert result.packets == ()
+    assert [(item.asset_id, item.reason) for item in result.dropped_assets] == [
+        ("figure-1", "invalid_evidence_packet"),
     ]
 
 

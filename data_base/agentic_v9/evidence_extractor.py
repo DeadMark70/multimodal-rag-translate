@@ -157,6 +157,10 @@ def calculate_difference(
     *, slot: RequiredSlot, left: EvidencePacket, right: EvidencePacket
 ) -> EvidencePacket:
     """Create a calculated packet with direct, explicit premise evidence IDs."""
+    if not _is_validated_direct_premise(left) or not _is_validated_direct_premise(right):
+        raise ValueError(
+            "difference calculation requires validated span-hashed direct premises"
+        )
     left_value = left.raw_value if left.raw_value is not None else _first_numeric_value(left)
     right_value = right.raw_value if right.raw_value is not None else _first_numeric_value(right)
     if left_value is None or right_value is None:
@@ -176,6 +180,7 @@ def calculate_difference(
         premise_evidence_ids=[left.evidence_id, right.evidence_id],
         display_precision=scale,
         extractor_version="v9-deterministic-1",
+        validation_status="derived_non_evidence",
     )
 
 
@@ -260,6 +265,14 @@ def _decimal_places(value: Decimal) -> int:
 def _first_numeric_value(packet: EvidencePacket) -> Decimal | None:
     match = _NUMBER.search(packet.statement)
     return Decimal(match.group(1)) if match else None
+
+
+def _is_validated_direct_premise(packet: EvidencePacket) -> bool:
+    return (
+        packet.support_type == "direct"
+        and packet.validation_status in {"deterministic_valid", "quote_bound"}
+        and packet.source.source_span_hash is not None
+    )
 
 
 def _covered_slots(packets: Iterable[EvidencePacket]) -> set[str]:

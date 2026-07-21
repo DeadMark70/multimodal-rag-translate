@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from data_base.agentic_v9.route_planner import RoutePlanner
+from data_base.agentic_v9.retrieval_tasks import RetrievalTaskCompiler
 from data_base.agentic_v9.schemas import ResolvedSourceScope
 
 
@@ -55,9 +56,15 @@ async def test_deterministic_regressions_emit_complete_retrieval_contracts() -> 
         )
 
         assert contract.route == case["expected_route"]
-        assert contract.graph_policy == (
-            "required_locator" if case["requires_graph"] else contract.graph_policy
-        )
+        expected_graph_policy = {
+            "single_lookup": "never",
+            "bounded_compare": "never",
+            "exact_structured": "locator_fallback",
+            "multi_document_exact": "locator_fallback",
+            "multi_hop": "locator_fallback",
+            "graph_relational": "required_locator",
+        }[case["expected_route"]]
+        assert contract.graph_policy == expected_graph_policy
         assert contract.required_slots
         assert contract.locator_hints
         assert contract.resolved_source_scope == _scope()
@@ -67,6 +74,23 @@ async def test_deterministic_regressions_emit_complete_retrieval_contracts() -> 
         assert "answer" not in contract.model_dump()
 
     assert invoker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_r2_planner_contract_compiles_its_required_qualification_round() -> None:
+    contract = await RoutePlanner(llm_invoker=_NeverInvoker()).plan(
+        question="SwinUNETR and nnU-Net: which performs better?",
+        resolved_source_scope=_scope(),
+    )
+
+    plan = RetrievalTaskCompiler().compile(
+        question="SwinUNETR and nnU-Net: which performs better?",
+        query_id="R2",
+        contract=contract,
+    )
+
+    assert contract.max_retrieval_rounds == 2
+    assert [task.round_id for task in plan.tasks] == ["round-1", "round-1", "round-2"]
 
 
 @pytest.mark.asyncio

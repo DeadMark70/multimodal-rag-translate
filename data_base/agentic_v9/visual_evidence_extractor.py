@@ -72,6 +72,15 @@ class VisualEvidenceExtractor:
         cancellation_token: Any = None,
     ) -> VisualEvidenceExtractionResult:
         """Locate assets first, then return only source-bound evidence packets."""
+        if not task.visual_required:
+            return VisualEvidenceExtractionResult(
+                dropped_assets=tuple(
+                    DroppedVisualAsset(
+                        asset_id=asset.asset_id, reason="visual_not_required"
+                    )
+                    for asset in assets
+                )
+            )
         located = self._locator.locate(
             task=task, assets=assets, slot_priorities=slot_priorities
         )
@@ -216,12 +225,22 @@ def _is_bound_to_task(
         and packet.query_id == task.query_id
         and bool(set(packet.slot_ids).intersection(asset.slot_ids))
         and set(packet.slot_ids).issubset(set(task.target_slot_ids))
-        and packet.source.doc_id == asset.source.doc_id
-        and packet.source.asset_id == asset.asset_id
+        and _same_source_provenance(packet.source, asset.source)
         and packet.locator.pdf_page_index == asset.pdf_page_index
         and packet.locator.figure_id == asset.locator.figure_id
         and packet.locator.table_id == asset.locator.table_id
         and packet.locator.bbox == asset.locator.bbox
+    )
+
+
+def _same_source_provenance(packet_source: Any, asset_source: Any) -> bool:
+    """Compare model-supplied provenance to the selected source identity.
+
+    A visual model may receive a span hash after identifying its visible span,
+    but it must not rewrite any supplied source-identity field.
+    """
+    return packet_source.model_dump(exclude={"source_span_hash"}) == asset_source.model_dump(
+        exclude={"source_span_hash"}
     )
 
 

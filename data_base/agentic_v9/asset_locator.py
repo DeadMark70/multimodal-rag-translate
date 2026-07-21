@@ -140,10 +140,24 @@ class AssetLocator:
             eligible.append((priority, sequence, located))
 
         eligible.sort(key=lambda item: (-item[0], item[1], item[2].asset_id))
-        selected = eligible[: self._max_assets_per_run]
+        unique_eligible: list[tuple[int, int, LocatedVisualAsset]] = []
+        selected_asset_ids: set[str] = set()
+        for candidate in eligible:
+            asset = candidate[2]
+            if asset.asset_id in selected_asset_ids:
+                dropped.append(
+                    DroppedVisualAsset(
+                        asset_id=asset.asset_id, reason="duplicate_asset_page"
+                    )
+                )
+                continue
+            selected_asset_ids.add(asset.asset_id)
+            unique_eligible.append(candidate)
+
+        selected = unique_eligible[: self._max_assets_per_run]
         dropped.extend(
             DroppedVisualAsset(asset_id=item.asset_id, reason="asset_limit_priority")
-            for _, _, item in eligible[self._max_assets_per_run :]
+            for _, _, item in unique_eligible[self._max_assets_per_run :]
         )
         return AssetLocationResult(
             located_assets=tuple(item for _, _, item in selected),

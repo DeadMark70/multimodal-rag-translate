@@ -13,6 +13,7 @@ from data_base.agentic_v9.evidence_extractor import (
     extract_numeric_packets,
 )
 from data_base.agentic_v9.evidence_pool import EvidencePoolItem
+from data_base.agentic_v9.evidence_validator import source_span_hash
 from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
@@ -41,6 +42,7 @@ def _item(
     *,
     slot_ids: list[str],
     table_id: str | None = "Table 1",
+    source_span_hash: str | None = None,
 ) -> EvidencePoolItem:
     return EvidencePoolItem(
         EvidencePacket(
@@ -52,7 +54,11 @@ def _item(
             slot_ids=slot_ids,
             statement=statement,
             support_type="direct",
-            source=EvidenceSource(doc_id="doc-polyp", chunk_id="chunk-table-1"),
+            source=EvidenceSource(
+                doc_id="doc-polyp",
+                chunk_id="chunk-table-1",
+                source_span_hash=source_span_hash,
+            ),
             scope=EvidenceScope(metric="Dice"),
             locator=SourceLocator(pdf_page_index=4, table_id=table_id, section="Results"),
         ),
@@ -108,14 +114,34 @@ def test_structured_extraction_preserves_formula_theorem_range_table_row_and_enu
 def test_calculation_references_direct_premises_without_inventing_precision() -> None:
     packet = calculate_difference(
         slot=_slot("dice_gap", "Calculate the Dice gap."),
-        left=_item("E1", "Seen 0.877", slot_ids=["dice_gap"]).packet,
-        right=_item("E2", "Unseen 0.837", slot_ids=["dice_gap"]).packet,
+        left=_item(
+            "E1",
+            "Seen 0.877",
+            slot_ids=["dice_gap"],
+            source_span_hash=source_span_hash("Seen 0.877"),
+        ).packet,
+        right=_item(
+            "E2",
+            "Unseen 0.837",
+            slot_ids=["dice_gap"],
+            source_span_hash=source_span_hash("Unseen 0.837"),
+        ).packet,
     )
 
     assert packet.raw_value == Decimal("0.040")
     assert packet.support_type == "calculated"
     assert packet.calculation_operation == "difference"
     assert packet.premise_evidence_ids == ["E1", "E2"]
+    assert packet.validation_status == "derived_non_evidence"
+
+
+def test_calculation_rejects_unvalidated_raw_pool_premises() -> None:
+    with pytest.raises(ValueError, match="validated span-hashed direct premises"):
+        calculate_difference(
+            slot=_slot("dice_gap", "Calculate the Dice gap."),
+            left=_item("E1", "Seen 0.877", slot_ids=["dice_gap"]).packet,
+            right=_item("E2", "Unseen 0.837", slot_ids=["dice_gap"]).packet,
+        )
 
 
 class _RecordingInvoker:
