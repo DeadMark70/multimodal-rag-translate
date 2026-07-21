@@ -43,6 +43,30 @@ PHASE_POLICIES: dict[str, PhasePolicy] = {
     "final_answer": PhasePolicy(0.25, 0.90, 40, 1536),
 }
 
+# The runtime contract permits one provider attempt for each model phase.  Tool
+# work is intentionally absent: it is budgeted separately from LLM attempts.
+MAX_PROVIDER_CALLS_BY_PHASE: dict[str, int] = {
+    phase: 1 for phase in PHASE_POLICIES
+}
+
+
+def provider_reservation_tokens(
+    phase: str,
+    *,
+    setup_output_ceiling: int,
+    setup_reasoning_reserve: int,
+) -> int:
+    """Return the visible-output and Setup-authoritative thought reservation."""
+    if setup_reasoning_reserve < 0:
+        raise ValueError("setup_reasoning_reserve must not be negative")
+    try:
+        policy = PHASE_POLICIES[phase]
+    except KeyError as error:
+        raise ValueError(f"Unsupported Agentic v9 phase: {phase}") from error
+    if setup_output_ceiling < 1:
+        raise ValueError("setup_output_ceiling must be at least one token")
+    return min(setup_output_ceiling, policy.max_output_tokens) + setup_reasoning_reserve
+
 
 def resolve_phase_policy(
     phase: str,

@@ -231,6 +231,16 @@ def test_query_contract_applies_the_model_default_graph_policy_for_each_route(
     assert contract.graph_policy == expected_graph_policy
 
 
+def test_query_contract_rejects_a_runtime_budget_without_provider_call_budget() -> None:
+    with pytest.raises(ValidationError):
+        QueryContract(
+            route="single_lookup",
+            intent="Find the reported score.",
+            max_llm_calls=0,
+            runtime_token_budget=1,
+        )
+
+
 @pytest.mark.parametrize("extra_field", ["user_id", "authorized_doc_ids"])
 def test_request_rejects_adapter_injected_authorization_fields(extra_field: str) -> None:
     payload = {

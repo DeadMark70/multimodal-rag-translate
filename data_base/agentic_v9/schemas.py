@@ -74,6 +74,8 @@ class QueryContract(BaseModel):
     locator_hints: list[str] = Field(default_factory=list)
     graph_policy: GraphPolicy | None = None
     visual_required: bool = False
+    evidence_extraction_required: bool = False
+    max_retrieval_rounds: int = Field(default=0, ge=0)
     max_repair_rounds: int = Field(default=0, ge=0)
     max_llm_calls: int = Field(default=0, ge=0)
     runtime_token_budget: int = Field(default=0, ge=0)
@@ -85,6 +87,8 @@ class QueryContract(BaseModel):
         """Keep route defaults deterministic unless a caller explicitly overrides them."""
         if self.graph_policy is None:
             self.graph_policy = default_graph_policy(self.route)
+        if self.runtime_token_budget and not self.max_llm_calls:
+            raise ValueError("runtime_token_budget requires max_llm_calls")
         return self
 
 
