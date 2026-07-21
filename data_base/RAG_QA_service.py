@@ -45,12 +45,8 @@ from core.llm_factory import get_llm_usage_metrics
 from core.llm_usage_context import llm_accounting_phase
 from core.providers import get_llm
 from core.prompt_loader import format_prompt
-from data_base.context_packing import (
-    expand_graph_evidence_to_chunks,
-    merge_vector_and_graph_docs,
-    score_graph_located_chunks,
-)
 from data_base.document_metadata import get_document_id
+from data_base.rag_graph_locator import locate_graph_sources
 from data_base.vector_store_manager import (
     get_user_retriever_async,
     invoke_retriever_queries_async,
@@ -1220,19 +1216,6 @@ def _graph_evidence_item_id(graph_event_id: str, evidence_id: str) -> str:
     return f"{graph_event_id}:{evidence_id}"
 
 
-def _unique_graph_item_ids(item_ids: List[str]) -> List[str]:
-    return list(dict.fromkeys(item_id for item_id in item_ids if item_id))
-
-
-def _graph_item_ids_from_documents(documents: List[Document]) -> List[str]:
-    return _unique_graph_item_ids(
-        [
-            str(document.metadata.get("graph_evidence_item_id") or "")
-            for document in documents
-        ]
-    )
-
-
 def _build_graph_evidence_items(
     *,
     graph_event_id: str,
@@ -2047,131 +2030,59 @@ async def rag_answer_question(
             },
         )
         if graph_execution_strategy.strategy == "source_expand":
-            chunk_lookup = VectorStoreChunkLookup()
-            graph_started_at = time.perf_counter()
-            bundle: GraphEvidenceBundle | None = None
-            try:
-                bundle = await _get_graph_evidence_bundle(
-                    question=question,
-                    user_id=user_id,
-                    search_mode=graph_search_mode,
-                    graph_execution_hints=graph_execution_hints,
-                    chunk_lookup=chunk_lookup,
-                )
-                resolved_chunks = expand_graph_evidence_to_chunks(
-                    user_id,
-                    bundle,
-                    ChunkAnchorResolver(chunk_lookup),
-                )
-                if doc_ids:
-                    allowed_doc_ids = set(doc_ids)
-                    scoped_chunks = [
-                        chunk
-                        for chunk in resolved_chunks
-                        if get_document_id(chunk.document.metadata) in allowed_doc_ids
-                    ]
-                else:
-                    scoped_chunks = resolved_chunks
-                if (
-                    _graph_evidence_mode(
-                        mode_hints,
-                        graph_execution_hints,
-                        _normalize_evaluation_metadata(
-                            mode_hints, graph_execution_hints
-                        ),
-                    )
-                    == "claim_gated"
-                ):
-                    scoped_chunks = [
-                        chunk
-                        for chunk in scoped_chunks
-                        if _claim_scope_approves_chunk(question, chunk)
-                    ]
-                graph_documents = score_graph_located_chunks(
-                    scoped_chunks,
-                    required_modalities=_required_modalities_for_question(question),
-                )
-                docs = merge_vector_and_graph_docs(
-                    docs,
-                    graph_documents,
-                    graph_chunk_ratio=0.35,
-                )
-                lifecycle = GraphEvidenceLifecycle(
-                    candidate_item_ids=_unique_graph_item_ids(
-                        [item.item_id for item in bundle.evidence_items]
-                    ),
-                    resolved_item_ids=_unique_graph_item_ids(
-                        [chunk.evidence_item.item_id for chunk in resolved_chunks]
-                    ),
-                    scope_approved_item_ids=_unique_graph_item_ids(
-                        [chunk.evidence_item.item_id for chunk in scoped_chunks]
-                    ),
-                    scored_item_ids=_graph_item_ids_from_documents(graph_documents),
-                    packed_item_ids=_graph_item_ids_from_documents(docs),
-                    used_as_locator=(
-                        graph_execution_strategy.strategy == "source_expand"
-                    ),
-                    graph_to_chunk_attempted=(
-                        graph_execution_strategy.strategy == "source_expand"
-                    ),
-                )
+            locator_result = await locate_graph_sources(
+                question=question,
+                user_id=user_id,
+                vector_documents=docs,
+                requested_doc_ids=doc_ids,
+                graph_execution_hints=graph_execution_hints,
+                required_modalities=_required_modalities_for_question(question),
+                evidence_mode=_graph_evidence_mode(
+                    mode_hints,
+                    graph_execution_hints,
+                    _normalize_evaluation_metadata(mode_hints, graph_execution_hints),
+                ),
+                bundle_locator=_get_graph_evidence_bundle,
+                search_mode=graph_search_mode,
+                claim_scope_approver=_claim_scope_approves_chunk,
+            )
+            docs = locator_result.documents
+            lifecycle = GraphEvidenceLifecycle(
+                candidate_item_ids=locator_result.candidate_item_ids,
+                resolved_item_ids=locator_result.resolved_item_ids,
+                scope_approved_item_ids=locator_result.scope_approved_item_ids,
+                scored_item_ids=locator_result.scored_item_ids,
+                packed_item_ids=locator_result.packed_item_ids,
+                used_as_locator=True,
+                graph_to_chunk_attempted=True,
+            )
+            if locator_result.bundle is not None:
                 graph_evidence_units = _graph_evidence_units_from_bundle(
-                    bundle,
-                    items=list(bundle.evidence_items),
+                    locator_result.bundle,
+                    items=list(locator_result.bundle.evidence_items),
                 )
-                graph_context_details = _graph_context_details_for_bundle(
-                    bundle,
-                    graph_execution_strategy.gate_decision,
-                    lifecycle,
-                    int((time.perf_counter() - graph_started_at) * 1000),
-                )
-                await _record_graph_observability(
-                    question=question,
-                    graph_search_mode=graph_search_mode,
-                    graph_execution_hints=graph_execution_hints,
-                    mode_hints=mode_hints,
-                    graph_context_details=graph_context_details,
-                    graph_evidence_units=graph_evidence_units,
+            if locator_result.fallback is not None:
+                graph_context_details = _graph_fallback_context_details(
+                    reason=locator_result.fallback,
+                    graph_latency_ms=locator_result.graph_latency_ms,
                     lifecycle=lifecycle,
                 )
-            except (KeyError, OSError, RuntimeError, ValueError) as exc:
-                logger.warning(
-                    "Graph-to-chunk expansion failed; retaining vector retrieval: %s",
-                    exc,
+            else:
+                graph_context_details = _graph_context_details_for_bundle(
+                    locator_result.bundle,
+                    graph_execution_strategy.gate_decision,
+                    lifecycle,
+                    locator_result.graph_latency_ms,
                 )
-                candidate_item_ids = (
-                    _unique_graph_item_ids(
-                        [item.item_id for item in bundle.evidence_items]
-                    )
-                    if bundle is not None
-                    else []
-                )
-                fallback_lifecycle = GraphEvidenceLifecycle(
-                    candidate_item_ids=candidate_item_ids,
-                    resolved_item_ids=[],
-                    scope_approved_item_ids=[],
-                    scored_item_ids=[],
-                    packed_item_ids=[],
-                    used_as_locator=True,
-                    graph_to_chunk_attempted=True,
-                )
-                graph_context_details = _graph_fallback_context_details(
-                    reason="source_expand_failed",
-                    graph_latency_ms=max(
-                        int((time.perf_counter() - graph_started_at) * 1000),
-                        0,
-                    ),
-                    lifecycle=fallback_lifecycle,
-                )
-                await _record_graph_observability(
-                    question=question,
-                    graph_search_mode=graph_search_mode,
-                    graph_execution_hints=graph_execution_hints,
-                    mode_hints=mode_hints,
-                    graph_context_details=graph_context_details,
-                    graph_evidence_units=graph_evidence_units,
-                    lifecycle=fallback_lifecycle,
-                )
+            await _record_graph_observability(
+                question=question,
+                graph_search_mode=graph_search_mode,
+                graph_execution_hints=graph_execution_hints,
+                mode_hints=mode_hints,
+                graph_context_details=graph_context_details,
+                graph_evidence_units=graph_evidence_units,
+                lifecycle=lifecycle,
+            )
         elif graph_execution_strategy.strategy == "raw_legacy":
             graph_context_payload = await _get_graph_context(
                 question=question,
