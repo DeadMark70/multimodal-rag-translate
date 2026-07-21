@@ -95,15 +95,19 @@ class QueryContract(BaseModel):
 class RetrievalTask(BaseModel):
     """A retrieval-only unit that targets slots and never contains an answer."""
 
+    model_config = ConfigDict(extra="forbid")
+
     task_id: str = Field(min_length=1)
     round_id: str = Field(min_length=1)
     query_id: str = Field(min_length=1)
     query: str = Field(min_length=1)
     target_slot_ids: list[str] = Field(min_length=1)
     source_scope: ResolvedSourceScope
+    source_group_id: str = Field(default="source-group-1", min_length=1)
     locator_hints: list[str] = Field(default_factory=list)
     graph_policy: GraphPolicy = "never"
     visual_required: bool = False
+    depends_on_task_ids: list[str] = Field(default_factory=list)
 
 
 class RagRetrievalResult(BaseModel):
