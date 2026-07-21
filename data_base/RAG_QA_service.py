@@ -46,6 +46,11 @@ from core.llm_usage_context import llm_accounting_phase
 from core.providers import get_llm
 from core.prompt_loader import format_prompt
 from data_base.document_metadata import get_document_id
+from data_base.rag_generation import (
+    generate_legacy_answer_from_evidence,
+    legacy_source_doc_ids,
+    parse_legacy_visual_tool_request,
+)
 from data_base.rag_graph_locator import locate_graph_sources
 from data_base.vector_store_manager import (
     get_user_retriever_async,
@@ -364,56 +369,11 @@ async def get_user_retriever(user_id: str, k: int = 3, plain_mode: bool = False)
 
 
 def _parse_visual_tool_request(response: str) -> Optional[Dict[str, str]]:
-    """
-    Extracts VERIFY_IMAGE JSON from LLM response with tolerant parsing.
-
-    Handles common LLM JSON formatting issues:
-    - JSON wrapped in markdown code blocks
-    - Extra whitespace/newlines
-    - Minor formatting variations
-
-    Args:
-        response: LLM response text.
-
-    Returns:
-        Parsed dict with 'action', 'path', 'question' or None if not found.
-    """
-    # Pattern to match VERIFY_IMAGE JSON (tolerant of whitespace)
-    patterns = [
-        # Standard JSON format
-        r'\{\s*"action"\s*:\s*"VERIFY_IMAGE"\s*,\s*"path"\s*:\s*"([^"]+)"\s*,\s*"question"\s*:\s*"([^"]+)"\s*\}',
-        # Reordered fields
-        r'\{\s*"action"\s*:\s*"VERIFY_IMAGE"[^}]*"path"\s*:\s*"([^"]+)"[^}]*"question"\s*:\s*"([^"]+)"[^}]*\}',
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, response, re.DOTALL | re.IGNORECASE)
-        if match:
-            return {
-                "action": "VERIFY_IMAGE",
-                "path": match.group(1),
-                "question": match.group(2),
-            }
-
-    # Fallback: try to find and parse any JSON with VERIFY_IMAGE
-    json_pattern = r"```(?:json)?\s*(\{[^`]+\})\s*```"
-    json_match = re.search(json_pattern, response, re.DOTALL)
-    if json_match:
-        try:
-            data = json.loads(json_match.group(1))
-            if (
-                data.get("action") == "VERIFY_IMAGE"
-                and data.get("path")
-                and data.get("question")
-            ):
-                return data
-        except json.JSONDecodeError:
-            pass
-
-    return None
+    """Backward-compatible facade for the extracted legacy parser."""
+    return parse_legacy_visual_tool_request(response)
 
 
-async def _execute_visual_verification_loop(
+async def _deprecated_visual_verification_loop(
     initial_response: str,
     context: str,
     question: str,
@@ -2114,6 +2074,42 @@ async def rag_answer_question(
     if not plain_mode:
         docs = await run_in_threadpool(_expand_short_chunks, docs, user_id)
 
+    generated = await generate_legacy_answer_from_evidence(
+        question=question,
+        user_id=user_id,
+        documents=docs,
+        llm=llm,
+        graph_context=graph_context,
+        history_section=(
+            f"\n{_format_history_for_prompt(history)}\n" if history else ""
+        ),
+        intent_constraints=_intent_constraints_for_prompt(question, mode_hints),
+        plain_mode=plain_mode,
+        enable_visual_verification=enable_visual_verification,
+        progress_callback=progress_callback,
+        image_encoder=_encode_image,
+    )
+    source_doc_ids = legacy_source_doc_ids(docs)
+    if return_docs:
+        returned_docs = (
+            docs
+            if generated.thought_process is None
+            else [*docs, *graph_evidence_documents_for_return]
+        )
+        return RAGResult(
+            generated.answer,
+            source_doc_ids,
+            returned_docs,
+            generated.usage,
+            thought_process=generated.thought_process,
+            tool_calls=generated.tool_calls,
+            visual_verification_meta=generated.visual_verification_meta,
+        )
+    return (generated.answer, source_doc_ids)
+
+    # The following legacy body is retained temporarily solely as source history
+    # for this reviewable extraction; it is unreachable after the delegation.
+
     # Step 6: Separate data, label sources, and deduplicate
     text_context: List[str] = []
     image_paths: Set[str] = set()
@@ -2285,7 +2281,7 @@ async def rag_answer_question(
                 answer,
                 tool_calls,
                 visual_verification_meta,
-            ) = await _execute_visual_verification_loop(
+            ) = await _deprecated_visual_verification_loop(
                 initial_response=answer,
                 context=context_text,
                 question=question,
