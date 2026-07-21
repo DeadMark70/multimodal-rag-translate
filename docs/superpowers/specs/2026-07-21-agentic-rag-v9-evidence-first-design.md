@@ -1,6 +1,6 @@
 # Agentic RAG v9 Evidence-First Design
 
-**Status:** Revised and ready for implementation
+**Status:** Approved and frozen
 
 **Date:** 2026-07-21
 
@@ -50,7 +50,7 @@ Required route values:
 - `multi_hop`
 - `graph_relational`
 
-The contract records intent, required answer slots, entities, locator hints, graph/visual requirements, repair limit, LLM-call limit, runtime token budget, and authorized document scope. Deterministic routing handles clear lookup, locator, numeric, formula, explicit comparison, exclusion, and already-decomposed questions. One RoutePlan LLM call is permitted only for ambiguous slot structure, hidden dependencies, unknown document scope, uncertain graph need, or mixed comparison/numeric/visual/verdict questions. Source names are resolved to internal document IDs and intersected with both user authorization and request-supplied `doc_ids`; routing can never expand document authorization.
+The contract records intent, required answer slots, entities, locator hints, graph/visual requirements, repair limit, LLM-call limit, runtime token budget, and resolved authorized document scope. Requests contain only requested IDs/names; authenticated identity comes from the adapter, and only the resolver may produce authorized IDs. Deterministic routing handles clear lookup, locator, numeric, formula, explicit comparison, exclusion, and already-decomposed questions. One RoutePlan LLM call is permitted only for ambiguous slot structure, hidden dependencies, unknown document scope, uncertain graph need, or mixed comparison/numeric/visual/verdict questions. Source names are resolved to internal document IDs and intersected with both user authorization and request-supplied `doc_ids`; routing can never expand document authorization.
 
 ## Retrieval and Generation Boundaries
 
@@ -95,7 +95,6 @@ Evidence packets are the v9 positive fact state. Required `support_type` values 
 
 - `direct`
 - `calculated`
-- `comparative_inference`
 - `scope_constraint`
 - `contradictory`
 
@@ -103,7 +102,7 @@ Every packet includes a versioned `EvidenceScope` covering applicable dataset, s
 
 Absence is modeled separately as `SlotResolution(status="explicitly_unavailable"|"not_found")`; it is not a source-less EvidencePacket. Provenance missing rate counts only positive evidence packets.
 
-Numeric values, formulae, locators, theorem ranges, table rows, and explicit enumerations use deterministic extraction first. Retrieval and repair finish before one batched prose-curation call processes the remaining unresolved prose slots. Cross-document comparative inference is deferred to final generation and must list its premise evidence IDs.
+Numeric values, formulae, locators, theorem ranges, table rows, and explicit enumerations use deterministic extraction first. Retrieval and repair finish before one batched prose-curation call processes the remaining unresolved prose slots. `FinalClaim.support_type` is `direct`, `calculated`, `comparative_inference`, or `qualified`. Cross-document comparative inference is therefore a FinalClaim, never an EvidencePacket, and must list its premise evidence IDs.
 
 ## Context Packing and Runtime Budget
 
@@ -160,9 +159,12 @@ All v9 runtime phases continue to use the Setup-selected model.
 | Phase | Temperature | Top-p | Top-k | Output cap |
 |---|---:|---:|---:|---:|
 | `route_plan` | 0.10 | 0.80 | 20 | 384 |
+| `query_rewrite` | 0.10 | 0.80 | 20 | 192 |
 | `retrieval_judge` | 0.10 | 0.70 | 10 | 96 |
+| `graph_route` | 0.10 | 0.70 | 10 | 128 |
 | `evidence_extract` | 0.10 | 0.80 | 20 | 768 |
 | `conflict_arbitration` | 0.10 | 0.80 | 20 | 256 |
+| `claim_verifier` | 0.10 | 0.80 | 20 | 384 |
 | `final_answer` | 0.25 | 0.90 | 40 | 1,536 |
 | `visual_extract` | 0.10 | 0.80 | 20 | 768 |
 
@@ -171,22 +173,27 @@ All v9 runtime phases continue to use the Setup-selected model.
 - `CampaignConfig` and `V9ExecutionRequest` persist `agentic_execution_version: Literal["v8", "v9"]`; `AGENTIC_EXECUTION_VERSION` supplies only the default.
 - Default remains `v8` until shadow comparison passes.
 - Shadow results use `condition_id="agentic-v9-shadow"` so they cannot collide with authoritative campaign rows.
+- Shadow explicitly persists an `operational` or `research` evaluation policy. Operational shadow cannot affect authoritative answers/gates; research shadow is independently evaluated and required for its declared comparison.
 - Evaluation and streaming chat become thin adapters around the shared v9 core.
 - Persist Query Contract and SufficiencyReport in versioned trace payloads, actual provider usage only in `evaluation_usage_events`, EvidencePackets and SlotResolutions in normalized v9 tables, final claims in `evaluation_claims`, and the final pack in `evaluation_context_packs`.
 - `RAGResult.documents` contains only `used_evidence_documents`; all retrieved/rejected/unpacked evidence remains observability-only.
+- Attempt-scoped evidence state is idempotent and authorized through campaign ownership. Formal arm identity is `(mode, condition_id, execution_profile)`; shadow identity is distinct from formal v9.
+- Run detail exposes v9 data only through a versioned nested `agentic_v9` envelope. OpenAPI is the transport source of truth.
 - Historical campaigns remain readable and retain their original execution profile.
 
 ## Concurrency, Cancellation, and Chat History
 
-`ExecutionPolicy` explicitly bounds retrieval, LLM, and visual concurrency and gives every LLM phase a timeout. The budget controller and evidence pool are concurrency-safe. Campaign cancellation, task cancellation, timeout, and SSE disconnect propagate through the execution core and reconcile reservations before exit.
+`ExecutionPolicy` explicitly bounds retrieval, LLM, and visual concurrency, gives every phase a timeout, and establishes a 24-second whole-run deadline at attempt/chat start before source resolution. The budget controller and evidence pool are concurrency-safe. Campaign cancellation, task cancellation, timeout, and SSE disconnect propagate through the execution core and reconcile reservations before exit.
 
 `V9ExecutionRequest.history` preserves at most the existing ten-message chat limit subject to a separate history token cap. History may help conversational query resolution but cannot be stored as academic evidence or cited by a final claim.
 
 ## Evaluation Protocol
 
-Golden Dataset v2 is immutable and separately hashed; v1 is never overwritten. It repairs Q14 reference/source contradictions and Q16 formula tokenization, and supplies required/optional atomic facts, claim importance, expected evidence, and expected route for all 16 questions.
+Golden Dataset v2 is immutable and separately hashed; v1 is never overwritten. It repairs Q14 reference/source contradictions and Q16 formula tokenization, and supplies required/optional atomic facts, claim importance, expected evidence, and expected route for all 16 formal questions. A separate route-regression fixture supplies deterministic/synthetic cases, including graph-relational coverage, and does not participate in formal quality averages.
 
-Q9/Q15/Q16 × one repeat is a smoke gate only. Promotion uses 16 questions × `naive`, v8, and v9 × eight paired repeats with an identical corpus, index, prompt, model, evaluator, and dataset snapshot. Report mean paired delta, 95% paired-bootstrap confidence interval, category deltas, and per-question regressions. Engineering correctness delta must be non-negative and the default statistical safety bound is lower CI ≥ -0.01.
+Q9/Q15/Q16 × one repeat is a smoke gate only. Promotion uses 16 questions × `naive`, v8, and v9 × eight paired repeats with an identical corpus, index, prompt, model, evaluator, and dataset snapshot. The bootstrap unit is the question cluster: aggregate repeats per question, then resample 16 questions. Report mean paired delta, 95% paired-bootstrap confidence interval, category deltas, and per-question regressions. Engineering correctness delta must be non-negative and the default statistical safety bound is lower CI ≥ -0.01.
+
+Document authority is fixed: this design is the semantic source of truth, the backend plan is the implementation source of truth, and generated OpenAPI is the transport source of truth.
 
 ## Acceptance Criteria
 

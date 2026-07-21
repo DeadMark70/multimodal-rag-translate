@@ -41,6 +41,7 @@ Create focused presentation components rather than enlarging the tabs: `V9Contra
 
 - [ ] Record backend commit/OpenAPI hash and frontend baseline in a manifest/test fixture.
 - [ ] Define typed `V9QueryContract`, required slot, source/scope, packet, slot resolution, sufficiency, reservation/budget snapshot, context pack, repair, conflict, final claim, metrics, and `V9ExecutionObservability`.
+- [ ] Define typed campaign preflight request/response issues and shadow progress fields from OpenAPI; authenticated user identity is never sent as a trusted campaign field.
 - [ ] Nest versioned data as `RunDetailResponse.agentic_v9?: V9ExecutionObservability | null`; do not flatten v9 fields or leave them as `Record<string, unknown>`.
 - [ ] Add contract tests proving optional v9 fields do not break v8 payloads.
 - [ ] Commit: `chore(evaluation): pin agentic v9 api contract`
@@ -49,11 +50,14 @@ Create focused presentation components rather than enlarging the tabs: `V9Contra
 
 **Modify:** `src/types/evaluation.ts`, `src/components/evaluation/CampaignRunner.tsx`, `CampaignRunner.test.tsx`, API tests.
 
-- [ ] Add `AgenticExecutionVersion = 'v8'|'v9'`, optional `agentic_execution_version`, and `agentic_v9_shadow` to campaign input.
+- [ ] Add `AgenticExecutionVersion = 'v8'|'v9'`, optional `agentic_execution_version`, `agentic_v9_shadow`, and explicit `shadow_evaluation_policy: 'operational'|'research'` to campaign input.
 - [ ] Controls appear only when Agentic mode is selected; default is v8 and v9 is labelled Evidence-First.
-- [ ] Shadow is an explicit research-only checkbox with runtime-token warning; reject authoritative v9 + v9 shadow.
+- [ ] Shadow is an explicit advanced/research control with runtime-token warning and required operational/research policy; reject authoritative v9 + v9 shadow.
 - [ ] Persisted campaign history displays saved version/condition and never guesses from current environment.
-- [ ] Render backend `configuration_incompatible` reasons before/after campaign creation; never silently change thinking or budgets.
+- [ ] Call `POST /api/evaluation/campaigns/preflight` for selected cases/model/version and render per-question `configuration_incompatible` issues before submission; still render runtime incompatibility after creation. Never silently change thinking or budgets.
+- [ ] Allow v8, v8 + v9 shadow, or v9; reject v9 + shadow. Product shadow is labelled operational/research-only and never replaces the authoritative answer.
+- [ ] Add separate shadow completed/total progress fields and warning status; never fold product-shadow work into authoritative progress or token ratio.
+- [ ] Research-shadow RAGAS/comparability failures display as a comparison failure without changing the authoritative answer.
 - [ ] Commit: `feat(evaluation): control agentic execution version`
 
 ## Task F1 — Add selected-run v9 evidence detail mapping
@@ -111,7 +115,7 @@ Create focused presentation components rather than enlarging the tabs: `V9Contra
 - [ ] Assert unknown numeric values never render `0`, `$0.000`, or `0.0%`.
 - [ ] Test actual Graph zero separately from uninstrumented Graph values and every policy state label.
 - [ ] Assert run selector changes all detail panels consistently.
-- [ ] Test v8/v9/shadow campaign controls, condition-aware labels, configuration incompatibility, request races, escaped malicious evidence, pagination, and historical `agentic_v9=null`.
+- [ ] Test v8/v9/shadow campaign controls, preflight/runtime incompatibility, separate shadow progress/warnings, condition-aware labels, request races, escaped malicious evidence, pagination, and historical `agentic_v9=null`.
 - [ ] Run lint, typecheck, unit/integration tests, and production build with an explicit timeout/log capture.
 - [ ] Commit: `test(evaluation): verify agentic v9 observability ui`
 

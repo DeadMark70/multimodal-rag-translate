@@ -57,7 +57,6 @@ Cross-document comparison is a `FinalClaim` with premise evidence IDs, never a s
 | `query_rewrite` | 0.10 | 0.80 | 20 | 192 | 1 |
 | `retrieval_judge` | 0.10 | 0.70 | 10 | 96 | 1 |
 | `graph_route` | 0.10 | 0.70 | 10 | 128 | 1 |
-| `graph_traversal` | N/A | N/A | N/A | N/A | 1 |
 | `visual_extract` | 0.10 | 0.80 | 20 | 768 | 1 batched call |
 | `evidence_extract` | 0.10 | 0.80 | 20 | 768 | 1 batched call |
 | `conflict_arbitration` | 0.10 | 0.80 | 20 | 256 | 1 |
@@ -66,9 +65,11 @@ Cross-document comparison is a `FinalClaim` with premise evidence IDs, never a s
 
 Phase limits are ceilings, not entitlements, and remain subordinate to route call/token/deadline budgets. Admission priority is final response reserve → required route planning → required visual/Graph locator → evidence extraction → retrieval judge/rewrite → conflict arbitration → optional claim verifier. Completely unsupported runs skip final LLM and use a deterministic insufficiency response.
 
+`max_provider_calls_by_phase` contains only model phases in the table. Non-provider work is budgeted separately as `max_tool_operations`: retrieval rounds from the contract, one Graph traversal, one visual asset batch, and repair rounds from the contract. Observability separately records provider attempts, tool operations, and retrieval queries; only provider attempts count toward `max_llm_calls`.
+
 ### Transport/runtime separation
 
-`V9ExecutionRequest` is serializable and contains question, user/requested sources, history, Setup snapshot, execution version, and trace identity. Non-serializable dependencies live in `V9RuntimeContext(cancellation_token, event_sink, budget_controller, deadline, clock, llm_invoker)`. The core signature is `await core.execute(request=request, runtime=runtime)`.
+`V9ExecutionRequest` is serializable and contains question, `requested_doc_ids`, `requested_source_names`, history, Setup snapshot, execution version, and trace identity. Authenticated user identity is injected by the FastAPI/adapter auth context and is never trusted from the body. `ResolvedSourceScope` distinguishes requested, resolved, authorized IDs, and rejected names. Non-serializable dependencies live in `V9RuntimeContext(cancellation_token, event_sink, budget_controller, deadline, clock, llm_invoker)`. The core signature is `await core.execute(request=request, runtime=runtime)`.
 
 ### Unified provider boundary
 
@@ -76,13 +77,13 @@ Every query-time model user receives an `LlmInvoker` protocol dependency. v9 rou
 
 ## Task 0 — Freeze baseline and build Golden Dataset v2
 
-**Create:** `evaluation/golden/agentic_v9_questions_v2.json`, `evaluation/golden/agentic_v9_baseline_manifest.json`, `tests/test_agentic_v9_golden_dataset.py`.
+**Create:** `evaluation/golden/agentic_v9_questions_v2.json`, `evaluation/golden/agentic_v9_route_regressions.json`, `evaluation/golden/agentic_v9_baseline_manifest.json`, `tests/test_agentic_v9_golden_dataset.py`.
 
 - [ ] Record backend behavioral commit; frontend URL/branch/commit; model/thinking, corpus/index, prompt and evaluator snapshots; source campaign IDs; artifact SHA-256 values.
 - [ ] Add a path-validation test for every file named by this plan.
 - [ ] Copy v1. Repair Q14 contradictory ground truths/source scope and Q16 formula splitting.
 - [ ] Fill all 16 questions with required/optional atomic facts, claim importance, expected evidence/locators, source docs, and expected route.
-- [ ] Assert unique IDs, valid references, non-empty required facts/evidence, stable hash, and six-route coverage.
+- [ ] Assert unique IDs, valid references, non-empty required facts/evidence, and stable hashes. Golden v2 plus route-regression fixtures cover six routes; synthetic graph cases never enter formal correctness/RAGAS averages.
 - [ ] Verify: `python -m pytest tests/test_agentic_v9_golden_dataset.py tests/test_evaluation_test_case_schema.py -q`
 - [ ] Commit: `test(agentic-v9): freeze golden dataset and baselines`
 
@@ -96,7 +97,7 @@ The manifest initially records frontend `https://github.com/DeadMark70/Multimoda
 - [ ] `SlotResolution.status`: `supported|conflicted|explicitly_unavailable|not_found`.
 - [ ] `SufficiencyReport` separates `evidence_complete`, `answerable`, `response_status`, slot groups, and stop reason.
 - [ ] Graph defaults by route: never, never, locator fallback, locator fallback, locator fallback, required locator.
-- [ ] `V9ExecutionRequest` includes authorized doc IDs, requested source names, bounded history, Setup snapshot, execution version, and trace identity; `V9RuntimeContext` carries cancellation/event/budget/clock dependencies and is never serialized.
+- [ ] `V9ExecutionRequest` includes only `requested_doc_ids` and `requested_source_names`; `ResolvedSourceScope` is the sole producer of authorized IDs. Authenticated user identity and `V9RuntimeContext` dependencies are adapter-injected and never serialized from the request body.
 - [ ] Verify schema and observability schema tests.
 - [ ] Commit: `feat(agentic-v9): define coherent execution contracts`
 
@@ -114,8 +115,10 @@ The manifest initially records frontend `https://github.com/DeadMark70/Multimoda
 
 **Create:** `data_base/agentic_v9/budget_feasibility.py`, tests. **Modify:** phase policy and QueryContract validation.
 
-- [ ] Define `max_calls_by_phase` and admission priority exactly as the runtime contract above.
-- [ ] Implement `BudgetFeasibilityReport` and validate after contract resolution but before the first provider call.
+- [ ] Define `max_provider_calls_by_phase`, `max_tool_operations`, and admission priority exactly as the runtime contract above.
+- [ ] Stage A `validate_pre_route_feasibility(...)` runs before an ambiguous route-planner call and proves route-plan reservation plus deterministic final/insufficiency fallback remain possible.
+- [ ] Stage B `validate_post_contract_feasibility(...)` runs after the contract and validates route token/call budgets, final reserve, and Graph/visual/curator eligibility against the current ledger.
+- [ ] Route-plan usage is charged to the final resolved route budget; it is never a free preflight call.
 - [ ] Reservation includes Setup-authoritative reasoning/thought-token reserve, not only visible output.
 - [ ] Incompatible thinking/route budget returns `configuration_incompatible`; never disable thinking or inflate budget silently.
 - [ ] Verify high-thinking-budget fixtures for single lookup and bounded compare.
@@ -128,6 +131,7 @@ The manifest initially records frontend `https://github.com/DeadMark70/Multimoda
 - [ ] `RunBudgetController` uses `asyncio.Lock`; atomically reserves call plus estimated input and maximum output.
 - [ ] Protect one final-call input/output envelope from optional phases.
 - [ ] `invoke_budgeted_llm` reserves before provider invocation and reconciles actual usage idempotently; missing usage gets a conservative estimate.
+- [ ] Store reserved input, visible output, and reasoning separately. If provider total exists it is authoritative; otherwise total is input + visible output + reasoning + other. Never add thought tokens on top of a reported total.
 - [ ] Every provider retry, direct/Graph/visual/verifier/final attempt counts. Deterministic parser recovery does not call an LLM.
 - [ ] Reservation failure prevents provider invocation. Final failure/unavailability returns deterministic qualified partial with generation count zero.
 - [ ] Verify budget, callback, and usage aggregation tests; use existing tests, not nonexistent `test_evaluation_accounting.py`.
@@ -222,6 +226,7 @@ Create `retrieval_tasks.py` and tests. Q9 bounded A/B, Q15 asset locator, Q16 so
 - [ ] Locate page/figure/table/formula before visual invocation.
 - [ ] Visual model receives target slot/question fragment/asset/source and returns EvidencePacket JSON only.
 - [ ] Use budget, phase policy, semaphore, timeout, and cancellation; never call legacy visual answer synthesis.
+- [ ] Enforce at most three assets per run and one page per asset, prefer bbox crops, cap encoded bytes/dimensions, choose overflow by target-slot priority, and persist dropped-asset reasons.
 - [ ] Commit: `feat(agentic-v9): extract visual evidence only`
 
 ## Task 9 — Extract evidence after retrieval stabilizes
@@ -278,7 +283,8 @@ Create `execution_policy.py` and tests. Initial limits: retrieval concurrency 3,
 
 **Modify:** execution policy/core/runtime context; add deadline tests.
 
-- [ ] Add `total_deadline_s=24.0` plus retrieval, rerank, Graph, visual, and existing phase timeouts.
+- [ ] Add `total_deadline_s=24.0` plus retrieval, rerank, Graph, visual, and existing phase timeouts. Start the deadline at evaluation-attempt/chat execution creation before source resolution and never reset it inside the core.
+- [ ] Deadline/latency includes scope resolution through claim verification; it excludes RAGAS and post-completion asynchronous analytics. P95 uses the same timestamps.
 - [ ] Each operation uses `min(phase_timeout, deadline.remaining_seconds())`.
 - [ ] When time is insufficient for the final reserve, skip optional repair/arbitration/verifier and enter final or deterministic partial.
 - [ ] `insufficient` with zero supported slots must never invoke final LLM.
@@ -316,7 +322,7 @@ Add indexes/FKs/schema version/payload-size guard and historical empty defaults.
 
 ### 13B Analytics/API/OpenAPI
 
-Modify `analytics.py`, `router.py`, `openapi.json`; add API tests. Expose contract, slots, packets, dropped context, graph outcome, budgets, repairs, conflicts, response/cancel status, generation count. Unknown remains N/A; no money fields. Commit `feat(evaluation): expose v9 evidence observability api`.
+Modify `analytics.py`, `router.py`, `openapi.json`; add API tests. Define `V9ExecutionObservability(schema_version="1", contract, slot_resolutions, evidence_packets, sufficiency, context_pack, budget, repairs, conflicts, final_claims, metrics)` and expose it only as `RunDetailResponse.agentic_v9: V9ExecutionObservability | None`. Unknown remains N/A; no money fields. Add `POST /api/evaluation/campaigns/preflight` using Golden expected routes for static compatibility and return per-question `configuration_incompatible` issues; runtime repeats both feasibility stages. Commit `feat(evaluation): expose v9 evidence observability api`.
 
 ## Task 14 — Evaluation adapter and RAGAS integrity
 
@@ -328,6 +334,10 @@ Modify campaign schemas/engine/worker, agentic evaluation service, and rag modes
 - [ ] Result separates `used_evidence_documents` from all retrieved; only used/cited documents populate `RAGResult.documents` and RAGAS contexts.
 - [ ] Test context-to-claim evidence mapping, unpacked exclusion, and deduplication.
 - [ ] `/runs` returns condition ID, execution profile/version, and response status so UI cannot merge v8, v9, and shadow.
+- [ ] Shadow modes: allow v8 authoritative, v8 + v9 shadow, or v9 authoritative; reject v9 authoritative + v9 shadow and formal v9 + shadow v9 in one campaign.
+- [ ] When shadow is enabled, persist `shadow_evaluation_policy: operational|research`; do not infer semantics from environment or UI labels.
+- [ ] Product shadow never changes the authoritative v8 answer; failures are warnings, tokens are operational-only, and progress uses separate shadow completed/total units rather than ordinary totals.
+- [ ] Research shadow uses an independent work item/attempt, runs RAGAS, and missing/failed shadow makes comparability fail without replacing the authoritative answer.
 - [ ] Commit: `feat(evaluation): adapt campaigns to agentic v9`
 
 ## Task 15 — Chat SSE adapter
@@ -358,6 +368,7 @@ Add required-slot coverage, important-claim unsupported rate, provenance failure
 - Report paired mean delta, 95% paired-bootstrap CI, category/per-question regressions, tokens/calls/latency, evidence metrics, accounting completeness.
 - Engineering correctness delta vs v8 `>=0`; default statistical lower bound `>=-0.01` (strict `>=0` requires explicit approval).
 - First gates: token ratio `<=4`, relevancy `>=0.70`, P95 `<25s`, provenance failures `0`, subtask answers `0`, final generation `<=1`, complete accounting/phase attribution.
+- Smoke requires zero failed/timed-out official runs. First formal promotion requires 100% official execution completion, accounting completeness, and required RAGAS metric completion.
 - Promote default only if all gates pass; rollback remains config-only.
 
 ### Task 17C — Enforce scientific condition identity and clustered bootstrap
@@ -366,7 +377,7 @@ Add required-slot coverage, important-claim unsupported rate, provenance failure
 - [ ] Aggregate eight repeats per question, then bootstrap 16 question clusters; never treat 128 executions as independent questions.
 - [ ] Randomize arm order within each question/repeat block and blind the RAGAS judge to labels.
 - [ ] Official token ratio is `sum(v9 official runtime tokens)/sum(naive official runtime tokens)`, not mean per-run ratios.
-- [ ] P95 uses successful accounting-complete official v9 runs, but excessive failure/timeout fails the gate rather than being excluded silently.
+- [ ] P95 uses successful accounting-complete official v9 runs; smoke/formal policies above require zero official failure/timeout, so failed samples can never be silently excluded from a passing gate.
 - [ ] Add a non-blocking ablation arm for v8 + A-type phase policy to separate policy from architecture effects.
 - [ ] Commit: `feat(evaluation): enforce clustered v9 benchmark statistics`
 
