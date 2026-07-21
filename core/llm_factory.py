@@ -94,12 +94,22 @@ def llm_runtime_override(*, clear: tuple[str, ...] = (), **overrides: Any):
     current = dict(_runtime_llm_overrides.get())
     for key in clear:
         current.pop(key, None)
-    merged = {**current, **{key: value for key, value in overrides.items() if value is not None}}
+    supplied = {key: value for key, value in overrides.items() if value is not None}
+    if "setup_max_output_tokens" not in current and "max_output_tokens" in supplied:
+        supplied.setdefault("setup_max_output_tokens", supplied["max_output_tokens"])
+    if "setup_max_input_tokens" not in current and "max_input_tokens" in supplied:
+        supplied.setdefault("setup_max_input_tokens", supplied["max_input_tokens"])
+    merged = {**current, **supplied}
     token: Token[dict[str, Any]] = _runtime_llm_overrides.set(merged)
     try:
         yield
     finally:
         _runtime_llm_overrides.reset(token)
+
+
+def current_llm_runtime_overrides() -> dict[str, Any]:
+    """Return a copy of the request-scoped LLM runtime metadata."""
+    return dict(_runtime_llm_overrides.get())
 
 
 def _resolve_model_name(purpose: LLMPurpose, model_name: Optional[str] = None) -> str:

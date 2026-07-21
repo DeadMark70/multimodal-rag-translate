@@ -12,6 +12,7 @@ _BASE_RUNTIME_KEYS = {
     "temperature",
     "top_p",
     "top_k",
+    "max_input_tokens",
     "max_output_tokens",
 }
 
@@ -122,6 +123,10 @@ def normalize_model_config_for_runtime(model_config: dict[str, Any]) -> dict[str
         for key in _BASE_RUNTIME_KEYS
         if model_config.get(key) is not None
     }
+    if "max_input_tokens" in runtime:
+        runtime["setup_max_input_tokens"] = runtime["max_input_tokens"]
+    if "max_output_tokens" in runtime:
+        runtime["setup_max_output_tokens"] = runtime["max_output_tokens"]
     runtime["thinking_enabled"] = bool(model_config.get("thinking_mode"))
     capability = get_thinking_capability(str(model_config.get("model_name") or ""))
 
