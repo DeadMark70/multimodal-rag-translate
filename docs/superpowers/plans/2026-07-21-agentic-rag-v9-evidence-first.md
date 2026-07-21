@@ -1,4 +1,6 @@
-# Agentic RAG v9 Evidence-First Implementation Plan
+# Agentic RAG v9 Evidence-First Implementation Plan (Superseded)
+
+> This first revision is retained for review history. The canonical revised backend plan is `docs/superpowers/plans/2026-07-21-agentic-rag-v9-evidence-first-backend.md`; frontend work is split into its own plan. Do not execute Tasks 1–14 below.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
