@@ -216,7 +216,11 @@ def test_complete_prompt_estimate_leaves_only_the_remaining_budget_for_evidence(
         min(100, 160 - 30 - 20) - result.prompt_estimate.fixed_overhead_tokens,
         0,
     )
-    assert result.estimated_input_tokens == result.prompt_estimate.total_tokens
+    assert result.estimated_input_tokens == result.prompt_estimate.evidence
+    assert result.prompt_estimate.total_tokens == (
+        result.estimated_input_tokens
+        + result.prompt_estimate.fixed_overhead_tokens
+    )
 
 
 def test_packer_includes_transitive_premises_for_calculated_and_derived_claim_evidence() -> None:

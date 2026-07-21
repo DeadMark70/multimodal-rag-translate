@@ -236,7 +236,10 @@ class EvidenceContextPacker:
         return PackedEvidenceContext(
             packets=selected_packets,
             rendered_text="\n\n".join(render_evidence_packet(packet) for packet in selected_packets),
-            estimated_input_tokens=prompt_estimate.total_tokens,
+            # This legacy field is the packed evidence metric.  The complete
+            # provider input projection remains available separately so fixed
+            # prompt overhead does not distort evidence distributions.
+            estimated_input_tokens=used_tokens,
             dropped_packet_ids=dropped,
             tokens_by_slot=self._tokens_by_slot(selected, selected_token_counts),
             tokens_by_source=self._tokens_by_source(selected, selected_token_counts),
@@ -379,7 +382,7 @@ class EvidenceContextPacker:
         return PackedEvidenceContext(
             packets=(),
             rendered_text="",
-            estimated_input_tokens=self._fixed_prompt_estimate.total_tokens,
+            estimated_input_tokens=0,
             dropped_packet_ids=tuple(sorted(set(dropped) | deduplicated_drops)),
             tokens_by_slot={},
             tokens_by_source={},
