@@ -56,6 +56,7 @@ from data_base.vector_store_manager import (
     invoke_retriever_queries_async,
 )
 from data_base.reranker import DocumentReranker
+from data_base.rag_retrieval import retrieve_hybrid_documents
 from data_base.query_transformer import (
     transform_query_with_hyde,
     transform_query_multi,
@@ -1889,44 +1890,19 @@ async def rag_answer_question(
             return RAGResult("抱歉，您還沒有建立任何知識庫文件，請先上傳 PDF。", [], [])
         return ("抱歉，您還沒有建立任何知識庫文件，請先上傳 PDF。", [])
 
-    # Step 3: Query transformation
-    search_queries = [question]
-
-    if enable_hyde:
-        await _emit_progress(progress_callback, "query_expansion", {"mode": "hyde"})
-        hyde_doc = await transform_query_with_hyde(
-            question,
-            enabled=True,
-            phase="query_expansion",
-        )
-        search_queries = [hyde_doc]
-        logger.debug(f"HyDE transformed query: {hyde_doc[:100]}...")
-    elif enable_multi_query:
-        await _emit_progress(
-            progress_callback, "query_expansion", {"mode": "multi_query"}
-        )
-        search_queries = await transform_query_multi(
-            question,
-            enabled=True,
-            phase="query_expansion",
-        )
-        logger.debug(f"Multi-query generated {len(search_queries)} queries")
-
-    # Step 4: Execute retrieval
+    # Steps 3-4: Query expansion, hybrid retrieval, and RRF fusion.
     try:
-        await _emit_progress(
-            progress_callback,
-            "retrieval",
-            {"query_count": len(search_queries)},
+        retrieval_result = await retrieve_hybrid_documents(
+            question,
+            retriever,
+            enable_hyde=enable_hyde,
+            enable_multi_query=enable_multi_query,
+            progress_callback=progress_callback,
+            hyde_transformer=transform_query_with_hyde,
+            multi_query_transformer=transform_query_multi,
+            query_executor=invoke_retriever_queries_async,
         )
-        retrieved_batches = await invoke_retriever_queries_async(
-            retriever, search_queries
-        )
-        if len(retrieved_batches) == 1:
-            docs = retrieved_batches[0]
-        else:
-            docs = reciprocal_rank_fusion(retrieved_batches)
-            logger.debug(f"RRF fused {len(docs)} documents")
+        docs = retrieval_result.documents
     except (RuntimeError, ValueError) as e:
         logger.error(f"Retrieval error: {e}", exc_info=True)
         if return_docs:
