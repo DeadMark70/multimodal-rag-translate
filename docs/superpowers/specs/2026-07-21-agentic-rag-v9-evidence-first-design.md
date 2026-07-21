@@ -1,6 +1,6 @@
 # Agentic RAG v9 Evidence-First Design
 
-**Status:** Approved design baseline
+**Status:** Revised and ready for implementation
 
 **Date:** 2026-07-21
 
@@ -17,6 +17,10 @@ Upgrade the current Agentic v8 execution flow to a budgeted, evidence-first v9 f
 - v9 does not change the model, embedding model, FAISS, BM25, or reranker and does not introduce multi-model routing.
 - Evaluation v8 remains available behind an execution-version flag until v9 passes shadow and benchmark gates.
 - Graph remains locator-only evidence. Raw graph text cannot directly support final claims.
+- Backend behavioral baseline is commit `2a4e4e9e1dcdd2ff269695edb007de7e9e3da79c`; later document-only commits do not change that runtime baseline.
+- Backend runtime remains Python 3.11 for this upgrade. Python-version migration is out of scope.
+- Execution version is persisted per request/campaign. `AGENTIC_EXECUTION_VERSION` supplies only the default.
+- Evaluation contexts contain only evidence actually packed for and cited by the final answer.
 
 ## Core Invariant
 
@@ -35,7 +39,7 @@ subtask retrieval -> full subtask answer -> fact extraction -> arbitration -> sy
 
 ## Query Contract
 
-`QueryContract` replaces complexity tier as the execution authority. `strategy_tier` remains trace-only compatibility metadata.
+`QueryContract` replaces complexity tier as the execution authority. `strategy_tier` remains trace-only compatibility metadata. Graph behavior is represented by `GraphPolicy = Literal["never", "locator_fallback", "required_locator"]`, not a boolean.
 
 Required route values:
 
@@ -46,7 +50,7 @@ Required route values:
 - `multi_hop`
 - `graph_relational`
 
-The contract records intent, required answer slots, entities, locator hints, graph/visual requirements, repair limit, LLM-call limit, and runtime token budget. Deterministic routing handles clear lookup, locator, numeric, formula, explicit comparison, exclusion, and already-decomposed questions. One RoutePlan LLM call is permitted only for ambiguous slot structure, hidden dependencies, unknown document scope, uncertain graph need, or mixed comparison/numeric/visual/verdict questions.
+The contract records intent, required answer slots, entities, locator hints, graph/visual requirements, repair limit, LLM-call limit, runtime token budget, and authorized document scope. Deterministic routing handles clear lookup, locator, numeric, formula, explicit comparison, exclusion, and already-decomposed questions. One RoutePlan LLM call is permitted only for ambiguous slot structure, hidden dependencies, unknown document scope, uncertain graph need, or mixed comparison/numeric/visual/verdict questions. Source names are resolved to internal document IDs and intersected with both user authorization and request-supplied `doc_ids`; routing can never expand document authorization.
 
 ## Retrieval and Generation Boundaries
 
@@ -59,7 +63,7 @@ async def retrieve_rag_evidence(
     user_id: str,
     doc_ids: list[str] | None,
     retrieval_policy: RetrievalPolicy,
-) -> RetrievalResult: ...
+) -> RagRetrievalResult: ...
 
 async def generate_answer_from_evidence(
     *,
@@ -69,7 +73,15 @@ async def generate_answer_from_evidence(
 ) -> FinalAnswerResult: ...
 ```
 
-The existing `rag_answer_question()` remains a compatibility wrapper for Naive, Advanced, Graph, and v8 callers. v9 calls retrieval for all retrieval tasks and calls answer generation only after sufficiency and conflict handling.
+The existing `rag_answer_question()` remains a compatibility wrapper for Naive, Advanced, Graph, and v8 callers. Generic retrieval returns `RagRetrievalResult`; an individual v9 task returns `TaskRetrievalResult`; the run returns `V9ExecutionResult`. v9 calls retrieval for all retrieval tasks and calls answer generation only after sufficiency and conflict handling. v9 policy code remains in `data_base.agentic_v9`; v8 planner, evaluator, and synthesizer receive only backward-compatible utility fixes.
+
+Visual routes are evidence-only:
+
+```text
+visual retrieval -> page/figure/table locator -> visual extraction -> EvidencePacket
+```
+
+They never produce an initial answer or run the legacy visual answer-synthesis loop.
 
 ## Evidence Pool and Provenance
 
@@ -77,22 +89,31 @@ Run-level deduplication occurs before generation. The stable identity is compose
 
 Every evidence item derives source identity from its own `Document.metadata`. The current behavior that assigns every context to `source_doc_ids[0]` is removed. Missing canonical `doc_id` is a traceable provenance failure and cannot silently borrow another document's identity.
 
-## Evidence Packets
+## Evidence Packets and Slot Resolution
 
-Evidence packets are the v9 fact state. Required `support_type` values are:
+Evidence packets are the v9 positive fact state. Required `support_type` values are:
 
 - `direct`
 - `calculated`
 - `comparative_inference`
 - `scope_constraint`
 - `contradictory`
-- `missing`
 
-Numeric values, formulae, locators, theorem ranges, table rows, and explicit enumerations use deterministic extraction first. General prose is curated in one batched evidence-extraction LLM call. Cross-document comparative inference is deferred to final generation and must list its premise evidence IDs.
+Every packet includes a versioned `EvidenceScope` covering applicable dataset, split, metric, model/variant, training protocol, prompt setting, noise level, and publication year, plus extractor/prompt versions, task/round/query IDs, normalized value/unit, calculation operation and premise IDs where applicable.
+
+Absence is modeled separately as `SlotResolution(status="explicitly_unavailable"|"not_found")`; it is not a source-less EvidencePacket. Provenance missing rate counts only positive evidence packets.
+
+Numeric values, formulae, locators, theorem ranges, table rows, and explicit enumerations use deterministic extraction first. Retrieval and repair finish before one batched prose-curation call processes the remaining unresolved prose slots. Cross-document comparative inference is deferred to final generation and must list its premise evidence IDs.
+
+## Context Packing and Runtime Budget
+
+The final input is built by a dedicated context packer. It enforces the minimum of the Setup input ceiling and remaining runtime-token budget, reserves final output capacity, preserves at least the best evidence for every answerable required slot, maintains source diversity, deduplicates chunks, and never truncates an atomic number, formula, table header/row, or theorem condition. Dropped packets and per-slot/per-source token usage are observable.
+
+All provider invocations pass through an async pre-invoke budget wrapper. Reservation is atomic, includes estimated input plus maximum output, and reserves one final-call envelope. Every provider attempt, including retry, Graph, visual, verifier, and direct calls, consumes call/token budget. Callback accounting records actual usage and reconciles idempotently but is not the hard gate. Parser failure uses deterministic extraction/fallback and never makes an unbudgeted repair call. If final-call budget is unavailable, a deterministic qualified-partial renderer is used and final-generation count is zero.
 
 ## Sufficiency and Repair
 
-Sufficiency is evaluated across the collection against required slots. Answer length and loose lexical overlap are not completion criteria. Each required slot must be supported, have traceable calculation/inference premises, or be explicitly marked insufficient.
+Sufficiency is evaluated across the collection against required slots. Answer length and loose lexical overlap are not completion criteria. `SufficiencyReport` separates `evidence_complete`, `answerable`, and `response_status` (`complete`, `qualified_partial`, `insufficient`). A slot that is explicitly unavailable can stop repair without falsely marking evidence complete.
 
 Repair queries are generated only from missing slot, missing entity, and locator. Repair limits are:
 
@@ -111,7 +132,7 @@ Budget exhaustion ends repair and produces a qualified partial answer. It does n
 
 CRAG uses deterministic pass/correct decisions first. The LLM retrieval grader is reserved for semantically relevant but ambiguous, partial, close-scored, conflicting, or scope-ambiguous evidence. Corrective rewrite produces one targeted query by default and at most two.
 
-Graph is independent of complexity. Explicit A-vs-B comparison, named model comparison, Figure/Table/Appendix/Theorem lookup, and multi-document exact extraction default to Graph off. Graph is enabled only for unknown-scope relations, lineage, relation/path queries, graph-to-source localization, or vector/BM25 failure to discover cross-document links.
+Graph is independent of complexity. `single_lookup` and `bounded_compare` default to `never`; exact structured, multi-document exact, and multi-hop routes default to `locator_fallback`; graph-relational uses `required_locator`. Graph is enabled for unknown-scope relations, lineage, relation/path queries, graph-to-source localization, or vector/BM25 failure to discover cross-document links. A graph hit must resolve to source chunks/assets before it can support a final claim.
 
 ## Conflict and Final Answer
 
@@ -123,14 +144,14 @@ The final model returns structured claims with `evidence_ids`. A deterministic r
 
 ## Route Budgets
 
-| Route | Maximum LLM calls | Runtime token budget | Graph | Repair |
-|---|---:|---:|---:|---:|
-| `single_lookup` | 2 | 3,500 | 0 | 0 |
-| `bounded_compare` | 4 | 6,500 | 0 | 1 |
-| `exact_structured` | 4 | 7,500 | 0 | 1 |
-| `multi_document_exact` | 5 | 10,000 | 0 | 2 |
-| `multi_hop` | 5 | 10,000 | conditional | 1 |
-| `graph_relational` | 5 | 12,000 | at most one traversal | 1 |
+| Route | Maximum LLM calls | Runtime token budget | Graph policy | Repair |
+|---|---:|---:|---|---:|
+| `single_lookup` | 2 | 3,500 | `never` | 0 |
+| `bounded_compare` | 4 | 6,500 | `never` | 1 |
+| `exact_structured` | 4 | 7,500 | `locator_fallback` | 1 |
+| `multi_document_exact` | 5 | 10,000 | `locator_fallback` | 2 |
+| `multi_hop` | 5 | 10,000 | `locator_fallback` | 1 |
+| `graph_relational` | 5 | 12,000 | `required_locator`, at most one traversal | 1 |
 
 ## Phase Policies
 
@@ -147,11 +168,25 @@ All v9 runtime phases continue to use the Setup-selected model.
 
 ## Deployment
 
-- `AGENTIC_EXECUTION_VERSION=v8|v9` selects the authoritative execution core.
+- `CampaignConfig` and `V9ExecutionRequest` persist `agentic_execution_version: Literal["v8", "v9"]`; `AGENTIC_EXECUTION_VERSION` supplies only the default.
 - Default remains `v8` until shadow comparison passes.
+- Shadow results use `condition_id="agentic-v9-shadow"` so they cannot collide with authoritative campaign rows.
 - Evaluation and streaming chat become thin adapters around the shared v9 core.
-- Persist `execution_profile`, Query Contract, effective phase configs, budget ledger, stop reason, evidence counts, repairs, Graph decision/fallback, conflict decision, and final-generation count.
+- Persist Query Contract and SufficiencyReport in versioned trace payloads, actual provider usage only in `evaluation_usage_events`, EvidencePackets and SlotResolutions in normalized v9 tables, final claims in `evaluation_claims`, and the final pack in `evaluation_context_packs`.
+- `RAGResult.documents` contains only `used_evidence_documents`; all retrieved/rejected/unpacked evidence remains observability-only.
 - Historical campaigns remain readable and retain their original execution profile.
+
+## Concurrency, Cancellation, and Chat History
+
+`ExecutionPolicy` explicitly bounds retrieval, LLM, and visual concurrency and gives every LLM phase a timeout. The budget controller and evidence pool are concurrency-safe. Campaign cancellation, task cancellation, timeout, and SSE disconnect propagate through the execution core and reconcile reservations before exit.
+
+`V9ExecutionRequest.history` preserves at most the existing ten-message chat limit subject to a separate history token cap. History may help conversational query resolution but cannot be stored as academic evidence or cited by a final claim.
+
+## Evaluation Protocol
+
+Golden Dataset v2 is immutable and separately hashed; v1 is never overwritten. It repairs Q14 reference/source contradictions and Q16 formula tokenization, and supplies required/optional atomic facts, claim importance, expected evidence, and expected route for all 16 questions.
+
+Q9/Q15/Q16 × one repeat is a smoke gate only. Promotion uses 16 questions × `naive`, v8, and v9 × eight paired repeats with an identical corpus, index, prompt, model, evaluator, and dataset snapshot. Report mean paired delta, 95% paired-bootstrap confidence interval, category deltas, and per-question regressions. Engineering correctness delta must be non-negative and the default statistical safety bound is lower CI ≥ -0.01.
 
 ## Acceptance Criteria
 
@@ -176,4 +211,4 @@ Second target:
 - Important-claim unsupported rate decreases.
 - Agentic/Naive runtime-token ratio is at most 3.
 
-Q9, Q15, and Q16 are mandatory representative cases for bounded comparison, structured extraction, and multi-document exact retrieval.
+Mandatory route regressions cover all six routes: Q10 (or a fixed single lookup), Q9, Q15, Q16, Q1/Q2, and a fixed graph relation/path case. Q1 and Q2 are always included because of their known faithfulness risk.
