@@ -63,6 +63,12 @@ _ACCOUNTING_CONTEXT: ContextVar[LlmAccountingContext | None] = ContextVar(
 _ACCOUNTING_PHASE: ContextVar[str] = ContextVar(
     "llm_accounting_phase", default="unclassified"
 )
+_AGENTIC_BUDGET_CONTROLLER: ContextVar[Any | None] = ContextVar(
+    "agentic_v9_budget_controller", default=None
+)
+_AGENTIC_BUDGET_RESERVATION_ID: ContextVar[str | None] = ContextVar(
+    "agentic_v9_budget_reservation_id", default=None
+)
 
 
 def current_llm_accounting_context() -> LlmAccountingContext | None:
@@ -73,6 +79,16 @@ def current_llm_accounting_context() -> LlmAccountingContext | None:
 def current_llm_accounting_phase() -> str:
     """Return the current task's accounting phase."""
     return _ACCOUNTING_PHASE.get()
+
+
+def current_agentic_budget_controller() -> Any | None:
+    """Return the v9 controller for this task, if its boundary set one."""
+    return _AGENTIC_BUDGET_CONTROLLER.get()
+
+
+def current_agentic_budget_reservation_id() -> str | None:
+    """Return the provider reservation currently being invoked, if any."""
+    return _AGENTIC_BUDGET_RESERVATION_ID.get()
 
 
 @contextmanager
@@ -95,6 +111,28 @@ def llm_accounting_phase(phase: str) -> Generator[None, None, None]:
         yield
     finally:
         _ACCOUNTING_PHASE.reset(token)
+
+
+@contextmanager
+def agentic_budget_scope(controller: Any) -> Generator[Any, None, None]:
+    """Expose a v9 controller to callbacks without affecting legacy calls."""
+    token: Token[Any | None] = _AGENTIC_BUDGET_CONTROLLER.set(controller)
+    try:
+        yield controller
+    finally:
+        _AGENTIC_BUDGET_CONTROLLER.reset(token)
+
+
+@contextmanager
+def agentic_budget_reservation_scope(
+    reservation_id: str,
+) -> Generator[None, None, None]:
+    """Associate callback terminal usage with one pre-invoke reservation."""
+    token: Token[str | None] = _AGENTIC_BUDGET_RESERVATION_ID.set(reservation_id)
+    try:
+        yield
+    finally:
+        _AGENTIC_BUDGET_RESERVATION_ID.reset(token)
 
 
 async def emit_direct_usage(

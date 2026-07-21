@@ -18,10 +18,13 @@ from pydantic import BaseModel
 from core.llm_usage_callback import EvaluationUsageCallback, _extract_usage
 from core.llm_usage_context import (
     LlmAccountingContext,
+    agentic_budget_reservation_scope,
+    agentic_budget_scope,
     current_llm_accounting_context,
     llm_accounting_phase,
     llm_accounting_scope,
 )
+from data_base.agentic_v9.budget_controller import RunBudgetController
 from core.providers import configure_providers, get_llm
 from evaluation.token_normalizers import normalize_provider_usage
 
@@ -183,7 +186,7 @@ async def test_error_callback_redacts_json_bearer_and_query_secrets() -> None:
     )
     provider_run_id = uuid4()
     message = (
-        'Authorization: Bearer bearer-secret, '
+        "Authorization: Bearer bearer-secret, "
         '{"api_key":"json-secret","access_token":"token-secret"}, '
         "https://api.example.test/generate?key=url-secret&x=1"
     )
@@ -381,3 +384,82 @@ def test_callback_extracts_nested_provider_usage_alias() -> None:
     )
 
     assert _extract_usage(response) == response.llm_output["token_usage"]
+
+
+@pytest.mark.asyncio
+async def test_v9_budget_callback_reconciles_flat_usage_once() -> None:
+    sink = MemorySink()
+    controller = RunBudgetController(
+        max_llm_calls=1,
+        runtime_token_budget=200,
+        setup_snapshot={"max_output_tokens": 100, "thinking_mode": False},
+        final_input_tokens=100,
+    )
+    reservation = await controller.reserve_call(
+        phase="final_answer",
+        purpose="synthesizer",
+        estimated_input_tokens=100,
+    )
+    callback = EvaluationUsageCallback(purpose="rag_qa", provider="google")
+
+    with (
+        llm_accounting_scope(_context(sink)),
+        agentic_budget_scope(controller),
+        agentic_budget_reservation_scope(reservation.reservation_id),
+    ):
+        await simulate_callback(
+            callback,
+            usage={
+                "input_tokens": 4,
+                "output_tokens": 2,
+                "thoughts_token_count": 1,
+                "total_tokens": 6,
+                "output_token_details": {"reasoning": 1},
+            },
+        )
+
+    snapshot = await controller.snapshot()
+    assert snapshot.reconciled_tokens == 6
+    assert sink.events[0].raw_usage == {
+        "input_tokens": 4,
+        "output_tokens": 2,
+        "reasoning_tokens": 1,
+        "total_tokens": 6,
+    }
+
+
+@pytest.mark.asyncio
+async def test_v9_budget_callback_preserves_missing_usage_for_conservative_reconciliation() -> (
+    None
+):
+    sink = MemorySink()
+    controller = RunBudgetController(
+        max_llm_calls=1,
+        runtime_token_budget=200,
+        setup_snapshot={"max_output_tokens": 100, "thinking_mode": False},
+        final_input_tokens=100,
+    )
+    reservation = await controller.reserve_call(
+        phase="final_answer",
+        purpose="synthesizer",
+        estimated_input_tokens=100,
+    )
+    callback = EvaluationUsageCallback(purpose="rag_qa", provider="google")
+
+    with (
+        llm_accounting_scope(_context(sink)),
+        agentic_budget_scope(controller),
+        agentic_budget_reservation_scope(reservation.reservation_id),
+    ):
+        provider_run_id = uuid4()
+        await callback.on_chat_model_start(
+            {}, [[AIMessage(content="prompt")]], run_id=provider_run_id
+        )
+        await callback.on_llm_end(
+            LLMResult(generations=[]),
+            run_id=provider_run_id,
+        )
+
+    snapshot = await controller.snapshot()
+    assert snapshot.reconciled_tokens == 200
+    assert sink.events[0].raw_usage == {}

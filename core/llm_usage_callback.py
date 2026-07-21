@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from time import monotonic
@@ -13,10 +14,14 @@ from langchain_core.outputs import LLMResult
 
 from core.llm_usage_context import (
     LlmAccountingContext,
+    current_agentic_budget_controller,
+    current_agentic_budget_reservation_id,
     current_llm_accounting_context,
     current_llm_accounting_phase,
     emit_direct_usage,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -24,6 +29,8 @@ class _StartState:
     context: LlmAccountingContext
     phase: str
     started_at: float
+    budget_controller: Any | None
+    budget_reservation_id: str | None
 
 
 class EvaluationUsageCallback(AsyncCallbackHandler):
@@ -72,6 +79,8 @@ class EvaluationUsageCallback(AsyncCallbackHandler):
                 context=context,
                 phase=current_llm_accounting_phase(),
                 started_at=monotonic(),
+                budget_controller=current_agentic_budget_controller(),
+                budget_reservation_id=current_agentic_budget_reservation_id(),
             )
 
     async def on_llm_end(
@@ -123,18 +132,32 @@ class EvaluationUsageCallback(AsyncCallbackHandler):
     ) -> None:
         # The context was snapshotted at start so task context changes between
         # streaming start and terminal chunk cannot misattribute the event.
+        normalized_usage = _flat_usage(usage) if start.budget_reservation_id else usage
         await emit_direct_usage(
             context=start.context,
             phase=start.phase,
             purpose=self.purpose,
             provider=self.provider,
-            raw_usage=usage,
+            raw_usage=normalized_usage,
             model_name=model_name or self.model_name,
             provider_run_id=str(run_id),
             latency_ms=(monotonic() - start.started_at) * 1000,
             status=status,
             error=error,
         )
+        if (
+            start.budget_controller is not None
+            and start.budget_reservation_id is not None
+        ):
+            try:
+                await start.budget_controller.reconcile_usage(
+                    start.budget_reservation_id, normalized_usage
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Agentic v9 usage reconciliation failed (error_type=%s)",
+                    type(exc).__name__,
+                )
 
 
 def _extract_usage(response: LLMResult) -> dict[str, Any]:
@@ -154,6 +177,51 @@ def _extract_usage(response: LLMResult) -> dict[str, Any]:
     return dict(usage) if isinstance(usage, dict) else {}
 
 
+def _flat_usage(usage: dict[str, Any]) -> dict[str, int]:
+    """Keep v9 callbacks free of nested/raw provider usage metadata."""
+    usage_keys = {
+        "input_tokens",
+        "prompt_tokens",
+        "prompt_token_count",
+        "output_tokens",
+        "completion_tokens",
+        "candidates_token_count",
+        "reasoning_tokens",
+        "thoughts_token_count",
+        "total_tokens",
+        "total_token_count",
+    }
+    details = usage.get("output_token_details")
+    output_details = details if isinstance(details, dict) else {}
+    if not usage_keys.intersection(usage) and "reasoning" not in output_details:
+        return {}
+    reasoning = usage.get(
+        "reasoning_tokens",
+        usage.get("thoughts_token_count", output_details.get("reasoning", 0)),
+    )
+    return {
+        "input_tokens": _usage_int(
+            usage.get("input_tokens", usage.get("prompt_tokens", 0))
+        ),
+        "output_tokens": _usage_int(
+            usage.get("output_tokens", usage.get("completion_tokens", 0))
+        ),
+        "reasoning_tokens": _usage_int(reasoning),
+        "total_tokens": _usage_int(
+            usage.get("total_tokens", usage.get("total_token_count", 0))
+        ),
+    }
+
+
+def _usage_int(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _extract_model_name(response: LLMResult) -> str | None:
     llm_output = response.llm_output or {}
     for key in ("model_name", "model", "model_version"):
@@ -165,7 +233,9 @@ def _extract_model_name(response: LLMResult) -> str | None:
         for generation in generation_group:
             for metadata in (
                 getattr(generation, "generation_info", None),
-                getattr(getattr(generation, "message", None), "response_metadata", None),
+                getattr(
+                    getattr(generation, "message", None), "response_metadata", None
+                ),
             ):
                 if not isinstance(metadata, dict):
                     continue
@@ -181,14 +251,14 @@ _QUERY_SECRET_RE = re.compile(
     r"(?i)([?&](?:api[_-]?key|access[_-]?token|token|key)=)([^&#\s]+)"
 )
 _KEY_VALUE_RE = re.compile(
-    r'''(?ix)
+    r"""(?ix)
     (?P<prefix>
         ["']?(?:api[_-]?key|access[_-]?token|token|password|secret|x-goog-api-key)["']?
         \s*(?:=|:)\s*
     )
     (?P<quote>["']?)
     (?P<value>[^"'\s,;&}]+)
-    '''
+    """
 )
 
 
@@ -196,7 +266,7 @@ def _redact_sensitive_message(message: str) -> str:
     message = _BEARER_RE.sub("Bearer [REDACTED]", message)
     message = _QUERY_SECRET_RE.sub(r"\1[REDACTED]", message)
     return _KEY_VALUE_RE.sub(
-        lambda match: f'{match.group("prefix")}{match.group("quote")}[REDACTED]',
+        lambda match: f"{match.group('prefix')}{match.group('quote')}[REDACTED]",
         message,
     )
 
