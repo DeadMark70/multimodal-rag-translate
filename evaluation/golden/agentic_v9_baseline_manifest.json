@@ -1,0 +1,53 @@
+{
+  "schema_version": "1",
+  "baseline_kind": "agentic-v9-evidence-first-preimplementation",
+  "backend": {
+    "behavioral_commit": "651acc0",
+    "branch": "feature/agentic-v9-evidence-first"
+  },
+  "frontend": {
+    "url": "https://github.com/DeadMark70/Multimodal_RAG_System_Web.git",
+    "branch": "master",
+    "commit": "1ab15449af756886039614fab6b6cc64781d1d23"
+  },
+  "model": {
+    "config_id": "a4cd737f-790e-43b5-a897-a2adb25a8514",
+    "name": "testing2",
+    "model_name": "gemini-2.5-flash-lite",
+    "temperature": 0.7,
+    "top_p": 0.95,
+    "top_k": 64,
+    "max_input_tokens": 1048576,
+    "max_output_tokens": 8192,
+    "thinking_mode": false,
+    "thinking_budget": 8192,
+    "thinking_level": null,
+    "thinking_include_thoughts": false
+  },
+  "execution_profiles": {
+    "naive": {"execution_profile": null, "context_policy_version": "v3_answer_aware_pack"},
+    "advanced": {"execution_profile": "advanced_eval_v2_multiquery_recursive_baseline", "context_policy_version": "v3_answer_aware_pack"},
+    "graph": {"execution_profile": "graph_eval_v2_multiquery_locator_recursive_baseline", "context_policy_version": "v3_answer_aware_pack"},
+    "agentic": {"execution_profile": "agentic_eval_v8_multiquery_locator_recursive_baseline", "context_policy_version": "v4_semantic_router_gate"}
+  },
+  "corpus_and_index": {
+    "knowledge_base_id": null,
+    "index_version": null,
+    "retriever_config_hash": null,
+    "capture_status": "unavailable_in_source_campaign_rows"
+  },
+  "prompt_snapshot": {
+    "prompt_pack_version": null,
+    "capture_status": "unavailable_in_source_campaign_rows"
+  },
+  "evaluator_snapshot": {
+    "test_suite_id": null,
+    "ragas_config": null,
+    "capture_status": "unavailable_in_source_campaign_rows"
+  },
+  "source_campaign_ids": ["ffd6c442-663e-4041-83be-d352d937c839"],
+  "artifacts": {
+    "agentic_v9_questions_v2.json": "6113c9e90d76dc06970ea185f0a4fb47ad200527c456f7386c77fd1a61efbd44",
+    "agentic_v9_route_regressions.json": "1cafdbd14c0391a400354a58672829ea84d41aead40feca399a3a7a1aa4810c3"
+  }
+}
