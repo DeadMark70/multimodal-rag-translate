@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from dataclasses import dataclass
+from typing import Any, Callable, Protocol
 
 from core.llm_factory import get_flat_llm_usage
 from core.llm_usage_context import (
@@ -18,6 +19,30 @@ class AsyncProvider(Protocol):
 
     async def ainvoke(self, messages: list[dict[str, Any]]) -> Any:
         """Invoke one provider attempt."""
+
+
+@dataclass(frozen=True, slots=True)
+class BudgetedLlmInvoker:
+    """Concrete v9 invoker that admits every provider call through one gate."""
+
+    controller: RunBudgetController
+    provider_factory: Callable[[str], AsyncProvider]
+
+    async def invoke(
+        self,
+        *,
+        phase: str,
+        purpose: str,
+        messages: list[dict[str, Any]],
+    ) -> Any:
+        """Resolve the provider only after the v9 caller chooses its purpose."""
+        return await invoke_budgeted_llm(
+            controller=self.controller,
+            provider=self.provider_factory(purpose),
+            phase=phase,
+            purpose=purpose,
+            messages=messages,
+        )
 
 
 def estimate_message_tokens(messages: list[dict[str, Any]]) -> int:
