@@ -15,7 +15,7 @@ from langchain_core.outputs import (
 )
 from pydantic import BaseModel
 
-from core.llm_usage_callback import EvaluationUsageCallback, _extract_usage
+from core.llm_usage_callback import EvaluationUsageCallback, _extract_usage, _flat_usage
 from core.llm_usage_context import (
     LlmAccountingContext,
     agentic_budget_reservation_scope,
@@ -463,3 +463,12 @@ async def test_v9_budget_callback_preserves_missing_usage_for_conservative_recon
     snapshot = await controller.snapshot()
     assert snapshot.reconciled_tokens == 200
     assert sink.events[0].raw_usage == {}
+
+
+def test_v9_callback_flat_usage_derives_total_from_input_and_output() -> None:
+    assert _flat_usage({"input_tokens": 4, "output_tokens": 2}) == {
+        "input_tokens": 4,
+        "output_tokens": 2,
+        "reasoning_tokens": 0,
+        "total_tokens": 6,
+    }

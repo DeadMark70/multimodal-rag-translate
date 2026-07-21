@@ -11,6 +11,7 @@ from core.llm_usage_context import (
     agentic_budget_scope,
 )
 from data_base.agentic_v9.budget_controller import RunBudgetController
+from data_base.agentic_v9.phase_policy import agentic_phase_policy_scope
 from data_base.agentic_v9.schemas import BudgetExceededError, FinalAnswerResult
 
 
@@ -38,7 +39,7 @@ class BudgetedLlmInvoker:
         """Resolve the provider only after the v9 caller chooses its purpose."""
         return await invoke_budgeted_llm(
             controller=self.controller,
-            provider=self.provider_factory(purpose),
+            provider_factory=self.provider_factory,
             phase=phase,
             purpose=purpose,
             messages=messages,
@@ -54,13 +55,16 @@ def estimate_message_tokens(messages: list[dict[str, Any]]) -> int:
 async def invoke_budgeted_llm(
     *,
     controller: RunBudgetController,
-    provider: AsyncProvider,
+    provider: AsyncProvider | None = None,
+    provider_factory: Callable[[str], AsyncProvider] | None = None,
     phase: str,
     purpose: str,
     messages: list[dict[str, Any]],
     estimated_input_tokens: int | None = None,
 ) -> Any:
     """Reserve before one provider attempt, then reconcile its terminal usage."""
+    if (provider is None) == (provider_factory is None):
+        raise ValueError("supply exactly one of provider or provider_factory")
     try:
         reservation = await controller.reserve_call(
             phase=phase,
@@ -76,11 +80,16 @@ async def invoke_budgeted_llm(
             return _final_qualified_partial()
         raise
     try:
+        policy = await controller.phase_policy(phase)
         with (
             agentic_budget_scope(controller),
             agentic_budget_reservation_scope(reservation.reservation_id),
+            agentic_phase_policy_scope(policy),
         ):
-            response = await provider.ainvoke(messages)
+            active_provider = (
+                provider if provider is not None else provider_factory(purpose)
+            )
+            response = await active_provider.ainvoke(messages)
     except Exception:
         await controller.reconcile_usage(reservation.reservation_id, {})
         if phase == "final_answer":

@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 from uuid import uuid4
 
-from data_base.agentic_v9.phase_policy import provider_reservation_tokens
+from data_base.agentic_v9.phase_policy import (
+    MAX_PROVIDER_CALLS_BY_PHASE,
+    EffectivePhasePolicy,
+    provider_reservation_tokens,
+    resolve_phase_policy,
+)
 from data_base.agentic_v9.schemas import BudgetExceededError, BudgetReservation
 
 
@@ -20,12 +25,15 @@ def _non_negative_int(value: object, *, default: int = 0) -> int:
         return default
 
 
-def _setup_reasoning_reserve(snapshot: Mapping[str, Any]) -> int:
-    if not bool(snapshot.get("thinking_mode", snapshot.get("thinking_enabled", False))):
+def _setup_reasoning_reserve(snapshot: Mapping[str, Any]) -> int | None:
+    thinking = snapshot.get("thinking_mode", snapshot.get("thinking_enabled", False))
+    if thinking is False:
         return 0
-    return _non_negative_int(
-        snapshot.get("thinking_token_reserve", snapshot.get("thinking_budget", 0))
-    )
+    for key in ("thinking_token_reserve", "thinking_budget"):
+        value = snapshot.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+    return None
 
 
 def _setup_output_ceiling(snapshot: Mapping[str, Any]) -> int:
@@ -35,6 +43,13 @@ def _setup_output_ceiling(snapshot: Mapping[str, Any]) -> int:
     if ceiling < 1:
         raise ValueError("setup_snapshot requires max_output_tokens")
     return ceiling
+
+
+def _setup_input_ceiling(snapshot: Mapping[str, Any], fallback: int) -> int:
+    ceiling = _non_negative_int(
+        snapshot.get("setup_max_input_tokens", snapshot.get("max_input_tokens", 0))
+    )
+    return ceiling if ceiling > 0 else max(fallback, 1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,10 +97,17 @@ class RunBudgetController:
         self._runtime_token_budget = runtime_token_budget
         self._setup_output_ceiling = _setup_output_ceiling(setup_snapshot)
         self._reasoning_reserve = _setup_reasoning_reserve(setup_snapshot)
+        if self._reasoning_reserve is None:
+            raise BudgetExceededError("thinking_reserve_unknown")
+        self._setup_input_ceiling = _setup_input_ceiling(
+            setup_snapshot, runtime_token_budget
+        )
         self._lock = asyncio.Lock()
         self._reservations: dict[str, BudgetReservation] = {}
         self._reconciled: dict[str, ReconciledUsage] = {}
         self._final_reservation_id: str | None = None
+        self._phase_attempt_counts: dict[str, int] = {}
+        self._provider_attempt_count = 0
 
         final_output = (
             provider_reservation_tokens(
@@ -117,6 +139,7 @@ class RunBudgetController:
         del purpose  # Purpose is consumed by the caller's trace event in Task 3C.
         input_tokens = _non_negative_int(estimated_input_tokens)
         async with self._lock:
+            self._ensure_phase_capacity(phase)
             if phase == "final_answer":
                 return self._reserve_final(input_tokens)
 
@@ -144,10 +167,25 @@ class RunBudgetController:
                 estimated_input_tokens=input_tokens,
                 reserved_output_tokens=output_tokens,
                 reserved_reasoning_tokens=self._reasoning_reserve,
-                provider_attempt=1,
+                provider_attempt=self._next_provider_attempt(),
             )
             self._reservations[reservation.reservation_id] = reservation
+            self._phase_attempt_counts[phase] = (
+                self._phase_attempt_counts.get(phase, 0) + 1
+            )
             return reservation
+
+    def _ensure_phase_capacity(self, phase: str) -> None:
+        try:
+            phase_limit = MAX_PROVIDER_CALLS_BY_PHASE[phase]
+        except KeyError as error:
+            raise ValueError(f"Unsupported Agentic v9 phase: {phase}") from error
+        if self._phase_attempt_counts.get(phase, 0) >= phase_limit:
+            raise BudgetExceededError("provider_phase_call_limit_exhausted")
+
+    def _next_provider_attempt(self) -> int:
+        self._provider_attempt_count += 1
+        return self._provider_attempt_count
 
     def _reserve_final(self, input_tokens: int) -> BudgetReservation:
         if self._final_reservation_id is not None:
@@ -160,11 +198,28 @@ class RunBudgetController:
             estimated_input_tokens=input_tokens,
             reserved_output_tokens=self._protected_final_output_tokens,
             reserved_reasoning_tokens=self._protected_final_reasoning_tokens,
-            provider_attempt=1,
+            provider_attempt=self._next_provider_attempt(),
         )
         self._reservations[reservation.reservation_id] = reservation
         self._final_reservation_id = reservation.reservation_id
+        self._phase_attempt_counts["final_answer"] = (
+            self._phase_attempt_counts.get("final_answer", 0) + 1
+        )
         return reservation
+
+    async def phase_policy(self, phase: str) -> EffectivePhasePolicy:
+        """Resolve the provider scope from Setup ceilings and live run headroom."""
+        async with self._lock:
+            remaining_input_budget = max(
+                1,
+                self._runtime_token_budget - self._reserved_tokens(),
+            )
+            return resolve_phase_policy(
+                phase,
+                setup_output_ceiling=self._setup_output_ceiling,
+                setup_input_ceiling=self._setup_input_ceiling,
+                remaining_input_budget=remaining_input_budget,
+            )
 
     async def reconcile_usage(
         self, reservation_id: str, usage: Mapping[str, Any] | None

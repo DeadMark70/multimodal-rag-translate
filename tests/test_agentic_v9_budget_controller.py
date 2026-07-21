@@ -91,3 +91,43 @@ async def test_missing_usage_reconciles_to_the_conservative_reservation() -> Non
 
     assert usage.usage_status == "estimated"
     assert usage.total_tokens == 200
+
+
+@pytest.mark.asyncio
+async def test_controller_rejects_enabled_thinking_without_a_numeric_reserve() -> None:
+    with pytest.raises(BudgetExceededError, match="thinking_reserve_unknown"):
+        RunBudgetController(
+            max_llm_calls=1,
+            runtime_token_budget=1_000,
+            setup_snapshot={
+                "max_output_tokens": 100,
+                "thinking_enabled": True,
+                "thinking_level": "high",
+            },
+            final_input_tokens=100,
+        )
+
+
+@pytest.mark.asyncio
+async def test_controller_caps_each_phase_and_numbers_provider_attempts() -> None:
+    controller = RunBudgetController(
+        max_llm_calls=2,
+        runtime_token_budget=500,
+        setup_snapshot={"max_output_tokens": 100, "thinking_mode": False},
+        final_input_tokens=100,
+    )
+
+    route = await controller.reserve_call(
+        phase="route_plan", purpose="planner", estimated_input_tokens=1
+    )
+    final = await controller.reserve_call(
+        phase="final_answer", purpose="synthesizer", estimated_input_tokens=100
+    )
+
+    assert (route.provider_attempt, final.provider_attempt) == (1, 2)
+    with pytest.raises(
+        BudgetExceededError, match="provider_phase_call_limit_exhausted"
+    ):
+        await controller.reserve_call(
+            phase="route_plan", purpose="planner", estimated_input_tokens=1
+        )

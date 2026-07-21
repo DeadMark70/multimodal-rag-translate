@@ -402,23 +402,30 @@ def get_flat_llm_usage(response: Any) -> dict[str, int]:
         "reasoning_tokens",
         usage.get("thoughts_token_count", details.get("reasoning", 0)),
     )
+    input_tokens = _usage_token_int(
+        usage.get(
+            "input_tokens",
+            usage.get("prompt_tokens", usage.get("prompt_token_count", 0)),
+        )
+    )
+    output_tokens = _usage_token_int(
+        usage.get(
+            "output_tokens",
+            usage.get("completion_tokens", usage.get("candidates_token_count", 0)),
+        )
+    )
+    reasoning_tokens = _usage_token_int(reasoning)
+    reported_total = usage.get("total_tokens", usage.get("total_token_count"))
+    total_tokens = (
+        _usage_token_int(reported_total)
+        if reported_total is not None
+        else input_tokens + output_tokens + reasoning_tokens
+    )
     return {
-        "input_tokens": _usage_token_int(
-            usage.get(
-                "input_tokens",
-                usage.get("prompt_tokens", usage.get("prompt_token_count", 0)),
-            )
-        ),
-        "output_tokens": _usage_token_int(
-            usage.get(
-                "output_tokens",
-                usage.get("completion_tokens", usage.get("candidates_token_count", 0)),
-            )
-        ),
-        "reasoning_tokens": _usage_token_int(reasoning),
-        "total_tokens": _usage_token_int(
-            usage.get("total_tokens", usage.get("total_token_count", 0))
-        ),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "reasoning_tokens": reasoning_tokens,
+        "total_tokens": total_tokens,
     }
 
 

@@ -208,6 +208,19 @@ def test_get_flat_llm_usage_strips_nested_provider_metadata() -> None:
     }
 
 
+def test_get_flat_llm_usage_derives_total_when_provider_only_reports_input_and_output() -> (
+    None
+):
+    response = Mock(usage_metadata={"input_tokens": 7, "output_tokens": 11})
+
+    assert get_flat_llm_usage(response) == {
+        "input_tokens": 7,
+        "output_tokens": 11,
+        "reasoning_tokens": 0,
+        "total_tokens": 18,
+    }
+
+
 def test_get_graph_rag_runtime_overrides_support_models_prefixed_gemini_3() -> None:
     assert get_graph_rag_runtime_overrides(
         "community_summary",

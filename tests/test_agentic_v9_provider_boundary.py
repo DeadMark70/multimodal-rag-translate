@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.llm_factory import current_llm_runtime_overrides, llm_runtime_override
+from data_base.agentic_v9.budget_controller import RunBudgetController
 from data_base.agentic_v9.budgeted_llm import BudgetedLlmInvoker
 from data_base.agentic_v9.model_paths import (
     V9ClaimVerifier,
@@ -33,9 +35,7 @@ class _RecordingInvoker:
         purpose: str,
         messages: list[dict[str, object]],
     ) -> object:
-        self.calls.append(
-            {"phase": phase, "purpose": purpose, "messages": messages}
-        )
+        self.calls.append({"phase": phase, "purpose": purpose, "messages": messages})
         return self.response
 
 
@@ -63,7 +63,11 @@ async def test_v9_multi_query_rewrite_uses_the_injected_budgeted_invoker() -> No
 
     queries = await V9QueryRewriter(invoker).multi_query("original question")
 
-    assert queries == ["original question", "first alternate query", "second alternate query"]
+    assert queries == [
+        "original question",
+        "first alternate query",
+        "second alternate query",
+    ]
     assert invoker.calls[0]["phase"] == "query_rewrite"
     assert invoker.calls[0]["purpose"] == "query_rewrite"
 
@@ -94,8 +98,59 @@ async def test_concrete_invoker_routes_all_v9_calls_through_budget_gate(
 
     assert response == "budgeted response"
     assert captured["controller"] is invoker.controller
-    assert captured["provider"] is provider
+    assert captured["provider_factory"] is invoker.provider_factory
     assert captured["phase"] == "claim_verifier"
+
+
+@pytest.mark.asyncio
+async def test_concrete_invoker_applies_phase_policy_while_creating_and_invoking_provider() -> (
+    None
+):
+    observed: list[dict[str, object]] = []
+
+    class _Provider:
+        async def ainvoke(self, messages: object) -> object:
+            observed.append(current_llm_runtime_overrides())
+            return {"usage_metadata": {"input_tokens": 1, "output_tokens": 1}}
+
+    controller = RunBudgetController(
+        max_llm_calls=1,
+        runtime_token_budget=2_000,
+        setup_snapshot={
+            "max_input_tokens": 1_000,
+            "max_output_tokens": 1_000,
+            "thinking_enabled": False,
+        },
+        final_input_tokens=10,
+    )
+    with llm_runtime_override(
+        model_name="gemini-2.5-flash-lite",
+        thinking_enabled=False,
+        max_input_tokens=1_000,
+        max_output_tokens=1_000,
+    ):
+        response = await BudgetedLlmInvoker(
+            controller=controller,
+            provider_factory=lambda purpose: (
+                observed.append(current_llm_runtime_overrides()) or _Provider()
+            ),
+        ).invoke(
+            phase="final_answer",
+            purpose="final_answer",
+            messages=[{"role": "user", "content": "answer"}],
+        )
+
+    assert response["usage_metadata"]["input_tokens"] == 1
+    assert len(observed) == 2
+    for config in observed:
+        assert config["model_name"] == "gemini-2.5-flash-lite"
+        assert config["thinking_enabled"] is False
+        assert config["max_output_tokens"] == 1_000
+        assert (config["temperature"], config["top_p"], config["top_k"]) == (
+            0.25,
+            0.9,
+            40,
+        )
 
 
 @pytest.mark.asyncio
@@ -105,7 +160,12 @@ async def test_concrete_invoker_routes_all_v9_calls_through_budget_gate(
         (V9CragJudge, "judge", "retrieval_judge", "retrieval_judge"),
         (V9VisualHelper, "extract", "visual_extract", "visual_analysis"),
         (V9EvidenceExtractor, "extract", "evidence_extract", "evidence_extraction"),
-        (V9ConflictArbiter, "arbitrate", "conflict_arbitration", "conflict_arbitration"),
+        (
+            V9ConflictArbiter,
+            "arbitrate",
+            "conflict_arbitration",
+            "conflict_arbitration",
+        ),
         (V9ClaimVerifier, "verify", "claim_verifier", "claim_verifier"),
         (V9FinalAnswerRenderer, "render", "final_answer", "final_answer"),
     ],
