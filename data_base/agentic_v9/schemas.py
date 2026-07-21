@@ -203,6 +203,17 @@ class SlotResolution(BaseModel):
     reason: str | None = None
     resolution_stage: str | None = None
 
+    @model_validator(mode="after")
+    def require_status_consistent_evidence(self) -> SlotResolution:
+        """Keep positive evidence links separate from absence resolutions."""
+        if self.status == "supported" and not self.evidence_ids:
+            raise ValueError("supported slot resolutions require evidence IDs")
+        if self.status == "conflicted" and len(self.evidence_ids) < 2:
+            raise ValueError("conflicted slot resolutions require two evidence IDs")
+        if self.status in {"explicitly_unavailable", "not_found"} and self.evidence_ids:
+            raise ValueError("absence slot resolutions cannot link positive evidence")
+        return self
+
 
 class SufficiencyReport(BaseModel):
     """Evidence completeness and response usability are deliberately independent."""
@@ -215,6 +226,23 @@ class SufficiencyReport(BaseModel):
     explicitly_unavailable_slot_ids: list[str] = Field(default_factory=list)
     not_found_slot_ids: list[str] = Field(default_factory=list)
     stop_reason: str | None = None
+
+    @model_validator(mode="after")
+    def require_consistent_completion_state(self) -> SufficiencyReport:
+        """Prevent absence or unresolved conflict from being labeled complete."""
+        unavailable_slots = (
+            self.explicitly_unavailable_slot_ids or self.not_found_slot_ids
+        )
+        if self.evidence_complete and unavailable_slots:
+            raise ValueError("unavailable or not-found slots preclude complete evidence")
+        if self.response_status == "complete" and (
+            not self.evidence_complete
+            or not self.answerable
+            or self.conflicted_slot_ids
+            or unavailable_slots
+        ):
+            raise ValueError("complete responses require fully answerable evidence")
+        return self
 
 
 class ConflictCandidate(BaseModel):

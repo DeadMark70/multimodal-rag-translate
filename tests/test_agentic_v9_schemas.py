@@ -12,7 +12,9 @@ from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
     EvidenceSource,
+    FinalClaim,
     GraphPolicy,
+    QueryContract,
     RagRetrievalResult,
     ResolvedSourceScope,
     SlotResolution,
@@ -116,6 +118,74 @@ def test_slot_resolution_and_sufficiency_keep_absence_separate_from_evidence() -
         SlotResolution(slot_id="slot-2", status="missing")
 
 
+@pytest.mark.parametrize(
+    ("status", "evidence_ids"),
+    [
+        ("supported", []),
+        ("conflicted", []),
+        ("conflicted", ["evidence-1"]),
+        ("explicitly_unavailable", ["evidence-1"]),
+        ("not_found", ["evidence-1"]),
+    ],
+)
+def test_slot_resolution_rejects_incoherent_evidence_links(
+    status: str, evidence_ids: list[str]
+) -> None:
+    with pytest.raises(ValidationError):
+        SlotResolution(slot_id="slot-1", status=status, evidence_ids=evidence_ids)
+
+
+def test_slot_resolution_accepts_only_positive_evidence_for_supported_or_conflicted() -> None:
+    assert SlotResolution(
+        slot_id="slot-1", status="supported", evidence_ids=["evidence-1"]
+    ).evidence_ids == ["evidence-1"]
+    assert SlotResolution(
+        slot_id="slot-1",
+        status="conflicted",
+        evidence_ids=["evidence-1", "evidence-2"],
+    ).status == "conflicted"
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        {
+            "evidence_complete": True,
+            "answerable": True,
+            "response_status": "qualified_partial",
+            "explicitly_unavailable_slot_ids": ["slot-1"],
+        },
+        {
+            "evidence_complete": True,
+            "answerable": True,
+            "response_status": "qualified_partial",
+            "not_found_slot_ids": ["slot-1"],
+        },
+        {
+            "evidence_complete": False,
+            "answerable": True,
+            "response_status": "complete",
+        },
+        {
+            "evidence_complete": True,
+            "answerable": False,
+            "response_status": "complete",
+        },
+        {
+            "evidence_complete": True,
+            "answerable": True,
+            "response_status": "complete",
+            "conflicted_slot_ids": ["slot-1"],
+        },
+    ],
+)
+def test_sufficiency_report_rejects_internally_incoherent_completion(
+    report: dict[str, object]
+) -> None:
+    with pytest.raises(ValidationError):
+        SufficiencyReport(**report)
+
+
 def test_request_serializes_only_requested_sources_and_scope_resolver_owns_authorization() -> (
     None
 ):
@@ -142,6 +212,46 @@ def test_request_serializes_only_requested_sources_and_scope_resolver_owns_autho
     assert scope.authorized_doc_ids == ["doc-1"]
 
 
+@pytest.mark.parametrize(
+    ("route", "expected_graph_policy"),
+    [
+        ("single_lookup", "never"),
+        ("bounded_compare", "never"),
+        ("exact_structured", "locator_fallback"),
+        ("multi_document_exact", "locator_fallback"),
+        ("multi_hop", "locator_fallback"),
+        ("graph_relational", "required_locator"),
+    ],
+)
+def test_query_contract_applies_the_model_default_graph_policy_for_each_route(
+    route: str, expected_graph_policy: GraphPolicy
+) -> None:
+    contract = QueryContract(route=route, intent="test routing")
+
+    assert contract.graph_policy == expected_graph_policy
+
+
+@pytest.mark.parametrize("extra_field", ["user_id", "authorized_doc_ids"])
+def test_request_rejects_adapter_injected_authorization_fields(extra_field: str) -> None:
+    payload = {
+        "question": "What is the reported score?",
+        "trace_id": "trace-1",
+        extra_field: "not-allowed",
+    }
+
+    with pytest.raises(ValidationError):
+        V9ExecutionRequest(**payload)
+
+
+def test_final_claim_rejects_evidence_only_scope_constraint_support_type() -> None:
+    with pytest.raises(ValidationError):
+        FinalClaim(
+            claim_id="claim-1",
+            statement="The frozen source scope cannot establish this claim.",
+            support_type="scope_constraint",
+        )
+
+
 def test_trace_execution_version_is_backward_compatible_and_summary_preserves_it() -> (
     None
 ):
@@ -159,6 +269,11 @@ def test_trace_execution_version_is_backward_compatible_and_summary_preserves_it
 
     assert detail.agentic_execution_version == "v8"
     assert summarize_agent_trace(detail).agentic_execution_version == "v8"
+
+    serialized = detail.model_dump(mode="json")
+    restored = AgentTraceDetail.model_validate(serialized)
+    assert restored.agentic_execution_version == "v8"
+    assert summarize_agent_trace(restored).agentic_execution_version == "v8"
 
 
 def test_retrieval_and_execution_results_preserve_the_evidence_only_boundary() -> None:
