@@ -1,5 +1,6 @@
 # Agentic RAG v9 Evidence-First Backend Implementation Plan
 
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` or `superpowers:executing-plans` task-by-task. Every task uses TDD, focused verification, review, and a scoped commit.
 > **Status:** Revised — ready for implementation
 > **Behavioral baseline:** `2a4e4e9e1dcdd2ff269695edb007de7e9e3da79c`
 > **Runtime:** Python 3.11
@@ -36,6 +37,43 @@ V9ExecutionResult    # whole run
 
 Task 1 must define every shared type before consumers: `QueryContract`, `RequiredSlot`, `RetrievalTask`, `EvidenceSource`, `EvidenceScope`, `EvidencePacket`, `SlotResolution`, `SufficiencyReport`, `ConflictCandidate`, `FinalClaim`, `FinalAnswerResult`, `RetrievalPolicy`, `AnswerPolicy`, `GeneratedRagAnswer`, `EffectivePhasePolicy`, `BudgetReservation`, `BudgetExceededError`, `ExecutionPolicy`, `V9ExecutionRequest`, `V9ExecutionMetrics`, and `V9ExecutionEvent`. All LLM functions are async.
 
+Evidence and claim support are intentionally different:
+
+```python
+EvidenceSupportType = Literal["direct", "calculated", "scope_constraint", "contradictory"]
+ClaimSupportType = Literal["direct", "calculated", "comparative_inference", "qualified"]
+ScopeMatch = Literal["same", "different", "unknown"]
+```
+
+Cross-document comparison is a `FinalClaim` with premise evidence IDs, never a synthetic source packet. Calculations use `Decimal` and persist raw value, normalized value, display precision, and rounding mode. Source locators distinguish `pdf_page_index` from `printed_page_label`; citation format is versioned.
+
+## Runtime contract addendum
+
+### Phase policy and call allocation
+
+| Phase | Temperature | Top-p | Top-k | Output cap | Per-run maximum |
+|---|---:|---:|---:|---:|---:|
+| `route_plan` | 0.10 | 0.80 | 20 | 384 | 1 |
+| `query_rewrite` | 0.10 | 0.80 | 20 | 192 | 1 |
+| `retrieval_judge` | 0.10 | 0.70 | 10 | 96 | 1 |
+| `graph_route` | 0.10 | 0.70 | 10 | 128 | 1 |
+| `graph_traversal` | N/A | N/A | N/A | N/A | 1 |
+| `visual_extract` | 0.10 | 0.80 | 20 | 768 | 1 batched call |
+| `evidence_extract` | 0.10 | 0.80 | 20 | 768 | 1 batched call |
+| `conflict_arbitration` | 0.10 | 0.80 | 20 | 256 | 1 |
+| `claim_verifier` | 0.10 | 0.80 | 20 | 384 | 1 batched call |
+| `final_answer` | 0.25 | 0.90 | 40 | 1,536 | 1 |
+
+Phase limits are ceilings, not entitlements, and remain subordinate to route call/token/deadline budgets. Admission priority is final response reserve → required route planning → required visual/Graph locator → evidence extraction → retrieval judge/rewrite → conflict arbitration → optional claim verifier. Completely unsupported runs skip final LLM and use a deterministic insufficiency response.
+
+### Transport/runtime separation
+
+`V9ExecutionRequest` is serializable and contains question, user/requested sources, history, Setup snapshot, execution version, and trace identity. Non-serializable dependencies live in `V9RuntimeContext(cancellation_token, event_sink, budget_controller, deadline, clock, llm_invoker)`. The core signature is `await core.execute(request=request, runtime=runtime)`.
+
+### Unified provider boundary
+
+Every query-time model user receives an `LlmInvoker` protocol dependency. v9 route planning, rewrite, retrieval judging, Graph routing, visual extraction, prose curation, conflict arbitration, claim verification, and final answering cannot call `.ainvoke()` directly. Retrieved content is untrusted evidence: it cannot alter policy, authorization, tools, or output schema; the v9 final model has no tool permissions.
+
 ## Task 0 — Freeze baseline and build Golden Dataset v2
 
 **Create:** `evaluation/golden/agentic_v9_questions_v2.json`, `evaluation/golden/agentic_v9_baseline_manifest.json`, `tests/test_agentic_v9_golden_dataset.py`.
@@ -58,7 +96,7 @@ The manifest initially records frontend `https://github.com/DeadMark70/Multimoda
 - [ ] `SlotResolution.status`: `supported|conflicted|explicitly_unavailable|not_found`.
 - [ ] `SufficiencyReport` separates `evidence_complete`, `answerable`, `response_status`, slot groups, and stop reason.
 - [ ] Graph defaults by route: never, never, locator fallback, locator fallback, locator fallback, required locator.
-- [ ] `V9ExecutionRequest` includes authorized doc IDs, bounded history, Setup snapshot, execution version, cancellation hook, and trace identity.
+- [ ] `V9ExecutionRequest` includes authorized doc IDs, requested source names, bounded history, Setup snapshot, execution version, and trace identity; `V9RuntimeContext` carries cancellation/event/budget/clock dependencies and is never serialized.
 - [ ] Verify schema and observability schema tests.
 - [ ] Commit: `feat(agentic-v9): define coherent execution contracts`
 
@@ -66,11 +104,22 @@ The manifest initially records frontend `https://github.com/DeadMark70/Multimoda
 
 **Create:** `data_base/agentic_v9/phase_policy.py`, tests. **Modify:** `core/llm_factory.py`, `evaluation/model_capabilities.py`.
 
-- [ ] Implement policies for route plan, retrieval judge, evidence/visual extraction, conflict, verifier, and final answer.
+- [ ] Implement the complete runtime-contract phase matrix, including query rewrite, Graph route, and claim verifier.
 - [ ] Effective output is `min(setup ceiling, phase cap)`; nested scope cannot change Setup model/thinking.
 - [ ] Preserve v8 behavior outside v9 scope.
 - [ ] Verify phase, factory override, and capability tests.
 - [ ] Commit: `feat(agentic-v9): enforce setup-authoritative phase policy`
+
+### Task 2C — Allocate calls and preflight Setup feasibility
+
+**Create:** `data_base/agentic_v9/budget_feasibility.py`, tests. **Modify:** phase policy and QueryContract validation.
+
+- [ ] Define `max_calls_by_phase` and admission priority exactly as the runtime contract above.
+- [ ] Implement `BudgetFeasibilityReport` and validate after contract resolution but before the first provider call.
+- [ ] Reservation includes Setup-authoritative reasoning/thought-token reserve, not only visible output.
+- [ ] Incompatible thinking/route budget returns `configuration_incompatible`; never disable thinking or inflate budget silently.
+- [ ] Verify high-thinking-budget fixtures for single lookup and bounded compare.
+- [ ] Commit: `feat(agentic-v9): preflight route budget feasibility`
 
 ## Task 3 — Add pre-invoke budgets and accounting reconciliation
 
@@ -83,6 +132,16 @@ The manifest initially records frontend `https://github.com/DeadMark70/Multimoda
 - [ ] Reservation failure prevents provider invocation. Final failure/unavailability returns deterministic qualified partial with generation count zero.
 - [ ] Verify budget, callback, and usage aggregation tests; use existing tests, not nonexistent `test_evaluation_accounting.py`.
 - [ ] Commit: `feat(agentic-v9): enforce atomic provider budgets`
+
+### Task 3C — Inject the BudgetedLlmInvoker into every v9 model path
+
+**Modify:** `data_base/query_transformer.py`, v9 CRAG adapters, `graph_rag/generic_mode.py` or its isolated v9 adapter, visual/evidence/conflict/final modules. **Create:** architecture test.
+
+- [ ] Define `LlmInvoker.invoke(phase, purpose, messages)` and inject it through every v9 query-time component.
+- [ ] Ensure Multi-Query rewrite, CRAG judge, generic Graph fallback router, visual helpers, and verifier cannot bypass the pre-invoke gate.
+- [ ] Add AST/monkeypatch architecture test that fails on direct `.ainvoke()` inside `data_base/agentic_v9` and proves the Graph fallback uses the invoker.
+- [ ] Legacy v8 direct paths may remain; v9 adapters must not enter them.
+- [ ] Commit: `refactor(agentic-v9): centralize provider invocation`
 
 ## Task 4 — Split generic retrieval from generation in six reviewable commits
 
@@ -121,6 +180,17 @@ Create `rag_generation.py`; legacy wrapper delegates to retrieval + legacy gener
 - [ ] Never split atomic numbers, formulae, theorem conditions, table headers/rows, or citations.
 - [ ] Fail closed if mandatory evidence cannot fit; persist dropped IDs and distributions.
 - [ ] Commit: `feat(agentic-v9): pack bounded evidence context`
+
+### Task 5B — Estimate the complete final prompt and preserve premise closure
+
+**Modify:** `token_estimator.py`, `context_packer.py`, tests.
+
+- [ ] Return `PromptTokenEstimate` with instruction, question, contract, history, evidence, image, schema, safety margin, and total tokens.
+- [ ] Evidence budget subtracts fixed prompt/history/image/safety overhead plus final output and Setup thinking reserve.
+- [ ] Selecting a calculated packet or derived-claim premise includes the transitive closure of all direct premise packets.
+- [ ] Use conservative language/content-specific estimates for Chinese, English, LaTeX, JSON/table, and images; do not rely on `len(text)//4`.
+- [ ] Persist estimated-vs-provider input error and increase safety margin or fail closed after calibrated error thresholds are exceeded.
+- [ ] Commit: `feat(agentic-v9): estimate complete prompt budgets`
 
 ## Task 6 — Build shared evidence pool
 
@@ -163,6 +233,17 @@ Create `retrieval_tasks.py` and tests. Q9 bounded A/B, Q15 asset locator, Q16 so
 - [ ] Drop invalid packet output without an LLM repair call.
 - [ ] Commit: `feat(agentic-v9): curate final evidence packets`
 
+### Task 9B — Validate source-bound prose packets
+
+**Create:** `data_base/agentic_v9/evidence_validator.py`, tests. **Modify:** evidence schema/extractor.
+
+- [ ] Persist `source_span_hash` and `validation_status=deterministic_valid|quote_bound|invalid`.
+- [ ] Require verbatim span membership; reject new numbers and unsourced model/dataset/metric entities.
+- [ ] Reject added negation, comparison, first/SOTA, cause, outperforms, safe/robust, best/highest language unless present in the source span.
+- [ ] Curator cannot rewrite source scope; prose packets remain extractive or minimally normalized.
+- [ ] High-risk abstractions become FinalClaims with premise IDs, not EvidencePackets.
+- [ ] Commit: `feat(agentic-v9): validate source-bound evidence`
+
 ## Task 10 — Sufficiency and bounded repair
 
 ### 10A Sufficiency
@@ -177,7 +258,7 @@ Create `repair.py`, `selective_crag.py`, tests. Queries derive only from missing
 
 ### 11A Scope-aware conflict
 
-Create `conflict_gate.py` and tests. Conflict requires same slot/metric/dataset/split/model variant/protocol/prompt setting and incompatible values. Only persisted unresolved candidates may invoke one arbitration call. Commit `feat(agentic-v9): gate scope-aware conflicts`.
+Create `conflict_gate.py` and tests. Conflict requires same slot/metric/dataset/split/model variant/protocol/prompt setting and incompatible values. Scope matching is `same|different|unknown`; unknown becomes `scope_ambiguous` and may require arbitration or qualification, never silently “no conflict.” Only persisted unresolved candidates may invoke one arbitration call. Commit `feat(agentic-v9): gate scope-aware conflicts`.
 
 ### 11B Final answer/verifier/citations
 
@@ -192,6 +273,16 @@ Create `execution_core.py` and tests. Sequence: scope/contract → retrieval →
 ### 12B Runtime bounds
 
 Create `execution_policy.py` and tests. Initial limits: retrieval concurrency 3, LLM 2, visual 1; timeouts route/judge 2s, extract 8s, final 15s. Test provider-attempt retries, TaskGroup cancellation, campaign cancel, SSE disconnect, and reservation reconciliation. Commit `feat(agentic-v9): enforce runtime bounds and cancellation`.
+
+### Task 12C — Propagate a whole-run deadline
+
+**Modify:** execution policy/core/runtime context; add deadline tests.
+
+- [ ] Add `total_deadline_s=24.0` plus retrieval, rerank, Graph, visual, and existing phase timeouts.
+- [ ] Each operation uses `min(phase_timeout, deadline.remaining_seconds())`.
+- [ ] When time is insufficient for the final reserve, skip optional repair/arbitration/verifier and enter final or deterministic partial.
+- [ ] `insufficient` with zero supported slots must never invoke final LLM.
+- [ ] Commit: `feat(agentic-v9): enforce whole-run deadline`
 
 ## Task 13 — Persistence and API contract
 
@@ -211,6 +302,18 @@ Modify `evaluation/db.py`, `trace_schemas.py`, `observability_storage.py`; add r
 
 Add indexes/FKs/schema version/payload-size guard and historical empty defaults. Commit `feat(evaluation): persist agentic v9 evidence state`.
 
+### Task 13C — Add attempt idempotency, authorization, and redaction
+
+**Modify:** DB/storage/router/export/security tests.
+
+- [ ] New rows include attempt, run, campaign, condition, schema version, and created time; unique keys are `(attempt_id,evidence_id)` and `(attempt_id,slot_id,resolution_stage)`.
+- [ ] Materialize contract/packets/slots/claims/completion trace atomically for an attempt; cancelled attempts retain trace but never complete evidence state.
+- [ ] Official benchmark uses latest official successful attempt; operational diagnostics include every retry attempt. Keep these token totals separate.
+- [ ] Enforce campaign ownership on new tables; unauthorized source resolution cannot fall back to all documents or leak names into trace.
+- [ ] Default API returns bounded plain-text excerpts, not raw HTML/Markdown/full prompts; authorized export may return full spans. Apply secret redaction and payload size/version guards.
+- [ ] Add cross-user denial, prompt-injection-as-evidence, retry-idempotency, and cancelled-materialization tests.
+- [ ] Commit: `feat(evaluation): secure idempotent v9 evidence persistence`
+
 ### 13B Analytics/API/OpenAPI
 
 Modify `analytics.py`, `router.py`, `openapi.json`; add API tests. Expose contract, slots, packets, dropped context, graph outcome, budgets, repairs, conflicts, response/cancel status, generation count. Unknown remains N/A; no money fields. Commit `feat(evaluation): expose v9 evidence observability api`.
@@ -220,10 +323,11 @@ Modify `analytics.py`, `router.py`, `openapi.json`; add API tests. Expose contra
 Modify campaign schemas/engine/worker, agentic evaluation service, and rag modes; add tests.
 
 - [ ] Persist `agentic_execution_version: Literal["v8","v9"]`; env is default only.
-- [ ] Shadow uses `condition_id="agentic-v9-shadow"` to avoid the existing unique-key collision.
+- [ ] Formal identities are `naive/naive-baseline`, `agentic/agentic-v8/v8`, and `agentic/agentic-v9/v9`; shadow alone uses `agentic-v9-shadow`.
 - [ ] Adapter maps campaign ↔ core without containing policy.
 - [ ] Result separates `used_evidence_documents` from all retrieved; only used/cited documents populate `RAGResult.documents` and RAGAS contexts.
 - [ ] Test context-to-claim evidence mapping, unpacked exclusion, and deduplication.
+- [ ] `/runs` returns condition ID, execution profile/version, and response status so UI cannot merge v8, v9, and shadow.
 - [ ] Commit: `feat(evaluation): adapt campaigns to agentic v9`
 
 ## Task 15 — Chat SSE adapter
@@ -249,12 +353,22 @@ Add required-slot coverage, important-claim unsupported rate, provenance failure
 ### 17B Gates
 
 - Smoke only: Q9/Q15/Q16 × naive/v8/v9 × 1.
-- Formal: all 16 × naive/v8/v9 × 8 paired repeats with identical golden hash, corpus/index, prompt, model/thinking, phase, evaluator, and code snapshots.
+- Formal: all 16 × naive/v8/v9 conditions × 8 paired repeats with identical golden hash, corpus/index, prompt, model/thinking, phase, evaluator, and code snapshots.
 - Mandatory routes: Q10/fixed single lookup, Q9, Q15, Q16, Q1, Q2, fixed graph path.
 - Report paired mean delta, 95% paired-bootstrap CI, category/per-question regressions, tokens/calls/latency, evidence metrics, accounting completeness.
 - Engineering correctness delta vs v8 `>=0`; default statistical lower bound `>=-0.01` (strict `>=0` requires explicit approval).
 - First gates: token ratio `<=4`, relevancy `>=0.70`, P95 `<25s`, provenance failures `0`, subtask answers `0`, final generation `<=1`, complete accounting/phase attribution.
 - Promote default only if all gates pass; rollback remains config-only.
+
+### Task 17C — Enforce scientific condition identity and clustered bootstrap
+
+- [ ] Pair by `(question_id, repeat_number)` and identify arms by `(mode, condition_id, execution_profile)`; never merge formal and shadow v9.
+- [ ] Aggregate eight repeats per question, then bootstrap 16 question clusters; never treat 128 executions as independent questions.
+- [ ] Randomize arm order within each question/repeat block and blind the RAGAS judge to labels.
+- [ ] Official token ratio is `sum(v9 official runtime tokens)/sum(naive official runtime tokens)`, not mean per-run ratios.
+- [ ] P95 uses successful accounting-complete official v9 runs, but excessive failure/timeout fails the gate rather than being excluded silently.
+- [ ] Add a non-blocking ablation arm for v8 + A-type phase policy to separate policy from architecture effects.
+- [ ] Commit: `feat(evaluation): enforce clustered v9 benchmark statistics`
 
 ## Review checkpoints
 
