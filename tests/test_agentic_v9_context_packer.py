@@ -12,7 +12,7 @@ from data_base.agentic_v9.schemas import (
     RequiredSlot,
     SourceLocator,
 )
-from data_base.agentic_v9.token_estimator import TokenEstimator
+from data_base.agentic_v9.token_estimator import PromptTokenEstimate, TokenEstimator
 
 
 def _packet(
@@ -185,3 +185,108 @@ def test_packer_deduplicates_chunk_spans_and_prefers_a_new_source_after_required
     assert "duplicate-best" in [packet.evidence_id for packet in result.packets]
     assert "other-source" in [packet.evidence_id for packet in result.packets]
     assert set(result.tokens_by_source) == {"doc-1", "doc-2"}
+
+
+def test_complete_prompt_estimate_leaves_only_the_remaining_budget_for_evidence() -> None:
+    packer = EvidenceContextPacker(
+        setup_input_ceiling=100,
+        remaining_runtime_tokens=160,
+        final_output_reserve=30,
+        thinking_token_reserve=20,
+        instruction="Use only cited evidence.",
+        question="比較中英文表格中的 Dice 分數。",
+        contract={"required_slots": ["slot-1"]},
+        history=[{"role": "user", "content": "Earlier question"}],
+        image_tokens=7,
+        schema={"type": "object", "properties": {"answer": {"type": "string"}}},
+        safety_margin_tokens=5,
+    )
+
+    result = packer.pack([_packet("fits", statement="evidence", chunk_id="fits")])
+
+    assert isinstance(result.prompt_estimate, PromptTokenEstimate)
+    assert result.prompt_estimate.instruction > 0
+    assert result.prompt_estimate.question > 0
+    assert result.prompt_estimate.contract > 0
+    assert result.prompt_estimate.history > 0
+    assert result.prompt_estimate.image == 7
+    assert result.prompt_estimate.schema > 0
+    assert result.prompt_estimate.safety_margin == 5
+    assert result.input_token_budget == max(
+        min(100, 160 - 30 - 20) - result.prompt_estimate.fixed_overhead_tokens,
+        0,
+    )
+    assert result.estimated_input_tokens == result.prompt_estimate.total_tokens
+
+
+def test_packer_includes_transitive_premises_for_calculated_and_derived_claim_evidence() -> None:
+    root = _packet("root", statement="root", chunk_id="root")
+    intermediate = _packet("intermediate", statement="intermediate", chunk_id="intermediate")
+    calculated = _packet(
+        "calculated", statement="calculated", chunk_id="calculated"
+    )
+    intermediate.premise_evidence_ids = ["root"]
+    calculated.support_type = "calculated"
+    calculated.premise_evidence_ids = ["intermediate"]
+    derived_premise = _packet(
+        "derived-premise", statement="derived", chunk_id="derived"
+    )
+    packer = EvidenceContextPacker(
+        setup_input_ceiling=100,
+        remaining_runtime_tokens=100,
+        final_output_reserve=0,
+        estimator=_FixedEstimator(
+            {"root": 2, "intermediate": 2, "calculated": 2, "derived-premise": 2}
+        ),  # type: ignore[arg-type]
+    )
+
+    result = packer.pack(
+        [calculated, intermediate, root, derived_premise],
+        required_slots=[RequiredSlot(slot_id="slot-1", description="calculation")],
+        derived_claim_premise_evidence_ids=["derived-premise"],
+    )
+
+    assert [packet.evidence_id for packet in result.packets][:4] == [
+        "root",
+        "intermediate",
+        "calculated",
+        "derived-premise",
+    ]
+
+
+def test_calibration_persists_provider_error_increases_margin_then_fails_closed() -> None:
+    estimator = TokenEstimator(
+        base_safety_margin_tokens=1,
+        excessive_error_ratio=0.20,
+        fail_closed_after_excessive_errors=2,
+    )
+    estimator.record_provider_input_tokens(
+        estimated_input_tokens=10, provider_input_tokens=20
+    )
+
+    assert estimator.provider_input_errors[-1].error_tokens == 10
+    assert estimator.safety_margin_tokens > 1
+
+    estimator.record_provider_input_tokens(
+        estimated_input_tokens=10, provider_input_tokens=20
+    )
+    packer = EvidenceContextPacker(
+        setup_input_ceiling=100,
+        remaining_runtime_tokens=100,
+        final_output_reserve=0,
+        estimator=estimator,
+    )
+
+    result = packer.pack([_packet("unsafe", chunk_id="unsafe")])
+
+    assert result.failure_reason == "provider_estimate_error_exceeded"
+    assert result.dropped_packet_ids == ("unsafe",)
+
+
+def test_estimator_is_conservative_for_structured_and_image_prompt_content() -> None:
+    estimator = TokenEstimator()
+
+    assert estimator.estimate_text(r"\\frac{Dice_{zh}}{0.91}") >= 10
+    assert estimator.estimate_json({"中文": ["value", 0.91]}) >= 10
+    assert estimator.estimate_table("| 指標 | Dice |\n| --- | --- |\n| A | 0.91 |") >= 20
+    assert estimator.estimate_image(width=512, height=512) > 0
