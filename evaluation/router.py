@@ -61,7 +61,10 @@ from evaluation.job_schemas import (
     EvaluationJobItemSummary,
     EvaluationRerunRequest,
 )
-from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.observability_storage import (
+    EvaluationObservabilityRepository,
+    safe_plain_text_excerpt,
+)
 from evaluation.schemas import (
     AvailableModel,
     DeleteResult,
@@ -749,12 +752,18 @@ async def get_campaign_run_observability(
 
     repository = EvaluationObservabilityRepository()
     trace_events = [
-        item
+        item.model_copy(update={"payload": {}, "error": {}})
         for item in await repository.list_trace_events_for_run(run_id)
         if item.campaign_id == campaign_id
     ]
     llm_calls = [
-        item
+        item.model_copy(
+            update={
+                "prompt_preview": safe_plain_text_excerpt(item.prompt_preview),
+                "payload": {},
+                "error": {},
+            }
+        )
         for item in await repository.list_llm_calls_for_run(run_id)
         if item.campaign_id == campaign_id
     ]
@@ -764,7 +773,12 @@ async def get_campaign_run_observability(
         if item.campaign_id == campaign_id
     ]
     retrieval_chunks = [
-        item
+        item.model_copy(
+            update={
+                "excerpt": safe_plain_text_excerpt(item.excerpt),
+                "payload": {},
+            }
+        )
         for item in await repository.list_retrieval_chunks_for_run(run_id)
         if item.campaign_id == campaign_id
     ]
@@ -796,7 +810,13 @@ async def get_campaign_run_observability(
         if item.campaign_id == campaign_id
     ]
     claims = [
-        item
+        item.model_copy(
+            update={
+                "claim_text": safe_plain_text_excerpt(item.claim_text),
+                "evidence": [],
+                "payload": {},
+            }
+        )
         for item in await repository.list_claims_for_run(run_id)
         if item.campaign_id == campaign_id
     ]

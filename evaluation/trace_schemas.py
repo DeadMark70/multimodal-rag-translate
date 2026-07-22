@@ -219,6 +219,24 @@ class EvaluationSlotResolution(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class EvaluationV9AttemptMaterialization(BaseModel):
+    """Attempt-scoped durable v9 state, retained even when cancelled."""
+
+    attempt_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    campaign_id: str = Field(min_length=1)
+    condition_id: str = ""
+    schema_version: str = Field(default="1", min_length=1, max_length=32)
+    trace_payload: dict[str, Any] = Field(default_factory=dict)
+    materialization_status: Literal["completed", "cancelled"] = "completed"
+    completed_at: datetime | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @property
+    def is_completed(self) -> bool:
+        return self.materialization_status == "completed"
+
+
 class AgenticV9TracePayload(BaseModel):
     """Versioned v9 execution state carried by an existing agent trace."""
 

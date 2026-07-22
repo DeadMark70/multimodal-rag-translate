@@ -188,6 +188,17 @@ _OBSERVABILITY_TABLE_COLUMNS = {
         "resolution_json": "TEXT NOT NULL DEFAULT '{}'",
         "created_at": "TEXT NOT NULL DEFAULT ''",
     },
+    "evaluation_v9_attempt_materializations": {
+        "attempt_id": "TEXT NOT NULL DEFAULT ''",
+        "run_id": "TEXT NOT NULL DEFAULT ''",
+        "campaign_id": "TEXT NOT NULL DEFAULT ''",
+        "condition_id": "TEXT NOT NULL DEFAULT ''",
+        "schema_version": "TEXT NOT NULL DEFAULT '1'",
+        "trace_json": "TEXT NOT NULL DEFAULT '{}'",
+        "materialization_status": "TEXT NOT NULL DEFAULT 'cancelled'",
+        "completed_at": "TEXT",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+    },
     "evaluation_human_ratings": {
         "run_id": "TEXT NOT NULL DEFAULT ''",
         "campaign_id": "TEXT NOT NULL DEFAULT ''",
@@ -632,6 +643,20 @@ CREATE TABLE IF NOT EXISTS evaluation_slot_resolutions (
     FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS evaluation_v9_attempt_materializations (
+    attempt_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    condition_id TEXT NOT NULL DEFAULT '',
+    schema_version TEXT NOT NULL DEFAULT '1',
+    trace_json TEXT NOT NULL DEFAULT '{}',
+    materialization_status TEXT NOT NULL CHECK (materialization_status IN ('completed', 'cancelled')),
+    completed_at TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(attempt_id) REFERENCES evaluation_attempts(id) ON DELETE CASCADE,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS evaluation_human_ratings (
     human_rating_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
@@ -1068,6 +1093,12 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_eval_slot_resolutions_campaign_run
         ON evaluation_slot_resolutions(campaign_id, run_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_v9_materializations_campaign_run
+        ON evaluation_v9_attempt_materializations(campaign_id, run_id, created_at ASC)
         """
     )
     await connection.execute(

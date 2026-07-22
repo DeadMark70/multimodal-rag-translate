@@ -51,7 +51,10 @@ from evaluation.db import (
     init_db,
 )
 from evaluation.rag_modes import RAG_MODES
-from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.observability_storage import (
+    EvaluationObservabilityRepository,
+    redact_sensitive_value,
+)
 from evaluation.trace_schemas import EvaluationHumanRating
 
 
@@ -775,7 +778,7 @@ class EvaluationAnalyticsService:
             for event in trace_events_by_run.get(result.id, []):
                 if event.campaign_id != campaign_id:
                     continue
-                event_row = _dump(event)
+                event_row = redact_sensitive_value(_dump(event))
                 if not request.include_raw_trace_payloads:
                     event_row["payload"] = {}
                 trace_events.append(event_row)
@@ -783,7 +786,7 @@ class EvaluationAnalyticsService:
             for call in context.llm_calls_by_run.get(result.id, []):
                 if call.campaign_id != campaign_id:
                     continue
-                call_row = _dump(call)
+                call_row = redact_sensitive_value(_dump(call))
                 if not request.include_prompt_previews:
                     call_row["prompt_preview"] = None
                 payload = dict(call_row.get("payload") or {})
@@ -794,7 +797,7 @@ class EvaluationAnalyticsService:
                 llm_calls.append(call_row)
 
             chunks = [
-                _dump(chunk)
+                redact_sensitive_value(_dump(chunk))
                 for chunk in retrieval_chunks_by_run.get(result.id, [])
                 if chunk.campaign_id == campaign_id
             ]
