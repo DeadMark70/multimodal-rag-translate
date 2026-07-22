@@ -13,7 +13,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 from langchain_core.messages import HumanMessage
 
@@ -29,6 +29,9 @@ from graph_rag.schemas import (
     is_graph_evidence_item_eligible,
 )
 from graph_rag.store import GraphStore
+
+if TYPE_CHECKING:
+    from data_base.agentic_v9.schemas import LlmInvoker
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +163,9 @@ class GraphEvidence:
 class GenericGraphRouter:
     """Adaptive router for generic graph search mode."""
 
+    def __init__(self, llm_invoker: "LlmInvoker | None" = None) -> None:
+        self._llm_invoker = llm_invoker
+
     def _fast_path(
         self,
         question: str,
@@ -261,24 +267,26 @@ class GenericGraphRouter:
     ) -> GraphRouteDecision:
         hints = hints or GraphQueryHints()
         try:
-            with graph_rag_llm_runtime_override("graph_extraction"):
-                llm = get_llm("graph_extraction")
-                with llm_accounting_phase("graph_reasoning"):
-                    response = await llm.ainvoke(
-                        [
-                            HumanMessage(
-                                content=format_graph_rag_prompt(
-                                    "generic_router",
-                                    question=question,
-                                    stage_hint=hints.stage_hint or "none",
-                                    task_type_hint=hints.task_type_hint or "none",
-                                    prefer_global=str(hints.prefer_global).lower(),
-                                prefer_local=str(hints.prefer_local).lower(),
-                                has_communities=str(has_communities).lower(),
-                            )
-                        )
-                    ]
+            prompt = format_graph_rag_prompt(
+                "generic_router",
+                question=question,
+                stage_hint=hints.stage_hint or "none",
+                task_type_hint=hints.task_type_hint or "none",
+                prefer_global=str(hints.prefer_global).lower(),
+                prefer_local=str(hints.prefer_local).lower(),
+                has_communities=str(has_communities).lower(),
+            )
+            if self._llm_invoker is not None:
+                response = await self._llm_invoker.invoke(
+                    phase="graph_route",
+                    purpose="graph_extraction",
+                    messages=[{"role": "user", "content": prompt}],
                 )
+            else:
+                with graph_rag_llm_runtime_override("graph_extraction"):
+                    llm = get_llm("graph_extraction")
+                    with llm_accounting_phase("graph_reasoning"):
+                        response = await llm.ainvoke([HumanMessage(content=prompt)])
             payload = json.loads(
                 re.search(r"\{[\s\S]*\}", response_content_to_text(response.content)).group(0)
             )

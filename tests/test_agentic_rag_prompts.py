@@ -16,6 +16,7 @@ EXPECTED_KEYS = {
     "detailed_eval",
     "pure_llm_eval",
     "fact_state",
+    "evidence_extract",
 }
 
 EXPECTED_REQUIRED_VARIABLES = {
@@ -32,6 +33,7 @@ EXPECTED_REQUIRED_VARIABLES = {
     "detailed_eval": ["question", "documents", "answer"],
     "pure_llm_eval": ["question", "answer", "ground_truth"],
     "fact_state": ["question", "source_doc_ids", "answer"],
+    "evidence_extract": ["question", "unresolved_slots", "source_evidence"],
 }
 
 SOURCE_FILES = [
@@ -93,9 +95,16 @@ def test_agentic_prompt_format_smoke():
         source_doc_ids="doc-1, doc-2",
         answer="Answer text",
     )
+    evidence_extract = format_agentic_rag_prompt(
+        "evidence_extract",
+        question="What is X?",
+        unresolved_slots="slot-1",
+        source_evidence="E1: source text",
+    )
 
     assert "What is X?" in planner
     assert "What is X?" in followup
     assert "[Task 1] A" in conflict
     assert "[1] doc text" in retrieval
     assert "doc-1, doc-2" in fact_state
+    assert "E1: source text" in evidence_extract

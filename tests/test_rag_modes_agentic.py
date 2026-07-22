@@ -5,6 +5,7 @@ from langchain_core.documents import Document
 
 from data_base.RAG_QA_service import RAGResult
 from evaluation.agentic_evaluation_service import AGENTIC_EVAL_PROFILE
+from evaluation.campaign_engine import CampaignEngine
 from evaluation.retrieval_profiles import (
     ADVANCED_EVAL_PROFILE,
     GRAPH_ABLATION_MODES,
@@ -227,6 +228,97 @@ async def test_run_campaign_case_agentic_uses_evaluation_service_and_profile() -
     assert result.contexts == ["ctx-1"]
     assert result.execution_profile == AGENTIC_EVAL_PROFILE
     assert result.context_policy_version == AGENTIC_CONTEXT_POLICY_VERSION
+
+
+@pytest.mark.asyncio
+async def test_v9_campaign_case_uses_the_typed_v9_runtime_not_the_v8_service() -> None:
+    test_case = EvaluationCase(
+        id="Q-v9",
+        question="What is the reported score?",
+        ground_truth="0.91",
+        source_docs=["doc-1"],
+        requires_multi_doc_reasoning=False,
+    )
+    v9_result = RAGResult(
+        answer="0.91",
+        source_doc_ids=["doc-1"],
+        documents=[Document(page_content="0.91", metadata={"doc_id": "doc-1"})],
+        agent_trace={
+            "agentic_execution_version": "v9",
+            "response_status": "complete",
+        },
+    )
+    with (
+        patch("evaluation.rag_modes.AgenticV9CampaignRuntime") as runtime_cls,
+        patch("evaluation.rag_modes.AgenticEvaluationService") as v8_service_cls,
+    ):
+        runtime_cls.return_value.execute = AsyncMock(return_value=v9_result)
+        result = await run_campaign_case(
+            test_case=test_case,
+            user_id="user-1",
+            mode="agentic-v9",
+            model_config={"max_input_tokens": 4096, "max_output_tokens": 256},
+            run_number=1,
+            agentic_execution_version="v9",
+        )
+
+    runtime_cls.return_value.execute.assert_awaited_once()
+    v8_service_cls.assert_not_called()
+    assert result.agentic_execution_version == "v9"
+
+
+@pytest.mark.asyncio
+async def test_mixed_v9_campaign_keeps_naive_baseline_on_v8_identity() -> None:
+    """A campaign-wide v9 setting must not relabel a naive baseline as v9."""
+    test_case = EvaluationCase(
+        id="Q-mixed-naive",
+        question="What is the baseline answer?",
+        ground_truth="baseline",
+        source_docs=[],
+        requires_multi_doc_reasoning=False,
+    )
+    naive_result = RAGResult(
+        answer="baseline",
+        source_doc_ids=[],
+        documents=[Document(page_content="baseline")],
+        usage={"total_tokens": 4},
+    )
+
+    with patch(
+        "evaluation.rag_modes.run_with_retry", new=AsyncMock(return_value=naive_result)
+    ):
+        result = await run_campaign_case(
+            test_case=test_case,
+            user_id="user-1",
+            mode="naive",
+            model_config={"max_output_tokens": 64},
+            agentic_execution_version="v9",
+        )
+
+    assert result.mode == "naive"
+    assert result.execution_identity == "naive"
+    assert result.agentic_execution_version == "v8"
+
+
+def test_mixed_v9_campaign_builds_v8_baselines_and_v9_agentic_unit() -> None:
+    test_case = EvaluationCase(
+        id="Q-mixed-units",
+        question="Which identity is used?",
+        ground_truth="identity",
+        source_docs=[],
+        requires_multi_doc_reasoning=False,
+    )
+
+    units = CampaignEngine._build_units(
+        test_cases=[test_case],
+        modes=["agentic-v9", "naive", "graph"],
+        repeat_count=1,
+        agentic_execution_version="v9",
+    )
+
+    assert {
+        unit.mode: unit.agentic_execution_version for unit in units
+    } == {"agentic-v9": "v9", "naive": "v8", "graph": "v8"}
 
 
 def test_extract_contexts_uses_answer_aware_policy_and_preserves_task_coverage() -> (

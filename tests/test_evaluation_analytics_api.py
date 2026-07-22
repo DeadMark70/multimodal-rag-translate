@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import tempfile
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -28,13 +30,13 @@ class FakeRagasEvaluator:
 
 
 def _make_upload_root() -> Path:
-    root = Path("output") / "test_tmp" / f"analytics_api_{uuid4().hex}" / "uploads"
+    root = Path(os.environ["EVALUATION_TEST_TMPDIR"]) / f"analytics_api_{uuid4().hex}" / "uploads"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 def _make_db_path() -> Path:
-    root = Path("output") / "test_tmp" / f"analytics_db_{uuid4().hex}"
+    root = Path(os.environ["EVALUATION_TEST_TMPDIR"]) / f"analytics_db_{uuid4().hex}"
     root.mkdir(parents=True, exist_ok=True)
     return root / "evaluation.db"
 
@@ -274,7 +276,12 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
 
         runs = client.get(f"/api/evaluation/campaigns/{campaign_id}/runs")
         assert runs.status_code == 200
-        assert runs.json()["runs"][0]["run_id"] == run_id
+        run_list_item = runs.json()["runs"][0]
+        assert run_list_item["run_id"] == run_id
+        # Ordinary pre-v9 campaigns retain the v8 default when read through
+        # the analytics projection rather than the full result payload.
+        assert run_list_item["condition_id"] is None
+        assert run_list_item["agentic_execution_version"] == "v8"
 
         aggregate_endpoint_expectations = {
             "mode-comparison": ("execution", 1),
@@ -323,6 +330,11 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
             assert response.status_code == 200
             assert response.json()["run_id"] == run_id
             assert key in response.json()
+
+        detail = client.get(f"/api/evaluation/runs/{run_id}/detail")
+        assert detail.status_code == 200
+        assert detail.json()["run_id"] == run_id
+        assert detail.json()["agentic_v9"] is None
 
         assert client.get(f"/api/evaluation/runs/{run_id}/graph").json()["tool_calls"][0]["tool_name"] == "graph_search"
         assert client.get(f"/api/evaluation/runs/{run_id}/visual").json()["tool_calls"] == []
@@ -393,3 +405,61 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
             f"/api/evaluation/campaigns/{campaign_id}/overview"
         )
         assert unauthenticated_overview.status_code == 401
+
+
+def test_v9_campaign_preflight_uses_golden_routes_and_reports_incompatible_setup() -> None:
+    """The admission check is deterministic, per question, and token-only."""
+    engine = CampaignEngine(runner=Mock(), ragas_evaluator=FakeRagasEvaluator())
+    temp_root = Path(tempfile.mkdtemp(prefix="analytics_v9_preflight_"))
+    upload_root = temp_root / "uploads"
+    upload_root.mkdir()
+    db_path = temp_root / "evaluation.db"
+    with _build_client("user-a", upload_root, db_path, engine) as client:
+        created_case = client.post(
+            "/api/evaluation/test-cases",
+            json={
+                "id": "Q10",
+                "question": "Golden route preflight question",
+                "ground_truth": "Golden route preflight answer",
+            },
+        )
+        assert created_case.status_code == 200
+
+        compatible = client.post(
+            "/api/evaluation/campaigns/preflight",
+            json={
+                "test_case_ids": ["Q10"],
+                "model_config": {
+                    "id": "cfg-v9", "name": "v9", "model_name": "gemini-2.5-flash",
+                    "temperature": 0.7, "top_p": 0.95, "top_k": 40,
+                    "max_input_tokens": 8192, "max_output_tokens": 2048,
+                    "thinking_mode": False, "thinking_budget": 8192,
+                },
+                "runtime_token_budget": 10000, "max_llm_calls": 4,
+            },
+        )
+        assert compatible.status_code == 200
+        compatible_question = compatible.json()["questions"][0]
+        assert compatible_question["question_id"] == "Q10"
+        assert compatible_question["expected_route"] == "single_lookup"
+        assert compatible_question["status"] == "feasible"
+        assert compatible_question["issues"] == []
+        assert "cost" not in compatible.json()
+
+        incompatible = client.post(
+            "/api/evaluation/campaigns/preflight",
+            json={
+                "test_case_ids": ["Q10"],
+                "model_config": {
+                    "id": "cfg-v9-unknown-thinking", "name": "v9", "model_name": "gemini-2.5-flash",
+                    "temperature": 0.7, "top_p": 0.95, "top_k": 40,
+                    "max_input_tokens": 8192, "max_output_tokens": 2048,
+                    "thinking_mode": True, "thinking_budget": -1,
+                },
+                "runtime_token_budget": 10000, "max_llm_calls": 4,
+            },
+        )
+        assert incompatible.status_code == 200
+        issue = incompatible.json()["questions"][0]["issues"][0]
+        assert issue["status"] == "configuration_incompatible"
+        assert issue["reason"] == "thinking_reserve_unknown"

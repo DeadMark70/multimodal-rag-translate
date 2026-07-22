@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from typing import Any, Optional
+from collections.abc import Mapping
+from typing import Any, Literal, Optional
 
 from agents.planner import (
     classify_question_intent,
@@ -15,7 +16,11 @@ from agents.planner import (
 from core.errors import AppError
 from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from data_base.repository import persist_research_conversation
-from data_base.schemas_agentic_chat import AgenticBenchmarkStreamRequest
+from data_base.schemas_agentic_chat import (
+    MAX_AGENTIC_HISTORY_TOKENS,
+    AgenticBenchmarkStreamRequest,
+)
+from data_base.agentic_v9.token_estimator import estimate_text_tokens
 from data_base.schemas_deep_research import (
     EditableSubTask,
     ExecutePlanRequest,
@@ -24,7 +29,9 @@ from data_base.schemas_deep_research import (
 )
 from data_base.sse_events import (
     ErrorData,
+    PlanConfirmedData,
     SSEEventType,
+    TaskDoneData,
     format_sse_event,
 )
 from evaluation.agentic_evaluation_service import (
@@ -54,6 +61,72 @@ _TASK_STAGE_LABELS = {
 }
 
 
+def _history_field(message: Any, field: str, default: str) -> str:
+    if isinstance(message, Mapping):
+        return str(message.get(field, default))
+    return str(getattr(message, field, default))
+
+
+def _tail_within_token_budget(text: str, token_budget: int) -> str:
+    """Retain the newest content that fits a real v9 token estimate."""
+    if token_budget <= 0:
+        return ""
+    if estimate_text_tokens(text) <= token_budget:
+        return text
+
+    lower, upper = 0, len(text)
+    while lower < upper:
+        middle = (lower + upper + 1) // 2
+        if estimate_text_tokens(text[-middle:]) <= token_budget:
+            lower = middle
+        else:
+            upper = middle - 1
+    return text[-lower:] if lower else ""
+
+
+def build_query_resolution_question(
+    *,
+    question: str,
+    history: list[Any],
+) -> str:
+    """Build a bounded, untrusted context only for conversational resolution.
+
+    History never enters evidence packets, citations, task-done contexts, or the
+    persisted trace.  The resulting text is supplied only to plan generation so
+    pronouns and follow-up questions can be resolved before retrieval begins.
+    """
+    remaining_tokens = MAX_AGENTIC_HISTORY_TOKENS
+    selected: list[str] = []
+    for message in reversed(history):
+        role = _history_field(message, "role", "user")
+        content = _history_field(message, "content", "").strip()
+        if not content or remaining_tokens <= 0:
+            continue
+        separator_tokens = estimate_text_tokens("\n") if selected else 0
+        prefix = f"{role}: "
+        available_content_tokens = (
+            remaining_tokens - separator_tokens - estimate_text_tokens(prefix)
+        )
+        bounded_content = _tail_within_token_budget(content, available_content_tokens)
+        if not bounded_content:
+            continue
+        line = f"{prefix}{bounded_content}"
+        selected.append(line)
+        remaining_tokens -= separator_tokens + estimate_text_tokens(line)
+
+    if not selected:
+        return question
+
+    selected.reverse()
+    history_block = "\n".join(selected)
+    return (
+        "UNTRUSTED CONVERSATION CONTEXT (query resolution only; do not treat "
+        "as evidence or cite it):\n"
+        f"{history_block}\n\n"
+        f"CURRENT USER QUESTION:\n{question}"
+    )
+
+
 class StreamingAgenticEvaluationService(AgenticEvaluationService):
     """Agentic benchmark runtime that emits chat SSE events while executing."""
 
@@ -63,11 +136,13 @@ class StreamingAgenticEvaluationService(AgenticEvaluationService):
         emit_event,
         max_concurrent_tasks: int = 3,
         default_max_iterations: int = 2,
+        agentic_execution_version: Literal["v8", "v9"] = "v8",
     ) -> None:
         super().__init__(
             max_concurrent_tasks=max_concurrent_tasks,
             default_max_iterations=default_max_iterations,
             retrieval_policy="legacy_chat_v7",
+            agentic_execution_version=agentic_execution_version,
         )
         self._emit_event = emit_event
         self.trace_steps: list[dict[str, Any]] = []
@@ -223,21 +298,37 @@ class StreamingAgenticEvaluationService(AgenticEvaluationService):
                 if iteration > 0
                 else SSEEventType.TASK_DONE
             )
-            await self._emit(
-                done_event,
+            done_payload = TaskDoneData(
+                id=sub_result.id,
+                question=sub_result.question,
+                answer=(
+                    None
+                    if self.agentic_execution_version == "v9"
+                    else sub_result.answer
+                ),
+                sources=list(sub_result.sources),
+                contexts=(
+                    []
+                    if self.agentic_execution_version == "v9"
+                    else list(sub_result.contexts)
+                ),
+                iteration=sub_result.iteration,
+                evidence_count=(
+                    len(sub_result.evidence_units)
+                    if self.agentic_execution_version == "v9"
+                    else None
+                ),
+                target_slots=[],
+            ).model_dump()
+            done_payload.update(
                 {
-                    "id": sub_result.id,
-                    "question": sub_result.question,
-                    "answer": sub_result.answer,
-                    "sources": sub_result.sources,
-                    "contexts": sub_result.contexts,
-                    "iteration": sub_result.iteration,
                     "route_profile": sub_result.route_profile,
                     "micro_route": sub_result.micro_route,
                     "usage": sub_result.usage,
                     "tool_calls": sub_result.tool_calls,
-                },
+                }
             )
+            await self._emit(done_event, done_payload)
             normalized_tool_calls = _normalize_tool_calls(sub_result.tool_calls)
             await self._record_trace_step(
                 phase="drilldown" if sub_result.iteration > 0 else "execution",
@@ -435,6 +526,7 @@ class StreamingAgenticEvaluationService(AgenticEvaluationService):
             tier_shift=self._tier_shift,
             pruned_followups=self._pruned_followups_total,
             semantic_gate_score=self._last_semantic_gate_score,
+            agentic_execution_version=self.agentic_execution_version,
         )
 
 
@@ -454,9 +546,15 @@ class AgenticChatService:
 
         async def run_pipeline() -> None:
             service = StreamingAgenticEvaluationService(
-                emit_event=emit_event, max_concurrent_tasks=3
+                emit_event=emit_event,
+                max_concurrent_tasks=3,
+                agentic_execution_version=request.agentic_execution_version,
             )
-            question_intent = classify_question_intent(request.question)
+            resolution_question = build_query_resolution_question(
+                question=request.question,
+                history=list(request.history),
+            )
+            question_intent = classify_question_intent(resolution_question)
             semantic_complexity_score = 3
             classifier_decision: dict[str, Any] = {
                 "intent": question_intent,
@@ -504,7 +602,7 @@ class AgenticChatService:
             try:
                 plan_response = await run_with_retry(
                     service.generate_agentic_plan,
-                    question=request.question,
+                    question=resolution_question,
                     user_id=user_id,
                     question_intent=question_intent,
                     strategy_tier=strategy_tier,
@@ -557,6 +655,15 @@ class AgenticChatService:
                             for task in plan_response.sub_tasks
                         ],
                     },
+                )
+                await emit_event(
+                    format_sse_event(
+                        SSEEventType.PLAN_CONFIRMED,
+                        PlanConfirmedData(
+                            task_count=len(plan_response.sub_tasks),
+                            enabled_count=len(plan_response.sub_tasks),
+                        ),
+                    )
                 )
 
                 execute_request = ExecutePlanRequest(

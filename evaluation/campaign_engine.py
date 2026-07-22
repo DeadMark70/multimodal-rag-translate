@@ -8,7 +8,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 from uuid import uuid4
 
 from core.errors import AppError, ErrorCode
@@ -46,6 +46,7 @@ from evaluation.evidence import (
 )
 from evaluation.observability import EvaluationRunRecorder
 from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.agentic_campaign_adapter import effective_agentic_execution_version
 from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
 from evaluation.ragas_evaluator import RagasEvaluator
 from evaluation.retrieval_profiles import evaluation_failure_execution_profile
@@ -88,6 +89,8 @@ class CampaignUnit:
     condition_label: str | None = None
     ablation_flags: dict[str, Any] | None = None
     budget: dict[str, Any] | None = None
+    agentic_execution_version: Literal["v8", "v9"] = "v8"
+    shadow_evaluation_policy: Literal["operational", "research"] | None = None
 
 
 @dataclass(frozen=True)
@@ -168,6 +171,7 @@ def _build_system_version_snapshot(
         "mode": unit.mode,
         "run_number": unit.run_number,
         "repeat_number": unit.repeat_number,
+        "agentic_execution_version": unit.agentic_execution_version,
     }
     if unit.condition_id:
         snapshot["condition_id"] = unit.condition_id
@@ -175,6 +179,8 @@ def _build_system_version_snapshot(
         snapshot["ablation_flags"] = dict(unit.ablation_flags or {})
     if unit.budget:
         snapshot["budget"] = dict(unit.budget)
+    if unit.shadow_evaluation_policy:
+        snapshot["shadow_evaluation_policy"] = unit.shadow_evaluation_policy
     if isinstance(payload, BenchmarkExecutionResult):
         if payload.execution_profile:
             snapshot["execution_profile"] = payload.execution_profile
@@ -190,13 +196,22 @@ def _build_derived_metrics(
 ) -> dict[str, Any]:
     metrics: dict[str, Any] = {
         "repeat_number": unit.repeat_number,
+        "agentic_execution_version": unit.agentic_execution_version,
     }
     if unit.condition_id:
         metrics["condition_id"] = unit.condition_id
         metrics["condition_label"] = unit.condition_label
         metrics["ablation_flags"] = dict(unit.ablation_flags or {})
     if isinstance(payload, Exception):
+        metrics["response_status"] = "failed"
         return metrics
+    if payload.execution_identity:
+        metrics["execution_identity"] = payload.execution_identity
+    if payload.shadow_evaluation_policy:
+        metrics["shadow_evaluation_policy"] = payload.shadow_evaluation_policy
+    metrics["response_status"] = payload.response_status or (
+        "failed" if payload.error_message else "complete"
+    )
     metrics.update(
         {
             "context_count": len(payload.contexts),
@@ -831,6 +846,8 @@ class CampaignEngine:
             modes=config.modes,
             repeat_count=config.repeat_count,
             ablation_conditions=config.ablation_conditions,
+            agentic_execution_version=config.agentic_execution_version,
+            shadow_evaluation_policy=config.shadow_evaluation_policy,
         )
         await self._job_store.create_job_with_items(
             user_id=user_id,
@@ -1413,6 +1430,8 @@ class CampaignEngine:
             modes=campaign.config.modes,
             repeat_count=campaign.config.repeat_count,
             ablation_conditions=campaign.config.ablation_conditions,
+            agentic_execution_version=campaign.config.agentic_execution_version,
+            shadow_evaluation_policy=campaign.config.shadow_evaluation_policy,
         )
         existing_keys = {str(row.get("logical_key")) for row in existing}
         result_by_id = {
@@ -1477,6 +1496,8 @@ class CampaignEngine:
                     modes=config.modes,
                     repeat_count=config.repeat_count,
                     ablation_conditions=config.ablation_conditions,
+                    agentic_execution_version=config.agentic_execution_version,
+                    shadow_evaluation_policy=config.shadow_evaluation_policy,
                 )
             rate_budget = RateBudget(rpm_limit=config.rpm_limit)
             completed_units = initial_completed_units
@@ -1622,6 +1643,13 @@ class CampaignEngine:
         completed_results = [
             row for row in results if row.status == CampaignResultStatus.COMPLETED
         ]
+        campaign = await self._campaign_repository.get(
+            user_id=user_id, campaign_id=campaign_id
+        )
+        if campaign.config.shadow_evaluation_policy == "operational":
+            completed_results = [
+                row for row in completed_results if row.mode != "agentic-v9-shadow"
+            ]
         if not completed_results:
             await self._campaign_repository.mark_completed(
                 user_id=user_id, campaign_id=campaign_id
@@ -1712,6 +1740,8 @@ class CampaignEngine:
                 run_number=repeat_number,
                 ablation_flags=ablation_flags,
                 budget=budget,
+                agentic_execution_version=unit.agentic_execution_version,
+                shadow_evaluation_policy=unit.shadow_evaluation_policy,
             )
         except Exception as exc:  # noqa: BLE001
             payload = exc
@@ -1934,6 +1964,8 @@ class CampaignEngine:
         modes: list[str],
         repeat_count: int,
         ablation_conditions: list[AblationCondition] | None = None,
+        agentic_execution_version: Literal["v8", "v9"] = "v8",
+        shadow_evaluation_policy: Literal["operational", "research"] | None = None,
     ) -> list[CampaignUnit]:
         units: list[CampaignUnit] = []
         if ablation_conditions:
@@ -1958,6 +1990,10 @@ class CampaignEngine:
                                 budget=dict(condition.budget)
                                 if condition.budget
                                 else None,
+                                agentic_execution_version=effective_agentic_execution_version(
+                                    condition.mode, agentic_execution_version
+                                ),
+                                shadow_evaluation_policy=shadow_evaluation_policy,
                             )
                         )
             return units
@@ -1971,6 +2007,10 @@ class CampaignEngine:
                             mode=mode,
                             run_number=run_number,
                             repeat_number=run_number,
+                            agentic_execution_version=effective_agentic_execution_version(
+                                mode, agentic_execution_version
+                            ),
+                            shadow_evaluation_policy=shadow_evaluation_policy,
                         )
                     )
         return units
@@ -1994,6 +2034,8 @@ class CampaignEngine:
                 "condition_label": unit.condition_label,
                 "ablation_flags": dict(unit.ablation_flags or {}),
                 "budget": dict(unit.budget or {}),
+                "agentic_execution_version": unit.agentic_execution_version,
+                "shadow_evaluation_policy": unit.shadow_evaluation_policy,
                 "model_config": config.model_preset.model_dump(mode="json"),
             },
         )

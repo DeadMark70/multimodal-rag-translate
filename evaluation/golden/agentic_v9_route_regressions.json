@@ -1,0 +1,11 @@
+{
+  "schema_version": "1",
+  "cases": [
+    {"id":"R1","question":"What are the three nnU-Net recipe elements?","expected_route":"single_lookup","requires_graph":false,"synthetic":false,"include_in_formal_metrics":false},
+    {"id":"R2","question":"SwinUNETR and nnU-Net: which performs better?","expected_route":"bounded_compare","requires_graph":false,"synthetic":false,"include_in_formal_metrics":false},
+    {"id":"R3","question":"According to Figure 1 and Table 1, calculate 0.877 minus 0.837.","expected_route":"exact_structured","requires_graph":false,"synthetic":false,"include_in_formal_metrics":false},
+    {"id":"R4","question":"Find GEPAR3D Appendix D, the ODES formula, and the U-KAN theorem range.","expected_route":"multi_document_exact","requires_graph":false,"synthetic":false,"include_in_formal_metrics":false},
+    {"id":"R5","question":"Compare MedSAM, SAM-Med3D, and MedSAM-2.","expected_route":"multi_hop","requires_graph":false,"synthetic":false,"include_in_formal_metrics":false},
+    {"id":"R6","question":"Find the unknown cross-paper method lineage path between two synthetic papers.","expected_route":"graph_relational","requires_graph":true,"synthetic":true,"include_in_formal_metrics":false}
+  ]
+}

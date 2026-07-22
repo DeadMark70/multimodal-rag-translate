@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 from evaluation.accounting_schemas import TokenBreakdown
 from evaluation.campaign_schemas import CampaignMode
 from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
+from data_base.agentic_v9.repair import RepairPlan
+from data_base.agentic_v9.schemas import BudgetReservation, QueryContract, SufficiencyReport
 
 TracePhase = Literal["planning", "execution", "drilldown", "evaluation", "synthesis"]
 TraceStatus = Literal["completed", "partial", "failed"]
@@ -129,6 +131,9 @@ class EvaluationContextPack(BaseModel):
     context_pack_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     campaign_id: str = Field(min_length=1)
+    attempt_id: Optional[str] = None
+    condition_id: str = ""
+    schema_version: str = Field(default="1", min_length=1, max_length=32)
     span_id: Optional[str] = None
     input_chunk_count: int = Field(default=0, ge=0)
     packed_chunk_count: int = Field(default=0, ge=0)
@@ -174,6 +179,9 @@ class EvaluationClaim(BaseModel):
     claim_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     campaign_id: str = Field(min_length=1)
+    attempt_id: Optional[str] = None
+    condition_id: str = ""
+    schema_version: str = Field(default="1", min_length=1, max_length=32)
     span_id: Optional[str] = None
     claim_text: str = Field(min_length=1)
     claim_type: Optional[str] = None
@@ -182,6 +190,63 @@ class EvaluationClaim(BaseModel):
     unsupported_reason: Optional[str] = None
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class EvaluationEvidencePacket(BaseModel):
+    """One v9 evidence packet associated with the durable execution attempt."""
+
+    attempt_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    campaign_id: str = Field(min_length=1)
+    condition_id: str = ""
+    schema_version: str = Field(default="1", min_length=1, max_length=32)
+    evidence_id: str = Field(min_length=1)
+    packet: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class EvaluationSlotResolution(BaseModel):
+    """One separately persisted v9 required-slot resolution for an attempt."""
+
+    attempt_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    campaign_id: str = Field(min_length=1)
+    condition_id: str = ""
+    schema_version: str = Field(default="1", min_length=1, max_length=32)
+    slot_id: str = Field(min_length=1)
+    resolution_stage: str = Field(default="sufficiency", min_length=1, max_length=64)
+    resolution: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class EvaluationV9AttemptMaterialization(BaseModel):
+    """Attempt-scoped durable v9 state, retained even when cancelled."""
+
+    attempt_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    campaign_id: str = Field(min_length=1)
+    condition_id: str = ""
+    schema_version: str = Field(default="1", min_length=1, max_length=32)
+    trace_payload: dict[str, Any] = Field(default_factory=dict)
+    materialization_status: Literal["completed", "cancelled"] = "completed"
+    completed_at: datetime | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @property
+    def is_completed(self) -> bool:
+        return self.materialization_status == "completed"
+
+
+class AgenticV9TracePayload(BaseModel):
+    """Versioned v9 execution state carried by an existing agent trace."""
+
+    schema_version: str = Field(default="1", min_length=1, max_length=32)
+    query_contract: QueryContract | None = None
+    sufficiency: SufficiencyReport | None = None
+    budget_reservations: list[BudgetReservation] = Field(default_factory=list)
+    repairs: list[RepairPlan] = Field(default_factory=list)
+    evidence_packet_ids: list[str] = Field(default_factory=list)
+    slot_resolution_ids: list[str] = Field(default_factory=list)
 
 
 class EvaluationRunSummary(BaseModel):
@@ -283,6 +348,7 @@ class AgentTraceDetail(BaseModel):
     question: str = Field(min_length=1)
     mode: CampaignMode
     execution_profile: Optional[str] = None
+    agentic_execution_version: Literal["v8", "v9"] = "v8"
     question_intent: Optional[str] = None
     strategy_tier: Optional[str] = None
     route_profile: Optional[str] = None
@@ -308,6 +374,7 @@ class AgentTraceDetail(BaseModel):
     total_tokens: int = Field(default=0, ge=0)
     created_at: datetime
     steps: list[AgentTraceStep] = Field(default_factory=list)
+    agentic_v9: AgenticV9TracePayload | None = None
 
 
 class AgentTraceSummary(BaseModel):
@@ -319,6 +386,7 @@ class AgentTraceSummary(BaseModel):
     question: str = Field(min_length=1)
     mode: CampaignMode
     execution_profile: Optional[str] = None
+    agentic_execution_version: Literal["v8", "v9"] = "v8"
     question_intent: Optional[str] = None
     strategy_tier: Optional[str] = None
     route_profile: Optional[str] = None
@@ -368,6 +436,7 @@ def summarize_agent_trace(detail: AgentTraceDetail) -> AgentTraceSummary:
         question=detail.question,
         mode=detail.mode,
         execution_profile=detail.execution_profile,
+        agentic_execution_version=detail.agentic_execution_version,
         question_intent=detail.question_intent,
         strategy_tier=detail.strategy_tier,
         route_profile=detail.route_profile,

@@ -8,16 +8,30 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from data_base.agentic_v9.repair import RepairPlan
+from data_base.agentic_v9.schemas import (
+    BudgetReservation,
+    ConflictCandidate,
+    EvidencePacket,
+    FinalClaim,
+    QueryContract,
+    SlotResolution,
+    SufficiencyReport,
+    V9ExecutionMetrics,
+)
 from evaluation.schemas import ModelConfig
 
 CampaignMode = Literal[
-    "naive", "advanced", "graph", "agentic", "router",
+    "naive", "naive-baseline", "advanced", "graph", "agentic", "agentic-v8", "v8",
+    "agentic-v9", "v9", "agentic-v9-shadow", "router",
     "graph_raw_current", "graph_provenance_gated", "graph_locator_to_chunk",
     "graph_locator_claim_gate", "always_no_graph", "always_graph_locator",
     "router_auto_graph", "oracle_graph_router", "graph_local_first", "graph_global_first", "graph_blended",
     "graph_path_pruned", "graph_planning_only",
 ]
 CampaignEvaluationPhase = Literal["execution", "evaluation"]
+AgenticExecutionVersion = Literal["v8", "v9"]
+ShadowEvaluationPolicy = Literal["operational", "research"]
 
 
 class CampaignLifecycleStatus(str, Enum):
@@ -66,6 +80,10 @@ class CampaignConfig(BaseModel):
     ragas_parallel_batches: int = Field(default=8, ge=1, le=8)
     ragas_rpm_limit: int = Field(default=1000, ge=1, le=1000)
     actual_router_execution_enabled: bool = False
+    # The environment may choose a creation default upstream, but a campaign
+    # snapshot always records the selected execution version explicitly.
+    agentic_execution_version: AgenticExecutionVersion = "v8"
+    shadow_evaluation_policy: ShadowEvaluationPolicy | None = None
 
     @model_validator(mode="after")
     def dedupe_modes(self) -> "CampaignConfig":
@@ -75,6 +93,7 @@ class CampaignConfig(BaseModel):
                 raise ValueError("ablation condition_id values must be unique")
             # Keep duplicates when multiple ablations share one execution mode.
             self.modes = [item.mode for item in self.ablation_conditions]
+            self._validate_agentic_identity()
             return self
 
         ordered_unique_modes: list[CampaignMode] = []
@@ -84,7 +103,27 @@ class CampaignConfig(BaseModel):
         self.modes = ordered_unique_modes
         if not self.modes:
             raise ValueError("at least one mode is required when ablation_conditions is empty")
+        self._validate_agentic_identity()
         return self
+
+    def _validate_agentic_identity(self) -> None:
+        shadow_modes = [mode for mode in self.modes if mode == "agentic-v9-shadow"]
+        if shadow_modes:
+            if len(self.modes) != 1:
+                raise ValueError("agentic-v9-shadow must be configured alone")
+            if self.agentic_execution_version != "v9":
+                raise ValueError("agentic-v9-shadow requires agentic_execution_version='v9'")
+            if self.shadow_evaluation_policy is None:
+                raise ValueError("agentic-v9-shadow requires shadow_evaluation_policy")
+        elif self.shadow_evaluation_policy is not None:
+            raise ValueError("shadow_evaluation_policy requires agentic-v9-shadow")
+
+        v9_modes = {"agentic-v9", "v9"}
+        v8_modes = {"agentic-v8", "v8"}
+        if any(mode in v9_modes for mode in self.modes) and self.agentic_execution_version != "v9":
+            raise ValueError("v9 identity requires agentic_execution_version='v9'")
+        if any(mode in v8_modes for mode in self.modes) and self.agentic_execution_version != "v8":
+            raise ValueError("v8 identity requires agentic_execution_version='v8'")
 
 
 class CampaignCreateRequest(BaseModel):
@@ -105,6 +144,8 @@ class CampaignCreateRequest(BaseModel):
     ragas_parallel_batches: int = Field(default=8, ge=1, le=8)
     ragas_rpm_limit: int = Field(default=1000, ge=1, le=1000)
     actual_router_execution_enabled: bool = False
+    agentic_execution_version: AgenticExecutionVersion = "v8"
+    shadow_evaluation_policy: ShadowEvaluationPolicy | None = None
 
     def to_config(self) -> CampaignConfig:
         return CampaignConfig(
@@ -120,6 +161,8 @@ class CampaignCreateRequest(BaseModel):
             ragas_parallel_batches=self.ragas_parallel_batches,
             ragas_rpm_limit=self.ragas_rpm_limit,
             actual_router_execution_enabled=self.actual_router_execution_enabled,
+            agentic_execution_version=self.agentic_execution_version,
+            shadow_evaluation_policy=self.shadow_evaluation_policy,
         )
 
 
@@ -128,6 +171,36 @@ class CampaignCreateResponse(BaseModel):
 
     campaign_id: str
     status: CampaignLifecycleStatus
+
+
+class CampaignPreflightRequest(BaseModel):
+    """Non-mutating v9 admission check for selected Golden Dataset questions."""
+
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+    test_case_ids: list[str] = Field(min_length=1)
+    model_preset: ModelConfig = Field(alias="model_config")
+    runtime_token_budget: int = Field(ge=0)
+    max_llm_calls: int = Field(ge=0)
+
+
+class CampaignPreflightIssue(BaseModel):
+    status: Literal["configuration_incompatible"] = "configuration_incompatible"
+    stage: Literal["pre_route", "post_contract"]
+    reason: str
+
+
+class CampaignPreflightQuestion(BaseModel):
+    question_id: str
+    expected_route: str | None = None
+    status: Literal["feasible", "configuration_incompatible"]
+    issues: list[CampaignPreflightIssue] = Field(default_factory=list)
+
+
+class CampaignPreflightResponse(BaseModel):
+    """Token-only configuration compatibility; values are never monetary."""
+
+    questions: list[CampaignPreflightQuestion] = Field(default_factory=list)
 
 
 class CampaignEvaluateRequest(BaseModel):
@@ -190,6 +263,10 @@ class CampaignResult(BaseModel):
     run_number: int = Field(ge=1)
     repeat_number: int = Field(default=1, ge=1)
     condition_id: Optional[str] = None
+    agentic_execution_version: AgenticExecutionVersion = "v8"
+    execution_identity: Optional[str] = None
+    shadow_evaluation_policy: ShadowEvaluationPolicy | None = None
+    response_status: Optional[str] = None
     answer: str
     contexts: list[str] = Field(default_factory=list)
     source_doc_ids: list[str] = Field(default_factory=list)
@@ -369,6 +446,10 @@ class EvaluationRunListItem(BaseModel):
     mode: CampaignMode
     run_number: int = Field(ge=1)
     repeat_number: int = Field(default=1, ge=1)
+    condition_id: Optional[str] = None
+    execution_profile: Optional[str] = None
+    agentic_execution_version: AgenticExecutionVersion = "v8"
+    response_status: Optional[str] = None
     status: CampaignResultStatus
     total_tokens: int = Field(default=0, ge=0)
     total_latency_ms: Optional[float] = Field(default=None, ge=0)
@@ -458,6 +539,40 @@ class RunDetailResponse(BaseModel):
     routing_decisions: list[dict[str, Any]] = Field(default_factory=list)
     claims: list[dict[str, Any]] = Field(default_factory=list)
     human_ratings: list[dict[str, Any]] = Field(default_factory=list)
+    agentic_v9: "V9ExecutionObservability | None" = None
+
+
+class V9EvidencePacket(BaseModel):
+    evidence_id: str
+    packet: EvidencePacket
+
+
+class V9SlotResolution(BaseModel):
+    slot_id: str
+    resolution_stage: str
+    resolution: SlotResolution
+
+
+class V9ContextPack(BaseModel):
+    packed_evidence_ids: list[str] = Field(default_factory=list)
+    dropped_evidence_ids: list[str] = Field(default_factory=list)
+    token_count: int | None = Field(default=None, ge=0)
+
+
+class V9ExecutionObservability(BaseModel):
+    """Versioned, token-only evidence-first observability projection."""
+
+    schema_version: str = "1"
+    contract: QueryContract | None = None
+    slot_resolutions: list[V9SlotResolution] = Field(default_factory=list)
+    evidence_packets: list[V9EvidencePacket] = Field(default_factory=list)
+    sufficiency: SufficiencyReport | None = None
+    context_pack: V9ContextPack | None = None
+    budget: list[BudgetReservation] = Field(default_factory=list)
+    repairs: list[RepairPlan] = Field(default_factory=list)
+    conflicts: list[ConflictCandidate] = Field(default_factory=list)
+    final_claims: list[FinalClaim] = Field(default_factory=list)
+    metrics: V9ExecutionMetrics = Field(default_factory=V9ExecutionMetrics)
 
 
 class RunVisualResponse(RunToolsResponse):

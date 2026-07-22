@@ -349,6 +349,23 @@ def test_run_observability_endpoint_returns_only_owned_campaign_rows(tmp_path) -
             assert cross_campaign.status_code == 404
 
 
+def test_run_observability_endpoint_denies_a_different_user(tmp_path) -> None:
+    upload_root = _make_upload_root()
+    db_path = tmp_path / "evaluation.db"
+
+    with patch.object(evaluation_db, "EVALUATION_DB_PATH", db_path):
+        asyncio.run(_seed_campaign("campaign-owned", "user-a"))
+        asyncio.run(_seed_campaign_result("campaign-owned", "run-1", "user-a"))
+        asyncio.run(_seed_trace_event("campaign-owned", "run-1"))
+
+        with _build_client("user-b", upload_root) as client:
+            response = client.get(
+                "/api/evaluation/campaigns/campaign-owned/runs/run-1/observability"
+            )
+
+    assert response.status_code == 404
+
+
 def test_run_observability_projects_graph_events_and_evidence_items(tmp_path) -> None:
     upload_root = _make_upload_root()
     db_path = tmp_path / "evaluation.db"

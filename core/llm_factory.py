@@ -8,6 +8,7 @@ Architecture note:
 - downstream business logic should import `get_llm(...)` from `core.providers`
 - direct `google-genai` usage is reserved for control-plane helpers/services
 """
+
 # Standard library
 import logging
 from contextlib import contextmanager
@@ -20,15 +21,25 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 from core.llm_usage_callback import EvaluationUsageCallback
 from evaluation.model_capabilities import get_thinking_capability
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Purpose type for type safety
 LLMPurpose = Literal[
-    "rag_qa", "translation", "image_caption", "visual_verification",
-    "context_generation", "proposition_extraction", "query_rewrite",
-    "evaluator", "planner", "synthesizer", "summary",
-    "graph_extraction", "community_summary"  # GraphRAG purposes
+    "rag_qa",
+    "translation",
+    "image_caption",
+    "visual_verification",
+    "context_generation",
+    "proposition_extraction",
+    "query_rewrite",
+    "evaluator",
+    "planner",
+    "synthesizer",
+    "summary",
+    "graph_extraction",
+    "community_summary",  # GraphRAG purposes
 ]
 GraphRAGPurpose = Literal["graph_extraction", "community_summary"]
 ExtractionProfile = Literal["standard", "high_precision"]
@@ -66,6 +77,7 @@ _GRAPH_RAG_THINKING_LEVELS: dict[GraphRAGPurpose, dict[ExtractionProfile, str]] 
     },
 }
 
+
 def set_session_model_override(model_name: Optional[str]) -> None:
     """
     Sets a session-wide model override and clears the LLM cache.
@@ -94,12 +106,22 @@ def llm_runtime_override(*, clear: tuple[str, ...] = (), **overrides: Any):
     current = dict(_runtime_llm_overrides.get())
     for key in clear:
         current.pop(key, None)
-    merged = {**current, **{key: value for key, value in overrides.items() if value is not None}}
+    supplied = {key: value for key, value in overrides.items() if value is not None}
+    if "setup_max_output_tokens" not in current and "max_output_tokens" in supplied:
+        supplied.setdefault("setup_max_output_tokens", supplied["max_output_tokens"])
+    if "setup_max_input_tokens" not in current and "max_input_tokens" in supplied:
+        supplied.setdefault("setup_max_input_tokens", supplied["max_input_tokens"])
+    merged = {**current, **supplied}
     token: Token[dict[str, Any]] = _runtime_llm_overrides.set(merged)
     try:
         yield
     finally:
         _runtime_llm_overrides.reset(token)
+
+
+def current_llm_runtime_overrides() -> dict[str, Any]:
+    """Return a copy of the request-scoped LLM runtime metadata."""
+    return dict(_runtime_llm_overrides.get())
 
 
 def _resolve_model_name(purpose: LLMPurpose, model_name: Optional[str] = None) -> str:
@@ -132,7 +154,9 @@ def get_graph_rag_runtime_overrides(
     overrides: dict[str, Any] = {"include_thoughts": False}
 
     if capability.control_type == "level":
-        overrides["thinking_level"] = _GRAPH_RAG_THINKING_LEVELS[purpose][extraction_profile]
+        overrides["thinking_level"] = _GRAPH_RAG_THINKING_LEVELS[purpose][
+            extraction_profile
+        ]
     else:
         overrides["thinking_budget"] = _GRAPH_RAG_THINKING_BUDGETS[purpose]
 
@@ -153,15 +177,23 @@ def graph_rag_llm_runtime_override(
         # An active Evaluation Setup is authoritative, even if a nested caller
         # supplies a stale or conflicting model_name argument.
         active_model = context.get("model_name") or model_name
-        effective_model = active_model or _resolve_model_name(purpose, model_name=model_name)
+        effective_model = active_model or _resolve_model_name(
+            purpose, model_name=model_name
+        )
         capability = get_thinking_capability(str(effective_model))
         overrides: dict[str, Any] = {
             "include_thoughts": bool(context.get("include_thoughts", False)),
         }
         if setup_thinking:
-            if capability.control_type == "budget" and context.get("thinking_budget") is not None:
+            if (
+                capability.control_type == "budget"
+                and context.get("thinking_budget") is not None
+            ):
                 overrides["thinking_budget"] = context["thinking_budget"]
-            elif capability.control_type == "level" and context.get("thinking_level") is not None:
+            elif (
+                capability.control_type == "level"
+                and context.get("thinking_level") is not None
+            ):
                 overrides["thinking_level"] = context["thinking_level"]
         with llm_runtime_override(
             clear=("thinking_budget", "thinking_level"),
@@ -180,6 +212,7 @@ def graph_rag_llm_runtime_override(
         ),
     ):
         yield
+
 
 # Configuration for each purpose
 _LLM_CONFIGS: dict[str, dict] = {
@@ -239,6 +272,7 @@ _LLM_CONFIGS: dict[str, dict] = {
         "max_output_tokens": 1024,
     },
 }
+
 
 @lru_cache(maxsize=64)
 def _get_llm_cached(
@@ -305,7 +339,9 @@ def get_llm(purpose: LLMPurpose, model_name: str = None) -> ChatGoogleGenerative
     request-scoped model settings safely.
     """
     overrides = _runtime_llm_overrides.get()
-    setup_model = overrides.get("model_name") if "thinking_enabled" in overrides else None
+    setup_model = (
+        overrides.get("model_name") if "thinking_enabled" in overrides else None
+    )
     effective_model = setup_model or model_name or overrides.get("model_name")
     return _get_llm_cached(
         purpose=purpose,
@@ -336,11 +372,8 @@ def get_llm_usage_metrics(response: Any) -> dict[str, int]:
 
     Returns zeroes when usage metadata is unavailable.
     """
-    usage = getattr(response, "usage_metadata", None)
-    if usage is None and isinstance(response, dict):
-        usage = response.get("usage_metadata")
-
-    if usage is None:
+    usage = get_flat_llm_usage(response)
+    if not usage:
         return {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -348,27 +381,58 @@ def get_llm_usage_metrics(response: Any) -> dict[str, int]:
             "reasoning_tokens": 0,
         }
 
+    return usage
+
+
+def get_flat_llm_usage(response: Any) -> dict[str, int]:
+    """Extract only canonical flat token fields from a provider response."""
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage_metadata") or response.get("usage")
     if hasattr(usage, "model_dump"):
         usage = usage.model_dump()
     elif hasattr(usage, "dict"):
         usage = usage.dict()
+    if not isinstance(usage, dict) or not usage:
+        return {}
 
-    if not isinstance(usage, dict):
-        return {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-            "reasoning_tokens": 0,
-        }
-
-    output_details = usage.get("output_token_details") or {}
-    reasoning_tokens = output_details.get("reasoning")
-    if reasoning_tokens is None:
-        reasoning_tokens = usage.get("thoughts_token_count", 0)
-
+    output_details = usage.get("output_token_details")
+    details = output_details if isinstance(output_details, dict) else {}
+    reasoning = usage.get(
+        "reasoning_tokens",
+        usage.get("thoughts_token_count", details.get("reasoning", 0)),
+    )
+    input_tokens = _usage_token_int(
+        usage.get(
+            "input_tokens",
+            usage.get("prompt_tokens", usage.get("prompt_token_count", 0)),
+        )
+    )
+    output_tokens = _usage_token_int(
+        usage.get(
+            "output_tokens",
+            usage.get("completion_tokens", usage.get("candidates_token_count", 0)),
+        )
+    )
+    reasoning_tokens = _usage_token_int(reasoning)
+    reported_total = usage.get("total_tokens", usage.get("total_token_count"))
+    total_tokens = (
+        _usage_token_int(reported_total)
+        if reported_total is not None
+        else input_tokens + output_tokens + reasoning_tokens
+    )
     return {
-        "input_tokens": int(usage.get("input_tokens", 0) or usage.get("prompt_token_count", 0) or 0),
-        "output_tokens": int(usage.get("output_tokens", 0) or usage.get("candidates_token_count", 0) or 0),
-        "total_tokens": int(usage.get("total_tokens", 0) or usage.get("total_token_count", 0) or 0),
-        "reasoning_tokens": int(reasoning_tokens or 0),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "reasoning_tokens": reasoning_tokens,
+        "total_tokens": total_tokens,
     }
+
+
+def _usage_token_int(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0

@@ -6,9 +6,7 @@ with enhanced reranking and query transformation.
 """
 
 # Standard library
-import asyncio
 import base64
-import json
 import logging
 import os
 import re
@@ -18,7 +16,6 @@ from datetime import datetime, timezone
 from typing import (
     List,
     Any,
-    Set,
     Optional,
     Tuple,
     NamedTuple,
@@ -38,30 +35,41 @@ if TYPE_CHECKING:
 # Third-party
 from fastapi.concurrency import run_in_threadpool
 from langchain_core.documents import Document
-from langchain_core.messages import HumanMessage
 
 # Local application
-from core.llm_factory import get_llm_usage_metrics
-from core.llm_usage_context import llm_accounting_phase
 from core.providers import get_llm
-from core.prompt_loader import format_prompt
-from data_base.context_packing import (
-    expand_graph_evidence_to_chunks,
-    merge_vector_and_graph_docs,
-    score_graph_located_chunks,
-)
+from core.llm_factory import get_llm_usage_metrics  # noqa: F401 - compatibility seam
 from data_base.document_metadata import get_document_id
+from data_base.rag_generation import (
+    generate_legacy_answer_from_evidence,
+    legacy_source_doc_ids,
+    parse_legacy_visual_tool_request,
+)
+from data_base.rag_graph_locator import locate_graph_sources
 from data_base.vector_store_manager import (
     get_user_retriever_async,
     invoke_retriever_queries_async,
 )
 from data_base.reranker import DocumentReranker
+from data_base.rag_filtering import (
+    RERANK_CANDIDATE_LIMIT as _RERANK_CANDIDATE_LIMIT,
+    RERANK_TARGET_K as _RERANK_TARGET_K,
+    filter_and_rerank_retrieval,
+    limit_rerank_candidates,
+    rerank_documents_for_generation,
+)
+from data_base.rag_crag import (
+    CragRewriteMode,
+    build_crag_queries,
+    judge_retrieved_documents,
+    run_corrective_retrieval,
+)
+from data_base.rag_retrieval import retrieve_hybrid_documents
 from data_base.query_transformer import (
     transform_query_with_hyde,
     transform_query_multi,
-    reciprocal_rank_fusion,
 )
-from data_base.repository import fetch_document_filenames
+from data_base.repository import fetch_document_filenames  # noqa: F401 - compatibility seam
 from data_base.parent_child_store import ParentDocumentStore
 from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
 from graph_rag.anchor_resolver import (
@@ -112,9 +120,6 @@ DEFAULT_GRAPH_LOCAL_MAX_NODES = 20
 _llm_initialized = False
 
 # Visual verification Re-Act loop settings
-MAX_VISUAL_ITERATIONS = 2  # Prevent infinite loops
-
-
 class RAGResult(NamedTuple):
     """Result from RAG question answering with optional documents."""
 
@@ -323,27 +328,19 @@ def _graph_execution_strategy(
 
 
 ProgressCallback = Callable[[str, Optional[Dict[str, Any]]], Awaitable[None]]
-CragRewriteMode = Literal["hyde", "multi_query", "none"]
 
 
 async def _build_crag_queries(
     question: str,
     rewrite_mode: CragRewriteMode,
 ) -> List[str]:
-    if rewrite_mode == "multi_query":
-        return await transform_query_multi(
-            question,
-            enabled=True,
-            phase="retrieval_rewrite",
-        )
-    if rewrite_mode == "hyde":
-        rewritten = await transform_query_with_hyde(
-            question,
-            enabled=True,
-            phase="retrieval_rewrite",
-        )
-        return [rewritten or question]
-    return [question]
+    """Compatibility facade for callers of the extracted CRAG rewrite policy."""
+    return await build_crag_queries(
+        question,
+        rewrite_mode,
+        hyde_transformer=transform_query_with_hyde,
+        multi_query_transformer=transform_query_multi,
+    )
 
 
 async def _emit_progress(
@@ -363,164 +360,8 @@ async def get_user_retriever(user_id: str, k: int = 3, plain_mode: bool = False)
 
 
 def _parse_visual_tool_request(response: str) -> Optional[Dict[str, str]]:
-    """
-    Extracts VERIFY_IMAGE JSON from LLM response with tolerant parsing.
-
-    Handles common LLM JSON formatting issues:
-    - JSON wrapped in markdown code blocks
-    - Extra whitespace/newlines
-    - Minor formatting variations
-
-    Args:
-        response: LLM response text.
-
-    Returns:
-        Parsed dict with 'action', 'path', 'question' or None if not found.
-    """
-    # Pattern to match VERIFY_IMAGE JSON (tolerant of whitespace)
-    patterns = [
-        # Standard JSON format
-        r'\{\s*"action"\s*:\s*"VERIFY_IMAGE"\s*,\s*"path"\s*:\s*"([^"]+)"\s*,\s*"question"\s*:\s*"([^"]+)"\s*\}',
-        # Reordered fields
-        r'\{\s*"action"\s*:\s*"VERIFY_IMAGE"[^}]*"path"\s*:\s*"([^"]+)"[^}]*"question"\s*:\s*"([^"]+)"[^}]*\}',
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, response, re.DOTALL | re.IGNORECASE)
-        if match:
-            return {
-                "action": "VERIFY_IMAGE",
-                "path": match.group(1),
-                "question": match.group(2),
-            }
-
-    # Fallback: try to find and parse any JSON with VERIFY_IMAGE
-    json_pattern = r"```(?:json)?\s*(\{[^`]+\})\s*```"
-    json_match = re.search(json_pattern, response, re.DOTALL)
-    if json_match:
-        try:
-            data = json.loads(json_match.group(1))
-            if (
-                data.get("action") == "VERIFY_IMAGE"
-                and data.get("path")
-                and data.get("question")
-            ):
-                return data
-        except json.JSONDecodeError:
-            pass
-
-    return None
-
-
-async def _execute_visual_verification_loop(
-    initial_response: str,
-    context: str,
-    question: str,
-    user_id: str,
-    llm: Any,
-    source_doc_ids: List[str],
-    image_paths: Optional[List[str]] = None,
-    force_once_if_not_triggered: bool = False,
-) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
-    """
-    Re-Act loop for visual verification.
-
-    If LLM requests VERIFY_IMAGE, execute the tool and re-prompt for synthesis.
-
-    Args:
-        initial_response: First LLM response (may contain tool request).
-        context: Original context text.
-        question: User's question.
-        user_id: User ID for visual tool.
-        llm: LLM instance for synthesis call.
-        source_doc_ids: Source document IDs for logging.
-
-    Returns:
-        Tuple of (final answer, tool_results, visual_meta) after visual verification.
-    """
-    response = initial_response
-    iteration = 0
-    tool_results: List[Dict[str, Any]] = []
-    attempted = False
-    forced_fallback_used = False
-    force_pending = bool(force_once_if_not_triggered and image_paths)
-
-    while iteration < MAX_VISUAL_ITERATIONS:
-        tool_request = _parse_visual_tool_request(response)
-        tool_request_is_forced = False
-        if not tool_request and force_pending:
-            tool_request = {
-                "action": "VERIFY_IMAGE",
-                "path": image_paths[0],
-                "question": question,
-            }
-            tool_request_is_forced = True
-            forced_fallback_used = True
-            force_pending = False
-            logger.info(
-                "Visual verification forced fallback triggered for image-aware route"
-            )
-        elif tool_request:
-            force_pending = False
-
-        if not tool_request:
-            break  # No tool request, return as-is
-
-        iteration += 1
-        attempted = True
-        logger.info(
-            f"Visual verification iteration {iteration}: {tool_request.get('question', '')[:50]}"
-        )
-
-        # Execute visual tool
-        from data_base.visual_tools import verify_image_details
-
-        result = await verify_image_details(
-            image_path=tool_request.get("path", ""),
-            question=tool_request.get("question", ""),
-            user_id=user_id,
-        )
-
-        tool_results.append(
-            {
-                "action": "VERIFY_IMAGE",
-                "path": tool_request.get("path"),
-                "question": tool_request.get("question"),
-                "success": result.get("success"),
-                "result": result.get("result")
-                if result["success"]
-                else result.get("error"),
-                "forced_once": tool_request_is_forced,
-            }
-        )
-
-        # Build synthesis prompt with tool results
-        results_json = json.dumps(tool_results, ensure_ascii=False, indent=2)
-        synthesis_prompt = format_prompt(
-            "visual_verification_synthesis",
-            context=context,
-            question=question,
-            initial_response=initial_response,
-            verification_results=results_json,
-        )
-
-        from langchain_core.messages import HumanMessage
-
-        synth_message = HumanMessage(content=synthesis_prompt)
-        with llm_accounting_phase("visual_verification"):
-            synth_response = await llm.ainvoke([synth_message])
-        response = synth_response.content
-
-        logger.info(f"Visual verification synthesis completed (iteration {iteration})")
-        if tool_request_is_forced:
-            break
-
-    visual_meta = {
-        "visual_verification_attempted": attempted,
-        "visual_tool_call_count": len(tool_results),
-        "visual_force_fallback_used": forced_fallback_used,
-    }
-    return response, tool_results, visual_meta
+    """Backward-compatible facade for the extracted legacy parser."""
+    return parse_legacy_visual_tool_request(response)
 
 
 async def initialize_llm_service() -> None:
@@ -1215,19 +1056,6 @@ def _graph_evidence_item_id(graph_event_id: str, evidence_id: str) -> str:
     return f"{graph_event_id}:{evidence_id}"
 
 
-def _unique_graph_item_ids(item_ids: List[str]) -> List[str]:
-    return list(dict.fromkeys(item_id for item_id in item_ids if item_id))
-
-
-def _graph_item_ids_from_documents(documents: List[Document]) -> List[str]:
-    return _unique_graph_item_ids(
-        [
-            str(document.metadata.get("graph_evidence_item_id") or "")
-            for document in documents
-        ]
-    )
-
-
 def _build_graph_evidence_items(
     *,
     graph_event_id: str,
@@ -1625,14 +1453,6 @@ def _intent_constraints_for_prompt(
 _MIN_CHUNK_LENGTH = 100  # Minimum characters to trigger expansion
 _MAX_EXPANDED_CHUNKS = 5  # Maximum number of chunks to expand
 _MAX_TOTAL_CHARS = 15000  # Maximum total characters after expansion
-_RERANK_TARGET_K = 8
-_RERANK_CANDIDATE_LIMIT = 12
-_RERANK_NOISE_KEYWORDS = (
-    "SAM",
-    "Segment Anything",
-    "Interactive Segmentation",
-    "SegVol",
-)
 
 
 def _expand_short_chunks(
@@ -1735,72 +1555,21 @@ def _expand_short_chunks(
     return expanded_docs
 
 
-def _query_explicitly_requests_noise_topics(question: str) -> bool:
-    """Return True when the query is explicitly about known noisy topics."""
-    query_lower = question.lower()
-    return any(keyword.lower() in query_lower for keyword in _RERANK_NOISE_KEYWORDS)
-
-
-def _is_noise_document(doc: Document) -> bool:
-    """Detect documents that match known noisy-topic heuristics."""
-    content_sample = doc.page_content[:500]
-    filename = doc.metadata.get("file_name") or doc.metadata.get("source_file") or ""
-    return any(
-        keyword in content_sample or keyword in filename
-        for keyword in _RERANK_NOISE_KEYWORDS
-    )
-
-
 def _rerank_documents_for_generation(
     question: str,
     documents: List[Document],
     target_k: int = _RERANK_TARGET_K,
 ) -> List[Document]:
-    """Rerank candidates and prefer non-noise documents before backfilling."""
-    if not documents or not DocumentReranker.is_initialized():
-        return documents[:target_k]
-
-    reranker = DocumentReranker.get_instance()
-    scored_docs = reranker.rerank_with_scores(question, documents, len(documents))
-    if not scored_docs:
-        return documents[:target_k]
-
-    if _query_explicitly_requests_noise_topics(question):
-        return [doc for doc, _ in scored_docs[:target_k]]
-
-    non_noise_docs = [
-        (doc, score) for doc, score in scored_docs if not _is_noise_document(doc)
-    ]
-    noise_docs = [(doc, score) for doc, score in scored_docs if _is_noise_document(doc)]
-
-    selected = list(non_noise_docs[:target_k])
-    if len(selected) < target_k:
-        selected.extend(noise_docs[: target_k - len(selected)])
-
-    logger.debug(
-        "Reranker selection complete: total=%s clean=%s noisy=%s selected=%s",
-        len(scored_docs),
-        len(non_noise_docs),
-        len(noise_docs),
-        len(selected),
-    )
-    return [doc for doc, _ in selected]
+    """Compatibility facade for selection now owned by ``rag_filtering``."""
+    return rerank_documents_for_generation(question, documents, target_k)
 
 
 def _limit_rerank_candidates(
     documents: List[Document],
     max_candidates: int = _RERANK_CANDIDATE_LIMIT,
 ) -> List[Document]:
-    """Cap reranker candidates to reduce peak inference memory usage."""
-    if len(documents) <= max_candidates:
-        return documents
-
-    logger.info(
-        "Capping reranker candidates from %s to %s for memory stability",
-        len(documents),
-        max_candidates,
-    )
-    return documents[:max_candidates]
+    """Compatibility facade for the retrieval-boundary candidate cap."""
+    return limit_rerank_candidates(documents, max_candidates)
 
 
 async def rag_answer_question(
@@ -1889,44 +1658,19 @@ async def rag_answer_question(
             return RAGResult("抱歉，您還沒有建立任何知識庫文件，請先上傳 PDF。", [], [])
         return ("抱歉，您還沒有建立任何知識庫文件，請先上傳 PDF。", [])
 
-    # Step 3: Query transformation
-    search_queries = [question]
-
-    if enable_hyde:
-        await _emit_progress(progress_callback, "query_expansion", {"mode": "hyde"})
-        hyde_doc = await transform_query_with_hyde(
-            question,
-            enabled=True,
-            phase="query_expansion",
-        )
-        search_queries = [hyde_doc]
-        logger.debug(f"HyDE transformed query: {hyde_doc[:100]}...")
-    elif enable_multi_query:
-        await _emit_progress(
-            progress_callback, "query_expansion", {"mode": "multi_query"}
-        )
-        search_queries = await transform_query_multi(
-            question,
-            enabled=True,
-            phase="query_expansion",
-        )
-        logger.debug(f"Multi-query generated {len(search_queries)} queries")
-
-    # Step 4: Execute retrieval
+    # Steps 3-4: Query expansion, hybrid retrieval, and RRF fusion.
     try:
-        await _emit_progress(
-            progress_callback,
-            "retrieval",
-            {"query_count": len(search_queries)},
+        retrieval_result = await retrieve_hybrid_documents(
+            question,
+            retriever,
+            enable_hyde=enable_hyde,
+            enable_multi_query=enable_multi_query,
+            progress_callback=progress_callback,
+            hyde_transformer=transform_query_with_hyde,
+            multi_query_transformer=transform_query_multi,
+            query_executor=invoke_retriever_queries_async,
         )
-        retrieved_batches = await invoke_retriever_queries_async(
-            retriever, search_queries
-        )
-        if len(retrieved_batches) == 1:
-            docs = retrieved_batches[0]
-        else:
-            docs = reciprocal_rank_fusion(retrieved_batches)
-            logger.debug(f"RRF fused {len(docs)} documents")
+        docs = retrieval_result.documents
     except (RuntimeError, ValueError) as e:
         logger.error(f"Retrieval error: {e}", exc_info=True)
         if return_docs:
@@ -1938,30 +1682,36 @@ async def rag_answer_question(
             return RAGResult("抱歉，在知識庫中找不到相關資訊。", [], [])
         return ("抱歉，在知識庫中找不到相關資訊。", [])
 
-    # Step 4.5: Filter by doc_ids if specified (before reranking for efficiency)
-    if doc_ids:
-        doc_id_set = set(doc_ids)
-        filtered_docs = [d for d in docs if get_document_id(d.metadata) in doc_id_set]
-        docs = filtered_docs
-
-        if not docs:
-            if return_docs:
-                return RAGResult(
-                    "抱歉，在指定的文件中找不到相關資訊。", list(doc_ids), []
-                )
-            return ("抱歉，在指定的文件中找不到相關資訊。", list(doc_ids))
-
-        # Debug: Count chunks per doc_id
-        doc_chunk_count = {}
-        for d in docs:
-            did = get_document_id(d.metadata) or "unknown"
-            doc_chunk_count[did] = doc_chunk_count.get(did, 0) + 1
-        logger.info(f"Multi-doc retrieval: {doc_chunk_count}")
-
-    # Step 5: Rerank with local document reranker (or fair multi-doc selection)
+    # Step 4.5-5: Keep candidate filtering and reranking inside the retrieval
+    # boundary.  CRAG and graph location intentionally remain later stages.
     target_k = int(retrieval_policy.get("target_k", _RERANK_TARGET_K))
     reranker_available = DocumentReranker.is_initialized()
-    rerank_candidates = _limit_rerank_candidates(docs) if enable_reranking else docs
+    selection_result = await run_in_threadpool(
+        filter_and_rerank_retrieval,
+        question,
+        retrieval_result,
+        doc_ids=doc_ids,
+        enable_reranking=enable_reranking,
+        reranker_available=reranker_available,
+        target_k=target_k,
+        max_candidates=_RERANK_CANDIDATE_LIMIT,
+    )
+    docs = selection_result.documents
+    reranking_metadata = selection_result.metadata["reranking"]
+
+    if doc_ids and not docs:
+        if return_docs:
+            return RAGResult(
+                "抱歉，在指定的文件中找不到相關資訊。", list(doc_ids), []
+            )
+        return ("抱歉，在指定的文件中找不到相關資訊。", list(doc_ids))
+
+    if doc_ids:
+        doc_chunk_count = {}
+        for document in docs:
+            document_id = get_document_id(document.metadata) or "unknown"
+            doc_chunk_count[document_id] = doc_chunk_count.get(document_id, 0) + 1
+        logger.info(f"Multi-doc retrieval: {doc_chunk_count}")
 
     if enable_reranking:
         await _emit_progress(
@@ -1969,111 +1719,51 @@ async def rag_answer_question(
             "reranking",
             {
                 "reranker_available": reranker_available,
-                "document_count": len(docs),
-                "candidate_count": len(rerank_candidates),
+                "document_count": len(
+                    selection_result.metadata["filtering"]["post_filter_ranks"]
+                ),
+                "candidate_count": reranking_metadata["candidate_count"],
             },
         )
 
-    if enable_reranking and reranker_available and len(rerank_candidates) > 0:
-        docs = await run_in_threadpool(
-            _rerank_documents_for_generation,
-            question,
-            rerank_candidates,
-            target_k,
-        )
-        logger.debug("Reranked to top %s documents", len(docs))
-    elif enable_reranking and not reranker_available:
+    if enable_reranking and not reranker_available:
         logger.info(
             "Reranking requested but inactive: %s",
             DocumentReranker.runtime_metadata(reason="runtime_not_initialized"),
         )
-    elif doc_ids and len(doc_ids) > 1:
-        # Multi-doc fair selection (unchanged)
-        docs_per_source = max(2, target_k // len(doc_ids))
-        selected_docs = []
-        docs_by_id = {}
-
-        for d in docs:
-            did = get_document_id(d.metadata) or "unknown"
-            if did not in docs_by_id:
-                docs_by_id[did] = []
-            docs_by_id[did].append(d)
-
-        # Take top N from each source
-        for did in doc_ids:
-            if did in docs_by_id:
-                selected_docs.extend(docs_by_id[did][:docs_per_source])
-
-        docs = selected_docs[:target_k]
-        logger.info(
-            f"Multi-doc fair selection: {len(docs)} docs from {len(docs_by_id)} sources"
-        )
-    else:
-        docs = docs[:target_k]
 
     # Step 5.4: Corrective Retrieval Guard (CRAG, opt-in only)
     if enable_crag and docs:
         try:
-            from agents.evaluator import RAGEvaluator
-
-            evaluator = RAGEvaluator()
-            is_relevant = await evaluator.grade_documents(
-                question=question, documents=docs
+            crag_result = await run_corrective_retrieval(
+                question=question,
+                documents=docs,
+                retriever=retriever,
+                judge=judge_retrieved_documents,
+                rewrite_mode=crag_rewrite_mode,
+                doc_ids=doc_ids,
+                enable_reranking=enable_reranking,
+                reranker_available=reranker_available,
+                target_k=target_k,
+                progress_callback=progress_callback,
+                hyde_transformer=transform_query_with_hyde,
+                multi_query_transformer=transform_query_multi,
+                query_executor=invoke_retriever_queries_async,
+                rerank_documents=_rerank_documents_for_generation,
+                limit_rerank_candidates=_limit_rerank_candidates,
             )
-            if not is_relevant:
-                logger.info(
-                    "CRAG guard detected low relevance for question '%s'; triggering corrective retrieval",
-                    question[:120],
-                )
+            if crag_result.status == "insufficient":
                 await _emit_progress(
                     progress_callback,
                     "crag_correction",
-                    {"status": "rewriting_query"},
+                    {"status": "insufficient_retrieval"},
                 )
-
-                corrected_queries = await _build_crag_queries(
-                    question,
-                    crag_rewrite_mode,
-                )
-                corrected_batches = await invoke_retriever_queries_async(
-                    retriever, corrected_queries
-                )
-                if len(corrected_batches) == 1:
-                    corrected_docs = corrected_batches[0]
-                else:
-                    corrected_docs = reciprocal_rank_fusion(corrected_batches)
-
-                if doc_ids:
-                    doc_id_set = set(doc_ids)
-                    corrected_docs = [
-                        document
-                        for document in corrected_docs
-                        if get_document_id(document.metadata) in doc_id_set
-                    ]
-
-                if corrected_docs and enable_reranking and reranker_available:
-                    corrected_candidates = _limit_rerank_candidates(corrected_docs)
-                    corrected_docs = await run_in_threadpool(
-                        _rerank_documents_for_generation,
-                        question,
-                        corrected_candidates,
-                        target_k,
-                    )
-                elif corrected_docs:
-                    corrected_docs = corrected_docs[:target_k]
-
-                if not corrected_docs:
-                    await _emit_progress(
-                        progress_callback,
-                        "crag_correction",
-                        {"status": "insufficient_retrieval"},
-                    )
-                    crag_message = "抱歉，檢索守衛判定目前檢索內容關聯性不足，請調整問題或補充文件後再試。"
-                    if return_docs:
-                        return RAGResult(crag_message, list(doc_ids or []), [])
-                    return (crag_message, list(doc_ids or []))
-
-                docs = corrected_docs
+                crag_message = "抱歉，檢索守衛判定目前檢索內容關聯性不足，請調整問題或補充文件後再試。"
+                if return_docs:
+                    return RAGResult(crag_message, list(doc_ids or []), [])
+                return (crag_message, list(doc_ids or []))
+            docs = crag_result.documents
+            if crag_result.correction_applied:
                 await _emit_progress(
                     progress_callback,
                     "crag_correction",
@@ -2180,131 +1870,59 @@ async def rag_answer_question(
             },
         )
         if graph_execution_strategy.strategy == "source_expand":
-            chunk_lookup = VectorStoreChunkLookup()
-            graph_started_at = time.perf_counter()
-            bundle: GraphEvidenceBundle | None = None
-            try:
-                bundle = await _get_graph_evidence_bundle(
-                    question=question,
-                    user_id=user_id,
-                    search_mode=graph_search_mode,
-                    graph_execution_hints=graph_execution_hints,
-                    chunk_lookup=chunk_lookup,
-                )
-                resolved_chunks = expand_graph_evidence_to_chunks(
-                    user_id,
-                    bundle,
-                    ChunkAnchorResolver(chunk_lookup),
-                )
-                if doc_ids:
-                    allowed_doc_ids = set(doc_ids)
-                    scoped_chunks = [
-                        chunk
-                        for chunk in resolved_chunks
-                        if get_document_id(chunk.document.metadata) in allowed_doc_ids
-                    ]
-                else:
-                    scoped_chunks = resolved_chunks
-                if (
-                    _graph_evidence_mode(
-                        mode_hints,
-                        graph_execution_hints,
-                        _normalize_evaluation_metadata(
-                            mode_hints, graph_execution_hints
-                        ),
-                    )
-                    == "claim_gated"
-                ):
-                    scoped_chunks = [
-                        chunk
-                        for chunk in scoped_chunks
-                        if _claim_scope_approves_chunk(question, chunk)
-                    ]
-                graph_documents = score_graph_located_chunks(
-                    scoped_chunks,
-                    required_modalities=_required_modalities_for_question(question),
-                )
-                docs = merge_vector_and_graph_docs(
-                    docs,
-                    graph_documents,
-                    graph_chunk_ratio=0.35,
-                )
-                lifecycle = GraphEvidenceLifecycle(
-                    candidate_item_ids=_unique_graph_item_ids(
-                        [item.item_id for item in bundle.evidence_items]
-                    ),
-                    resolved_item_ids=_unique_graph_item_ids(
-                        [chunk.evidence_item.item_id for chunk in resolved_chunks]
-                    ),
-                    scope_approved_item_ids=_unique_graph_item_ids(
-                        [chunk.evidence_item.item_id for chunk in scoped_chunks]
-                    ),
-                    scored_item_ids=_graph_item_ids_from_documents(graph_documents),
-                    packed_item_ids=_graph_item_ids_from_documents(docs),
-                    used_as_locator=(
-                        graph_execution_strategy.strategy == "source_expand"
-                    ),
-                    graph_to_chunk_attempted=(
-                        graph_execution_strategy.strategy == "source_expand"
-                    ),
-                )
+            locator_result = await locate_graph_sources(
+                question=question,
+                user_id=user_id,
+                vector_documents=docs,
+                requested_doc_ids=doc_ids,
+                graph_execution_hints=graph_execution_hints,
+                required_modalities=_required_modalities_for_question(question),
+                evidence_mode=_graph_evidence_mode(
+                    mode_hints,
+                    graph_execution_hints,
+                    _normalize_evaluation_metadata(mode_hints, graph_execution_hints),
+                ),
+                bundle_locator=_get_graph_evidence_bundle,
+                search_mode=graph_search_mode,
+                claim_scope_approver=_claim_scope_approves_chunk,
+            )
+            docs = locator_result.documents
+            lifecycle = GraphEvidenceLifecycle(
+                candidate_item_ids=locator_result.candidate_item_ids,
+                resolved_item_ids=locator_result.resolved_item_ids,
+                scope_approved_item_ids=locator_result.scope_approved_item_ids,
+                scored_item_ids=locator_result.scored_item_ids,
+                packed_item_ids=locator_result.packed_item_ids,
+                used_as_locator=True,
+                graph_to_chunk_attempted=True,
+            )
+            if locator_result.bundle is not None:
                 graph_evidence_units = _graph_evidence_units_from_bundle(
-                    bundle,
-                    items=list(bundle.evidence_items),
+                    locator_result.bundle,
+                    items=list(locator_result.bundle.evidence_items),
                 )
-                graph_context_details = _graph_context_details_for_bundle(
-                    bundle,
-                    graph_execution_strategy.gate_decision,
-                    lifecycle,
-                    int((time.perf_counter() - graph_started_at) * 1000),
-                )
-                await _record_graph_observability(
-                    question=question,
-                    graph_search_mode=graph_search_mode,
-                    graph_execution_hints=graph_execution_hints,
-                    mode_hints=mode_hints,
-                    graph_context_details=graph_context_details,
-                    graph_evidence_units=graph_evidence_units,
+            if locator_result.fallback is not None:
+                graph_context_details = _graph_fallback_context_details(
+                    reason=locator_result.fallback,
+                    graph_latency_ms=locator_result.graph_latency_ms,
                     lifecycle=lifecycle,
                 )
-            except (KeyError, OSError, RuntimeError, ValueError) as exc:
-                logger.warning(
-                    "Graph-to-chunk expansion failed; retaining vector retrieval: %s",
-                    exc,
+            else:
+                graph_context_details = _graph_context_details_for_bundle(
+                    locator_result.bundle,
+                    graph_execution_strategy.gate_decision,
+                    lifecycle,
+                    locator_result.graph_latency_ms,
                 )
-                candidate_item_ids = (
-                    _unique_graph_item_ids(
-                        [item.item_id for item in bundle.evidence_items]
-                    )
-                    if bundle is not None
-                    else []
-                )
-                fallback_lifecycle = GraphEvidenceLifecycle(
-                    candidate_item_ids=candidate_item_ids,
-                    resolved_item_ids=[],
-                    scope_approved_item_ids=[],
-                    scored_item_ids=[],
-                    packed_item_ids=[],
-                    used_as_locator=True,
-                    graph_to_chunk_attempted=True,
-                )
-                graph_context_details = _graph_fallback_context_details(
-                    reason="source_expand_failed",
-                    graph_latency_ms=max(
-                        int((time.perf_counter() - graph_started_at) * 1000),
-                        0,
-                    ),
-                    lifecycle=fallback_lifecycle,
-                )
-                await _record_graph_observability(
-                    question=question,
-                    graph_search_mode=graph_search_mode,
-                    graph_execution_hints=graph_execution_hints,
-                    mode_hints=mode_hints,
-                    graph_context_details=graph_context_details,
-                    graph_evidence_units=graph_evidence_units,
-                    lifecycle=fallback_lifecycle,
-                )
+            await _record_graph_observability(
+                question=question,
+                graph_search_mode=graph_search_mode,
+                graph_execution_hints=graph_execution_hints,
+                mode_hints=mode_hints,
+                graph_context_details=graph_context_details,
+                graph_evidence_units=graph_evidence_units,
+                lifecycle=lifecycle,
+            )
         elif graph_execution_strategy.strategy == "raw_legacy":
             graph_context_payload = await _get_graph_context(
                 question=question,
@@ -2336,205 +1954,35 @@ async def rag_answer_question(
     if not plain_mode:
         docs = await run_in_threadpool(_expand_short_chunks, docs, user_id)
 
-    # Step 6: Separate data, label sources, and deduplicate
-    text_context: List[str] = []
-    image_paths: Set[str] = set()
-    source_doc_ids: Set[str] = set()
-
-    # Build doc_id to filename mapping for labeling
-    doc_id_to_name = {}
-
-    # Collect unique doc_ids first
-    unique_doc_ids = set()
-    for doc in docs:
-        doc_id = get_document_id(doc.metadata)
-        if doc_id:
-            unique_doc_ids.add(doc_id)
-
-    # Query database for actual filenames if we have doc_ids
-    if unique_doc_ids:
-        try:
-            doc_id_to_name = await fetch_document_filenames(list(unique_doc_ids))
-            logger.debug(f"Fetched filenames: {doc_id_to_name}")
-        except Exception as e:
-            logger.warning(f"Failed to fetch filenames from DB: {e}")
-
-    # Fallback for any doc_ids not found in DB
-    for doc in docs:
-        doc_id = get_document_id(doc.metadata)
-        if doc_id and doc_id not in doc_id_to_name:
-            filename = (
-                doc.metadata.get("file_name")
-                or doc.metadata.get("source_file")
-                or f"文件-{doc_id[:8]}"
-            )
-            doc_id_to_name[doc_id] = filename
-
-    # Group chunks by source document (anti-hallucination strategy)
-    chunks_by_doc: dict[str, List[str]] = {}
-
-    for doc in docs:
-        source = doc.metadata.get("source", "text")
-
-        # Track source doc_ids
-        doc_id = get_document_id(doc.metadata)
-        if doc_id:
-            source_doc_ids.add(doc_id)
-
-        # Get source label for this chunk
-        source_label = doc_id_to_name.get(doc_id, "未知來源") if doc_id else "未知來源"
-
-        # Initialize list for this document if needed
-        if source_label not in chunks_by_doc:
-            chunks_by_doc[source_label] = []
-
-        if source == "image":
-            img_path = doc.metadata.get("image_path")
-            if img_path and os.path.exists(img_path):
-                image_paths.add(img_path)
-                # Normalize path for Markdown compatibility (Windows backslash -> forward slash)
-                normalized_path = img_path.replace("\\", "/")
-                # Include image path in text context for LLM to reference
-                if doc.page_content:
-                    chunks_by_doc[source_label].append(
-                        f"[圖片摘要] (路徑: {normalized_path})\n{doc.page_content}"
-                    )
-            elif doc.page_content:
-                # No valid image path, just include summary
-                chunks_by_doc[source_label].append(f"[圖片摘要] {doc.page_content}")
-        else:
-            if doc.page_content:
-                chunks_by_doc[source_label].append(doc.page_content)
-
-    # Build document-grouped context (each document's content is kept together)
-    for filename, chunks in chunks_by_doc.items():
-        file_section = f"=== 來源文件：{filename} ===\n（以下內容僅來自此文件，請勿與其他文件混淆）\n\n"
-        file_section += "\n\n".join(chunks)
-        text_context.append(file_section)
-
-    # Step 7: Process images (limit count to avoid token explosion)
-    MAX_IMAGES = 3
-    image_list = list(image_paths)[:MAX_IMAGES]
-    encoded_images: List[str] = []
-
-    if image_list:
-        encoded_candidates = await asyncio.gather(
-            *(run_in_threadpool(_encode_image, img_path) for img_path in image_list)
-        )
-        encoded_images = [image for image in encoded_candidates if image]
-
-    logger.debug(f"Text chunks: {len(text_context)}, Images: {len(encoded_images)}")
-
-    # Step 8: Build interleaved multimodal message
-    # Group text chunks with their associated images for clearer context
-    context_text = (
-        "\n\n---\n\n".join(text_context) if text_context else "(無文字背景資訊)"
+    generated = await generate_legacy_answer_from_evidence(
+        question=question,
+        user_id=user_id,
+        documents=docs,
+        llm=llm,
+        graph_context=graph_context,
+        history_section=(
+            f"\n{_format_history_for_prompt(history)}\n" if history else ""
+        ),
+        intent_constraints=_intent_constraints_for_prompt(question, mode_hints),
+        plain_mode=plain_mode,
+        enable_visual_verification=enable_visual_verification,
+        progress_callback=progress_callback,
+        image_encoder=_encode_image,
     )
-
-    # Format conversation history if provided
-    history_text = _format_history_for_prompt(history)
-    history_section = f"\n{history_text}\n" if history_text else ""
-
-    # Format graph context if available
-    graph_section = f"\n{graph_context}\n" if graph_context else ""
-    intent_constraints = _intent_constraints_for_prompt(question, mode_hints)
-
-    if plain_mode:
-        prompt_text = format_prompt(
-            "plain_rag_answer",
-            context_text=context_text,
-            graph_section=graph_section,
-            history_section=history_section,
-            question=question,
-            intent_constraints=intent_constraints,
+    source_doc_ids = legacy_source_doc_ids(docs)
+    if return_docs:
+        returned_docs = (
+            docs
+            if generated.thought_process is None
+            else [*docs, *graph_evidence_documents_for_return]
         )
-    else:
-        visual_instruction = (
-            format_prompt("visual_tool_instruction")
-            if enable_visual_verification and image_paths
-            else ""
+        return RAGResult(
+            generated.answer,
+            source_doc_ids,
+            returned_docs,
+            generated.usage,
+            thought_process=generated.thought_process,
+            tool_calls=generated.tool_calls,
+            visual_verification_meta=generated.visual_verification_meta,
         )
-        prompt_text = format_prompt(
-            "advanced_rag_answer",
-            context_text=context_text,
-            graph_section=graph_section,
-            history_section=history_section,
-            question=question,
-            intent_constraints=intent_constraints,
-            visual_instruction=visual_instruction,
-        )
-
-    # Build content list
-    message_content: List[Any] = [{"type": "text", "text": prompt_text}]
-
-    # Add images
-    for b64_img in encoded_images:
-        message_content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"},
-            }
-        )
-
-    message = HumanMessage(content=message_content)
-
-    # Step 9: Call LLM
-    try:
-        await _emit_progress(
-            progress_callback,
-            "answer_generation",
-            {
-                "image_count": len(encoded_images),
-                "document_count": len(docs),
-            },
-        )
-        with llm_accounting_phase("answer_generation"):
-            response = await llm.ainvoke([message])
-        answer = response.content
-        usage_metadata = get_llm_usage_metrics(response)
-        visual_verification_meta = {
-            "visual_verification_attempted": False,
-            "visual_tool_call_count": 0,
-            "visual_force_fallback_used": False,
-        }
-        if enable_visual_verification and not image_paths:
-            visual_verification_meta["visual_not_applicable"] = True
-
-        # Step 10: Visual Verification Re-Act Loop (Phase 9)
-        tool_calls = []
-        if enable_visual_verification and image_paths:
-            (
-                answer,
-                tool_calls,
-                visual_verification_meta,
-            ) = await _execute_visual_verification_loop(
-                initial_response=answer,
-                context=context_text,
-                question=question,
-                user_id=user_id,
-                llm=llm,
-                source_doc_ids=list(source_doc_ids),
-                image_paths=image_list,
-                force_once_if_not_triggered=True,
-            )
-            # Note: Usage from visual verification loop is not currently aggregated into usage_metadata
-
-        if return_docs:
-            return RAGResult(
-                answer,
-                list(source_doc_ids),
-                [*docs, *graph_evidence_documents_for_return],
-                usage_metadata,
-                thought_process=prompt_text,  # Capture the prompt as thought trace
-                tool_calls=tool_calls,
-                visual_verification_meta=visual_verification_meta,
-            )
-        return (answer, list(source_doc_ids))
-
-    except (RuntimeError, ValueError, OSError) as e:
-        logger.error(f"LLM error for user {user_id}: {e}", exc_info=True)
-        if return_docs:
-            return RAGResult(
-                "抱歉，處理您的問題時發生錯誤。", list(source_doc_ids), docs, {}
-            )
-        return ("抱歉，處理您的問題時發生錯誤。", list(source_doc_ids))
+    return (generated.answer, source_doc_ids)

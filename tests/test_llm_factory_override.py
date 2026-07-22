@@ -8,11 +8,13 @@ from core.llm_factory import (
     clear_llm_cache,
     get_graph_rag_runtime_overrides,
     get_llm,
+    get_flat_llm_usage,
     get_llm_usage_metrics,
     graph_rag_llm_runtime_override,
     llm_runtime_override,
 )
 from evaluation.model_capabilities import normalize_model_config_for_runtime
+
 
 def test_get_llm_default_model():
     """Tests that get_llm returns the default model when no override is provided."""
@@ -23,12 +25,13 @@ def test_get_llm_default_model():
 
     assert llm.model == "gemini-2.5-flash-lite"
 
+
 def test_get_llm_override_model():
     """Tests that get_llm returns the overridden model when provided."""
     clear_llm_cache()
     # Attempting to use a model name that is not the default
     override_model = "gemini-2.0-flash"
-    
+
     # This should fail if the parameter doesn't exist yet
     try:
         with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
@@ -151,7 +154,9 @@ def test_graph_rag_runtime_override_passes_low_thinking_to_community_summary() -
     assert "thinking_budget" not in kwargs
 
 
-def test_graph_rag_runtime_override_passes_high_thinking_to_high_precision_extraction() -> None:
+def test_graph_rag_runtime_override_passes_high_thinking_to_high_precision_extraction() -> (
+    None
+):
     clear_llm_cache()
     with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
         mock_chat.return_value.model = "gemini-3.1-flash-lite"
@@ -181,6 +186,38 @@ def test_get_llm_usage_metrics_reads_reasoning_tokens() -> None:
         "output_tokens": 40,
         "total_tokens": 140,
         "reasoning_tokens": 24,
+    }
+
+
+def test_get_flat_llm_usage_strips_nested_provider_metadata() -> None:
+    response = Mock(
+        usage_metadata={
+            "input_tokens": 100,
+            "output_tokens": 40,
+            "total_tokens": 140,
+            "output_token_details": {"reasoning": 24},
+            "provider_only": {"opaque": "metadata"},
+        }
+    )
+
+    assert get_flat_llm_usage(response) == {
+        "input_tokens": 100,
+        "output_tokens": 40,
+        "reasoning_tokens": 24,
+        "total_tokens": 140,
+    }
+
+
+def test_get_flat_llm_usage_derives_total_when_provider_only_reports_input_and_output() -> (
+    None
+):
+    response = Mock(usage_metadata={"input_tokens": 7, "output_tokens": 11})
+
+    assert get_flat_llm_usage(response) == {
+        "input_tokens": 7,
+        "output_tokens": 11,
+        "reasoning_tokens": 0,
+        "total_tokens": 18,
     }
 
 
@@ -249,7 +286,9 @@ def test_graph_runtime_override_preserves_enabled_level_for_outer_gemini_3() -> 
     assert "thinking_budget" not in kwargs
 
 
-def test_setup_model_remains_authoritative_over_conflicting_graph_model_argument() -> None:
+def test_setup_model_remains_authoritative_over_conflicting_graph_model_argument() -> (
+    None
+):
     clear_llm_cache()
     with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
         mock_chat.return_value.model = "gemini-2.5-flash-lite"
@@ -274,7 +313,9 @@ def test_setup_model_remains_authoritative_over_conflicting_graph_model_argument
     assert "thinking_level" not in kwargs
 
 
-def test_evaluation_setup_disabled_thinking_reaches_graph_llm_without_controls() -> None:
+def test_evaluation_setup_disabled_thinking_reaches_graph_llm_without_controls() -> (
+    None
+):
     setup = normalize_model_config_for_runtime(
         {
             "model_name": "gemini-2.5-flash-lite",

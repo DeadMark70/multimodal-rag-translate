@@ -31,6 +31,7 @@ from evaluation.trace_schemas import (
 
 EVALUATION_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "evaluation.db"
 _UNSET = object()
+MAX_AGENT_TRACE_PAYLOAD_BYTES = 256 * 1024
 logger = logging.getLogger(__name__)
 _INITIALIZED_DB_PATHS: set[str] = set()
 _INIT_LOCKS: dict[str, asyncio.Lock] = {}
@@ -118,6 +119,9 @@ _OBSERVABILITY_TABLE_COLUMNS = {
     "evaluation_context_packs": {
         "run_id": "TEXT NOT NULL DEFAULT ''",
         "campaign_id": "TEXT NOT NULL DEFAULT ''",
+        "attempt_id": "TEXT",
+        "condition_id": "TEXT NOT NULL DEFAULT ''",
+        "schema_version": "TEXT NOT NULL DEFAULT '1'",
         "span_id": "TEXT",
         "input_chunk_count": "INTEGER NOT NULL DEFAULT 0",
         "packed_chunk_count": "INTEGER NOT NULL DEFAULT 0",
@@ -151,6 +155,9 @@ _OBSERVABILITY_TABLE_COLUMNS = {
     "evaluation_claims": {
         "run_id": "TEXT NOT NULL DEFAULT ''",
         "campaign_id": "TEXT NOT NULL DEFAULT ''",
+        "attempt_id": "TEXT",
+        "condition_id": "TEXT NOT NULL DEFAULT ''",
+        "schema_version": "TEXT NOT NULL DEFAULT '1'",
         "span_id": "TEXT",
         "claim_text": "TEXT NOT NULL DEFAULT ''",
         "claim_type": "TEXT",
@@ -158,6 +165,38 @@ _OBSERVABILITY_TABLE_COLUMNS = {
         "evidence_json": "TEXT NOT NULL DEFAULT '[]'",
         "unsupported_reason": "TEXT",
         "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+    },
+    "evaluation_evidence_packets": {
+        "attempt_id": "TEXT NOT NULL DEFAULT ''",
+        "run_id": "TEXT NOT NULL DEFAULT ''",
+        "campaign_id": "TEXT NOT NULL DEFAULT ''",
+        "condition_id": "TEXT NOT NULL DEFAULT ''",
+        "schema_version": "TEXT NOT NULL DEFAULT '1'",
+        "evidence_id": "TEXT NOT NULL DEFAULT ''",
+        "packet_json": "TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+    },
+    "evaluation_slot_resolutions": {
+        "attempt_id": "TEXT NOT NULL DEFAULT ''",
+        "run_id": "TEXT NOT NULL DEFAULT ''",
+        "campaign_id": "TEXT NOT NULL DEFAULT ''",
+        "condition_id": "TEXT NOT NULL DEFAULT ''",
+        "schema_version": "TEXT NOT NULL DEFAULT '1'",
+        "slot_id": "TEXT NOT NULL DEFAULT ''",
+        "resolution_stage": "TEXT NOT NULL DEFAULT 'sufficiency'",
+        "resolution_json": "TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+    },
+    "evaluation_v9_attempt_materializations": {
+        "attempt_id": "TEXT NOT NULL DEFAULT ''",
+        "run_id": "TEXT NOT NULL DEFAULT ''",
+        "campaign_id": "TEXT NOT NULL DEFAULT ''",
+        "condition_id": "TEXT NOT NULL DEFAULT ''",
+        "schema_version": "TEXT NOT NULL DEFAULT '1'",
+        "trace_json": "TEXT NOT NULL DEFAULT '{}'",
+        "materialization_status": "TEXT NOT NULL DEFAULT 'cancelled'",
+        "completed_at": "TEXT",
         "created_at": "TEXT NOT NULL DEFAULT ''",
     },
     "evaluation_human_ratings": {
@@ -514,6 +553,9 @@ CREATE TABLE IF NOT EXISTS evaluation_context_packs (
     context_pack_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
     campaign_id TEXT NOT NULL,
+    attempt_id TEXT,
+    condition_id TEXT NOT NULL DEFAULT '',
+    schema_version TEXT NOT NULL DEFAULT '1',
     span_id TEXT,
     input_chunk_count INTEGER NOT NULL DEFAULT 0,
     packed_chunk_count INTEGER NOT NULL DEFAULT 0,
@@ -521,7 +563,8 @@ CREATE TABLE IF NOT EXISTS evaluation_context_packs (
     retrieved_but_not_packed_evidence_json TEXT NOT NULL DEFAULT '[]',
     payload_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
-    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY(attempt_id) REFERENCES evaluation_attempts(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS evaluation_tool_calls (
@@ -556,6 +599,9 @@ CREATE TABLE IF NOT EXISTS evaluation_claims (
     claim_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
     campaign_id TEXT NOT NULL,
+    attempt_id TEXT,
+    condition_id TEXT NOT NULL DEFAULT '',
+    schema_version TEXT NOT NULL DEFAULT '1',
     span_id TEXT,
     claim_text TEXT NOT NULL,
     claim_type TEXT,
@@ -564,6 +610,50 @@ CREATE TABLE IF NOT EXISTS evaluation_claims (
     unsupported_reason TEXT,
     payload_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY(attempt_id) REFERENCES evaluation_attempts(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_evidence_packets (
+    evidence_packet_row_id TEXT PRIMARY KEY,
+    attempt_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    condition_id TEXT NOT NULL DEFAULT '',
+    schema_version TEXT NOT NULL DEFAULT '1',
+    evidence_id TEXT NOT NULL,
+    packet_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(attempt_id) REFERENCES evaluation_attempts(id) ON DELETE CASCADE,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_slot_resolutions (
+    slot_resolution_row_id TEXT PRIMARY KEY,
+    attempt_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    condition_id TEXT NOT NULL DEFAULT '',
+    schema_version TEXT NOT NULL DEFAULT '1',
+    slot_id TEXT NOT NULL,
+    resolution_stage TEXT NOT NULL DEFAULT 'sufficiency',
+    resolution_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(attempt_id) REFERENCES evaluation_attempts(id) ON DELETE CASCADE,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_v9_attempt_materializations (
+    attempt_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    condition_id TEXT NOT NULL DEFAULT '',
+    schema_version TEXT NOT NULL DEFAULT '1',
+    trace_json TEXT NOT NULL DEFAULT '{}',
+    materialization_status TEXT NOT NULL CHECK (materialization_status IN ('completed', 'cancelled')),
+    completed_at TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(attempt_id) REFERENCES evaluation_attempts(id) ON DELETE CASCADE,
     FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
 );
 
@@ -929,6 +1019,12 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
     )
     await connection.execute(
         """
+        CREATE INDEX IF NOT EXISTS idx_eval_context_packs_attempt_created
+        ON evaluation_context_packs(attempt_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_eval_tool_calls_run_created
         ON evaluation_tool_calls(run_id, created_at ASC)
         """
@@ -955,6 +1051,54 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_eval_claims_campaign_run
         ON evaluation_claims(campaign_id, run_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_claims_attempt_created
+        ON evaluation_claims(attempt_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_evidence_packets_attempt_evidence
+        ON evaluation_evidence_packets(attempt_id, evidence_id)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_evidence_packets_run_created
+        ON evaluation_evidence_packets(run_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_evidence_packets_campaign_run
+        ON evaluation_evidence_packets(campaign_id, run_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_slot_resolutions_attempt_slot_stage
+        ON evaluation_slot_resolutions(attempt_id, slot_id, resolution_stage)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_slot_resolutions_run_created
+        ON evaluation_slot_resolutions(run_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_slot_resolutions_campaign_run
+        ON evaluation_slot_resolutions(campaign_id, run_id, created_at ASC)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_eval_v9_materializations_campaign_run
+        ON evaluation_v9_attempt_materializations(campaign_id, run_id, created_at ASC)
         """
     )
     await connection.execute(
@@ -1175,6 +1319,26 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
         condition_id=(row["condition_id"] or None)
         if "condition_id" in row.keys()
         else None,
+        agentic_execution_version=(
+            system_version_snapshot.get("agentic_execution_version", "v8")
+            if system_version_snapshot.get("agentic_execution_version") in {"v8", "v9"}
+            else "v8"
+        ),
+        execution_identity=(
+            derived_metrics.get("execution_identity")
+            if isinstance(derived_metrics.get("execution_identity"), str)
+            else None
+        ),
+        shadow_evaluation_policy=(
+            derived_metrics.get("shadow_evaluation_policy")
+            if derived_metrics.get("shadow_evaluation_policy") in {"operational", "research"}
+            else None
+        ),
+        response_status=(
+            derived_metrics.get("response_status")
+            if isinstance(derived_metrics.get("response_status"), str)
+            else None
+        ),
         answer=row["answer"],
         contexts=_json_loads(row["contexts_json"], []),
         source_doc_ids=_json_loads(row["source_doc_ids_json"], []),
@@ -1218,6 +1382,7 @@ class CampaignAnalyticsResult:
     execution_profile: Optional[str]
     context_policy_version: Optional[str]
     run_number: int
+    condition_id: Optional[str]
     latency_ms: float
     total_latency_ms: Optional[float]
     total_tokens: Optional[int]
@@ -1226,9 +1391,20 @@ class CampaignAnalyticsResult:
     question_version: Optional[str]
     status: CampaignResultStatus
     error_message: Optional[str]
+    system_version_snapshot: dict[str, Any]
     derived_metrics: dict[str, Any]
     answer_preview: str
     created_at: datetime
+
+    @property
+    def agentic_execution_version(self) -> str:
+        version = self.system_version_snapshot.get("agentic_execution_version", "v8")
+        return version if version in {"v8", "v9"} else "v8"
+
+    @property
+    def response_status(self) -> Optional[str]:
+        value = self.derived_metrics.get("response_status")
+        return value if isinstance(value, str) else None
 
 
 def _normalize_route_profile(value: Any) -> Any:
@@ -1777,6 +1953,7 @@ class CampaignResultRepository:
                     execution_profile,
                     context_policy_version,
                     run_number,
+                    condition_id,
                     latency_ms,
                     total_latency_ms,
                     total_tokens,
@@ -1785,6 +1962,7 @@ class CampaignResultRepository:
                     question_version,
                     status,
                     error_message,
+                    system_version_snapshot_json,
                     derived_metrics_json,
                     substr(answer, 1, 240) AS answer_preview,
                     created_at
@@ -1805,6 +1983,7 @@ class CampaignResultRepository:
                 execution_profile=row["execution_profile"],
                 context_policy_version=row["context_policy_version"],
                 run_number=row["run_number"],
+                condition_id=row["condition_id"] or None,
                 latency_ms=row["latency_ms"],
                 total_latency_ms=row["total_latency_ms"],
                 total_tokens=row["total_tokens"],
@@ -1813,6 +1992,9 @@ class CampaignResultRepository:
                 question_version=row["question_version"],
                 status=CampaignResultStatus(row["status"]),
                 error_message=row["error_message"],
+                system_version_snapshot=_json_loads(
+                    row["system_version_snapshot_json"], {}
+                ),
                 derived_metrics=_json_loads(row["derived_metrics_json"], {}),
                 answer_preview=row["answer_preview"] or "",
                 created_at=datetime.fromisoformat(row["created_at"]),
@@ -2077,6 +2259,9 @@ class AgentTraceRepository:
                         else None
                     )
                 ),
+                "agentic_execution_version": normalized_payload.get(
+                    "agentic_execution_version", "v8"
+                ),
                 "question_intent": normalized_payload.get("question_intent"),
                 "strategy_tier": normalized_payload.get("strategy_tier"),
                 "route_profile": normalized_payload.get("route_profile"),
@@ -2109,8 +2294,12 @@ class AgentTraceRepository:
                 "total_tokens": total_tokens,
                 "created_at": normalized_payload.get("created_at") or _utc_now_iso(),
                 "steps": steps,
+                "agentic_v9": normalized_payload.get("agentic_v9"),
             }
         )
+        serialized_trace = _json_dumps(detail.model_dump(mode="json"))
+        if len(serialized_trace.encode("utf-8")) > MAX_AGENT_TRACE_PAYLOAD_BYTES:
+            raise ValueError("agent trace payload exceeds 262144 bytes")
         async with connect_db() as connection:
             await connection.execute(
                 """
@@ -2130,7 +2319,7 @@ class AgentTraceRepository:
                     campaign_id,
                     campaign_result_id,
                     user_id,
-                    _json_dumps(detail.model_dump(mode="json")),
+                    serialized_trace,
                     detail.created_at.isoformat(),
                 ),
             )

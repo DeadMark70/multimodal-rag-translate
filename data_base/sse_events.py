@@ -11,7 +11,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 # Third-party
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SSEEventType(str, Enum):
@@ -77,10 +77,12 @@ class TaskDoneData(BaseModel):
     """Data for task_done event."""
     id: int
     question: str
-    answer: str
-    sources: List[str]
-    contexts: List[str] = []
+    answer: Optional[str] = None
+    sources: List[str] = Field(default_factory=list)
+    contexts: List[str] = Field(default_factory=list)
     iteration: int = 0
+    evidence_count: Optional[int] = None
+    target_slots: List[str] = Field(default_factory=list)
 
 
 class DrilldownStartData(BaseModel):

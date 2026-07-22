@@ -26,6 +26,8 @@ from evaluation.campaign_schemas import (
     CampaignLifecycleStatus,
     CampaignMetricsResponse,
     CampaignOverviewResponse,
+    CampaignPreflightRequest,
+    CampaignPreflightResponse,
     CampaignProgressEvent,
     CampaignResultsResponse,
     CampaignStatus,
@@ -45,6 +47,7 @@ from evaluation.campaign_schemas import (
     RunClaimsResponse,
     RunContextResponse,
     RunDiffResponse,
+    RunDetailResponse,
     RunLlmCallsResponse,
     RunMetricsResponse,
     RunRetrievalResponse,
@@ -61,7 +64,10 @@ from evaluation.job_schemas import (
     EvaluationJobItemSummary,
     EvaluationRerunRequest,
 )
-from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.observability_storage import (
+    EvaluationObservabilityRepository,
+    safe_plain_text_excerpt,
+)
 from evaluation.schemas import (
     AvailableModel,
     DeleteResult,
@@ -370,6 +376,16 @@ async def create_campaign(
     )
 
 
+@router.post("/campaigns/preflight", response_model=CampaignPreflightResponse)
+async def preflight_campaign(
+    payload: CampaignPreflightRequest,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> CampaignPreflightResponse:
+    """Return non-mutating per-question v9 admission compatibility."""
+    return await analytics.campaign_preflight(user_id=user_id, request=payload)
+
+
 @router.get("/campaigns", response_model=list[CampaignStatus])
 async def get_campaigns(
     user_id: str = Depends(get_current_user_id),
@@ -604,6 +620,16 @@ async def get_evaluation_run_trace(
     return await analytics.run_trace(user_id=user_id, run_id=run_id)
 
 
+@router.get("/runs/{run_id}/detail", response_model=RunDetailResponse)
+async def get_evaluation_run_detail(
+    run_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> RunDetailResponse:
+    """Fetch a backwards-compatible detail payload with optional v9 evidence."""
+    return await analytics.run_detail(user_id=user_id, run_id=run_id)
+
+
 @router.get("/runs/{run_id}/retrieval", response_model=RunRetrievalResponse)
 async def get_evaluation_run_retrieval(
     run_id: str,
@@ -749,12 +775,18 @@ async def get_campaign_run_observability(
 
     repository = EvaluationObservabilityRepository()
     trace_events = [
-        item
+        item.model_copy(update={"payload": {}, "error": {}})
         for item in await repository.list_trace_events_for_run(run_id)
         if item.campaign_id == campaign_id
     ]
     llm_calls = [
-        item
+        item.model_copy(
+            update={
+                "prompt_preview": safe_plain_text_excerpt(item.prompt_preview),
+                "payload": {},
+                "error": {},
+            }
+        )
         for item in await repository.list_llm_calls_for_run(run_id)
         if item.campaign_id == campaign_id
     ]
@@ -764,7 +796,12 @@ async def get_campaign_run_observability(
         if item.campaign_id == campaign_id
     ]
     retrieval_chunks = [
-        item
+        item.model_copy(
+            update={
+                "excerpt": safe_plain_text_excerpt(item.excerpt),
+                "payload": {},
+            }
+        )
         for item in await repository.list_retrieval_chunks_for_run(run_id)
         if item.campaign_id == campaign_id
     ]
@@ -796,7 +833,13 @@ async def get_campaign_run_observability(
         if item.campaign_id == campaign_id
     ]
     claims = [
-        item
+        item.model_copy(
+            update={
+                "claim_text": safe_plain_text_excerpt(item.claim_text),
+                "evidence": [],
+                "payload": {},
+            }
+        )
         for item in await repository.list_claims_for_run(run_id)
         if item.campaign_id == campaign_id
     ]

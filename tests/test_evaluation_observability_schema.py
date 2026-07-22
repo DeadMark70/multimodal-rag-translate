@@ -4,7 +4,13 @@ from datetime import datetime, timezone
 import pytest
 
 from evaluation import db as evaluation_db
-from evaluation.trace_schemas import EvaluationClaim, EvaluationTraceEvent
+from evaluation.trace_schemas import (
+    AgentTraceDetail,
+    EvaluationClaim,
+    EvaluationEvidencePacket,
+    EvaluationSlotResolution,
+    EvaluationTraceEvent,
+)
 
 EXPECTED_TABLES = {
     "evaluation_trace_events",
@@ -16,6 +22,8 @@ EXPECTED_TABLES = {
     "evaluation_routing_decisions",
     "evaluation_claims",
     "evaluation_human_ratings",
+    "evaluation_evidence_packets",
+    "evaluation_slot_resolutions",
 }
 
 EXPECTED_CAMPAIGN_RESULT_COLUMNS = {
@@ -55,6 +63,8 @@ COMMON_DETAIL_COLUMNS = {
 COMMON_DETAIL_TABLES = EXPECTED_TABLES - {
     "evaluation_trace_events",
     "evaluation_retrieval_chunks",
+    "evaluation_evidence_packets",
+    "evaluation_slot_resolutions",
 }
 
 
@@ -162,6 +172,12 @@ async def test_observability_migration_repairs_partial_tables(tmp_path, monkeypa
     with sqlite3.connect(db_path) as connection:
         connection.execute("CREATE TABLE evaluation_trace_events (event_id TEXT PRIMARY KEY)")
         connection.execute("CREATE TABLE evaluation_claims (claim_id TEXT PRIMARY KEY)")
+        connection.execute(
+            "CREATE TABLE evaluation_evidence_packets (evidence_packet_row_id TEXT PRIMARY KEY)"
+        )
+        connection.execute(
+            "CREATE TABLE evaluation_slot_resolutions (slot_resolution_row_id TEXT PRIMARY KEY)"
+        )
         connection.commit()
 
     await evaluation_db.init_db()
@@ -174,6 +190,117 @@ async def test_observability_migration_repairs_partial_tables(tmp_path, monkeypa
     assert {"run_id", "campaign_id", "span_id", "evidence_json", "payload_json"}.issubset(
         claim_columns
     )
+    evidence_columns = await _table_columns("evaluation_evidence_packets")
+    resolution_columns = await _table_columns("evaluation_slot_resolutions")
+    assert {"attempt_id", "schema_version", "evidence_id", "packet_json"}.issubset(
+        evidence_columns
+    )
+    assert {"attempt_id", "schema_version", "slot_id", "resolution_json"}.issubset(
+        resolution_columns
+    )
+
+
+@pytest.mark.asyncio
+async def test_v9_evidence_tables_have_identity_schema_and_idempotency_indexes(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
+
+    await evaluation_db.init_db()
+
+    evidence_columns = await _table_columns("evaluation_evidence_packets")
+    resolution_columns = await _table_columns("evaluation_slot_resolutions")
+    required_columns = {
+        "attempt_id",
+        "run_id",
+        "campaign_id",
+        "condition_id",
+        "schema_version",
+        "created_at",
+    }
+    assert required_columns.issubset(evidence_columns)
+    assert required_columns.issubset(resolution_columns)
+    assert {"evidence_id", "packet_json"}.issubset(evidence_columns)
+    assert {"slot_id", "resolution_stage", "resolution_json"}.issubset(resolution_columns)
+
+    index_names = await _index_names()
+    assert "idx_eval_evidence_packets_attempt_evidence" in index_names
+    assert "idx_eval_slot_resolutions_attempt_slot_stage" in index_names
+    assert await _index_columns("idx_eval_evidence_packets_attempt_evidence") == [
+        "attempt_id",
+        "evidence_id",
+    ]
+    assert await _index_columns("idx_eval_slot_resolutions_attempt_slot_stage") == [
+        "attempt_id",
+        "slot_id",
+        "resolution_stage",
+    ]
+
+
+def test_v9_records_and_legacy_agent_trace_have_safe_defaults() -> None:
+    now = datetime.now(timezone.utc)
+    evidence = EvaluationEvidencePacket(
+        attempt_id="attempt-1",
+        run_id="run-1",
+        campaign_id="campaign-1",
+        condition_id="condition-1",
+        evidence_id="evidence-1",
+        packet={"statement": "Bounded evidence."},
+        created_at=now,
+    )
+    resolution = EvaluationSlotResolution(
+        attempt_id="attempt-1",
+        run_id="run-1",
+        campaign_id="campaign-1",
+        condition_id="condition-1",
+        slot_id="slot-1",
+        resolution_stage="sufficiency",
+        resolution={"status": "supported"},
+        created_at=now,
+    )
+    legacy_trace = AgentTraceDetail(
+        trace_id="trace-1",
+        campaign_id="campaign-1",
+        campaign_result_id="result-1",
+        question_id="question-1",
+        question="Question?",
+        mode="agentic",
+        run_number=1,
+        trace_status="completed",
+        created_at=now,
+    )
+
+    assert evidence.schema_version == "1"
+    assert resolution.schema_version == "1"
+    assert legacy_trace.agentic_v9 is None
+
+
+def test_existing_claim_and_context_pack_accept_optional_v9_attempt_metadata() -> None:
+    now = datetime.now(timezone.utc)
+    claim = EvaluationClaim(
+        claim_id="claim-v9",
+        run_id="run-1",
+        campaign_id="campaign-1",
+        claim_text="Claim.",
+        attempt_id="attempt-1",
+        condition_id="condition-1",
+        schema_version="1",
+        created_at=now,
+    )
+    from evaluation.trace_schemas import EvaluationContextPack
+
+    context_pack = EvaluationContextPack(
+        context_pack_id="pack-v9",
+        run_id="run-1",
+        campaign_id="campaign-1",
+        attempt_id="attempt-1",
+        condition_id="condition-1",
+        schema_version="1",
+        created_at=now,
+    )
+
+    assert claim.attempt_id == "attempt-1"
+    assert context_pack.condition_id == "condition-1"
 
 
 def test_evaluation_trace_event_allows_running_nullable_duration() -> None:

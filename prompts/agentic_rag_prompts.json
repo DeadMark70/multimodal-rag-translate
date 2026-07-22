@@ -110,6 +110,16 @@
       ],
       "template": "你是一位嚴格的學術論文評審。請評估「AI 回答」的品質。\n\n**注意：此評估為 Pure LLM 模式，無參考文獻。**\n\n## 評估資料\n**問題：** {question}\n\n**AI 回答：**\n{answer}\n\n**Ground Truth (參考答案，用於對比)：**\n{ground_truth}\n\n## 評分標準 (1-10分)\n1. **Accuracy (精確度)**: 與 Ground Truth 的吻合程度\n2. **Completeness (完整性)**: 是否涵蓋所有重點\n3. **Clarity (邏輯表達)**: 結構是否清晰\n\n## 輸出格式 (JSON Only)\n{{\"analysis\": \"<對比分析>\", \"accuracy\": <1-10>, \"completeness\": <1-10>, \"clarity\": <1-10>, \"reason\": \"<評語>\", \"suggestion\": \"<改進建議>\"}}"
     },
+    "evidence_extract": {
+      "version": 1,
+      "description": "v9 source-bound prose evidence curator",
+      "required_variables": [
+        "question",
+        "unresolved_slots",
+        "source_evidence"
+      ],
+      "template": "You curate only the remaining prose evidence slots after deterministic extraction and repair are complete. Return JSON only, exactly {{\"packets\":[...]}}. Each packet must contain exactly source_evidence_id, slot_ids, and statement. source_evidence_id must be one supplied ID; slot_ids must be unresolved slots; statement must be an exact contiguous verbatim span from that source. Do not answer the question, compare sources, infer a verdict, add numbers, normalize wording, or add fields. Invalid or unsupported material must be omitted.\n\nQuestion:\n{question}\n\nUnresolved slots:\n{unresolved_slots}\n\nSource evidence:\n{source_evidence}"
+    },
     "fact_state": {
       "version": 1,
       "description": "fact state",

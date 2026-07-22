@@ -21,6 +21,13 @@ from langchain_core.documents import Document
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# CI and restricted Windows worktrees can deny inherited ``output`` and system
+# temp directories.  Tests share one explicit, overrideable root instead.
+os.environ.setdefault(
+    "EVALUATION_TEST_TMPDIR",
+    str(Path(__file__).resolve().parent.parent / ".pytest-tmp"),
+)
+
 
 # ============================================================================
 # Mock Fixtures
@@ -109,12 +116,7 @@ def temp_user_dir(tmp_path):
 @pytest.fixture
 def tmp_path():
     """Use a workspace-local temp directory because system temp is not writable here."""
-    path = (
-        Path(__file__).resolve().parent.parent
-        / "output"
-        / "test_tmp"
-        / f"pytest-{uuid4().hex}"
-    )
+    path = Path(os.environ["EVALUATION_TEST_TMPDIR"]) / f"pytest-{uuid4().hex}"
     path.mkdir(parents=True, exist_ok=False)
     try:
         yield path
