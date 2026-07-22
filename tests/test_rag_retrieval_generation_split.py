@@ -217,6 +217,12 @@ def test_legacy_wrapper_delegates_generation_without_exposing_visual_synthesis()
     assert "_execute_legacy_visual_verification_loop" in generation_source
 
 
+def test_legacy_generation_avoids_python_311_incompatible_fstring_backslashes() -> None:
+    generation_source = Path("data_base/rag_generation.py").read_text(encoding="utf-8")
+
+    assert "image_path.replace('\\\\\\\\', '/')" not in generation_source
+
+
 @pytest.mark.asyncio
 async def test_legacy_wrapper_preserves_empty_retrieval_projection() -> None:
     from data_base.RAG_QA_service import rag_answer_question

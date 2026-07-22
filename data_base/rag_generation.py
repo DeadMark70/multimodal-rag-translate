@@ -196,7 +196,8 @@ async def generate_legacy_answer_from_evidence(
             if image_path and os.path.exists(image_path):
                 image_paths.add(image_path)
                 if document.page_content:
-                    chunks.append(f"[圖片摘要] (路徑: {image_path.replace('\\\\', '/')})\n{document.page_content}")
+                    normalized_image_path = image_path.replace("\\", "/")
+                    chunks.append(f"[圖片摘要] (路徑: {normalized_image_path})\n{document.page_content}")
             elif document.page_content:
                 chunks.append(f"[圖片摘要] {document.page_content}")
         elif document.page_content:

@@ -6,6 +6,20 @@ on:
   pull_request:
 
 jobs:
+  python-311-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup deployment Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile deployment source
+        run: python -m compileall -q core data_base evaluation
+
   backend-test:
     runs-on: ubuntu-latest
     env:
