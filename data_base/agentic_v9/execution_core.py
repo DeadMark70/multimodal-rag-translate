@@ -13,6 +13,10 @@ from inspect import isawaitable
 from typing import Any, TypeVar
 
 from data_base.agentic_v9.context_packer import PackedEvidenceContext
+from data_base.agentic_v9.execution_policy import (
+    ExecutionDeadline,
+    V9ExecutionPolicyRuntime,
+)
 from data_base.agentic_v9.retrieval_tasks import RetrievalTaskCompiler
 from data_base.agentic_v9.schemas import (
     EvidencePacket,
@@ -24,6 +28,7 @@ from data_base.agentic_v9.schemas import (
     TaskRetrievalResult,
     V9ExecutionRequest,
     V9ExecutionResult,
+    V9RuntimeContext,
 )
 from data_base.agentic_v9.sufficiency_gate import SufficiencyEvaluation
 
@@ -115,21 +120,46 @@ class V9ExecutionCore:
         *,
         stages: V9ExecutionStages,
         retrieval_task_compiler: RetrievalTaskCompiler | None = None,
+        runtime: V9ExecutionPolicyRuntime | None = None,
     ) -> None:
         self._stages = stages
-        self._retrieval_task_compiler = retrieval_task_compiler or RetrievalTaskCompiler()
+        self._retrieval_task_compiler = (
+            retrieval_task_compiler or RetrievalTaskCompiler()
+        )
+        self._runtime = runtime or V9ExecutionPolicyRuntime()
 
-    async def execute(self, request: V9ExecutionRequest) -> V9ExecutionResult:
+    async def execute(
+        self,
+        request: V9ExecutionRequest,
+        *,
+        runtime: V9RuntimeContext | None = None,
+        runtime_context: V9RuntimeContext | None = None,
+        deadline: ExecutionDeadline | None = None,
+    ) -> V9ExecutionResult:
         """Execute the ordered evidence-first v9 flow for one request."""
-        scope = await _resolve(self._stages.resolve_scope(request))
-        contract = await _resolve(self._stages.plan_contract(request, scope))
+        if runtime is not None and runtime_context is not None:
+            raise ValueError("pass either runtime or runtime_context, not both")
+        runtime_context = runtime_context or runtime
+        # The evaluation/chat adapter creates this before entering the core.  The
+        # fallback keeps direct core callers bounded without ever resetting it.
+        deadline = (
+            deadline
+            or (runtime_context.deadline if runtime_context is not None else None)
+            or self._runtime.start_deadline()
+        )
+        scope = await self._run_stage(
+            "retrieval", "route_plan", self._stages.resolve_scope(request), deadline
+        )
+        contract = await self._run_stage(
+            "llm", "route_plan", self._stages.plan_contract(request, scope), deadline
+        )
 
         task_results: list[TaskRetrievalResult] = []
         evidence_packets: list[EvidencePacket] = []
         initial_tasks = self._initial_tasks(request, contract)
         if initial_tasks:
             await self._retrieve_candidates(
-                initial_tasks, contract, task_results, evidence_packets
+                initial_tasks, contract, task_results, evidence_packets, deadline
             )
 
         # Initial sufficiency owns the only repair decision; repair policy is
@@ -138,7 +168,10 @@ class V9ExecutionCore:
             contract, tuple(evidence_packets)
         )
         repair_round = 0
-        while repair_round < contract.max_repair_rounds:
+        while (
+            repair_round < contract.max_repair_rounds
+            and self._runtime.has_final_reserve(deadline)
+        ):
             repair_tasks = tuple(
                 self._stages.plan_repair(
                     contract, sufficiency, request.trace_id, repair_round + 1
@@ -148,7 +181,7 @@ class V9ExecutionCore:
                 break
             repair_round += 1
             await self._retrieve_candidates(
-                repair_tasks, contract, task_results, evidence_packets
+                repair_tasks, contract, task_results, evidence_packets, deadline
             )
             sufficiency = self._stages.evaluate_sufficiency(
                 contract, tuple(evidence_packets)
@@ -156,36 +189,58 @@ class V9ExecutionCore:
 
         # One final prose batch may curate packets; it cannot produce an answer.
         curated_packets = tuple(
-            await _resolve(
+            await self._run_stage(
+                "llm",
+                "evidence_extract",
                 self._stages.prose_curate(
                     request.question, contract, tuple(evidence_packets)
-                )
+                ),
+                deadline,
             )
         )
         prose_curator_call_count = 1
         assert prose_curator_call_count <= 1
 
         final_sufficiency = self._stages.evaluate_sufficiency(contract, curated_packets)
-        conflict = await _resolve(
-            self._stages.resolve_conflicts(contract, curated_packets, final_sufficiency)
-        )
+        if self._runtime.has_final_reserve(deadline):
+            conflict = await self._run_stage(
+                "llm",
+                "retrieval_judge",
+                self._stages.resolve_conflicts(
+                    contract, curated_packets, final_sufficiency
+                ),
+                deadline,
+            )
+        else:
+            conflict = ConflictStageResult(sufficiency=final_sufficiency)
         assert 0 <= conflict.arbitration_call_count <= 1
 
-        packed = await _resolve(
+        packed = await self._run_stage(
+            "retrieval",
+            "evidence_extract",
             self._stages.pack(
                 request.question, contract, curated_packets, conflict.sufficiency
-            )
+            ),
+            deadline,
         )
         final_generation_count = 0
-        if conflict.sufficiency.report.answerable and _is_packable(packed):
-            final_answer = await _resolve(
+        if (
+            deadline.has_time_remaining()
+            and conflict.sufficiency.report.answerable
+            and conflict.sufficiency.report.supported_slot_ids
+            and _is_packable(packed)
+        ):
+            final_answer = await self._run_stage(
+                "llm",
+                "final_answer",
                 self._stages.generate_final(
                     request.question,
                     contract,
                     packed,
                     conflict.sufficiency.slot_resolutions,
                     conflict.arbitration,
-                )
+                ),
+                deadline,
             )
             final_generation_count = 1
         else:
@@ -231,17 +286,45 @@ class V9ExecutionCore:
         contract: QueryContract,
         task_results: list[TaskRetrievalResult],
         evidence_packets: list[EvidencePacket],
+        deadline: ExecutionDeadline,
     ) -> None:
-        results = tuple(await _resolve(self._stages.retrieve(tasks)))
+        results = tuple(
+            await self._run_stage(
+                "retrieval", "evidence_extract", self._stages.retrieve(tasks), deadline
+            )
+        )
         returned_task_ids = {result.task_id for result in results}
         expected_task_ids = {task.task_id for task in tasks}
         if returned_task_ids.difference(expected_task_ids):
             raise ValueError("retrieval returned a result for an undeclared task")
         task_results.extend(results)
-        candidates = await _resolve(
-            self._stages.deterministic_candidates(results, contract)
+        candidates = await self._run_stage(
+            "retrieval",
+            "evidence_extract",
+            self._stages.deterministic_candidates(results, contract),
+            deadline,
         )
         evidence_packets.extend(candidates)
+
+    async def _run_stage(
+        self,
+        kind: str,
+        phase: str,
+        value: _MaybeAwaitable[_T],
+        deadline: ExecutionDeadline,
+    ) -> _T:
+        """Apply both the phase limit and the single attempt-wide deadline."""
+
+        async def operation() -> _T:
+            return await _resolve(value)
+
+        if kind == "llm":
+            return await self._runtime.run_llm(
+                operation, phase=phase, deadline=deadline
+            )
+        return await self._runtime.run_retrieval(
+            operation, phase=phase, deadline=deadline
+        )
 
 
 async def _resolve(value: _MaybeAwaitable[_T]) -> _T:

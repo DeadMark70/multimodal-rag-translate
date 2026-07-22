@@ -417,7 +417,11 @@ class LlmInvoker(Protocol):
 
 @dataclass(slots=True)
 class V9RuntimeContext:
-    """Non-serializable adapter dependencies for ``core.execute`` only."""
+    """Non-serializable adapter dependencies for one bounded ``core.execute``.
+
+    ``deadline`` is created by the evaluation/chat attempt before source scope
+    resolution and is shared unchanged through claim verification.
+    """
 
     cancellation_token: Any
     event_sink: Callable[[V9ExecutionEvent], Awaitable[None]]

@@ -19,6 +19,7 @@ from data_base.agentic_v9.execution_core import (
 )
 from data_base.agentic_v9.execution_policy import (
     ExecutionCancellation,
+    ExecutionDeadline,
     V9ExecutionPolicyRuntime,
 )
 
@@ -35,6 +36,7 @@ __all__ = [
     "V9ExecutionPolicyRuntime",
     "V9ExecutionStages",
     "ExecutionCancellation",
+    "ExecutionDeadline",
     "compile_retrieval_tasks",
     "plan_query_contract",
 ]

@@ -9,6 +9,7 @@ import pytest
 from data_base.agentic_v9.budget_controller import RunBudgetController
 from data_base.agentic_v9.budgeted_llm import invoke_budgeted_llm
 from data_base.agentic_v9.execution_policy import (
+    ExecutionDeadline,
     ExecutionCancellation,
     V9ExecutionPolicyRuntime,
     emit_sse_event,
@@ -22,6 +23,7 @@ def test_execution_policy_has_the_initial_runtime_bounds() -> None:
     assert policy.max_retrieval_concurrency == 3
     assert policy.max_llm_concurrency == 2
     assert policy.max_visual_concurrency == 1
+    assert policy.total_deadline_s == 24.0
     assert policy.phase_timeouts_s == {
         "route_plan": 2.0,
         "retrieval_judge": 2.0,
@@ -29,6 +31,19 @@ def test_execution_policy_has_the_initial_runtime_bounds() -> None:
         "visual_extract": 8.0,
         "final_answer": 15.0,
     }
+
+
+def test_deadline_clamps_every_phase_timeout_without_resetting() -> None:
+    now = [100.0]
+    deadline = ExecutionDeadline(24.0, monotonic=lambda: now[0])
+    runtime = V9ExecutionPolicyRuntime(ExecutionPolicy())
+
+    assert runtime.timeout_for("final_answer", deadline=deadline) == 15.0
+    now[0] = 122.5
+
+    assert deadline.remaining_seconds() == 1.5
+    assert runtime.timeout_for("final_answer", deadline=deadline) == 1.5
+    assert runtime.timeout_for("route_plan", deadline=deadline) == 1.5
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from time import monotonic
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Literal, TypeVar
 
@@ -12,6 +13,27 @@ from data_base.agentic_v9.schemas import ExecutionPolicy
 _T = TypeVar("_T")
 RuntimeKind = Literal["retrieval", "llm", "visual"]
 _DEFAULT_TIMEOUT_S = 8.0
+
+
+class ExecutionDeadline:
+    """A monotonic whole-run deadline created once per evaluation attempt."""
+
+    def __init__(
+        self, total_deadline_s: float, *, monotonic: Callable[[], float] = monotonic
+    ) -> None:
+        if total_deadline_s <= 0:
+            raise ValueError("total deadline must be positive")
+        self._monotonic = monotonic
+        self.started_at = monotonic()
+        self.total_deadline_s = total_deadline_s
+
+    def remaining_seconds(self) -> float:
+        """Return the non-negative budget left from the original start time."""
+        return max(0.0, self.total_deadline_s - (self._monotonic() - self.started_at))
+
+    def has_time_remaining(self) -> bool:
+        """Return whether another bounded operation may still be started."""
+        return self.remaining_seconds() > 0
 
 
 class ExecutionCancellation:
@@ -53,9 +75,20 @@ class V9ExecutionPolicyRuntime:
         if any(timeout <= 0 for timeout in self.policy.phase_timeouts_s.values()):
             raise ValueError("phase timeouts must be positive")
 
-    def timeout_for(self, phase: str) -> float:
-        """Return the declared phase bound, or the conservative extraction bound."""
-        return self.policy.phase_timeouts_s.get(phase, _DEFAULT_TIMEOUT_S)
+    def start_deadline(self) -> ExecutionDeadline:
+        """Create the attempt-wide deadline before any v9 stage is entered."""
+        return ExecutionDeadline(self.policy.total_deadline_s)
+
+    def timeout_for(
+        self, phase: str, *, deadline: ExecutionDeadline | None = None
+    ) -> float:
+        """Return the phase bound clamped to the remaining whole-run budget."""
+        timeout = self.policy.phase_timeouts_s.get(phase, _DEFAULT_TIMEOUT_S)
+        return min(timeout, deadline.remaining_seconds()) if deadline else timeout
+
+    def has_final_reserve(self, deadline: ExecutionDeadline) -> bool:
+        """Keep the final phase's declared time available for required completion."""
+        return deadline.remaining_seconds() >= self.timeout_for("final_answer")
 
     async def run_retrieval(
         self,
@@ -63,9 +96,10 @@ class V9ExecutionPolicyRuntime:
         *,
         phase: str = "evidence_extract",
         cancellation: ExecutionCancellation | None = None,
+        deadline: ExecutionDeadline | None = None,
     ) -> _T:
         """Run one retrieval operation within its independent semaphore."""
-        return await self._run("retrieval", operation, phase, cancellation)
+        return await self._run("retrieval", operation, phase, cancellation, deadline)
 
     async def run_llm(
         self,
@@ -73,9 +107,10 @@ class V9ExecutionPolicyRuntime:
         *,
         phase: str,
         cancellation: ExecutionCancellation | None = None,
+        deadline: ExecutionDeadline | None = None,
     ) -> _T:
         """Run one budget-gated LLM operation within the shared LLM cap."""
-        return await self._run("llm", operation, phase, cancellation)
+        return await self._run("llm", operation, phase, cancellation, deadline)
 
     async def run_visual(
         self,
@@ -83,9 +118,10 @@ class V9ExecutionPolicyRuntime:
         *,
         phase: str = "visual_extract",
         cancellation: ExecutionCancellation | None = None,
+        deadline: ExecutionDeadline | None = None,
     ) -> _T:
         """Run one visual operation within the single-asset default cap."""
-        return await self._run("visual", operation, phase, cancellation)
+        return await self._run("visual", operation, phase, cancellation, deadline)
 
     async def run_provider_attempts(
         self,
@@ -94,6 +130,7 @@ class V9ExecutionPolicyRuntime:
         phase: str,
         max_attempts: int,
         cancellation: ExecutionCancellation | None = None,
+        deadline: ExecutionDeadline | None = None,
     ) -> _T:
         """Retry only explicit provider attempts; each call stays budget-admissible."""
         if max_attempts < 1:
@@ -104,6 +141,7 @@ class V9ExecutionPolicyRuntime:
                     lambda: operation(attempt),
                     phase=phase,
                     cancellation=cancellation,
+                    deadline=deadline,
                 )
             except asyncio.CancelledError:
                 raise
@@ -119,13 +157,14 @@ class V9ExecutionPolicyRuntime:
         kind: RuntimeKind,
         phase: str | None = None,
         cancellation: ExecutionCancellation | None = None,
+        deadline: ExecutionDeadline | None = None,
     ) -> tuple[_T, ...]:
         """Run siblings in a TaskGroup so any failure cancels the remaining work."""
         results: list[_T | None] = [None] * len(operations)
 
         async def collect(index: int, operation: Callable[[], Awaitable[_T]]) -> None:
             results[index] = await self._run(
-                kind, operation, phase or _phase_for_kind(kind), cancellation
+                kind, operation, phase or _phase_for_kind(kind), cancellation, deadline
             )
 
         async with asyncio.TaskGroup() as group:
@@ -139,11 +178,15 @@ class V9ExecutionPolicyRuntime:
         operation: Callable[[], Awaitable[_T]],
         phase: str,
         cancellation: ExecutionCancellation | None,
+        deadline: ExecutionDeadline | None,
     ) -> _T:
         _raise_if_cancelled(cancellation)
         async with self._semaphores[kind]:
             _raise_if_cancelled(cancellation)
-            async with asyncio.timeout(self.timeout_for(phase)):
+            timeout = self.timeout_for(phase, deadline=deadline)
+            if timeout <= 0:
+                raise asyncio.TimeoutError("whole-run deadline exhausted")
+            async with asyncio.timeout(timeout):
                 return await _await_cancellable(operation, cancellation)
 
 
@@ -198,6 +241,7 @@ def _raise_if_cancelled(cancellation: ExecutionCancellation | None) -> None:
 
 __all__ = [
     "ExecutionCancellation",
+    "ExecutionDeadline",
     "V9ExecutionPolicyRuntime",
     "emit_sse_event",
 ]

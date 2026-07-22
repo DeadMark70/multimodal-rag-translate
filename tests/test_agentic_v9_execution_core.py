@@ -12,10 +12,15 @@ from data_base.agentic_v9.execution_core import (
     V9ExecutionCore,
     V9ExecutionStages,
 )
+from data_base.agentic_v9.execution_policy import (
+    ExecutionDeadline,
+    V9ExecutionPolicyRuntime,
+)
 from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
     EvidenceSource,
+    ExecutionPolicy,
     FinalAnswerResult,
     QueryContract,
     RagRetrievalResult,
@@ -270,3 +275,68 @@ async def test_core_returns_a_deterministic_partial_without_final_generation_whe
     assert calls == ["pack", "partial"]
     assert result.final_answer.response_status == "insufficient"
     assert result.metrics.final_generation_count == 0
+
+
+@pytest.mark.asyncio
+async def test_core_skips_repair_and_arbitration_when_only_final_reserve_remains() -> None:
+    calls: list[str] = []
+    initial = _complete_sufficiency()
+    now = [0.0]
+
+    async def scope(_: V9ExecutionRequest) -> ResolvedSourceScope:
+        return ResolvedSourceScope(authorized_doc_ids=[])
+
+    async def contract(_: V9ExecutionRequest, __: ResolvedSourceScope) -> QueryContract:
+        now[0] = 10.0
+        return _contract()
+
+    def evaluate(_: QueryContract, __: tuple[EvidencePacket, ...]) -> SufficiencyEvaluation:
+        return initial
+
+    def repair(*_: object) -> tuple[object, ...]:
+        calls.append("repair")
+        return ()
+
+    async def curator(
+        _: str, __: QueryContract, packets: tuple[EvidencePacket, ...]
+    ) -> tuple[EvidencePacket, ...]:
+        return packets
+
+    async def conflict(*_: object) -> ConflictStageResult:
+        calls.append("arbitration")
+        return ConflictStageResult(sufficiency=initial, arbitration_call_count=1)
+
+    def pack(*_: object) -> object:
+        return SimpleNamespace(is_packable=True)
+
+    async def final(*_: object) -> FinalAnswerResult:
+        calls.append("final")
+        return FinalAnswerResult(response_status="complete", final_generation_count=1)
+
+    def partial(_: QueryContract, evaluation: SufficiencyEvaluation) -> FinalAnswerResult:
+        calls.append("partial")
+        return FinalAnswerResult(response_status=evaluation.report.response_status)
+
+    core = V9ExecutionCore(
+        stages=V9ExecutionStages(
+            resolve_scope=scope,
+            plan_contract=contract,
+            retrieve=lambda _: (),
+            deterministic_candidates=lambda *_: (),
+            evaluate_sufficiency=evaluate,
+            plan_repair=repair,
+            prose_curate=curator,
+            resolve_conflicts=conflict,
+            pack=pack,
+            generate_final=final,
+            deterministic_partial=partial,
+        ),
+        runtime=V9ExecutionPolicyRuntime(ExecutionPolicy(total_deadline_s=24.0)),
+    )
+
+    result = await core.execute(
+        _request(), deadline=ExecutionDeadline(24.0, monotonic=lambda: now[0])
+    )
+
+    assert calls == ["final"]
+    assert result.metrics.arbitration_call_count == 0
