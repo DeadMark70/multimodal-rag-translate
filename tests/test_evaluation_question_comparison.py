@@ -166,6 +166,39 @@ async def test_missing_comparison_mode_never_becomes_zero_delta():
 
 
 @pytest.mark.asyncio
+async def test_question_comparison_uses_agentic_when_naive_is_best_quality_mode():
+    class NaiveWinsScores(_Scores):
+        async def list_for_campaign(self, **kwargs):
+            rows = await super().list_for_campaign(**kwargs)
+            for row in rows:
+                if row["campaign_result_id"] == "agentic-1":
+                    row["metric_value"] = 0.4
+            return rows
+
+    class CompleteAccounting(_Accounting):
+        async def list_campaign_scopes(self, campaign_id):
+            return [_scope("naive-1"), _scope("agentic-1")]
+
+        async def list_campaign_events(self, campaign_id):
+            return [_event("naive-1"), _event("agentic-1")]
+
+    service = ResearchAnalyticsService(
+        campaigns=_Campaigns(["naive", "agentic"]),
+        results=_Results([_result("naive-1", "naive", 0.5), _result("agentic-1", "agentic", 0.4)]),
+        ragas_scores=NaiveWinsScores(),
+        accounting=CompleteAccounting(),
+    )
+
+    row = (await service.get_question_comparison(user_id="user-1", campaign_id="campaign-1")).rows[0]
+
+    assert row.best_quality_mode == "naive"
+    assert row.delta_correctness == pytest.approx(-0.1)
+    assert row.delta_faithfulness == pytest.approx(-0.4)
+    assert row.delta_tokens == pytest.approx(0.0)
+    assert row.comparability_reason is None
+
+
+@pytest.mark.asyncio
 async def test_partial_quality_mode_cannot_win_best_mode():
     class PartialScores(_Scores):
         async def list_for_campaign(self, **kwargs):
@@ -189,4 +222,4 @@ async def test_partial_quality_mode_cannot_win_best_mode():
 
     assert row.best_quality_mode == "naive"
     assert row.delta_correctness is None
-    assert row.comparability_reason == "comparison_mode_missing"
+    assert row.comparability_reason == "incomplete_quality"

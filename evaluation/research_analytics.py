@@ -92,7 +92,7 @@ class ResearchAnalyticsService:
     async def get_summary(
         self, *, user_id: str, campaign_id: str
     ) -> CampaignResearchSummaryResponse:
-        campaign = await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
+        await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
         all_results = await self._results.list_for_campaign(
             user_id=user_id, campaign_id=campaign_id
         )
@@ -421,7 +421,7 @@ class ResearchAnalyticsService:
                 (
                     row
                     for row in mode_rows
-                    if row.mode == best_mode and row.mode != "naive"
+                    if row.mode == "agentic" and row.sample_count > 0
                 ),
                 None,
             )

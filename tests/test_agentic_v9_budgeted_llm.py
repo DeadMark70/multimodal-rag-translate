@@ -2,6 +2,7 @@
 
 import pytest
 
+from core.llm_usage_context import current_llm_accounting_phase
 from data_base.agentic_v9.budget_controller import RunBudgetController
 from data_base.agentic_v9.budgeted_llm import invoke_budgeted_llm
 from data_base.agentic_v9.schemas import BudgetExceededError
@@ -19,6 +20,15 @@ class _NeverCalledProvider:
 class _UnavailableProvider:
     async def ainvoke(self, messages: object) -> object:
         raise RuntimeError("provider unavailable")
+
+
+class _PhaseRecordingProvider:
+    def __init__(self) -> None:
+        self.phase: str | None = None
+
+    async def ainvoke(self, messages: object) -> object:
+        self.phase = current_llm_accounting_phase()
+        return {"usage_metadata": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}
 
 
 @pytest.mark.asyncio
@@ -68,3 +78,25 @@ async def test_final_provider_failure_returns_deterministic_qualified_partial() 
         result.answer
         == "Final generation was unavailable; evidence is returned as a qualified partial."
     )
+
+
+@pytest.mark.asyncio
+async def test_budgeted_invocation_exposes_actual_phase_to_provider_usage_callbacks() -> None:
+    controller = RunBudgetController(
+        max_llm_calls=1,
+        runtime_token_budget=400,
+        setup_snapshot={"max_output_tokens": 100, "thinking_mode": False},
+        final_input_tokens=100,
+    )
+    provider = _PhaseRecordingProvider()
+
+    await invoke_budgeted_llm(
+        controller=controller,
+        provider=provider,
+        phase="final_answer",
+        purpose="synthesizer",
+        messages=[{"role": "user", "content": "answer"}],
+        estimated_input_tokens=100,
+    )
+
+    assert provider.phase == "final_answer"

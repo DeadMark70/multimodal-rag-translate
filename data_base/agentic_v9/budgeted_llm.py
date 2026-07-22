@@ -10,6 +10,7 @@ from core.llm_factory import get_flat_llm_usage
 from core.llm_usage_context import (
     agentic_budget_reservation_scope,
     agentic_budget_scope,
+    llm_accounting_phase,
 )
 from data_base.agentic_v9.budget_controller import RunBudgetController
 from data_base.agentic_v9.phase_policy import agentic_phase_policy_scope
@@ -86,6 +87,7 @@ async def invoke_budgeted_llm(
             agentic_budget_scope(controller),
             agentic_budget_reservation_scope(reservation.reservation_id),
             agentic_phase_policy_scope(policy),
+            llm_accounting_phase(phase),
         ):
             active_provider = (
                 provider if provider is not None else provider_factory(purpose)
