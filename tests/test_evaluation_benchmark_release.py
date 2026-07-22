@@ -27,6 +27,7 @@ def _run(question_id: str, repeat: int, *, mode: str, version: str, shadow: bool
         timed_out=False,
         accounting_complete=True,
         snapshot_fingerprint="snapshot",
+        evaluator_fingerprint="evaluator-v1",
         quality_score=score,
         runtime_tokens=tokens,
         latency_ms=100.0,

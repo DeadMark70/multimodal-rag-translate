@@ -64,6 +64,7 @@ class BenchmarkRun:
     timed_out: bool
     accounting_complete: bool
     snapshot_fingerprint: str | None
+    evaluator_fingerprint: str | None
     quality_score: float | None
     runtime_tokens: int | None
     latency_ms: float | None
@@ -103,6 +104,7 @@ class BenchmarkManifest:
     arm_order_seed: int
     evaluator_blinding: dict[str, object]
     snapshot_fingerprint: str | None = None
+    evaluator_fingerprint: str | None = None
     non_blocking_ablations: tuple[str, ...] = ()
 
 
@@ -179,6 +181,9 @@ def build_manifest(*, benchmark_id: str, runs: list[BenchmarkRun], seed: int = 2
     else:
         kind = "insufficient"
     fingerprints = {run.snapshot_fingerprint for run in official if run.snapshot_fingerprint}
+    evaluator_fingerprints = {
+        run.evaluator_fingerprint for run in official if run.evaluator_fingerprint
+    }
     blocks = [
         ManifestBlock(
             question_id=run.question_id,
@@ -202,6 +207,11 @@ def build_manifest(*, benchmark_id: str, runs: list[BenchmarkRun], seed: int = 2
             "method": "deterministic_per_question_repeat_arm_order",
         },
         snapshot_fingerprint=next(iter(fingerprints)) if len(fingerprints) == 1 else None,
+        evaluator_fingerprint=(
+            next(iter(evaluator_fingerprints))
+            if len(evaluator_fingerprints) == 1
+            else None
+        ),
         non_blocking_ablations=tuple(
             sorted({run.condition_id for run in validation.ablation_runs})
         ),
@@ -234,6 +244,8 @@ def validate_benchmark_runs(runs: list[BenchmarkRun]) -> ValidationResult:
             reasons.add("partial_accounting")
         if not run.snapshot_fingerprint:
             reasons.add("missing_snapshot_fingerprint")
+        if not run.evaluator_fingerprint:
+            reasons.add("missing_evaluator_metadata")
         arm = run.identity.official_label
         if arm is None:
             reasons.add("unknown_official_arm")
@@ -250,6 +262,9 @@ def validate_benchmark_runs(runs: list[BenchmarkRun]) -> ValidationResult:
         fingerprints = {row.snapshot_fingerprint for row in paired}
         if len(fingerprints) != 1:
             reasons.add("incompatible_snapshots")
+        evaluator_fingerprints = {row.evaluator_fingerprint for row in paired}
+        if len(evaluator_fingerprints) != 1 or None in evaluator_fingerprints:
+            reasons.add("incompatible_evaluator_metadata")
     return ValidationResult(
         comparable=not reasons,
         reasons=tuple(sorted(reasons)),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from statistics import mean
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -81,6 +82,7 @@ class ReleaseRun:
     golden_available: bool
     used_evidence_mapped: bool
     snapshot_fingerprint: str | None
+    evaluator_fingerprint: str | None
     response_status: str | None
     required_slot_count: int | None
     supported_slot_count: int | None
@@ -115,6 +117,7 @@ class ReleaseRun:
                 and self.phase_attribution_status == "complete"
             ),
             snapshot_fingerprint=self.snapshot_fingerprint,
+            evaluator_fingerprint=self.evaluator_fingerprint,
             quality_score=self.quality_score,
             runtime_tokens=self.runtime_tokens,
             latency_ms=self.latency_ms,
@@ -128,6 +131,7 @@ def derive_release_metrics(*, benchmark_id: str, runs: list[ReleaseRun]) -> Rele
     validation = validate_benchmark_runs(benchmark_runs)
     manifest = build_manifest(benchmark_id=benchmark_id, runs=benchmark_runs)
     reasons = set(validation.reasons)
+    official_runs = validation.official_runs
     for run in runs:
         if not run.golden_available:
             reasons.add("missing_golden_data")
@@ -137,6 +141,13 @@ def derive_release_metrics(*, benchmark_id: str, runs: list[ReleaseRun]) -> Rele
             reasons.add("required_ragas_incomplete")
         if run.accounting_status != "complete" or run.phase_attribution_status != "complete":
             reasons.add("partial_accounting")
+    if any(run.runtime_tokens is None for run in official_runs):
+        reasons.add("runtime_token_instrumentation_missing")
+    if any(run.latency_ms is None for run in official_runs):
+        reasons.add("latency_instrumentation_missing")
+    naive_tokens = [run.runtime_tokens for run in official_runs if run.identity.official_label == "naive"]
+    if naive_tokens and all(token is not None for token in naive_tokens) and sum(int(token) for token in naive_tokens) <= 0:
+        reasons.add("runtime_token_denominator_nonpositive")
     reasons = sorted(reasons)
     report = ReleaseMetricsReport(
         benchmark_id=benchmark_id,
@@ -150,6 +161,7 @@ def derive_release_metrics(*, benchmark_id: str, runs: list[ReleaseRun]) -> Rele
             "ordered_blocks": [asdict(block) for block in manifest.ordered_blocks],
             "evaluator_blinding": manifest.evaluator_blinding,
             "snapshot_fingerprint": manifest.snapshot_fingerprint,
+            "evaluator_fingerprint": manifest.evaluator_fingerprint,
             "non_blocking_ablations": list(manifest.non_blocking_ablations),
         },
         arms=_arm_summaries(runs),
@@ -160,7 +172,7 @@ def derive_release_metrics(*, benchmark_id: str, runs: list[ReleaseRun]) -> Rele
 
 
 def _blocked_report(report: ReleaseMetricsReport) -> ReleaseMetricsReport:
-    unavailable = ReleaseMetric(reason="release_gate_blocked")
+    unavailable = ReleaseMetric(reason=_release_gate_reason(report.gate_reasons))
     report.required_slot_coverage = unavailable
     report.important_unsupported_claim_rate = unavailable
     report.provenance_failure_rate = unavailable
@@ -178,6 +190,11 @@ def _blocked_report(report: ReleaseMetricsReport) -> ReleaseMetricsReport:
         "availability": "release_gate_blocked",
     }
     return report
+
+
+def _release_gate_reason(reasons: list[str]) -> str:
+    """Expose the concrete gate causes on every unavailable derived metric."""
+    return "release_gate_blocked" if not reasons else f"release_gate_blocked:{','.join(sorted(reasons))}"
 
 
 def _measured_report(
@@ -229,8 +246,16 @@ def _measured_report(
     )
     v9 = [run for run in benchmark_runs if run.identity.official_label == "agentic-v9"]
     naive = [run for run in benchmark_runs if run.identity.official_label == "naive"]
-    report.token_ratio = ReleaseMetric(value=ratio_of_sums(v9, naive), reason=None)
-    report.latency_p95_ms = ReleaseMetric(value=successful_p95(v9), reason=None)
+    token_ratio = ratio_of_sums(v9, naive)
+    report.token_ratio = ReleaseMetric(
+        value=token_ratio,
+        reason=None if token_ratio is not None else "runtime_token_ratio_unavailable",
+    )
+    latency_p95 = successful_p95(v9)
+    report.latency_p95_ms = ReleaseMetric(
+        value=latency_p95,
+        reason=None if latency_p95 is not None else "latency_p95_unavailable",
+    )
     bootstrap = clustered_paired_bootstrap(benchmark_runs, seed=20260722)
     report.paired_quality_delta = ReleaseMetric(value=bootstrap.mean_delta, reason=None if bootstrap.mean_delta is not None else "quality_score_missing")
     report.paired_quality_ci_lower = ReleaseMetric(value=bootstrap.ci_lower, reason=None if bootstrap.ci_lower is not None else "quality_score_missing")
@@ -242,6 +267,7 @@ def _measured_report(
         "cluster_count": bootstrap.cluster_count,
         "repeat_aggregation": bootstrap.repeat_aggregation,
         "token_ratio_method": "ratio_of_summed_official_runtime_tokens",
+        "final_generation_count_aggregation": "maximum_across_official_v9_runs",
     }
     report.category_quality_deltas = _quality_deltas(runs, group=lambda item: item.category or "uncategorized")
     report.per_question_quality_deltas = _quality_deltas(runs, group=lambda item: item.question_id)
@@ -340,6 +366,12 @@ class ReleaseMetricsService:
         runs: list[ReleaseRun] = []
         for campaign in selected:
             scores = await self._scores.list_for_campaign(user_id=user_id, campaign_id=campaign.id)
+            evaluator_fingerprints = evaluator_fingerprints_from_work_metadata(
+                await self._scores.list_work_metadata_for_campaign(
+                    user_id=user_id,
+                    campaign_id=campaign.id,
+                )
+            )
             score_by_result: dict[str, dict[str, float]] = {}
             for row in scores:
                 value = row.get("metric_value")
@@ -351,6 +383,7 @@ class ReleaseMetricsService:
                         user_id=user_id,
                         result=result,
                         score_map=score_by_result.get(result.id, {}),
+                        evaluator_fingerprint=evaluator_fingerprints.get(result.id),
                     )
                 )
         report = derive_release_metrics(benchmark_id=benchmark_id, runs=runs)
@@ -360,8 +393,14 @@ class ReleaseMetricsService:
             return _blocked_report(report)
         return report
 
-    async def _release_run(self, *, user_id: str, result, score_map: dict[str, float]) -> ReleaseRun:
-        from evaluation.benchmark_release import stable_snapshot_fingerprint
+    async def _release_run(
+        self,
+        *,
+        user_id: str,
+        result,
+        score_map: dict[str, float],
+        evaluator_fingerprint: str | None,
+    ) -> ReleaseRun:
 
         breakdown = await self._run_tokens(campaign_id=result.campaign_id, run_id=result.id)
         detail = await self._analytics.run_detail(user_id=user_id, run_id=result.id)
@@ -376,11 +415,11 @@ class ReleaseMetricsService:
         graph_fallback = sum(1 for event in graph_events if event.graph_route.lower().startswith("fallback"))
         snapshot = {
             "question": result.question_snapshot,
-            "model": result.model_config_snapshot,
+            "model_thinking": result.model_config_snapshot,
             "system": {
                 key: value
                 for key, value in result.system_version_snapshot.items()
-                if key not in {"execution_profile", "agentic_execution_version", "condition_id", "execution_identity"}
+                if key not in _ARM_BOOKKEEPING_SNAPSHOT_KEYS
             },
         }
         return ReleaseRun(
@@ -405,7 +444,12 @@ class ReleaseMetricsService:
                 if result.agentic_execution_version == "v9" and not result.shadow_evaluation_policy
                 else True
             ),
-            snapshot_fingerprint=stable_snapshot_fingerprint(snapshot) if all(snapshot.values()) else None,
+            snapshot_fingerprint=(
+                invariant_snapshot_fingerprint(snapshot)
+                if result.question_snapshot and result.model_config_snapshot
+                else None
+            ),
+            evaluator_fingerprint=evaluator_fingerprint,
             response_status=result.response_status,
             required_slot_count=len(contract.required_slots) if contract else None,
             supported_slot_count=len(v9.sufficiency.supported_slot_ids) if v9 and v9.sufficiency else None,
@@ -438,3 +482,87 @@ class ReleaseMetricsService:
         from evaluation.research_analytics import _tokens
 
         return _tokens(matching, [event for event in events if event.scope_id in {scope.scope_id for scope in matching}])
+
+
+_ARM_BOOKKEEPING_SNAPSHOT_KEYS = frozenset(
+    {
+        "mode",
+        "run_number",
+        "repeat_number",
+        "condition_id",
+        "condition_label",
+        "execution_profile",
+        "execution_identity",
+        "agentic_execution_version",
+        "shadow_evaluation_policy",
+        "ablation_flags",
+    }
+)
+_REQUIRED_RAGAS_METRICS = frozenset(
+    {"answer_correctness", "faithfulness", "answer_relevancy"}
+)
+
+
+def invariant_snapshot_fingerprint(snapshot: dict[str, Any]) -> str:
+    """Fingerprint only immutable comparison inputs, never arm/run bookkeeping."""
+    from evaluation.benchmark_release import stable_snapshot_fingerprint
+
+    normalized = {
+        key: value
+        for key, value in snapshot.items()
+        if key not in _ARM_BOOKKEEPING_SNAPSHOT_KEYS
+    }
+    system = normalized.get("system")
+    if isinstance(system, dict):
+        normalized["system"] = {
+            key: value
+            for key, value in system.items()
+            if key not in _ARM_BOOKKEEPING_SNAPSHOT_KEYS
+        }
+    return stable_snapshot_fingerprint(normalized)
+
+
+def evaluator_fingerprints_from_work_metadata(
+    metadata_rows: list[dict[str, Any]],
+) -> dict[str, str | None]:
+    """Build per-result evaluator fingerprints from immutable RAGAS work metadata.
+
+    A result is eligible only when every required RAGAS metric has one complete,
+    deterministic evaluator descriptor. Missing or conflicting descriptors remain
+    ``None`` so benchmark validation fails closed.
+    """
+    from evaluation.benchmark_release import stable_snapshot_fingerprint
+
+    grouped: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for row in metadata_rows:
+        result_id = row.get("campaign_result_id")
+        metric_name = row.get("metric_name")
+        if not isinstance(result_id, str) or not result_id or metric_name not in _REQUIRED_RAGAS_METRICS:
+            continue
+        grouped.setdefault(result_id, {}).setdefault(str(metric_name), []).append(row)
+
+    fingerprints: dict[str, str | None] = {}
+    required_fields = (
+        "evaluation_signature",
+        "metric_version",
+        "compatibility_signature",
+        "compatibility_signature_version",
+        "evaluator_model",
+        "evaluator_config",
+    )
+    for result_id, by_metric in grouped.items():
+        descriptor: dict[str, dict[str, Any]] = {}
+        valid = set(by_metric) == _REQUIRED_RAGAS_METRICS
+        for metric_name in _REQUIRED_RAGAS_METRICS:
+            rows = by_metric.get(metric_name, [])
+            if len(rows) != 1 or any(rows[0].get(field) is None for field in required_fields):
+                valid = False
+                continue
+            descriptor[metric_name] = {
+                field: rows[0][field]
+                for field in required_fields
+            }
+        fingerprints[result_id] = (
+            stable_snapshot_fingerprint({"required_ragas": descriptor}) if valid else None
+        )
+    return fingerprints

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
 from core.auth import get_current_user_id
-from evaluation.release_metrics import ReleaseRun, derive_release_metrics
+from evaluation.release_metrics import (
+    ReleaseRun,
+    derive_release_metrics,
+    evaluator_fingerprints_from_work_metadata,
+    invariant_snapshot_fingerprint,
+)
 from evaluation.router import get_release_metrics_service
 from evaluation import db as evaluation_db
 from main import app
@@ -30,6 +36,7 @@ def _run(*, run_id: str, mode: str, version: str, complete: bool = True, golden:
         golden_available=golden,
         used_evidence_mapped=used_evidence,
         snapshot_fingerprint="same-snapshot",
+        evaluator_fingerprint="evaluator-v1",
         response_status="complete",
         required_slot_count=2,
         supported_slot_count=2,
@@ -61,7 +68,7 @@ def test_release_metrics_fail_closed_without_used_evidence_mapping() -> None:
     assert report.comparable is False
     assert "missing_used_evidence_mapping" in report.gate_reasons
     assert report.token_ratio.value is None
-    assert report.token_ratio.reason == "release_gate_blocked"
+    assert report.token_ratio.reason == "release_gate_blocked:missing_used_evidence_mapping"
 
 
 def test_release_metrics_emit_measured_v9_evidence_metrics_when_complete() -> None:
@@ -81,6 +88,7 @@ def test_release_metrics_emit_measured_v9_evidence_metrics_when_complete() -> No
     assert report.final_generation_count.value == 1
     assert report.token_ratio.value == 2.0
     assert report.token_ratio.reason is None
+    assert report.statistics["final_generation_count_aggregation"] == "maximum_across_official_v9_runs"
 
 
 def test_release_metrics_never_substitute_zero_for_partial_accounting() -> None:
@@ -95,7 +103,79 @@ def test_release_metrics_never_substitute_zero_for_partial_accounting() -> None:
 
     assert "partial_accounting" in report.gate_reasons
     assert report.required_slot_coverage.value is None
-    assert report.required_slot_coverage.reason == "release_gate_blocked"
+    assert report.required_slot_coverage.reason == "release_gate_blocked:partial_accounting"
+
+
+def test_invariant_snapshot_fingerprint_excludes_arm_bookkeeping_but_keeps_real_snapshot_changes() -> None:
+    base = {
+        "golden": {"answer": "a"},
+        "corpus": {"index": "corpus-v1"},
+        "prompt": {"template": "prompt-v1"},
+        "model": {"model": "model-v1", "thinking_mode": False},
+        "phase": {"policy": "phase-v1"},
+        "evaluator": {"signature": "eval-v1"},
+        "code": {"commit": "code-v1"},
+        "mode": "naive",
+        "run_number": 1,
+        "repeat_number": 1,
+        "condition_id": "naive-official",
+    }
+    other_arm = {
+        **base,
+        "mode": "agentic",
+        "run_number": 2,
+        "repeat_number": 8,
+        "condition_id": "agentic-v9-official",
+    }
+
+    assert invariant_snapshot_fingerprint(base) == invariant_snapshot_fingerprint(other_arm)
+    assert invariant_snapshot_fingerprint(base) != invariant_snapshot_fingerprint(
+        {**other_arm, "prompt": {"template": "prompt-v2"}}
+    )
+
+
+def test_release_metrics_fail_closed_on_evaluator_or_runtime_instrumentation_mismatch() -> None:
+    evaluator_mismatch = derive_release_metrics(
+        benchmark_id="bench-1",
+        runs=[
+            _run(run_id="naive", mode="naive", version="v8"),
+            _run(run_id="v8", mode="agentic", version="v8"),
+            replace(_run(run_id="v9", mode="agentic", version="v9"), evaluator_fingerprint="evaluator-v2"),
+        ],
+    )
+    assert evaluator_mismatch.comparable is False
+    assert "incompatible_evaluator_metadata" in evaluator_mismatch.gate_reasons
+
+    missing_tokens = derive_release_metrics(
+        benchmark_id="bench-1",
+        runs=[
+            _run(run_id="naive", mode="naive", version="v8"),
+            _run(run_id="v8", mode="agentic", version="v8"),
+            replace(_run(run_id="v9", mode="agentic", version="v9"), runtime_tokens=None),
+        ],
+    )
+    assert missing_tokens.comparable is False
+    assert "runtime_token_instrumentation_missing" in missing_tokens.gate_reasons
+    assert missing_tokens.token_ratio.reason == "release_gate_blocked:runtime_token_instrumentation_missing"
+
+
+def test_evaluator_work_metadata_requires_a_complete_deterministic_signature_per_result() -> None:
+    complete = [
+        {
+            "campaign_result_id": "run-1",
+            "metric_name": metric,
+            "evaluation_signature": "eval-sig",
+            "metric_version": "1",
+            "compatibility_signature": "compatible",
+            "compatibility_signature_version": "1",
+            "evaluator_model": "judge-v1",
+            "evaluator_config": {"temperature": 0},
+        }
+        for metric in ("answer_correctness", "faithfulness", "answer_relevancy")
+    ]
+    assert evaluator_fingerprints_from_work_metadata(complete) == {"run-1": evaluator_fingerprints_from_work_metadata(complete)["run-1"]}
+    assert evaluator_fingerprints_from_work_metadata(complete)["run-1"] is not None
+    assert evaluator_fingerprints_from_work_metadata(complete[:-1])["run-1"] is None
 
 
 def test_release_metrics_api_serializes_fail_closed_values(tmp_path) -> None:
@@ -125,7 +205,7 @@ def test_release_metrics_api_serializes_fail_closed_values(tmp_path) -> None:
         assert response.status_code == 200
         assert response.json()["token_ratio"] == {
             "value": None,
-            "reason": "release_gate_blocked",
+            "reason": "release_gate_blocked:missing_used_evidence_mapping",
         }
     finally:
         app.dependency_overrides = {}
