@@ -101,6 +101,8 @@ class DatasetExecutionWorker:
                         run_number=unit.repeat_number,
                         ablation_flags=unit.ablation_flags,
                         budget=unit.budget,
+                        agentic_execution_version=unit.agentic_execution_version,
+                        shadow_evaluation_policy=unit.shadow_evaluation_policy,
                     )
                 completed_at = datetime.now(timezone.utc)
                 total_latency_ms = max((time.perf_counter() - started_perf) * 1000, 0)
@@ -240,8 +242,13 @@ class DatasetExecutionWorker:
             total_tokens=0,
             question_snapshot=_build_question_snapshot(test_case),
             model_config_snapshot=model_config,
-            system_version_snapshot={},
-            derived_metrics={},
+            system_version_snapshot={
+                "agentic_execution_version": unit.agentic_execution_version,
+            },
+            derived_metrics={
+                "agentic_execution_version": unit.agentic_execution_version,
+                "response_status": "failed",
+            },
             final_answer_hash=_final_answer_hash(f"ERROR: {exc}"),
             source_attempt_id=claim.attempt_id,
         )
@@ -278,6 +285,16 @@ class DatasetExecutionWorker:
                     else None
                 ),
                 budget=dict(snapshot["budget"]) if snapshot.get("budget") else None,
+                agentic_execution_version=(
+                    str(snapshot.get("agentic_execution_version", "v8"))
+                    if snapshot.get("agentic_execution_version") in {"v8", "v9"}
+                    else "v8"
+                ),
+                shadow_evaluation_policy=(
+                    str(snapshot["shadow_evaluation_policy"])
+                    if snapshot.get("shadow_evaluation_policy") in {"operational", "research"}
+                    else None
+                ),
             ),
             user_id,
             campaign_id,
@@ -387,6 +404,18 @@ class DatasetExecutionWorker:
         ragas_config = getattr(campaign, "config", None)
         ragas_batch_size = getattr(ragas_config, "ragas_batch_size", None)
         ragas_parallel_batches = getattr(ragas_config, "ragas_parallel_batches", None)
+        if getattr(ragas_config, "shadow_evaluation_policy", None) == "operational":
+            # Product shadow is diagnostic work: it never feeds authoritative
+            # RAGAS comparisons or replaces the v8 answer projection.
+            results = await self._result_repository.list_for_campaign(
+                user_id=str(snapshot["user_id"]),
+                campaign_id=str(snapshot["campaign_id"]),
+            )
+            selected_result_ids = [
+                result.id
+                for result in results
+                if result.mode != "agentic-v9-shadow"
+            ]
         created = await self._store.ensure_ragas_work(
             user_id=str(snapshot["user_id"]),
             campaign_id=str(snapshot["campaign_id"]),

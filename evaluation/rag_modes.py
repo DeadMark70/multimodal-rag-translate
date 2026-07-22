@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from langchain_core.documents import Document
 
@@ -13,6 +13,7 @@ from core.llm_factory import llm_runtime_override
 from data_base.indexing_service import DEFAULT_PRODUCTION_INDEXING_PROFILE
 from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from evaluation.agentic_evaluation_service import AgenticEvaluationService
+from evaluation.agentic_campaign_adapter import campaign_execution_identity
 from evaluation.model_capabilities import normalize_model_config_for_runtime
 from evaluation.retrieval_profiles import (
     apply_no_hyde_policy,
@@ -339,6 +340,10 @@ class BenchmarkExecutionResult:
     execution_profile: Optional[str] = None
     context_policy_version: Optional[str] = None
     agent_trace: Optional[dict[str, Any]] = None
+    agentic_execution_version: Literal["v8", "v9"] = "v8"
+    execution_identity: Optional[str] = None
+    shadow_evaluation_policy: Literal["operational", "research"] | None = None
+    response_status: Optional[str] = None
 
 
 def _runtime_overrides(model_config: dict[str, Any]) -> dict[str, Any]:
@@ -354,8 +359,15 @@ async def run_campaign_case(
     run_number: int = 1,
     ablation_flags: dict[str, Any] | None = None,
     budget: dict[str, Any] | None = None,
+    agentic_execution_version: Literal["v8", "v9"] = "v8",
+    shadow_evaluation_policy: Literal["operational", "research"] | None = None,
 ) -> BenchmarkExecutionResult:
     """Execute one test case under one RAG mode."""
+    execution_identity = mode
+    if mode in {"naive-baseline", "agentic-v8", "v8", "agentic-v9", "v9", "agentic-v9-shadow"}:
+        _, mode, agentic_execution_version = campaign_execution_identity(
+            execution_identity, agentic_execution_version
+        )
     if mode not in RAG_MODES:
         raise ValueError(f"Unsupported RAG mode: {mode}")
 
@@ -367,6 +379,7 @@ async def run_campaign_case(
                 question=test_case.question,
                 user_id=user_id,
                 run_number=run_number,
+                agentic_execution_version=agentic_execution_version,
             )
         else:
             runtime_mode = {
@@ -426,6 +439,10 @@ async def run_campaign_case(
         if mode == "agentic"
         else CONTEXT_POLICY_VERSION,
         agent_trace=result.agent_trace,
+        agentic_execution_version=agentic_execution_version,
+        execution_identity=execution_identity,
+        shadow_evaluation_policy=shadow_evaluation_policy,
+        response_status=(result.agent_trace or {}).get("response_status"),
     )
 
 
@@ -435,8 +452,12 @@ async def _run_agentic_case(
     question: str,
     user_id: str,
     run_number: int,
+    agentic_execution_version: Literal["v8", "v9"] = "v8",
 ) -> RAGResult:
-    service = AgenticEvaluationService(max_concurrent_tasks=3)
+    service_kwargs: dict[str, Any] = {"max_concurrent_tasks": 3}
+    if agentic_execution_version == "v9":
+        service_kwargs["agentic_execution_version"] = "v9"
+    service = AgenticEvaluationService(**service_kwargs)
     return await service.run_case(
         question_id=question_id,
         question=question,

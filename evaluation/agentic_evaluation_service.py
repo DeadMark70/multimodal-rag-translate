@@ -437,6 +437,43 @@ def _claim_candidates(answer: str, limit: int = 6) -> list[str]:
     return chunks[:limit]
 
 
+def _used_evidence_documents(
+    *, claims: list[dict[str, Any]], evidence_units: list[dict[str, Any]]
+) -> tuple[list[Document], list[str], list[str]]:
+    """Return a deterministic projection of evidence cited by final claims only."""
+    by_id = {str(unit.get("evidence_id")): unit for unit in evidence_units}
+    used_ids: list[str] = []
+    for claim in claims:
+        for evidence_id in claim.get("evidence_ids", []):
+            normalized = str(evidence_id)
+            if normalized in by_id and normalized not in used_ids:
+                used_ids.append(normalized)
+
+    documents: list[Document] = []
+    source_ids: list[str] = []
+    seen_texts: set[str] = set()
+    for evidence_id in used_ids:
+        unit = by_id[evidence_id]
+        text = str(unit.get("text") or "").strip()
+        if not text or text in seen_texts:
+            continue
+        seen_texts.add(text)
+        source_id = unit.get("source_doc_id")
+        if isinstance(source_id, str) and source_id and source_id not in source_ids:
+            source_ids.append(source_id)
+        documents.append(
+            Document(
+                page_content=text,
+                metadata={
+                    "evidence_id": evidence_id,
+                    "doc_id": source_id,
+                    "used_in_final_answer": True,
+                },
+            )
+        )
+    return documents, source_ids, used_ids
+
+
 def _support_level(overlap: int) -> str:
     if overlap >= 8:
         return "strong"
@@ -608,6 +645,9 @@ def _finalize_trace_payload(
     tier_shift: Optional[str] = None,
     pruned_followups: int = 0,
     semantic_gate_score: Optional[float] = None,
+    agentic_execution_version: Literal["v8", "v9"] = "v8",
+    used_evidence_ids: Optional[list[str]] = None,
+    response_status: Optional[str] = None,
 ) -> dict[str, Any]:
     tool_call_count = sum(len(step.get("tool_calls", [])) for step in steps)
     total_tokens = sum(
@@ -618,6 +658,9 @@ def _finalize_trace_payload(
         "question_id": question_id,
         "question": question,
         "mode": "agentic",
+        "agentic_execution_version": agentic_execution_version,
+        "used_evidence_ids": used_evidence_ids or [],
+        "response_status": response_status,
         "run_number": run_number,
         "execution_profile": execution_profile,
         "trace_status": trace_status,
@@ -657,12 +700,14 @@ class AgenticEvaluationService(ResearchExecutionCore):
         max_concurrent_tasks: int = 3,
         default_max_iterations: int = 2,
         retrieval_policy: AgenticRetrievalPolicy = "evaluation_v8",
+        agentic_execution_version: Literal["v8", "v9"] = "v8",
     ) -> None:
         super().__init__(
             max_concurrent_tasks=max_concurrent_tasks,
             default_max_iterations=default_max_iterations,
         )
         self.retrieval_policy = retrieval_policy
+        self.agentic_execution_version = agentic_execution_version
         self.execution_profile = (
             AGENTIC_LEGACY_CHAT_PROFILE
             if retrieval_policy == "legacy_chat_v7"
@@ -1710,6 +1755,21 @@ class AgenticEvaluationService(ResearchExecutionCore):
             )
             dominant_route_profile = route_profiles[0] if route_profiles else None
             trace_summary = result_response.summary or "Agentic research completed"
+            used_evidence_ids: list[str] = []
+            if self.agentic_execution_version == "v9":
+                used_documents, used_source_doc_ids, used_evidence_ids = (
+                    _used_evidence_documents(
+                        claims=list(result_response.claims),
+                        evidence_units=self._evidence_index(result_response.sub_tasks),
+                    )
+                )
+                # v9 deliberately exposes no merely-retrieved/unpacked context
+                # to the RAG result or RAGAS dataset projection.
+                aggregated_docs = used_documents
+                result_response.all_sources = used_source_doc_ids
+            response_status = (
+                "complete" if unsupported_claim_count == 0 else "qualified_partial"
+            )
             _append_trace_step(
                 trace_steps,
                 phase="synthesis",
@@ -1739,6 +1799,8 @@ class AgenticEvaluationService(ResearchExecutionCore):
                     "visual_verification_attempted": visual_verification_attempted,
                     "visual_tool_call_count": visual_tool_call_count,
                     "visual_force_fallback_used": visual_force_fallback_used,
+                    "used_evidence_ids": used_evidence_ids,
+                    "response_status": response_status,
                 },
             )
 
@@ -1774,6 +1836,9 @@ class AgenticEvaluationService(ResearchExecutionCore):
                     tier_shift=self._tier_shift,
                     pruned_followups=self._pruned_followups_total,
                     semantic_gate_score=self._last_semantic_gate_score,
+                    agentic_execution_version=self.agentic_execution_version,
+                    used_evidence_ids=used_evidence_ids,
+                    response_status=response_status,
                 ),
             )
         except Exception as exc:  # noqa: BLE001
@@ -1822,6 +1887,7 @@ class AgenticEvaluationService(ResearchExecutionCore):
                     tier_shift=self._tier_shift,
                     pruned_followups=self._pruned_followups_total,
                     semantic_gate_score=self._last_semantic_gate_score,
+                    agentic_execution_version=self.agentic_execution_version,
                 ),
             ) from exc
         finally:

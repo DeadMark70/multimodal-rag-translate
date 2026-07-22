@@ -1319,6 +1319,26 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
         condition_id=(row["condition_id"] or None)
         if "condition_id" in row.keys()
         else None,
+        agentic_execution_version=(
+            system_version_snapshot.get("agentic_execution_version", "v8")
+            if system_version_snapshot.get("agentic_execution_version") in {"v8", "v9"}
+            else "v8"
+        ),
+        execution_identity=(
+            derived_metrics.get("execution_identity")
+            if isinstance(derived_metrics.get("execution_identity"), str)
+            else None
+        ),
+        shadow_evaluation_policy=(
+            derived_metrics.get("shadow_evaluation_policy")
+            if derived_metrics.get("shadow_evaluation_policy") in {"operational", "research"}
+            else None
+        ),
+        response_status=(
+            derived_metrics.get("response_status")
+            if isinstance(derived_metrics.get("response_status"), str)
+            else None
+        ),
         answer=row["answer"],
         contexts=_json_loads(row["contexts_json"], []),
         source_doc_ids=_json_loads(row["source_doc_ids_json"], []),
