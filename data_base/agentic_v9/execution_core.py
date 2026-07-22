@@ -134,24 +134,34 @@ class V9ExecutionCore:
         *,
         runtime: V9RuntimeContext | None = None,
         runtime_context: V9RuntimeContext | None = None,
-        deadline: ExecutionDeadline | None = None,
     ) -> V9ExecutionResult:
         """Execute the ordered evidence-first v9 flow for one request."""
         if runtime is not None and runtime_context is not None:
             raise ValueError("pass either runtime or runtime_context, not both")
         runtime_context = runtime_context or runtime
-        # The evaluation/chat adapter creates this before entering the core.  The
-        # fallback keeps direct core callers bounded without ever resetting it.
-        deadline = (
-            deadline
-            or (runtime_context.deadline if runtime_context is not None else None)
-            or self._runtime.start_deadline()
-        )
+        if runtime_context is None or not isinstance(
+            runtime_context.deadline, ExecutionDeadline
+        ):
+            raise ValueError(
+                "an attempt runtime context with a pre-created deadline is required"
+            )
+        # The evaluation/chat adapter creates this before source resolution;
+        # the core only shares it unchanged with every bounded stage.
+        deadline = runtime_context.deadline
+        cancellation = runtime_context.cancellation_token
         scope = await self._run_stage(
-            "retrieval", "route_plan", self._stages.resolve_scope(request), deadline
+            "retrieval",
+            "route_plan",
+            self._stages.resolve_scope(request),
+            deadline,
+            cancellation,
         )
         contract = await self._run_stage(
-            "llm", "route_plan", self._stages.plan_contract(request, scope), deadline
+            "llm",
+            "route_plan",
+            self._stages.plan_contract(request, scope),
+            deadline,
+            cancellation,
         )
 
         task_results: list[TaskRetrievalResult] = []
@@ -159,7 +169,12 @@ class V9ExecutionCore:
         initial_tasks = self._initial_tasks(request, contract)
         if initial_tasks:
             await self._retrieve_candidates(
-                initial_tasks, contract, task_results, evidence_packets, deadline
+                initial_tasks,
+                contract,
+                task_results,
+                evidence_packets,
+                deadline,
+                cancellation,
             )
 
         # Initial sufficiency owns the only repair decision; repair policy is
@@ -181,7 +196,12 @@ class V9ExecutionCore:
                 break
             repair_round += 1
             await self._retrieve_candidates(
-                repair_tasks, contract, task_results, evidence_packets, deadline
+                repair_tasks,
+                contract,
+                task_results,
+                evidence_packets,
+                deadline,
+                cancellation,
             )
             sufficiency = self._stages.evaluate_sufficiency(
                 contract, tuple(evidence_packets)
@@ -196,6 +216,7 @@ class V9ExecutionCore:
                     request.question, contract, tuple(evidence_packets)
                 ),
                 deadline,
+                cancellation,
             )
         )
         prose_curator_call_count = 1
@@ -210,47 +231,52 @@ class V9ExecutionCore:
                     contract, curated_packets, final_sufficiency
                 ),
                 deadline,
+                cancellation,
             )
         else:
             conflict = ConflictStageResult(sufficiency=final_sufficiency)
         assert 0 <= conflict.arbitration_call_count <= 1
 
-        packed = await self._run_stage(
-            "retrieval",
-            "evidence_extract",
-            self._stages.pack(
-                request.question, contract, curated_packets, conflict.sufficiency
-            ),
-            deadline,
-        )
-        final_generation_count = 0
-        if (
-            deadline.has_time_remaining()
-            and conflict.sufficiency.report.answerable
-            and conflict.sufficiency.report.supported_slot_ids
-            and _is_packable(packed)
-        ):
-            final_answer = await self._run_stage(
-                "llm",
-                "final_answer",
-                self._stages.generate_final(
-                    request.question,
-                    contract,
-                    packed,
-                    conflict.sufficiency.slot_resolutions,
-                    conflict.arbitration,
-                ),
-                deadline,
-            )
-            final_generation_count = 1
-        else:
+        if not deadline.has_time_remaining():
             final_answer = self._stages.deterministic_partial(
                 contract, conflict.sufficiency
             )
+        else:
+            packed = await self._run_stage(
+                "retrieval",
+                "evidence_extract",
+                self._stages.pack(
+                    request.question, contract, curated_packets, conflict.sufficiency
+                ),
+                deadline,
+                cancellation,
+            )
+            if (
+                deadline.has_time_remaining()
+                and conflict.sufficiency.report.answerable
+                and conflict.sufficiency.report.supported_slot_ids
+                and _is_packable(packed)
+            ):
+                final_answer = await self._run_stage(
+                    "llm",
+                    "final_answer",
+                    self._stages.generate_final(
+                        request.question,
+                        contract,
+                        packed,
+                        conflict.sufficiency.slot_resolutions,
+                        conflict.arbitration,
+                    ),
+                    deadline,
+                    cancellation,
+                )
+            else:
+                final_answer = self._stages.deterministic_partial(
+                    contract, conflict.sufficiency
+                )
 
+        final_generation_count = final_answer.final_generation_count
         assert final_generation_count <= 1
-        assert final_answer.final_generation_count <= 1
-        assert final_generation_count == final_answer.final_generation_count
         subtask_answer_count = 0
         assert subtask_answer_count == 0
         return V9ExecutionResult(
@@ -287,10 +313,15 @@ class V9ExecutionCore:
         task_results: list[TaskRetrievalResult],
         evidence_packets: list[EvidencePacket],
         deadline: ExecutionDeadline,
+        cancellation: Any,
     ) -> None:
         results = tuple(
             await self._run_stage(
-                "retrieval", "evidence_extract", self._stages.retrieve(tasks), deadline
+                "retrieval",
+                "evidence_extract",
+                self._stages.retrieve(tasks),
+                deadline,
+                cancellation,
             )
         )
         returned_task_ids = {result.task_id for result in results}
@@ -303,6 +334,7 @@ class V9ExecutionCore:
             "evidence_extract",
             self._stages.deterministic_candidates(results, contract),
             deadline,
+            cancellation,
         )
         evidence_packets.extend(candidates)
 
@@ -312,6 +344,7 @@ class V9ExecutionCore:
         phase: str,
         value: _MaybeAwaitable[_T],
         deadline: ExecutionDeadline,
+        cancellation: Any,
     ) -> _T:
         """Apply both the phase limit and the single attempt-wide deadline."""
 
@@ -320,10 +353,10 @@ class V9ExecutionCore:
 
         if kind == "llm":
             return await self._runtime.run_llm(
-                operation, phase=phase, deadline=deadline
+                operation, phase=phase, deadline=deadline, cancellation=cancellation
             )
         return await self._runtime.run_retrieval(
-            operation, phase=phase, deadline=deadline
+            operation, phase=phase, deadline=deadline, cancellation=cancellation
         )
 
 

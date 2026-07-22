@@ -26,6 +26,11 @@ from data_base.agentic_v9.schemas import (
 )
 
 
+_FINAL_GENERATION_UNAVAILABLE_ANSWER = (
+    "Final generation was unavailable; evidence is returned as a qualified partial."
+)
+
+
 class FinalAnswerDraft(BaseModel):
     """Strict, typed provider output before deterministic claim verification."""
 
@@ -87,8 +92,13 @@ class FinalAnswerRenderer:
                     },
                 ],
             )
-            if isinstance(response, FinalAnswerResult):
+            if _is_fixed_no_claim_fallback(response):
                 return response
+            if isinstance(response, FinalAnswerResult):
+                response = {
+                    "answer": response.answer,
+                    "claims": response.claims,
+                }
             draft = FinalAnswerDraft.model_validate(_response_content(response))
         except Exception:
             return FinalAnswerResult(
@@ -229,6 +239,18 @@ def _response_content(response: Any) -> Any:
     if isinstance(content, bytes):
         content = content.decode("utf-8", errors="replace")
     return json.loads(content) if isinstance(content, str) else content
+
+
+def _is_fixed_no_claim_fallback(response: Any) -> bool:
+    """Allow only the budgeted provider's fixed, claim-free terminal fallback."""
+    return (
+        isinstance(response, FinalAnswerResult)
+        and response.response_status == "qualified_partial"
+        and response.answer == _FINAL_GENERATION_UNAVAILABLE_ANSWER
+        and not response.claims
+        and not response.used_evidence_ids
+        and response.final_generation_count == 0
+    )
 
 
 def _response_status(

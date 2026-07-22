@@ -13,6 +13,7 @@ from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
     EvidenceSource,
+    FinalAnswerResult,
     QueryContract,
     RequiredSlot,
     SlotResolution,
@@ -230,3 +231,97 @@ async def test_final_answer_accepts_the_typed_packer_packet_projection() -> None
 
     assert result.claims[0].qualified_reason is None
     assert result.response_status == "complete"
+
+
+@pytest.mark.asyncio
+async def test_direct_final_result_is_treated_as_an_untrusted_draft_and_qualified() -> (
+    None
+):
+    invoker = _RecordingInvoker(
+        FinalAnswerResult(
+            response_status="complete",
+            answer="The score is 0.99.",
+            claims=[
+                {
+                    "claim_id": "claim-1",
+                    "statement": "The score is 0.99.",
+                    "support_type": "direct",
+                    "evidence_ids": ["E1"],
+                }
+            ],
+            used_evidence_ids=["E1"],
+            final_generation_count=1,
+        )
+    )
+
+    result = await generate_final_answer(
+        question="What is the reported score?",
+        contract=_contract(),
+        packed_packets=[_packet()],
+        slot_resolutions=[
+            SlotResolution(slot_id="score", status="supported", evidence_ids=["E1"])
+        ],
+        llm_invoker=invoker,
+    )
+
+    assert result.final_generation_count == 1
+    assert result.claims[0].support_type == "qualified"
+    assert "does not match cited exact evidence" in result.claims[0].qualified_reason
+    assert "[v1:paper.pdf p.5, Table 1; E1]" in result.answer
+
+
+@pytest.mark.asyncio
+async def test_only_the_fixed_no_claim_final_fallback_bypasses_draft_validation() -> (
+    None
+):
+    invoker = _RecordingInvoker(
+        FinalAnswerResult(
+            response_status="qualified_partial",
+            answer="Untrusted uncited partial.",
+            final_generation_count=0,
+        )
+    )
+
+    result = await generate_final_answer(
+        question="What is the reported score?",
+        contract=_contract(),
+        packed_packets=[_packet()],
+        slot_resolutions=[
+            SlotResolution(slot_id="score", status="supported", evidence_ids=["E1"])
+        ],
+        llm_invoker=invoker,
+    )
+
+    assert result.final_generation_count == 1
+    assert result.response_status == "insufficient"
+    assert result.answer == ""
+
+
+@pytest.mark.asyncio
+async def test_fixed_no_claim_final_fallback_remains_a_qualified_partial() -> None:
+    fallback_answer = (
+        "Final generation was unavailable; evidence is returned as a qualified partial."
+    )
+    invoker = _RecordingInvoker(
+        FinalAnswerResult(
+            response_status="qualified_partial",
+            answer=fallback_answer,
+            final_generation_count=0,
+        )
+    )
+
+    result = await generate_final_answer(
+        question="What is the reported score?",
+        contract=_contract(),
+        packed_packets=[_packet()],
+        slot_resolutions=[
+            SlotResolution(slot_id="score", status="supported", evidence_ids=["E1"])
+        ],
+        llm_invoker=invoker,
+    )
+
+    assert result.response_status == "qualified_partial"
+    assert result.answer == fallback_answer
+    assert result.claims == []
+    assert result.used_evidence_ids == []
+    assert result.final_generation_count == 0
