@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
@@ -90,6 +91,9 @@ async def invoke_budgeted_llm(
                 provider if provider is not None else provider_factory(purpose)
             )
             response = await active_provider.ainvoke(messages)
+    except asyncio.CancelledError:
+        await controller.reconcile_usage(reservation.reservation_id, {})
+        raise
     except Exception:
         await controller.reconcile_usage(reservation.reservation_id, {})
         if phase == "final_answer":

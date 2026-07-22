@@ -246,7 +246,9 @@ class SufficiencyReport(BaseModel):
             self.explicitly_unavailable_slot_ids or self.not_found_slot_ids
         )
         if self.evidence_complete and unavailable_slots:
-            raise ValueError("unavailable or not-found slots preclude complete evidence")
+            raise ValueError(
+                "unavailable or not-found slots preclude complete evidence"
+            )
         if self.response_status == "complete" and (
             not self.evidence_complete
             or not self.answerable
@@ -345,7 +347,15 @@ class ExecutionPolicy(BaseModel):
     max_llm_concurrency: int = Field(default=2, ge=1)
     max_visual_concurrency: int = Field(default=1, ge=1)
     total_deadline_s: float = Field(default=24.0, gt=0)
-    phase_timeouts_s: dict[str, float] = Field(default_factory=dict)
+    phase_timeouts_s: dict[str, float] = Field(
+        default_factory=lambda: {
+            "route_plan": 2.0,
+            "retrieval_judge": 2.0,
+            "evidence_extract": 8.0,
+            "visual_extract": 8.0,
+            "final_answer": 15.0,
+        }
+    )
 
 
 class V9ExecutionRequest(BaseModel):
