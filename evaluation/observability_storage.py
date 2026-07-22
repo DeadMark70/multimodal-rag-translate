@@ -16,14 +16,19 @@ from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
 from evaluation.trace_schemas import (
     EvaluationClaim,
     EvaluationContextPack,
+    EvaluationEvidencePacket,
     EvaluationHumanRating,
     EvaluationLlmCall,
     EvaluationRetrievalChunk,
     EvaluationRetrievalEvent,
     EvaluationRoutingDecision,
+    EvaluationSlotResolution,
     EvaluationToolCall,
     EvaluationTraceEvent,
 )
+
+
+MAX_V9_OBSERVABILITY_PAYLOAD_BYTES = 256 * 1024
 
 
 def _json_default(value: Any) -> Any:
@@ -40,6 +45,13 @@ def _json_default(value: Any) -> Any:
 
 def _json_dumps(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, default=_json_default)
+
+
+def _v9_json_dumps(payload: Any) -> str:
+    serialized = _json_dumps(payload)
+    if len(serialized.encode("utf-8")) > MAX_V9_OBSERVABILITY_PAYLOAD_BYTES:
+        raise ValueError("v9 observability payload exceeds 262144 bytes")
+    return serialized
 
 
 def _json_loads(payload: str | None, fallback: Any) -> Any:
@@ -288,6 +300,126 @@ class EvaluationObservabilityRepository(
     EvaluationGraphEvidenceItemRepository,
 ):
     """Persistence operations for normalized evaluation observability rows."""
+
+    async def record_evidence_packet(self, packet: EvaluationEvidencePacket) -> None:
+        """Persist one v9 evidence packet idempotently for its attempt."""
+        await init_db()
+        async with connect_db() as connection:
+            await connection.execute(
+                """
+                INSERT INTO evaluation_evidence_packets (
+                    evidence_packet_row_id, attempt_id, run_id, campaign_id, condition_id,
+                    schema_version, evidence_id, packet_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(attempt_id, evidence_id) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    campaign_id = excluded.campaign_id,
+                    condition_id = excluded.condition_id,
+                    schema_version = excluded.schema_version,
+                    packet_json = excluded.packet_json,
+                    created_at = excluded.created_at
+                """,
+                (
+                    f"{packet.attempt_id}:{packet.evidence_id}",
+                    packet.attempt_id,
+                    packet.run_id,
+                    packet.campaign_id,
+                    packet.condition_id,
+                    packet.schema_version,
+                    packet.evidence_id,
+                    _v9_json_dumps(packet.packet),
+                    packet.created_at.isoformat(),
+                ),
+            )
+            await connection.commit()
+
+    async def list_evidence_packets_for_attempt(
+        self, attempt_id: str
+    ) -> list[EvaluationEvidencePacket]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM evaluation_evidence_packets
+                WHERE attempt_id = ? ORDER BY created_at ASC, evidence_id ASC
+                """,
+                (attempt_id,),
+            )
+            rows = await cursor.fetchall()
+        return [
+            EvaluationEvidencePacket(
+                attempt_id=row["attempt_id"],
+                run_id=row["run_id"],
+                campaign_id=row["campaign_id"],
+                condition_id=row["condition_id"],
+                schema_version=row["schema_version"],
+                evidence_id=row["evidence_id"],
+                packet=_json_loads(row["packet_json"], {}),
+                created_at=datetime.fromisoformat(row["created_at"]),
+            )
+            for row in rows
+        ]
+
+    async def record_slot_resolution(self, resolution: EvaluationSlotResolution) -> None:
+        """Persist one v9 slot resolution idempotently for its attempt and stage."""
+        await init_db()
+        async with connect_db() as connection:
+            await connection.execute(
+                """
+                INSERT INTO evaluation_slot_resolutions (
+                    slot_resolution_row_id, attempt_id, run_id, campaign_id, condition_id,
+                    schema_version, slot_id, resolution_stage, resolution_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(attempt_id, slot_id, resolution_stage) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    campaign_id = excluded.campaign_id,
+                    condition_id = excluded.condition_id,
+                    schema_version = excluded.schema_version,
+                    resolution_json = excluded.resolution_json,
+                    created_at = excluded.created_at
+                """,
+                (
+                    f"{resolution.attempt_id}:{resolution.slot_id}:{resolution.resolution_stage}",
+                    resolution.attempt_id,
+                    resolution.run_id,
+                    resolution.campaign_id,
+                    resolution.condition_id,
+                    resolution.schema_version,
+                    resolution.slot_id,
+                    resolution.resolution_stage,
+                    _v9_json_dumps(resolution.resolution),
+                    resolution.created_at.isoformat(),
+                ),
+            )
+            await connection.commit()
+
+    async def list_slot_resolutions_for_attempt(
+        self, attempt_id: str
+    ) -> list[EvaluationSlotResolution]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM evaluation_slot_resolutions
+                WHERE attempt_id = ? ORDER BY created_at ASC, slot_id ASC, resolution_stage ASC
+                """,
+                (attempt_id,),
+            )
+            rows = await cursor.fetchall()
+        return [
+            EvaluationSlotResolution(
+                attempt_id=row["attempt_id"],
+                run_id=row["run_id"],
+                campaign_id=row["campaign_id"],
+                condition_id=row["condition_id"],
+                schema_version=row["schema_version"],
+                slot_id=row["slot_id"],
+                resolution_stage=row["resolution_stage"],
+                resolution=_json_loads(row["resolution_json"], {}),
+                created_at=datetime.fromisoformat(row["created_at"]),
+            )
+            for row in rows
+        ]
 
     async def record_trace_event(self, event: EvaluationTraceEvent) -> None:
         await self.record_trace_events([event])
@@ -691,15 +823,19 @@ class EvaluationObservabilityRepository(
             await connection.execute(
                 """
                 INSERT OR REPLACE INTO evaluation_context_packs (
-                    context_pack_id, run_id, campaign_id, span_id, input_chunk_count,
+                    context_pack_id, run_id, campaign_id, attempt_id, condition_id, schema_version,
+                    span_id, input_chunk_count,
                     packed_chunk_count, token_count, retrieved_but_not_packed_evidence_json,
                     payload_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pack.context_pack_id,
                     pack.run_id,
                     pack.campaign_id,
+                    pack.attempt_id,
+                    pack.condition_id,
+                    pack.schema_version,
                     pack.span_id,
                     pack.input_chunk_count,
                     pack.packed_chunk_count,
@@ -724,6 +860,9 @@ class EvaluationObservabilityRepository(
                 context_pack_id=row["context_pack_id"],
                 run_id=row["run_id"],
                 campaign_id=row["campaign_id"],
+                attempt_id=row["attempt_id"],
+                condition_id=row["condition_id"],
+                schema_version=row["schema_version"],
                 span_id=row["span_id"],
                 input_chunk_count=row["input_chunk_count"],
                 packed_chunk_count=row["packed_chunk_count"],
@@ -888,6 +1027,9 @@ class EvaluationObservabilityRepository(
                 "claim_id",
                 "run_id",
                 "campaign_id",
+                "attempt_id",
+                "condition_id",
+                "schema_version",
                 "span_id",
                 "claim_text",
                 "claim_type",
@@ -901,6 +1043,9 @@ class EvaluationObservabilityRepository(
                 claim.claim_id,
                 claim.run_id,
                 claim.campaign_id,
+                claim.attempt_id,
+                claim.condition_id,
+                claim.schema_version,
                 claim.span_id,
                 claim.claim_text,
                 claim.claim_type,
@@ -925,6 +1070,9 @@ class EvaluationObservabilityRepository(
                 claim_id=row["claim_id"],
                 run_id=row["run_id"],
                 campaign_id=row["campaign_id"],
+                attempt_id=row["attempt_id"],
+                condition_id=row["condition_id"],
+                schema_version=row["schema_version"],
                 span_id=row["span_id"],
                 claim_text=row["claim_text"],
                 claim_type=row["claim_type"],
@@ -956,6 +1104,9 @@ class EvaluationObservabilityRepository(
                     claim_id=row["claim_id"],
                     run_id=row["run_id"],
                     campaign_id=row["campaign_id"],
+                    attempt_id=row["attempt_id"],
+                    condition_id=row["condition_id"],
+                    schema_version=row["schema_version"],
                     span_id=row["span_id"],
                     claim_text=row["claim_text"],
                     claim_type=row["claim_type"],

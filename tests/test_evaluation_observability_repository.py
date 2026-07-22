@@ -9,11 +9,13 @@ from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.trace_schemas import (
     EvaluationClaim,
     EvaluationContextPack,
+    EvaluationEvidencePacket,
     EvaluationHumanRating,
     EvaluationLlmCall,
     EvaluationRetrievalChunk,
     EvaluationRetrievalEvent,
     EvaluationRoutingDecision,
+    EvaluationSlotResolution,
     EvaluationToolCall,
     EvaluationTraceEvent,
 )
@@ -48,6 +50,101 @@ async def _seed_campaign(campaign_id: str) -> None:
             ),
         )
         await connection.commit()
+
+
+async def _seed_attempt(campaign_id: str, attempt_id: str) -> None:
+    now = _now().isoformat()
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            """
+            INSERT INTO evaluation_jobs (id, user_id, campaign_id, job_type, selection_json, config_snapshot_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("job-1", "user-a", campaign_id, "execution", "{}", "{}", now),
+        )
+        await connection.execute(
+            """
+            INSERT INTO evaluation_work_items (id, campaign_id, logical_key, work_type, input_snapshot_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("work-item-1", campaign_id, "logical-key-1", "execution", "{}", now),
+        )
+        await connection.execute(
+            """
+            INSERT INTO evaluation_job_items (id, job_id, work_item_id, status, max_attempts, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("job-item-1", "job-1", "work-item-1", "running", 1, now, now),
+        )
+        await connection.execute(
+            """
+            INSERT INTO evaluation_attempts (
+                id, job_id, job_item_id, work_item_id, attempt_number, status, started_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (attempt_id, "job-1", "job-item-1", "work-item-1", 1, "running", now),
+        )
+        await connection.commit()
+
+
+@pytest.mark.asyncio
+async def test_observability_repository_round_trips_v9_evidence_and_slot_resolution(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
+    await _seed_campaign("campaign-v9")
+    await _seed_attempt("campaign-v9", "attempt-v9")
+    repository = EvaluationObservabilityRepository()
+    created_at = _now()
+
+    evidence = EvaluationEvidencePacket(
+        attempt_id="attempt-v9",
+        run_id="run-v9",
+        campaign_id="campaign-v9",
+        condition_id="condition-v9",
+        evidence_id="evidence-v9",
+        packet={"statement": "A bounded evidence packet."},
+        created_at=created_at,
+    )
+    resolution = EvaluationSlotResolution(
+        attempt_id="attempt-v9",
+        run_id="run-v9",
+        campaign_id="campaign-v9",
+        condition_id="condition-v9",
+        slot_id="slot-v9",
+        resolution_stage="sufficiency",
+        resolution={"status": "supported", "evidence_ids": ["evidence-v9"]},
+        created_at=created_at,
+    )
+
+    await repository.record_evidence_packet(evidence)
+    await repository.record_evidence_packet(evidence)
+    await repository.record_slot_resolution(resolution)
+    await repository.record_slot_resolution(resolution)
+
+    assert await repository.list_evidence_packets_for_attempt("attempt-v9") == [evidence]
+    assert await repository.list_slot_resolutions_for_attempt("attempt-v9") == [resolution]
+
+
+@pytest.mark.asyncio
+async def test_observability_repository_rejects_oversized_v9_payload(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
+    await _seed_campaign("campaign-v9-limit")
+    await _seed_attempt("campaign-v9-limit", "attempt-v9-limit")
+    repository = EvaluationObservabilityRepository()
+
+    with pytest.raises(ValueError, match="payload exceeds"):
+        await repository.record_evidence_packet(
+            EvaluationEvidencePacket(
+                attempt_id="attempt-v9-limit",
+                run_id="run-v9-limit",
+                campaign_id="campaign-v9-limit",
+                condition_id="condition-v9",
+                evidence_id="evidence-too-large",
+                packet={"statement": "x" * 300_000},
+                created_at=_now(),
+            )
+        )
 
 
 @pytest.mark.asyncio
