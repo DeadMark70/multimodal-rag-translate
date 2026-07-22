@@ -106,3 +106,46 @@ def test_ratio_of_sums_is_not_mean_of_per_run_ratios() -> None:
     ]
 
     assert ratio_of_sums(v9, naive) == 5.5
+
+
+def _complete_two_question_matrix() -> list[BenchmarkRun]:
+    return [
+        _run(question_id, 1, mode=mode, version=version)
+        for question_id in ("Q1", "Q2")
+        for mode, version in (("naive", "v8"), ("agentic", "v8"), ("agentic", "v9"))
+    ]
+
+
+def test_validation_rejects_benchmark_wide_snapshot_mismatch_despite_valid_pairs() -> None:
+    runs = _complete_two_question_matrix()
+    runs = [
+        replace(run, snapshot_fingerprint="snapshot-q2") if run.question_id == "Q2" else run
+        for run in runs
+    ]
+
+    result = validate_benchmark_runs(runs)
+
+    assert result.comparable is False
+    assert "incompatible_benchmark_snapshots" in result.reasons
+    assert "incompatible_snapshots" not in result.reasons
+
+
+def test_validation_rejects_benchmark_wide_evaluator_mismatch_despite_valid_pairs() -> None:
+    runs = _complete_two_question_matrix()
+    runs = [
+        replace(run, evaluator_fingerprint="evaluator-v2") if run.question_id == "Q2" else run
+        for run in runs
+    ]
+
+    result = validate_benchmark_runs(runs)
+
+    assert result.comparable is False
+    assert "incompatible_benchmark_evaluator_metadata" in result.reasons
+    assert "incompatible_evaluator_metadata" not in result.reasons
+
+
+def test_validation_accepts_benchmark_wide_snapshot_and_evaluator_fingerprints() -> None:
+    result = validate_benchmark_runs(_complete_two_question_matrix())
+
+    assert result.comparable is True
+    assert result.reasons == ()

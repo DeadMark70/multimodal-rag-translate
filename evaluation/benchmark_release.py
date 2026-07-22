@@ -265,6 +265,16 @@ def validate_benchmark_runs(runs: list[BenchmarkRun]) -> ValidationResult:
         evaluator_fingerprints = {row.evaluator_fingerprint for row in paired}
         if len(evaluator_fingerprints) != 1 or None in evaluator_fingerprints:
             reasons.add("incompatible_evaluator_metadata")
+    # Pair-level equality proves that an individual naive/v8/v9 comparison is
+    # internally valid.  It is insufficient for a clustered benchmark: every
+    # question and repeat must have been run against the same frozen
+    # environment and evaluator before their deltas can share one CI.
+    benchmark_snapshots = {run.snapshot_fingerprint for run in official}
+    if len(benchmark_snapshots) != 1 or None in benchmark_snapshots:
+        reasons.add("incompatible_benchmark_snapshots")
+    benchmark_evaluators = {run.evaluator_fingerprint for run in official}
+    if len(benchmark_evaluators) != 1 or None in benchmark_evaluators:
+        reasons.add("incompatible_benchmark_evaluator_metadata")
     return ValidationResult(
         comparable=not reasons,
         reasons=tuple(sorted(reasons)),
