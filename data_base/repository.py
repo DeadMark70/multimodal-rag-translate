@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from uuid import UUID
 
 from core.supabase_repository import execute_supabase_operation
 
@@ -88,20 +89,26 @@ async def resolve_document_references(
     if not unique_references:
         return {}
 
-    async def select(field: str):
+    async def select(field: str, values: list[str]):
         return await execute_supabase_operation(
             operation=f"resolve_document_references_by_{field}",
             failure_message="Failed to resolve evaluation source references",
             handler=lambda client: client.table("documents")
             .select("id, file_name")
             .eq("user_id", user_id)
-            .in_(field, unique_references)
+            .in_(field, values)
             .execute(),
         )
 
-    id_response, filename_response = await select("id"), await select("file_name")
+    canonical_ids = [
+        reference for reference in unique_references if _is_canonical_document_id(reference)
+    ]
+    responses = []
+    if canonical_ids:
+        responses.append(await select("id", canonical_ids))
+    responses.append(await select("file_name", unique_references))
     resolved: dict[str, set[str]] = {reference: set() for reference in unique_references}
-    for response in (id_response, filename_response):
+    for response in responses:
         for row in response.data or []:
             document_id = row.get("id")
             if not isinstance(document_id, str) or not document_id:
@@ -116,6 +123,15 @@ async def resolve_document_references(
         for reference, document_ids in resolved.items()
         if document_ids
     }
+
+
+def _is_canonical_document_id(value: str) -> bool:
+    """Return whether a value is safe to send to the UUID ``documents.id`` field."""
+    try:
+        UUID(value)
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return True
 
 
 async def persist_research_conversation(

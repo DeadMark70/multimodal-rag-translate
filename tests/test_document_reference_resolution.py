@@ -23,7 +23,9 @@ class _DocumentsQuery:
         self.user_ids.append(value)
         return self
 
-    def in_(self, field: str, _references: list[str]) -> _DocumentsQuery:
+    def in_(self, field: str, references: list[str]) -> _DocumentsQuery:
+        if field == "id":
+            assert references == ["11111111-1111-4111-8111-111111111111"]
         self._field = field
         return self
 
@@ -38,10 +40,21 @@ async def test_resolve_document_references_maps_filename_and_uuid_without_hiding
 ) -> None:
     query = _DocumentsQuery(
         {
-            "id": [{"id": "uuid-1", "file_name": "paper.pdf"}],
+            "id": [
+                {
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "file_name": "paper.pdf",
+                }
+            ],
             "file_name": [
-                {"id": "uuid-1", "file_name": "paper.pdf"},
-                {"id": "uuid-2", "file_name": "paper.pdf"},
+                {
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "file_name": "paper.pdf",
+                },
+                {
+                    "id": "22222222-2222-4222-8222-222222222222",
+                    "file_name": "paper.pdf",
+                },
             ],
         }
     )
@@ -56,8 +69,17 @@ async def test_resolve_document_references_maps_filename_and_uuid_without_hiding
     monkeypatch.setattr(repository, "execute_supabase_operation", fake_execute)
 
     resolved = await repository.resolve_document_references(
-        user_id="user-a", references=["uuid-1", "paper.pdf"]
+        user_id="user-a",
+        references=["11111111-1111-4111-8111-111111111111", "paper.pdf"],
     )
 
-    assert resolved == {"uuid-1": ["uuid-1"], "paper.pdf": ["uuid-1", "uuid-2"]}
+    assert resolved == {
+        "11111111-1111-4111-8111-111111111111": [
+            "11111111-1111-4111-8111-111111111111"
+        ],
+        "paper.pdf": [
+            "11111111-1111-4111-8111-111111111111",
+            "22222222-2222-4222-8222-222222222222",
+        ],
+    }
     assert query.user_ids == ["user-a", "user-a"]
