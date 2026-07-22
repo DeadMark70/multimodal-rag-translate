@@ -46,6 +46,7 @@ from evaluation.evidence import (
 )
 from evaluation.observability import EvaluationRunRecorder
 from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.agentic_campaign_adapter import effective_agentic_execution_version
 from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
 from evaluation.ragas_evaluator import RagasEvaluator
 from evaluation.retrieval_profiles import evaluation_failure_execution_profile
@@ -1989,7 +1990,9 @@ class CampaignEngine:
                                 budget=dict(condition.budget)
                                 if condition.budget
                                 else None,
-                                agentic_execution_version=agentic_execution_version,
+                                agentic_execution_version=effective_agentic_execution_version(
+                                    condition.mode, agentic_execution_version
+                                ),
                                 shadow_evaluation_policy=shadow_evaluation_policy,
                             )
                         )
@@ -2004,7 +2007,9 @@ class CampaignEngine:
                             mode=mode,
                             run_number=run_number,
                             repeat_number=run_number,
-                            agentic_execution_version=agentic_execution_version,
+                            agentic_execution_version=effective_agentic_execution_version(
+                                mode, agentic_execution_version
+                            ),
                             shadow_evaluation_policy=shadow_evaluation_policy,
                         )
                     )

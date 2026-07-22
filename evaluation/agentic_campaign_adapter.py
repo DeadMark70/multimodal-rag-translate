@@ -17,6 +17,25 @@ from data_base.agentic_v9.schemas import EvidencePacket, FinalAnswerResult
 AgenticExecutionVersion = Literal["v8", "v9"]
 
 
+def effective_agentic_execution_version(
+    identity: str, configured_version: AgenticExecutionVersion
+) -> AgenticExecutionVersion:
+    """Return the version owned by one public execution identity.
+
+    Campaign setup supplies a default only for the unversioned ``agentic``
+    identity.  Baselines must retain their v8/non-v9 projection even when they
+    are compared beside ``agentic-v9`` in the same campaign.
+    """
+    normalized = str(identity).strip().lower()
+    if normalized in {"agentic-v9", "v9", "agentic-v9-shadow"}:
+        return "v9"
+    if normalized in {"agentic-v8", "v8"}:
+        return "v8"
+    if normalized == "agentic":
+        return configured_version
+    return "v8"
+
+
 def campaign_execution_identity(
     identity: str, agentic_execution_version: AgenticExecutionVersion
 ) -> tuple[str, str, AgenticExecutionVersion]:
@@ -78,4 +97,8 @@ def used_evidence_documents(
     return documents
 
 
-__all__ = ["campaign_execution_identity", "used_evidence_documents"]
+__all__ = [
+    "campaign_execution_identity",
+    "effective_agentic_execution_version",
+    "used_evidence_documents",
+]

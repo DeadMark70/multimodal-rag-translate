@@ -15,7 +15,10 @@ from data_base.indexing_service import DEFAULT_PRODUCTION_INDEXING_PROFILE
 from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from evaluation.agentic_evaluation_service import AgenticEvaluationService
 from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
-from evaluation.agentic_campaign_adapter import campaign_execution_identity
+from evaluation.agentic_campaign_adapter import (
+    campaign_execution_identity,
+    effective_agentic_execution_version,
+)
 from evaluation.model_capabilities import normalize_model_config_for_runtime
 from evaluation.retrieval_profiles import (
     apply_no_hyde_policy,
@@ -366,6 +369,9 @@ async def run_campaign_case(
 ) -> BenchmarkExecutionResult:
     """Execute one test case under one RAG mode."""
     execution_identity = mode
+    agentic_execution_version = effective_agentic_execution_version(
+        execution_identity, agentic_execution_version
+    )
     if mode in {"naive-baseline", "agentic-v8", "v8", "agentic-v9", "v9", "agentic-v9-shadow"}:
         _, mode, agentic_execution_version = campaign_execution_identity(
             execution_identity, agentic_execution_version

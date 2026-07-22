@@ -39,6 +39,7 @@ from evaluation.error_policy import classify_evaluation_error
 from evaluation.job_schemas import ClaimedEvaluationWork, ExecutionAttemptOutput
 from evaluation.job_store import EvaluationJobStore
 from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.agentic_campaign_adapter import effective_agentic_execution_version
 from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
 from evaluation.retrieval_profiles import evaluation_failure_execution_profile
 from evaluation.schemas import TestCase
@@ -149,7 +150,7 @@ class DatasetExecutionWorker:
                     ExecutionAttemptOutput(result=result),
                     accounting_scope_id=scope.scope_id,
                 )
-                if unit.agentic_execution_version == "v9":
+                if self._is_typed_agentic_v9_payload(unit=unit, payload=payload):
                     await self._materialize_v9_attempt(
                         claim=claim,
                         run_id=promoted.id,
@@ -201,6 +202,26 @@ class DatasetExecutionWorker:
                 exc_info=True,
             )
         await self._derive_campaign_state(claim)
+
+    @staticmethod
+    def _is_typed_agentic_v9_payload(
+        *, unit: CampaignUnit, payload: BenchmarkExecutionResult
+    ) -> bool:
+        """Require the actual v9 agentic identity and durable typed trace.
+
+        A campaign's setup default may be v9 while it executes baseline
+        conditions.  Those results are deliberately v8/non-v9 projections and
+        must never be promoted into the v9 evidence tables.
+        """
+        trace = payload.agent_trace
+        return (
+            unit.agentic_execution_version == "v9"
+            and payload.mode == "agentic"
+            and payload.agentic_execution_version == "v9"
+            and isinstance(trace, dict)
+            and trace.get("agentic_execution_version") == "v9"
+            and isinstance(trace.get("agentic_v9"), dict)
+        )
 
     async def _materialize_v9_attempt(
         self,
@@ -383,10 +404,13 @@ class DatasetExecutionWorker:
                     else None
                 ),
                 budget=dict(snapshot["budget"]) if snapshot.get("budget") else None,
-                agentic_execution_version=(
-                    str(snapshot.get("agentic_execution_version", "v8"))
-                    if snapshot.get("agentic_execution_version") in {"v8", "v9"}
-                    else "v8"
+                agentic_execution_version=effective_agentic_execution_version(
+                    str(snapshot["mode"]),
+                    (
+                        str(snapshot.get("agentic_execution_version", "v8"))
+                        if snapshot.get("agentic_execution_version") in {"v8", "v9"}
+                        else "v8"
+                    ),
                 ),
                 shadow_evaluation_policy=(
                     str(snapshot["shadow_evaluation_policy"])

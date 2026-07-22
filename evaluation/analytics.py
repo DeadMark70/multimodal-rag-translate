@@ -66,6 +66,7 @@ from evaluation.rag_modes import RAG_MODES
 from evaluation.observability_storage import (
     EvaluationObservabilityRepository,
     redact_sensitive_value,
+    safe_plain_text_excerpt,
 )
 from data_base.agentic_v9.budget_feasibility import (
     FeasibilityStatus,
@@ -1099,10 +1100,21 @@ class EvaluationAnalyticsService:
             return None
         payload = materialization.trace_payload
         try:
-            evidence = [
-                V9EvidencePacket(evidence_id=item.evidence_id, packet=EvidencePacket.model_validate(item.packet))
-                for item in await self._observability_repository.list_evidence_packets_for_attempt(attempt_id)
-            ]
+            evidence = []
+            for item in await self._observability_repository.list_evidence_packets_for_attempt(
+                attempt_id
+            ):
+                packet = EvidencePacket.model_validate(item.packet)
+                evidence.append(
+                    V9EvidencePacket(
+                        evidence_id=item.evidence_id,
+                        packet=packet.model_copy(
+                            update={
+                                "statement": safe_plain_text_excerpt(packet.statement)
+                            }
+                        ),
+                    )
+                )
             slots = [
                 V9SlotResolution(
                     slot_id=item.slot_id,
