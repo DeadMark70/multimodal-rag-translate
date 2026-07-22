@@ -2182,6 +2182,54 @@
         }
       }
     },
+    "/api/evaluation/campaigns/{campaign_id}/release-metrics": {
+      "get": {
+        "tags": [
+          "Evaluation"
+        ],
+        "summary": "Get Campaign Release Metrics",
+        "description": "Return authoritative, fail-closed v9 benchmark release metrics.",
+        "operationId": "get_campaign_release_metrics_api_evaluation_campaigns__campaign_id__release_metrics_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReleaseMetricsReport"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/evaluation/campaigns/{campaign_id}/overview": {
       "get": {
         "tags": [
@@ -6397,6 +6445,19 @@
               }
             ],
             "title": "Shadow Evaluation Policy"
+          },
+          "benchmark_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Benchmark Id"
           }
         },
         "type": "object",
@@ -6554,6 +6615,19 @@
               }
             ],
             "title": "Shadow Evaluation Policy"
+          },
+          "benchmark_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Benchmark Id"
           }
         },
         "type": "object",
@@ -15171,6 +15245,195 @@
         ],
         "title": "RegenerateSummaryResponse",
         "description": "Response model for summary regeneration kickoff."
+      },
+      "ReleaseArmSummary": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "condition_id": {
+            "type": "string",
+            "title": "Condition Id"
+          },
+          "execution_profile": {
+            "type": "string",
+            "title": "Execution Profile"
+          },
+          "agentic_execution_version": {
+            "type": "string",
+            "title": "Agentic Execution Version"
+          },
+          "shadow_evaluation_policy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shadow Evaluation Policy"
+          },
+          "response_status_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Response Status Counts"
+          },
+          "run_count": {
+            "type": "integer",
+            "title": "Run Count",
+            "default": 0
+          },
+          "complete_run_count": {
+            "type": "integer",
+            "title": "Complete Run Count",
+            "default": 0
+          },
+          "accounting_complete_run_count": {
+            "type": "integer",
+            "title": "Accounting Complete Run Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "condition_id",
+          "execution_profile",
+          "agentic_execution_version"
+        ],
+        "title": "ReleaseArmSummary"
+      },
+      "ReleaseMetric": {
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "title": "ReleaseMetric"
+      },
+      "ReleaseMetricsReport": {
+        "properties": {
+          "benchmark_id": {
+            "type": "string",
+            "title": "Benchmark Id"
+          },
+          "benchmark_kind": {
+            "type": "string",
+            "title": "Benchmark Kind"
+          },
+          "comparable": {
+            "type": "boolean",
+            "title": "Comparable"
+          },
+          "gate_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Gate Reasons"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Manifest"
+          },
+          "arms": {
+            "items": {
+              "$ref": "#/components/schemas/ReleaseArmSummary"
+            },
+            "type": "array",
+            "title": "Arms"
+          },
+          "required_slot_coverage": {
+            "$ref": "#/components/schemas/ReleaseMetric"
+          },
+          "important_unsupported_claim_rate": {
+            "$ref": "#/components/schemas/ReleaseMetric"
+          },
+          "provenance_failure_rate": {
+            "$ref": "#/components/schemas/ReleaseMetric"
+          },
+          "pack_efficiency": {
+            "$ref": "#/components/schemas/ReleaseMetric"
+          },
+          "graph_locator_success": {
+            "$ref": "#/components/schemas/ReleaseMetric"
+          },
+          "graph_locator_fallback": {
+            "$ref": "#/components/schemas/ReleaseMetric"
+          },
+          "final_generation_count": {
+            "$ref": "#/components/schemas/ReleaseMetric"
+          },
+          "latency_p95_ms": {
+            "$ref": "#/components/schemas/ReleaseMetric"
+          },
+          "token_ratio": {
+            "$ref": "#/components/schemas/ReleaseMetric"
+          },
+          "paired_quality_delta": {
+            "$ref": "#/components/schemas/ReleaseMetric"
+          },
+          "paired_quality_ci_lower": {
+            "$ref": "#/components/schemas/ReleaseMetric"
+          },
+          "paired_quality_ci_upper": {
+            "$ref": "#/components/schemas/ReleaseMetric"
+          },
+          "category_quality_deltas": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ReleaseMetric"
+            },
+            "type": "object",
+            "title": "Category Quality Deltas"
+          },
+          "per_question_quality_deltas": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ReleaseMetric"
+            },
+            "type": "object",
+            "title": "Per Question Quality Deltas"
+          },
+          "statistics": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Statistics"
+          }
+        },
+        "type": "object",
+        "required": [
+          "benchmark_id",
+          "benchmark_kind",
+          "comparable"
+        ],
+        "title": "ReleaseMetricsReport"
       },
       "RepairPlan": {
         "properties": {

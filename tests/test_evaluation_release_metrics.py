@@ -129,3 +129,12 @@ def test_release_metrics_api_serializes_fail_closed_values(tmp_path) -> None:
         }
     finally:
         app.dependency_overrides = {}
+
+
+def test_runtime_openapi_exposes_release_metrics_and_benchmark_identity() -> None:
+    schema = app.openapi()
+
+    assert "/api/evaluation/campaigns/{campaign_id}/release-metrics" in schema["paths"]
+    assert "ReleaseMetricsReport" in schema["components"]["schemas"]
+    benchmark_schema = schema["components"]["schemas"]["CampaignCreateRequest"]["properties"]["benchmark_id"]
+    assert {item["type"] for item in benchmark_schema["anyOf"]} == {"string", "null"}
