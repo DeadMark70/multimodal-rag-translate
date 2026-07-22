@@ -12,6 +12,11 @@ from data_base.agentic_v9.retrieval_tasks import (
     RetrievalTaskPlan,
     compile_retrieval_tasks,
 )
+from data_base.agentic_v9.execution_core import (
+    ConflictStageResult,
+    V9ExecutionCore,
+    V9ExecutionStages,
+)
 
 __all__ = [
     "QueryContract",
@@ -21,6 +26,9 @@ __all__ = [
     "RetrievalTaskCompiler",
     "RetrievalTaskPlan",
     "V9ExecutionRequest",
+    "ConflictStageResult",
+    "V9ExecutionCore",
+    "V9ExecutionStages",
     "compile_retrieval_tasks",
     "plan_query_contract",
 ]
