@@ -26,6 +26,8 @@ from evaluation.campaign_schemas import (
     CampaignLifecycleStatus,
     CampaignMetricsResponse,
     CampaignOverviewResponse,
+    CampaignPreflightRequest,
+    CampaignPreflightResponse,
     CampaignProgressEvent,
     CampaignResultsResponse,
     CampaignStatus,
@@ -45,6 +47,7 @@ from evaluation.campaign_schemas import (
     RunClaimsResponse,
     RunContextResponse,
     RunDiffResponse,
+    RunDetailResponse,
     RunLlmCallsResponse,
     RunMetricsResponse,
     RunRetrievalResponse,
@@ -373,6 +376,16 @@ async def create_campaign(
     )
 
 
+@router.post("/campaigns/preflight", response_model=CampaignPreflightResponse)
+async def preflight_campaign(
+    payload: CampaignPreflightRequest,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> CampaignPreflightResponse:
+    """Return non-mutating per-question v9 admission compatibility."""
+    return await analytics.campaign_preflight(user_id=user_id, request=payload)
+
+
 @router.get("/campaigns", response_model=list[CampaignStatus])
 async def get_campaigns(
     user_id: str = Depends(get_current_user_id),
@@ -605,6 +618,16 @@ async def get_evaluation_run_trace(
 ) -> RunTraceResponse:
     """Fetch stage trace and routing observability for one run."""
     return await analytics.run_trace(user_id=user_id, run_id=run_id)
+
+
+@router.get("/runs/{run_id}/detail", response_model=RunDetailResponse)
+async def get_evaluation_run_detail(
+    run_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> RunDetailResponse:
+    """Fetch a backwards-compatible detail payload with optional v9 evidence."""
+    return await analytics.run_detail(user_id=user_id, run_id=run_id)
 
 
 @router.get("/runs/{run_id}/retrieval", response_model=RunRetrievalResponse)

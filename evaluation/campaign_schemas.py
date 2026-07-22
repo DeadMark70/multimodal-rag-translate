@@ -8,6 +8,17 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from data_base.agentic_v9.repair import RepairPlan
+from data_base.agentic_v9.schemas import (
+    BudgetReservation,
+    ConflictCandidate,
+    EvidencePacket,
+    FinalClaim,
+    QueryContract,
+    SlotResolution,
+    SufficiencyReport,
+    V9ExecutionMetrics,
+)
 from evaluation.schemas import ModelConfig
 
 CampaignMode = Literal[
@@ -128,6 +139,36 @@ class CampaignCreateResponse(BaseModel):
 
     campaign_id: str
     status: CampaignLifecycleStatus
+
+
+class CampaignPreflightRequest(BaseModel):
+    """Non-mutating v9 admission check for selected Golden Dataset questions."""
+
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+    test_case_ids: list[str] = Field(min_length=1)
+    model_preset: ModelConfig = Field(alias="model_config")
+    runtime_token_budget: int = Field(ge=0)
+    max_llm_calls: int = Field(ge=0)
+
+
+class CampaignPreflightIssue(BaseModel):
+    status: Literal["configuration_incompatible"] = "configuration_incompatible"
+    stage: Literal["pre_route", "post_contract"]
+    reason: str
+
+
+class CampaignPreflightQuestion(BaseModel):
+    question_id: str
+    expected_route: str | None = None
+    status: Literal["feasible", "configuration_incompatible"]
+    issues: list[CampaignPreflightIssue] = Field(default_factory=list)
+
+
+class CampaignPreflightResponse(BaseModel):
+    """Token-only configuration compatibility; values are never monetary."""
+
+    questions: list[CampaignPreflightQuestion] = Field(default_factory=list)
 
 
 class CampaignEvaluateRequest(BaseModel):
@@ -458,6 +499,40 @@ class RunDetailResponse(BaseModel):
     routing_decisions: list[dict[str, Any]] = Field(default_factory=list)
     claims: list[dict[str, Any]] = Field(default_factory=list)
     human_ratings: list[dict[str, Any]] = Field(default_factory=list)
+    agentic_v9: "V9ExecutionObservability | None" = None
+
+
+class V9EvidencePacket(BaseModel):
+    evidence_id: str
+    packet: EvidencePacket
+
+
+class V9SlotResolution(BaseModel):
+    slot_id: str
+    resolution_stage: str
+    resolution: SlotResolution
+
+
+class V9ContextPack(BaseModel):
+    packed_evidence_ids: list[str] = Field(default_factory=list)
+    dropped_evidence_ids: list[str] = Field(default_factory=list)
+    token_count: int | None = Field(default=None, ge=0)
+
+
+class V9ExecutionObservability(BaseModel):
+    """Versioned, token-only evidence-first observability projection."""
+
+    schema_version: str = "1"
+    contract: QueryContract | None = None
+    slot_resolutions: list[V9SlotResolution] = Field(default_factory=list)
+    evidence_packets: list[V9EvidencePacket] = Field(default_factory=list)
+    sufficiency: SufficiencyReport | None = None
+    context_pack: V9ContextPack | None = None
+    budget: list[BudgetReservation] = Field(default_factory=list)
+    repairs: list[RepairPlan] = Field(default_factory=list)
+    conflicts: list[ConflictCandidate] = Field(default_factory=list)
+    final_claims: list[FinalClaim] = Field(default_factory=list)
+    metrics: V9ExecutionMetrics = Field(default_factory=V9ExecutionMetrics)
 
 
 class RunVisualResponse(RunToolsResponse):

@@ -4428,6 +4428,101 @@
           }
         }
       }
+    },
+    "/api/evaluation/campaigns/preflight": {
+      "post": {
+        "tags": [
+          "Evaluation"
+        ],
+        "summary": "Preflight Campaign",
+        "description": "Return non-mutating per-question v9 admission compatibility.",
+        "operationId": "preflight_campaign_api_evaluation_campaigns_preflight_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignPreflightRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignPreflightResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/evaluation/runs/{run_id}/detail": {
+      "get": {
+        "tags": [
+          "Evaluation"
+        ],
+        "summary": "Get Evaluation Run Detail",
+        "description": "Fetch a backwards-compatible detail payload with optional v9 evidence.",
+        "operationId": "get_evaluation_run_detail_api_evaluation_runs__run_id__detail_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDetailResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -13913,6 +14008,1495 @@
           "formula"
         ],
         "title": "VisualElementType"
+      },
+      "ConflictCandidate": {
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Candidate Id"
+          },
+          "slot_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Slot Id"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 2,
+            "title": "Evidence Ids"
+          },
+          "scope_match": {
+            "type": "string",
+            "enum": [
+              "same",
+              "different",
+              "unknown"
+            ],
+            "title": "Scope Match"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Reason"
+          },
+          "unresolved": {
+            "type": "boolean",
+            "title": "Unresolved",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "candidate_id",
+          "slot_id",
+          "evidence_ids",
+          "scope_match",
+          "reason"
+        ],
+        "title": "ConflictCandidate",
+        "description": "A persisted scope-aware conflict requiring qualification or arbitration."
+      },
+      "EvidenceScope": {
+        "properties": {
+          "dataset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset"
+          },
+          "split": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Split"
+          },
+          "metric": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metric"
+          },
+          "model_variant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Variant"
+          },
+          "training_protocol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Training Protocol"
+          },
+          "prompt_setting": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Setting"
+          },
+          "noise_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Noise Level"
+          },
+          "publication_year": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Year"
+          }
+        },
+        "type": "object",
+        "title": "EvidenceScope",
+        "description": "Experimental/publication scope that prevents false evidence equivalence."
+      },
+      "EvidencePacket": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Schema Version"
+          },
+          "evidence_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Evidence Id"
+          },
+          "task_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Task Id"
+          },
+          "round_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Round Id"
+          },
+          "query_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Query Id"
+          },
+          "slot_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Slot Ids"
+          },
+          "statement": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Statement"
+          },
+          "support_type": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "calculated",
+              "scope_constraint",
+              "contradictory"
+            ],
+            "title": "Support Type"
+          },
+          "source": {
+            "$ref": "#/components/schemas/EvidenceSource"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/EvidenceScope"
+          },
+          "locator": {
+            "$ref": "#/components/schemas/SourceLocator"
+          },
+          "raw_value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Value"
+          },
+          "normalized_value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Normalized Value"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "calculation_operation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calculation Operation"
+          },
+          "premise_evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Premise Evidence Ids"
+          },
+          "display_precision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Precision"
+          },
+          "rounding_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rounding Mode"
+          },
+          "extractor_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extractor Version"
+          },
+          "prompt_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Version"
+          },
+          "validation_status": {
+            "type": "string",
+            "enum": [
+              "deterministic_valid",
+              "quote_bound",
+              "derived_non_evidence",
+              "invalid"
+            ],
+            "title": "Validation Status",
+            "default": "deterministic_valid"
+          }
+        },
+        "type": "object",
+        "required": [
+          "schema_version",
+          "evidence_id",
+          "task_id",
+          "round_id",
+          "query_id",
+          "slot_ids",
+          "statement",
+          "support_type",
+          "source",
+          "scope",
+          "locator"
+        ],
+        "title": "EvidencePacket",
+        "description": "Positive, provenance-bound fact state; absence belongs to slot resolution."
+      },
+      "CampaignPreflightIssue": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "configuration_incompatible",
+            "title": "Status",
+            "default": "configuration_incompatible"
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "pre_route",
+              "post_contract"
+            ],
+            "title": "Stage"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "stage",
+          "reason"
+        ],
+        "title": "CampaignPreflightIssue"
+      },
+      "SufficiencyReport": {
+        "properties": {
+          "evidence_complete": {
+            "type": "boolean",
+            "title": "Evidence Complete"
+          },
+          "answerable": {
+            "type": "boolean",
+            "title": "Answerable"
+          },
+          "response_status": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "qualified_partial",
+              "insufficient"
+            ],
+            "title": "Response Status"
+          },
+          "supported_slot_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Supported Slot Ids"
+          },
+          "conflicted_slot_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Conflicted Slot Ids"
+          },
+          "explicitly_unavailable_slot_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Explicitly Unavailable Slot Ids"
+          },
+          "not_found_slot_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Not Found Slot Ids"
+          },
+          "stop_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_complete",
+          "answerable",
+          "response_status"
+        ],
+        "title": "SufficiencyReport",
+        "description": "Evidence completeness and response usability are deliberately independent."
+      },
+      "RunDetailResponse": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "trace_events": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Trace Events"
+          },
+          "llm_calls": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Llm Calls"
+          },
+          "retrieval_events": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Retrieval Events"
+          },
+          "retrieval_chunks": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Retrieval Chunks"
+          },
+          "context_packs": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Context Packs"
+          },
+          "tool_calls": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Tool Calls"
+          },
+          "routing_decisions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Routing Decisions"
+          },
+          "claims": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Claims"
+          },
+          "human_ratings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Human Ratings"
+          },
+          "agentic_v9": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V9ExecutionObservability"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "campaign_id"
+        ],
+        "title": "RunDetailResponse",
+        "description": "Full run detail assembled from all research observability views."
+      },
+      "V9SlotResolution": {
+        "properties": {
+          "slot_id": {
+            "type": "string",
+            "title": "Slot Id"
+          },
+          "resolution_stage": {
+            "type": "string",
+            "title": "Resolution Stage"
+          },
+          "resolution": {
+            "$ref": "#/components/schemas/SlotResolution"
+          }
+        },
+        "type": "object",
+        "required": [
+          "slot_id",
+          "resolution_stage",
+          "resolution"
+        ],
+        "title": "V9SlotResolution"
+      },
+      "ResolvedSourceScope": {
+        "properties": {
+          "requested_doc_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Requested Doc Ids"
+          },
+          "requested_source_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Requested Source Names"
+          },
+          "resolved_doc_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Resolved Doc Ids"
+          },
+          "authorized_doc_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Authorized Doc Ids"
+          },
+          "rejected_source_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Rejected Source Names"
+          }
+        },
+        "type": "object",
+        "title": "ResolvedSourceScope",
+        "description": "Resolver output; the sole v9 contract that contains authorized IDs."
+      },
+      "RetrievalTask": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Task Id"
+          },
+          "round_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Round Id"
+          },
+          "query_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Query Id"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Query"
+          },
+          "target_slot_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Target Slot Ids"
+          },
+          "source_scope": {
+            "$ref": "#/components/schemas/ResolvedSourceScope"
+          },
+          "source_group_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Source Group Id",
+            "default": "source-group-1"
+          },
+          "locator_hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Locator Hints"
+          },
+          "graph_policy": {
+            "type": "string",
+            "enum": [
+              "never",
+              "locator_fallback",
+              "required_locator"
+            ],
+            "title": "Graph Policy",
+            "default": "never"
+          },
+          "visual_required": {
+            "type": "boolean",
+            "title": "Visual Required",
+            "default": false
+          },
+          "depends_on_task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Depends On Task Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "task_id",
+          "round_id",
+          "query_id",
+          "query",
+          "target_slot_ids",
+          "source_scope"
+        ],
+        "title": "RetrievalTask",
+        "description": "A retrieval-only unit that targets slots and never contains an answer."
+      },
+      "V9ExecutionMetrics": {
+        "properties": {
+          "provider_attempt_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Provider Attempt Count",
+            "default": 0
+          },
+          "tool_operation_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Tool Operation Count",
+            "default": 0
+          },
+          "retrieval_query_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Retrieval Query Count",
+            "default": 0
+          },
+          "final_generation_count": {
+            "type": "integer",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Final Generation Count",
+            "default": 0
+          },
+          "subtask_answer_count": {
+            "type": "integer",
+            "maximum": 0.0,
+            "minimum": 0.0,
+            "title": "Subtask Answer Count",
+            "default": 0
+          },
+          "prose_curator_call_count": {
+            "type": "integer",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Prose Curator Call Count",
+            "default": 0
+          },
+          "arbitration_call_count": {
+            "type": "integer",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Arbitration Call Count",
+            "default": 0
+          },
+          "reserved_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Reserved Tokens",
+            "default": 0
+          },
+          "reconciled_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Reconciled Tokens",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "V9ExecutionMetrics",
+        "description": "Run-level observability metrics with provider and tool work kept separate."
+      },
+      "QueryContract": {
+        "properties": {
+          "contract_version": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Contract Version",
+            "default": "1"
+          },
+          "route": {
+            "type": "string",
+            "enum": [
+              "single_lookup",
+              "bounded_compare",
+              "exact_structured",
+              "multi_document_exact",
+              "multi_hop",
+              "graph_relational"
+            ],
+            "title": "Route"
+          },
+          "intent": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Intent"
+          },
+          "required_slots": {
+            "items": {
+              "$ref": "#/components/schemas/RequiredSlot"
+            },
+            "type": "array",
+            "title": "Required Slots"
+          },
+          "entities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Entities"
+          },
+          "locator_hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Locator Hints"
+          },
+          "graph_policy": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "never",
+                  "locator_fallback",
+                  "required_locator"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Policy"
+          },
+          "visual_required": {
+            "type": "boolean",
+            "title": "Visual Required",
+            "default": false
+          },
+          "evidence_extraction_required": {
+            "type": "boolean",
+            "title": "Evidence Extraction Required",
+            "default": false
+          },
+          "max_retrieval_rounds": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Max Retrieval Rounds",
+            "default": 0
+          },
+          "max_repair_rounds": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Max Repair Rounds",
+            "default": 0
+          },
+          "max_llm_calls": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Max Llm Calls",
+            "default": 0
+          },
+          "runtime_token_budget": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Runtime Token Budget",
+            "default": 0
+          },
+          "resolved_source_scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolvedSourceScope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "strategy_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Tier"
+          }
+        },
+        "type": "object",
+        "required": [
+          "route",
+          "intent"
+        ],
+        "title": "QueryContract",
+        "description": "Routing authority for a bounded evidence-first execution."
+      },
+      "V9ContextPack": {
+        "properties": {
+          "packed_evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Packed Evidence Ids"
+          },
+          "dropped_evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dropped Evidence Ids"
+          },
+          "token_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Count"
+          }
+        },
+        "type": "object",
+        "title": "V9ContextPack"
+      },
+      "FinalClaim": {
+        "properties": {
+          "claim_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Claim Id"
+          },
+          "statement": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Statement"
+          },
+          "support_type": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "calculated",
+              "comparative_inference",
+              "qualified"
+            ],
+            "title": "Support Type"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence Ids"
+          },
+          "premise_evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Premise Evidence Ids"
+          },
+          "qualified_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualified Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "claim_id",
+          "statement",
+          "support_type"
+        ],
+        "title": "FinalClaim",
+        "description": "A rendered answer claim linked to its supporting evidence packet IDs."
+      },
+      "CampaignPreflightQuestion": {
+        "properties": {
+          "question_id": {
+            "type": "string",
+            "title": "Question Id"
+          },
+          "expected_route": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Route"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "feasible",
+              "configuration_incompatible"
+            ],
+            "title": "Status"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignPreflightIssue"
+            },
+            "type": "array",
+            "title": "Issues"
+          }
+        },
+        "type": "object",
+        "required": [
+          "question_id",
+          "status"
+        ],
+        "title": "CampaignPreflightQuestion"
+      },
+      "BudgetReservation": {
+        "properties": {
+          "reservation_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Reservation Id"
+          },
+          "phase": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Phase"
+          },
+          "estimated_input_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Estimated Input Tokens"
+          },
+          "reserved_output_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Reserved Output Tokens"
+          },
+          "reserved_reasoning_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Reserved Reasoning Tokens",
+            "default": 0
+          },
+          "provider_attempt": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Provider Attempt",
+            "default": 1
+          }
+        },
+        "type": "object",
+        "required": [
+          "reservation_id",
+          "phase",
+          "estimated_input_tokens",
+          "reserved_output_tokens"
+        ],
+        "title": "BudgetReservation",
+        "description": "Atomic budget reservation made before a provider attempt."
+      },
+      "EvidenceSource": {
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Doc Id"
+          },
+          "chunk_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Id"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "asset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Id"
+          },
+          "document_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Name"
+          },
+          "source_span_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Span Hash"
+          }
+        },
+        "type": "object",
+        "required": [
+          "doc_id"
+        ],
+        "title": "EvidenceSource",
+        "description": "Canonical source identity for a positive evidence packet."
+      },
+      "V9EvidencePacket": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id"
+          },
+          "packet": {
+            "$ref": "#/components/schemas/EvidencePacket"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "packet"
+        ],
+        "title": "V9EvidencePacket"
+      },
+      "RequiredSlot": {
+        "properties": {
+          "slot_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Slot Id"
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Description"
+          },
+          "required": {
+            "type": "boolean",
+            "title": "Required",
+            "default": true
+          },
+          "entity_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Entity Ids"
+          },
+          "locator_hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Locator Hints"
+          }
+        },
+        "type": "object",
+        "required": [
+          "slot_id",
+          "description"
+        ],
+        "title": "RequiredSlot",
+        "description": "One fact, comparison, or locator the answer must resolve."
+      },
+      "RepairPlan": {
+        "properties": {
+          "repair_round_index": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Repair Round Index"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/RetrievalTask"
+            },
+            "type": "array",
+            "maxItems": 2,
+            "title": "Tasks"
+          },
+          "stop_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "repair_round_index"
+        ],
+        "title": "RepairPlan",
+        "description": "Serializable repair decision containing retrieval tasks, never answers."
+      },
+      "CampaignPreflightRequest": {
+        "properties": {
+          "test_case_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Test Case Ids"
+          },
+          "model_config": {
+            "$ref": "#/components/schemas/ModelConfig"
+          },
+          "runtime_token_budget": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Runtime Token Budget"
+          },
+          "max_llm_calls": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Max Llm Calls"
+          }
+        },
+        "type": "object",
+        "required": [
+          "test_case_ids",
+          "model_config",
+          "runtime_token_budget",
+          "max_llm_calls"
+        ],
+        "title": "CampaignPreflightRequest",
+        "description": "Non-mutating v9 admission check for selected Golden Dataset questions."
+      },
+      "SourceLocator": {
+        "properties": {
+          "pdf_page_index": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pdf Page Index"
+          },
+          "printed_page_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Printed Page Label"
+          },
+          "section": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Section"
+          },
+          "table_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Table Id"
+          },
+          "figure_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Figure Id"
+          },
+          "bbox": {
+            "anyOf": [
+              {
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array",
+                "maxItems": 4,
+                "minItems": 4
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bbox"
+          },
+          "citation_format_version": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Citation Format Version",
+            "default": "1"
+          }
+        },
+        "type": "object",
+        "title": "SourceLocator",
+        "description": "Versioned source location with distinct PDF and printed-page coordinates."
+      },
+      "CampaignPreflightResponse": {
+        "properties": {
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignPreflightQuestion"
+            },
+            "type": "array",
+            "title": "Questions"
+          }
+        },
+        "type": "object",
+        "title": "CampaignPreflightResponse",
+        "description": "Token-only configuration compatibility; values are never monetary."
+      },
+      "SlotResolution": {
+        "properties": {
+          "slot_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Slot Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "supported",
+              "conflicted",
+              "explicitly_unavailable",
+              "not_found"
+            ],
+            "title": "Status"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence Ids"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "resolution_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Stage"
+          }
+        },
+        "type": "object",
+        "required": [
+          "slot_id",
+          "status"
+        ],
+        "title": "SlotResolution",
+        "description": "The separately persisted resolution state for a required slot."
+      },
+      "V9ExecutionObservability": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "title": "Schema Version",
+            "default": "1"
+          },
+          "contract": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QueryContract"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slot_resolutions": {
+            "items": {
+              "$ref": "#/components/schemas/V9SlotResolution"
+            },
+            "type": "array",
+            "title": "Slot Resolutions"
+          },
+          "evidence_packets": {
+            "items": {
+              "$ref": "#/components/schemas/V9EvidencePacket"
+            },
+            "type": "array",
+            "title": "Evidence Packets"
+          },
+          "sufficiency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SufficiencyReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "context_pack": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V9ContextPack"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "budget": {
+            "items": {
+              "$ref": "#/components/schemas/BudgetReservation"
+            },
+            "type": "array",
+            "title": "Budget"
+          },
+          "repairs": {
+            "items": {
+              "$ref": "#/components/schemas/RepairPlan"
+            },
+            "type": "array",
+            "title": "Repairs"
+          },
+          "conflicts": {
+            "items": {
+              "$ref": "#/components/schemas/ConflictCandidate"
+            },
+            "type": "array",
+            "title": "Conflicts"
+          },
+          "final_claims": {
+            "items": {
+              "$ref": "#/components/schemas/FinalClaim"
+            },
+            "type": "array",
+            "title": "Final Claims"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/V9ExecutionMetrics"
+          }
+        },
+        "type": "object",
+        "title": "V9ExecutionObservability",
+        "description": "Versioned, token-only evidence-first observability projection."
       }
     },
     "securitySchemes": {

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 import math
 import re
 from collections import Counter, defaultdict
@@ -10,6 +12,7 @@ from dataclasses import dataclass, replace
 from statistics import mean
 from typing import Any, Literal
 from uuid import uuid4
+from pathlib import Path
 
 from pydantic import BaseModel
 
@@ -20,6 +23,10 @@ from evaluation.campaign_schemas import (
     CampaignLifecycleStatus,
     CampaignErrorsResponse,
     CampaignOverviewResponse,
+    CampaignPreflightIssue,
+    CampaignPreflightQuestion,
+    CampaignPreflightRequest,
+    CampaignPreflightResponse,
     CostLatencyResponse,
     EvaluationRunListItem,
     EvaluationRunListResponse,
@@ -36,12 +43,17 @@ from evaluation.campaign_schemas import (
     RouterAnalysisResponse,
     RunClaimsResponse,
     RunContextResponse,
+    RunDetailResponse,
     RunDiffResponse,
     RunLlmCallsResponse,
     RunMetricsResponse,
     RunRetrievalResponse,
     RunToolsResponse,
     RunTraceResponse,
+    V9ContextPack,
+    V9EvidencePacket,
+    V9ExecutionObservability,
+    V9SlotResolution,
     SanitizedErrorRow,
 )
 from evaluation.db import (
@@ -54,6 +66,22 @@ from evaluation.rag_modes import RAG_MODES
 from evaluation.observability_storage import (
     EvaluationObservabilityRepository,
     redact_sensitive_value,
+)
+from data_base.agentic_v9.budget_feasibility import (
+    FeasibilityStatus,
+    validate_post_contract_feasibility,
+    validate_pre_route_feasibility,
+)
+from data_base.agentic_v9.repair import RepairPlan
+from data_base.agentic_v9.schemas import QueryContract
+from data_base.agentic_v9.schemas import (
+    BudgetReservation,
+    ConflictCandidate,
+    EvidencePacket,
+    FinalClaim,
+    SlotResolution,
+    SufficiencyReport,
+    V9ExecutionMetrics,
 )
 from evaluation.trace_schemas import EvaluationHumanRating
 
@@ -74,10 +102,27 @@ _GRAPH_ABLATION_METRICS = (
     "router_skip_graph_accuracy",
     "router_use_graph_accuracy",
 )
+_V9_GOLDEN_DATASET = Path(__file__).resolve().parent / "golden" / "agentic_v9_questions_v2.json"
 
 
 def _dump(value: BaseModel) -> dict[str, Any]:
     return value.model_dump(mode="json")
+
+
+def _load_v9_golden_routes() -> dict[str, str]:
+    """Read the immutable route authority once per preflight request."""
+    try:
+        payload = json.loads(_V9_GOLDEN_DATASET.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    questions = payload.get("questions") if isinstance(payload, dict) else []
+    return {
+        str(question["id"]): str(question["expected_route"])
+        for question in questions
+        if isinstance(question, dict)
+        and isinstance(question.get("id"), str)
+        and isinstance(question.get("expected_route"), str)
+    }
 
 
 def _cost_rollup(values: list[float | None]) -> tuple[float | None, int, int, str]:
@@ -246,6 +291,62 @@ class EvaluationAnalyticsService:
     async def campaign_overview(self, *, user_id: str, campaign_id: str) -> CampaignOverviewResponse:
         context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
         return context.overview or self._build_campaign_overview(context)
+
+    async def campaign_preflight(
+        self, *, user_id: str, request: CampaignPreflightRequest
+    ) -> CampaignPreflightResponse:
+        """Check the two v9 feasibility stages without reserving or invoking work."""
+        from evaluation.storage import list_test_cases
+
+        owned_ids = {
+            str(case.get("id"))
+            for case in await list_test_cases(user_id)
+            if isinstance(case, dict)
+        }
+        golden = _load_v9_golden_routes()
+        setup_snapshot = request.model_preset.model_dump(mode="json")
+        questions: list[CampaignPreflightQuestion] = []
+        for question_id in request.test_case_ids:
+            expected_route = golden.get(question_id)
+            issues: list[CampaignPreflightIssue] = []
+            if question_id not in owned_ids or expected_route is None:
+                issues.append(
+                    CampaignPreflightIssue(
+                        stage="post_contract",
+                        reason="golden_expected_route_unavailable",
+                    )
+                )
+            else:
+                pre_route = validate_pre_route_feasibility(
+                    setup_snapshot=setup_snapshot,
+                    remaining_token_budget=request.runtime_token_budget,
+                    remaining_llm_calls=request.max_llm_calls,
+                )
+                if pre_route.status is FeasibilityStatus.CONFIGURATION_INCOMPATIBLE:
+                    issues.append(CampaignPreflightIssue(stage="pre_route", reason=pre_route.reason or "configuration_incompatible"))
+                contract = QueryContract(
+                    route=expected_route,
+                    intent="Golden Dataset static route compatibility check.",
+                    max_llm_calls=request.max_llm_calls,
+                    runtime_token_budget=request.runtime_token_budget,
+                )
+                post_contract = validate_post_contract_feasibility(
+                    contract=contract,
+                    setup_snapshot=setup_snapshot,
+                    remaining_token_budget=request.runtime_token_budget,
+                    remaining_llm_calls=request.max_llm_calls,
+                )
+                if post_contract.status is FeasibilityStatus.CONFIGURATION_INCOMPATIBLE:
+                    issues.append(CampaignPreflightIssue(stage="post_contract", reason=post_contract.reason or "configuration_incompatible"))
+            questions.append(
+                CampaignPreflightQuestion(
+                    question_id=question_id,
+                    expected_route=expected_route,
+                    status="configuration_incompatible" if issues else "feasible",
+                    issues=issues,
+                )
+            )
+        return CampaignPreflightResponse(questions=questions)
 
     async def _load_campaign_context(self, *, user_id: str, campaign_id: str) -> _CampaignAnalyticsContext:
         campaign = await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
@@ -947,6 +1048,81 @@ class EvaluationAnalyticsService:
                 if item.campaign_id == campaign_id
             ],
         )
+
+    async def run_detail(self, *, user_id: str, run_id: str) -> RunDetailResponse:
+        """Return the legacy detail fields plus the optional versioned v9 envelope."""
+        campaign_id = await self._campaign_id_for_owned_run(user_id=user_id, run_id=run_id)
+        trace, retrieval, context, tools, claims = await asyncio.gather(
+            self.run_trace(user_id=user_id, run_id=run_id),
+            self.run_retrieval(user_id=user_id, run_id=run_id),
+            self.run_context(user_id=user_id, run_id=run_id),
+            self.run_tools(user_id=user_id, run_id=run_id),
+            self.run_claims(user_id=user_id, run_id=run_id),
+        )
+        llm = await self.run_llm_calls(user_id=user_id, run_id=run_id)
+        return RunDetailResponse(
+            run_id=run_id,
+            campaign_id=campaign_id,
+            trace_events=trace.trace_events,
+            llm_calls=llm.llm_calls,
+            retrieval_events=retrieval.retrieval_events,
+            retrieval_chunks=retrieval.retrieval_chunks,
+            context_packs=context.context_packs,
+            tool_calls=tools.tool_calls,
+            routing_decisions=trace.routing_decisions,
+            claims=claims.claims,
+            agentic_v9=await self._v9_observability_for_run(
+                user_id=user_id, campaign_id=campaign_id, run_id=run_id
+            ),
+        )
+
+    async def _v9_observability_for_run(
+        self, *, user_id: str, campaign_id: str, run_id: str
+    ) -> V9ExecutionObservability | None:
+        await init_db()
+        async with connect_db() as connection:
+            row = await (
+                await connection.execute(
+                    "SELECT source_attempt_id FROM campaign_results WHERE id = ? AND campaign_id = ? AND user_id = ?",
+                    (run_id, campaign_id, user_id),
+                )
+            ).fetchone()
+        attempt_id = str(row["source_attempt_id"]) if row and row["source_attempt_id"] else None
+        if not attempt_id:
+            return None
+        materialization = await self._observability_repository.get_v9_attempt_materialization(attempt_id)
+        if materialization is None or materialization.campaign_id != campaign_id:
+            return None
+        payload = materialization.trace_payload
+        try:
+            evidence = [
+                V9EvidencePacket(evidence_id=item.evidence_id, packet=EvidencePacket.model_validate(item.packet))
+                for item in await self._observability_repository.list_evidence_packets_for_attempt(attempt_id)
+            ]
+            slots = [
+                V9SlotResolution(
+                    slot_id=item.slot_id,
+                    resolution_stage=item.resolution_stage,
+                    resolution=SlotResolution.model_validate(item.resolution),
+                )
+                for item in await self._observability_repository.list_slot_resolutions_for_attempt(attempt_id)
+            ]
+            return V9ExecutionObservability(
+                schema_version=materialization.schema_version,
+                contract=QueryContract.model_validate(payload["query_contract"]) if payload.get("query_contract") else None,
+                slot_resolutions=slots,
+                evidence_packets=evidence,
+                sufficiency=SufficiencyReport.model_validate(payload["sufficiency"]) if payload.get("sufficiency") else None,
+                context_pack=V9ContextPack.model_validate(payload["context_pack"]) if payload.get("context_pack") else None,
+                budget=[BudgetReservation.model_validate(item) for item in payload.get("budget_reservations", [])],
+                repairs=[RepairPlan.model_validate(item) for item in payload.get("repairs", [])],
+                conflicts=[ConflictCandidate.model_validate(item) for item in payload.get("conflicts", [])],
+                final_claims=[FinalClaim.model_validate(item) for item in payload.get("final_claims", [])],
+                metrics=V9ExecutionMetrics.model_validate(payload.get("metrics", {})),
+            )
+        except (KeyError, TypeError, ValueError):
+            # Older/partial materializations are intentionally represented as N/A.
+            return None
 
     async def run_retrieval(self, *, user_id: str, run_id: str) -> RunRetrievalResponse:
         campaign_id = await self._campaign_id_for_owned_run(user_id=user_id, run_id=run_id)
