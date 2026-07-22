@@ -56,6 +56,7 @@ from evaluation.campaign_schemas import (
 )
 from evaluation.model_capabilities import normalize_model_config_for_storage
 from evaluation.research_analytics import ResearchAnalyticsService
+from evaluation.release_metrics import ReleaseMetricsReport, ReleaseMetricsService
 from evaluation.model_discovery import list_available_models
 from evaluation.db import CampaignResultRepository
 from evaluation.job_schemas import (
@@ -173,6 +174,7 @@ def _to_sse_event(
 
 _ANALYTICS_SERVICE = EvaluationAnalyticsService()
 _RESEARCH_ANALYTICS_SERVICE = ResearchAnalyticsService()
+_RELEASE_METRICS_SERVICE = ReleaseMetricsService()
 
 
 def get_evaluation_analytics_service() -> EvaluationAnalyticsService:
@@ -183,6 +185,11 @@ def get_evaluation_analytics_service() -> EvaluationAnalyticsService:
 def get_research_analytics_service() -> ResearchAnalyticsService:
     """Factory for strict research-accounting analytics."""
     return _RESEARCH_ANALYTICS_SERVICE
+
+
+def get_release_metrics_service() -> ReleaseMetricsService:
+    """Factory for fail-closed benchmark release metrics."""
+    return _RELEASE_METRICS_SERVICE
 
 
 async def _preserve_omitted_test_case_metadata(
@@ -416,6 +423,19 @@ async def get_campaign_research_summary(
 ) -> CampaignResearchSummaryResponse:
     """Fetch the strict version-2 research accounting summary."""
     return await analytics.get_summary(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get(
+    "/campaigns/{campaign_id}/release-metrics",
+    response_model=ReleaseMetricsReport,
+)
+async def get_campaign_release_metrics(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: ReleaseMetricsService = Depends(get_release_metrics_service),
+) -> ReleaseMetricsReport:
+    """Return authoritative, fail-closed v9 benchmark release metrics."""
+    return await analytics.get_report(user_id=user_id, campaign_id=campaign_id)
 
 
 @router.get(
