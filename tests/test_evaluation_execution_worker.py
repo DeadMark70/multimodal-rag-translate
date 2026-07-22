@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 from shutil import rmtree
 from types import SimpleNamespace
@@ -13,12 +14,15 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from langchain_core.documents import Document
 
 import evaluation.db as evaluation_db
 from core.llm_usage_callback import emit_direct_usage
 from core.llm_usage_context import llm_accounting_phase
 from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.execution_worker import DatasetExecutionWorker
+from evaluation.analytics import EvaluationAnalyticsService
+from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
 from evaluation.job_schemas import (
     ClaimedEvaluationWork,
     EvaluationWorkType,
@@ -51,7 +55,9 @@ async def store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> EvaluationJobStore:
     database_path = (
-        Path("output") / "test_tmp" / f"dataset-execution-{uuid4().hex}" / "worker.db"
+        Path(os.environ["EVALUATION_TEST_TMPDIR"])
+        / f"dataset-execution-{uuid4().hex}"
+        / "worker.db"
     )
     database_path.parent.mkdir(parents=True)
     monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", database_path)
@@ -100,6 +106,9 @@ async def _claim_seeded_execution(
     store: EvaluationJobStore,
     *,
     mode: str = "naive",
+    agentic_execution_version: str = "v8",
+    source_docs: list[str] | None = None,
+    model_config: dict | None = None,
 ):  # noqa: ANN202
     await store.create_job_with_items(
         user_id="user-a",
@@ -118,13 +127,14 @@ async def _claim_seeded_execution(
                         "id": "Q1",
                         "question": "What is the answer?",
                         "ground_truth": "42",
-                        "source_docs": [],
+                        "source_docs": source_docs or [],
                         "requires_multi_doc_reasoning": False,
                     },
                     "mode": mode,
                     "run_number": 1,
                     "repeat_number": 1,
-                    "model_config": {},
+                    "model_config": model_config or {},
+                    "agentic_execution_version": agentic_execution_version,
                 },
             )
         ],
@@ -512,3 +522,75 @@ async def test_worker_completion_after_campaign_cancellation_exits_cleanly(
         )
         == []
     )
+
+
+@pytest.mark.asyncio
+async def test_v9_worker_materializes_the_real_core_trace_for_run_detail(
+    store: EvaluationJobStore,
+) -> None:
+    provider = SimpleNamespace(
+        ainvoke=AsyncMock(
+            return_value=SimpleNamespace(
+                content="The source reports 0.91.",
+                usage_metadata={"input_tokens": 10, "output_tokens": 5},
+            )
+        )
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="The source reports 0.91.",
+                    metadata={"doc_id": "doc-1", "page_number": 1},
+                )
+            ]
+        ),
+        provider_factory=lambda _purpose: provider,
+    )
+
+    async def runner(**kwargs):  # noqa: ANN003
+        v9 = await runtime.execute(
+            question=kwargs["test_case"].question,
+            user_id=kwargs["user_id"],
+            authorized_doc_ids=list(kwargs["test_case"].source_docs),
+            setup_snapshot=kwargs["model_config"],
+            trace_id="worker-v9-trace",
+        )
+        return BenchmarkExecutionResult(
+            question_id=kwargs["test_case"].id,
+            question=kwargs["test_case"].question,
+            ground_truth=kwargs["test_case"].ground_truth,
+            mode=kwargs["mode"],
+            answer=v9.answer,
+            contexts=[document.page_content for document in v9.documents],
+            source_doc_ids=v9.source_doc_ids,
+            agent_trace=v9.agent_trace,
+            agentic_execution_version="v9",
+        )
+
+    worker = DatasetExecutionWorker(store=store, runner=runner)
+    claim = await _claim_seeded_execution(
+        store,
+        mode="agentic",
+        agentic_execution_version="v9",
+        source_docs=["doc-1"],
+        model_config={
+            "max_input_tokens": 4096,
+            "max_output_tokens": 256,
+            "thinking_mode": False,
+        },
+    )
+    await worker.execute(claim)
+
+    result = (
+        await evaluation_db.CampaignResultRepository().list_for_campaign(
+            user_id="user-a", campaign_id="cmp-1"
+        )
+    )[0]
+    detail = await EvaluationAnalyticsService().run_detail(
+        user_id="user-a", run_id=result.id
+    )
+    assert detail.agentic_v9 is not None
+    assert detail.agentic_v9.contract is not None
+    assert detail.agentic_v9.evidence_packets
+    assert detail.agentic_v9.slot_resolutions

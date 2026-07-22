@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import tempfile
 import time
 from contextlib import contextmanager
@@ -29,13 +30,13 @@ class FakeRagasEvaluator:
 
 
 def _make_upload_root() -> Path:
-    root = Path("output") / "test_tmp" / f"analytics_api_{uuid4().hex}" / "uploads"
+    root = Path(os.environ["EVALUATION_TEST_TMPDIR"]) / f"analytics_api_{uuid4().hex}" / "uploads"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 def _make_db_path() -> Path:
-    root = Path("output") / "test_tmp" / f"analytics_db_{uuid4().hex}"
+    root = Path(os.environ["EVALUATION_TEST_TMPDIR"]) / f"analytics_db_{uuid4().hex}"
     root.mkdir(parents=True, exist_ok=True)
     return root / "evaluation.db"
 

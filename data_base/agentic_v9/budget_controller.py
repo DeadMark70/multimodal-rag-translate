@@ -317,6 +317,11 @@ class RunBudgetController:
                 total_tokens=reconciled,
             )
 
+    async def reservations(self) -> tuple[BudgetReservation, ...]:
+        """Return the immutable reservation ledger for a persisted v9 trace."""
+        async with self._lock:
+            return tuple(self._reservations.values())
+
     def _reserved_tokens(self) -> int:
         return sum(
             item.estimated_input_tokens

@@ -38,9 +38,16 @@ from evaluation.db import (
 from evaluation.error_policy import classify_evaluation_error
 from evaluation.job_schemas import ClaimedEvaluationWork, ExecutionAttemptOutput
 from evaluation.job_store import EvaluationJobStore
+from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
 from evaluation.retrieval_profiles import evaluation_failure_execution_profile
 from evaluation.schemas import TestCase
+from evaluation.trace_schemas import (
+    EvaluationClaim,
+    EvaluationEvidencePacket,
+    EvaluationSlotResolution,
+)
+from data_base.agentic_v9.schemas import EvidencePacket, FinalClaim, SlotResolution
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +73,7 @@ class DatasetExecutionWorker:
         self._campaign_repository = campaign_repository or CampaignRepository()
         self._result_repository = result_repository or CampaignResultRepository()
         self._trace_repository = trace_repository or AgentTraceRepository()
+        self._observability_repository = EvaluationObservabilityRepository()
         self._ragas_evaluator = ragas_evaluator
         self._notify = notify
         self._accounting_store = accounting_store or EvaluationAccountingStore()
@@ -141,6 +149,14 @@ class DatasetExecutionWorker:
                     ExecutionAttemptOutput(result=result),
                     accounting_scope_id=scope.scope_id,
                 )
+                if unit.agentic_execution_version == "v9":
+                    await self._materialize_v9_attempt(
+                        claim=claim,
+                        run_id=promoted.id,
+                        campaign_id=campaign_id,
+                        condition_id=unit.condition_id or "",
+                        payload=payload,
+                    )
             except asyncio.CancelledError:
                 await self._accounting_store.finalize_scope(scope.scope_id, "cancelled")
                 raise
@@ -185,6 +201,88 @@ class DatasetExecutionWorker:
                 exc_info=True,
             )
         await self._derive_campaign_state(claim)
+
+    async def _materialize_v9_attempt(
+        self,
+        *,
+        claim: ClaimedEvaluationWork,
+        run_id: str,
+        campaign_id: str,
+        condition_id: str,
+        payload: BenchmarkExecutionResult,
+    ) -> None:
+        """Persist the terminal core state under the promoted attempt identity."""
+        trace = payload.agent_trace or {}
+        v9 = trace.get("agentic_v9") if isinstance(trace, dict) else None
+        if not isinstance(v9, dict):
+            raise ValueError("v9 campaign payload is missing its typed execution trace")
+        schema_version = str(v9.get("schema_version") or "1")
+        evidence_rows: list[EvaluationEvidencePacket] = []
+        for raw_packet in v9.get("evidence_packets", []):
+            packet = EvidencePacket.model_validate(raw_packet)
+            evidence_rows.append(
+                EvaluationEvidencePacket(
+                    attempt_id=claim.attempt_id,
+                    run_id=run_id,
+                    campaign_id=campaign_id,
+                    condition_id=condition_id,
+                    schema_version=schema_version,
+                    evidence_id=packet.evidence_id,
+                    packet=packet.model_dump(mode="json"),
+                )
+            )
+        resolution_rows: list[EvaluationSlotResolution] = []
+        for raw_resolution in v9.get("slot_resolutions", []):
+            resolution = SlotResolution.model_validate(raw_resolution)
+            resolution_rows.append(
+                EvaluationSlotResolution(
+                    attempt_id=claim.attempt_id,
+                    run_id=run_id,
+                    campaign_id=campaign_id,
+                    condition_id=condition_id,
+                    schema_version=schema_version,
+                    slot_id=resolution.slot_id,
+                    resolution_stage=resolution.resolution_stage or "sufficiency_gate",
+                    resolution=resolution.model_dump(mode="json"),
+                )
+            )
+        claims: list[EvaluationClaim] = []
+        for raw_claim in v9.get("final_claims", []):
+            final_claim = FinalClaim.model_validate(raw_claim)
+            claims.append(
+                EvaluationClaim(
+                    claim_id=final_claim.claim_id,
+                    attempt_id=claim.attempt_id,
+                    run_id=run_id,
+                    campaign_id=campaign_id,
+                    condition_id=condition_id,
+                    schema_version=schema_version,
+                    claim_text=final_claim.statement,
+                    claim_type=final_claim.support_type,
+                    support_status=(
+                        "supported" if final_claim.evidence_ids else "unsupported"
+                    ),
+                    evidence=[
+                        {"evidence_id": evidence_id}
+                        for evidence_id in final_claim.evidence_ids
+                    ],
+                    unsupported_reason=final_claim.qualified_reason,
+                )
+            )
+        trace_payload = dict(v9)
+        trace_payload.pop("evidence_packets", None)
+        trace_payload.pop("slot_resolutions", None)
+        await self._observability_repository.materialize_v9_attempt(
+            attempt_id=claim.attempt_id,
+            run_id=run_id,
+            campaign_id=campaign_id,
+            condition_id=condition_id,
+            schema_version=schema_version,
+            trace_payload=trace_payload,
+            evidence_packets=evidence_rows,
+            slot_resolutions=resolution_rows,
+            claims=claims,
+        )
 
     async def _claim_was_cancelled(self, claim: ClaimedEvaluationWork) -> bool:
         return await self._store.get_job_item_status(claim.job_item_id) == "cancelled"

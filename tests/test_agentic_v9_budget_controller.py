@@ -94,6 +94,22 @@ async def test_missing_usage_reconciles_to_the_conservative_reservation() -> Non
 
 
 @pytest.mark.asyncio
+async def test_reservations_expose_the_persistable_attempt_ledger() -> None:
+    controller = RunBudgetController(
+        max_llm_calls=2,
+        runtime_token_budget=10_000,
+        setup_snapshot={"max_output_tokens": 256, "thinking_mode": False},
+        final_input_tokens=128,
+    )
+
+    reservation = await controller.reserve_call(
+        phase="final_answer", purpose="answer", estimated_input_tokens=12
+    )
+
+    assert await controller.reservations() == (reservation,)
+
+
+@pytest.mark.asyncio
 async def test_controller_rejects_enabled_thinking_without_a_numeric_reserve() -> None:
     with pytest.raises(BudgetExceededError, match="thinking_reserve_unknown"):
         RunBudgetController(

@@ -6,6 +6,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
+from uuid import uuid4
 
 from langchain_core.documents import Document
 
@@ -13,6 +14,7 @@ from core.llm_factory import llm_runtime_override
 from data_base.indexing_service import DEFAULT_PRODUCTION_INDEXING_PROFILE
 from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from evaluation.agentic_evaluation_service import AgenticEvaluationService
+from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
 from evaluation.agentic_campaign_adapter import campaign_execution_identity
 from evaluation.model_capabilities import normalize_model_config_for_runtime
 from evaluation.retrieval_profiles import (
@@ -380,6 +382,8 @@ async def run_campaign_case(
                 user_id=user_id,
                 run_number=run_number,
                 agentic_execution_version=agentic_execution_version,
+                authorized_doc_ids=list(test_case.source_docs),
+                setup_snapshot=dict(model_config),
             )
         else:
             runtime_mode = {
@@ -453,10 +457,18 @@ async def _run_agentic_case(
     user_id: str,
     run_number: int,
     agentic_execution_version: Literal["v8", "v9"] = "v8",
+    authorized_doc_ids: list[str] | None = None,
+    setup_snapshot: dict[str, Any] | None = None,
 ) -> RAGResult:
-    service_kwargs: dict[str, Any] = {"max_concurrent_tasks": 3}
     if agentic_execution_version == "v9":
-        service_kwargs["agentic_execution_version"] = "v9"
+        return await AgenticV9CampaignRuntime().execute(
+            question=question,
+            user_id=user_id,
+            authorized_doc_ids=list(authorized_doc_ids or []),
+            setup_snapshot=dict(setup_snapshot or {}),
+            trace_id=f"campaign:{question_id}:{run_number}:{uuid4()}",
+        )
+    service_kwargs: dict[str, Any] = {"max_concurrent_tasks": 3}
     service = AgenticEvaluationService(**service_kwargs)
     return await service.run_case(
         question_id=question_id,

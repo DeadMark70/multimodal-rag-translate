@@ -229,6 +229,43 @@ async def test_run_campaign_case_agentic_uses_evaluation_service_and_profile() -
     assert result.context_policy_version == AGENTIC_CONTEXT_POLICY_VERSION
 
 
+@pytest.mark.asyncio
+async def test_v9_campaign_case_uses_the_typed_v9_runtime_not_the_v8_service() -> None:
+    test_case = EvaluationCase(
+        id="Q-v9",
+        question="What is the reported score?",
+        ground_truth="0.91",
+        source_docs=["doc-1"],
+        requires_multi_doc_reasoning=False,
+    )
+    v9_result = RAGResult(
+        answer="0.91",
+        source_doc_ids=["doc-1"],
+        documents=[Document(page_content="0.91", metadata={"doc_id": "doc-1"})],
+        agent_trace={
+            "agentic_execution_version": "v9",
+            "response_status": "complete",
+        },
+    )
+    with (
+        patch("evaluation.rag_modes.AgenticV9CampaignRuntime") as runtime_cls,
+        patch("evaluation.rag_modes.AgenticEvaluationService") as v8_service_cls,
+    ):
+        runtime_cls.return_value.execute = AsyncMock(return_value=v9_result)
+        result = await run_campaign_case(
+            test_case=test_case,
+            user_id="user-1",
+            mode="agentic-v9",
+            model_config={"max_input_tokens": 4096, "max_output_tokens": 256},
+            run_number=1,
+            agentic_execution_version="v9",
+        )
+
+    runtime_cls.return_value.execute.assert_awaited_once()
+    v8_service_cls.assert_not_called()
+    assert result.agentic_execution_version == "v9"
+
+
 def test_extract_contexts_uses_answer_aware_policy_and_preserves_task_coverage() -> (
     None
 ):

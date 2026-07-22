@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import os
 from pathlib import Path
 from shutil import rmtree
 from uuid import uuid4
@@ -38,7 +39,9 @@ async def accounting_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> EvaluationAccountingStore:
     database_path = (
-        Path("output") / "test_tmp" / f"accounting-runtime-{uuid4().hex}" / "worker.db"
+        Path(os.environ["EVALUATION_TEST_TMPDIR"])
+        / f"accounting-runtime-{uuid4().hex}"
+        / "worker.db"
     )
     database_path.parent.mkdir(parents=True)
     monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", database_path)
