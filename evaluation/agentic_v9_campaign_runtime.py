@@ -37,7 +37,6 @@ from data_base.agentic_v9.execution_policy import (
     V9ExecutionPolicyRuntime,
 )
 from data_base.agentic_v9.repair import build_repair_plan
-from data_base.agentic_v9.route_planner import plan_query_contract
 from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
@@ -54,13 +53,16 @@ from data_base.agentic_v9.schemas import (
     V9ExecutionRequest,
     V9RuntimeContext,
 )
-from data_base.agentic_v9.source_scope_resolver import SourceScopeResolver
 from data_base.agentic_v9.sufficiency_gate import SufficiencyEvaluation, evaluate_sufficiency
 from data_base.document_metadata import get_document_id
 from data_base.rag_filtering import filter_and_rerank_retrieval
 from data_base.rag_retrieval import retrieve_hybrid_documents
 from data_base.vector_store_manager import get_user_retriever_async
 from evaluation.agentic_campaign_adapter import used_evidence_documents
+from evaluation.agentic_v9_admission import (
+    DocumentReferenceResolver,
+    build_v9_admission_contract,
+)
 from evaluation.retrieval_profiles import AGENTIC_EVAL_PROFILE
 
 
@@ -84,10 +86,14 @@ class AgenticV9CampaignRuntime:
         retrieve_documents: RetrievalAdapter | None = None,
         provider_factory: ProviderFactory | None = None,
         policy_runtime: V9ExecutionPolicyRuntime | None = None,
+        document_reference_resolver: DocumentReferenceResolver | None = None,
     ) -> None:
         self._retrieve_documents = retrieve_documents or _retrieve_documents
         self._provider_factory = provider_factory or _provider_for_purpose
         self._policy_runtime = policy_runtime or V9ExecutionPolicyRuntime()
+        self._document_reference_resolver = (
+            document_reference_resolver or _resolve_document_references
+        )
 
     async def execute(
         self,
@@ -117,14 +123,17 @@ class AgenticV9CampaignRuntime:
                 feasibility=pre_route,
             )
 
-        source_scope = SourceScopeResolver({}).resolve(
-            requested_source_names=[],
-            requested_doc_ids=authorized_doc_ids,
-            authorized_doc_ids=authorized_doc_ids,
+        admission = await build_v9_admission_contract(
+            question=question,
+            user_id=user_id,
+            source_references=authorized_doc_ids,
+            document_reference_resolver=self._document_reference_resolver,
         )
+        source_scope = admission.source_scope
+        runtime_contract = admission.contract
         request = V9ExecutionRequest(
             question=question,
-            requested_doc_ids=list(authorized_doc_ids),
+            requested_doc_ids=list(source_scope.authorized_doc_ids),
             setup_snapshot=dict(setup_snapshot),
             trace_id=trace_id,
         )
@@ -149,10 +158,7 @@ class AgenticV9CampaignRuntime:
             # Route planning remains deterministic unless the planner has an
             # explicitly injected budgeted ambiguity invoker.  This prevents an
             # unreserved provider call while the contract budget is unknown.
-            contract = await plan_query_contract(
-                question=question,
-                resolved_source_scope=scope,
-            )
+            contract = runtime_contract
             post_contract = validate_post_contract_feasibility(
                 contract=contract,
                 setup_snapshot=setup_snapshot,
@@ -435,6 +441,14 @@ async def _retrieve_documents(
         enable_reranking=False,
     )
     return list(filtered.documents)
+
+
+async def _resolve_document_references(
+    user_id: str, references: list[str]
+) -> dict[str, list[str]]:
+    from data_base.repository import resolve_document_references
+
+    return await resolve_document_references(user_id=user_id, references=references)
 
 
 def _provider_for_purpose(_: str) -> Any:

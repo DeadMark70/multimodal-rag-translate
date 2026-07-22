@@ -541,6 +541,10 @@ async def test_v9_worker_materializes_the_real_core_trace_for_run_detail(
             )
         )
     )
+
+    async def resolve_references(_user_id: str, references: list[str]) -> dict[str, str]:
+        return {reference: reference for reference in references}
+
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(
             return_value=[
@@ -551,6 +555,7 @@ async def test_v9_worker_materializes_the_real_core_trace_for_run_detail(
             ]
         ),
         provider_factory=lambda _purpose: provider,
+        document_reference_resolver=resolve_references,
     )
 
     async def runner(**kwargs):  # noqa: ANN003

@@ -463,3 +463,50 @@ def test_v9_campaign_preflight_uses_golden_routes_and_reports_incompatible_setup
         issue = incompatible.json()["questions"][0]["issues"][0]
         assert issue["status"] == "configuration_incompatible"
         assert issue["reason"] == "thinking_reserve_unknown"
+
+
+def test_v9_campaign_preflight_uses_runtime_contract_for_visual_requirements() -> None:
+    engine = CampaignEngine(runner=Mock(), ragas_evaluator=FakeRagasEvaluator())
+    with tempfile.TemporaryDirectory(
+        prefix="analytics_v9_preflight_runtime_contract_", dir=Path.cwd()
+    ) as temp_dir:
+        temp_root = Path(temp_dir)
+        upload_root = temp_root / "uploads"
+        upload_root.mkdir()
+        db_path = temp_root / "evaluation.db"
+        with _build_client("user-a", upload_root, db_path, engine) as client:
+            created_case = client.post(
+                "/api/evaluation/test-cases",
+                json={
+                    "id": "Q10",
+                    "question": "What is the table score?",
+                    "ground_truth": "A table value.",
+                },
+            )
+            assert created_case.status_code == 200
+
+            response = client.post(
+                "/api/evaluation/campaigns/preflight",
+                json={
+                    "test_case_ids": ["Q10"],
+                    "model_config": {
+                        "id": "cfg-v9", "name": "v9", "model_name": "gemini-2.5-flash",
+                        "temperature": 0.7, "top_p": 0.95, "top_k": 40,
+                        "max_input_tokens": 8192, "max_output_tokens": 2048,
+                        "thinking_mode": False, "thinking_budget": 8192,
+                    },
+                    "runtime_token_budget": 10000, "max_llm_calls": 3,
+                },
+            )
+
+            assert response.status_code == 200
+            question = response.json()["questions"][0]
+            assert question["expected_route"] == "exact_structured"
+            assert question["status"] == "configuration_incompatible"
+            assert question["issues"] == [
+                {
+                    "stage": "post_contract",
+                    "reason": "required_provider_calls_exceed_call_budget",
+                    "status": "configuration_incompatible",
+                }
+            ]

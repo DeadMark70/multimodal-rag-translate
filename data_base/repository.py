@@ -74,6 +74,50 @@ async def fetch_document_filenames(doc_ids: list[str]) -> dict[str, str]:
     return name_map
 
 
+async def resolve_document_references(
+    user_id: str, references: list[str]
+) -> dict[str, list[str]]:
+    """Resolve owned canonical IDs from immutable IDs or stored file names.
+
+    Evaluation test cases created before canonical document IDs were persisted
+    may hold ``file_name`` values.  Keep this resolution fail-closed: duplicate
+    file names remain multiple candidates for ``SourceScopeResolver`` to reject
+    instead of selecting an arbitrary document.
+    """
+    unique_references = list(dict.fromkeys(value for value in references if value))
+    if not unique_references:
+        return {}
+
+    async def select(field: str):
+        return await execute_supabase_operation(
+            operation=f"resolve_document_references_by_{field}",
+            failure_message="Failed to resolve evaluation source references",
+            handler=lambda client: client.table("documents")
+            .select("id, file_name")
+            .eq("user_id", user_id)
+            .in_(field, unique_references)
+            .execute(),
+        )
+
+    id_response, filename_response = await select("id"), await select("file_name")
+    resolved: dict[str, set[str]] = {reference: set() for reference in unique_references}
+    for response in (id_response, filename_response):
+        for row in response.data or []:
+            document_id = row.get("id")
+            if not isinstance(document_id, str) or not document_id:
+                continue
+            if document_id in resolved:
+                resolved[document_id].add(document_id)
+            file_name = row.get("file_name")
+            if isinstance(file_name, str) and file_name in resolved:
+                resolved[file_name].add(document_id)
+    return {
+        reference: sorted(document_ids)
+        for reference, document_ids in resolved.items()
+        if document_ids
+    }
+
+
 async def persist_research_conversation(
     *,
     conversation_id: str,

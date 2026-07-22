@@ -73,6 +73,7 @@ from data_base.agentic_v9.budget_feasibility import (
     validate_post_contract_feasibility,
     validate_pre_route_feasibility,
 )
+from evaluation.agentic_v9_admission import build_v9_admission_contract
 from data_base.agentic_v9.repair import RepairPlan
 from data_base.agentic_v9.schemas import QueryContract
 from data_base.agentic_v9.schemas import (
@@ -299,10 +300,10 @@ class EvaluationAnalyticsService:
         """Check the two v9 feasibility stages without reserving or invoking work."""
         from evaluation.storage import list_test_cases
 
-        owned_ids = {
-            str(case.get("id"))
+        test_cases = {
+            str(case.get("id")): case
             for case in await list_test_cases(user_id)
-            if isinstance(case, dict)
+            if isinstance(case, dict) and case.get("id")
         }
         golden = _load_v9_golden_routes()
         setup_snapshot = request.model_preset.model_dump(mode="json")
@@ -310,7 +311,8 @@ class EvaluationAnalyticsService:
         for question_id in request.test_case_ids:
             expected_route = golden.get(question_id)
             issues: list[CampaignPreflightIssue] = []
-            if question_id not in owned_ids or expected_route is None:
+            test_case = test_cases.get(question_id)
+            if test_case is None or expected_route is None:
                 issues.append(
                     CampaignPreflightIssue(
                         stage="post_contract",
@@ -318,6 +320,12 @@ class EvaluationAnalyticsService:
                     )
                 )
             else:
+                question = str(test_case.get("question") or "")
+                source_docs = [
+                    str(value)
+                    for value in test_case.get("source_docs", [])
+                    if isinstance(value, str) and value
+                ]
                 pre_route = validate_pre_route_feasibility(
                     setup_snapshot=setup_snapshot,
                     remaining_token_budget=request.runtime_token_budget,
@@ -325,12 +333,20 @@ class EvaluationAnalyticsService:
                 )
                 if pre_route.status is FeasibilityStatus.CONFIGURATION_INCOMPATIBLE:
                     issues.append(CampaignPreflightIssue(stage="pre_route", reason=pre_route.reason or "configuration_incompatible"))
-                contract = QueryContract(
-                    route=expected_route,
-                    intent="Golden Dataset static route compatibility check.",
-                    max_llm_calls=request.max_llm_calls,
-                    runtime_token_budget=request.runtime_token_budget,
+                admission = await build_v9_admission_contract(
+                    question=question,
+                    user_id=user_id,
+                    source_references=source_docs,
                 )
+                contract = admission.contract
+                expected_route = contract.route
+                if admission.source_scope.rejected_source_names:
+                    issues.append(
+                        CampaignPreflightIssue(
+                            stage="post_contract",
+                            reason="source_reference_unresolved",
+                        )
+                    )
                 post_contract = validate_post_contract_feasibility(
                     contract=contract,
                     setup_snapshot=setup_snapshot,

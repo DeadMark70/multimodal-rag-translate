@@ -29,6 +29,13 @@ def _setup() -> dict[str, object]:
     }
 
 
+async def _identity_reference_resolver(
+    _user_id: str, references: list[str]
+) -> dict[str, str]:
+    """Keep unit tests independent of the production document repository."""
+    return {reference: reference for reference in references}
+
+
 @pytest.mark.asyncio
 async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> None:
     provider = _Provider()
@@ -43,6 +50,7 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=retrieve_documents,
         provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
     )
 
     result = await runtime.execute(
@@ -66,12 +74,49 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
 
 
 @pytest.mark.asyncio
+async def test_v9_campaign_runtime_resolves_filename_scope_to_canonical_document_id() -> None:
+    provider = _Provider()
+    retrieve_documents = AsyncMock(
+        return_value=[
+            Document(
+                page_content="The source reports a score of 0.91.",
+                metadata={"doc_id": "doc-1", "page_number": 2, "chunk_id": "chunk-1"},
+            )
+        ]
+    )
+
+    async def resolve_references(_user_id: str, references: list[str]) -> dict[str, str]:
+        assert references == ["paper.pdf"]
+        return {"paper.pdf": "doc-1"}
+
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve_documents,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=resolve_references,
+    )
+
+    result = await runtime.execute(
+        question="What is the reported score?",
+        user_id="user-a",
+        authorized_doc_ids=["paper.pdf"],
+        setup_snapshot=_setup(),
+        trace_id="attempt-trace-filename-scope",
+    )
+
+    assert result.agent_trace["agentic_v9"]["query_contract"]["resolved_source_scope"]["authorized_doc_ids"] == ["doc-1"]
+    assert result.agent_trace["agentic_v9"]["query_contract"]["resolved_source_scope"]["requested_doc_ids"] == ["doc-1"]
+    assert result.agent_trace["response_status"] == "complete"
+    retrieve_documents.assert_awaited()
+
+
+@pytest.mark.asyncio
 async def test_v9_runtime_rejects_incompatible_setup_before_provider_or_retrieval() -> None:
     provider = _Provider()
     retrieve_documents = AsyncMock()
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=retrieve_documents,
         provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
     )
 
     result = await runtime.execute(
@@ -96,6 +141,7 @@ async def test_v9_runtime_repeats_feasibility_after_contract_before_retrieval() 
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=retrieve_documents,
         provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
     )
 
     # A table request requires visual extraction in the deterministic contract.
