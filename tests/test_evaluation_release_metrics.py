@@ -9,8 +9,9 @@ from core.auth import get_current_user_id
 from evaluation.release_metrics import (
     ReleaseRun,
     derive_release_metrics,
+    environment_fingerprint,
     evaluator_fingerprints_from_work_metadata,
-    invariant_snapshot_fingerprint,
+    golden_question_fingerprint,
 )
 from evaluation.router import get_release_metrics_service
 from evaluation import db as evaluation_db
@@ -35,7 +36,8 @@ def _run(*, run_id: str, mode: str, version: str, complete: bool = True, golden:
         required_ragas_complete=True,
         golden_available=golden,
         used_evidence_mapped=used_evidence,
-        snapshot_fingerprint="same-snapshot",
+        golden_question_fingerprint="golden-Q9",
+        environment_fingerprint="environment-v1",
         evaluator_fingerprint="evaluator-v1",
         response_status="complete",
         required_slot_count=2,
@@ -106,32 +108,91 @@ def test_release_metrics_never_substitute_zero_for_partial_accounting() -> None:
     assert report.required_slot_coverage.reason == "release_gate_blocked:partial_accounting"
 
 
-def test_invariant_snapshot_fingerprint_excludes_arm_bookkeeping_but_keeps_real_snapshot_changes() -> None:
-    base = {
-        "golden": {"answer": "a"},
-        "corpus": {"index": "corpus-v1"},
-        "prompt": {"template": "prompt-v1"},
-        "model": {"model": "model-v1", "thinking_mode": False},
-        "phase": {"policy": "phase-v1"},
-        "evaluator": {"signature": "eval-v1"},
-        "code": {"commit": "code-v1"},
+def test_fingerprint_layers_keep_distinct_goldens_out_of_shared_environment() -> None:
+    question_one = {
+        "id": "Q1",
+        "question": "question one",
+        "ground_truth": "answer one",
+        "key_points": ["one"],
+        "expected_evidence": ["evidence-one"],
+    }
+    question_two = {
+        "id": "Q2",
+        "question": "question two",
+        "ground_truth": "answer two",
+        "key_points": ["two"],
+        "expected_evidence": ["evidence-two"],
+    }
+    base_environment = {
+        "model_thinking": {"model": "model-v1", "thinking_mode": False},
+        "system": {
+            "corpus": {"index": "corpus-v1"},
+            "prompt": {"template": "prompt-v1"},
+            "phase": {"policy": "phase-v1"},
+            "code": {"commit": "code-v1"},
+        },
         "mode": "naive",
         "run_number": 1,
         "repeat_number": 1,
         "condition_id": "naive-official",
     }
     other_arm = {
-        **base,
+        **base_environment,
         "mode": "agentic",
         "run_number": 2,
         "repeat_number": 8,
         "condition_id": "agentic-v9-official",
     }
 
-    assert invariant_snapshot_fingerprint(base) == invariant_snapshot_fingerprint(other_arm)
-    assert invariant_snapshot_fingerprint(base) != invariant_snapshot_fingerprint(
-        {**other_arm, "prompt": {"template": "prompt-v2"}}
+    assert golden_question_fingerprint(question_one) != golden_question_fingerprint(question_two)
+    assert environment_fingerprint(base_environment) == environment_fingerprint(other_arm)
+    assert environment_fingerprint(base_environment) != environment_fingerprint(
+        {**other_arm, "system": {"prompt": {"template": "prompt-v2"}}}
     )
+
+
+def test_release_metrics_accepts_production_shaped_distinct_goldens_in_one_environment() -> None:
+    question_snapshots = {
+        "Q1": {
+            "id": "Q1",
+            "question": "question one",
+            "ground_truth": "answer one",
+            "key_points": ["one"],
+            "expected_evidence": [{"doc_id": "doc-one"}],
+        },
+        "Q2": {
+            "id": "Q2",
+            "question": "question two",
+            "ground_truth": "answer two",
+            "key_points": ["two"],
+            "expected_evidence": [{"doc_id": "doc-two"}],
+        },
+    }
+    frozen_environment = {
+        "model_thinking": {"model_name": "judgeable-model", "thinking_mode": False},
+        "system": {
+            "corpus": {"knowledge_base_id": "kb-1", "index_version": "index-1"},
+            "prompt": {"pack_version": "prompt-1"},
+            "phase": {"policy_version": "phase-1"},
+            "code": {"commit": "commit-1"},
+        },
+    }
+    runs = [
+        replace(
+            _run(run_id=f"{question_id}-{version}", mode=mode, version=version),
+            question_id=question_id,
+            golden_question_fingerprint=golden_question_fingerprint(snapshot),
+            environment_fingerprint=environment_fingerprint(frozen_environment),
+        )
+        for question_id, snapshot in question_snapshots.items()
+        for mode, version in (("naive", "v8"), ("agentic", "v8"), ("agentic", "v9"))
+    ]
+
+    report = derive_release_metrics(benchmark_id="bench-1", runs=runs)
+
+    assert report.comparable is True
+    assert report.manifest["environment_fingerprint"] == environment_fingerprint(frozen_environment)
+    assert "snapshot_fingerprint" not in report.manifest
 
 
 def test_release_metrics_fail_closed_on_evaluator_or_runtime_instrumentation_mismatch() -> None:

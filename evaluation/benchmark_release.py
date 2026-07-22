@@ -63,7 +63,8 @@ class BenchmarkRun:
     completed: bool
     timed_out: bool
     accounting_complete: bool
-    snapshot_fingerprint: str | None
+    golden_question_fingerprint: str | None
+    environment_fingerprint: str | None
     evaluator_fingerprint: str | None
     quality_score: float | None
     runtime_tokens: int | None
@@ -94,6 +95,7 @@ class ManifestBlock:
     execution_profile: str
     agentic_execution_version: str
     shadow_evaluation_policy: str | None
+    golden_question_fingerprint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +105,7 @@ class BenchmarkManifest:
     ordered_blocks: tuple[ManifestBlock, ...]
     arm_order_seed: int
     evaluator_blinding: dict[str, object]
-    snapshot_fingerprint: str | None = None
+    environment_fingerprint: str | None = None
     evaluator_fingerprint: str | None = None
     non_blocking_ablations: tuple[str, ...] = ()
 
@@ -180,7 +182,9 @@ def build_manifest(*, benchmark_id: str, runs: list[BenchmarkRun], seed: int = 2
         kind = "formal"
     else:
         kind = "insufficient"
-    fingerprints = {run.snapshot_fingerprint for run in official if run.snapshot_fingerprint}
+    environment_fingerprints = {
+        run.environment_fingerprint for run in official if run.environment_fingerprint
+    }
     evaluator_fingerprints = {
         run.evaluator_fingerprint for run in official if run.evaluator_fingerprint
     }
@@ -193,6 +197,7 @@ def build_manifest(*, benchmark_id: str, runs: list[BenchmarkRun], seed: int = 2
             execution_profile=run.execution_profile,
             agentic_execution_version=run.agentic_execution_version,
             shadow_evaluation_policy=run.shadow_evaluation_policy,
+            golden_question_fingerprint=run.golden_question_fingerprint,
         )
         for run in official
     ]
@@ -206,7 +211,11 @@ def build_manifest(*, benchmark_id: str, runs: list[BenchmarkRun], seed: int = 2
             "shown_mode_label": False,
             "method": "deterministic_per_question_repeat_arm_order",
         },
-        snapshot_fingerprint=next(iter(fingerprints)) if len(fingerprints) == 1 else None,
+        environment_fingerprint=(
+            next(iter(environment_fingerprints))
+            if len(environment_fingerprints) == 1
+            else None
+        ),
         evaluator_fingerprint=(
             next(iter(evaluator_fingerprints))
             if len(evaluator_fingerprints) == 1
@@ -242,8 +251,10 @@ def validate_benchmark_runs(runs: list[BenchmarkRun]) -> ValidationResult:
             reasons.add("official_run_timed_out")
         if not run.accounting_complete:
             reasons.add("partial_accounting")
-        if not run.snapshot_fingerprint:
-            reasons.add("missing_snapshot_fingerprint")
+        if not run.golden_question_fingerprint:
+            reasons.add("missing_golden_question_fingerprint")
+        if not run.environment_fingerprint:
+            reasons.add("missing_environment_fingerprint")
         if not run.evaluator_fingerprint:
             reasons.add("missing_evaluator_metadata")
         arm = run.identity.official_label
@@ -259,19 +270,19 @@ def validate_benchmark_runs(runs: list[BenchmarkRun]) -> ValidationResult:
             elif count > 1:
                 reasons.add("duplicate_official_arm")
         paired = [row for rows in arms.values() for row in rows]
-        fingerprints = {row.snapshot_fingerprint for row in paired}
-        if len(fingerprints) != 1:
-            reasons.add("incompatible_snapshots")
+        golden_fingerprints = {row.golden_question_fingerprint for row in paired}
+        if len(golden_fingerprints) != 1 or None in golden_fingerprints:
+            reasons.add("incompatible_golden_question")
         evaluator_fingerprints = {row.evaluator_fingerprint for row in paired}
         if len(evaluator_fingerprints) != 1 or None in evaluator_fingerprints:
             reasons.add("incompatible_evaluator_metadata")
-    # Pair-level equality proves that an individual naive/v8/v9 comparison is
-    # internally valid.  It is insufficient for a clustered benchmark: every
-    # question and repeat must have been run against the same frozen
-    # environment and evaluator before their deltas can share one CI.
-    benchmark_snapshots = {run.snapshot_fingerprint for run in official}
-    if len(benchmark_snapshots) != 1 or None in benchmark_snapshots:
-        reasons.add("incompatible_benchmark_snapshots")
+    # A golden fingerprint is intentionally pair-local: distinct questions have
+    # distinct ground truth and expected evidence.  Only the immutable runtime
+    # environment and evaluator must agree benchmark-wide before question-level
+    # deltas can share one clustered CI.
+    benchmark_environments = {run.environment_fingerprint for run in official}
+    if len(benchmark_environments) != 1 or None in benchmark_environments:
+        reasons.add("incompatible_benchmark_environment")
     benchmark_evaluators = {run.evaluator_fingerprint for run in official}
     if len(benchmark_evaluators) != 1 or None in benchmark_evaluators:
         reasons.add("incompatible_benchmark_evaluator_metadata")

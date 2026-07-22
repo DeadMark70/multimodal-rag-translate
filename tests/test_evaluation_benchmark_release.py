@@ -12,7 +12,18 @@ from evaluation.benchmark_release import (
 )
 
 
-def _run(question_id: str, repeat: int, *, mode: str, version: str, shadow: bool = False, score: float = 0.5, tokens: int = 10) -> BenchmarkRun:
+def _run(
+    question_id: str,
+    repeat: int,
+    *,
+    mode: str,
+    version: str,
+    shadow: bool = False,
+    score: float = 0.5,
+    tokens: int = 10,
+    golden_question_fingerprint: str | None = None,
+    environment_fingerprint: str = "environment-v1",
+) -> BenchmarkRun:
     return BenchmarkRun(
         run_id=f"{question_id}-{repeat}-{mode}-{version}{'-shadow' if shadow else ''}",
         campaign_id="campaign",
@@ -26,7 +37,8 @@ def _run(question_id: str, repeat: int, *, mode: str, version: str, shadow: bool
         completed=True,
         timed_out=False,
         accounting_complete=True,
-        snapshot_fingerprint="snapshot",
+        golden_question_fingerprint=golden_question_fingerprint or f"golden-{question_id}",
+        environment_fingerprint=environment_fingerprint,
         evaluator_fingerprint="evaluator-v1",
         quality_score=score,
         runtime_tokens=tokens,
@@ -116,18 +128,34 @@ def _complete_two_question_matrix() -> list[BenchmarkRun]:
     ]
 
 
-def test_validation_rejects_benchmark_wide_snapshot_mismatch_despite_valid_pairs() -> None:
+def test_validation_rejects_per_pair_golden_mismatch() -> None:
     runs = _complete_two_question_matrix()
     runs = [
-        replace(run, snapshot_fingerprint="snapshot-q2") if run.question_id == "Q2" else run
+        replace(run, golden_question_fingerprint="golden-Q1-other")
+        if run.question_id == "Q1" and run.run_id.endswith("agentic-v9")
+        else run
         for run in runs
     ]
 
     result = validate_benchmark_runs(runs)
 
     assert result.comparable is False
-    assert "incompatible_benchmark_snapshots" in result.reasons
-    assert "incompatible_snapshots" not in result.reasons
+    assert "incompatible_golden_question" in result.reasons
+    assert "incompatible_benchmark_environment" not in result.reasons
+
+
+def test_validation_rejects_benchmark_wide_environment_mismatch_despite_distinct_goldens() -> None:
+    runs = _complete_two_question_matrix()
+    runs = [
+        replace(run, environment_fingerprint="environment-v2") if run.question_id == "Q2" else run
+        for run in runs
+    ]
+
+    result = validate_benchmark_runs(runs)
+
+    assert result.comparable is False
+    assert "incompatible_benchmark_environment" in result.reasons
+    assert "incompatible_golden_question" not in result.reasons
 
 
 def test_validation_rejects_benchmark_wide_evaluator_mismatch_despite_valid_pairs() -> None:
@@ -144,7 +172,7 @@ def test_validation_rejects_benchmark_wide_evaluator_mismatch_despite_valid_pair
     assert "incompatible_evaluator_metadata" not in result.reasons
 
 
-def test_validation_accepts_benchmark_wide_snapshot_and_evaluator_fingerprints() -> None:
+def test_validation_accepts_distinct_question_goldens_with_one_environment_and_evaluator() -> None:
     result = validate_benchmark_runs(_complete_two_question_matrix())
 
     assert result.comparable is True

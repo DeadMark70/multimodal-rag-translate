@@ -81,7 +81,8 @@ class ReleaseRun:
     required_ragas_complete: bool
     golden_available: bool
     used_evidence_mapped: bool
-    snapshot_fingerprint: str | None
+    golden_question_fingerprint: str | None
+    environment_fingerprint: str | None
     evaluator_fingerprint: str | None
     response_status: str | None
     required_slot_count: int | None
@@ -116,7 +117,8 @@ class ReleaseRun:
                 self.accounting_status == "complete"
                 and self.phase_attribution_status == "complete"
             ),
-            snapshot_fingerprint=self.snapshot_fingerprint,
+            golden_question_fingerprint=self.golden_question_fingerprint,
+            environment_fingerprint=self.environment_fingerprint,
             evaluator_fingerprint=self.evaluator_fingerprint,
             quality_score=self.quality_score,
             runtime_tokens=self.runtime_tokens,
@@ -160,7 +162,7 @@ def derive_release_metrics(*, benchmark_id: str, runs: list[ReleaseRun]) -> Rele
             "arm_order_seed": manifest.arm_order_seed,
             "ordered_blocks": [asdict(block) for block in manifest.ordered_blocks],
             "evaluator_blinding": manifest.evaluator_blinding,
-            "snapshot_fingerprint": manifest.snapshot_fingerprint,
+            "environment_fingerprint": manifest.environment_fingerprint,
             "evaluator_fingerprint": manifest.evaluator_fingerprint,
             "non_blocking_ablations": list(manifest.non_blocking_ablations),
         },
@@ -413,8 +415,7 @@ class ReleaseMetricsService:
         graph_requested = bool(contract and contract.graph_policy != "never")
         graph_success = sum(1 for event in graph_events if event.graph_to_chunk_success_rate and event.graph_to_chunk_success_rate > 0)
         graph_fallback = sum(1 for event in graph_events if event.graph_route.lower().startswith("fallback"))
-        snapshot = {
-            "question": result.question_snapshot,
+        environment_snapshot = {
             "model_thinking": result.model_config_snapshot,
             "system": {
                 key: value
@@ -444,9 +445,14 @@ class ReleaseMetricsService:
                 if result.agentic_execution_version == "v9" and not result.shadow_evaluation_policy
                 else True
             ),
-            snapshot_fingerprint=(
-                invariant_snapshot_fingerprint(snapshot)
-                if result.question_snapshot and result.model_config_snapshot
+            golden_question_fingerprint=(
+                golden_question_fingerprint(result.question_snapshot)
+                if result.question_snapshot
+                else None
+            ),
+            environment_fingerprint=(
+                environment_fingerprint(environment_snapshot)
+                if result.model_config_snapshot
                 else None
             ),
             evaluator_fingerprint=evaluator_fingerprint,
@@ -503,23 +509,50 @@ _REQUIRED_RAGAS_METRICS = frozenset(
 )
 
 
-def invariant_snapshot_fingerprint(snapshot: dict[str, Any]) -> str:
-    """Fingerprint only immutable comparison inputs, never arm/run bookkeeping."""
+_GOLDEN_QUESTION_SNAPSHOT_KEYS = (
+    "id",
+    "question",
+    "ground_truth",
+    "ground_truth_short",
+    "key_points",
+    "expected_evidence",
+)
+_ENVIRONMENT_EXCLUDED_SYSTEM_KEYS = _ARM_BOOKKEEPING_SNAPSHOT_KEYS | frozenset(
+    {"question", "golden", "evaluator"}
+)
+
+
+def golden_question_fingerprint(question_snapshot: dict[str, Any]) -> str:
+    """Fingerprint the immutable golden material for one question/repeat pair."""
     from evaluation.benchmark_release import stable_snapshot_fingerprint
 
-    normalized = {
-        key: value
-        for key, value in snapshot.items()
-        if key not in _ARM_BOOKKEEPING_SNAPSHOT_KEYS
-    }
-    system = normalized.get("system")
+    return stable_snapshot_fingerprint(
+        {
+            key: question_snapshot.get(key)
+            for key in _GOLDEN_QUESTION_SNAPSHOT_KEYS
+        }
+    )
+
+
+def environment_fingerprint(snapshot: dict[str, Any]) -> str:
+    """Fingerprint only question-independent frozen runtime environment inputs."""
+    from evaluation.benchmark_release import stable_snapshot_fingerprint
+
+    system = snapshot.get("system")
     if isinstance(system, dict):
-        normalized["system"] = {
+        normalized_system = {
             key: value
             for key, value in system.items()
-            if key not in _ARM_BOOKKEEPING_SNAPSHOT_KEYS
+            if key not in _ENVIRONMENT_EXCLUDED_SYSTEM_KEYS
         }
-    return stable_snapshot_fingerprint(normalized)
+    else:
+        normalized_system = None
+    return stable_snapshot_fingerprint(
+        {
+            "model_thinking": snapshot.get("model_thinking"),
+            "system_environment": normalized_system,
+        }
+    )
 
 
 def evaluator_fingerprints_from_work_metadata(
