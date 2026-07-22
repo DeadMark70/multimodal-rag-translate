@@ -84,6 +84,9 @@ class CampaignConfig(BaseModel):
     # snapshot always records the selected execution version explicitly.
     agentic_execution_version: AgenticExecutionVersion = "v8"
     shadow_evaluation_policy: ShadowEvaluationPolicy | None = None
+    # A benchmark run can span separate immutable campaigns because v8/v9 and
+    # shadow configuration are intentionally incompatible in one campaign.
+    benchmark_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode="after")
     def dedupe_modes(self) -> "CampaignConfig":
@@ -146,6 +149,7 @@ class CampaignCreateRequest(BaseModel):
     actual_router_execution_enabled: bool = False
     agentic_execution_version: AgenticExecutionVersion = "v8"
     shadow_evaluation_policy: ShadowEvaluationPolicy | None = None
+    benchmark_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
 
     def to_config(self) -> CampaignConfig:
         return CampaignConfig(
@@ -163,6 +167,7 @@ class CampaignCreateRequest(BaseModel):
             actual_router_execution_enabled=self.actual_router_execution_enabled,
             agentic_execution_version=self.agentic_execution_version,
             shadow_evaluation_policy=self.shadow_evaluation_policy,
+            benchmark_id=self.benchmark_id,
         )
 
 
