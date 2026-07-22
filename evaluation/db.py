@@ -1382,6 +1382,7 @@ class CampaignAnalyticsResult:
     execution_profile: Optional[str]
     context_policy_version: Optional[str]
     run_number: int
+    condition_id: Optional[str]
     latency_ms: float
     total_latency_ms: Optional[float]
     total_tokens: Optional[int]
@@ -1390,9 +1391,20 @@ class CampaignAnalyticsResult:
     question_version: Optional[str]
     status: CampaignResultStatus
     error_message: Optional[str]
+    system_version_snapshot: dict[str, Any]
     derived_metrics: dict[str, Any]
     answer_preview: str
     created_at: datetime
+
+    @property
+    def agentic_execution_version(self) -> str:
+        version = self.system_version_snapshot.get("agentic_execution_version", "v8")
+        return version if version in {"v8", "v9"} else "v8"
+
+    @property
+    def response_status(self) -> Optional[str]:
+        value = self.derived_metrics.get("response_status")
+        return value if isinstance(value, str) else None
 
 
 def _normalize_route_profile(value: Any) -> Any:
@@ -1941,6 +1953,7 @@ class CampaignResultRepository:
                     execution_profile,
                     context_policy_version,
                     run_number,
+                    condition_id,
                     latency_ms,
                     total_latency_ms,
                     total_tokens,
@@ -1949,6 +1962,7 @@ class CampaignResultRepository:
                     question_version,
                     status,
                     error_message,
+                    system_version_snapshot_json,
                     derived_metrics_json,
                     substr(answer, 1, 240) AS answer_preview,
                     created_at
@@ -1969,6 +1983,7 @@ class CampaignResultRepository:
                 execution_profile=row["execution_profile"],
                 context_policy_version=row["context_policy_version"],
                 run_number=row["run_number"],
+                condition_id=row["condition_id"] or None,
                 latency_ms=row["latency_ms"],
                 total_latency_ms=row["total_latency_ms"],
                 total_tokens=row["total_tokens"],
@@ -1977,6 +1992,9 @@ class CampaignResultRepository:
                 question_version=row["question_version"],
                 status=CampaignResultStatus(row["status"]),
                 error_message=row["error_message"],
+                system_version_snapshot=_json_loads(
+                    row["system_version_snapshot_json"], {}
+                ),
                 derived_metrics=_json_loads(row["derived_metrics_json"], {}),
                 answer_preview=row["answer_preview"] or "",
                 created_at=datetime.fromisoformat(row["created_at"]),

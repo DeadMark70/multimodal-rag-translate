@@ -275,7 +275,12 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
 
         runs = client.get(f"/api/evaluation/campaigns/{campaign_id}/runs")
         assert runs.status_code == 200
-        assert runs.json()["runs"][0]["run_id"] == run_id
+        run_list_item = runs.json()["runs"][0]
+        assert run_list_item["run_id"] == run_id
+        # Ordinary pre-v9 campaigns retain the v8 default when read through
+        # the analytics projection rather than the full result payload.
+        assert run_list_item["condition_id"] is None
+        assert run_list_item["agentic_execution_version"] == "v8"
 
         aggregate_endpoint_expectations = {
             "mode-comparison": ("execution", 1),
