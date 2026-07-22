@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from evaluation.benchmark_release import (
     BenchmarkRun,
+    build_manifest,
     build_smoke_manifest,
     clustered_paired_bootstrap,
+    ratio_of_sums,
     validate_benchmark_runs,
 )
 
@@ -70,3 +74,34 @@ def test_smoke_manifest_has_exactly_nine_official_arms_and_no_shadow() -> None:
     assert len(manifest.ordered_blocks) == 9
     assert {item.question_id for item in manifest.ordered_blocks} == {"Q9", "Q15", "Q16"}
     assert all(item.shadow_evaluation_policy is None for item in manifest.ordered_blocks)
+
+
+def test_formal_manifest_excludes_non_blocking_ablation_and_requires_full_matrix() -> None:
+    runs = [
+        _run(question_id, repeat, mode=mode, version=version, tokens=20 if version == "v9" else 10)
+        for question_id in [f"Q{index}" for index in range(1, 17)]
+        for repeat in range(1, 9)
+        for mode, version in (("naive", "v8"), ("agentic", "v8"), ("agentic", "v9"))
+    ]
+    ablation = replace(
+        _run("Q1", 1, mode="agentic", version="v8"),
+        condition_id="ablation:v8-a-phase-policy",
+    )
+    manifest = build_manifest(benchmark_id="formal-1", runs=[*runs, ablation])
+
+    assert manifest.kind == "formal"
+    assert len(manifest.ordered_blocks) == 384
+    assert manifest.non_blocking_ablations == ("ablation:v8-a-phase-policy",)
+
+
+def test_ratio_of_sums_is_not_mean_of_per_run_ratios() -> None:
+    v9 = [
+        _run("Q1", 1, mode="agentic", version="v9", tokens=100),
+        _run("Q2", 1, mode="agentic", version="v9", tokens=10),
+    ]
+    naive = [
+        _run("Q1", 1, mode="naive", version="v8", tokens=10),
+        _run("Q2", 1, mode="naive", version="v8", tokens=10),
+    ]
+
+    assert ratio_of_sums(v9, naive) == 5.5

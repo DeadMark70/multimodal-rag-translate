@@ -32,8 +32,13 @@ class ArmIdentity:
         return self.shadow_evaluation_policy is not None or self.mode == "agentic-v9-shadow"
 
     @property
+    def is_non_blocking_ablation(self) -> bool:
+        """A-type policy ablations are recorded, never official comparators."""
+        return self.condition_id.startswith("ablation:")
+
+    @property
     def official_label(self) -> str | None:
-        if self.is_shadow:
+        if self.is_shadow or self.is_non_blocking_ablation:
             return None
         if self.mode == "naive":
             return "naive"
@@ -98,6 +103,7 @@ class BenchmarkManifest:
     arm_order_seed: int
     evaluator_blinding: dict[str, object]
     snapshot_fingerprint: str | None = None
+    non_blocking_ablations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +112,7 @@ class ValidationResult:
     reasons: tuple[str, ...]
     official_runs: tuple[BenchmarkRun, ...]
     shadow_runs: tuple[BenchmarkRun, ...]
+    ablation_runs: tuple[BenchmarkRun, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,7 +165,12 @@ def build_manifest(*, benchmark_id: str, runs: list[BenchmarkRun], seed: int = 2
     official = validation.official_runs
     question_count = len({run.question_id for run in official})
     repeat_numbers = {run.repeat_number for run in official}
-    expected_formal = question_count == 16 and repeat_numbers == set(range(1, 9)) and len(official) == 384
+    expected_formal = (
+        validation.comparable
+        and question_count == 16
+        and repeat_numbers == set(range(1, 9))
+        and len(official) == 384
+    )
     kind: Literal["smoke", "formal", "insufficient"]
     if len(official) == 9 and question_count == 3 and repeat_numbers == {1}:
         kind = "smoke"
@@ -190,6 +202,9 @@ def build_manifest(*, benchmark_id: str, runs: list[BenchmarkRun], seed: int = 2
             "method": "deterministic_per_question_repeat_arm_order",
         },
         snapshot_fingerprint=next(iter(fingerprints)) if len(fingerprints) == 1 else None,
+        non_blocking_ablations=tuple(
+            sorted({run.condition_id for run in validation.ablation_runs})
+        ),
     )
 
 
@@ -197,7 +212,14 @@ def validate_benchmark_runs(runs: list[BenchmarkRun]) -> ValidationResult:
     """Reject invalid official comparisons instead of selecting a subset."""
     reasons: set[str] = set()
     shadow = tuple(run for run in runs if run.identity.is_shadow)
-    official = tuple(run for run in runs if not run.identity.is_shadow)
+    ablations = tuple(
+        run for run in runs if not run.identity.is_shadow and run.identity.is_non_blocking_ablation
+    )
+    official = tuple(
+        run
+        for run in runs
+        if not run.identity.is_shadow and not run.identity.is_non_blocking_ablation
+    )
     if shadow:
         reasons.add("shadow_arm_excluded")
     if not official:
@@ -233,6 +255,7 @@ def validate_benchmark_runs(runs: list[BenchmarkRun]) -> ValidationResult:
         reasons=tuple(sorted(reasons)),
         official_runs=official,
         shadow_runs=shadow,
+        ablation_runs=ablations,
     )
 
 

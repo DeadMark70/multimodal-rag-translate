@@ -150,6 +150,7 @@ def derive_release_metrics(*, benchmark_id: str, runs: list[ReleaseRun]) -> Rele
             "ordered_blocks": [asdict(block) for block in manifest.ordered_blocks],
             "evaluator_blinding": manifest.evaluator_blinding,
             "snapshot_fingerprint": manifest.snapshot_fingerprint,
+            "non_blocking_ablations": list(manifest.non_blocking_ablations),
         },
         arms=_arm_summaries(runs),
     )
