@@ -465,7 +465,7 @@ def test_v9_campaign_preflight_uses_golden_routes_and_reports_incompatible_setup
         assert issue["reason"] == "thinking_reserve_unknown"
 
 
-def test_v9_campaign_preflight_uses_runtime_contract_for_visual_requirements() -> None:
+def test_v9_campaign_preflight_admits_visual_requirements_when_contract_reserves_three_calls() -> None:
     engine = CampaignEngine(runner=Mock(), ragas_evaluator=FakeRagasEvaluator())
     with tempfile.TemporaryDirectory(
         prefix="analytics_v9_preflight_runtime_contract_", dir=Path.cwd()
@@ -502,11 +502,5 @@ def test_v9_campaign_preflight_uses_runtime_contract_for_visual_requirements() -
             assert response.status_code == 200
             question = response.json()["questions"][0]
             assert question["expected_route"] == "exact_structured"
-            assert question["status"] == "configuration_incompatible"
-            assert question["issues"] == [
-                {
-                    "stage": "post_contract",
-                    "reason": "required_provider_calls_exceed_call_budget",
-                    "status": "configuration_incompatible",
-                }
-            ]
+            assert question["status"] == "feasible"
+            assert question["issues"] == []

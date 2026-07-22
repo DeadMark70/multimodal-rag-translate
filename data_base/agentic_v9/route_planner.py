@@ -47,12 +47,16 @@ class _RouteBudget:
 
 
 _ROUTE_BUDGETS: dict[AgenticV9Route, _RouteBudget] = {
-    "single_lookup": _RouteBudget(1, 0, 2, 30_000),
-    "bounded_compare": _RouteBudget(2, 1, 2, 40_000),
-    "exact_structured": _RouteBudget(1, 1, 2, 40_000),
-    "multi_document_exact": _RouteBudget(2, 1, 2, 50_000),
-    "multi_hop": _RouteBudget(2, 1, 2, 50_000),
-    "graph_relational": _RouteBudget(1, 1, 3, 50_000),
+    # All routes reserve evidence extraction and final answer generation. A
+    # locator may require one visual extraction; graph routes may additionally
+    # require graph routing. The cap must cover the legal phase set before the
+    # post-contract admission gate validates the actual requirements.
+    "single_lookup": _RouteBudget(1, 0, 3, 30_000),
+    "bounded_compare": _RouteBudget(2, 1, 3, 40_000),
+    "exact_structured": _RouteBudget(1, 1, 3, 40_000),
+    "multi_document_exact": _RouteBudget(2, 1, 3, 50_000),
+    "multi_hop": _RouteBudget(2, 1, 3, 50_000),
+    "graph_relational": _RouteBudget(1, 1, 4, 50_000),
 }
 
 

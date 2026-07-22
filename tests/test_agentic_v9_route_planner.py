@@ -8,6 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from data_base.agentic_v9.budget_feasibility import (
+    FeasibilityStatus,
+    validate_post_contract_feasibility,
+)
 from data_base.agentic_v9.route_planner import RoutePlanner
 from data_base.agentic_v9.retrieval_tasks import RetrievalTaskCompiler
 from data_base.agentic_v9.schemas import ResolvedSourceScope
@@ -15,6 +19,7 @@ from data_base.agentic_v9.schemas import ResolvedSourceScope
 
 ROOT = Path(__file__).resolve().parents[1]
 ROUTES_PATH = ROOT / "evaluation" / "golden" / "agentic_v9_route_regressions.json"
+QUESTIONS_PATH = ROOT / "evaluation" / "golden" / "agentic_v9_questions_v2.json"
 
 
 class _NeverInvoker:
@@ -120,6 +125,61 @@ async def test_q1_q2_shape_as_multi_hop_slot_contracts(
     assert contract.graph_policy == "locator_fallback"
     assert contract.max_retrieval_rounds == 2
     assert contract.max_repair_rounds == 1
+    assert contract.max_llm_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_visual_and_graph_routes_reserve_their_required_provider_phases() -> None:
+    planner = RoutePlanner(llm_invoker=_NeverInvoker())
+
+    visual_contract = await planner.plan(
+        question="What is the table score?",
+        resolved_source_scope=_scope(),
+    )
+    graph_visual_contract = await planner.plan(
+        question="What is the graph path in Figure 2?",
+        resolved_source_scope=_scope(),
+    )
+
+    assert visual_contract.route == "exact_structured"
+    assert visual_contract.visual_required is True
+    assert visual_contract.max_llm_calls == 3
+    assert graph_visual_contract.route == "graph_relational"
+    assert graph_visual_contract.visual_required is True
+    assert graph_visual_contract.max_llm_calls == 4
+
+
+@pytest.mark.asyncio
+async def test_formal_question_set_fits_the_published_v9_preflight_envelope() -> None:
+    """The UI's five-call admission envelope must admit every formal question.
+
+    This includes one ambiguity-only route-plan call plus the resolved runtime
+    phases, preventing a future route-budget reduction from making the setup
+    preflight disagree with runtime admission again.
+    """
+    cases = json.loads(QUESTIONS_PATH.read_text(encoding="utf-8"))["questions"]
+    planner = RoutePlanner()
+
+    for case in cases:
+        source_docs = case["source_docs"]
+        contract = await planner.plan(
+            question=case["question"],
+            resolved_source_scope=ResolvedSourceScope(
+                requested_doc_ids=source_docs,
+                authorized_doc_ids=source_docs,
+            ),
+        )
+        result = validate_post_contract_feasibility(
+            contract=contract,
+            setup_snapshot={"max_output_tokens": 8192, "thinking_mode": False},
+            remaining_token_budget=50_000,
+            remaining_llm_calls=5,
+            route_plan_used=contract.strategy_tier == "budgeted_ambiguity",
+        )
+
+        assert result.status is FeasibilityStatus.FEASIBLE, (
+            f"{case['id']}: {result.reason}"
+        )
 
 
 @pytest.mark.asyncio
@@ -136,7 +196,7 @@ async def test_only_ambiguous_question_uses_one_budgeted_route_plan_call() -> No
     assert len(invoker.calls) == 1
     assert invoker.calls[0]["phase"] == "route_plan"
     assert invoker.calls[0]["purpose"] == "resolve_ambiguous_query_contract"
-    assert contract.max_llm_calls == 3  # route-plan + evidence extraction + final
+    assert contract.max_llm_calls == 4  # route-plan + evidence extraction + visual reserve + final
     assert "answer" not in contract.model_dump()
 
 
