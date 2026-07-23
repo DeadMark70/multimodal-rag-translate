@@ -8,7 +8,12 @@ import sqlite3
 import pytest
 
 from evaluation import db as evaluation_db
-from evaluation.db import AgentTraceRepository
+from evaluation.campaign_schemas import CampaignResultStatus
+from evaluation.db import (
+    MAX_EVALUATION_ANSWER_BYTES,
+    AgentTraceRepository,
+    CampaignResultRepository,
+)
 
 
 def _trace_payload() -> dict[str, object]:
@@ -23,6 +28,85 @@ def _trace_payload() -> dict[str, object]:
         "created_at": "2026-07-24T00:00:00+00:00",
         "steps": [],
     }
+
+
+@pytest.mark.asyncio
+async def test_campaign_result_repository_accepts_the_exact_answer_byte_limit_and_rejects_more(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "evaluation.db"
+    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", db_path)
+    await evaluation_db.force_init_db()
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            """
+            INSERT INTO campaigns (
+                id, user_id, status, phase, config_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "campaign-1",
+                "user-1",
+                "completed",
+                "execution",
+                "{}",
+                "2026-07-24T00:00:00+00:00",
+                "2026-07-24T00:00:00+00:00",
+            ),
+        )
+        await connection.commit()
+    repository = CampaignResultRepository()
+
+    result = await repository.create(
+        user_id="user-1",
+        campaign_id="campaign-1",
+        question_id="question-1",
+        question="What changed?",
+        ground_truth="The answer",
+        ground_truth_short=None,
+        key_points=[],
+        ragas_focus=[],
+        mode="naive",
+        execution_profile=None,
+        context_policy_version=None,
+        run_number=1,
+        answer="😀" * (MAX_EVALUATION_ANSWER_BYTES // 4),
+        contexts=[],
+        source_doc_ids=[],
+        expected_sources=[],
+        latency_ms=0,
+        token_usage={},
+        category=None,
+        difficulty=None,
+        status=CampaignResultStatus.COMPLETED,
+    )
+
+    assert result.status == CampaignResultStatus.COMPLETED
+    assert len(result.answer.encode("utf-8")) == MAX_EVALUATION_ANSWER_BYTES
+    with pytest.raises(ValueError, match="EVALUATION_ANSWER_TOO_LARGE"):
+        await repository.create(
+            user_id="user-1",
+            campaign_id="campaign-1",
+            question_id="question-2",
+            question="What changed?",
+            ground_truth="The answer",
+            ground_truth_short=None,
+            key_points=[],
+            ragas_focus=[],
+            mode="naive",
+            execution_profile=None,
+            context_policy_version=None,
+            run_number=1,
+            answer="😀" * ((MAX_EVALUATION_ANSWER_BYTES // 4) + 1),
+            contexts=[],
+            source_doc_ids=[],
+            expected_sources=[],
+            latency_ms=0,
+            token_usage={},
+            category=None,
+            difficulty=None,
+            status=CampaignResultStatus.COMPLETED,
+        )
 
 
 @pytest.mark.asyncio

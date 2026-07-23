@@ -32,12 +32,27 @@ from evaluation.trace_schemas import (
 EVALUATION_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "evaluation.db"
 _UNSET = object()
 MAX_AGENT_TRACE_PAYLOAD_BYTES = 256 * 1024
+MAX_EVALUATION_ANSWER_BYTES = 1_048_576
+EVALUATION_ANSWER_TOO_LARGE = "EVALUATION_ANSWER_TOO_LARGE"
 logger = logging.getLogger(__name__)
 _INITIALIZED_DB_PATHS: set[str] = set()
 _INIT_LOCKS: dict[str, asyncio.Lock] = {}
 ROUTE_PROFILE_ALIASES = {
     "hybrid_graph": "generic_graph",
 }
+
+
+class EvaluationAnswerTooLargeError(ValueError):
+    """Raised before an evaluation answer can be persisted above the hard limit."""
+
+    def __init__(self) -> None:
+        super().__init__(EVALUATION_ANSWER_TOO_LARGE)
+
+
+def is_evaluation_answer_too_large(answer: str) -> bool:
+    """Return whether an answer exceeds the persisted UTF-8 byte budget."""
+
+    return len(answer.encode("utf-8")) > MAX_EVALUATION_ANSWER_BYTES
 _OBSERVABILITY_TABLE_COLUMNS = {
     "evaluation_trace_events": {
         "run_id": "TEXT NOT NULL DEFAULT ''",
@@ -2243,6 +2258,8 @@ class CampaignResultRepository:
         final_answer_hash: Optional[str] = None,
         source_attempt_id: Optional[str] = None,
     ) -> CampaignResult:
+        if is_evaluation_answer_too_large(answer):
+            raise EvaluationAnswerTooLargeError()
         await init_db()
         result_id = result_id or str(uuid4())
         created_at = _utc_now_iso()

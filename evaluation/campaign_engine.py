@@ -26,6 +26,8 @@ from evaluation.db import (
     AgentTraceRepository,
     CampaignRepository,
     CampaignResultRepository,
+    EVALUATION_ANSWER_TOO_LARGE,
+    is_evaluation_answer_too_large,
 )
 from evaluation.job_schemas import (
     EvaluationAttempt,
@@ -1769,6 +1771,12 @@ class CampaignEngine:
     ):
         unit = execution.unit
         payload = execution.payload
+        if (
+            isinstance(payload, BenchmarkExecutionResult)
+            and is_evaluation_answer_too_large(payload.answer)
+        ):
+            payload.answer = ""
+            payload.error_message = EVALUATION_ANSWER_TOO_LARGE
         question_snapshot = _build_question_snapshot(unit.test_case)
         total_tokens = (
             _extract_total_tokens(payload.token_usage)
