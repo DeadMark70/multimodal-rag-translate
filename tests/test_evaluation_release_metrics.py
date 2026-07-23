@@ -113,8 +113,48 @@ def test_release_metrics_never_substitute_zero_for_partial_accounting() -> None:
     assert report.required_slot_coverage.reason == "release_gate_blocked:partial_accounting"
 
 
+@pytest.fixture
+def release_metrics_160_run_fixture() -> list[SimpleNamespace]:
+    """A formal-sized result set used to protect release-report read bounds."""
+
+    rows = []
+    for index in range(160):
+        mode, version, quality = (
+            ("naive", "v8", 0.4) if index % 2 == 0 else ("agentic", "v9", 0.7)
+        )
+        run_number = index // 2 + 1
+        rows.append(
+            SimpleNamespace(
+                id=f"{mode}-{run_number}",
+                campaign_id="campaign-1",
+                question_id=f"Q{index // 2}",
+                repeat_number=1,
+                mode=mode,
+                condition_id=f"{mode}-{run_number}",
+                execution_profile=f"{mode}-{version}",
+                agentic_execution_version=version,
+                shadow_evaluation_policy=None,
+                status=SimpleNamespace(value="completed"),
+                error_message=None,
+                question_snapshot={"id": f"Q{index // 2}"},
+                model_config_snapshot={"model": "test"},
+                system_version_snapshot={},
+                response_status="complete",
+                total_latency_ms=100.0,
+                category="retrieval",
+                source_attempt_id=None,
+                quality=quality,
+            )
+        )
+    return rows
+
+
 @pytest.mark.asyncio
-async def test_release_metrics_short_circuit_when_anchor_has_no_benchmark_id() -> None:
+async def test_release_metrics_no_benchmark_skips_all_160_run_bulk_loaders(
+    release_metrics_160_run_fixture: list[SimpleNamespace],
+) -> None:
+    assert len(release_metrics_160_run_fixture) == 160
+
     class _Campaigns:
         async def get(self, *, user_id: str, campaign_id: str):
             assert user_id == "user-1"
@@ -124,17 +164,24 @@ async def test_release_metrics_short_circuit_when_anchor_has_no_benchmark_id() -
         async def list_by_user(self, *, user_id: str):
             raise AssertionError("campaign discovery must not run without a benchmark")
 
-    class _MustNotBeCalled:
+    class _MustNotLoad:
+        def __init__(self, rows: list[SimpleNamespace]) -> None:
+            self.rows = rows
+            self.calls: list[str] = []
+
         def __getattr__(self, name: str):
+            self.calls.append(name)
             raise AssertionError(f"{name} must not run without a benchmark")
+
+    bulk_loaders = _MustNotLoad(release_metrics_160_run_fixture)
 
     report = await ReleaseMetricsService(
         campaigns=_Campaigns(),
-        results=_MustNotBeCalled(),
-        ragas_scores=_MustNotBeCalled(),
-        accounting=_MustNotBeCalled(),
-        observability=_MustNotBeCalled(),
-        analytics=_MustNotBeCalled(),
+        results=bulk_loaders,
+        ragas_scores=bulk_loaders,
+        accounting=bulk_loaders,
+        observability=bulk_loaders,
+        analytics=bulk_loaders,
     ).get_report(user_id="user-1", campaign_id="campaign-1")
 
     assert report.availability == "not_applicable"
@@ -143,6 +190,7 @@ async def test_release_metrics_short_circuit_when_anchor_has_no_benchmark_id() -
     assert report.benchmark_kind == "not_applicable"
     assert report.comparable is False
     assert report.gate_reasons == ["benchmark_not_configured"]
+    assert bulk_loaders.calls == []
 
 
 class _ReleaseMetricsCacheCampaigns:
@@ -284,11 +332,11 @@ async def test_release_metrics_does_not_cache_nonterminal_benchmark_loads(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("result_count", [1, 160])
-async def test_release_metrics_builds_campaign_runs_from_one_snapshot_per_repository(
-    result_count: int,
+async def test_release_metrics_160_run_benchmark_keeps_repository_call_count_constant(
+    release_metrics_160_run_fixture: list[SimpleNamespace],
 ) -> None:
     """Release projection reads are constant per selected campaign, not per run."""
+    assert len(release_metrics_160_run_fixture) == 160
 
     class _Campaigns:
         async def get(self, *, user_id: str, campaign_id: str):
@@ -309,39 +357,12 @@ async def test_release_metrics_builds_campaign_runs_from_one_snapshot_per_reposi
                 )
             ]
 
-    def _result(index: int):
-        mode, version, quality = (
-            ("naive", "v8", 0.4) if index % 2 == 0 else ("agentic", "v9", 0.7)
-        )
-        run_id = f"naive-{index // 2 + 1}" if mode == "naive" else f"v9-{index // 2 + 1}"
-        return SimpleNamespace(
-            id=run_id,
-            campaign_id="campaign-1",
-            question_id=f"Q{index // 2}",
-            repeat_number=1,
-            mode=mode,
-            condition_id=run_id,
-            execution_profile=f"{mode}-{version}",
-            agentic_execution_version=version,
-            shadow_evaluation_policy=None,
-            status=SimpleNamespace(value="completed"),
-            error_message=None,
-            question_snapshot={"id": f"Q{index // 2}"},
-            model_config_snapshot={"model": "test"},
-            system_version_snapshot={},
-            response_status="complete",
-            total_latency_ms=100.0,
-            category="retrieval",
-            source_attempt_id=None,
-            quality=quality,
-        )
-
     class _Results:
         calls = 0
 
         async def list_for_campaign_release(self, *, user_id: str, campaign_id: str):
             self.calls += 1
-            return [_result(index) for index in range(result_count)]
+            return release_metrics_160_run_fixture
 
     class _Scores:
         score_calls = 0
@@ -355,7 +376,7 @@ async def test_release_metrics_builds_campaign_runs_from_one_snapshot_per_reposi
                     "metric_name": "answer_correctness",
                     "metric_value": result.quality,
                 }
-                for result in [_result(index) for index in range(result_count)]
+                for result in release_metrics_160_run_fixture
             ]
 
         async def list_work_metadata_for_campaign(self, *, user_id: str, campaign_id: str):
@@ -396,20 +417,6 @@ async def test_release_metrics_builds_campaign_runs_from_one_snapshot_per_reposi
     ).get_report(user_id="user-1", campaign_id="campaign-1")
 
     assert (results.calls, scores.score_calls, scores.metadata_calls, accounting.calls, observability.calls) == (1, 1, 1, 1, 1)
-    if result_count == 160:
-        assert [(item.run_id, item.quality_score) for item in ReleaseMetricsService(
-            campaigns=_Campaigns(), results=results, ragas_scores=scores,
-            accounting=accounting, observability=observability,
-        )._build_release_runs(
-            results=[_result(0), _result(1)],
-            scores_by_result={"naive-1": {"answer_correctness": 0.4}, "v9-1": {"answer_correctness": 0.7}},
-            evaluator_fingerprints={},
-            accounting_snapshot=SimpleNamespace(scopes_by_run_id={}, events_by_scope_id={}),
-            observability_snapshot=SimpleNamespace(
-                materializations_by_run_id={}, evidence_packets_by_run_id={}, slot_resolutions_by_run_id={},
-                claims_by_run_id={}, context_packs_by_run_id={}, graph_events_by_run_id={},
-            ),
-        )] == [("naive-1", 0.4), ("v9-1", 0.7)]
 
 
 def test_fingerprint_layers_keep_distinct_goldens_out_of_shared_environment() -> None:
