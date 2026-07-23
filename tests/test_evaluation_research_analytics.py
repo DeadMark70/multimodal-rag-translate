@@ -1,6 +1,7 @@
 """Strict research-summary contract regression tests using durable repositories."""
 
 from datetime import datetime, timezone
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -1221,3 +1222,85 @@ async def test_campaign_aggregate_uses_raw_runs_and_optional_metrics_are_request
         "answer_relevancy",
         "context_precision",
     }
+
+
+@pytest.mark.asyncio
+async def test_research_aggregates_use_bounded_result_projection_for_large_payloads(
+    research_service, monkeypatch
+) -> None:
+    """Research aggregate responses must not materialize detail/export payloads."""
+    campaign_id = "bounded-research-results"
+    await _campaign(campaign_id, ["naive"])
+    result_id = await _result(campaign_id, "naive", "bounded-attempt")
+    large_payload = "x" * (2 * 1024 * 1024)
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            """
+            UPDATE campaign_results
+            SET answer = ?, contexts_json = ?, ground_truth = ?
+            WHERE id = ?
+            """,
+            (large_payload, json.dumps([large_payload]), large_payload, result_id),
+        )
+        await connection.commit()
+
+    # Preserve the existing response contract before injecting a bounded-loader spy.
+    expected_summary = await research_service.get_summary(
+        user_id="user-1", campaign_id=campaign_id
+    )
+    expected_comparison = await research_service.get_question_comparison(
+        user_id="user-1", campaign_id=campaign_id
+    )
+    expected_behavior = await research_service.get_agent_behavior(
+        user_id="user-1", campaign_id=campaign_id
+    )
+
+    class ResultRepositorySpy:
+        def __init__(self) -> None:
+            self.research_calls = 0
+            self.full_calls = 0
+            self._delegate = CampaignResultRepository()
+
+        async def list_for_campaign_research(self, *, user_id: str, campaign_id: str):
+            self.research_calls += 1
+            return await self._delegate.list_for_campaign_research(
+                user_id=user_id, campaign_id=campaign_id
+            )
+
+        async def list_for_campaign(self, *, user_id: str, campaign_id: str):
+            self.full_calls += 1
+            raise AssertionError("research aggregate loaded full campaign results")
+
+    campaign_result_queries: list[str] = []
+    original_execute = evaluation_db.aiosqlite.Connection.execute
+
+    async def capture_execute(connection, sql, parameters=()):
+        if "from campaign_results" in sql.lower():
+            campaign_result_queries.append(sql.lower())
+        return await original_execute(connection, sql, parameters)
+
+    monkeypatch.setattr(
+        evaluation_db.aiosqlite.Connection, "execute", capture_execute
+    )
+    results = ResultRepositorySpy()
+    service = ResearchAnalyticsService(results=results)
+
+    summary = await service.get_summary(user_id="user-1", campaign_id=campaign_id)
+    comparison = await service.get_question_comparison(
+        user_id="user-1", campaign_id=campaign_id
+    )
+    behavior = await service.get_agent_behavior(
+        user_id="user-1", campaign_id=campaign_id
+    )
+
+    assert summary.model_dump(mode="json") == expected_summary.model_dump(mode="json")
+    assert comparison.model_dump(mode="json") == expected_comparison.model_dump(
+        mode="json"
+    )
+    assert behavior.model_dump(mode="json") == expected_behavior.model_dump(mode="json")
+    assert results.research_calls == 3
+    assert results.full_calls == 0
+    assert len(campaign_result_queries) == 3
+    assert all("answer" not in query for query in campaign_result_queries)
+    assert all("contexts_json" not in query for query in campaign_result_queries)
+    assert all("ground_truth" not in query for query in campaign_result_queries)

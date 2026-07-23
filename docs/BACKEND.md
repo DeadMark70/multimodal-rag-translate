@@ -49,6 +49,8 @@
 
 - Evaluation analytics uses campaign-level bulk observability reads and a bounded result projection; full answer/context blobs remain restricted to explicit result/export/detail paths.
 - Terminal campaign analytics contexts are reused by the process-local analytics service while the campaign `updated_at` marker is unchanged; running campaigns continue to read live state.
+- `GET /api/evaluation/campaigns/{campaign_id}/release-metrics` is a separate, backend-authoritative release report. Its `availability` is `available` when a benchmark is configured; a missing benchmark is the normal `not_applicable` state with `not_applicable_reason="benchmark_not_configured"`, not an error or a zero-valued report. That short circuit must not invoke result, score, accounting, or observability bulk loaders.
+- A configured release report reads one bounded projection/snapshot set per selected benchmark campaign, independent of run count. Large answer, context, and full trace payloads stay on explicit detail, result, or export routes. Terminal release reports are cached only while every selected campaign remains terminal and its `(id, updated_at, status)` marker is unchanged; a marker change invalidates the cache, while live campaigns are never cached.
 - Conversation history exposes additive summary/cursor endpoints under `/api/conversations/page` and `/messages/page`; legacy unbounded endpoints remain for compatibility during frontend migration.
 - `stats/`: dashboard aggregates
 - `multimodal_rag/` and `image_service/`: multimodal extraction and image translation support
@@ -76,6 +78,8 @@
 - Request middleware attaches `X-Request-Id` to the response.
 - `TEST_MODE` or `USE_FAKE_PROVIDERS` skip real warmups and provider calls during startup-sensitive paths.
 - Evaluation persists campaign state in SQLite with WAL mode and supports results, traces, metrics, manual evaluate, cancel, and SSE reconnect.
+- Campaign trace-list reads use the migrated `agent_traces.summary_json` projection and its campaign/user/created index; full `trace_json` is reserved for trace-detail reads. Existing rows with no usable summary remain readable as a minimal `not_instrumented` summary rather than forcing the list path to deserialize a complete trace.
+- Evaluation answers are capped at 1,048,576 UTF-8 bytes. Oversize answers are recorded as failed work with the stable error code `EVALUATION_ANSWER_TOO_LARGE`; callers must not retry by silently truncating or substituting the answer.
 - Vector-store hot paths now run through an async coordination seam in `data_base/vector_store_manager.py`:
   - FAISS load/save/create/delete, BM25 construction, synchronous retriever `invoke(...)`, and short-chunk expansion are offloaded from request/background coroutines
   - per-user async locks serialize same-user FAISS mutations so ask/upload/retry-index/delete do not race the same index directory

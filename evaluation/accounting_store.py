@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Mapping
 
@@ -84,6 +85,14 @@ class ScopeTokenSummary(BaseModel):
         if self.reconciliation_status == "balanced" and self.total_tokens is not None:
             usage["total_tokens"] = self.total_tokens
         return usage
+
+
+@dataclass(frozen=True, slots=True)
+class CampaignAccountingSnapshot:
+    """Campaign-scoped accounting rows grouped for in-memory release derivation."""
+
+    scopes_by_run_id: dict[str, list[AccountingScope]]
+    events_by_scope_id: dict[str, list[UsageEvent]]
 
 
 class EvaluationAccountingStore:
@@ -302,10 +311,11 @@ class EvaluationAccountingStore:
                 (campaign_id,),
             )
             rows = await cursor.fetchall()
+            targets_by_scope_id = await _load_scope_targets_by_scope_id(
+                connection, [row["scope_id"] for row in rows]
+            )
             scopes = [
-                _scope_from_row(
-                    row, await _load_scope_targets(connection, row["scope_id"])
-                )
+                _scope_from_row(row, targets_by_scope_id.get(row["scope_id"], []))
                 for row in rows
             ]
         return scopes
@@ -321,6 +331,57 @@ class EvaluationAccountingStore:
             )
             rows = await cursor.fetchall()
         return [_event_from_row(row) for row in rows]
+
+    async def load_campaign_snapshot(self, campaign_id: str) -> CampaignAccountingSnapshot:
+        """Load all accounting inputs needed by every release run in one connection."""
+        await init_db()
+        async with connect_db() as connection:
+            scope_rows = await (
+                await connection.execute(
+                    """SELECT * FROM evaluation_accounting_scopes
+                       WHERE campaign_id = ? ORDER BY created_at ASC, scope_id ASC""",
+                    (campaign_id,),
+                )
+            ).fetchall()
+            target_rows = await (
+                await connection.execute(
+                    """SELECT targets.* FROM evaluation_accounting_scope_targets AS targets
+                       JOIN evaluation_accounting_scopes AS scopes ON scopes.scope_id = targets.scope_id
+                       WHERE scopes.campaign_id = ?
+                       ORDER BY targets.created_at ASC, targets.attempt_id ASC""",
+                    (campaign_id,),
+                )
+            ).fetchall()
+            event_rows = await (
+                await connection.execute(
+                    """SELECT * FROM evaluation_usage_events
+                       WHERE campaign_id = ? ORDER BY created_at ASC, usage_event_id ASC""",
+                    (campaign_id,),
+                )
+            ).fetchall()
+        targets_by_scope: dict[str, list[AccountingScopeTarget]] = {}
+        for row in target_rows:
+            targets_by_scope.setdefault(row["scope_id"], []).append(
+                AccountingScopeTarget(
+                    campaign_result_id=row["campaign_result_id"],
+                    job_id=row["job_id"], work_item_id=row["work_item_id"],
+                    attempt_id=row["attempt_id"], mode=row["mode"],
+                    metric_name=row["metric_name"], is_official=bool(row["is_official"]),
+                )
+            )
+        scopes_by_run_id: dict[str, list[AccountingScope]] = {}
+        for row in scope_rows:
+            scope = _scope_from_row(row, targets_by_scope.get(row["scope_id"], []))
+            if scope.run_id:
+                scopes_by_run_id.setdefault(scope.run_id, []).append(scope)
+        events_by_scope_id: dict[str, list[UsageEvent]] = {}
+        for row in event_rows:
+            event = _event_from_row(row)
+            events_by_scope_id.setdefault(event.scope_id, []).append(event)
+        return CampaignAccountingSnapshot(
+            scopes_by_run_id=scopes_by_run_id,
+            events_by_scope_id=events_by_scope_id,
+        )
 
     async def summarize_scope_tokens(self, scope_id: str) -> ScopeTokenSummary:
         """Return non-overlapping event token sums plus completeness metadata."""
@@ -406,6 +467,34 @@ async def _load_scope_targets(connection, scope_id: str) -> list[AccountingScope
         )
         for row in rows
     ]
+
+
+async def _load_scope_targets_by_scope_id(
+    connection, scope_ids: list[str]
+) -> dict[str, list[AccountingScopeTarget]]:
+    placeholders = ", ".join("?" for _ in scope_ids) or "NULL"
+    cursor = await connection.execute(
+        f"""SELECT scope_id, campaign_result_id, job_id, work_item_id, attempt_id,
+                   mode, metric_name, is_official
+            FROM evaluation_accounting_scope_targets
+            WHERE scope_id IN ({placeholders})
+            ORDER BY scope_id ASC, created_at ASC, attempt_id ASC""",
+        scope_ids,
+    )
+    targets_by_scope_id: dict[str, list[AccountingScopeTarget]] = {}
+    for row in await cursor.fetchall():
+        targets_by_scope_id.setdefault(row["scope_id"], []).append(
+            AccountingScopeTarget(
+                campaign_result_id=row["campaign_result_id"],
+                job_id=row["job_id"],
+                work_item_id=row["work_item_id"],
+                attempt_id=row["attempt_id"],
+                mode=row["mode"],
+                metric_name=row["metric_name"],
+                is_official=bool(row["is_official"]),
+            )
+        )
+    return targets_by_scope_id
 
 
 def _scope_from_row(row, targets: list[AccountingScopeTarget]) -> AccountingScope:

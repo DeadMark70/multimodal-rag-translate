@@ -15,6 +15,7 @@ from data_base.agentic_v9.schemas import BudgetReservation, QueryContract, Suffi
 
 TracePhase = Literal["planning", "execution", "drilldown", "evaluation", "synthesis"]
 TraceStatus = Literal["completed", "partial", "failed"]
+TraceSummaryStatus = Literal["completed", "partial", "failed", "not_instrumented"]
 TraceEventStatus = Literal["running", "success", "failed", "skipped", "timeout", "partial"]
 TraceStageType = Literal[
     "routing",
@@ -382,16 +383,16 @@ class AgentTraceSummary(BaseModel):
 
     trace_id: str = Field(min_length=1)
     campaign_result_id: str = Field(min_length=1)
-    question_id: str = Field(min_length=1)
-    question: str = Field(min_length=1)
-    mode: CampaignMode
+    question_id: str = ""
+    question: str = ""
+    mode: CampaignMode | None = None
     execution_profile: Optional[str] = None
     agentic_execution_version: Literal["v8", "v9"] = "v8"
     question_intent: Optional[str] = None
     strategy_tier: Optional[str] = None
     route_profile: Optional[str] = None
-    run_number: int = Field(ge=1)
-    trace_status: TraceStatus
+    run_number: int = Field(default=1, ge=1)
+    trace_status: TraceSummaryStatus = "not_instrumented"
     summary: str = ""
     step_count: int = Field(default=0, ge=0)
     tool_call_count: int = Field(default=0, ge=0)

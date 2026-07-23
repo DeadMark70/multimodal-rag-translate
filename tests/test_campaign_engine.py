@@ -30,7 +30,11 @@ from evaluation.campaign_schemas import (
     MetricAggregate,
     ModeMetricsSummary,
 )
-from evaluation.db import CampaignRepository, CampaignResultRepository
+from evaluation.db import (
+    MAX_EVALUATION_ANSWER_BYTES,
+    CampaignRepository,
+    CampaignResultRepository,
+)
 from evaluation.job_store import EvaluationJobStore
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.rag_modes import (
@@ -1268,6 +1272,52 @@ async def test_run_campaign_persists_failure_execution_profiles_directly() -> No
         assert results_by_mode["graph"].execution_profile == GRAPH_EVAL_PROFILE
         assert results_by_mode["agentic"].status == CampaignResultStatus.FAILED
         assert results_by_mode["agentic"].execution_profile == captured_agentic_profile
+
+
+@pytest.mark.asyncio
+async def test_run_campaign_rejects_oversized_answer_without_ragas_evaluation() -> None:
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="a" * (MAX_EVALUATION_ANSWER_BYTES + 1),
+        )
+
+    db_path = _make_db_path()
+    test_case = TestCase(
+        id="Q-OVERSIZED-ANSWER",
+        question="What is the answer?",
+        ground_truth="42",
+    )
+    fake_ragas = FakeRagasEvaluator()
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        campaign = await campaign_repo.create(
+            user_id="user-a",
+            name="Oversized answer",
+            config=_campaign_config_for_test_case_ids([test_case.id], modes=["naive"]),
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=fake_ragas)
+
+        await engine._run_campaign(
+            user_id="user-a",
+            campaign_id=campaign.id,
+            config=campaign.config,
+            test_cases=[test_case],
+        )
+
+        results = await result_repo.list_for_campaign(
+            user_id="user-a", campaign_id=campaign.id
+        )
+    assert len(results) == 1
+    assert results[0].status == CampaignResultStatus.FAILED
+    assert results[0].answer == ""
+    assert results[0].error_message == "EVALUATION_ANSWER_TOO_LARGE"
+    assert fake_ragas.evaluate_calls == []
 
 
 @pytest.mark.asyncio

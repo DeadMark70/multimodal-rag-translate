@@ -6,6 +6,7 @@ import json
 import html
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -380,11 +381,126 @@ class EvaluationGraphEvidenceItemRepository:
         return dict(grouped)
 
 
+@dataclass(frozen=True, slots=True)
+class CampaignReleaseObservabilitySnapshot:
+    """Only observability material required by release gates, grouped by run."""
+
+    materializations_by_run_id: dict[str, list[EvaluationV9AttemptMaterialization]]
+    evidence_packets_by_run_id: dict[str, list[EvaluationEvidencePacket]]
+    slot_resolutions_by_run_id: dict[str, list[EvaluationSlotResolution]]
+    claims_by_run_id: dict[str, list[EvaluationClaim]]
+    context_packs_by_run_id: dict[str, list[EvaluationContextPack]]
+    graph_events_by_run_id: dict[str, list[EvaluationGraphEvent]]
+
+
 class EvaluationObservabilityRepository(
     EvaluationGraphEventRepository,
     EvaluationGraphEvidenceItemRepository,
 ):
     """Persistence operations for normalized evaluation observability rows."""
+
+    async def load_campaign_release_snapshot(
+        self, campaign_id: str
+    ) -> CampaignReleaseObservabilitySnapshot:
+        """Read release-gate observability once per campaign, never once per run."""
+        await init_db()
+        async with connect_db() as connection:
+            materialization_rows = await (
+                await connection.execute(
+                    """SELECT * FROM evaluation_v9_attempt_materializations
+                       WHERE campaign_id = ? ORDER BY run_id ASC, created_at ASC""",
+                    (campaign_id,),
+                )
+            ).fetchall()
+            evidence_rows = await (
+                await connection.execute(
+                    """SELECT * FROM evaluation_evidence_packets
+                       WHERE campaign_id = ? ORDER BY run_id ASC, created_at ASC, evidence_id ASC""",
+                    (campaign_id,),
+                )
+            ).fetchall()
+            slot_rows = await (
+                await connection.execute(
+                    """SELECT * FROM evaluation_slot_resolutions
+                       WHERE campaign_id = ? ORDER BY run_id ASC, created_at ASC, slot_id ASC, resolution_stage ASC""",
+                    (campaign_id,),
+                )
+            ).fetchall()
+            claim_rows = await (
+                await connection.execute(
+                    """SELECT * FROM evaluation_claims
+                       WHERE campaign_id = ? ORDER BY run_id ASC, created_at ASC""",
+                    (campaign_id,),
+                )
+            ).fetchall()
+            context_rows = await (
+                await connection.execute(
+                    """SELECT * FROM evaluation_context_packs
+                       WHERE campaign_id = ? ORDER BY run_id ASC, created_at ASC""",
+                    (campaign_id,),
+                )
+            ).fetchall()
+            graph_rows = await (
+                await connection.execute(
+                    """SELECT * FROM evaluation_graph_events
+                       WHERE campaign_id = ? ORDER BY run_id ASC, created_at ASC""",
+                    (campaign_id,),
+                )
+            ).fetchall()
+        materializations_by_run_id: dict[str, list[EvaluationV9AttemptMaterialization]] = defaultdict(list)
+        for row in materialization_rows:
+            materializations_by_run_id[str(row["run_id"])].append(EvaluationV9AttemptMaterialization(
+                attempt_id=row["attempt_id"], run_id=row["run_id"], campaign_id=row["campaign_id"],
+                condition_id=row["condition_id"], schema_version=row["schema_version"],
+                trace_payload=_json_loads(row["trace_json"], {}),
+                materialization_status=row["materialization_status"], completed_at=_parse_dt(row["completed_at"]),
+                created_at=_parse_dt(row["created_at"]) or datetime.now(timezone.utc),
+            ))
+        evidence_packets_by_run_id: dict[str, list[EvaluationEvidencePacket]] = defaultdict(list)
+        for row in evidence_rows:
+            evidence_packets_by_run_id[str(row["run_id"])].append(EvaluationEvidencePacket(
+                attempt_id=row["attempt_id"], run_id=row["run_id"], campaign_id=row["campaign_id"],
+                condition_id=row["condition_id"], schema_version=row["schema_version"], evidence_id=row["evidence_id"],
+                packet=_json_loads(row["packet_json"], {}), created_at=datetime.fromisoformat(row["created_at"]),
+            ))
+        slot_resolutions_by_run_id: dict[str, list[EvaluationSlotResolution]] = defaultdict(list)
+        for row in slot_rows:
+            slot_resolutions_by_run_id[str(row["run_id"])].append(EvaluationSlotResolution(
+                attempt_id=row["attempt_id"], run_id=row["run_id"], campaign_id=row["campaign_id"],
+                condition_id=row["condition_id"], schema_version=row["schema_version"], slot_id=row["slot_id"],
+                resolution_stage=row["resolution_stage"], resolution=_json_loads(row["resolution_json"], {}),
+                created_at=datetime.fromisoformat(row["created_at"]),
+            ))
+        claims_by_run_id: dict[str, list[EvaluationClaim]] = defaultdict(list)
+        for row in claim_rows:
+            claims_by_run_id[str(row["run_id"])].append(EvaluationClaim(
+                claim_id=row["claim_id"], run_id=row["run_id"], campaign_id=row["campaign_id"],
+                attempt_id=row["attempt_id"], condition_id=row["condition_id"], schema_version=row["schema_version"],
+                span_id=row["span_id"], claim_text=row["claim_text"], claim_type=row["claim_type"],
+                support_status=row["support_status"], evidence=_json_loads(row["evidence_json"], []),
+                unsupported_reason=row["unsupported_reason"], payload=_json_loads(row["payload_json"], {}),
+                created_at=datetime.fromisoformat(row["created_at"]),
+            ))
+        context_packs_by_run_id: dict[str, list[EvaluationContextPack]] = defaultdict(list)
+        for row in context_rows:
+            context_packs_by_run_id[str(row["run_id"])].append(EvaluationContextPack(
+                context_pack_id=row["context_pack_id"], run_id=row["run_id"], campaign_id=row["campaign_id"],
+                attempt_id=row["attempt_id"], condition_id=row["condition_id"], schema_version=row["schema_version"],
+                span_id=row["span_id"], input_chunk_count=row["input_chunk_count"], packed_chunk_count=row["packed_chunk_count"],
+                token_count=row["token_count"], retrieved_but_not_packed_evidence=_json_loads(row["retrieved_but_not_packed_evidence_json"], []),
+                payload=_json_loads(row["payload_json"], {}), created_at=datetime.fromisoformat(row["created_at"]),
+            ))
+        graph_events_by_run_id: dict[str, list[EvaluationGraphEvent]] = defaultdict(list)
+        for row in graph_rows:
+            graph_events_by_run_id[str(row["run_id"])].append(_graph_event_from_row(row))
+        return CampaignReleaseObservabilitySnapshot(
+            materializations_by_run_id=dict(materializations_by_run_id),
+            evidence_packets_by_run_id=dict(evidence_packets_by_run_id),
+            slot_resolutions_by_run_id=dict(slot_resolutions_by_run_id),
+            claims_by_run_id=dict(claims_by_run_id),
+            context_packs_by_run_id=dict(context_packs_by_run_id),
+            graph_events_by_run_id=dict(graph_events_by_run_id),
+        )
 
     async def materialize_v9_attempt(
         self,
