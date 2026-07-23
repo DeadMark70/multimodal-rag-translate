@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
+import pytest
 
 from core.auth import get_current_user_id
 from evaluation.release_metrics import (
     ReleaseRun,
+    ReleaseMetricsService,
     derive_release_metrics,
     environment_fingerprint,
     evaluator_fingerprints_from_work_metadata,
@@ -106,6 +109,38 @@ def test_release_metrics_never_substitute_zero_for_partial_accounting() -> None:
     assert "partial_accounting" in report.gate_reasons
     assert report.required_slot_coverage.value is None
     assert report.required_slot_coverage.reason == "release_gate_blocked:partial_accounting"
+
+
+@pytest.mark.asyncio
+async def test_release_metrics_short_circuit_when_anchor_has_no_benchmark_id() -> None:
+    class _Campaigns:
+        async def get(self, *, user_id: str, campaign_id: str):
+            assert user_id == "user-1"
+            assert campaign_id == "campaign-1"
+            return SimpleNamespace(config=SimpleNamespace(benchmark_id=None))
+
+        async def list_by_user(self, *, user_id: str):
+            raise AssertionError("campaign discovery must not run without a benchmark")
+
+    class _MustNotBeCalled:
+        def __getattr__(self, name: str):
+            raise AssertionError(f"{name} must not run without a benchmark")
+
+    report = await ReleaseMetricsService(
+        campaigns=_Campaigns(),
+        results=_MustNotBeCalled(),
+        ragas_scores=_MustNotBeCalled(),
+        accounting=_MustNotBeCalled(),
+        observability=_MustNotBeCalled(),
+        analytics=_MustNotBeCalled(),
+    ).get_report(user_id="user-1", campaign_id="campaign-1")
+
+    assert report.availability == "not_applicable"
+    assert report.not_applicable_reason == "benchmark_not_configured"
+    assert report.benchmark_id == ""
+    assert report.benchmark_kind == "not_applicable"
+    assert report.comparable is False
+    assert report.gate_reasons == ["benchmark_not_configured"]
 
 
 def test_fingerprint_layers_keep_distinct_goldens_out_of_shared_environment() -> None:

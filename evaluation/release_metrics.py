@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from statistics import mean
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -43,6 +43,8 @@ class ReleaseMetricsReport(BaseModel):
     benchmark_id: str
     benchmark_kind: str
     comparable: bool
+    availability: Literal["available", "not_applicable"] = "available"
+    not_applicable_reason: str | None = None
     gate_reasons: list[str] = Field(default_factory=list)
     manifest: dict[str, object] = Field(default_factory=dict)
     arms: list[ReleaseArmSummary] = Field(default_factory=list)
@@ -357,7 +359,17 @@ class ReleaseMetricsService:
 
     async def get_report(self, *, user_id: str, campaign_id: str) -> ReleaseMetricsReport:
         anchor = await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
-        benchmark_id = anchor.config.benchmark_id or campaign_id
+        if not anchor.config.benchmark_id:
+            return ReleaseMetricsReport(
+                benchmark_id="",
+                benchmark_kind="not_applicable",
+                comparable=False,
+                availability="not_applicable",
+                not_applicable_reason="benchmark_not_configured",
+                gate_reasons=["benchmark_not_configured"],
+            )
+
+        benchmark_id = anchor.config.benchmark_id
         campaigns = await self._campaigns.list_by_user(user_id=user_id)
         selected = [
             campaign
@@ -389,10 +401,6 @@ class ReleaseMetricsService:
                     )
                 )
         report = derive_release_metrics(benchmark_id=benchmark_id, runs=runs)
-        if not anchor.config.benchmark_id:
-            report.comparable = False
-            report.gate_reasons = sorted({*report.gate_reasons, "benchmark_id_missing"})
-            return _blocked_report(report)
         return report
 
     async def _release_run(
