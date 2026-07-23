@@ -146,3 +146,37 @@ async def test_agent_trace_campaign_list_returns_not_instrumented_summary_for_le
     assert summaries[0].trace_id == "legacy-trace"
     assert summaries[0].campaign_result_id == "legacy-result"
     assert summaries[0].trace_status == "not_instrumented"
+
+
+@pytest.mark.asyncio
+async def test_initialization_sets_wal_while_connection_keeps_runtime_pragmas(
+    tmp_path, monkeypatch
+) -> None:
+    connection_only_path = tmp_path / "connection-only.db"
+    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", connection_only_path)
+
+    async with evaluation_db.connect_db() as connection:
+        journal_mode = (
+            await (await connection.execute("PRAGMA journal_mode;")).fetchone()
+        )[0]
+    assert journal_mode == "delete"
+
+    await evaluation_db.force_init_db()
+    with sqlite3.connect(connection_only_path) as connection:
+        assert connection.execute("PRAGMA journal_mode;").fetchone()[0] == "wal"
+
+    init_path = tmp_path / "init.db"
+    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", init_path)
+    await evaluation_db.init_db()
+    with sqlite3.connect(init_path) as connection:
+        assert connection.execute("PRAGMA journal_mode;").fetchone()[0] == "wal"
+
+    async with evaluation_db.connect_db() as connection:
+        foreign_keys = (
+            await (await connection.execute("PRAGMA foreign_keys;")).fetchone()
+        )[0]
+        busy_timeout = (
+            await (await connection.execute("PRAGMA busy_timeout;")).fetchone()
+        )[0]
+    assert foreign_keys == 1
+    assert busy_timeout == 5000

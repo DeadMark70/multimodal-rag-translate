@@ -311,10 +311,11 @@ class EvaluationAccountingStore:
                 (campaign_id,),
             )
             rows = await cursor.fetchall()
+            targets_by_scope_id = await _load_scope_targets_by_scope_id(
+                connection, [row["scope_id"] for row in rows]
+            )
             scopes = [
-                _scope_from_row(
-                    row, await _load_scope_targets(connection, row["scope_id"])
-                )
+                _scope_from_row(row, targets_by_scope_id.get(row["scope_id"], []))
                 for row in rows
             ]
         return scopes
@@ -466,6 +467,34 @@ async def _load_scope_targets(connection, scope_id: str) -> list[AccountingScope
         )
         for row in rows
     ]
+
+
+async def _load_scope_targets_by_scope_id(
+    connection, scope_ids: list[str]
+) -> dict[str, list[AccountingScopeTarget]]:
+    placeholders = ", ".join("?" for _ in scope_ids) or "NULL"
+    cursor = await connection.execute(
+        f"""SELECT scope_id, campaign_result_id, job_id, work_item_id, attempt_id,
+                   mode, metric_name, is_official
+            FROM evaluation_accounting_scope_targets
+            WHERE scope_id IN ({placeholders})
+            ORDER BY scope_id ASC, created_at ASC, attempt_id ASC""",
+        scope_ids,
+    )
+    targets_by_scope_id: dict[str, list[AccountingScopeTarget]] = {}
+    for row in await cursor.fetchall():
+        targets_by_scope_id.setdefault(row["scope_id"], []).append(
+            AccountingScopeTarget(
+                campaign_result_id=row["campaign_result_id"],
+                job_id=row["job_id"],
+                work_item_id=row["work_item_id"],
+                attempt_id=row["attempt_id"],
+                mode=row["mode"],
+                metric_name=row["metric_name"],
+                is_official=bool(row["is_official"]),
+            )
+        )
+    return targets_by_scope_id
 
 
 def _scope_from_row(row, targets: list[AccountingScopeTarget]) -> AccountingScope:

@@ -772,7 +772,6 @@ async def connect_db():
     db_path.parent.mkdir(parents=True, exist_ok=True)
     connection = await aiosqlite.connect(db_path)
     connection.row_factory = aiosqlite.Row
-    await connection.execute("PRAGMA journal_mode=WAL;")
     await connection.execute("PRAGMA synchronous=NORMAL;")
     await connection.execute("PRAGMA busy_timeout=5000;")
     await connection.execute("PRAGMA foreign_keys=ON;")
@@ -792,6 +791,7 @@ async def init_db() -> None:
         if db_path in _INITIALIZED_DB_PATHS and Path(db_path).exists():
             return
         async with connect_db() as connection:
+            await connection.execute("PRAGMA journal_mode=WAL;")
             await connection.executescript(_INIT_SQL)
             await _apply_migrations(connection)
             await connection.commit()
@@ -802,6 +802,7 @@ async def force_init_db() -> None:
     """Run schema creation and migrations even if the current DB path is cached."""
     db_path = str(Path(EVALUATION_DB_PATH).resolve())
     async with connect_db() as connection:
+        await connection.execute("PRAGMA journal_mode=WAL;")
         await connection.executescript(_INIT_SQL)
         await _apply_migrations(connection)
         await connection.commit()
