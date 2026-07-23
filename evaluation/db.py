@@ -1408,6 +1408,31 @@ class CampaignAnalyticsResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CampaignResearchResult:
+    """Bounded result projection used by research aggregate responses only."""
+
+    id: str
+    campaign_id: str
+    question_id: str
+    mode: str
+    context_policy_version: Optional[str]
+    run_number: int
+    latency_ms: float
+    total_latency_ms: Optional[float]
+    category: Optional[str]
+    difficulty: Optional[str]
+    required_modalities: list[Any] | None
+    derived_metrics: dict[str, Any]
+    source_attempt_id: Optional[str]
+    status: CampaignResultStatus
+
+    @property
+    def repeat_number(self) -> int:
+        value = self.derived_metrics.get("repeat_number")
+        return value if isinstance(value, int) else self.run_number
+
+
+@dataclass(frozen=True, slots=True)
 class CampaignReleaseResult:
     """Bounded result projection used only for campaign release derivation."""
 
@@ -2040,6 +2065,62 @@ class CampaignResultRepository:
                 derived_metrics=_json_loads(row["derived_metrics_json"], {}),
                 answer_preview=row["answer_preview"] or "",
                 created_at=datetime.fromisoformat(row["created_at"]),
+            )
+            for row in rows
+        ]
+
+    async def list_for_campaign_research(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+    ) -> list[CampaignResearchResult]:
+        """Return only result fields needed by research aggregate responses."""
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT
+                    id,
+                    campaign_id,
+                    question_id,
+                    mode,
+                    context_policy_version,
+                    run_number,
+                    latency_ms,
+                    total_latency_ms,
+                    category,
+                    difficulty,
+                    json_extract(question_snapshot_json, '$.required_modalities')
+                        AS required_modalities_json,
+                    derived_metrics_json,
+                    source_attempt_id,
+                    status
+                FROM campaign_results
+                WHERE campaign_id = ? AND user_id = ?
+                ORDER BY created_at ASC, question_id ASC, mode ASC, run_number ASC, id ASC
+                """,
+                (campaign_id, user_id),
+            )
+            rows = await cursor.fetchall()
+        return [
+            CampaignResearchResult(
+                id=row["id"],
+                campaign_id=row["campaign_id"],
+                question_id=row["question_id"],
+                mode=row["mode"],
+                context_policy_version=row["context_policy_version"] or None,
+                run_number=row["run_number"],
+                latency_ms=row["latency_ms"],
+                total_latency_ms=row["total_latency_ms"],
+                category=row["category"],
+                difficulty=row["difficulty"],
+                required_modalities=_json_loads(
+                    row["required_modalities_json"], None
+                ),
+                derived_metrics=_json_loads(row["derived_metrics_json"], {}),
+                source_attempt_id=row["source_attempt_id"] or None,
+                status=CampaignResultStatus(row["status"]),
             )
             for row in rows
         ]

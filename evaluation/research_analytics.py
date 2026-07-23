@@ -89,11 +89,22 @@ class ResearchAnalyticsService:
         self._accounting = accounting or EvaluationAccountingStore()
         self._traces = traces or AgentTraceRepository()
 
+    async def _list_for_campaign_research(self, *, user_id: str, campaign_id: str):
+        """Prefer the bounded projection, retaining injected legacy doubles."""
+        list_research = getattr(
+            self._results, "list_for_campaign_research", None
+        )
+        if list_research is not None:
+            return await list_research(user_id=user_id, campaign_id=campaign_id)
+        return await self._results.list_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
+
     async def get_summary(
         self, *, user_id: str, campaign_id: str
     ) -> CampaignResearchSummaryResponse:
         await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
-        all_results = await self._results.list_for_campaign(
+        all_results = await self._list_for_campaign_research(
             user_id=user_id, campaign_id=campaign_id
         )
         completed = [
@@ -265,7 +276,7 @@ class ResearchAnalyticsService:
     ) -> ResearchQuestionComparisonResponse:
         """Return measured question/mode comparisons with strict null semantics."""
         campaign = await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
-        all_results = await self._results.list_for_campaign(
+        all_results = await self._list_for_campaign_research(
             user_id=user_id, campaign_id=campaign_id
         )
         completed = [
@@ -480,7 +491,6 @@ class ResearchAnalyticsService:
             )
 
             first = question_results[0]
-            snapshot = first.question_snapshot if isinstance(first.question_snapshot, dict) else {}
             derived = [
                 getattr(result, "derived_metrics", {})
                 for result in question_results
@@ -502,8 +512,10 @@ class ResearchAnalyticsService:
                     category=getattr(first, "category", None),
                     difficulty=getattr(first, "difficulty", None),
                     required_modalities=(
-                        list(snapshot["required_modalities"])
-                        if isinstance(snapshot.get("required_modalities"), list)
+                        list(first.required_modalities)
+                        if isinstance(
+                            getattr(first, "required_modalities", None), list
+                        )
                         else None
                     ),
                     by_mode=mode_rows,
@@ -560,7 +572,7 @@ class ResearchAnalyticsService:
     ) -> AgentBehaviorResponse:
         """Return trace-backed behavior rows for every persisted campaign run."""
         await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
-        results = await self._results.list_for_campaign(
+        results = await self._list_for_campaign_research(
             user_id=user_id, campaign_id=campaign_id
         )
         completed = [
