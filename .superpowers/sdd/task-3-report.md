@@ -101,3 +101,51 @@ format check passes.
 No implementation concerns. Test output contains pre-existing third-party
 `storage3` Pydantic-v2 deprecation warnings and a Pytest cache permission
 warning under `output/test_tmp`; all required commands exited successfully.
+
+---
+
+# Task 3 Follow-up — Cache terminal Release Metrics reports safely
+
+## Scope
+
+- Modified `evaluation/release_metrics.py` and `tests/test_evaluation_release_metrics.py` only.
+- Added an instance-local terminal report cache keyed exactly by the sorted selected campaign `(id, updated_at.isoformat(), status.value)` tuples.
+- Cache entries are used only when every selected campaign is terminal: `completed`, `completed_with_errors`, `failed`, or `cancelled`.
+- Cached reports are deep-copied on both write and read. The pre-existing no-benchmark `not_applicable` return remains before cache evaluation.
+
+## TDD evidence
+
+RED command:
+
+```powershell
+uv run --python 3.13 --with-requirements requirements.txt python -m pytest -q tests/test_evaluation_release_metrics.py -k "caches_unchanged_terminal or reloads_when_any_selected or does_not_cache_nonterminal"
+```
+
+Result: 1 failed, 3 passed. The unchanged completed benchmark loaded each bulk source twice: actual `(2, 2, 2, 2, 2)`, expected `(1, 1, 1, 1, 1)`.
+
+GREEN command: same command after the minimal implementation.
+
+Result: 4 passed, 12 deselected.
+
+## Final verification
+
+```powershell
+uv run --python 3.13 --with-requirements requirements.txt python -m pytest -q tests/test_evaluation_release_metrics.py
+uv run --python 3.13 --with-requirements requirements.txt ruff check evaluation/release_metrics.py tests/test_evaluation_release_metrics.py
+git diff --check
+```
+
+Results:
+
+- `16 passed` for the focused release-metrics module.
+- Ruff: `All checks passed!`
+- Diff check: no whitespace errors.
+
+The pytest environment emitted 23 pre-existing third-party `storage3` Pydantic deprecation warnings; they are unrelated to this change.
+
+## Self-review
+
+- Unchanged terminal campaigns reuse the process-local cache.
+- Changing any selected campaign status or timestamp changes the exact cache key and reloads all selected campaign inputs.
+- Running and evaluating campaigns bypass the terminal cache on every request.
+- The P0 missing-benchmark fast return is still first and no `not_applicable` result is cached.

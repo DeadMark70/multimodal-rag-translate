@@ -26,7 +26,7 @@ from data_base.agentic_v9.schemas import (
     V9ExecutionMetrics,
 )
 from evaluation.accounting_store import CampaignAccountingSnapshot, EvaluationAccountingStore
-from evaluation.campaign_schemas import V9ContextPack
+from evaluation.campaign_schemas import CampaignLifecycleStatus, V9ContextPack
 from evaluation.db import CampaignRepository, CampaignResultRepository, RagasScoreRepository
 from evaluation.observability_storage import (
     CampaignReleaseObservabilitySnapshot,
@@ -364,6 +364,9 @@ class ReleaseMetricsService:
         self._accounting = accounting or EvaluationAccountingStore()
         self._observability = observability or EvaluationObservabilityRepository()
         self._analytics = analytics
+        self._terminal_report_cache: dict[
+            tuple[tuple[str, str, str], ...], ReleaseMetricsReport
+        ] = {}
 
     async def get_report(self, *, user_id: str, campaign_id: str) -> ReleaseMetricsReport:
         anchor = await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
@@ -385,6 +388,19 @@ class ReleaseMetricsService:
             if campaign.id == campaign_id
             or (anchor.config.benchmark_id and campaign.config.benchmark_id == anchor.config.benchmark_id)
         ]
+        cache_key = tuple(
+            (campaign.id, campaign.updated_at.isoformat(), campaign.status.value)
+            for campaign in sorted(selected, key=lambda item: item.id)
+        )
+        terminal_statuses = {
+            CampaignLifecycleStatus.COMPLETED,
+            CampaignLifecycleStatus.COMPLETED_WITH_ERRORS,
+            CampaignLifecycleStatus.FAILED,
+            CampaignLifecycleStatus.CANCELLED,
+        }
+        cacheable = all(campaign.status in terminal_statuses for campaign in selected)
+        if cacheable and (cached := self._terminal_report_cache.get(cache_key)) is not None:
+            return cached.model_copy(deep=True)
         snapshots = await asyncio.gather(
             *(
                 self._load_campaign_inputs(user_id=user_id, campaign_id=campaign.id)
@@ -403,6 +419,8 @@ class ReleaseMetricsService:
                 )
             )
         report = derive_release_metrics(benchmark_id=benchmark_id, runs=runs)
+        if cacheable:
+            self._terminal_report_cache[cache_key] = report.model_copy(deep=True)
         return report
 
     async def _load_campaign_inputs(self, *, user_id: str, campaign_id: str):
