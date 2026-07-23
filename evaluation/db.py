@@ -730,6 +730,7 @@ CREATE TABLE IF NOT EXISTS agent_traces (
     campaign_result_id TEXT,
     user_id TEXT NOT NULL,
     trace_json TEXT NOT NULL,
+    summary_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL
 );
 
@@ -754,6 +755,9 @@ ON ragas_scores(campaign_id, user_id, campaign_result_id, metric_name);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_traces_result
 ON agent_traces(campaign_result_id);
+
+CREATE INDEX IF NOT EXISTS idx_agent_traces_campaign_user_created
+ON agent_traces(campaign_id, user_id, created_at DESC);
 """
 
 
@@ -848,6 +852,12 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
     if "condition_id" not in campaign_result_columns:
         await connection.execute(
             "ALTER TABLE campaign_results ADD COLUMN condition_id TEXT NOT NULL DEFAULT ''"
+        )
+
+    agent_trace_columns = await _table_columns(connection, "agent_traces")
+    if "summary_json" not in agent_trace_columns:
+        await connection.execute(
+            "ALTER TABLE agent_traces ADD COLUMN summary_json TEXT NOT NULL DEFAULT '{}'"
         )
 
     work_item_columns = await _table_columns(connection, "evaluation_work_items")
@@ -955,6 +965,12 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_traces_result
         ON agent_traces(campaign_result_id)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_agent_traces_campaign_user_created
+        ON agent_traces(campaign_id, user_id, created_at DESC)
         """
     )
     await connection.execute(
@@ -1517,6 +1533,23 @@ def _row_to_agent_trace_detail(row: aiosqlite.Row) -> AgentTraceDetail:
             message="Stored agent trace is invalid",
             status_code=500,
         ) from exc
+
+
+def _row_to_agent_trace_summary(row: aiosqlite.Row) -> AgentTraceSummary:
+    """Read the list projection without deserializing the full trace payload."""
+    summary_payload = _json_loads(row["summary_json"], {})
+    if summary_payload:
+        try:
+            return AgentTraceSummary.model_validate(summary_payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to parse agent trace summary row %s: %s", row["id"], exc)
+
+    return AgentTraceSummary(
+        trace_id=row["id"],
+        campaign_result_id=row["campaign_result_id"],
+        created_at=row["created_at"],
+        trace_status="not_instrumented",
+    )
 
 
 class CampaignRepository:
@@ -2465,6 +2498,9 @@ class AgentTraceRepository:
             }
         )
         serialized_trace = _json_dumps(detail.model_dump(mode="json"))
+        serialized_summary = _json_dumps(
+            summarize_agent_trace(detail).model_dump(mode="json")
+        )
         if len(serialized_trace.encode("utf-8")) > MAX_AGENT_TRACE_PAYLOAD_BYTES:
             raise ValueError("agent trace payload exceeds 262144 bytes")
         async with connect_db() as connection:
@@ -2478,8 +2514,8 @@ class AgentTraceRepository:
             await connection.execute(
                 """
                 INSERT INTO agent_traces (
-                    id, campaign_id, campaign_result_id, user_id, trace_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    id, campaign_id, campaign_result_id, user_id, trace_json, summary_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     detail.trace_id,
@@ -2487,6 +2523,7 @@ class AgentTraceRepository:
                     campaign_result_id,
                     user_id,
                     serialized_trace,
+                    serialized_summary,
                     detail.created_at.isoformat(),
                 ),
             )
@@ -2503,7 +2540,7 @@ class AgentTraceRepository:
         async with connect_db() as connection:
             cursor = await connection.execute(
                 """
-                SELECT *
+                SELECT id, campaign_id, campaign_result_id, user_id, summary_json, created_at
                 FROM agent_traces
                 WHERE campaign_id = ? AND user_id = ?
                 ORDER BY created_at DESC
@@ -2511,7 +2548,7 @@ class AgentTraceRepository:
                 (campaign_id, user_id),
             )
             rows = await cursor.fetchall()
-        return [summarize_agent_trace(_row_to_agent_trace_detail(row)) for row in rows]
+        return [_row_to_agent_trace_summary(row) for row in rows]
 
     async def get_for_result(
         self,
