@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict, dataclass
 from statistics import mean
 from typing import Any, Literal
@@ -16,10 +17,21 @@ from evaluation.benchmark_release import (
     successful_p95,
     validate_benchmark_runs,
 )
-from evaluation.accounting_store import EvaluationAccountingStore
-from evaluation.analytics import EvaluationAnalyticsService
+from data_base.agentic_v9.schemas import (
+    EvidencePacket,
+    FinalClaim,
+    QueryContract,
+    SlotResolution,
+    SufficiencyReport,
+    V9ExecutionMetrics,
+)
+from evaluation.accounting_store import CampaignAccountingSnapshot, EvaluationAccountingStore
+from evaluation.campaign_schemas import V9ContextPack
 from evaluation.db import CampaignRepository, CampaignResultRepository, RagasScoreRepository
-from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.observability_storage import (
+    CampaignReleaseObservabilitySnapshot,
+    EvaluationObservabilityRepository,
+)
 
 
 class ReleaseMetric(BaseModel):
@@ -344,18 +356,14 @@ class ReleaseMetricsService:
         ragas_scores: RagasScoreRepository | None = None,
         accounting: EvaluationAccountingStore | None = None,
         observability: EvaluationObservabilityRepository | None = None,
-        analytics: EvaluationAnalyticsService | None = None,
+        analytics: Any | None = None,
     ) -> None:
         self._campaigns = campaigns or CampaignRepository()
         self._results = results or CampaignResultRepository()
         self._scores = ragas_scores or RagasScoreRepository()
         self._accounting = accounting or EvaluationAccountingStore()
         self._observability = observability or EvaluationObservabilityRepository()
-        self._analytics = analytics or EvaluationAnalyticsService(
-            campaign_repository=self._campaigns,
-            result_repository=self._results,
-            observability_repository=self._observability,
-        )
+        self._analytics = analytics
 
     async def get_report(self, *, user_id: str, campaign_id: str) -> ReleaseMetricsReport:
         anchor = await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
@@ -377,49 +385,83 @@ class ReleaseMetricsService:
             if campaign.id == campaign_id
             or (anchor.config.benchmark_id and campaign.config.benchmark_id == anchor.config.benchmark_id)
         ]
+        snapshots = await asyncio.gather(
+            *(
+                self._load_campaign_inputs(user_id=user_id, campaign_id=campaign.id)
+                for campaign in selected
+            )
+        )
         runs: list[ReleaseRun] = []
-        for campaign in selected:
-            scores = await self._scores.list_for_campaign(user_id=user_id, campaign_id=campaign.id)
-            evaluator_fingerprints = evaluator_fingerprints_from_work_metadata(
-                await self._scores.list_work_metadata_for_campaign(
-                    user_id=user_id,
-                    campaign_id=campaign.id,
+        for results, score_by_result, evaluator_fingerprints, accounting_snapshot, observability_snapshot in snapshots:
+            runs.extend(
+                self._build_release_runs(
+                    results=results,
+                    scores_by_result=score_by_result,
+                    evaluator_fingerprints=evaluator_fingerprints,
+                    accounting_snapshot=accounting_snapshot,
+                    observability_snapshot=observability_snapshot,
                 )
             )
-            score_by_result: dict[str, dict[str, float]] = {}
-            for row in scores:
-                value = row.get("metric_value")
-                if isinstance(value, (int, float)):
-                    score_by_result.setdefault(str(row["campaign_result_id"]), {})[str(row["metric_name"])] = float(value)
-            for result in await self._results.list_for_campaign(user_id=user_id, campaign_id=campaign.id):
-                runs.append(
-                    await self._release_run(
-                        user_id=user_id,
-                        result=result,
-                        score_map=score_by_result.get(result.id, {}),
-                        evaluator_fingerprint=evaluator_fingerprints.get(result.id),
-                    )
-                )
         report = derive_release_metrics(benchmark_id=benchmark_id, runs=runs)
         return report
 
-    async def _release_run(
+    async def _load_campaign_inputs(self, *, user_id: str, campaign_id: str):
+        results, scores, work_metadata, accounting_snapshot, observability_snapshot = await asyncio.gather(
+            self._results.list_for_campaign_release(user_id=user_id, campaign_id=campaign_id),
+            self._scores.list_for_campaign(user_id=user_id, campaign_id=campaign_id),
+            self._scores.list_work_metadata_for_campaign(user_id=user_id, campaign_id=campaign_id),
+            self._accounting.load_campaign_snapshot(campaign_id),
+            self._observability.load_campaign_release_snapshot(campaign_id),
+        )
+        score_by_result: dict[str, dict[str, float]] = {}
+        for row in scores:
+            value = row.get("metric_value")
+            if isinstance(value, (int, float)):
+                score_by_result.setdefault(str(row["campaign_result_id"]), {})[str(row["metric_name"])] = float(value)
+        return (
+            results,
+            score_by_result,
+            evaluator_fingerprints_from_work_metadata(work_metadata),
+            accounting_snapshot,
+            observability_snapshot,
+        )
+
+    def _build_release_runs(
         self,
         *,
-        user_id: str,
+        results,
+        scores_by_result: dict[str, dict[str, float]],
+        evaluator_fingerprints: dict[str, str | None],
+        accounting_snapshot: CampaignAccountingSnapshot,
+        observability_snapshot: CampaignReleaseObservabilitySnapshot,
+    ) -> list[ReleaseRun]:
+        return [
+            self._release_run_from_snapshots(
+                result=result,
+                score_map=scores_by_result.get(result.id, {}),
+                evaluator_fingerprint=evaluator_fingerprints.get(result.id),
+                accounting_snapshot=accounting_snapshot,
+                observability_snapshot=observability_snapshot,
+            )
+            for result in results
+        ]
+
+    def _release_run_from_snapshots(
+        self,
+        *,
         result,
         score_map: dict[str, float],
         evaluator_fingerprint: str | None,
+        accounting_snapshot: CampaignAccountingSnapshot,
+        observability_snapshot: CampaignReleaseObservabilitySnapshot,
     ) -> ReleaseRun:
-
-        breakdown = await self._run_tokens(campaign_id=result.campaign_id, run_id=result.id)
-        detail = await self._analytics.run_detail(user_id=user_id, run_id=result.id)
-        v9 = detail.agentic_v9
-        final_claims = list(v9.final_claims) if v9 else []
+        breakdown = self._snapshot_run_tokens(result.id, accounting_snapshot)
+        v9 = self._v9_snapshot_for_result(result, observability_snapshot)
+        final_claims = v9["final_claims"] if v9 else []
         required_metrics = {"answer_correctness", "faithfulness", "answer_relevancy"}
-        contract = v9.contract if v9 else None
-        context_pack = v9.context_pack if v9 else None
-        graph_events = await self._observability.list_graph_events_for_run(result.id)
+        contract = v9["contract"] if v9 else None
+        context_pack = v9["context_pack"] if v9 else None
+        graph_events = observability_snapshot.graph_events_by_run_id.get(result.id, [])
         graph_requested = bool(contract and contract.graph_policy != "never")
         graph_success = sum(1 for event in graph_events if event.graph_to_chunk_success_rate and event.graph_to_chunk_success_rate > 0)
         graph_fallback = sum(1 for event in graph_events if event.graph_route.lower().startswith("fallback"))
@@ -448,8 +490,7 @@ class ReleaseMetricsService:
             required_ragas_complete=required_metrics.issubset(score_map),
             golden_available=bool(result.question_snapshot),
             used_evidence_mapped=(
-                bool(final_claims)
-                and all(claim.evidence_ids for claim in final_claims)
+                bool(final_claims) and all(claim.evidence_ids for claim in final_claims)
                 if result.agentic_execution_version == "v9" and not result.shadow_evaluation_policy
                 else True
             ),
@@ -466,36 +507,73 @@ class ReleaseMetricsService:
             evaluator_fingerprint=evaluator_fingerprint,
             response_status=result.response_status,
             required_slot_count=len(contract.required_slots) if contract else None,
-            supported_slot_count=len(v9.sufficiency.supported_slot_ids) if v9 and v9.sufficiency else None,
+            supported_slot_count=len(v9["sufficiency"].supported_slot_ids) if v9 and v9["sufficiency"] else None,
             important_claim_count=len(final_claims) if v9 else None,
             unsupported_important_claim_count=sum(not claim.evidence_ids for claim in final_claims) if v9 else None,
             provenance_failure_count=sum(not claim.evidence_ids for claim in final_claims) if v9 else None,
             packed_evidence_count=len(context_pack.packed_evidence_ids) if context_pack else None,
-            available_evidence_count=len(v9.evidence_packets) if v9 else None,
+            available_evidence_count=v9["evidence_count"] if v9 else None,
             graph_locator_success_count=graph_success if graph_requested and graph_events else None,
             graph_locator_fallback_count=graph_fallback if graph_requested and graph_events else None,
-            final_generation_count=v9.metrics.final_generation_count if v9 else None,
+            final_generation_count=v9["metrics"].final_generation_count if v9 else None,
             runtime_tokens=breakdown.total_tokens,
             latency_ms=result.total_latency_ms,
             quality_score=score_map.get("answer_correctness"),
             category=result.category,
         )
 
-    async def _run_tokens(self, *, campaign_id: str, run_id: str):
-        scopes = await self._accounting.list_campaign_scopes(campaign_id)
+    @staticmethod
+    def _snapshot_run_tokens(run_id: str, snapshot: CampaignAccountingSnapshot):
+        scopes = snapshot.scopes_by_run_id.get(run_id, [])
         matching = [
             scope
             for scope in scopes
-            if scope.scope_type == "execution_run" and scope.run_id == run_id and scope.accounting_schema_version == "2"
+            if scope.scope_type == "execution_run" and scope.accounting_schema_version == "2"
         ]
         if not matching:
             from evaluation.accounting_schemas import TokenBreakdown
-
             return TokenBreakdown(accounting_status="incomplete_legacy", phase_attribution_status="not_available")
-        events = await self._accounting.list_campaign_events(campaign_id)
         from evaluation.research_analytics import _tokens
 
-        return _tokens(matching, [event for event in events if event.scope_id in {scope.scope_id for scope in matching}])
+        return _tokens(
+            matching,
+            [event for scope in matching for event in snapshot.events_by_scope_id.get(scope.scope_id, [])],
+        )
+
+    @staticmethod
+    def _v9_snapshot_for_result(result, snapshot: CampaignReleaseObservabilitySnapshot):
+        materialization = next(
+            (
+                item
+                for item in snapshot.materializations_by_run_id.get(result.id, [])
+                if item.attempt_id == result.source_attempt_id
+            ),
+            None,
+        )
+        if not result.source_attempt_id or not materialization:
+            return None
+        payload = materialization.trace_payload
+        try:
+            evidence = [
+                EvidencePacket.model_validate(item.packet)
+                for item in snapshot.evidence_packets_by_run_id.get(result.id, [])
+                if item.attempt_id == materialization.attempt_id
+            ]
+            [
+                SlotResolution.model_validate(item.resolution)
+                for item in snapshot.slot_resolutions_by_run_id.get(result.id, [])
+                if item.attempt_id == materialization.attempt_id
+            ]
+            return {
+                "contract": QueryContract.model_validate(payload["query_contract"]) if payload.get("query_contract") else None,
+                "sufficiency": SufficiencyReport.model_validate(payload["sufficiency"]) if payload.get("sufficiency") else None,
+                "context_pack": V9ContextPack.model_validate(payload["context_pack"]) if payload.get("context_pack") else None,
+                "final_claims": [FinalClaim.model_validate(item) for item in payload.get("final_claims", [])],
+                "metrics": V9ExecutionMetrics.model_validate(payload.get("metrics", {})),
+                "evidence_count": len(evidence),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
 
 
 _ARM_BOOKKEEPING_SNAPSHOT_KEYS = frozenset(

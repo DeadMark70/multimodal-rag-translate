@@ -1407,6 +1407,48 @@ class CampaignAnalyticsResult:
         return value if isinstance(value, str) else None
 
 
+@dataclass(frozen=True, slots=True)
+class CampaignReleaseResult:
+    """Bounded result projection used only for campaign release derivation."""
+
+    id: str
+    campaign_id: str
+    question_id: str
+    mode: str
+    execution_profile: Optional[str]
+    run_number: int
+    condition_id: Optional[str]
+    total_latency_ms: Optional[float]
+    category: Optional[str]
+    status: CampaignResultStatus
+    error_message: Optional[str]
+    question_snapshot: dict[str, Any]
+    model_config_snapshot: dict[str, Any]
+    system_version_snapshot: dict[str, Any]
+    derived_metrics: dict[str, Any]
+    source_attempt_id: Optional[str]
+
+    @property
+    def repeat_number(self) -> int:
+        value = self.derived_metrics.get("repeat_number")
+        return value if isinstance(value, int) else self.run_number
+
+    @property
+    def agentic_execution_version(self) -> str:
+        version = self.system_version_snapshot.get("agentic_execution_version", "v8")
+        return version if version in {"v8", "v9"} else "v8"
+
+    @property
+    def shadow_evaluation_policy(self) -> Optional[str]:
+        value = self.derived_metrics.get("shadow_evaluation_policy")
+        return value if value in {"operational", "research"} else None
+
+    @property
+    def response_status(self) -> Optional[str]:
+        value = self.derived_metrics.get("response_status")
+        return value if isinstance(value, str) else None
+
+
 def _normalize_route_profile(value: Any) -> Any:
     if not isinstance(value, str):
         return value
@@ -1998,6 +2040,50 @@ class CampaignResultRepository:
                 derived_metrics=_json_loads(row["derived_metrics_json"], {}),
                 answer_preview=row["answer_preview"] or "",
                 created_at=datetime.fromisoformat(row["created_at"]),
+            )
+            for row in rows
+        ]
+
+    async def list_for_campaign_release(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+    ) -> list[CampaignReleaseResult]:
+        """Return only immutable result fields used by release gates and fingerprints."""
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT id, campaign_id, question_id, mode, execution_profile, run_number,
+                       condition_id, total_latency_ms, category, status, error_message,
+                       question_snapshot_json, model_config_snapshot_json,
+                       system_version_snapshot_json, derived_metrics_json, source_attempt_id
+                FROM campaign_results
+                WHERE campaign_id = ? AND user_id = ?
+                ORDER BY created_at ASC, question_id ASC, mode ASC, run_number ASC, id ASC
+                """,
+                (campaign_id, user_id),
+            )
+            rows = await cursor.fetchall()
+        return [
+            CampaignReleaseResult(
+                id=row["id"],
+                campaign_id=row["campaign_id"],
+                question_id=row["question_id"],
+                mode=row["mode"],
+                execution_profile=row["execution_profile"] or None,
+                run_number=row["run_number"],
+                condition_id=row["condition_id"] or None,
+                total_latency_ms=row["total_latency_ms"],
+                category=row["category"],
+                status=CampaignResultStatus(row["status"]),
+                error_message=row["error_message"],
+                question_snapshot=_json_loads(row["question_snapshot_json"], {}),
+                model_config_snapshot=_json_loads(row["model_config_snapshot_json"], {}),
+                system_version_snapshot=_json_loads(row["system_version_snapshot_json"], {}),
+                derived_metrics=_json_loads(row["derived_metrics_json"], {}),
+                source_attempt_id=row["source_attempt_id"] or None,
             )
             for row in rows
         ]

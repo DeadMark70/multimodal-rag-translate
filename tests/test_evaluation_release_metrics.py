@@ -143,6 +143,123 @@ async def test_release_metrics_short_circuit_when_anchor_has_no_benchmark_id() -
     assert report.gate_reasons == ["benchmark_not_configured"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result_count", [1, 160])
+async def test_release_metrics_builds_campaign_runs_from_one_snapshot_per_repository(
+    result_count: int,
+) -> None:
+    """Release projection reads are constant per selected campaign, not per run."""
+
+    class _Campaigns:
+        async def get(self, *, user_id: str, campaign_id: str):
+            return SimpleNamespace(id=campaign_id, config=SimpleNamespace(benchmark_id="bench-1"))
+
+        async def list_by_user(self, *, user_id: str):
+            return [SimpleNamespace(id="campaign-1", config=SimpleNamespace(benchmark_id="bench-1"))]
+
+    def _result(index: int):
+        mode, version, quality = (
+            ("naive", "v8", 0.4) if index % 2 == 0 else ("agentic", "v9", 0.7)
+        )
+        run_id = f"naive-{index // 2 + 1}" if mode == "naive" else f"v9-{index // 2 + 1}"
+        return SimpleNamespace(
+            id=run_id,
+            campaign_id="campaign-1",
+            question_id=f"Q{index // 2}",
+            repeat_number=1,
+            mode=mode,
+            condition_id=run_id,
+            execution_profile=f"{mode}-{version}",
+            agentic_execution_version=version,
+            shadow_evaluation_policy=None,
+            status=SimpleNamespace(value="completed"),
+            error_message=None,
+            question_snapshot={"id": f"Q{index // 2}"},
+            model_config_snapshot={"model": "test"},
+            system_version_snapshot={},
+            response_status="complete",
+            total_latency_ms=100.0,
+            category="retrieval",
+            source_attempt_id=None,
+            quality=quality,
+        )
+
+    class _Results:
+        calls = 0
+
+        async def list_for_campaign_release(self, *, user_id: str, campaign_id: str):
+            self.calls += 1
+            return [_result(index) for index in range(result_count)]
+
+    class _Scores:
+        score_calls = 0
+        metadata_calls = 0
+
+        async def list_for_campaign(self, *, user_id: str, campaign_id: str):
+            self.score_calls += 1
+            return [
+                {
+                    "campaign_result_id": result.id,
+                    "metric_name": "answer_correctness",
+                    "metric_value": result.quality,
+                }
+                for result in [_result(index) for index in range(result_count)]
+            ]
+
+        async def list_work_metadata_for_campaign(self, *, user_id: str, campaign_id: str):
+            self.metadata_calls += 1
+            return []
+
+    class _Accounting:
+        calls = 0
+
+        async def load_campaign_snapshot(self, campaign_id: str):
+            self.calls += 1
+            return SimpleNamespace(scopes_by_run_id={}, events_by_scope_id={})
+
+    class _Observability:
+        calls = 0
+
+        async def load_campaign_release_snapshot(self, campaign_id: str):
+            self.calls += 1
+            return SimpleNamespace(
+                materializations_by_run_id={},
+                evidence_packets_by_run_id={},
+                slot_resolutions_by_run_id={},
+                claims_by_run_id={},
+                context_packs_by_run_id={},
+                graph_events_by_run_id={},
+            )
+
+    results = _Results()
+    scores = _Scores()
+    accounting = _Accounting()
+    observability = _Observability()
+    await ReleaseMetricsService(
+        campaigns=_Campaigns(),
+        results=results,
+        ragas_scores=scores,
+        accounting=accounting,
+        observability=observability,
+    ).get_report(user_id="user-1", campaign_id="campaign-1")
+
+    assert (results.calls, scores.score_calls, scores.metadata_calls, accounting.calls, observability.calls) == (1, 1, 1, 1, 1)
+    if result_count == 160:
+        assert [(item.run_id, item.quality_score) for item in ReleaseMetricsService(
+            campaigns=_Campaigns(), results=results, ragas_scores=scores,
+            accounting=accounting, observability=observability,
+        )._build_release_runs(
+            results=[_result(0), _result(1)],
+            scores_by_result={"naive-1": {"answer_correctness": 0.4}, "v9-1": {"answer_correctness": 0.7}},
+            evaluator_fingerprints={},
+            accounting_snapshot=SimpleNamespace(scopes_by_run_id={}, events_by_scope_id={}),
+            observability_snapshot=SimpleNamespace(
+                materializations_by_run_id={}, evidence_packets_by_run_id={}, slot_resolutions_by_run_id={},
+                claims_by_run_id={}, context_packs_by_run_id={}, graph_events_by_run_id={},
+            ),
+        )] == [("naive-1", 0.4), ("v9-1", 0.7)]
+
+
 def test_fingerprint_layers_keep_distinct_goldens_out_of_shared_environment() -> None:
     question_one = {
         "id": "Q1",
