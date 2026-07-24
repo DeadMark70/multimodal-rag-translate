@@ -1,5 +1,6 @@
 """Tests for durable evaluation usage accounting persistence."""
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -7,6 +8,7 @@ import pytest
 import pytest_asyncio
 
 from evaluation import db as evaluation_db
+from evaluation import accounting_store as accounting_store_module
 from evaluation.accounting_schemas import AccountingScopeStart, UsageEventCreate
 from evaluation.accounting_store import EvaluationAccountingStore
 
@@ -279,3 +281,56 @@ async def test_balanced_zero_usage_remains_known_in_legacy_projection(
     assert usage["reasoning_tokens"] == 0
     assert usage["other_tokens"] == 0
     assert usage["total_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_list_campaign_scopes_bulk_loads_ordered_targets_in_two_queries(
+    accounting_store, monkeypatch
+) -> None:
+    for scope_number in range(3):
+        await accounting_store.start_scope(
+            AccountingScopeStart(
+                scope_id=f"scope-{scope_number}",
+                campaign_id="campaign-1",
+                scope_type="ragas_batch",
+                scope_key=f"faithfulness:batch-{scope_number}",
+                metric_name="faithfulness",
+                targets=[
+                    {
+                        "campaign_result_id": f"result-{scope_number}-{target_number}",
+                        "job_id": "job-1",
+                        "work_item_id": f"work-{scope_number}-{target_number}",
+                        "attempt_id": f"attempt-{target_number}",
+                        "metric_name": "faithfulness",
+                    }
+                    for target_number in (1, 0)
+                ],
+            )
+        )
+
+    statements: list[str] = []
+    original_connect_db = accounting_store_module.connect_db
+
+    @asynccontextmanager
+    async def traced_connect_db():
+        async with original_connect_db() as connection:
+            await connection.set_trace_callback(statements.append)
+            yield connection
+
+    monkeypatch.setattr(accounting_store_module, "connect_db", traced_connect_db)
+
+    scopes = await accounting_store.list_campaign_scopes("campaign-1")
+
+    select_statements = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith("SELECT")
+    ]
+    assert len(select_statements) == 2
+    assert "FROM evaluation_accounting_scopes" in select_statements[0]
+    assert "FROM evaluation_accounting_scope_targets" in select_statements[1]
+    assert "WHERE scope_id IN" in select_statements[1]
+    assert [scope.scope_id for scope in scopes] == ["scope-0", "scope-1", "scope-2"]
+    assert [[target.attempt_id for target in scope.targets] for scope in scopes] == [
+        ["attempt-0", "attempt-1"]
+    ] * 3

@@ -430,6 +430,42 @@ async def test_failed_durable_execution_prefers_captured_trace_profile(
 
 
 @pytest.mark.asyncio
+async def test_execution_worker_marks_oversized_answer_failed_without_scheduling_ragas(
+    store: EvaluationJobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ensure_ragas_work = AsyncMock()
+    monkeypatch.setattr(store, "ensure_ragas_work", ensure_ragas_work)
+    payload = _successful_payload(
+        question_id="Q1",
+        mode="naive",
+        answer="a" * (evaluation_db.MAX_EVALUATION_ANSWER_BYTES + 1),
+    )
+    worker = DatasetExecutionWorker(
+        store=store,
+        runner=AsyncMock(return_value=payload),
+        ragas_evaluator=SimpleNamespace(
+            enabled_metrics=("faithfulness",), evaluator_model="judge-v1"
+        ),
+    )
+    claim = await _claim_seeded_execution(store)
+
+    await worker.execute(claim)
+
+    results = await evaluation_db.CampaignResultRepository().list_for_campaign(
+        user_id="user-a", campaign_id="cmp-1"
+    )
+    attempts = await store.list_attempts(
+        user_id="user-a", work_item_id=claim.work_item_id
+    )
+    assert len(results) == 1
+    assert results[0].status.value == "failed"
+    assert results[0].answer == ""
+    assert results[0].error_message == "EVALUATION_ANSWER_TOO_LARGE"
+    assert attempts[-1].status.value == "failed"
+    ensure_ragas_work.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_ablation_conditions_with_a_shared_mode_keep_distinct_official_results(
     store: EvaluationJobStore,
 ) -> None:

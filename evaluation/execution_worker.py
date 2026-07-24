@@ -34,6 +34,9 @@ from evaluation.db import (
     AgentTraceRepository,
     CampaignRepository,
     CampaignResultRepository,
+    EVALUATION_ANSWER_TOO_LARGE,
+    EvaluationAnswerTooLargeError,
+    is_evaluation_answer_too_large,
 )
 from evaluation.error_policy import classify_evaluation_error
 from evaluation.job_schemas import ClaimedEvaluationWork, ExecutionAttemptOutput
@@ -117,6 +120,10 @@ class DatasetExecutionWorker:
                 total_latency_ms = max((time.perf_counter() - started_perf) * 1000, 0)
                 if total_latency_ms <= 0:
                     total_latency_ms = _duration_ms(started_at, completed_at)
+                if is_evaluation_answer_too_large(payload.answer):
+                    payload.answer = ""
+                    payload.error_message = EVALUATION_ANSWER_TOO_LARGE
+                    raise EvaluationAnswerTooLargeError()
                 if payload.error_message:
                     raise RuntimeError(payload.error_message)
                 token_summary = await self._accounting_store.summarize_scope_tokens(
@@ -325,6 +332,7 @@ class DatasetExecutionWorker:
         unit, user_id, campaign_id, model_config = self._snapshot_inputs(claim)
         now = datetime.now(timezone.utc)
         test_case = unit.test_case
+        oversized_answer = isinstance(exc, EvaluationAnswerTooLargeError)
         await self._result_repository.create(
             result_id=claim.attempt_id,
             user_id=user_id,
@@ -343,7 +351,7 @@ class DatasetExecutionWorker:
             context_policy_version=None,
             run_number=unit.run_number,
             condition_id=unit.condition_id,
-            answer=f"ERROR: {exc}",
+            answer="" if oversized_answer else f"ERROR: {exc}",
             contexts=[],
             source_doc_ids=[],
             expected_sources=list(test_case.source_docs),
@@ -352,7 +360,9 @@ class DatasetExecutionWorker:
             category=test_case.category,
             difficulty=test_case.difficulty,
             status=CampaignResultStatus.FAILED,
-            error_message=str(exc),
+            error_message=(
+                EVALUATION_ANSWER_TOO_LARGE if oversized_answer else str(exc)
+            ),
             question_version=test_case.question_version,
             request_id=None,
             started_at=now.isoformat(),
@@ -368,7 +378,9 @@ class DatasetExecutionWorker:
                 "agentic_execution_version": unit.agentic_execution_version,
                 "response_status": "failed",
             },
-            final_answer_hash=_final_answer_hash(f"ERROR: {exc}"),
+            final_answer_hash=(
+                None if oversized_answer else _final_answer_hash(f"ERROR: {exc}")
+            ),
             source_attempt_id=claim.attempt_id,
         )
 

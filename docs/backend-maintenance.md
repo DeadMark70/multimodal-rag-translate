@@ -66,6 +66,22 @@ When changing PDF background/indexing behavior, run:
 $env:TEST_MODE='true'; $env:USE_FAKE_PROVIDERS='true'; .\.venv\Scripts\python.exe -m pytest tests/test_pdfservice_background_processing.py tests/test_pdfservice_manual_translation.py tests/test_router_boundaries.py -q
 ```
 
+### Evaluation Release Metrics And Trace Lists
+
+- `GET /api/evaluation/campaigns/{campaign_id}/release-metrics` is owned by `evaluation/release_metrics.py`; routers only authenticate and delegate.
+- Treat `availability="not_applicable"` plus `not_applicable_reason="benchmark_not_configured"` as the expected result for a campaign with no benchmark. It is not a failed release calculation and it must return before any result, score, accounting, or observability bulk read.
+- For configured benchmarks, keep projection reads bounded and campaign-scoped: bulk-load the selected campaigns' results, scores/work metadata, accounting snapshot, and release observability snapshot once each. Do not add per-run repository reads or pull large answer/context/trace blobs into the release or campaign-list paths.
+- Terminal release reports are process-local cache entries keyed by each selected campaign's ID, `updated_at`, and status. Any marker change invalidates the entry; nonterminal campaigns always load fresh state.
+- `agent_traces.summary_json` is the compact list projection introduced by the trace-summary migration. Preserve the legacy `trace_json` detail path, backfill/maintain summaries through the repository, and keep the `(campaign_id, user_id, created_at)` list index usable.
+- The repository enforces a 1,048,576-byte UTF-8 answer limit. Preserve the explicit `EVALUATION_ANSWER_TOO_LARGE` error code through durable and legacy execution; do not truncate a provider answer to make it persist.
+
+When changing these paths, run:
+
+```powershell
+$env:TEST_MODE='true'; $env:USE_FAKE_PROVIDERS='true'; uv run --python 3.13 --with-requirements requirements.txt python -m pytest tests/test_evaluation_release_metrics.py tests/test_evaluation_api.py tests/test_evaluation_db.py tests/test_evaluation_execution_worker.py tests/test_campaign_engine.py -q
+uvx --from ruff==0.14.13 ruff check evaluation/release_metrics.py evaluation/db.py evaluation/execution_worker.py evaluation/campaign_engine.py tests/test_evaluation_release_metrics.py tests/test_evaluation_db.py tests/test_evaluation_execution_worker.py tests/test_campaign_engine.py
+```
+
 ## Upload And Path Boundaries
 
 - Upload-root paths and PDF upload validation should stay centralized in `core/uploads.py`.

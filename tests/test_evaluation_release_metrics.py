@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
+import pytest
 
 from core.auth import get_current_user_id
 from evaluation.release_metrics import (
     ReleaseRun,
+    ReleaseMetricsService,
     derive_release_metrics,
     environment_fingerprint,
     evaluator_fingerprints_from_work_metadata,
     golden_question_fingerprint,
 )
+from evaluation.campaign_schemas import CampaignLifecycleStatus
 from evaluation.router import get_release_metrics_service
 from evaluation import db as evaluation_db
 from main import app
@@ -106,6 +111,312 @@ def test_release_metrics_never_substitute_zero_for_partial_accounting() -> None:
     assert "partial_accounting" in report.gate_reasons
     assert report.required_slot_coverage.value is None
     assert report.required_slot_coverage.reason == "release_gate_blocked:partial_accounting"
+
+
+@pytest.fixture
+def release_metrics_160_run_fixture() -> list[SimpleNamespace]:
+    """A formal-sized result set used to protect release-report read bounds."""
+
+    rows = []
+    for index in range(160):
+        mode, version, quality = (
+            ("naive", "v8", 0.4) if index % 2 == 0 else ("agentic", "v9", 0.7)
+        )
+        run_number = index // 2 + 1
+        rows.append(
+            SimpleNamespace(
+                id=f"{mode}-{run_number}",
+                campaign_id="campaign-1",
+                question_id=f"Q{index // 2}",
+                repeat_number=1,
+                mode=mode,
+                condition_id=f"{mode}-{run_number}",
+                execution_profile=f"{mode}-{version}",
+                agentic_execution_version=version,
+                shadow_evaluation_policy=None,
+                status=SimpleNamespace(value="completed"),
+                error_message=None,
+                question_snapshot={"id": f"Q{index // 2}"},
+                model_config_snapshot={"model": "test"},
+                system_version_snapshot={},
+                response_status="complete",
+                total_latency_ms=100.0,
+                category="retrieval",
+                source_attempt_id=None,
+                quality=quality,
+            )
+        )
+    return rows
+
+
+@pytest.mark.asyncio
+async def test_release_metrics_no_benchmark_skips_all_160_run_bulk_loaders(
+    release_metrics_160_run_fixture: list[SimpleNamespace],
+) -> None:
+    assert len(release_metrics_160_run_fixture) == 160
+
+    class _Campaigns:
+        async def get(self, *, user_id: str, campaign_id: str):
+            assert user_id == "user-1"
+            assert campaign_id == "campaign-1"
+            return SimpleNamespace(config=SimpleNamespace(benchmark_id=None))
+
+        async def list_by_user(self, *, user_id: str):
+            raise AssertionError("campaign discovery must not run without a benchmark")
+
+    class _MustNotLoad:
+        def __init__(self, rows: list[SimpleNamespace]) -> None:
+            self.rows = rows
+            self.calls: list[str] = []
+
+        def __getattr__(self, name: str):
+            self.calls.append(name)
+            raise AssertionError(f"{name} must not run without a benchmark")
+
+    bulk_loaders = _MustNotLoad(release_metrics_160_run_fixture)
+
+    report = await ReleaseMetricsService(
+        campaigns=_Campaigns(),
+        results=bulk_loaders,
+        ragas_scores=bulk_loaders,
+        accounting=bulk_loaders,
+        observability=bulk_loaders,
+        analytics=bulk_loaders,
+    ).get_report(user_id="user-1", campaign_id="campaign-1")
+
+    assert report.availability == "not_applicable"
+    assert report.not_applicable_reason == "benchmark_not_configured"
+    assert report.benchmark_id == ""
+    assert report.benchmark_kind == "not_applicable"
+    assert report.comparable is False
+    assert report.gate_reasons == ["benchmark_not_configured"]
+    assert bulk_loaders.calls == []
+
+
+class _ReleaseMetricsCacheCampaigns:
+    def __init__(self, campaigns):
+        self.campaigns = campaigns
+
+    async def get(self, *, user_id: str, campaign_id: str):
+        return next(campaign for campaign in self.campaigns if campaign.id == campaign_id)
+
+    async def list_by_user(self, *, user_id: str):
+        return self.campaigns
+
+
+class _ReleaseMetricsCacheResults:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def list_for_campaign_release(self, *, user_id: str, campaign_id: str):
+        self.calls += 1
+        return []
+
+
+class _ReleaseMetricsCacheScores:
+    def __init__(self) -> None:
+        self.score_calls = 0
+        self.metadata_calls = 0
+
+    async def list_for_campaign(self, *, user_id: str, campaign_id: str):
+        self.score_calls += 1
+        return []
+
+    async def list_work_metadata_for_campaign(self, *, user_id: str, campaign_id: str):
+        self.metadata_calls += 1
+        return []
+
+
+class _ReleaseMetricsCacheAccounting:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def load_campaign_snapshot(self, campaign_id: str):
+        self.calls += 1
+        return SimpleNamespace(scopes_by_run_id={}, events_by_scope_id={})
+
+
+class _ReleaseMetricsCacheObservability:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def load_campaign_release_snapshot(self, campaign_id: str):
+        self.calls += 1
+        return SimpleNamespace(
+            materializations_by_run_id={},
+            evidence_packets_by_run_id={},
+            slot_resolutions_by_run_id={},
+            claims_by_run_id={},
+            context_packs_by_run_id={},
+            graph_events_by_run_id={},
+        )
+
+
+def _release_metrics_cache_campaign(
+    campaign_id: str,
+    *,
+    status: CampaignLifecycleStatus = CampaignLifecycleStatus.COMPLETED,
+    updated_at: datetime | None = None,
+):
+    return SimpleNamespace(
+        id=campaign_id,
+        config=SimpleNamespace(benchmark_id="bench-1"),
+        status=status,
+        updated_at=updated_at or datetime(2026, 7, 24, tzinfo=timezone.utc),
+    )
+
+
+def _release_metrics_cache_service(campaigns):
+    results = _ReleaseMetricsCacheResults()
+    scores = _ReleaseMetricsCacheScores()
+    accounting = _ReleaseMetricsCacheAccounting()
+    observability = _ReleaseMetricsCacheObservability()
+    return (
+        ReleaseMetricsService(
+            campaigns=_ReleaseMetricsCacheCampaigns(campaigns),
+            results=results,
+            ragas_scores=scores,
+            accounting=accounting,
+            observability=observability,
+        ),
+        results,
+        scores,
+        accounting,
+        observability,
+    )
+
+
+@pytest.mark.asyncio
+async def test_release_metrics_caches_unchanged_terminal_benchmark_loads() -> None:
+    service, results, scores, accounting, observability = _release_metrics_cache_service(
+        [_release_metrics_cache_campaign("campaign-1")]
+    )
+
+    await service.get_report(user_id="user-1", campaign_id="campaign-1")
+    await service.get_report(user_id="user-1", campaign_id="campaign-1")
+
+    assert (results.calls, scores.score_calls, scores.metadata_calls, accounting.calls, observability.calls) == (1, 1, 1, 1, 1)
+
+
+@pytest.mark.asyncio
+async def test_release_metrics_reloads_when_any_selected_campaign_marker_changes() -> None:
+    campaigns = [
+        _release_metrics_cache_campaign("campaign-1"),
+        _release_metrics_cache_campaign("campaign-2"),
+    ]
+    service, results, scores, accounting, observability = _release_metrics_cache_service(campaigns)
+
+    await service.get_report(user_id="user-1", campaign_id="campaign-1")
+    campaigns[1].updated_at += timedelta(seconds=1)
+    await service.get_report(user_id="user-1", campaign_id="campaign-1")
+
+    assert (results.calls, scores.score_calls, scores.metadata_calls, accounting.calls, observability.calls) == (4, 4, 4, 4, 4)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [CampaignLifecycleStatus.RUNNING, CampaignLifecycleStatus.EVALUATING],
+)
+async def test_release_metrics_does_not_cache_nonterminal_benchmark_loads(
+    status: CampaignLifecycleStatus,
+) -> None:
+    service, results, scores, accounting, observability = _release_metrics_cache_service(
+        [_release_metrics_cache_campaign("campaign-1", status=status)]
+    )
+
+    await service.get_report(user_id="user-1", campaign_id="campaign-1")
+    await service.get_report(user_id="user-1", campaign_id="campaign-1")
+
+    assert (results.calls, scores.score_calls, scores.metadata_calls, accounting.calls, observability.calls) == (2, 2, 2, 2, 2)
+
+
+@pytest.mark.asyncio
+async def test_release_metrics_160_run_benchmark_keeps_repository_call_count_constant(
+    release_metrics_160_run_fixture: list[SimpleNamespace],
+) -> None:
+    """Release projection reads are constant per selected campaign, not per run."""
+    assert len(release_metrics_160_run_fixture) == 160
+
+    class _Campaigns:
+        async def get(self, *, user_id: str, campaign_id: str):
+            return SimpleNamespace(
+                id=campaign_id,
+                config=SimpleNamespace(benchmark_id="bench-1"),
+                status=CampaignLifecycleStatus.COMPLETED,
+                updated_at=datetime(2026, 7, 24, tzinfo=timezone.utc),
+            )
+
+        async def list_by_user(self, *, user_id: str):
+            return [
+                SimpleNamespace(
+                    id="campaign-1",
+                    config=SimpleNamespace(benchmark_id="bench-1"),
+                    status=CampaignLifecycleStatus.COMPLETED,
+                    updated_at=datetime(2026, 7, 24, tzinfo=timezone.utc),
+                )
+            ]
+
+    class _Results:
+        calls = 0
+
+        async def list_for_campaign_release(self, *, user_id: str, campaign_id: str):
+            self.calls += 1
+            return release_metrics_160_run_fixture
+
+    class _Scores:
+        score_calls = 0
+        metadata_calls = 0
+
+        async def list_for_campaign(self, *, user_id: str, campaign_id: str):
+            self.score_calls += 1
+            return [
+                {
+                    "campaign_result_id": result.id,
+                    "metric_name": "answer_correctness",
+                    "metric_value": result.quality,
+                }
+                for result in release_metrics_160_run_fixture
+            ]
+
+        async def list_work_metadata_for_campaign(self, *, user_id: str, campaign_id: str):
+            self.metadata_calls += 1
+            return []
+
+    class _Accounting:
+        calls = 0
+
+        async def load_campaign_snapshot(self, campaign_id: str):
+            self.calls += 1
+            return SimpleNamespace(scopes_by_run_id={}, events_by_scope_id={})
+
+    class _Observability:
+        calls = 0
+
+        async def load_campaign_release_snapshot(self, campaign_id: str):
+            self.calls += 1
+            return SimpleNamespace(
+                materializations_by_run_id={},
+                evidence_packets_by_run_id={},
+                slot_resolutions_by_run_id={},
+                claims_by_run_id={},
+                context_packs_by_run_id={},
+                graph_events_by_run_id={},
+            )
+
+    results = _Results()
+    scores = _Scores()
+    accounting = _Accounting()
+    observability = _Observability()
+    await ReleaseMetricsService(
+        campaigns=_Campaigns(),
+        results=results,
+        ragas_scores=scores,
+        accounting=accounting,
+        observability=observability,
+    ).get_report(user_id="user-1", campaign_id="campaign-1")
+
+    assert (results.calls, scores.score_calls, scores.metadata_calls, accounting.calls, observability.calls) == (1, 1, 1, 1, 1)
 
 
 def test_fingerprint_layers_keep_distinct_goldens_out_of_shared_environment() -> None:

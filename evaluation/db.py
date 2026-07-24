@@ -32,12 +32,27 @@ from evaluation.trace_schemas import (
 EVALUATION_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "evaluation.db"
 _UNSET = object()
 MAX_AGENT_TRACE_PAYLOAD_BYTES = 256 * 1024
+MAX_EVALUATION_ANSWER_BYTES = 1_048_576
+EVALUATION_ANSWER_TOO_LARGE = "EVALUATION_ANSWER_TOO_LARGE"
 logger = logging.getLogger(__name__)
 _INITIALIZED_DB_PATHS: set[str] = set()
 _INIT_LOCKS: dict[str, asyncio.Lock] = {}
 ROUTE_PROFILE_ALIASES = {
     "hybrid_graph": "generic_graph",
 }
+
+
+class EvaluationAnswerTooLargeError(ValueError):
+    """Raised before an evaluation answer can be persisted above the hard limit."""
+
+    def __init__(self) -> None:
+        super().__init__(EVALUATION_ANSWER_TOO_LARGE)
+
+
+def is_evaluation_answer_too_large(answer: str) -> bool:
+    """Return whether an answer exceeds the persisted UTF-8 byte budget."""
+
+    return len(answer.encode("utf-8")) > MAX_EVALUATION_ANSWER_BYTES
 _OBSERVABILITY_TABLE_COLUMNS = {
     "evaluation_trace_events": {
         "run_id": "TEXT NOT NULL DEFAULT ''",
@@ -730,6 +745,7 @@ CREATE TABLE IF NOT EXISTS agent_traces (
     campaign_result_id TEXT,
     user_id TEXT NOT NULL,
     trace_json TEXT NOT NULL,
+    summary_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL
 );
 
@@ -754,6 +770,9 @@ ON ragas_scores(campaign_id, user_id, campaign_result_id, metric_name);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_traces_result
 ON agent_traces(campaign_result_id);
+
+CREATE INDEX IF NOT EXISTS idx_agent_traces_campaign_user_created
+ON agent_traces(campaign_id, user_id, created_at DESC);
 """
 
 
@@ -768,7 +787,6 @@ async def connect_db():
     db_path.parent.mkdir(parents=True, exist_ok=True)
     connection = await aiosqlite.connect(db_path)
     connection.row_factory = aiosqlite.Row
-    await connection.execute("PRAGMA journal_mode=WAL;")
     await connection.execute("PRAGMA synchronous=NORMAL;")
     await connection.execute("PRAGMA busy_timeout=5000;")
     await connection.execute("PRAGMA foreign_keys=ON;")
@@ -788,6 +806,7 @@ async def init_db() -> None:
         if db_path in _INITIALIZED_DB_PATHS and Path(db_path).exists():
             return
         async with connect_db() as connection:
+            await connection.execute("PRAGMA journal_mode=WAL;")
             await connection.executescript(_INIT_SQL)
             await _apply_migrations(connection)
             await connection.commit()
@@ -798,6 +817,7 @@ async def force_init_db() -> None:
     """Run schema creation and migrations even if the current DB path is cached."""
     db_path = str(Path(EVALUATION_DB_PATH).resolve())
     async with connect_db() as connection:
+        await connection.execute("PRAGMA journal_mode=WAL;")
         await connection.executescript(_INIT_SQL)
         await _apply_migrations(connection)
         await connection.commit()
@@ -848,6 +868,12 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
     if "condition_id" not in campaign_result_columns:
         await connection.execute(
             "ALTER TABLE campaign_results ADD COLUMN condition_id TEXT NOT NULL DEFAULT ''"
+        )
+
+    agent_trace_columns = await _table_columns(connection, "agent_traces")
+    if "summary_json" not in agent_trace_columns:
+        await connection.execute(
+            "ALTER TABLE agent_traces ADD COLUMN summary_json TEXT NOT NULL DEFAULT '{}'"
         )
 
     work_item_columns = await _table_columns(connection, "evaluation_work_items")
@@ -955,6 +981,12 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_traces_result
         ON agent_traces(campaign_result_id)
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_agent_traces_campaign_user_created
+        ON agent_traces(campaign_id, user_id, created_at DESC)
         """
     )
     await connection.execute(
@@ -1407,6 +1439,73 @@ class CampaignAnalyticsResult:
         return value if isinstance(value, str) else None
 
 
+@dataclass(frozen=True, slots=True)
+class CampaignResearchResult:
+    """Bounded result projection used by research aggregate responses only."""
+
+    id: str
+    campaign_id: str
+    question_id: str
+    mode: str
+    context_policy_version: Optional[str]
+    run_number: int
+    latency_ms: float
+    total_latency_ms: Optional[float]
+    category: Optional[str]
+    difficulty: Optional[str]
+    required_modalities: list[Any] | None
+    derived_metrics: dict[str, Any]
+    source_attempt_id: Optional[str]
+    status: CampaignResultStatus
+
+    @property
+    def repeat_number(self) -> int:
+        value = self.derived_metrics.get("repeat_number")
+        return value if isinstance(value, int) else self.run_number
+
+
+@dataclass(frozen=True, slots=True)
+class CampaignReleaseResult:
+    """Bounded result projection used only for campaign release derivation."""
+
+    id: str
+    campaign_id: str
+    question_id: str
+    mode: str
+    execution_profile: Optional[str]
+    run_number: int
+    condition_id: Optional[str]
+    total_latency_ms: Optional[float]
+    category: Optional[str]
+    status: CampaignResultStatus
+    error_message: Optional[str]
+    question_snapshot: dict[str, Any]
+    model_config_snapshot: dict[str, Any]
+    system_version_snapshot: dict[str, Any]
+    derived_metrics: dict[str, Any]
+    source_attempt_id: Optional[str]
+
+    @property
+    def repeat_number(self) -> int:
+        value = self.derived_metrics.get("repeat_number")
+        return value if isinstance(value, int) else self.run_number
+
+    @property
+    def agentic_execution_version(self) -> str:
+        version = self.system_version_snapshot.get("agentic_execution_version", "v8")
+        return version if version in {"v8", "v9"} else "v8"
+
+    @property
+    def shadow_evaluation_policy(self) -> Optional[str]:
+        value = self.derived_metrics.get("shadow_evaluation_policy")
+        return value if value in {"operational", "research"} else None
+
+    @property
+    def response_status(self) -> Optional[str]:
+        value = self.derived_metrics.get("response_status")
+        return value if isinstance(value, str) else None
+
+
 def _normalize_route_profile(value: Any) -> Any:
     if not isinstance(value, str):
         return value
@@ -1450,6 +1549,23 @@ def _row_to_agent_trace_detail(row: aiosqlite.Row) -> AgentTraceDetail:
             message="Stored agent trace is invalid",
             status_code=500,
         ) from exc
+
+
+def _row_to_agent_trace_summary(row: aiosqlite.Row) -> AgentTraceSummary:
+    """Read the list projection without deserializing the full trace payload."""
+    summary_payload = _json_loads(row["summary_json"], {})
+    if summary_payload:
+        try:
+            return AgentTraceSummary.model_validate(summary_payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to parse agent trace summary row %s: %s", row["id"], exc)
+
+    return AgentTraceSummary(
+        trace_id=row["id"],
+        campaign_result_id=row["campaign_result_id"],
+        created_at=row["created_at"],
+        trace_status="not_instrumented",
+    )
 
 
 class CampaignRepository:
@@ -2002,6 +2118,106 @@ class CampaignResultRepository:
             for row in rows
         ]
 
+    async def list_for_campaign_research(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+    ) -> list[CampaignResearchResult]:
+        """Return only result fields needed by research aggregate responses."""
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT
+                    id,
+                    campaign_id,
+                    question_id,
+                    mode,
+                    context_policy_version,
+                    run_number,
+                    latency_ms,
+                    total_latency_ms,
+                    category,
+                    difficulty,
+                    json_extract(question_snapshot_json, '$.required_modalities')
+                        AS required_modalities_json,
+                    derived_metrics_json,
+                    source_attempt_id,
+                    status
+                FROM campaign_results
+                WHERE campaign_id = ? AND user_id = ?
+                ORDER BY created_at ASC, question_id ASC, mode ASC, run_number ASC, id ASC
+                """,
+                (campaign_id, user_id),
+            )
+            rows = await cursor.fetchall()
+        return [
+            CampaignResearchResult(
+                id=row["id"],
+                campaign_id=row["campaign_id"],
+                question_id=row["question_id"],
+                mode=row["mode"],
+                context_policy_version=row["context_policy_version"] or None,
+                run_number=row["run_number"],
+                latency_ms=row["latency_ms"],
+                total_latency_ms=row["total_latency_ms"],
+                category=row["category"],
+                difficulty=row["difficulty"],
+                required_modalities=_json_loads(
+                    row["required_modalities_json"], None
+                ),
+                derived_metrics=_json_loads(row["derived_metrics_json"], {}),
+                source_attempt_id=row["source_attempt_id"] or None,
+                status=CampaignResultStatus(row["status"]),
+            )
+            for row in rows
+        ]
+
+    async def list_for_campaign_release(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+    ) -> list[CampaignReleaseResult]:
+        """Return only immutable result fields used by release gates and fingerprints."""
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT id, campaign_id, question_id, mode, execution_profile, run_number,
+                       condition_id, total_latency_ms, category, status, error_message,
+                       question_snapshot_json, model_config_snapshot_json,
+                       system_version_snapshot_json, derived_metrics_json, source_attempt_id
+                FROM campaign_results
+                WHERE campaign_id = ? AND user_id = ?
+                ORDER BY created_at ASC, question_id ASC, mode ASC, run_number ASC, id ASC
+                """,
+                (campaign_id, user_id),
+            )
+            rows = await cursor.fetchall()
+        return [
+            CampaignReleaseResult(
+                id=row["id"],
+                campaign_id=row["campaign_id"],
+                question_id=row["question_id"],
+                mode=row["mode"],
+                execution_profile=row["execution_profile"] or None,
+                run_number=row["run_number"],
+                condition_id=row["condition_id"] or None,
+                total_latency_ms=row["total_latency_ms"],
+                category=row["category"],
+                status=CampaignResultStatus(row["status"]),
+                error_message=row["error_message"],
+                question_snapshot=_json_loads(row["question_snapshot_json"], {}),
+                model_config_snapshot=_json_loads(row["model_config_snapshot_json"], {}),
+                system_version_snapshot=_json_loads(row["system_version_snapshot_json"], {}),
+                derived_metrics=_json_loads(row["derived_metrics_json"], {}),
+                source_attempt_id=row["source_attempt_id"] or None,
+            )
+            for row in rows
+        ]
+
     async def create(
         self,
         *,
@@ -2042,6 +2258,8 @@ class CampaignResultRepository:
         final_answer_hash: Optional[str] = None,
         source_attempt_id: Optional[str] = None,
     ) -> CampaignResult:
+        if is_evaluation_answer_too_large(answer):
+            raise EvaluationAnswerTooLargeError()
         await init_db()
         result_id = result_id or str(uuid4())
         created_at = _utc_now_iso()
@@ -2298,6 +2516,9 @@ class AgentTraceRepository:
             }
         )
         serialized_trace = _json_dumps(detail.model_dump(mode="json"))
+        serialized_summary = _json_dumps(
+            summarize_agent_trace(detail).model_dump(mode="json")
+        )
         if len(serialized_trace.encode("utf-8")) > MAX_AGENT_TRACE_PAYLOAD_BYTES:
             raise ValueError("agent trace payload exceeds 262144 bytes")
         async with connect_db() as connection:
@@ -2311,8 +2532,8 @@ class AgentTraceRepository:
             await connection.execute(
                 """
                 INSERT INTO agent_traces (
-                    id, campaign_id, campaign_result_id, user_id, trace_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    id, campaign_id, campaign_result_id, user_id, trace_json, summary_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     detail.trace_id,
@@ -2320,6 +2541,7 @@ class AgentTraceRepository:
                     campaign_result_id,
                     user_id,
                     serialized_trace,
+                    serialized_summary,
                     detail.created_at.isoformat(),
                 ),
             )
@@ -2336,7 +2558,7 @@ class AgentTraceRepository:
         async with connect_db() as connection:
             cursor = await connection.execute(
                 """
-                SELECT *
+                SELECT id, campaign_id, campaign_result_id, user_id, summary_json, created_at
                 FROM agent_traces
                 WHERE campaign_id = ? AND user_id = ?
                 ORDER BY created_at DESC
@@ -2344,7 +2566,7 @@ class AgentTraceRepository:
                 (campaign_id, user_id),
             )
             rows = await cursor.fetchall()
-        return [summarize_agent_trace(_row_to_agent_trace_detail(row)) for row in rows]
+        return [_row_to_agent_trace_summary(row) for row in rows]
 
     async def get_for_result(
         self,

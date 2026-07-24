@@ -85,6 +85,10 @@ Human-maintained inventory of the current backend surface.
 - Campaign SSE remains coarse-grained (`campaign_snapshot`, `campaign_progress`, terminal `campaign_*` events). `event_schema_version="1.0"` and monotonic `sequence` currently apply to persisted trace events, not the SSE envelope.
 - Legacy campaigns remain readable even when research observability tables are empty; research run-detail endpoints return empty collections instead of failing.
 - Campaign analytics reads use a bounded result projection and campaign-scoped routing bulk query; terminal campaign contexts are reused in the process-local analytics service cache while the campaign `updated_at` marker is unchanged.
+- `GET /api/evaluation/campaigns/{campaign_id}/release-metrics` returns the authoritative `ReleaseMetricsReport`. `availability="available"` carries a configured benchmark report; `availability="not_applicable"`, `benchmark_kind="not_applicable"`, and `not_applicable_reason="benchmark_not_configured"` are the normal response for a campaign with no benchmark. In that state the service performs no result, score, accounting, or observability bulk load.
+- A configured release report obtains one bounded result/score/work-metadata/accounting/observability snapshot per selected benchmark campaign, not one repository call per run. It never uses large answer, context, or full trace detail blobs as a list/report projection. Terminal reports are cached only for unchanged selected campaign `(id, updated_at, status)` markers; changed markers invalidate the cache and nonterminal campaigns are uncached.
+- Campaign trace lists read the migrated compact `agent_traces.summary_json` projection, indexed by campaign, user, and creation time; full `trace_json` stays detail-only. Rows without a usable historical summary remain listable as `not_instrumented`.
+- Evaluation result persistence rejects answers over 1,048,576 UTF-8 bytes. Durable and legacy execution expose the stable `EVALUATION_ANSWER_TOO_LARGE` failure code rather than truncating a response.
 
 ## Conversation Performance Contract
 
