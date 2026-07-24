@@ -51,7 +51,7 @@ from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
 from evaluation.ragas_evaluator import RagasEvaluator
 from evaluation.retrieval_profiles import evaluation_failure_execution_profile
 from evaluation.retry import RateBudget
-from evaluation.schemas import EvaluationGraphEvent, TestCase
+from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem, TestCase
 from evaluation.storage import list_test_cases
 from evaluation.trace_schemas import (
     AgentTraceDetail,
@@ -438,6 +438,9 @@ async def _record_unit_llm_usage(
         campaign_id=campaign_id,
         user_id=user_id,
         request_id=request_id,
+        # Required-stage telemetry is part of the v9 completion contract.
+        # Never silently convert a persistence outage into a successful run.
+        strict=True,
     )
     await recorder.record_llm_usage(
         purpose="campaign_generation",
@@ -554,9 +557,10 @@ async def _record_unit_research_observability(
             scope_item_ids = list(
                 graph_execution.get("scope_approved_item_ids") or []
             )
+            graph_event_id = str(uuid4())
             await recorder.record_graph_event(
                 EvaluationGraphEvent(
-                    graph_event_id=str(uuid4()),
+                    graph_event_id=graph_event_id,
                     run_id=run_id,
                     campaign_id=campaign_id,
                     span_id=graph_span.span_id,
@@ -592,6 +596,43 @@ async def _record_unit_research_observability(
                     created_at=created_at,
                 )
             )
+            resolved_doc_ids = list(
+                graph_execution.get("resolved_source_doc_ids") or []
+            )
+            resolved_chunk_ids = list(
+                graph_execution.get("resolved_source_chunk_ids") or []
+            )
+            await recorder.record_graph_evidence_items(
+                [
+                    EvaluationGraphEvidenceItem(
+                        graph_evidence_item_id=f"{graph_event_id}:{index}",
+                        graph_event_id=graph_event_id,
+                        source_doc_ids=[doc_id],
+                        source_chunk_ids=(
+                            [resolved_chunk_ids[index]]
+                            if index < len(resolved_chunk_ids)
+                            else []
+                        ),
+                        provenance_status="full",
+                        used_as_locator=True,
+                        packed_in_context=doc_id
+                        in set(graph_execution.get("resolved_source_doc_ids") or []),
+                        used_in_answer=False,
+                        created_at=created_at,
+                    )
+                    for index, doc_id in enumerate(resolved_doc_ids)
+                ]
+            )
+            if execution_state != "executed":
+                graph_span.set_outcome(
+                    status="partial",
+                    error={
+                        "reason": str(
+                            graph_execution.get("failure_reason")
+                            or "required_graph_not_satisfied"
+                        )
+                    },
+                )
 
     visual_execution = (
         v9_payload.get("visual_execution") if isinstance(v9_payload, dict) else None
@@ -610,11 +651,20 @@ async def _record_unit_research_observability(
                 "dropped_asset_count": visual_execution.get("dropped_asset_count"),
                 "evidence_packet_count": visual_execution.get("evidence_packet_count"),
             },
-        ):
+        ) as visual_span:
             # Entering the span records the durable stage event; the detailed
             # result lives in its payload so absent assets are never confused
             # with a measured zero successful extraction.
-            pass
+            if visual_execution.get("state") != "executed":
+                visual_span.set_outcome(
+                    status="partial",
+                    error={
+                        "reason": str(
+                            visual_execution.get("failure_reason")
+                            or "required_visual_not_satisfied"
+                        )
+                    },
+                )
 
     steps = trace_payload.get("steps")
     if isinstance(steps, list):

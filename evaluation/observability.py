@@ -23,7 +23,7 @@ from evaluation.trace_schemas import (
     EvaluationTraceEvent,
     TraceStageType,
 )
-from evaluation.schemas import EvaluationGraphEvent
+from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,8 @@ class EvaluationSpan:
         self.started_at: datetime | None = None
         self.ended_at: datetime | None = None
         self.duration_ms: float | None = None
+        self._outcome_status: str | None = None
+        self._outcome_error: dict[str, str] = {}
         self._stack_token: Token[tuple["EvaluationSpan", ...]] | None = None
 
     async def __aenter__(self) -> "EvaluationSpan":
@@ -95,6 +97,13 @@ class EvaluationSpan:
             raise
         return self
 
+    def set_outcome(self, *, status: str, error: dict[str, str] | None = None) -> None:
+        """Override the closing status for a completed-but-unsatisfied stage."""
+        if status not in {"success", "partial", "failed", "skipped", "timeout"}:
+            raise ValueError("unsupported trace span outcome")
+        self._outcome_status = status
+        self._outcome_error = dict(error or {})
+
     async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
@@ -109,10 +118,18 @@ class EvaluationSpan:
             await self._recorder._record_trace_event(
                 span=self,
                 event_id=self.end_event_id,
-                status="failed" if exc else "success",
+                status=(
+                    "failed"
+                    if exc
+                    else self._outcome_status or "success"
+                ),
                 ended_at=ended_at,
                 duration_ms=self.duration_ms,
-                error=_sanitize_exception(exc) if exc else {},
+                error=(
+                    _sanitize_exception(exc)
+                    if exc
+                    else self._outcome_error
+                ),
             )
         finally:
             if self._stack_token is not None:
@@ -141,6 +158,7 @@ class EvaluationRunRecorder:
         claim_repository: EvaluationObservabilityRepository | None = None,
         human_rating_repository: EvaluationObservabilityRepository | None = None,
         graph_event_repository: EvaluationObservabilityRepository | None = None,
+        graph_evidence_item_repository: EvaluationObservabilityRepository | None = None,
         strict: bool = False,
     ) -> None:
         repository = trace_repository or EvaluationObservabilityRepository()
@@ -158,6 +176,7 @@ class EvaluationRunRecorder:
         self.claim_repository = claim_repository or repository
         self.human_rating_repository = human_rating_repository or repository
         self.graph_event_repository = graph_event_repository or repository
+        self.graph_evidence_item_repository = graph_evidence_item_repository or repository
         self.strict = strict
         self._sequence = 0
         self._span_stack: ContextVar[tuple[EvaluationSpan, ...]] = ContextVar(
@@ -317,6 +336,13 @@ class EvaluationRunRecorder:
 
     async def record_graph_event(self, event: EvaluationGraphEvent) -> None:
         await self._safe_record(self.graph_event_repository.record_graph_event, event)
+
+    async def record_graph_evidence_items(
+        self, items: list[EvaluationGraphEvidenceItem]
+    ) -> None:
+        await self._safe_record(
+            self.graph_evidence_item_repository.record_graph_evidence_items, items
+        )
 
     async def _safe_record(self, record_fn, payload) -> None:
         try:

@@ -219,28 +219,40 @@ class AgenticV9CampaignRuntime:
                     state["contract"].graph_policy == "required_locator"
                     and not state["graph_execution"]["attempted"]
                 ):
-                    located = await self._graph_locator(
-                        task.query,
-                        user_id,
-                        docs,
-                        list(task.source_scope.authorized_doc_ids),
-                        state["contract"],
-                    )
-                    state["graph_execution"] = _graph_execution_projection(located)
-                    docs = list(located.documents)
+                    try:
+                        located = await self._graph_locator(
+                            task.query,
+                            user_id,
+                            docs,
+                            list(task.source_scope.authorized_doc_ids),
+                            state["contract"],
+                        )
+                    except Exception as error:  # Stage admitted; preserve partial answer.
+                        state["graph_execution"] = _failed_required_stage(
+                            policy="required_locator", error=error
+                        )
+                    else:
+                        state["graph_execution"] = _graph_execution_projection(located)
+                        docs = list(located.documents)
                 if (
                     state["contract"].visual_required
                     and not state["visual_execution"]["attempted"]
                 ):
                     controller = state["budget_controller"]
                     assert isinstance(controller, RunBudgetController)
-                    visual_result = await self._visual_extractor(
-                        task, docs, question, controller
-                    )
-                    state["visual_execution"] = _visual_execution_projection(
-                        visual_result
-                    )
-                    state["visual_packets"].extend(visual_result.packets)
+                    try:
+                        visual_result = await self._visual_extractor(
+                            task, docs, question, controller
+                        )
+                    except Exception as error:  # Stage admitted; preserve partial answer.
+                        state["visual_execution"] = _failed_required_stage(
+                            policy="visual_required", error=error
+                        )
+                    else:
+                        state["visual_execution"] = _visual_execution_projection(
+                            visual_result
+                        )
+                        state["visual_packets"].extend(visual_result.packets)
                 chunks = [_chunk_projection(document, index) for index, document in enumerate(docs)]
                 results.append(
                     TaskRetrievalResult(
@@ -591,6 +603,31 @@ def _graph_execution_projection(
         "packed_item_ids": list(located.packed_item_ids),
         "resolved_source_doc_ids": list(located.resolved_source_doc_ids),
         "resolved_source_chunk_ids": list(located.resolved_source_chunk_ids),
+    }
+
+
+def _failed_required_stage(*, policy: str, error: Exception) -> dict[str, Any]:
+    """Project an admitted stage failure without leaking provider internals."""
+    return {
+        "policy": policy,
+        "required": policy == "visual_required",
+        "state": "required_but_not_satisfied",
+        "attempted": True,
+        "failure_reason": f"{error.__class__.__name__}:stage_execution_failed",
+        "route": None,
+        "path": None,
+        "fallback": "stage_execution_failed",
+        "latency_ms": None,
+        "candidate_item_ids": [],
+        "resolved_item_ids": [],
+        "scope_approved_item_ids": [],
+        "scored_item_ids": [],
+        "packed_item_ids": [],
+        "resolved_source_doc_ids": [],
+        "resolved_source_chunk_ids": [],
+        "selected_asset_count": 0,
+        "dropped_asset_count": 0,
+        "evidence_packet_count": 0,
     }
 
 
