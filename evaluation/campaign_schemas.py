@@ -342,15 +342,64 @@ class ModeComparisonResponse(AnalyticsAggregateResponse):
     """Mode-level comparison analytics."""
 
 
+AgentBehaviorSchema = Literal["v8", "v9", "not_applicable"]
+BehaviorTraceStatus = Literal[
+    "completed", "partial", "failed", "not_applicable", "not_instrumented"
+]
+BehaviorExecutionState = Literal[
+    "not_requested",
+    "not_triggered",
+    "executed",
+    "failed",
+    "required_but_not_satisfied",
+    "not_instrumented",
+]
+
+
+class LegacyAgentBehaviorMetrics(BaseModel):
+    """v8 step-based measurements; never inferred for evidence-first v9 runs."""
+
+    subtasks: int | None = Field(default=None, ge=0)
+    tool_calls: int | None = Field(default=None, ge=0)
+    visual_calls: int | None = Field(default=None, ge=0)
+    graph_calls: int | None = Field(default=None, ge=0)
+    drilldown_depth: int | None = Field(default=None, ge=0)
+
+
+class V9AgentBehaviorMetrics(BaseModel):
+    """Durable evidence-first execution observations for one v9 run."""
+
+    route: str | None = None
+    graph_policy: str | None = None
+    visual_required: bool | None = None
+    evidence_extraction_required: bool | None = None
+    retrieval_query_count: int | None = Field(default=None, ge=0)
+    provider_attempt_count: int | None = Field(default=None, ge=0)
+    final_generation_count: int | None = Field(default=None, ge=0)
+    evidence_packet_count: int | None = Field(default=None, ge=0)
+    packed_evidence_count: int | None = Field(default=None, ge=0)
+    slot_resolution_count: int | None = Field(default=None, ge=0)
+    required_slot_count: int | None = Field(default=None, ge=0)
+    supported_slot_count: int | None = Field(default=None, ge=0)
+    repair_count: int | None = Field(default=None, ge=0)
+    final_claim_count: int | None = Field(default=None, ge=0)
+    reserved_tokens: int | None = Field(default=None, ge=0)
+    reconciled_tokens: int | None = Field(default=None, ge=0)
+    graph_execution: BehaviorExecutionState = "not_instrumented"
+    visual_execution: BehaviorExecutionState = "not_instrumented"
+
+
 class AgentBehaviorRow(BaseModel):
-    """One run's trace-backed behavior metrics."""
+    """One run's versioned, trace-backed behavior metrics."""
 
     run_id: str
     campaign_id: str
     question_id: str
     mode: CampaignMode
     repeat_number: int = Field(default=1, ge=1)
-    trace_status: str
+    behavior_schema: AgentBehaviorSchema = "not_applicable"
+    trace_status: BehaviorTraceStatus
+    failure_reason: str | None = None
     accounting_status: Literal["complete", "partial", "not_available"] = "not_available"
     subtasks: int | None = Field(default=None, ge=0)
     tool_calls: int | None = Field(default=None, ge=0)
@@ -362,11 +411,14 @@ class AgentBehaviorRow(BaseModel):
     unsupported_claim_ratio: float | None = Field(default=None, ge=0, le=1)
     supported_claim_ratio: float | None = Field(default=None, ge=0, le=1)
     total_tokens: int | None = Field(default=None, ge=0)
+    legacy: LegacyAgentBehaviorMetrics | None = None
+    v9: V9AgentBehaviorMetrics | None = None
 
 
 class AgentBehaviorResponse(AnalyticsAggregateResponse):
     """Trace-backed per-run agent behavior analytics."""
 
+    behavior_schema_version: Literal["2"] = "2"
     rows: list[AgentBehaviorRow] = Field(default_factory=list)
 
 

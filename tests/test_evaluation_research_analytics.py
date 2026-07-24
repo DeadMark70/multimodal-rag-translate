@@ -22,6 +22,7 @@ from evaluation.research_analytics import (
 )
 from evaluation.job_store import build_legacy_evaluator_compatibility_signature
 from evaluation.schemas import ModelConfig
+from evaluation.trace_schemas import EvaluationV9AttemptMaterialization
 
 
 def test_nearest_rank_percentiles_are_observed_values() -> None:
@@ -344,6 +345,68 @@ async def test_missing_usage_keeps_all_token_categories_nullable(
     assert summary.tokens.missing_usage_call_count == 1
     assert summary.tokens.unbalanced_call_count == 0
     assert summary.tokens.unclassified_phase_call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_agent_behavior_projects_materialized_v9_evidence_not_legacy_step_zeros(
+    research_service,
+) -> None:
+    await _campaign("agent-behavior-v9", ["agentic"])
+    result_id = await _result("agent-behavior-v9", "agentic", "attempt-v9")
+    await _official_scope("agent-behavior-v9", result_id, "attempt-v9")
+
+    class Observability:
+        async def list_v9_attempt_materializations_for_campaign(self, campaign_id):
+            assert campaign_id == "agent-behavior-v9"
+            return {
+                result_id: EvaluationV9AttemptMaterialization(
+                    attempt_id="attempt-v9",
+                    run_id=result_id,
+                    campaign_id=campaign_id,
+                    trace_payload={
+                        "query_contract": {
+                            "route": "multi_hop",
+                            "graph_policy": "required_locator",
+                            "visual_required": False,
+                            "evidence_extraction_required": True,
+                            "required_slots": [{"slot_id": "S1"}],
+                        },
+                        "metrics": {
+                            "retrieval_query_count": 2,
+                            "provider_attempt_count": 1,
+                            "final_generation_count": 1,
+                            "reconciled_tokens": 15,
+                        },
+                        "sufficiency": {"supported_slot_ids": ["S1"]},
+                        "context_pack": {"packed_evidence_ids": ["E1"]},
+                        "budget_reservations": [{"reserved_tokens": 32}],
+                        "repairs": [],
+                        "final_claims": [{"claim_id": "C1"}],
+                    },
+                )
+            }
+
+        async def list_v9_behavior_counts_for_campaign(self, campaign_id):
+            return {result_id: {"evidence_packet_count": 13, "slot_resolution_count": 1}}
+
+        async def list_graph_events_for_campaign(self, campaign_id):
+            return {}
+
+    research_service._observability = Observability()
+
+    response = await research_service.get_agent_behavior(
+        user_id="user-1", campaign_id="agent-behavior-v9"
+    )
+
+    row = response.rows[0]
+    assert response.behavior_schema_version == "2"
+    assert row.behavior_schema == "v9"
+    assert row.trace_status == "not_instrumented"
+    assert row.legacy is None
+    assert row.v9 is not None
+    assert row.v9.evidence_packet_count == 13
+    assert row.v9.slot_resolution_count == 1
+    assert row.v9.graph_execution == "required_but_not_satisfied"
 
 
 @pytest.mark.asyncio

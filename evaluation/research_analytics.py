@@ -25,9 +25,11 @@ from evaluation.campaign_schemas import (
     AgentBehaviorResponse,
     AgentBehaviorRow,
     CampaignResultStatus,
+    LegacyAgentBehaviorMetrics,
     QuestionComparisonRow,
     QuestionModeComparison,
     ResearchQuestionComparisonResponse,
+    V9AgentBehaviorMetrics,
 )
 from evaluation.db import (
     AgentTraceRepository,
@@ -40,6 +42,7 @@ from evaluation.job_store import (
     build_legacy_evaluator_compatibility_signature,
     build_evaluator_compatibility_signature,
 )
+from evaluation.observability_storage import EvaluationObservabilityRepository
 
 PRIMARY_QUALITY_METRICS = ("answer_correctness", "faithfulness", "answer_relevancy")
 OPTIONAL_CONTEXT_METRICS = ("context_precision", "context_recall")
@@ -82,12 +85,14 @@ class ResearchAnalyticsService:
         ragas_scores: RagasScoreRepository | None = None,
         accounting: EvaluationAccountingStore | None = None,
         traces: AgentTraceRepository | None = None,
+        observability: EvaluationObservabilityRepository | None = None,
     ) -> None:
         self._campaigns = campaigns or CampaignRepository()
         self._results = results or CampaignResultRepository()
         self._ragas_scores = ragas_scores or RagasScoreRepository()
         self._accounting = accounting or EvaluationAccountingStore()
         self._traces = traces or AgentTraceRepository()
+        self._observability = observability or EvaluationObservabilityRepository()
 
     async def get_summary(
         self, *, user_id: str, campaign_id: str
@@ -570,6 +575,9 @@ class ResearchAnalyticsService:
             user_id=user_id, campaign_id=campaign_id
         )
         traces_by_result = {trace.campaign_result_id: trace for trace in traces}
+        v9_materializations = await self._observability.list_v9_attempt_materializations_for_campaign(campaign_id)
+        v9_counts = await self._observability.list_v9_behavior_counts_for_campaign(campaign_id)
+        graph_events_by_run = await self._observability.list_graph_events_for_campaign(campaign_id)
         scores = await self._ragas_scores.list_for_campaign(
             user_id=user_id, campaign_id=campaign_id
         )
@@ -607,6 +615,8 @@ class ResearchAnalyticsService:
         rows: list[AgentBehaviorRow] = []
         for result in results:
             trace = traces_by_result.get(result.id)
+            materialization = v9_materializations.get(str(result.id))
+            is_v9 = bool(materialization or (trace is not None and trace.agentic_execution_version == "v9") or str(result.mode) in {"agentic-v9", "v9", "agentic-v9-shadow"})
             metrics = result.derived_metrics or {}
             run_scopes = [
                 scope
@@ -636,6 +646,20 @@ class ResearchAnalyticsService:
                 else token_breakdown.accounting_status
             )
             quality_scores = score_map.get(str(result.id), {})
+            behavior_schema = "v9" if is_v9 else "v8" if trace else "not_applicable"
+            trace_status = _agent_behavior_trace_status(result=result, trace=trace, is_v9=is_v9)
+            legacy = LegacyAgentBehaviorMetrics(
+                subtasks=trace.subtask_count,
+                tool_calls=trace.tool_call_count,
+                visual_calls=trace.visual_tool_call_count,
+                graph_calls=trace.graph_tool_call_count,
+                drilldown_depth=trace.drilldown_depth,
+            ) if trace is not None and not is_v9 else None
+            v9 = _v9_behavior_metrics(
+                trace_payload=materialization.trace_payload,
+                counts=v9_counts.get(str(result.id), {}),
+                graph_events=graph_events_by_run.get(str(result.id), []),
+            ) if is_v9 and materialization is not None else None
             rows.append(
                 AgentBehaviorRow(
                     run_id=result.id,
@@ -643,19 +667,19 @@ class ResearchAnalyticsService:
                     question_id=result.question_id,
                     mode=result.mode,
                     repeat_number=result.repeat_number,
-                    trace_status=(
-                        trace.trace_status
-                        if trace
-                        else "not_applicable"
-                        if result.mode != "agentic"
-                        else "not_instrumented"
+                    behavior_schema=behavior_schema,
+                    trace_status=trace_status,
+                    failure_reason=(
+                        _safe_agent_behavior_failure_reason(result.error_message)
+                        if result.status == CampaignResultStatus.FAILED
+                        else None
                     ),
                     accounting_status=token_status,
-                    subtasks=trace.subtask_count if trace else None,
-                    tool_calls=trace.tool_call_count if trace else None,
-                    visual_calls=trace.visual_tool_call_count if trace else None,
-                    graph_calls=trace.graph_tool_call_count if trace else None,
-                    drilldown_depth=trace.drilldown_depth if trace else None,
+                    subtasks=legacy.subtasks if legacy else None,
+                    tool_calls=legacy.tool_calls if legacy else None,
+                    visual_calls=legacy.visual_calls if legacy else None,
+                    graph_calls=legacy.graph_calls if legacy else None,
+                    drilldown_depth=legacy.drilldown_depth if legacy else None,
                     correctness=quality_scores.get("answer_correctness"),
                     faithfulness=quality_scores.get("faithfulness"),
                     unsupported_claim_ratio=_optional_metric(
@@ -665,6 +689,8 @@ class ResearchAnalyticsService:
                         metrics.get("supported_claim_ratio")
                     ),
                     total_tokens=token_breakdown.total_tokens,
+                    legacy=legacy,
+                    v9=v9,
                 )
             )
         return AgentBehaviorResponse(
@@ -677,6 +703,52 @@ class ResearchAnalyticsService:
             rows=rows,
             summaries={},
         )
+
+
+def _agent_behavior_trace_status(*, result, trace, is_v9: bool) -> str:
+    if result.status == CampaignResultStatus.FAILED:
+        return "failed"
+    if trace is not None:
+        return trace.trace_status
+    return "not_instrumented" if is_v9 else "not_applicable"
+
+
+def _safe_agent_behavior_failure_reason(value: object) -> str:
+    text = str(value or "").strip()
+    return text or "failure_reason_not_recorded"
+
+
+def _optional_nonnegative_int(value: object) -> int | None:
+    return value if isinstance(value, int) and value >= 0 else None
+
+
+def _v9_behavior_metrics(*, trace_payload: dict, counts: dict, graph_events: list) -> V9AgentBehaviorMetrics:
+    contract = trace_payload.get("query_contract") or {}
+    metrics = trace_payload.get("metrics") or {}
+    sufficiency = trace_payload.get("sufficiency") or {}
+    context_pack = trace_payload.get("context_pack") or {}
+    graph_policy = contract.get("graph_policy")
+    visual_required = contract.get("visual_required")
+    return V9AgentBehaviorMetrics(
+        route=contract.get("route"),
+        graph_policy=graph_policy,
+        visual_required=visual_required if isinstance(visual_required, bool) else None,
+        evidence_extraction_required=contract.get("evidence_extraction_required") if isinstance(contract.get("evidence_extraction_required"), bool) else None,
+        retrieval_query_count=_optional_nonnegative_int(metrics.get("retrieval_query_count")),
+        provider_attempt_count=_optional_nonnegative_int(metrics.get("provider_attempt_count")),
+        final_generation_count=_optional_nonnegative_int(metrics.get("final_generation_count")),
+        evidence_packet_count=_optional_nonnegative_int(counts.get("evidence_packet_count")),
+        packed_evidence_count=_optional_nonnegative_int(len(context_pack.get("packed_evidence_ids", []))),
+        slot_resolution_count=_optional_nonnegative_int(counts.get("slot_resolution_count")),
+        required_slot_count=_optional_nonnegative_int(len(contract.get("required_slots", []))),
+        supported_slot_count=_optional_nonnegative_int(len(sufficiency.get("supported_slot_ids", []))),
+        repair_count=_optional_nonnegative_int(len(trace_payload.get("repairs", []))),
+        final_claim_count=_optional_nonnegative_int(len(trace_payload.get("final_claims", []))),
+        reserved_tokens=sum(int(item.get("reserved_tokens", 0) or 0) for item in trace_payload.get("budget_reservations", []) if isinstance(item, dict)),
+        reconciled_tokens=_optional_nonnegative_int(metrics.get("reconciled_tokens")),
+        graph_execution=("not_requested" if graph_policy in (None, "never") else "executed" if graph_events else "required_but_not_satisfied" if graph_policy == "required_locator" else "not_triggered"),
+        visual_execution="required_but_not_satisfied" if visual_required else "not_requested",
+    )
 
 
 def _mode_summary(

@@ -5,7 +5,12 @@ from datetime import datetime, UTC
 import pytest
 from pydantic import ValidationError
 
-from evaluation.campaign_schemas import CampaignResult, CampaignResultStatus
+from evaluation.campaign_schemas import (
+    AgentBehaviorResponse,
+    AgentBehaviorRow,
+    CampaignResult,
+    CampaignResultStatus,
+)
 
 
 def test_campaign_result_allows_nested_token_usage_payloads() -> None:
@@ -106,3 +111,56 @@ def test_campaign_config_ragas_fields_reject_invalid_values() -> None:
             ),
             ragas_batch_size=9,
         )
+
+
+def test_agent_behavior_v9_contract_preserves_evidence_metrics_without_legacy_zeros() -> None:
+    response = AgentBehaviorResponse(
+        campaign_id="cmp-v9",
+        analysis_unit="execution",
+        sample_count=1,
+        independent_question_count=1,
+        repeat_count=1,
+        behavior_schema_version="2",
+        rows=[
+            AgentBehaviorRow(
+                run_id="run-v9",
+                campaign_id="cmp-v9",
+                question_id="Q1",
+                mode="agentic",
+                repeat_number=1,
+                behavior_schema="v9",
+                trace_status="completed",
+                accounting_status="complete",
+                total_tokens=42,
+                legacy=None,
+                v9={
+                    "route": "multi_hop",
+                    "graph_policy": "required_locator",
+                    "visual_required": False,
+                    "evidence_extraction_required": True,
+                    "retrieval_query_count": 2,
+                    "provider_attempt_count": 1,
+                    "final_generation_count": 1,
+                    "evidence_packet_count": 13,
+                    "packed_evidence_count": 6,
+                    "slot_resolution_count": 2,
+                    "required_slot_count": 2,
+                    "supported_slot_count": 2,
+                    "repair_count": 0,
+                    "final_claim_count": 1,
+                    "reserved_tokens": 64,
+                    "reconciled_tokens": 42,
+                    "graph_execution": "required_but_not_satisfied",
+                    "visual_execution": "not_requested",
+                },
+            )
+        ],
+    )
+
+    row = response.rows[0]
+    assert response.behavior_schema_version == "2"
+    assert row.behavior_schema == "v9"
+    assert row.legacy is None
+    assert row.v9 is not None
+    assert row.v9.evidence_packet_count == 13
+    assert row.v9.graph_execution == "required_but_not_satisfied"

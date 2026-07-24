@@ -514,6 +514,71 @@ class EvaluationObservabilityRepository(
             created_at=_parse_dt(row["created_at"]) or datetime.now(timezone.utc),
         )
 
+    async def list_v9_attempt_materializations_for_campaign(
+        self, campaign_id: str
+    ) -> dict[str, EvaluationV9AttemptMaterialization]:
+        """Return completed/cancelled v9 materializations keyed by execution run id."""
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM evaluation_v9_attempt_materializations
+                WHERE campaign_id = ?
+                ORDER BY run_id ASC, created_at ASC
+                """,
+                (campaign_id,),
+            )
+            rows = await cursor.fetchall()
+        return {
+            str(row["run_id"]): EvaluationV9AttemptMaterialization(
+                attempt_id=row["attempt_id"],
+                run_id=row["run_id"],
+                campaign_id=row["campaign_id"],
+                condition_id=row["condition_id"],
+                schema_version=row["schema_version"],
+                trace_payload=_json_loads(row["trace_json"], {}),
+                materialization_status=row["materialization_status"],
+                completed_at=_parse_dt(row["completed_at"]),
+                created_at=_parse_dt(row["created_at"]) or datetime.now(timezone.utc),
+            )
+            for row in rows
+        }
+
+    async def list_v9_behavior_counts_for_campaign(
+        self, campaign_id: str
+    ) -> dict[str, dict[str, int]]:
+        """Return durable v9 evidence/slot counts keyed by run id in two grouped reads."""
+        await init_db()
+        async with connect_db() as connection:
+            evidence_cursor = await connection.execute(
+                """
+                SELECT run_id, COUNT(*) AS count
+                FROM evaluation_evidence_packets
+                WHERE campaign_id = ?
+                GROUP BY run_id
+                """,
+                (campaign_id,),
+            )
+            evidence_rows = await evidence_cursor.fetchall()
+            slot_cursor = await connection.execute(
+                """
+                SELECT run_id, COUNT(*) AS count
+                FROM evaluation_slot_resolutions
+                WHERE campaign_id = ?
+                GROUP BY run_id
+                """,
+                (campaign_id,),
+            )
+            slot_rows = await slot_cursor.fetchall()
+        counts: dict[str, dict[str, int]] = defaultdict(
+            lambda: {"evidence_packet_count": 0, "slot_resolution_count": 0}
+        )
+        for row in evidence_rows:
+            counts[str(row["run_id"])]["evidence_packet_count"] = int(row["count"])
+        for row in slot_rows:
+            counts[str(row["run_id"])]["slot_resolution_count"] = int(row["count"])
+        return dict(counts)
+
     @staticmethod
     async def _insert_evidence_packet(connection: Any, packet: EvaluationEvidencePacket) -> None:
         await connection.execute(
