@@ -17,7 +17,7 @@ from typing import Any
 from langchain_core.documents import Document
 
 from core.providers import get_llm
-from data_base.RAG_QA_service import RAGResult
+from data_base.RAG_QA_service import RAGResult, get_graph_evidence_bundle
 from data_base.agentic_v9.budget_controller import RunBudgetController
 from data_base.agentic_v9.budget_feasibility import (
     FeasibilityResult,
@@ -54,8 +54,14 @@ from data_base.agentic_v9.schemas import (
     V9RuntimeContext,
 )
 from data_base.agentic_v9.sufficiency_gate import SufficiencyEvaluation, evaluate_sufficiency
+from data_base.agentic_v9.asset_locator import VisualAssetCandidate
+from data_base.agentic_v9.visual_evidence_extractor import (
+    VisualEvidenceExtractionResult,
+    VisualEvidenceExtractor,
+)
 from data_base.document_metadata import get_document_id
 from data_base.rag_filtering import filter_and_rerank_retrieval
+from data_base.rag_graph_locator import GraphSourceLocatorResult, locate_graph_sources
 from data_base.rag_retrieval import retrieve_hybrid_documents
 from data_base.vector_store_manager import get_user_retriever_async
 from evaluation.agentic_campaign_adapter import used_evidence_documents
@@ -67,6 +73,14 @@ from evaluation.retrieval_profiles import AGENTIC_EVAL_PROFILE
 
 
 RetrievalAdapter = Callable[[str, str, list[str]], Awaitable[list[Document]]]
+GraphLocator = Callable[
+    [str, str, list[Document], list[str], QueryContract],
+    Awaitable[GraphSourceLocatorResult],
+]
+VisualExtractor = Callable[
+    [Any, list[Document], str, RunBudgetController],
+    Awaitable[VisualEvidenceExtractionResult],
+]
 ProviderFactory = Callable[[str], Any]
 
 
@@ -84,11 +98,15 @@ class AgenticV9CampaignRuntime:
         self,
         *,
         retrieve_documents: RetrievalAdapter | None = None,
+        graph_locator: GraphLocator | None = None,
+        visual_extractor: VisualExtractor | None = None,
         provider_factory: ProviderFactory | None = None,
         policy_runtime: V9ExecutionPolicyRuntime | None = None,
         document_reference_resolver: DocumentReferenceResolver | None = None,
     ) -> None:
         self._retrieve_documents = retrieve_documents or _retrieve_documents
+        self._graph_locator = graph_locator or _locate_graph_documents
+        self._visual_extractor = visual_extractor or _extract_visual_evidence
         self._provider_factory = provider_factory or _provider_for_purpose
         self._policy_runtime = policy_runtime or V9ExecutionPolicyRuntime()
         self._document_reference_resolver = (
@@ -147,6 +165,10 @@ class AgenticV9CampaignRuntime:
             "post_contract": None,
             "budget_controller": None,
             "task_slot_ids": {},
+            "graph_execution": None,
+            "visual_execution": None,
+            "visual_packets": [],
+            "visual_packets_emitted": False,
         }
 
         async def resolve_scope(_: V9ExecutionRequest) -> ResolvedSourceScope:
@@ -168,6 +190,8 @@ class AgenticV9CampaignRuntime:
             )
             state["contract"] = contract
             state["post_contract"] = post_contract
+            state["graph_execution"] = _initial_graph_execution(contract)
+            state["visual_execution"] = _initial_visual_execution(contract)
             if post_contract.status is FeasibilityStatus.CONFIGURATION_INCOMPATIBLE:
                 raise _ConfigurationIncompatible(
                     stage="post_contract", feasibility=post_contract
@@ -191,6 +215,32 @@ class AgenticV9CampaignRuntime:
                 docs = await self._retrieve_documents(
                     user_id, task.query, list(task.source_scope.authorized_doc_ids)
                 )
+                if (
+                    state["contract"].graph_policy == "required_locator"
+                    and not state["graph_execution"]["attempted"]
+                ):
+                    located = await self._graph_locator(
+                        task.query,
+                        user_id,
+                        docs,
+                        list(task.source_scope.authorized_doc_ids),
+                        state["contract"],
+                    )
+                    state["graph_execution"] = _graph_execution_projection(located)
+                    docs = list(located.documents)
+                if (
+                    state["contract"].visual_required
+                    and not state["visual_execution"]["attempted"]
+                ):
+                    controller = state["budget_controller"]
+                    assert isinstance(controller, RunBudgetController)
+                    visual_result = await self._visual_extractor(
+                        task, docs, question, controller
+                    )
+                    state["visual_execution"] = _visual_execution_projection(
+                        visual_result
+                    )
+                    state["visual_packets"].extend(visual_result.packets)
                 chunks = [_chunk_projection(document, index) for index, document in enumerate(docs)]
                 results.append(
                     TaskRetrievalResult(
@@ -211,6 +261,9 @@ class AgenticV9CampaignRuntime:
                 trace_id=trace_id,
                 task_slot_ids=state["task_slot_ids"],
             )
+            if not state["visual_packets_emitted"]:
+                packets.extend(state["visual_packets"])
+                state["visual_packets_emitted"] = True
             state["evidence_packets"].extend(packets)
             return tuple(packets)
 
@@ -379,6 +432,26 @@ class AgenticV9CampaignRuntime:
             }
         )
         final = executed.final_answer or FinalAnswerResult(response_status="insufficient")
+        graph_execution = state["graph_execution"] or _initial_graph_execution(
+            state["contract"]
+        )
+        visual_execution = state["visual_execution"] or _initial_visual_execution(
+            state["contract"]
+        )
+        if (
+            (
+                state["contract"].graph_policy == "required_locator"
+                and graph_execution["state"] != "executed"
+            )
+            or (
+                state["contract"].visual_required
+                and visual_execution["state"] != "executed"
+            )
+        ) and final.response_status == "complete":
+            # A required graph locator is a capability contract, not a hint.  A
+            # vector-only answer may still be useful, but it cannot be marked
+            # complete when no eligible graph-to-source evidence was admitted.
+            final = final.model_copy(update={"response_status": "qualified_partial"})
         used_packets = [
             packet
             for packet in state["evidence_packets"]
@@ -402,6 +475,8 @@ class AgenticV9CampaignRuntime:
                 ],
                 "sufficiency": executed.sufficiency.model_dump(mode="json") if executed.sufficiency else None,
                 "context_pack": _context_pack_projection(packed),
+                "graph_execution": graph_execution,
+                "visual_execution": visual_execution,
                 "budget_reservations": [
                     item.model_dump(mode="json") for item in await controller.reservations()
                 ],
@@ -441,6 +516,184 @@ async def _retrieve_documents(
         enable_reranking=False,
     )
     return list(filtered.documents)
+
+
+async def _locate_graph_documents(
+    question: str,
+    user_id: str,
+    vector_documents: list[Document],
+    authorized_doc_ids: list[str],
+    contract: QueryContract,
+) -> GraphSourceLocatorResult:
+    """Run the production graph boundary as a source locator, never context."""
+    return await locate_graph_sources(
+        question=question,
+        user_id=user_id,
+        vector_documents=vector_documents,
+        requested_doc_ids=authorized_doc_ids,
+        graph_execution_hints={
+            "graph_evidence_mode": "locator_to_chunk",
+            "graph_feature_flags": {
+                "agentic_v9_required_locator": contract.graph_policy
+                == "required_locator",
+            },
+        },
+        required_modalities=[],
+        evidence_mode="locator_to_chunk",
+        bundle_locator=get_graph_evidence_bundle,
+        search_mode="generic",
+    )
+
+
+def _initial_graph_execution(contract: QueryContract | None) -> dict[str, Any]:
+    policy = contract.graph_policy if contract is not None else "never"
+    return {
+        "policy": policy,
+        "state": "not_requested" if policy == "never" else "not_triggered",
+        "attempted": False,
+        "failure_reason": None,
+        "route": None,
+        "path": None,
+        "fallback": None,
+        "latency_ms": None,
+        "candidate_item_ids": [],
+        "resolved_item_ids": [],
+        "scope_approved_item_ids": [],
+        "scored_item_ids": [],
+        "packed_item_ids": [],
+        "resolved_source_doc_ids": [],
+        "resolved_source_chunk_ids": [],
+    }
+
+
+def _graph_execution_projection(
+    located: GraphSourceLocatorResult,
+) -> dict[str, Any]:
+    resolved_documents = list(located.resolved_source_documents)
+    has_eligible_source = bool(resolved_documents) and not located.fallback
+    return {
+        "policy": "required_locator",
+        "state": "executed" if has_eligible_source else "required_but_not_satisfied",
+        "attempted": True,
+        "failure_reason": (
+            None
+            if has_eligible_source
+            else (located.fallback or "no_eligible_graph_source_evidence")
+        ),
+        "route": located.route,
+        "path": located.path,
+        "fallback": located.fallback,
+        "latency_ms": located.graph_latency_ms,
+        "candidate_item_ids": list(located.candidate_item_ids),
+        "resolved_item_ids": list(located.resolved_item_ids),
+        "scope_approved_item_ids": list(located.scope_approved_item_ids),
+        "scored_item_ids": list(located.scored_item_ids),
+        "packed_item_ids": list(located.packed_item_ids),
+        "resolved_source_doc_ids": list(located.resolved_source_doc_ids),
+        "resolved_source_chunk_ids": list(located.resolved_source_chunk_ids),
+    }
+
+
+async def _extract_visual_evidence(
+    task: Any,
+    documents: list[Document],
+    question: str,
+    controller: RunBudgetController,
+) -> VisualEvidenceExtractionResult:
+    """Extract only selected, source-bound visual evidence from retrieved docs."""
+    extractor = VisualEvidenceExtractor(
+        BudgetedLlmInvoker(
+            controller=controller,
+            provider_factory=_provider_for_purpose,
+        )
+    )
+    return await extractor.extract(
+        task=task,
+        assets=_visual_assets_from_documents(documents, task),
+        question_fragment=question,
+    )
+
+
+def _visual_assets_from_documents(
+    documents: list[Document], task: Any
+) -> list[VisualAssetCandidate]:
+    """Project only fully located page images supplied by retrieval metadata."""
+    assets: list[VisualAssetCandidate] = []
+    for index, document in enumerate(documents):
+        metadata = dict(document.metadata or {})
+        image_base64 = metadata.get("page_image_base64") or metadata.get("image_base64")
+        page = metadata.get("page_number")
+        width = metadata.get("page_width") or metadata.get("image_width")
+        height = metadata.get("page_height") or metadata.get("image_height")
+        doc_id = get_document_id(metadata)
+        if not (
+            isinstance(image_base64, str)
+            and image_base64
+            and isinstance(page, int)
+            and page >= 0
+            and isinstance(width, int)
+            and width > 0
+            and isinstance(height, int)
+            and height > 0
+            and isinstance(doc_id, str)
+            and doc_id
+        ):
+            continue
+        assets.append(
+            VisualAssetCandidate(
+                asset_id=str(metadata.get("asset_id") or f"{doc_id}:page:{page}:{index}"),
+                source=EvidenceSource(
+                    doc_id=doc_id,
+                    chunk_id=str(metadata.get("chunk_id") or index + 1),
+                ),
+                pdf_page_index=page,
+                slot_ids=list(task.target_slot_ids),
+                figure_id=metadata.get("figure_id"),
+                table_id=metadata.get("table_id"),
+                bbox=metadata.get("bbox"),
+                page_image_base64=image_base64,
+                page_encoded_bytes=int(metadata.get("page_encoded_bytes") or 0),
+                page_width=width,
+                page_height=height,
+            )
+        )
+    return assets
+
+
+def _initial_visual_execution(contract: QueryContract | None) -> dict[str, Any]:
+    required = bool(contract and contract.visual_required)
+    return {
+        "required": required,
+        "state": "not_triggered" if required else "not_requested",
+        "attempted": False,
+        "failure_reason": None,
+        "selected_asset_count": 0,
+        "dropped_asset_count": 0,
+        "evidence_packet_count": 0,
+    }
+
+
+def _visual_execution_projection(
+    result: VisualEvidenceExtractionResult,
+) -> dict[str, Any]:
+    packet_count = len(result.packets)
+    return {
+        "required": True,
+        "state": "executed" if packet_count else "required_but_not_satisfied",
+        "attempted": True,
+        "failure_reason": (
+            None
+            if packet_count
+            else (
+                result.dropped_assets[0].reason
+                if result.dropped_assets
+                else "no_eligible_visual_evidence"
+            )
+        ),
+        "selected_asset_count": len(result.located_assets),
+        "dropped_asset_count": len(result.dropped_assets),
+        "evidence_packet_count": packet_count,
+    }
 
 
 async def _resolve_document_references(

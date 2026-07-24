@@ -51,7 +51,7 @@ from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
 from evaluation.ragas_evaluator import RagasEvaluator
 from evaluation.retrieval_profiles import evaluation_failure_execution_profile
 from evaluation.retry import RateBudget
-from evaluation.schemas import TestCase
+from evaluation.schemas import EvaluationGraphEvent, TestCase
 from evaluation.storage import list_test_cases
 from evaluation.trace_schemas import (
     AgentTraceDetail,
@@ -526,6 +526,95 @@ async def _record_unit_research_observability(
                     created_at=created_at,
                 )
             )
+
+    v9_payload = trace_payload.get("agentic_v9")
+    graph_execution = (
+        v9_payload.get("graph_execution") if isinstance(v9_payload, dict) else None
+    )
+    if isinstance(graph_execution, dict) and graph_execution.get("policy") != "never":
+        execution_state = str(graph_execution.get("state") or "not_instrumented")
+        graph_route = str(
+            graph_execution.get("route")
+            or ("fallback" if execution_state != "executed" else "unknown")
+        )
+        latency_ms = graph_execution.get("latency_ms")
+        async with recorder.start_span(
+            stage_type="graph",
+            stage_name="agentic_v9_graph_locator",
+            event_type="graph_locator",
+            payload={
+                "request_id": request_id,
+                "question_id": execution.unit.test_case.id,
+                "policy": graph_execution.get("policy"),
+                "execution_state": execution_state,
+                "failure_reason": graph_execution.get("failure_reason"),
+            },
+        ) as graph_span:
+            resolved_item_ids = list(graph_execution.get("resolved_item_ids") or [])
+            scope_item_ids = list(
+                graph_execution.get("scope_approved_item_ids") or []
+            )
+            await recorder.record_graph_event(
+                EvaluationGraphEvent(
+                    graph_event_id=str(uuid4()),
+                    run_id=run_id,
+                    campaign_id=campaign_id,
+                    span_id=graph_span.span_id,
+                    graph_query=execution.unit.test_case.question,
+                    graph_search_mode="generic",
+                    graph_evidence_mode="locator_to_chunk",
+                    graph_route=graph_route,
+                    router_reason=graph_execution.get("failure_reason"),
+                    graph_feature_flags={
+                        "agentic_v9": True,
+                        "graph_policy": graph_execution.get("policy"),
+                        "execution_state": execution_state,
+                        "attempted": bool(graph_execution.get("attempted")),
+                        "fallback": graph_execution.get("fallback"),
+                    },
+                    matched_entity_ids=list(
+                        graph_execution.get("candidate_item_ids") or []
+                    ),
+                    node_count=len(resolved_item_ids),
+                    path_count=len(scope_item_ids),
+                    graph_latency_ms=(
+                        latency_ms
+                        if isinstance(latency_ms, int) and latency_ms >= 0
+                        else None
+                    ),
+                    graph_to_chunk_success_rate=(
+                        1.0
+                        if execution_state == "executed" and scope_item_ids
+                        else 0.0
+                        if bool(graph_execution.get("attempted"))
+                        else None
+                    ),
+                    created_at=created_at,
+                )
+            )
+
+    visual_execution = (
+        v9_payload.get("visual_execution") if isinstance(v9_payload, dict) else None
+    )
+    if isinstance(visual_execution, dict) and visual_execution.get("required"):
+        async with recorder.start_span(
+            stage_type="visual",
+            stage_name="agentic_v9_visual_extract",
+            event_type="visual_extract",
+            payload={
+                "request_id": request_id,
+                "question_id": execution.unit.test_case.id,
+                "execution_state": visual_execution.get("state"),
+                "failure_reason": visual_execution.get("failure_reason"),
+                "selected_asset_count": visual_execution.get("selected_asset_count"),
+                "dropped_asset_count": visual_execution.get("dropped_asset_count"),
+                "evidence_packet_count": visual_execution.get("evidence_packet_count"),
+            },
+        ):
+            # Entering the span records the durable stage event; the detailed
+            # result lives in its payload so absent assets are never confused
+            # with a measured zero successful extraction.
+            pass
 
     steps = trace_payload.get("steps")
     if isinstance(steps, list):

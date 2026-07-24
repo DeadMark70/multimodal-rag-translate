@@ -23,6 +23,7 @@ from evaluation.trace_schemas import (
     EvaluationTraceEvent,
     TraceStageType,
 )
+from evaluation.schemas import EvaluationGraphEvent
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,7 @@ class EvaluationRunRecorder:
         routing_decision_repository: EvaluationObservabilityRepository | None = None,
         claim_repository: EvaluationObservabilityRepository | None = None,
         human_rating_repository: EvaluationObservabilityRepository | None = None,
+        graph_event_repository: EvaluationObservabilityRepository | None = None,
         strict: bool = False,
     ) -> None:
         repository = trace_repository or EvaluationObservabilityRepository()
@@ -155,6 +157,7 @@ class EvaluationRunRecorder:
         self.routing_decision_repository = routing_decision_repository or repository
         self.claim_repository = claim_repository or repository
         self.human_rating_repository = human_rating_repository or repository
+        self.graph_event_repository = graph_event_repository or repository
         self.strict = strict
         self._sequence = 0
         self._span_stack: ContextVar[tuple[EvaluationSpan, ...]] = ContextVar(
@@ -311,6 +314,9 @@ class EvaluationRunRecorder:
 
     async def record_human_rating(self, rating: EvaluationHumanRating) -> None:
         await self._safe_record(self.human_rating_repository.record_human_rating, rating)
+
+    async def record_graph_event(self, event: EvaluationGraphEvent) -> None:
+        await self._safe_record(self.graph_event_repository.record_graph_event, event)
 
     async def _safe_record(self, record_fn, payload) -> None:
         try:

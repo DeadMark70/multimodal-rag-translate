@@ -729,6 +729,38 @@ def _v9_behavior_metrics(*, trace_payload: dict, counts: dict, graph_events: lis
     context_pack = trace_payload.get("context_pack") or {}
     graph_policy = contract.get("graph_policy")
     visual_required = contract.get("visual_required")
+    graph_execution_payload = trace_payload.get("graph_execution") or {}
+    visual_execution_payload = trace_payload.get("visual_execution") or {}
+    graph_execution = graph_execution_payload.get("state")
+    if graph_execution not in {
+        "not_requested",
+        "not_triggered",
+        "executed",
+        "failed",
+        "required_but_not_satisfied",
+        "not_instrumented",
+    }:
+        graph_execution = (
+            "not_requested"
+            if graph_policy in (None, "never")
+            else "executed"
+            if graph_events
+            else "required_but_not_satisfied"
+            if graph_policy == "required_locator"
+            else "not_triggered"
+        )
+    visual_execution = visual_execution_payload.get("state")
+    if visual_execution not in {
+        "not_requested",
+        "not_triggered",
+        "executed",
+        "failed",
+        "required_but_not_satisfied",
+        "not_instrumented",
+    }:
+        visual_execution = (
+            "required_but_not_satisfied" if visual_required else "not_requested"
+        )
     return V9AgentBehaviorMetrics(
         route=contract.get("route"),
         graph_policy=graph_policy,
@@ -746,8 +778,8 @@ def _v9_behavior_metrics(*, trace_payload: dict, counts: dict, graph_events: lis
         final_claim_count=_optional_nonnegative_int(len(trace_payload.get("final_claims", []))),
         reserved_tokens=sum(int(item.get("reserved_tokens", 0) or 0) for item in trace_payload.get("budget_reservations", []) if isinstance(item, dict)),
         reconciled_tokens=_optional_nonnegative_int(metrics.get("reconciled_tokens")),
-        graph_execution=("not_requested" if graph_policy in (None, "never") else "executed" if graph_events else "required_but_not_satisfied" if graph_policy == "required_locator" else "not_triggered"),
-        visual_execution="required_but_not_satisfied" if visual_required else "not_requested",
+        graph_execution=graph_execution,
+        visual_execution=visual_execution,
     )
 
 

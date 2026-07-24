@@ -9,6 +9,17 @@ import pytest
 from langchain_core.documents import Document
 
 from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
+from evaluation.agentic_v9_admission import V9AdmissionContract
+from data_base.agentic_v9.schemas import (
+    EvidencePacket,
+    EvidenceScope,
+    EvidenceSource,
+    QueryContract,
+    RequiredSlot,
+    ResolvedSourceScope,
+    SourceLocator,
+)
+from data_base.agentic_v9.visual_evidence_extractor import VisualEvidenceExtractionResult
 
 
 class _Provider:
@@ -135,7 +146,9 @@ async def test_v9_runtime_rejects_incompatible_setup_before_provider_or_retrieva
 
 
 @pytest.mark.asyncio
-async def test_v9_runtime_repeats_feasibility_after_contract_before_retrieval() -> None:
+async def test_v9_runtime_repeats_feasibility_after_contract_before_retrieval(
+    monkeypatch,
+) -> None:
     provider = _Provider()
     retrieve_documents = AsyncMock()
     runtime = AgenticV9CampaignRuntime(
@@ -144,8 +157,31 @@ async def test_v9_runtime_repeats_feasibility_after_contract_before_retrieval() 
         document_reference_resolver=_identity_reference_resolver,
     )
 
-    # A table request requires visual extraction in the deterministic contract.
-    # Its route budget cannot admit visual + evidence + final provider work.
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        route="exact_structured",
+        intent="extract a table value",
+        required_slots=[RequiredSlot(slot_id="S1", description="table value")],
+        visual_required=True,
+        evidence_extraction_required=True,
+        max_llm_calls=2,
+        runtime_token_budget=40_000,
+        resolved_source_scope=scope,
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract", admission
+    )
+
+    # The contract requires visual + evidence + final provider work but permits
+    # only two calls.  It must be rejected before retrieval starts.
     result = await runtime.execute(
         question="What is the table score?",
         user_id="user-a",
@@ -159,3 +195,258 @@ async def test_v9_runtime_repeats_feasibility_after_contract_before_retrieval() 
     assert result.agent_trace["response_status"] == "configuration_incompatible"
     retrieve_documents.assert_not_awaited()
     provider.ainvoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_required_graph_locator_is_executed_and_recorded_before_complete_answer(
+    monkeypatch,
+) -> None:
+    provider = _Provider()
+    document = Document(
+        page_content="The relation is source-bound.",
+        metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+    )
+    graph_locator = AsyncMock(
+        return_value=SimpleNamespace(
+            documents=[document],
+            resolved_source_documents=[document],
+            resolved_source_doc_ids=["doc-1"],
+            resolved_source_chunk_ids=["chunk-1"],
+            candidate_item_ids=["graph-item-1"],
+            resolved_item_ids=["graph-item-1"],
+            scope_approved_item_ids=["graph-item-1"],
+            scored_item_ids=["graph-item-1"],
+            packed_item_ids=["graph-item-1"],
+            route="local-first",
+            path="source_expand",
+            fallback=None,
+            graph_latency_ms=7,
+        )
+    )
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"], resolved_doc_ids=["doc-1"], authorized_doc_ids=["doc-1"]
+    )
+    contract = QueryContract(
+        route="graph_relational",
+        intent="relation",
+        required_slots=[RequiredSlot(slot_id="S1", description="relation")],
+        graph_policy="required_locator",
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=4,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract", admission
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(return_value=[document]),
+        graph_locator=graph_locator,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What relation is recorded?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "max_output_tokens": 8192},
+        trace_id="required-graph-trace",
+    )
+
+    assert result.agent_trace["response_status"] == "complete"
+    assert result.agent_trace["agentic_v9"]["graph_execution"]["state"] == "executed"
+    graph_locator.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_required_graph_locator_without_source_evidence_is_qualified_partial(
+    monkeypatch,
+) -> None:
+    provider = _Provider()
+    document = Document(
+        page_content="The vector result is not graph evidence.",
+        metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+    )
+    graph_locator = AsyncMock(
+        return_value=SimpleNamespace(
+            documents=[document],
+            resolved_source_documents=[],
+            resolved_source_doc_ids=[],
+            resolved_source_chunk_ids=[],
+            candidate_item_ids=["graph-item-1"],
+            resolved_item_ids=[],
+            scope_approved_item_ids=[],
+            scored_item_ids=[],
+            packed_item_ids=[],
+            route="local-first",
+            path="source_expand",
+            fallback="no_source_bound_graph_evidence",
+            graph_latency_ms=7,
+        )
+    )
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"], resolved_doc_ids=["doc-1"], authorized_doc_ids=["doc-1"]
+    )
+    contract = QueryContract(
+        route="graph_relational",
+        intent="relation",
+        required_slots=[RequiredSlot(slot_id="S1", description="relation")],
+        graph_policy="required_locator",
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=4,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract", admission
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(return_value=[document]),
+        graph_locator=graph_locator,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What relation is recorded?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "max_output_tokens": 8192},
+        trace_id="missing-required-graph-trace",
+    )
+
+    graph_execution = result.agent_trace["agentic_v9"]["graph_execution"]
+    assert result.agent_trace["response_status"] == "qualified_partial"
+    assert graph_execution["state"] == "required_but_not_satisfied"
+    assert graph_execution["failure_reason"] == "no_source_bound_graph_evidence"
+
+
+@pytest.mark.asyncio
+async def test_required_visual_evidence_is_recorded_before_complete_answer(monkeypatch) -> None:
+    provider = _Provider()
+    document = Document(
+        page_content="Table 1 reports the result.",
+        metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+    )
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"], resolved_doc_ids=["doc-1"], authorized_doc_ids=["doc-1"]
+    )
+    contract = QueryContract(
+        route="exact_structured",
+        intent="table value",
+        required_slots=[RequiredSlot(slot_id="S1", description="table value")],
+        visual_required=True,
+        evidence_extraction_required=True,
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=3,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    async def extract_visual(task, _documents, _question, _controller):
+        return VisualEvidenceExtractionResult(
+            packets=(
+                EvidencePacket(
+                    schema_version="1",
+                    evidence_id="visual-evidence-1",
+                    task_id=task.task_id,
+                    round_id=task.round_id,
+                    query_id=task.query_id,
+                    slot_ids=list(task.target_slot_ids),
+                    statement="The table reports 0.91.",
+                    support_type="direct",
+                    source=EvidenceSource(
+                        doc_id="doc-1", chunk_id="chunk-1", asset_id="asset-1"
+                    ),
+                    scope=EvidenceScope(),
+                    locator=SourceLocator(pdf_page_index=1, table_id="table-1"),
+                    validation_status="deterministic_valid",
+                ),
+            )
+        )
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract", admission
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(return_value=[document]),
+        visual_extractor=extract_visual,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What is in the table?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "max_output_tokens": 8192},
+        trace_id="required-visual-trace",
+    )
+
+    assert result.agent_trace["response_status"] == "complete"
+    assert result.agent_trace["agentic_v9"]["visual_execution"]["state"] == "executed"
+
+
+@pytest.mark.asyncio
+async def test_missing_required_visual_evidence_is_qualified_partial(monkeypatch) -> None:
+    provider = _Provider()
+    document = Document(
+        page_content="Table 1 reports the result.",
+        metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+    )
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"], resolved_doc_ids=["doc-1"], authorized_doc_ids=["doc-1"]
+    )
+    contract = QueryContract(
+        route="exact_structured",
+        intent="table value",
+        required_slots=[RequiredSlot(slot_id="S1", description="table value")],
+        visual_required=True,
+        evidence_extraction_required=True,
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=3,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract", admission
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(return_value=[document]),
+        visual_extractor=AsyncMock(return_value=VisualEvidenceExtractionResult()),
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What is in the table?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "max_output_tokens": 8192},
+        trace_id="missing-required-visual-trace",
+    )
+
+    visual = result.agent_trace["agentic_v9"]["visual_execution"]
+    assert result.agent_trace["response_status"] == "qualified_partial"
+    assert visual["state"] == "required_but_not_satisfied"
+    assert visual["failure_reason"] == "no_eligible_visual_evidence"
