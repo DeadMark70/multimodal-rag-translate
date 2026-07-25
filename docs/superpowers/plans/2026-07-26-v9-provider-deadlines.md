@@ -2,16 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Raise Agentic v9 provider-facing request limits from the observed 8-second default to 32 seconds, while capping visual extraction independently at 16 seconds.
+**Goal:** Raise Agentic v9 provider-facing request limits from the observed 8-second default to 32 seconds, while capping visual extraction independently at 16 seconds and preserving time for final synthesis.
 
-**Architecture:** `ExecutionPolicy` is the single source of truth for an attempt-wide deadline and per-phase caps. The runtime clamps every phase to the remaining attempt-wide deadline, so both the phase values and total deadline must change together. No evaluator, RAGAS, job-worker, or legacy v8 timeout is changed.
+**Architecture:** `ExecutionPolicy` is the single source of truth for an attempt-wide deadline and per-phase caps. The runtime clamps every phase to the remaining attempt-wide deadline and reserves the full final-answer cap before synthesis; the attempt-wide deadline must therefore exceed a single 32-second LLM phase. No evaluator, RAGAS, job-worker, or legacy v8 timeout is changed.
 
 **Tech Stack:** Python 3.11, Pydantic, asyncio, pytest.
 
 ## Global Constraints
 
 - Agentic v9 LLM phases use a 32.0-second cap: `route_plan`, `retrieval_judge`, `evidence_extract`, and `final_answer`.
-- The attempt-wide v9 deadline is 32.0 seconds.
+- The attempt-wide v9 deadline is 64.0 seconds.
 - `visual_extract` remains isolated and uses a 16.0-second cap.
 - The runtime must continue to clamp every per-phase value to the remaining attempt-wide time.
 - Legacy v8, RAGAS, and external provider configuration remain unchanged.
@@ -33,7 +33,7 @@
 Change `test_execution_policy_has_the_initial_runtime_bounds` to assert:
 
 ```python
-assert policy.total_deadline_s == 32.0
+assert policy.total_deadline_s == 64.0
 assert policy.phase_timeouts_s == {
     "route_plan": 32.0,
     "retrieval_judge": 32.0,
@@ -81,7 +81,7 @@ Expected: PASS.
 
 - [ ] **Step 1: Write the failing test expectations**
 
-Update the deadline test to use `ExecutionDeadline(32.0, ...)`, assert `32.0` for both `evidence_extract` and `final_answer` at start, then advance the monotonic clock to `130.5` and assert `1.5` for both. Add an assertion that `visual_extract` is `16.0` at the start.
+Update the deadline test to use `ExecutionDeadline(64.0, ...)`, assert `32.0` for both `evidence_extract` and `final_answer` at start, then advance the monotonic clock to `162.5` and assert `1.5` for both. Add an assertion that `visual_extract` is `16.0` at the start.
 
 - [ ] **Step 2: Run the focused test and verify it fails**
 

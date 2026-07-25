@@ -346,14 +346,14 @@ class ExecutionPolicy(BaseModel):
     max_retrieval_concurrency: int = Field(default=3, ge=1)
     max_llm_concurrency: int = Field(default=2, ge=1)
     max_visual_concurrency: int = Field(default=1, ge=1)
-    total_deadline_s: float = Field(default=24.0, gt=0)
+    total_deadline_s: float = Field(default=64.0, gt=0)
     phase_timeouts_s: dict[str, float] = Field(
         default_factory=lambda: {
-            "route_plan": 2.0,
-            "retrieval_judge": 2.0,
-            "evidence_extract": 8.0,
-            "visual_extract": 8.0,
-            "final_answer": 15.0,
+            "route_plan": 32.0,
+            "retrieval_judge": 32.0,
+            "evidence_extract": 32.0,
+            "visual_extract": 16.0,
+            "final_answer": 32.0,
         }
     )
 

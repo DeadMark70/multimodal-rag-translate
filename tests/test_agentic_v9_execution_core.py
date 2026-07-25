@@ -99,7 +99,7 @@ def _runtime_context(
         cancellation_token=cancellation or ExecutionCancellation(),
         event_sink=_event_sink,
         budget_controller=object(),
-        deadline=deadline or ExecutionDeadline(24.0),
+        deadline=deadline or ExecutionDeadline(64.0),
         clock=datetime.now,
         llm_invoker=SimpleNamespace(),
     )
@@ -333,7 +333,7 @@ async def test_core_skips_repair_and_arbitration_when_only_final_reserve_remains
         return ResolvedSourceScope(authorized_doc_ids=[])
 
     async def contract(_: V9ExecutionRequest, __: ResolvedSourceScope) -> QueryContract:
-        now[0] = 10.0
+        now[0] = 32.1
         return _contract()
 
     def evaluate(
@@ -381,13 +381,13 @@ async def test_core_skips_repair_and_arbitration_when_only_final_reserve_remains
             generate_final=final,
             deterministic_partial=partial,
         ),
-        runtime=V9ExecutionPolicyRuntime(ExecutionPolicy(total_deadline_s=24.0)),
+        runtime=V9ExecutionPolicyRuntime(ExecutionPolicy(total_deadline_s=64.0)),
     )
 
     result = await core.execute(
         _request(),
         runtime_context=_runtime_context(
-            deadline=ExecutionDeadline(24.0, monotonic=lambda: now[0])
+            deadline=ExecutionDeadline(64.0, monotonic=lambda: now[0])
         ),
     )
 
@@ -525,7 +525,7 @@ async def test_core_returns_partial_without_packing_when_deadline_is_exhausted()
 ):
     calls: list[str] = []
     now = [0.0]
-    deadline = ExecutionDeadline(24.0, monotonic=lambda: now[0])
+    deadline = ExecutionDeadline(64.0, monotonic=lambda: now[0])
 
     async def scope(_: V9ExecutionRequest) -> ResolvedSourceScope:
         return ResolvedSourceScope(authorized_doc_ids=[])
@@ -540,7 +540,7 @@ async def test_core_returns_partial_without_packing_when_deadline_is_exhausted()
         )
 
     async def conflict(*args: object) -> ConflictStageResult:
-        now[0] = 24.0
+        now[0] = 64.0
         return ConflictStageResult(sufficiency=args[-1])
 
     def partial(
