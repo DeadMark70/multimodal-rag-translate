@@ -196,10 +196,13 @@ def _sanitize_error_message(raw: Any) -> str:
 
 
 def _sanitize_failure_reason(raw: Any) -> str:
-    """Return a safe, actionable capability-gap reason."""
-    return _sanitize_error_message(raw).replace(
-        "Error details unavailable.", "capability_gap_reason_not_recorded"
-    )
+    """Return only a structured capability-gap reason code, never provider detail."""
+    value = str(raw or "").strip().lower()
+    if re.fullmatch(r"[a-z][a-z0-9_]{0,119}", value):
+        return value
+    if not value:
+        return "capability_gap_reason_not_recorded"
+    return "capability_gap_reason_redacted"
 
 
 def _redact_question_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:

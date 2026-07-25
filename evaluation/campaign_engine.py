@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -78,12 +77,6 @@ _TERMINAL_STATUSES = {
     CampaignLifecycleStatus.CANCELLED,
 }
 _LEGACY_RAGAS_METRIC = "legacy_campaign"
-_SAFE_FAILURE_SECRET_PATTERNS = (
-    re.compile(r"sk-[A-Za-z0-9_-]+"),
-    re.compile(r"api[_-]?key\s*=\s*\S+", re.IGNORECASE),
-)
-
-
 @dataclass(frozen=True)
 class CampaignUnit:
     """One question-mode-run execution cell."""
@@ -270,16 +263,9 @@ def _build_derived_metrics(
 
 
 def _safe_failure_message(raw: Any) -> str:
-    """Persist only a concise, secret-safe failure message."""
-    text = str(raw or "").strip()
-    if not text:
-        return "failure_reason_not_recorded"
-    for pattern in _SAFE_FAILURE_SECRET_PATTERNS:
-        text = pattern.sub("[redacted]", text)
-    lowered = text.lower()
-    if "\n" in text or "traceback" in lowered or "stack trace" in lowered:
-        return "Provider error details were redacted."
-    return text[:200]
+    """Never persist arbitrary provider or exception text as a run failure message."""
+    del raw
+    return "Provider error details were redacted."
 
 
 def _failure_diagnostics(

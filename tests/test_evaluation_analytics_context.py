@@ -475,6 +475,44 @@ async def test_campaign_stage_warnings_project_partial_reason() -> None:
 
 
 @pytest.mark.asyncio
+async def test_campaign_stage_warnings_redact_unstructured_failure_reason() -> None:
+    observability_repository = BulkOnlyObservabilityRepository()
+    now = datetime(2026, 7, 8, tzinfo=timezone.utc)
+    observability_repository.trace_event = EvaluationTraceEvent(
+        event_id="graph-partial-raw-reason",
+        run_id="run-1",
+        campaign_id="campaign-1",
+        span_id="span-graph",
+        parent_event_id=None,
+        parent_span_id=None,
+        event_type="graph_locator",
+        event_schema_version="1.0",
+        sequence=3,
+        stage_type="graph",
+        stage_name="agentic_v9_graph_locator",
+        started_at=now,
+        ended_at=now,
+        duration_ms=10,
+        status="partial",
+        retry_count=0,
+        payload={"execution_state": "required_but_not_satisfied"},
+        error={"reason": "provider response included private prompt contents"},
+        created_at=now,
+    )
+    service = EvaluationAnalyticsService(
+        campaign_repository=SingleRunCampaignRepository(),
+        result_repository=SingleRunResultRepository(),
+        observability_repository=observability_repository,
+    )
+
+    response = await service.campaign_stage_warnings(
+        user_id="user-a", campaign_id="campaign-1"
+    )
+
+    assert response.rows[0].failure_reason == "capability_gap_reason_redacted"
+
+
+@pytest.mark.asyncio
 async def test_export_campaign_uses_bulk_observability() -> None:
     observability_repository = BulkOnlyObservabilityRepository()
     service = EvaluationAnalyticsService(

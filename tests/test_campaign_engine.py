@@ -1278,7 +1278,7 @@ async def test_run_campaign_persists_failure_execution_profiles_directly() -> No
 async def test_run_campaign_persists_safe_failure_diagnostics() -> None:
     class DiagnosticFailure(RuntimeError):
         def __init__(self) -> None:
-            super().__init__("apiKey=sk-secret\nTraceback provider request failed")
+            super().__init__("provider response: apiKey=sk-secret prompt=private medical question")
             self.agent_trace = {
                 "question_id": "Q-FAILURE-DIAGNOSTICS",
                 "question": "Why did this run fail?",
@@ -1324,6 +1324,7 @@ async def test_run_campaign_persists_safe_failure_diagnostics() -> None:
     assert result.status == CampaignResultStatus.FAILED
     assert result.answer == ""
     assert result.error_message == "Provider error details were redacted."
+    assert "private medical question" not in result.error_message
     assert diagnostics == {
         "error_code": "DiagnosticFailure",
         "safe_error_message": "Provider error details were redacted.",
