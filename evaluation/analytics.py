@@ -22,6 +22,7 @@ from evaluation.campaign_schemas import (
     CampaignAnalyticsDashboardResponse,
     CampaignLifecycleStatus,
     CampaignErrorsResponse,
+    CampaignStageWarningsResponse,
     CampaignOverviewResponse,
     CampaignPreflightIssue,
     CampaignPreflightQuestion,
@@ -55,6 +56,7 @@ from evaluation.campaign_schemas import (
     V9ExecutionObservability,
     V9SlotResolution,
     SanitizedErrorRow,
+    StageWarningRow,
 )
 from evaluation.db import (
     CampaignRepository,
@@ -191,6 +193,16 @@ def _sanitize_error_message(raw: Any) -> str:
     if len(text) > 200:
         return f"{text[:197]}..."
     return text
+
+
+def _sanitize_failure_reason(raw: Any) -> str:
+    """Return only a structured capability-gap reason code, never provider detail."""
+    value = str(raw or "").strip().lower()
+    if re.fullmatch(r"[a-z][a-z0-9_]{0,119}", value):
+        return value
+    if not value:
+        return "capability_gap_reason_not_recorded"
+    return "capability_gap_reason_redacted"
 
 
 def _redact_question_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -795,6 +807,16 @@ class EvaluationAnalyticsService:
             llm_calls_by_run=context.llm_calls_by_run,
         )
 
+    async def campaign_stage_warnings(
+        self, *, user_id: str, campaign_id: str
+    ) -> CampaignStageWarningsResponse:
+        context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
+        trace_events_by_run = await self._observability_repository.list_trace_events_for_campaign(campaign_id)
+        return self._build_campaign_stage_warnings(
+            context=context,
+            trace_events_by_run=trace_events_by_run,
+        )
+
     def _build_campaign_errors(
         self,
         *,
@@ -817,7 +839,7 @@ class EvaluationAnalyticsService:
                     )
                 )
             for item in trace_events_by_run.get(result.id, []):
-                if item.campaign_id != context.campaign_id or (not item.error and item.status != "failed"):
+                if item.campaign_id != context.campaign_id or item.status != "failed":
                     continue
                 rows.append(
                     SanitizedErrorRow(
@@ -831,7 +853,7 @@ class EvaluationAnalyticsService:
                     )
                 )
             for call in llm_calls_by_run.get(result.id, []):
-                if call.campaign_id != context.campaign_id or (not call.error and call.status != "failed"):
+                if call.campaign_id != context.campaign_id or call.status != "failed":
                     continue
                 rows.append(
                     SanitizedErrorRow(
@@ -846,6 +868,50 @@ class EvaluationAnalyticsService:
                 )
         rows.sort(key=lambda item: (item.created_at, item.run_id, item.stage_name))
         return CampaignErrorsResponse(campaign_id=context.campaign_id, rows=rows)
+
+    def _build_campaign_stage_warnings(
+        self,
+        *,
+        context: _CampaignAnalyticsContext,
+        trace_events_by_run: dict[str, list[Any]],
+    ) -> CampaignStageWarningsResponse:
+        rows: list[StageWarningRow] = []
+        for result in context.results:
+            for item in trace_events_by_run.get(result.id, []):
+                if item.campaign_id != context.campaign_id:
+                    continue
+                if not str(item.stage_name or "").startswith("agentic_v9_"):
+                    continue
+                payload = item.payload if isinstance(item.payload, dict) else {}
+                execution_state = str(payload.get("execution_state") or "")
+                if item.status != "partial" and execution_state != "required_but_not_satisfied":
+                    continue
+                if execution_state in {"not_triggered", "not_requested"}:
+                    continue
+                reason = (
+                    (item.error or {}).get("reason")
+                    or payload.get("failure_reason")
+                    or (item.error or {}).get("message")
+                    or "capability_gap_reason_not_recorded"
+                )
+                rows.append(
+                    StageWarningRow(
+                        run_id=result.id,
+                        campaign_id=context.campaign_id,
+                        question_id=result.question_id,
+                        mode=result.mode,
+                        stage_name=item.stage_name,
+                        status=(
+                            "required_but_not_satisfied"
+                            if execution_state == "required_but_not_satisfied"
+                            else "partial"
+                        ),
+                        failure_reason=_sanitize_failure_reason(reason),
+                        created_at=item.created_at,
+                    )
+                )
+        rows.sort(key=lambda item: (item.created_at, item.run_id, item.stage_name))
+        return CampaignStageWarningsResponse(campaign_id=context.campaign_id, rows=rows)
 
     async def export_campaign(
         self,
