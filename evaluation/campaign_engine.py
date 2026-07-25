@@ -77,6 +77,7 @@ _TERMINAL_STATUSES = {
     CampaignLifecycleStatus.CANCELLED,
 }
 _LEGACY_RAGAS_METRIC = "legacy_campaign"
+_SAFE_FAILURE_CODES = frozenset({"EVALUATION_ANSWER_TOO_LARGE"})
 @dataclass(frozen=True)
 class CampaignUnit:
     """One question-mode-run execution cell."""
@@ -264,7 +265,8 @@ def _build_derived_metrics(
 
 def _safe_failure_message(raw: Any) -> str:
     """Never persist arbitrary provider or exception text as a run failure message."""
-    del raw
+    if str(raw or "").strip() in _SAFE_FAILURE_CODES:
+        return str(raw).strip()
     return "Provider error details were redacted."
 
 
