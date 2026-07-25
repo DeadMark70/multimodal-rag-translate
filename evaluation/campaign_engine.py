@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -77,6 +78,10 @@ _TERMINAL_STATUSES = {
     CampaignLifecycleStatus.CANCELLED,
 }
 _LEGACY_RAGAS_METRIC = "legacy_campaign"
+_SAFE_FAILURE_SECRET_PATTERNS = (
+    re.compile(r"sk-[A-Za-z0-9_-]+"),
+    re.compile(r"api[_-]?key\s*=\s*\S+", re.IGNORECASE),
+)
 
 
 @dataclass(frozen=True)
@@ -206,6 +211,9 @@ def _build_derived_metrics(
         metrics["ablation_flags"] = dict(unit.ablation_flags or {})
     if isinstance(payload, Exception):
         metrics["response_status"] = "failed"
+        metrics["failure_diagnostics"] = _failure_diagnostics(
+            unit=unit, payload=payload
+        )
         return metrics
     if payload.execution_identity:
         metrics["execution_identity"] = payload.execution_identity
@@ -214,6 +222,10 @@ def _build_derived_metrics(
     metrics["response_status"] = payload.response_status or (
         "failed" if payload.error_message else "complete"
     )
+    if payload.error_message:
+        metrics["failure_diagnostics"] = _failure_diagnostics(
+            unit=unit, payload=payload
+        )
     metrics.update(
         {
             "context_count": len(payload.contexts),
@@ -255,6 +267,55 @@ def _build_derived_metrics(
             answer=payload.answer,
         )
     return metrics
+
+
+def _safe_failure_message(raw: Any) -> str:
+    """Persist only a concise, secret-safe failure message."""
+    text = str(raw or "").strip()
+    if not text:
+        return "failure_reason_not_recorded"
+    for pattern in _SAFE_FAILURE_SECRET_PATTERNS:
+        text = pattern.sub("[redacted]", text)
+    lowered = text.lower()
+    if "\n" in text or "traceback" in lowered or "stack trace" in lowered:
+        return "Provider error details were redacted."
+    return text[:200]
+
+
+def _failure_diagnostics(
+    *, unit: CampaignUnit, payload: BenchmarkExecutionResult | Exception
+) -> dict[str, Any]:
+    trace_payload = getattr(payload, "agent_trace", None)
+    trace = trace_payload if isinstance(trace_payload, dict) else {}
+    raw_error = str(payload) if isinstance(payload, Exception) else payload.error_message
+    retry_count = trace.get("retry_count")
+    return {
+        "error_code": (
+            payload.__class__.__name__
+            if isinstance(payload, Exception)
+            else str(trace.get("error_code") or "RUN_FAILED")
+        ),
+        "safe_error_message": _safe_failure_message(raw_error),
+        "last_completed_stage": (
+            trace.get("last_completed_stage")
+            if isinstance(trace.get("last_completed_stage"), str)
+            else "campaign_unit_execution"
+            if isinstance(payload, Exception)
+            else None
+        ),
+        "provider_status": trace.get("provider_status")
+        if isinstance(trace.get("provider_status"), str)
+        else None,
+        "retry_count": retry_count
+        if isinstance(retry_count, int) and retry_count >= 0
+        else 0,
+        "timeout_state": trace.get("timeout_state")
+        if isinstance(trace.get("timeout_state"), str)
+        else None,
+        "budget_state": trace.get("budget_state")
+        if isinstance(trace.get("budget_state"), str)
+        else None,
+    }
 
 
 def _final_answer_hash(answer: str | None) -> str | None:
@@ -1925,6 +1986,10 @@ class CampaignEngine:
         system_version_snapshot = _build_system_version_snapshot(
             unit=unit, payload=payload
         )
+        failure_diagnostics = _failure_diagnostics(unit=unit, payload=payload)
+        if isinstance(payload, BenchmarkExecutionResult) and payload.error_message:
+            payload.answer = ""
+            payload.error_message = failure_diagnostics["safe_error_message"]
         derived_metrics = _build_derived_metrics(unit=unit, payload=payload)
 
         if isinstance(payload, Exception):
@@ -1945,7 +2010,7 @@ class CampaignEngine:
                 ),
                 context_policy_version=None,
                 run_number=unit.run_number,
-                answer=f"ERROR: {payload}",
+                answer="",
                 contexts=[],
                 source_doc_ids=[],
                 expected_sources=list(unit.test_case.source_docs),
@@ -1954,7 +2019,7 @@ class CampaignEngine:
                 category=unit.test_case.category,
                 difficulty=unit.test_case.difficulty,
                 status=CampaignResultStatus.FAILED,
-                error_message=str(payload),
+                error_message=failure_diagnostics["safe_error_message"],
                 question_version=unit.test_case.question_version,
                 request_id=execution.request_id,
                 started_at=execution.started_at.isoformat(),

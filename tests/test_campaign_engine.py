@@ -1275,6 +1275,67 @@ async def test_run_campaign_persists_failure_execution_profiles_directly() -> No
 
 
 @pytest.mark.asyncio
+async def test_run_campaign_persists_safe_failure_diagnostics() -> None:
+    class DiagnosticFailure(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("apiKey=sk-secret\nTraceback provider request failed")
+            self.agent_trace = {
+                "question_id": "Q-FAILURE-DIAGNOSTICS",
+                "question": "Why did this run fail?",
+                "mode": "agentic",
+                "last_completed_stage": "hybrid_retrieval",
+                "provider_status": "timeout",
+                "retry_count": 2,
+                "timeout_state": "elapsed",
+                "budget_state": "reserved",
+            }
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        raise DiagnosticFailure()
+
+    db_path = _make_db_path()
+    test_case = TestCase(
+        id="Q-FAILURE-DIAGNOSTICS",
+        question="Why did this run fail?",
+        ground_truth="A safe diagnostic is persisted.",
+    )
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        campaign = await campaign_repo.create(
+            user_id="user-a",
+            name="Safe failure diagnostics",
+            config=_campaign_config_for_test_case_ids([test_case.id], modes=["agentic"]),
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+
+        await engine._run_campaign(
+            user_id="user-a",
+            campaign_id=campaign.id,
+            config=campaign.config,
+            test_cases=[test_case],
+        )
+
+        result = (
+            await result_repo.list_for_campaign(user_id="user-a", campaign_id=campaign.id)
+        )[0]
+
+    diagnostics = result.derived_metrics["failure_diagnostics"]
+    assert result.status == CampaignResultStatus.FAILED
+    assert result.answer == ""
+    assert result.error_message == "Provider error details were redacted."
+    assert diagnostics == {
+        "error_code": "DiagnosticFailure",
+        "safe_error_message": "Provider error details were redacted.",
+        "last_completed_stage": "hybrid_retrieval",
+        "provider_status": "timeout",
+        "retry_count": 2,
+        "timeout_state": "elapsed",
+        "budget_state": "reserved",
+    }
+
+
+@pytest.mark.asyncio
 async def test_run_campaign_rejects_oversized_answer_without_ragas_evaluation() -> None:
     async def runner(**kwargs) -> BenchmarkExecutionResult:
         test_case = kwargs["test_case"]
