@@ -411,6 +411,33 @@ async def test_agent_behavior_projects_materialized_v9_evidence_not_legacy_step_
 
 
 @pytest.mark.asyncio
+async def test_agent_behavior_projects_failed_v9_reason_without_endpoint_failure(
+    research_service,
+) -> None:
+    await _campaign("agent-behavior-failed-v9", ["agentic"])
+    result_id = await _result(
+        "agent-behavior-failed-v9",
+        "agentic-v9",
+        "attempt-v9-failed",
+        status=CampaignResultStatus.FAILED,
+    )
+    await evaluation_db.init_db()
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            "UPDATE campaign_results SET error_message = '' WHERE id = ?",
+            (result_id,),
+        )
+        await connection.commit()
+
+    response = await research_service.get_agent_behavior(
+        user_id="user-1", campaign_id="agent-behavior-failed-v9"
+    )
+
+    assert response.rows[0].trace_status == "failed"
+    assert response.rows[0].failure_reason == "failure_reason_not_recorded"
+
+
+@pytest.mark.asyncio
 async def test_mixed_usage_reports_measured_subtotals_without_total(
     research_service,
 ) -> None:

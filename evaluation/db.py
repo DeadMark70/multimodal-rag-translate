@@ -1457,6 +1457,7 @@ class CampaignResearchResult:
     derived_metrics: dict[str, Any]
     source_attempt_id: Optional[str]
     status: CampaignResultStatus
+    error_message: Optional[str]
 
     @property
     def repeat_number(self) -> int:
@@ -2144,7 +2145,8 @@ class CampaignResultRepository:
                         AS required_modalities_json,
                     derived_metrics_json,
                     source_attempt_id,
-                    status
+                    status,
+                    error_message
                 FROM campaign_results
                 WHERE campaign_id = ? AND user_id = ?
                 ORDER BY created_at ASC, question_id ASC, mode ASC, run_number ASC, id ASC
@@ -2170,6 +2172,7 @@ class CampaignResultRepository:
                 derived_metrics=_json_loads(row["derived_metrics_json"], {}),
                 source_attempt_id=row["source_attempt_id"] or None,
                 status=CampaignResultStatus(row["status"]),
+                error_message=row["error_message"] or None,
             )
             for row in rows
         ]
