@@ -104,6 +104,33 @@ async def _seed_export_rows(*, run_id: str, campaign_id: str) -> None:
     )
 
 
+async def _seed_stage_warning(*, run_id: str, campaign_id: str) -> None:
+    now = datetime.now(timezone.utc)
+    await EvaluationObservabilityRepository().record_trace_event(
+        EvaluationTraceEvent(
+            event_id=f"{run_id}-graph-warning",
+            run_id=run_id,
+            campaign_id=campaign_id,
+            span_id=f"{run_id}-graph-span",
+            parent_event_id=None,
+            parent_span_id=None,
+            event_type="graph_locator",
+            event_schema_version="1.0",
+            sequence=11,
+            stage_type="graph",
+            stage_name="agentic_v9_graph_locator",
+            started_at=now,
+            ended_at=now,
+            duration_ms=10,
+            status="partial",
+            retry_count=0,
+            payload={"execution_state": "required_but_not_satisfied"},
+            error={"reason": "no_eligible_graph_source_evidence"},
+            created_at=now,
+        )
+    )
+
+
 def _campaign_payload() -> dict:
     return {
         "name": "Export",
@@ -171,6 +198,7 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         _wait_for_completed(client, campaign_id)
         run_id = client.get(f"/api/evaluation/campaigns/{campaign_id}/results").json()["results"][0]["id"]
         asyncio.run(_seed_export_rows(run_id=run_id, campaign_id=campaign_id))
+        asyncio.run(_seed_stage_warning(run_id=run_id, campaign_id=campaign_id))
 
         errors_response = client.get(f"/api/evaluation/campaigns/{campaign_id}/errors")
         assert errors_response.status_code == 200
@@ -179,6 +207,23 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         assert error_row["stage_name"] == "answer_generation"
         assert "sk-secret" not in error_row["message"]
         assert "stack trace" not in error_row["message"].lower()
+
+        warnings_response = client.get(
+            f"/api/evaluation/campaigns/{campaign_id}/stage-warnings"
+        )
+        assert warnings_response.status_code == 200
+        assert warnings_response.json()["rows"] == [
+            {
+                "run_id": run_id,
+                "campaign_id": campaign_id,
+                "question_id": "Q-EXPORT",
+                "mode": "agentic",
+                "stage_name": "agentic_v9_graph_locator",
+                "status": "required_but_not_satisfied",
+                "failure_reason": "no_eligible_graph_source_evidence",
+                "created_at": warnings_response.json()["rows"][0]["created_at"],
+            }
+        ]
 
         default_export = client.post(f"/api/evaluation/campaigns/{campaign_id}/export", json={})
         assert default_export.status_code == 200

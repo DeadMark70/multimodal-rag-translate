@@ -714,6 +714,26 @@ class CampaignErrorsResponse(BaseModel):
     rows: list[SanitizedErrorRow] = Field(default_factory=list)
 
 
+class StageWarningRow(BaseModel):
+    """One non-fatal v9 capability gap surfaced for research analysis."""
+
+    run_id: str
+    campaign_id: str
+    question_id: str
+    mode: CampaignMode
+    stage_name: str
+    status: Literal["partial", "required_but_not_satisfied"]
+    failure_reason: str
+    created_at: datetime
+
+
+class CampaignStageWarningsResponse(BaseModel):
+    """Capability-gap rows for one campaign, separate from failed runs."""
+
+    campaign_id: str
+    rows: list[StageWarningRow] = Field(default_factory=list)
+
+
 class CampaignAnalyticsDashboardResponse(BaseModel):
     """Single-request bundle for the Evaluation Center dashboard."""
 

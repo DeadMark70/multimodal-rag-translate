@@ -20,6 +20,7 @@ from evaluation.campaign_schemas import (
     AblationResponse,
     CampaignAnalyticsDashboardResponse,
     CampaignErrorsResponse,
+    CampaignStageWarningsResponse,
     CampaignCreateRequest,
     CampaignCreateResponse,
     CampaignEvaluateRequest,
@@ -615,6 +616,21 @@ async def get_campaign_errors(
 ) -> CampaignErrorsResponse:
     """Fetch sanitized error rows for one campaign."""
     return await analytics.campaign_errors(user_id=user_id, campaign_id=campaign_id)
+
+
+@router.get(
+    "/campaigns/{campaign_id}/stage-warnings",
+    response_model=CampaignStageWarningsResponse,
+)
+async def get_campaign_stage_warnings(
+    campaign_id: str,
+    user_id: str = Depends(get_current_user_id),
+    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+) -> CampaignStageWarningsResponse:
+    """Fetch non-fatal v9 capability gaps for one campaign."""
+    return await analytics.campaign_stage_warnings(
+        user_id=user_id, campaign_id=campaign_id
+    )
 
 
 @router.post("/campaigns/{campaign_id}/export", response_model=ExportCampaignResponse)
