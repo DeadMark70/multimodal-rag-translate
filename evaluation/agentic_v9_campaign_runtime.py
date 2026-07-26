@@ -27,6 +27,7 @@ from data_base.agentic_v9.budget_feasibility import (
 )
 from data_base.agentic_v9.budgeted_llm import BudgetedLlmInvoker
 from data_base.agentic_v9.context_packer import EvidenceContextPacker, PackedEvidenceContext
+from data_base.agentic_v9.citation_renderer import render_verified_answer
 from data_base.agentic_v9.execution_core import (
     ConflictStageResult,
     V9ExecutionCore,
@@ -36,22 +37,24 @@ from data_base.agentic_v9.execution_policy import (
     ExecutionCancellation,
     V9ExecutionPolicyRuntime,
 )
+from data_base.agentic_v9.final_answer import generate_final_answer
 from data_base.agentic_v9.repair import build_repair_plan
 from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
     EvidenceSource,
     FinalAnswerResult,
-    FinalClaim,
     QueryContract,
     RagRetrievalResult,
     ResolvedSourceScope,
     SlotResolution,
     SourceLocator,
+    SufficiencyReport,
     TaskRetrievalResult,
     V9ExecutionEvent,
     V9ExecutionRequest,
     V9RuntimeContext,
+    UnresolvedRequirement,
 )
 from data_base.agentic_v9.sufficiency_gate import SufficiencyEvaluation, evaluate_sufficiency
 from data_base.agentic_v9.asset_locator import VisualAssetCandidate
@@ -169,6 +172,7 @@ class AgenticV9CampaignRuntime:
             "visual_execution": None,
             "visual_packets": [],
             "visual_packets_emitted": False,
+            "final_slot_resolutions": (),
         }
 
         async def resolve_scope(_: V9ExecutionRequest) -> ResolvedSourceScope:
@@ -282,7 +286,14 @@ class AgenticV9CampaignRuntime:
         def sufficiency(
             contract: QueryContract, packets: tuple[EvidencePacket, ...]
         ) -> SufficiencyEvaluation:
-            return evaluate_sufficiency(contract, packets)
+            evaluation = _apply_required_capability_constraints(
+                contract=contract,
+                evaluation=evaluate_sufficiency(contract, packets),
+                graph_execution=state["graph_execution"],
+                visual_execution=state["visual_execution"],
+            )
+            state["final_slot_resolutions"] = evaluation.slot_resolutions
+            return evaluation
 
         def plan_repair(
             contract: QueryContract,
@@ -345,57 +356,48 @@ class AgenticV9CampaignRuntime:
             return packed
 
         async def generate_final(
-            _: str,
-            __: QueryContract,
+            final_question: str,
+            final_contract: QueryContract,
             packed: PackedEvidenceContext,
             resolutions: tuple[SlotResolution, ...],
-            ___: Any | None,
+            arbitration: Any | None,
+            sufficiency_report: SufficiencyReport,
         ) -> FinalAnswerResult:
             controller = state["budget_controller"]
             assert isinstance(controller, RunBudgetController)
-            response = await BudgetedLlmInvoker(
-                controller=controller,
-                provider_factory=self._provider_factory,
-            ).invoke(
-                phase="final_answer",
-                purpose="agentic_v9_final_answer",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Use only supplied evidence. Cite no source not present.",
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Question: {question}\n\nEvidence:\n{packed.rendered_text}",
-                    },
-                ],
-            )
-            if isinstance(response, FinalAnswerResult):
-                return response
-            answer = _response_text(response)
-            used_ids = [packet.evidence_id for packet in packed.packets]
-            claims = [
-                FinalClaim(
-                    claim_id=f"claim:{trace_id}",
-                    statement=answer or "Evidence-backed answer unavailable.",
-                    support_type="direct",
-                    evidence_ids=used_ids,
+            if sufficiency_report.response_status == "complete":
+                assert all(
+                    resolution.status == "supported"
+                    for resolution in resolutions
+                    if any(
+                        slot.slot_id == resolution.slot_id and slot.required
+                        for slot in final_contract.required_slots
+                    )
                 )
-            ]
-            return FinalAnswerResult(
-                response_status="complete",
-                answer=answer,
-                claims=claims,
-                used_evidence_ids=used_ids,
-                final_generation_count=1,
+            return await generate_final_answer(
+                question=final_question,
+                contract=final_contract,
+                packed_packets=packed,
+                slot_resolutions=resolutions,
+                llm_invoker=BudgetedLlmInvoker(
+                    controller=controller,
+                    provider_factory=self._provider_factory,
+                ),
+                arbitration=arbitration,
             )
 
         def deterministic_partial(
-            _: QueryContract, evaluation: SufficiencyEvaluation
+            partial_contract: QueryContract, evaluation: SufficiencyEvaluation
         ) -> FinalAnswerResult:
             return FinalAnswerResult(
                 response_status=evaluation.report.response_status,
-                answer="Evidence was insufficient for a fully supported answer.",
+                answer=render_verified_answer(
+                    (),
+                    (),
+                    unresolved_requirements=_unresolved_requirements(
+                        partial_contract, evaluation.slot_resolutions
+                    ),
+                ),
             )
 
         core = V9ExecutionCore(
@@ -451,19 +453,15 @@ class AgenticV9CampaignRuntime:
             state["contract"]
         )
         if (
-            (
-                state["contract"].graph_policy == "required_locator"
-                and graph_execution["state"] != "executed"
+            executed.sufficiency is not None
+            and final.response_status == "complete"
+            and executed.sufficiency.response_status != "complete"
+        ):
+            # Defensive invariant: capability constraints were already applied
+            # before generation, so this branch must never be the primary guard.
+            final = final.model_copy(
+                update={"response_status": executed.sufficiency.response_status}
             )
-            or (
-                state["contract"].visual_required
-                and visual_execution["state"] != "executed"
-            )
-        ) and final.response_status == "complete":
-            # A required graph locator is a capability contract, not a hint.  A
-            # vector-only answer may still be useful, but it cannot be marked
-            # complete when no eligible graph-to-source evidence was admitted.
-            final = final.model_copy(update={"response_status": "qualified_partial"})
         used_packets = [
             packet
             for packet in state["evidence_packets"]
@@ -483,7 +481,7 @@ class AgenticV9CampaignRuntime:
                 "evidence_packets": [packet.model_dump(mode="json") for packet in state["evidence_packets"]],
                 "slot_resolutions": [
                     resolution.model_dump(mode="json")
-                    for resolution in (executed.sufficiency and evaluate_sufficiency(state["contract"], state["evidence_packets"]).slot_resolutions or ())
+                    for resolution in state["final_slot_resolutions"]
                 ],
                 "sufficiency": executed.sufficiency.model_dump(mode="json") if executed.sufficiency else None,
                 "context_pack": _context_pack_projection(packed),
@@ -555,6 +553,143 @@ async def _locate_graph_documents(
         bundle_locator=get_graph_evidence_bundle,
         search_mode="generic",
     )
+
+
+def _apply_required_capability_constraints(
+    *,
+    contract: QueryContract,
+    evaluation: SufficiencyEvaluation,
+    graph_execution: dict[str, Any] | None,
+    visual_execution: dict[str, Any] | None,
+) -> SufficiencyEvaluation:
+    """Downgrade affected required slots before packing or final generation."""
+    required_slot_ids = {
+        slot.slot_id for slot in contract.required_slots if slot.required
+    }
+    graph_failed = bool(
+        contract.graph_policy == "required_locator"
+        and (graph_execution or {}).get("state") != "executed"
+    )
+    visual_failed = bool(
+        contract.visual_required
+        and (visual_execution or {}).get("state") != "executed"
+    )
+    if not graph_failed and not visual_failed:
+        return evaluation
+
+    adjusted: list[SlotResolution] = []
+    for resolution in evaluation.slot_resolutions:
+        if resolution.slot_id not in required_slot_ids:
+            adjusted.append(resolution)
+            continue
+        if visual_failed:
+            reason = (visual_execution or {}).get("failure_reason") or (
+                "Required visual evidence is unavailable."
+            )
+            adjusted.append(
+                SlotResolution(
+                    slot_id=resolution.slot_id,
+                    status="explicitly_unavailable",
+                    reason=reason,
+                    resolution_stage="required_visual_capability",
+                )
+            )
+            continue
+        graph_failure_reason = (graph_execution or {}).get("failure_reason")
+        graph_stage_failed = (graph_execution or {}).get("fallback") == (
+            "stage_execution_failed"
+        )
+        adjusted.append(
+            SlotResolution(
+                slot_id=resolution.slot_id,
+                status=(
+                    "explicitly_unavailable" if graph_stage_failed else "not_found"
+                ),
+                reason=graph_failure_reason
+                or "Required graph source evidence was not found.",
+                resolution_stage="required_graph_capability",
+            )
+        )
+
+    adjusted_tuple = tuple(adjusted)
+    required = tuple(
+        resolution
+        for resolution in adjusted_tuple
+        if resolution.slot_id in required_slot_ids
+    )
+    supported = [
+        resolution.slot_id
+        for resolution in required
+        if resolution.status == "supported"
+    ]
+    conflicted = [
+        resolution.slot_id
+        for resolution in required
+        if resolution.status == "conflicted"
+    ]
+    unavailable = [
+        resolution.slot_id
+        for resolution in required
+        if resolution.status == "explicitly_unavailable"
+    ]
+    not_found = [
+        resolution.slot_id
+        for resolution in required
+        if resolution.status == "not_found"
+    ]
+    evidence_complete = bool(required_slot_ids) and len(supported) == len(
+        required_slot_ids
+    )
+    answerable = bool(supported)
+    report = SufficiencyReport(
+        evidence_complete=evidence_complete,
+        answerable=answerable,
+        response_status=(
+            "complete"
+            if evidence_complete
+            else "qualified_partial"
+            if answerable
+            else "insufficient"
+        ),
+        supported_slot_ids=supported,
+        conflicted_slot_ids=conflicted,
+        explicitly_unavailable_slot_ids=unavailable,
+        not_found_slot_ids=not_found,
+        stop_reason="required_capability_unavailable",
+    )
+    return SufficiencyEvaluation(
+        slot_resolutions=adjusted_tuple,
+        report=report,
+        repairable_slot_ids=tuple(not_found),
+        repair_stopped_slot_ids=tuple(unavailable),
+    )
+
+
+def _unresolved_requirements(
+    contract: QueryContract,
+    resolutions: Sequence[SlotResolution],
+) -> tuple[UnresolvedRequirement, ...]:
+    resolutions_by_slot = {
+        resolution.slot_id: resolution for resolution in resolutions
+    }
+    rows: list[UnresolvedRequirement] = []
+    for slot in contract.required_slots:
+        if not slot.required:
+            continue
+        resolution = resolutions_by_slot.get(slot.slot_id)
+        if resolution is not None and resolution.status == "supported":
+            continue
+        rows.append(
+            UnresolvedRequirement(
+                slot_id=slot.slot_id,
+                reason=(
+                    resolution.reason
+                    if resolution is not None and resolution.reason
+                    else "Required source-bound evidence was not found."
+                ),
+            )
+        )
+    return tuple(rows)
 
 
 def _initial_graph_execution(contract: QueryContract | None) -> dict[str, Any]:
@@ -885,13 +1020,6 @@ def _final_input_reserve(snapshot: dict[str, Any], runtime_token_budget: int) ->
         8192,
         max(runtime_token_budget // 2, 1),
     )
-
-
-def _response_text(response: Any) -> str:
-    content = response.get("content") if isinstance(response, dict) else getattr(response, "content", response)
-    if isinstance(content, list):
-        return "".join(str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in content).strip()
-    return str(content or "").strip()
 
 
 def _context_pack_projection(packed: PackedEvidenceContext | None) -> dict[str, Any] | None:

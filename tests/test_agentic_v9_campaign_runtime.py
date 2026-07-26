@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -24,9 +25,31 @@ from data_base.agentic_v9.visual_evidence_extractor import VisualEvidenceExtract
 
 class _Provider:
     def __init__(self) -> None:
+        self.ainvoke = AsyncMock(side_effect=self._respond)
+
+    async def _respond(self, messages):
+        payload = json.loads(messages[-1]["content"])
+        packet = payload["packed_evidence_packets"][0]
+        return SimpleNamespace(
+                content={
+                    "supported_findings": [
+                        {
+                            "slot_id": packet["slot_ids"][0],
+                            "statement": packet["statement"],
+                            "evidence_ids": [packet["evidence_id"]],
+                        }
+                    ],
+                    "unresolved_requirements": [],
+                },
+                usage_metadata={"input_tokens": 12, "output_tokens": 7},
+            )
+
+
+class _InvalidProvider:
+    def __init__(self) -> None:
         self.ainvoke = AsyncMock(
             return_value=SimpleNamespace(
-                content="The reported score is 0.91.",
+                content={"answer": "Unsupported provider prose."},
                 usage_metadata={"input_tokens": 12, "output_tokens": 7},
             )
         )
@@ -265,7 +288,7 @@ async def test_required_graph_locator_is_executed_and_recorded_before_complete_a
 
 
 @pytest.mark.asyncio
-async def test_required_graph_locator_without_source_evidence_is_qualified_partial(
+async def test_required_graph_locator_without_source_evidence_is_insufficient(
     monkeypatch,
 ) -> None:
     provider = _Provider()
@@ -327,9 +350,10 @@ async def test_required_graph_locator_without_source_evidence_is_qualified_parti
     )
 
     graph_execution = result.agent_trace["agentic_v9"]["graph_execution"]
-    assert result.agent_trace["response_status"] == "qualified_partial"
+    assert result.agent_trace["response_status"] == "insufficient"
     assert graph_execution["state"] == "required_but_not_satisfied"
     assert graph_execution["failure_reason"] == "no_source_bound_graph_evidence"
+    assert result.agent_trace["agentic_v9"]["slot_resolutions"][0]["status"] != "supported"
 
 
 @pytest.mark.asyncio
@@ -403,7 +427,7 @@ async def test_required_visual_evidence_is_recorded_before_complete_answer(monke
 
 
 @pytest.mark.asyncio
-async def test_missing_required_visual_evidence_is_qualified_partial(monkeypatch) -> None:
+async def test_missing_required_visual_evidence_is_insufficient(monkeypatch) -> None:
     provider = _Provider()
     document = Document(
         page_content="Table 1 reports the result.",
@@ -447,6 +471,43 @@ async def test_missing_required_visual_evidence_is_qualified_partial(monkeypatch
     )
 
     visual = result.agent_trace["agentic_v9"]["visual_execution"]
-    assert result.agent_trace["response_status"] == "qualified_partial"
+    assert result.agent_trace["response_status"] == "insufficient"
     assert visual["state"] == "required_but_not_satisfied"
     assert visual["failure_reason"] == "no_eligible_visual_evidence"
+    assert result.agent_trace["agentic_v9"]["slot_resolutions"][0]["status"] == (
+        "explicitly_unavailable"
+    )
+
+
+@pytest.mark.asyncio
+async def test_invalid_final_provider_output_uses_deterministic_sections() -> None:
+    provider = _InvalidProvider()
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="The source reports a score of 0.91.",
+                    metadata={
+                        "doc_id": "doc-1",
+                        "page_number": 2,
+                        "chunk_id": "chunk-1",
+                    },
+                )
+            ]
+        ),
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What is the reported score?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot=_setup(),
+        trace_id="invalid-final-provider",
+    )
+
+    assert "Unsupported provider prose" not in result.answer
+    assert "Supported conclusions" in result.answer
+    assert "Unresolved/unverifiable requirements" in result.answer
+    assert result.agent_trace["response_status"] == "insufficient"

@@ -178,6 +178,7 @@ async def test_core_runs_the_evidence_first_stages_in_order_and_enforces_call_ca
         ___: object,
         ____: tuple[SlotResolution, ...],
         _____: object,
+        ______: SufficiencyReport,
     ) -> FinalAnswerResult:
         calls.append("final")
         return FinalAnswerResult(
@@ -228,6 +229,88 @@ async def test_core_runs_the_evidence_first_stages_in_order_and_enforces_call_ca
     assert result.metrics.prose_curator_call_count == 1
     assert result.metrics.arbitration_call_count == 0
     assert result.metrics.final_generation_count == 1
+
+
+@pytest.mark.asyncio
+async def test_incomplete_sufficiency_cannot_be_upgraded_by_final_provider() -> None:
+    contract = _contract().model_copy(
+        update={
+            "required_slots": [
+                RequiredSlot(slot_id="score", description="reported score"),
+                RequiredSlot(slot_id="source", description="source requirement"),
+            ]
+        }
+    )
+    degraded = SufficiencyEvaluation(
+        slot_resolutions=(
+            SlotResolution(
+                slot_id="score",
+                status="supported",
+                evidence_ids=["evidence-1"],
+            ),
+            SlotResolution(
+                slot_id="source",
+                status="not_found",
+                reason="Required source evidence was not found.",
+            ),
+        ),
+        report=SufficiencyReport(
+            evidence_complete=False,
+            answerable=True,
+            response_status="qualified_partial",
+            supported_slot_ids=["score"],
+            not_found_slot_ids=["source"],
+        ),
+    )
+    received: dict[str, object] = {}
+
+    async def final(
+        _question: str,
+        _contract: QueryContract,
+        _packed: object,
+        resolutions: tuple[SlotResolution, ...],
+        _arbitration: object,
+        report: SufficiencyReport,
+    ) -> FinalAnswerResult:
+        received["resolutions"] = resolutions
+        received["report"] = report
+        return FinalAnswerResult(
+            response_status="complete",
+            answer="Provider attempted an upgrade.",
+            final_generation_count=1,
+        )
+
+    result = await V9ExecutionCore(
+        stages=V9ExecutionStages(
+            resolve_scope=lambda _: ResolvedSourceScope(authorized_doc_ids=["doc-1"]),
+            plan_contract=lambda *_: contract,
+            retrieve=lambda tasks: (
+                TaskRetrievalResult(
+                    task_id=tasks[0].task_id,
+                    retrieval=RagRetrievalResult(retrieval_id="retrieval-1"),
+                ),
+            ),
+            deterministic_candidates=lambda *_: (_packet(),),
+            evaluate_sufficiency=lambda *_: degraded,
+            plan_repair=lambda *_: (),
+            prose_curate=lambda _, __, packets: packets,
+            resolve_conflicts=lambda *args: ConflictStageResult(
+                sufficiency=args[-1]
+            ),
+            pack=lambda _, __, packets, ___: SimpleNamespace(
+                packets=packets, is_packable=True
+            ),
+            generate_final=final,
+            deterministic_partial=lambda _, evaluation: FinalAnswerResult(
+                response_status=evaluation.report.response_status
+            ),
+        )
+    ).execute(_request(), runtime_context=_runtime_context())
+
+    assert received["resolutions"] == degraded.slot_resolutions
+    assert received["report"] == degraded.report
+    assert result.final_answer.response_status == "qualified_partial"
+    assert result.sufficiency.response_status == "qualified_partial"
 
 
 @pytest.mark.asyncio

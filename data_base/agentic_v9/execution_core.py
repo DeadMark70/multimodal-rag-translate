@@ -25,6 +25,7 @@ from data_base.agentic_v9.schemas import (
     ResolvedSourceScope,
     RetrievalTask,
     SlotResolution,
+    SufficiencyReport,
     TaskRetrievalResult,
     V9ExecutionRequest,
     V9ExecutionResult,
@@ -82,6 +83,7 @@ FinalStage = Callable[
         PackedEvidenceContext,
         tuple[SlotResolution, ...],
         Any | None,
+        SufficiencyReport,
     ],
     _MaybeAwaitable[FinalAnswerResult],
 ]
@@ -266,6 +268,7 @@ class V9ExecutionCore:
                         packed,
                         conflict.sufficiency.slot_resolutions,
                         conflict.arbitration,
+                        conflict.sufficiency.report,
                     ),
                     deadline,
                     cancellation,
@@ -275,6 +278,9 @@ class V9ExecutionCore:
                     contract, conflict.sufficiency
                 )
 
+        final_answer = _prevent_response_status_upgrade(
+            final_answer, conflict.sufficiency.report
+        )
         final_generation_count = final_answer.final_generation_count
         assert final_generation_count <= 1
         subtask_answer_count = 0
@@ -292,7 +298,6 @@ class V9ExecutionCore:
                 "arbitration_call_count": conflict.arbitration_call_count,
             },
         )
-
     def _initial_tasks(
         self, request: V9ExecutionRequest, contract: QueryContract
     ) -> tuple[RetrievalTask, ...]:
@@ -358,6 +363,18 @@ class V9ExecutionCore:
         return await self._runtime.run_retrieval(
             operation, phase=phase, deadline=deadline, cancellation=cancellation
         )
+
+
+def _prevent_response_status_upgrade(
+    final_answer: FinalAnswerResult, sufficiency: SufficiencyReport
+) -> FinalAnswerResult:
+    """Keep the deterministic sufficiency gate authoritative over provider output."""
+    rank = {"insufficient": 0, "qualified_partial": 1, "complete": 2}
+    if rank[final_answer.response_status] <= rank[sufficiency.response_status]:
+        return final_answer
+    return final_answer.model_copy(
+        update={"response_status": sufficiency.response_status}
+    )
 
 
 async def _resolve(value: _MaybeAwaitable[_T]) -> _T:
