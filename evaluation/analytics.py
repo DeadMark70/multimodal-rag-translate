@@ -955,6 +955,11 @@ class EvaluationAnalyticsService:
         llm_calls: list[dict[str, Any]] = []
         retrieval_summary: list[dict[str, Any]] = []
         claim_summary: list[dict[str, Any]] = []
+        phase_counts: dict[str, int] = defaultdict(int)
+        hash_availability: dict[str, int] = defaultdict(int)
+        preview_availability: dict[str, int] = defaultdict(int)
+        full_availability: dict[str, int] = defaultdict(int)
+        availability_warnings: list[str] = []
         for result in context.results:
             row = result.model_dump(mode="json")
             runs.append(_redact_export_run(row, request))
@@ -971,12 +976,34 @@ class EvaluationAnalyticsService:
                 if call.campaign_id != campaign_id:
                     continue
                 call_row = redact_sensitive_value(_dump(call))
-                if not request.include_prompt_previews:
+                phase_counts[str(call_row.get("phase") or "unknown")] += 1
+                hash_availability[
+                    "captured"
+                    if call_row.get("prompt_hash")
+                    else "not_captured_at_execution"
+                ] += 1
+                preview_status = str(
+                    call_row.get("prompt_capture_status") or "unknown"
+                )
+                if not request.include_prompt_previews and call_row.get(
+                    "prompt_preview"
+                ) is not None:
                     call_row["prompt_preview"] = None
+                    preview_status = "redacted"
+                    call_row["prompt_capture_status"] = preview_status
+                preview_availability[preview_status] += 1
                 payload = dict(call_row.get("payload") or {})
-                full_prompt = payload.get("full_prompt")
-                if full_prompt is not None and not request.include_full_prompts:
+                full_status = str(
+                    call_row.get("full_prompt_capture_status") or "unknown"
+                )
+                captured_full = full_status in {"captured", "redacted"}
+                if not captured_full:
                     payload.pop("full_prompt", None)
+                elif not request.include_full_prompts:
+                    payload.pop("full_prompt", None)
+                    full_status = "redacted"
+                    call_row["full_prompt_capture_status"] = full_status
+                full_availability[full_status] += 1
                 call_row["payload"] = payload
                 llm_calls.append(call_row)
 
@@ -1022,6 +1049,18 @@ class EvaluationAnalyticsService:
             trace_events_by_run=trace_events_by_run,
             llm_calls_by_run=context.llm_calls_by_run,
         )
+        if request.include_full_prompts and full_availability.get(
+            "not_captured_at_execution", 0
+        ):
+            availability_warnings.append(
+                "One or more full prompts were not captured at execution."
+            )
+        if request.include_full_prompts and full_availability.get(
+            "capture_failed", 0
+        ):
+            availability_warnings.append(
+                "One or more full prompt capture attempts failed at execution."
+            )
         return ExportCampaignResponse(
             campaign=context.campaign.model_dump(mode="json"),
             redaction=request.model_dump(mode="json"),
@@ -1034,6 +1073,21 @@ class EvaluationAnalyticsService:
             llm_calls=llm_calls,
             retrieval_summary=retrieval_summary,
             claim_summary=claim_summary,
+            summary={
+                "run_count": len(runs),
+                "llm_call_count": len(llm_calls),
+                "per_phase_counts": dict(sorted(phase_counts.items())),
+                "prompt_hash_availability": dict(
+                    sorted(hash_availability.items())
+                ),
+                "prompt_preview_availability": dict(
+                    sorted(preview_availability.items())
+                ),
+                "full_prompt_availability": dict(
+                    sorted(full_availability.items())
+                ),
+            },
+            availability_warnings=availability_warnings,
         )
 
     async def repeat_stability(self, *, user_id: str, campaign_id: str) -> RepeatStabilitySummary:

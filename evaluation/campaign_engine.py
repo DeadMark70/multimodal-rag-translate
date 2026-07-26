@@ -1767,6 +1767,9 @@ class CampaignEngine:
                             unit=unit,
                             user_id=user_id,
                             campaign_id=campaign_id,
+                            prompt_capture_policy=config.prompt_capture_policy.model_dump(
+                                mode="json"
+                            ),
                             model_config=config.model_preset.model_dump(mode="json"),
                             rate_budget=rate_budget,
                             run_number=unit.run_number,
@@ -1967,6 +1970,7 @@ class CampaignEngine:
         unit: CampaignUnit,
         user_id: str,
         campaign_id: str,
+        prompt_capture_policy: dict[str, Any],
         model_config: dict,
         rate_budget: RateBudget,
         run_number: int,
@@ -1990,6 +1994,7 @@ class CampaignEngine:
                 or model_config.get("model")
                 or "unknown"
             ),
+            prompt_capture_policy=prompt_capture_policy,
         )
         try:
             with llm_call_observer_scope(recorder):

@@ -81,6 +81,15 @@ class AblationCondition(BaseModel):
     budget: dict[str, Any] | None = None
 
 
+class PromptCapturePolicy(BaseModel):
+    """Execution-time-authoritative prompt evidence policy."""
+
+    hash: bool = True
+    preview: bool = True
+    full_prompt: bool = False
+    preview_max_chars: int = Field(default=512, ge=32, le=4096)
+
+
 class CampaignConfig(BaseModel):
     """User-supplied campaign configuration."""
 
@@ -105,6 +114,9 @@ class CampaignConfig(BaseModel):
     # A benchmark run can span separate immutable campaigns because v8/v9 and
     # shadow configuration are intentionally incompatible in one campaign.
     benchmark_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    prompt_capture_policy: PromptCapturePolicy = Field(
+        default_factory=PromptCapturePolicy
+    )
 
     @model_validator(mode="after")
     def dedupe_modes(self) -> "CampaignConfig":
@@ -178,6 +190,9 @@ class CampaignCreateRequest(BaseModel):
     agentic_execution_version: AgenticExecutionVersion = "v8"
     shadow_evaluation_policy: ShadowEvaluationPolicy | None = None
     benchmark_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    prompt_capture_policy: PromptCapturePolicy = Field(
+        default_factory=PromptCapturePolicy
+    )
 
     def to_config(self) -> CampaignConfig:
         return CampaignConfig(
@@ -196,6 +211,7 @@ class CampaignCreateRequest(BaseModel):
             agentic_execution_version=self.agentic_execution_version,
             shadow_evaluation_policy=self.shadow_evaluation_policy,
             benchmark_id=self.benchmark_id,
+            prompt_capture_policy=self.prompt_capture_policy,
         )
 
 
@@ -809,6 +825,8 @@ class ExportCampaignResponse(BaseModel):
     llm_calls: list[dict[str, Any]] = Field(default_factory=list)
     retrieval_summary: list[dict[str, Any]] = Field(default_factory=list)
     claim_summary: list[dict[str, Any]] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    availability_warnings: list[str] = Field(default_factory=list)
 
 
 class CampaignProgressEvent(BaseModel):

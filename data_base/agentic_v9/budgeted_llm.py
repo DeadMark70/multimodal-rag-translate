@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from core.llm_factory import get_flat_llm_usage
 from core.llm_usage_context import (
@@ -37,7 +38,11 @@ class LlmAttemptObservation:
     provider_attempt: int
     provider: str
     model_name: str
-    prompt_hash: str
+    prompt_hash: str | None
+    prompt_preview: str | None
+    full_prompt: str | None
+    prompt_capture_status: str
+    full_prompt_capture_status: str
     response_hash: str | None
     latency_ms: float
     status: str
@@ -66,6 +71,7 @@ class BudgetedLlmInvoker:
     observer: LlmCallObserver | None = None
     provider_name: str = "unknown"
     model_name: str = "unknown"
+    capture_policy: Mapping[str, Any] | None = None
 
     async def invoke(
         self,
@@ -81,6 +87,10 @@ class BudgetedLlmInvoker:
             observer=self.observer,
             provider_name=self.provider_name,
             model_name=self.model_name,
+            capture_policy=(
+                self.capture_policy
+                or getattr(self.observer, "prompt_capture_policy", None)
+            ),
             phase=phase,
             purpose=purpose,
             messages=messages,
@@ -105,6 +115,7 @@ async def invoke_budgeted_llm(
     observer: LlmCallObserver | None = None,
     provider_name: str = "unknown",
     model_name: str = "unknown",
+    capture_policy: Mapping[str, Any] | None = None,
 ) -> Any:
     """Reserve before one provider attempt, then reconcile its terminal usage."""
     if (provider is None) == (provider_factory is None):
@@ -124,7 +135,7 @@ async def invoke_budgeted_llm(
             return _final_qualified_partial()
         raise
     started_at = time.perf_counter()
-    prompt_hash = _stable_hash(messages)
+    prompt_capture = _capture_prompt(messages, capture_policy)
     active_provider: AsyncProvider | None = provider
     try:
         policy = await controller.phase_policy(phase)
@@ -147,7 +158,7 @@ async def invoke_budgeted_llm(
             reservation=reservation,
             provider_name=provider_name,
             model_name=model_name,
-            prompt_hash=prompt_hash,
+            prompt_capture=prompt_capture,
             response_hash=None,
             started_at=started_at,
             status="failed",
@@ -167,7 +178,7 @@ async def invoke_budgeted_llm(
             reservation=reservation,
             provider_name=provider_name,
             model_name=model_name,
-            prompt_hash=prompt_hash,
+            prompt_capture=prompt_capture,
             response_hash=None,
             started_at=started_at,
             status="timeout" if isinstance(exc, asyncio.TimeoutError) else "failed",
@@ -196,7 +207,7 @@ async def invoke_budgeted_llm(
         reservation=reservation,
         provider_name=provider_name,
         model_name=model_name,
-        prompt_hash=prompt_hash,
+        prompt_capture=prompt_capture,
         response_hash=_stable_hash(response),
         started_at=started_at,
         status="success",
@@ -214,7 +225,7 @@ async def _observe_terminal(
     reservation: Any,
     provider_name: str,
     model_name: str,
-    prompt_hash: str,
+    prompt_capture: "_PromptCapture",
     response_hash: str | None,
     started_at: float,
     status: str,
@@ -230,7 +241,11 @@ async def _observe_terminal(
         provider_attempt=reservation.provider_attempt,
         provider=provider_name or "unknown",
         model_name=model_name or "unknown",
-        prompt_hash=prompt_hash,
+        prompt_hash=prompt_capture.prompt_hash,
+        prompt_preview=prompt_capture.prompt_preview,
+        full_prompt=prompt_capture.full_prompt,
+        prompt_capture_status=prompt_capture.prompt_capture_status,
+        full_prompt_capture_status=prompt_capture.full_prompt_capture_status,
         response_hash=response_hash,
         latency_ms=max((time.perf_counter() - started_at) * 1000, 0),
         status=status,
@@ -268,9 +283,89 @@ def _canonical_observation_phase(phase: str) -> str:
     return aliases.get(phase, "retrieval_judge")
 
 
-def _stable_hash(value: object) -> str:
+@dataclass(frozen=True, slots=True)
+class _PromptCapture:
+    prompt_hash: str | None
+    prompt_preview: str | None
+    full_prompt: str | None
+    prompt_capture_status: str
+    full_prompt_capture_status: str
+
+
+_SECRET_PATTERNS = (
+    re.compile(
+        r"(?i)\b(api[_-]?key|password|secret|token)\s*[:=]\s*[^\s,;\"}]+"
+    ),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{6,}\b"),
+)
+
+
+def _capture_prompt(
+    messages: list[dict[str, Any]],
+    policy: Mapping[str, Any] | None,
+) -> _PromptCapture:
+    frozen = dict(policy or {})
+    capture_hash = bool(frozen.get("hash", True))
+    capture_preview = bool(frozen.get("preview", True))
+    capture_full = bool(frozen.get("full_prompt", False))
+    preview_max_chars = frozen.get("preview_max_chars", 512)
+    if (
+        not isinstance(preview_max_chars, int)
+        or isinstance(preview_max_chars, bool)
+        or preview_max_chars < 1
+    ):
+        preview_max_chars = 512
     try:
-        serialized = json.dumps(
+        canonical = _stable_serialize(messages)
+        sanitized = canonical
+        for pattern in _SECRET_PATTERNS:
+            sanitized = pattern.sub("[REDACTED]", sanitized)
+        was_redacted = sanitized != canonical
+        prompt_hash = (
+            hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            if capture_hash
+            else None
+        )
+        return _PromptCapture(
+            prompt_hash=prompt_hash,
+            prompt_preview=(
+                sanitized[:preview_max_chars] if capture_preview else None
+            ),
+            full_prompt=sanitized if capture_full else None,
+            prompt_capture_status=(
+                "redacted"
+                if capture_preview and was_redacted
+                else "captured"
+                if capture_preview
+                else "not_captured_at_execution"
+            ),
+            full_prompt_capture_status=(
+                "redacted"
+                if capture_full and was_redacted
+                else "captured"
+                if capture_full
+                else "not_captured_at_execution"
+            ),
+        )
+    except Exception:
+        return _PromptCapture(
+            prompt_hash=None,
+            prompt_preview=None,
+            full_prompt=None,
+            prompt_capture_status="capture_failed",
+            full_prompt_capture_status="capture_failed",
+        )
+
+
+def _stable_hash(value: object) -> str:
+    serialized = _stable_serialize(value)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _stable_serialize(value: object) -> str:
+    try:
+        return json.dumps(
             value,
             sort_keys=True,
             separators=(",", ":"),
@@ -278,8 +373,7 @@ def _stable_hash(value: object) -> str:
             default=str,
         )
     except (TypeError, ValueError):
-        serialized = str(value)
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        return str(value)
 
 
 def _final_qualified_partial() -> FinalAnswerResult:

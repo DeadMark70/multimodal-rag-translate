@@ -186,6 +186,7 @@ class EvaluationRunRecorder:
         graph_evidence_item_repository: EvaluationObservabilityRepository | None = None,
         provider_name: str = "unknown",
         model_name: str = "unknown",
+        prompt_capture_policy: dict | None = None,
         strict: bool = False,
     ) -> None:
         repository = trace_repository or EvaluationObservabilityRepository()
@@ -195,6 +196,7 @@ class EvaluationRunRecorder:
         self.request_id = request_id
         self.provider_name = provider_name or "unknown"
         self.model_name = model_name or "unknown"
+        self.prompt_capture_policy = dict(prompt_capture_policy or {})
         self.trace_repository = repository
         self.llm_call_repository = llm_call_repository or repository
         self.retrieval_event_repository = retrieval_event_repository or repository
@@ -323,11 +325,21 @@ class EvaluationRunRecorder:
             reasoning_tokens=int(usage["reasoning_tokens"]),
             other_tokens=int(usage["other_tokens"]),
             prompt_hash=observation.prompt_hash,
+            prompt_preview=observation.prompt_preview,
+            prompt_capture_status=observation.prompt_capture_status,
+            full_prompt_capture_status=observation.full_prompt_capture_status,
             response_hash=observation.response_hash,
             latency_ms=observation.latency_ms,
             status=observation.status,
             error=dict(observation.error),
-            payload={"usage_status": usage["usage_status"]},
+            payload={
+                "usage_status": usage["usage_status"],
+                **(
+                    {"full_prompt": observation.full_prompt}
+                    if observation.full_prompt is not None
+                    else {}
+                ),
+            },
             created_at=_utc_now(),
         )
         return await self.record_llm_call(call)

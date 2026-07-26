@@ -640,7 +640,7 @@ async def post_campaign_export(
     user_id: str = Depends(get_current_user_id),
     analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
 ) -> ExportCampaignResponse:
-    """Export one campaign with explicit redaction controls."""
+    """Export without escalating the campaign's execution-time capture policy."""
     return await analytics.export_campaign(
         user_id=user_id, campaign_id=campaign_id, request=payload
     )

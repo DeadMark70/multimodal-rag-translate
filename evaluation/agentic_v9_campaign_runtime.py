@@ -210,6 +210,7 @@ class AgenticV9CampaignRuntime:
                     observer=llm_call_observer,
                     provider_name=provider_name,
                     model_name=model_name,
+                    capture_policy=setup_snapshot.get("prompt_capture_policy"),
                 )
             ).plan(
                 question=question,
@@ -570,6 +571,7 @@ class AgenticV9CampaignRuntime:
                     observer=llm_call_observer,
                     provider_name=provider_name,
                     model_name=model_name,
+                    capture_policy=setup_snapshot.get("prompt_capture_policy"),
                 ),
                 arbitration=arbitration,
                 sufficiency_report=sufficiency_report,

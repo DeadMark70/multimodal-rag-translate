@@ -342,3 +342,43 @@ async def test_observer_failure_preserves_answer_and_marks_partial() -> None:
     assert response["content"] == "provider answer"
     assert len(observer.calls) == 1
     assert observer.partial_reasons == ["llm_call_observer_failed"]
+
+
+@pytest.mark.asyncio
+async def test_prompt_capture_is_execution_time_bounded_and_sanitized() -> None:
+    observer = _RecordingObserver()
+    await invoke_budgeted_llm(
+        controller=_controller(),
+        provider=_ResponseProvider(),
+        observer=observer,
+        provider_name="gemini",
+        model_name="gemini-2.5-flash",
+        capture_policy={
+            "hash": True,
+            "preview": True,
+            "full_prompt": False,
+            "preview_max_chars": 48,
+        },
+        phase="evidence_extract",
+        purpose="extract_evidence",
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "api_key=sk-live-super-secret "
+                    "Extract a deliberately long evidence statement."
+                ),
+            }
+        ],
+        estimated_input_tokens=10,
+    )
+
+    call = observer.calls[0]
+    assert call.prompt_hash
+    assert call.prompt_preview is not None
+    assert len(call.prompt_preview) <= 48
+    assert "super-secret" not in call.prompt_preview
+    assert "sk-live" not in call.prompt_preview
+    assert call.prompt_capture_status == "redacted"
+    assert call.full_prompt is None
+    assert call.full_prompt_capture_status == "not_captured_at_execution"
