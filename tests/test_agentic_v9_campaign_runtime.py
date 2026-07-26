@@ -778,6 +778,186 @@ async def test_required_visual_failure_only_downgrades_required_policy_slots(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("later_asset_present", "expected_required_status"),
+    [(True, "supported"), (False, "explicitly_unavailable")],
+)
+async def test_multidocument_visual_call_aggregates_sources_and_binds_packets_per_slot(
+    monkeypatch,
+    later_asset_present: bool,
+    expected_required_status: str,
+) -> None:
+    provider = _Provider()
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-a", "doc-z"],
+        resolved_doc_ids=["doc-a", "doc-z"],
+        authorized_doc_ids=["doc-a", "doc-z"],
+    )
+    contract = QueryContract(
+        contract_version="2",
+        route="multi_document_exact",
+        intent="two source-bound visual facts",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="preferred first-document table fact",
+                authorized_source_doc_ids=["doc-a"],
+                locator_hints=["Table A"],
+                visual_policy="preferred",
+            ),
+            RequiredSlot(
+                slot_id="S2",
+                description="required later-document table fact",
+                authorized_source_doc_ids=["doc-z"],
+                locator_hints=["Table Z"],
+                visual_policy="required",
+            ),
+        ],
+        locator_hints=["table"],
+        visual_requested=True,
+        visual_required=True,
+        evidence_extraction_required=True,
+        max_retrieval_rounds=2,
+        max_repair_rounds=0,
+        max_llm_calls=3,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+        slot_plan_status="complete",
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    async def retrieve_documents(_user_id, _query, doc_ids):
+        if len(doc_ids) != 1:
+            return []
+        doc_id = doc_ids[0]
+        has_asset = doc_id == "doc-a" or later_asset_present
+        metadata = {
+            "doc_id": doc_id,
+            "chunk_id": f"chunk-{doc_id}",
+            "page_number": 1,
+            "table_id": "Table A" if doc_id == "doc-a" else "Table Z",
+        }
+        if has_asset:
+            metadata.update(
+                {
+                    "asset_id": f"asset-{doc_id}",
+                    "page_image_base64": "aW1hZ2U=",
+                    "page_width": 10,
+                    "page_height": 10,
+                }
+            )
+        return [
+            Document(
+                page_content=f"{doc_id} contains its requested fact.",
+                metadata=metadata,
+            )
+        ]
+
+    visual_calls: list[list[tuple[str, list[str]]]] = []
+
+    async def extract_visual(task, documents, _question, _controller):
+        asset_bindings = [
+            (
+                document.metadata["doc_id"],
+                document.metadata["visual_slot_ids"],
+            )
+            for document in documents
+            if document.metadata.get("page_image_base64")
+        ]
+        visual_calls.append(asset_bindings)
+        asset_doc_ids = [doc_id for doc_id, _slot_ids in asset_bindings]
+
+        def packet(
+            *,
+            evidence_id: str,
+            doc_id: str,
+            slot_id: str,
+            table_id: str,
+        ) -> EvidencePacket:
+            return EvidencePacket(
+                schema_version="1",
+                evidence_id=evidence_id,
+                task_id=task.task_id,
+                round_id=task.round_id,
+                query_id=task.query_id,
+                slot_ids=[slot_id],
+                statement=f"{doc_id} visual fact.",
+                support_type="direct",
+                source=EvidenceSource(
+                    doc_id=doc_id,
+                    chunk_id=f"chunk-{doc_id}",
+                    asset_id=f"asset-{doc_id}",
+                ),
+                scope=EvidenceScope(),
+                locator=SourceLocator(
+                    pdf_page_index=1,
+                    table_id=table_id,
+                ),
+                validation_status="deterministic_valid",
+            )
+
+        packets = [
+            packet(
+                evidence_id="wrong-source-visual",
+                doc_id="doc-a",
+                slot_id="S2",
+                table_id="Table A",
+            )
+        ]
+        if "doc-z" in asset_doc_ids:
+            packets.append(
+                packet(
+                    evidence_id="later-source-visual",
+                    doc_id="doc-z",
+                    slot_id="S2",
+                    table_id="Table Z",
+                )
+            )
+        return VisualEvidenceExtractionResult(packets=tuple(packets))
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract",
+        admission,
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve_documents,
+        visual_extractor=extract_visual,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What are the two table facts?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-a", "doc-z"],
+        setup_snapshot={**_setup(), "max_output_tokens": 8192},
+        trace_id=f"multidoc-visual-{later_asset_present}",
+    )
+
+    assert visual_calls == [
+        [
+            ("doc-a", ["S1"]),
+            *([("doc-z", ["S2"])] if later_asset_present else []),
+        ]
+    ]
+    v9 = result.agent_trace["agentic_v9"]
+    visual_evidence_ids = {
+        packet["evidence_id"]
+        for packet in v9["evidence_packets"]
+        if packet["source"].get("asset_id")
+    }
+    assert "wrong-source-visual" not in visual_evidence_ids
+    assert ("later-source-visual" in visual_evidence_ids) is later_asset_present
+    resolutions = {
+        row["slot_id"]: row["status"] for row in v9["slot_resolutions"]
+    }
+    assert resolutions["S1"] == "supported"
+    assert resolutions["S2"] == expected_required_status
+
+
+@pytest.mark.asyncio
 async def test_invalid_final_provider_output_uses_deterministic_sections() -> None:
     provider = _InvalidProvider()
     runtime = AgenticV9CampaignRuntime(

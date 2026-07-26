@@ -47,6 +47,7 @@ from data_base.agentic_v9.schemas import (
     FinalAnswerResult,
     QueryContract,
     RagRetrievalResult,
+    RequiredSlot,
     ResolvedSourceScope,
     SlotResolution,
     SourceLocator,
@@ -252,6 +253,7 @@ class AgenticV9CampaignRuntime:
             tasks: tuple[Any, ...],
         ) -> tuple[TaskRetrievalResult, ...]:
             results: list[TaskRetrievalResult] = []
+            visual_documents: list[Document] = []
             for task in tasks:
                 state["task_slot_ids"][task.task_id] = list(task.target_slot_ids)
                 docs = await self._retrieve_documents(
@@ -276,51 +278,12 @@ class AgenticV9CampaignRuntime:
                     else:
                         state["graph_execution"] = _graph_execution_projection(located)
                         docs = list(located.documents)
-                if (
-                    state["contract"].visual_requested
-                    and not state["visual_execution"]["attempted"]
-                ):
-                    controller = state["budget_controller"]
-                    assert isinstance(controller, RunBudgetController)
-                    visual_slot_ids = [
-                        slot.slot_id
-                        for slot in state["contract"].required_slots
-                        if slot.visual_policy in {"preferred", "required"}
-                    ]
-                    if (
-                        state["contract"].visual_required
-                        and not visual_slot_ids
-                    ):
-                        visual_slot_ids = [
-                            slot.slot_id
-                            for slot in state["contract"].required_slots
-                            if slot.required
-                        ]
-                    visual_task = task.model_copy(
-                        update={
-                            "target_slot_ids": visual_slot_ids,
-                            "visual_required": True,
-                        }
+                visual_documents.extend(
+                    _visual_documents_for_contract(
+                        documents=docs,
+                        contract=state["contract"],
                     )
-                    try:
-                        visual_result = await self._visual_extractor(
-                            visual_task, docs, question, controller
-                        )
-                    except Exception as error:  # Stage admitted; preserve partial answer.
-                        state["visual_execution"] = _failed_required_stage(
-                            policy=(
-                                "visual_required"
-                                if state["contract"].visual_required
-                                else "visual_preferred"
-                            ),
-                            error=error,
-                        )
-                    else:
-                        state["visual_execution"] = _visual_execution_projection(
-                            visual_result,
-                            required=state["contract"].visual_required,
-                        )
-                        state["visual_packets"].extend(visual_result.packets)
+                )
                 chunks = [_chunk_projection(document, index) for index, document in enumerate(docs)]
                 results.append(
                     TaskRetrievalResult(
@@ -330,6 +293,52 @@ class AgenticV9CampaignRuntime:
                         ),
                     )
                 )
+            if (
+                state["contract"].visual_requested
+                and not state["visual_execution"]["attempted"]
+            ):
+                controller = state["budget_controller"]
+                assert isinstance(controller, RunBudgetController)
+                visual_slot_ids = [
+                    slot.slot_id for slot in _requested_visual_slots(state["contract"])
+                ]
+                visual_task = tasks[0].model_copy(
+                    update={
+                        "target_slot_ids": visual_slot_ids,
+                        "source_scope": (
+                            state["contract"].resolved_source_scope
+                            or tasks[0].source_scope
+                        ),
+                        "locator_hints": [],
+                        "visual_required": True,
+                    }
+                )
+                try:
+                    visual_result = await self._visual_extractor(
+                        visual_task,
+                        _deduplicate_visual_documents(visual_documents),
+                        question,
+                        controller,
+                    )
+                except Exception as error:  # Stage admitted; preserve partial answer.
+                    state["visual_execution"] = _failed_required_stage(
+                        policy=(
+                            "visual_required"
+                            if state["contract"].visual_required
+                            else "visual_preferred"
+                        ),
+                        error=error,
+                    )
+                else:
+                    visual_result = _bind_visual_result_to_contract(
+                        result=visual_result,
+                        contract=state["contract"],
+                    )
+                    state["visual_execution"] = _visual_execution_projection(
+                        visual_result,
+                        required=state["contract"].visual_required,
+                    )
+                    state["visual_packets"].extend(visual_result.packets)
             return tuple(results)
 
         async def deterministic_candidates(
@@ -885,13 +894,13 @@ async def _extract_visual_evidence(
     )
     return await extractor.extract(
         task=task,
-        assets=_visual_assets_from_documents(documents, task),
+        assets=_visual_assets_from_documents(documents),
         question_fragment=question,
     )
 
 
 def _visual_assets_from_documents(
-    documents: list[Document], task: Any
+    documents: list[Document],
 ) -> list[VisualAssetCandidate]:
     """Project only fully located page images supplied by retrieval metadata."""
     assets: list[VisualAssetCandidate] = []
@@ -902,6 +911,7 @@ def _visual_assets_from_documents(
         width = metadata.get("page_width") or metadata.get("image_width")
         height = metadata.get("page_height") or metadata.get("image_height")
         doc_id = get_document_id(metadata)
+        slot_ids = metadata.get("visual_slot_ids")
         if not (
             isinstance(image_base64, str)
             and image_base64
@@ -913,6 +923,8 @@ def _visual_assets_from_documents(
             and height > 0
             and isinstance(doc_id, str)
             and doc_id
+            and isinstance(slot_ids, list)
+            and slot_ids
         ):
             continue
         assets.append(
@@ -923,9 +935,10 @@ def _visual_assets_from_documents(
                     chunk_id=str(metadata.get("chunk_id") or index + 1),
                 ),
                 pdf_page_index=page,
-                slot_ids=list(task.target_slot_ids),
+                slot_ids=list(slot_ids),
                 figure_id=metadata.get("figure_id"),
                 table_id=metadata.get("table_id"),
+                formula_id=metadata.get("formula_id"),
                 bbox=metadata.get("bbox"),
                 page_image_base64=image_base64,
                 page_encoded_bytes=int(metadata.get("page_encoded_bytes") or 0),
@@ -934,6 +947,189 @@ def _visual_assets_from_documents(
             )
         )
     return assets
+
+
+def _requested_visual_slots(contract: QueryContract) -> list[RequiredSlot]:
+    slots = [
+        slot
+        for slot in contract.required_slots
+        if slot.visual_policy in {"preferred", "required"}
+    ]
+    if contract.visual_required and not slots:
+        return [slot for slot in contract.required_slots if slot.required]
+    return slots
+
+
+def _visual_documents_for_contract(
+    *,
+    documents: list[Document],
+    contract: QueryContract,
+) -> list[Document]:
+    """Bind each retrieved visual candidate to compatible authorized slots."""
+    visual_documents: list[Document] = []
+    for document in documents:
+        metadata = dict(document.metadata or {})
+        doc_id = get_document_id(metadata)
+        if not isinstance(doc_id, str) or not doc_id:
+            continue
+        if not _has_visual_candidate_metadata(metadata):
+            continue
+        slot_ids = [
+            slot.slot_id
+            for slot in _requested_visual_slots(contract)
+            if _slot_accepts_visual_source(
+                slot=slot,
+                doc_id=doc_id,
+                figure_id=metadata.get("figure_id"),
+                table_id=metadata.get("table_id"),
+                formula_id=metadata.get("formula_id"),
+            )
+        ]
+        if not slot_ids:
+            continue
+        metadata["visual_slot_ids"] = slot_ids
+        visual_documents.append(
+            Document(page_content=document.page_content, metadata=metadata)
+        )
+    return visual_documents
+
+
+def _has_visual_candidate_metadata(metadata: dict[str, Any]) -> bool:
+    image = metadata.get("page_image_base64") or metadata.get("image_base64")
+    width = metadata.get("page_width") or metadata.get("image_width")
+    height = metadata.get("page_height") or metadata.get("image_height")
+    return bool(
+        isinstance(image, str)
+        and image
+        and isinstance(metadata.get("page_number"), int)
+        and isinstance(width, int)
+        and width > 0
+        and isinstance(height, int)
+        and height > 0
+    )
+
+
+def _deduplicate_visual_documents(documents: list[Document]) -> list[Document]:
+    deduplicated: list[Document] = []
+    seen: set[tuple[object, ...]] = set()
+    for document in documents:
+        metadata = document.metadata or {}
+        key = (
+            metadata.get("asset_id"),
+            get_document_id(metadata),
+            metadata.get("page_number"),
+            metadata.get("figure_id"),
+            metadata.get("table_id"),
+            metadata.get("formula_id"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduplicated.append(document)
+    return deduplicated
+
+
+def _bind_visual_result_to_contract(
+    *,
+    result: VisualEvidenceExtractionResult,
+    contract: QueryContract,
+) -> VisualEvidenceExtractionResult:
+    """Remove source/locator slot claims outside the exact query contract."""
+    slots_by_id = {
+        slot.slot_id: slot for slot in _requested_visual_slots(contract)
+    }
+    packets: list[EvidencePacket] = []
+    for packet in result.packets:
+        bound_slot_ids = [
+            slot_id
+            for slot_id in packet.slot_ids
+            if (slot := slots_by_id.get(slot_id)) is not None
+            and _slot_accepts_visual_source(
+                slot=slot,
+                doc_id=packet.source.doc_id,
+                figure_id=packet.locator.figure_id,
+                table_id=packet.locator.table_id,
+                formula_id=packet.locator.section,
+            )
+        ]
+        if bound_slot_ids:
+            packets.append(
+                packet.model_copy(update={"slot_ids": bound_slot_ids})
+            )
+    return result.model_copy(update={"packets": tuple(packets)})
+
+
+def _slot_accepts_visual_source(
+    *,
+    slot: RequiredSlot,
+    doc_id: str,
+    figure_id: object,
+    table_id: object,
+    formula_id: object,
+) -> bool:
+    if (
+        slot.authorized_source_doc_ids
+        and doc_id not in slot.authorized_source_doc_ids
+    ):
+        return False
+    visual_hints = [
+        hint
+        for hint in slot.locator_hints
+        if hint.strip().casefold().startswith(
+            ("figure", "fig.", "table", "formula", "equation")
+        )
+    ]
+    if not visual_hints:
+        return True
+    return any(
+        _visual_hint_matches(
+            hint,
+            figure_id=figure_id,
+            table_id=table_id,
+            formula_id=formula_id,
+        )
+        for hint in visual_hints
+    )
+
+
+def _visual_hint_matches(
+    hint: str,
+    *,
+    figure_id: object,
+    table_id: object,
+    formula_id: object,
+) -> bool:
+    normalized_hint = _visual_locator_key(hint)
+    prefix = hint.strip().casefold()
+    if prefix.startswith(("figure", "fig.")):
+        return _visual_identifier_matches(normalized_hint, "figure", figure_id)
+    if prefix.startswith("table"):
+        return _visual_identifier_matches(normalized_hint, "table", table_id)
+    return _visual_identifier_matches(normalized_hint, "formula", formula_id)
+
+
+def _visual_identifier_matches(
+    normalized_hint: str,
+    category: str,
+    identifier: object,
+) -> bool:
+    if not isinstance(identifier, str) or not identifier.strip():
+        return False
+    identifier_key = _visual_locator_key(identifier)
+    hint_suffix = normalized_hint.removeprefix(category)
+    identifier_suffix = identifier_key.removeprefix(category)
+    return not hint_suffix or hint_suffix == identifier_suffix
+
+
+def _visual_locator_key(value: str) -> str:
+    key = "".join(
+        character for character in value.casefold() if character.isalnum()
+    )
+    if key.startswith("fig") and not key.startswith("figure"):
+        key = f"figure{key.removeprefix('fig')}"
+    if key.startswith("equation"):
+        key = f"formula{key.removeprefix('equation')}"
+    return key
 
 
 def _initial_visual_execution(contract: QueryContract | None) -> dict[str, Any]:
