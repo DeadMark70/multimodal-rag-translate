@@ -63,33 +63,6 @@ _DEFINITION_PATTERN = re.compile(
     r"\b(?:is|are)\s+defined\s+as\b|\bmeans\b|\brefers\s+to\b",
     re.IGNORECASE,
 )
-_RANGE_PATTERN = re.compile(
-    r"\bbetween\b.+\band\b"
-    r"|\bfrom\b.+\bto\b"
-    r"|(?:<=|>=|<|>).+(?:<=|>=|<|>)"
-    r"|\b[-+]?(?:\d+(?:\.\d+)?|\.\d+)\s*(?:to|\-|–|—)\s*"
-    r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)",
-    re.IGNORECASE,
-)
-_BOOLEAN_PATTERN = re.compile(
-    r"\b(?:true|false|yes|no|supported|unsupported)\b"
-    r"|\b(?:does|do|is|are|was|were)\s+not\b",
-    re.IGNORECASE,
-)
-_COMPARISON_PATTERN = re.compile(
-    r"\b(?:better|worse|higher|lower|greater|less)\b[^.;\n]{0,80}\bthan\b"
-    r"|\b(?:versus|vs\.?|compared\s+(?:with|to))\b",
-    re.IGNORECASE,
-)
-_EXPLANATION_PATTERN = re.compile(
-    r"\b(?:because|due\s+to|therefore|so\s+that)\b",
-    re.IGNORECASE,
-)
-_LIST_PATTERN = re.compile(
-    r"(?:\b(?:are|include|includes|consist\s+of)\b|:)"
-    r"[^.;:\n]*,[^.;:\n]*(?:,|\band\b)",
-    re.IGNORECASE,
-)
 _UNAVAILABLE_PATTERN = re.compile(
     r"\bunavailable\b"
     r"|\bnot\s+(?:available|reported|provided|given|found|stated|shown|listed)\b"
@@ -102,30 +75,71 @@ _NUMERIC_ANSWER_LINK_PATTERN = re.compile(
     r"|\b(?:reported\s+as|measured\s+at|as|of)\b|[=:])\s*$",
     re.IGNORECASE,
 )
+_NUMERIC_CONDITION_CUES = {
+    "condition",
+    "epoch",
+    "epochs",
+    "fold",
+    "folds",
+    "level",
+    "model",
+    "noise",
+    "release",
+    "seed",
+    "setting",
+    "version",
+    "year",
+}
 _FOLLOWING_NUMERIC_UNIT_PATTERN = re.compile(
     r"\s*(?:[-–—]\s*|\(\s*)?(%|[a-z]+)",
     re.IGNORECASE,
 )
-_NON_UNIT_FOLLOWERS = {
-    "and",
-    "at",
-    "but",
-    "for",
-    "from",
-    "in",
-    "of",
-    "on",
-    "or",
-    "than",
-    "that",
-    "then",
-    "to",
-    "under",
-    "when",
-    "where",
-    "while",
-    "with",
+_NUMERIC_UNIT_ALIASES = {
+    "case": "case",
+    "cases": "case",
+    "epoch": "epoch",
+    "epochs": "epoch",
+    "figure": "figure",
+    "figures": "figure",
+    "fold": "fold",
+    "folds": "fold",
+    "image": "image",
+    "images": "image",
+    "iteration": "iteration",
+    "iterations": "iteration",
+    "page": "page",
+    "pages": "page",
+    "patient": "patient",
+    "patients": "patient",
+    "percent": "percent",
+    "percentage": "percent",
+    "percentages": "percent",
+    "pct": "percent",
+    "run": "run",
+    "runs": "run",
+    "sample": "sample",
+    "samples": "sample",
+    "seed": "seed",
+    "seeds": "seed",
+    "subject": "subject",
+    "subjects": "subject",
+    "table": "table",
+    "tables": "table",
+    "year": "year",
+    "years": "year",
 }
+_PERCENT_RESULT_TERMS = {
+    "accuracy",
+    "percentage",
+    "percent",
+    "rate",
+    "result",
+    "score",
+    "value",
+}
+_COUNT_SHAPE_TERMS = {"count", "number", "size", "total"}
+_IN_MEASUREMENT_UNITS = {"epoch", "iteration", "year"}
+_YEAR_RESULT_TERMS = {"calendar", "publication", "release"}
 
 
 def authorized_doc_ids_for_slot(
@@ -218,13 +232,13 @@ def slot_content_matches_chunk(
     peer_slots: Iterable[RequiredSlot],
     text: str,
 ) -> bool:
-    """Bind a slot's requested result role without consulting answer values."""
+    """Disambiguate co-located atomic slots without consulting answer values."""
     peers = [peer for peer in peer_slots if peer.slot_id != slot.slot_id]
+    if not peers:
+        return True
 
     all_slots = [slot, *peers]
     discriminators = _unique_discriminators(slot, all_slots)
-    if not peers:
-        discriminators = _result_descriptor_terms(slot)
     if not discriminators:
         return False
 
@@ -239,13 +253,8 @@ def slot_content_matches_chunk(
     )
     if not signal_spans:
         return False
-    if slot.expected_answer_type not in {
-        "number",
-        "equation",
-        "definition",
-        "range",
-    }:
-        return _result_role_is_present(slot, text)
+    if slot.expected_answer_type not in {"number", "equation", "definition"}:
+        return discriminators.issubset(set(_content_tokens(text)))
 
     for signal_span in signal_spans:
         slot_distance = _association_distance(discriminators, text, signal_span)
@@ -317,34 +326,21 @@ def _answer_signal_spans(
         )
     if slot.expected_answer_type == "definition":
         return tuple(match.span() for match in _DEFINITION_PATTERN.finditer(text))
-    if slot.expected_answer_type == "range":
-        return tuple(match.span() for match in _RANGE_PATTERN.finditer(text))
     if slot.expected_answer_type == "comparison":
-        match = _COMPARISON_PATTERN.search(text)
-        return (match.span(),) if match is not None else ()
-    if slot.expected_answer_type == "boolean":
-        match = _BOOLEAN_PATTERN.search(text)
-        return (match.span(),) if match is not None else ()
-    if slot.expected_answer_type == "explanation":
-        match = _EXPLANATION_PATTERN.search(text)
-        return (match.span(),) if match is not None else ()
-    if slot.expected_answer_type == "list":
-        match = _LIST_PATTERN.search(text)
-        return (match.span(),) if match is not None else ()
-    if slot.expected_answer_type == "categorical":
-        match = re.search(
-            r"\b(?:is|are|was|were|classified\s+as|category\s+is)\b"
-            r"\s+[A-Za-z][A-Za-z0-9_-]*",
-            text,
-            re.IGNORECASE,
-        )
+        match = re.search(r"\b(?:than|versus|vs\.?|compared)\b", text, re.IGNORECASE)
         return (match.span(),) if match is not None else ()
     return ((0, len(text)),) if text.strip() else ()
 
 
 def _slot_condition_numbers(slot: RequiredSlot) -> set[str]:
     values: set[str] = set()
-    constraint_texts = tuple(condition.value for condition in slot.conditions)
+    constraint_texts = (
+        slot.description,
+        *slot.entity_ids,
+        *slot.locator_hints,
+        *slot.source_name_hints,
+        *slot.authorized_source_doc_ids,
+    )
     for value in constraint_texts:
         values.update(
             _canonical_number(match.group(0))
@@ -365,17 +361,9 @@ def _numeric_candidate_has_unrequested_unit(
     match: re.Match[str],
 ) -> bool:
     unit = _numeric_candidate_unit(text, match)
-    expected = _canonical_unit(slot.expected_result_unit)
-    if expected is None:
-        return True
-    if expected == "dimensionless":
-        return unit is not None
     if unit is None:
-        prefix = text[max(0, match.start() - 120) : match.start()]
-        return expected not in {
-            _canonical_unit(token) for token in _content_tokens(prefix)
-        }
-    return unit != expected
+        return False
+    return unit not in _requested_numeric_units(slot)
 
 
 def _numeric_candidate_unit(
@@ -390,26 +378,49 @@ def _numeric_candidate_unit(
     raw_unit = unit_match.group(1).casefold()
     if raw_unit == "%":
         return "percent"
-    if raw_unit in _NON_UNIT_FOLLOWERS:
-        return None
-    return _canonical_unit(raw_unit)
+    return _NUMERIC_UNIT_ALIASES.get(raw_unit)
 
 
-def _canonical_unit(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = value.strip().casefold()
-    if not normalized:
-        return None
-    if normalized in {"%", "percent", "percentage", "percentages", "pct"}:
-        return "percent"
-    if normalized == "dimensionless":
-        return normalized
-    if normalized.endswith("ies") and len(normalized) > 3:
-        return f"{normalized[:-3]}y"
-    if normalized.endswith("s") and not normalized.endswith("ss"):
-        return normalized[:-1]
-    return normalized
+def _requested_numeric_units(slot: RequiredSlot) -> set[str]:
+    if slot.expected_answer_type != "number":
+        return set()
+
+    tokens = [
+        match.group(0).casefold()
+        for match in _CONTENT_TOKEN_PATTERN.finditer(slot.description)
+    ]
+    requested: set[str] = set()
+    for index, token in enumerate(tokens):
+        unit = _NUMERIC_UNIT_ALIASES.get(token)
+        if unit is None:
+            continue
+        previous = tokens[index - 1] if index >= 1 else ""
+        previous_two = tokens[index - 2 : index]
+        following = tokens[index + 1] if index + 1 < len(tokens) else ""
+        following_two = tokens[index + 1 : index + 3]
+
+        if unit == "percent" and (
+            previous in _PERCENT_RESULT_TERMS
+            or following in _PERCENT_RESULT_TERMS
+            or previous == "in"
+            or previous_two == ["as", "a"]
+        ):
+            requested.add(unit)
+            continue
+        if (
+            previous in _COUNT_SHAPE_TERMS
+            or following in _COUNT_SHAPE_TERMS
+            or (len(previous_two) == 2 and previous_two[0] in _COUNT_SHAPE_TERMS)
+            or previous_two == ["how", "many"]
+            or (previous == "in" and unit in _IN_MEASUREMENT_UNITS)
+        ):
+            requested.add(unit)
+            continue
+        if unit == "year" and (
+            previous in _YEAR_RESULT_TERMS or following_two == ["of", "publication"]
+        ):
+            requested.add(unit)
+    return requested
 
 
 def _numeric_signal_is_unavailable(
@@ -443,23 +454,16 @@ def _is_independently_reported_number(
     link = _NUMERIC_ANSWER_LINK_PATTERN.search(prefix)
     if link is None:
         return False
-    subject_tokens = _result_tokens(prefix[: link.start()])
+    subject_tokens = _content_tokens(prefix[: link.start()])
     if not subject_tokens:
         return False
-    result_terms = _result_descriptor_terms(slot)
-    if not result_terms or not result_terms.issubset(set(subject_tokens)):
-        return False
-    entity_term_sets = [
-        set(_content_tokens(entity_id))
-        for entity_id in slot.entity_ids
-        if _content_tokens(entity_id)
-    ]
-    if entity_term_sets and not any(
-        entity_terms.issubset(set(subject_tokens)) for entity_terms in entity_term_sets
-    ):
+    if not discriminators.issubset(set(subject_tokens)):
         return False
     closest_subject = subject_tokens[-1]
-    return closest_subject in result_terms
+    return (
+        closest_subject not in _NUMERIC_CONDITION_CUES
+        and closest_subject in _slot_descriptor_terms(slot)
+    )
 
 
 def _associated_discriminator_start(
@@ -557,41 +561,9 @@ def _association_distance(
 
 def _slot_descriptor_terms(slot: RequiredSlot) -> set[str]:
     terms = set(_content_tokens(slot.description))
-    terms.update(_result_descriptor_terms(slot))
     for entity_id in slot.entity_ids:
         terms.update(_content_tokens(entity_id))
-    for condition in slot.conditions:
-        terms.difference_update(_content_tokens(condition.field))
-        terms.difference_update(_content_tokens(condition.value))
-        if condition.unit:
-            terms.difference_update(_content_tokens(condition.unit))
     return terms
-
-
-def _result_descriptor_terms(slot: RequiredSlot) -> set[str]:
-    if slot.expected_answer_type == "number" and (
-        not slot.requested_measure or not slot.expected_result_unit
-    ):
-        return set()
-    if slot.requested_measure:
-        return set(_result_tokens(slot.requested_measure))
-    return set(_content_tokens(slot.description))
-
-
-def _result_role_is_present(slot: RequiredSlot, text: str) -> bool:
-    if slot.expected_answer_type == "text" and slot.requested_measure is None:
-        return bool(text.strip())
-    result_terms = _result_descriptor_terms(slot)
-    if not result_terms or not result_terms.issubset(set(_content_tokens(text))):
-        return False
-    return bool(
-        _answer_signal_spans(
-            slot,
-            text,
-            discriminators=result_terms,
-            competitor_discriminators=(),
-        )
-    )
 
 
 def _content_tokens(value: str) -> tuple[str, ...]:
@@ -602,17 +574,6 @@ def _content_tokens(value: str) -> tuple[str, ...]:
             for match in _CONTENT_TOKEN_PATTERN.finditer(value)
         )
         if token not in _CONTENT_STOPWORDS
-    )
-
-
-def _result_tokens(value: str) -> tuple[str, ...]:
-    return tuple(
-        token
-        for token in (
-            match.group(0).casefold()
-            for match in _CONTENT_TOKEN_PATTERN.finditer(value)
-        )
-        if token not in {"a", "an", "requested", "result", "the"}
     )
 
 

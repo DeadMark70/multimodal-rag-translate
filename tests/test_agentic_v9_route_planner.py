@@ -103,7 +103,7 @@ async def test_deterministic_regressions_emit_complete_retrieval_contracts() -> 
 
 
 @pytest.mark.asyncio
-async def test_r2_planner_contract_groups_compatible_atomic_slots() -> None:
+async def test_r2_planner_contract_compiles_its_required_qualification_round() -> None:
     contract = await RoutePlanner(llm_invoker=_NeverInvoker()).plan(
         question="SwinUNETR and nnU-Net: which performs better?",
         resolved_source_scope=_scope(),
@@ -116,10 +116,7 @@ async def test_r2_planner_contract_groups_compatible_atomic_slots() -> None:
     )
 
     assert contract.max_retrieval_rounds == 2
-    assert [task.round_id for task in plan.tasks] == ["round-1"]
-    assert plan.tasks[0].target_slot_ids == [
-        slot.slot_id for slot in contract.required_slots
-    ]
+    assert [task.round_id for task in plan.tasks] == ["round-1", "round-1", "round-2"]
 
 
 @pytest.mark.asyncio
@@ -222,9 +219,7 @@ async def test_only_ambiguous_question_uses_one_budgeted_route_plan_call() -> No
     assert len(invoker.calls) == 1
     assert invoker.calls[0]["phase"] == "contract_planning"
     assert invoker.calls[0]["purpose"] == "atomic_contract_planning"
-    assert (
-        contract.max_llm_calls == 4
-    )  # route-plan + evidence extraction + visual reserve + final
+    assert contract.max_llm_calls == 4  # route-plan + evidence extraction + visual reserve + final
     assert "answer" not in contract.model_dump()
 
 

@@ -1,7 +1,7 @@
 {
   "prompts": {
     "atomic_contract_planning": {
-      "version": 2,
+      "version": 1,
       "description": "Answer-free atomic contract planning for an ambiguous Agentic v9 question.",
       "required_variables": [
         "question",
@@ -9,7 +9,7 @@
         "authorized_doc_ids",
         "authorized_source_mapping"
       ],
-      "template": "Return strict JSON only with selected_route, slots, route_reason, and confidence. Each slot must contain description, requested_measure (string or null), source_name_hints, authorized_source_doc_ids, locator_hints, expected_answer_type, expected_result_unit (string or null), conditions, depends_on_slot_ids, and visual_policy. Each condition must contain field, operator, value, and unit (string or null). Separate the requested result from conditions: values that constrain the question belong only in conditions and can never be requested_measure or an expected result. Use one to eight answer-free slots. Dependencies may reference only earlier slot IDs. Locator hints must be bounded source locations such as Figure, Table, Appendix, Formula, Equation, Theorem, Page, Section, source passage, or a named equation or matrix. Never answer the question, invent values, or expand or mismatch the supplied source names and IDs. Use only the original question and the authoritative source metadata below; never use or request benchmark answers, gold facts, reference answers, expected values, retrieved answers, or opaque name-to-ID guesses.\n\nQuestion: {question}\nAuthorized source names: {authorized_source_names}\nAuthorized document IDs: {authorized_doc_ids}\nAuthoritative source mapping: {authorized_source_mapping}\nReturn the atomic contract JSON object."
+      "template": "Return strict JSON only with selected_route, slots, route_reason, and confidence. Each slot must contain description, source_name_hints, authorized_source_doc_ids, locator_hints, expected_answer_type, depends_on_slot_ids, and visual_policy. Use one to eight answer-free slots. Dependencies may reference only earlier slot IDs. Locator hints must be bounded source locations such as Figure, Table, Appendix, Formula, Equation, Theorem, Page, Section, source passage, or a named equation or matrix. Never answer the question, invent values, or expand or mismatch the supplied source names and IDs. Use the authoritative mapping below; never guess opaque name-to-ID pairing.\n\nQuestion: {question}\nAuthorized source names: {authorized_source_names}\nAuthorized document IDs: {authorized_doc_ids}\nAuthoritative source mapping: {authorized_source_mapping}\nReturn the atomic contract JSON object."
     }
   }
 }

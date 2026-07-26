@@ -42,7 +42,9 @@ async def test_formal_questions_decompose_into_atomic_answer_free_slots(
     minimum_slots: int,
 ) -> None:
     case = _questions()[question_id]
-    doc_ids = [f"doc-{index}" for index, _ in enumerate(case["source_docs"], 1)]
+    doc_ids = [
+        f"doc-{index}" for index, _ in enumerate(case["source_docs"], 1)
+    ]
 
     contract = await QuestionContractPlanner().plan(
         question=case["question"],
@@ -50,7 +52,9 @@ async def test_formal_questions_decompose_into_atomic_answer_free_slots(
         authorized_source_doc_ids=doc_ids,
         authorized_source_name_to_doc_ids={
             name: [doc_id]
-            for name, doc_id in zip(case["source_docs"], doc_ids, strict=True)
+            for name, doc_id in zip(
+                case["source_docs"], doc_ids, strict=True
+            )
         },
         setup_policy={"max_llm_calls": 5, "max_output_tokens": 8192},
     )
@@ -64,7 +68,9 @@ async def test_formal_questions_decompose_into_atomic_answer_free_slots(
         f"S{index}" for index in range(1, len(contract.required_slots) + 1)
     ]
     assert all(slot.description.strip() for slot in contract.required_slots)
-    assert all(slot.authorized_source_doc_ids for slot in contract.required_slots)
+    assert all(
+        slot.authorized_source_doc_ids for slot in contract.required_slots
+    )
 
 
 @pytest.mark.asyncio
@@ -94,192 +100,14 @@ async def test_q16_has_seven_ordered_slots_without_expected_numeric_answers() ->
         "S7",
     ]
     descriptions = [slot.description for slot in contract.required_slots]
-    assert [
-        "penalty" in descriptions[0].casefold(),
-        "reason" in descriptions[1].casefold(),
-    ] == [True, True]
+    assert ["penalty" in descriptions[0].casefold(), "reason" in descriptions[1].casefold()] == [True, True]
     assert "equation" in descriptions[2].casefold()
     assert "|a^c" in descriptions[3].casefold()
     assert "u-kan" in descriptions[4].casefold()
     assert "proposed" in descriptions[5].casefold()
     assert "theorem" in descriptions[6].casefold()
-    ukan = contract.required_slots[4]
-    proposed = contract.required_slots[5]
-    theorem = contract.required_slots[6]
-    assert ukan.entity_ids == ["U-KAN"]
-    assert ukan.requested_measure == "Dice"
-    assert ukan.expected_result_unit == "dimensionless"
-    assert [condition.model_dump() for condition in ukan.conditions] == [
-        {
-            "field": "noise_level",
-            "operator": "=",
-            "value": "0.4",
-            "unit": None,
-        }
-    ]
-    assert proposed.requested_measure == "Dice"
-    assert proposed.conditions == ukan.conditions
-    assert theorem.expected_answer_type == "range"
     for forbidden in ("0.179", "0.4064", "0.9079", "0 ≤", "0 <="):
         assert all(forbidden not in description for description in descriptions)
-
-
-@pytest.mark.asyncio
-async def test_ambiguity_planner_accepts_strict_structured_result_json() -> None:
-    invoker = _PlannerInvoker(
-        {
-            "content": json.dumps(
-                {
-                    "selected_route": "exact_structured",
-                    "slots": [
-                        {
-                            "description": "Retrieve U-KAN Dice under the requested condition.",
-                            "requested_measure": "Dice",
-                            "source_name_hints": ["paper.pdf"],
-                            "authorized_source_doc_ids": ["doc-1"],
-                            "locator_hints": [],
-                            "expected_answer_type": "number",
-                            "expected_result_unit": "dimensionless",
-                            "conditions": [
-                                {
-                                    "field": "noise_level",
-                                    "operator": "=",
-                                    "value": "0.4",
-                                    "unit": None,
-                                }
-                            ],
-                            "depends_on_slot_ids": [],
-                            "visual_policy": "preferred",
-                        }
-                    ],
-                    "route_reason": "The question requests one table result.",
-                    "confidence": 0.9,
-                }
-            )
-        }
-    )
-
-    contract = await QuestionContractPlanner(llm_invoker=invoker).plan(
-        question="Please investigate U-KAN Dice at noise level 0.4.",
-        authorized_source_names=["paper.pdf"],
-        authorized_source_doc_ids=["doc-1"],
-        setup_policy={},
-    )
-
-    slot = contract.required_slots[0]
-    assert contract.slot_plan_status == "complete"
-    assert slot.requested_measure == "Dice"
-    assert slot.expected_result_unit == "dimensionless"
-    assert slot.conditions[0].value == "0.4"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("question", "requested_measure", "condition_value"),
-    [
-        (
-            "Please investigate U-KAN Dice at noise level 0.4.",
-            "Dice",
-            "0.9079",
-        ),
-        (
-            "Please investigate U-KAN at noise level 0.4.",
-            "0.9079",
-            "0.4",
-        ),
-        (
-            "Please investigate U-KAN Dice at noise level 0.4.",
-            "gold accuracy",
-            "0.4",
-        ),
-    ],
-)
-async def test_ambiguity_planner_rejects_unasked_condition_or_result_values(
-    question: str,
-    requested_measure: str,
-    condition_value: str,
-) -> None:
-    invoker = _PlannerInvoker(
-        {
-            "content": json.dumps(
-                {
-                    "selected_route": "single_lookup",
-                    "slots": [
-                        {
-                            "description": "Retrieve the requested result.",
-                            "requested_measure": requested_measure,
-                            "source_name_hints": ["paper.pdf"],
-                            "authorized_source_doc_ids": ["doc-1"],
-                            "locator_hints": [],
-                            "expected_answer_type": "number",
-                            "expected_result_unit": "dimensionless",
-                            "conditions": [
-                                {
-                                    "field": "noise_level",
-                                    "operator": "=",
-                                    "value": condition_value,
-                                    "unit": None,
-                                }
-                            ],
-                            "depends_on_slot_ids": [],
-                            "visual_policy": "never",
-                        }
-                    ],
-                    "route_reason": "One requested result.",
-                    "confidence": 0.8,
-                }
-            )
-        }
-    )
-
-    contract = await QuestionContractPlanner(llm_invoker=invoker).plan(
-        question=question,
-        authorized_source_names=["paper.pdf"],
-        authorized_source_doc_ids=["doc-1"],
-        setup_policy={},
-    )
-
-    assert contract.slot_plan_status == "degraded"
-    assert contract.route_decision.fallback_reason == "invalid_planner_output"
-
-
-@pytest.mark.asyncio
-async def test_ambiguity_planner_degrades_when_result_role_is_unknown() -> None:
-    invoker = _PlannerInvoker(
-        {
-            "content": json.dumps(
-                {
-                    "selected_route": "single_lookup",
-                    "slots": [
-                        {
-                            "description": "Retrieve the requested numeric result.",
-                            "requested_measure": None,
-                            "source_name_hints": ["paper.pdf"],
-                            "authorized_source_doc_ids": ["doc-1"],
-                            "locator_hints": [],
-                            "expected_answer_type": "number",
-                            "expected_result_unit": None,
-                            "conditions": [],
-                            "depends_on_slot_ids": [],
-                            "visual_policy": "never",
-                        }
-                    ],
-                    "route_reason": "One requested result.",
-                    "confidence": 0.8,
-                }
-            )
-        }
-    )
-
-    contract = await QuestionContractPlanner(llm_invoker=invoker).plan(
-        question="Please investigate this unclear numeric request.",
-        authorized_source_names=["paper.pdf"],
-        authorized_source_doc_ids=["doc-1"],
-        setup_policy={},
-    )
-
-    assert contract.slot_plan_status == "degraded"
-    assert contract.route_decision.fallback_reason == "invalid_planner_output"
 
 
 @pytest.mark.asyncio
@@ -301,7 +129,9 @@ async def test_numbered_parallel_source_and_locator_clauses_split_stably() -> No
 
     assert len(contract.required_slots) >= 5
     all_locators = {
-        locator for slot in contract.required_slots for locator in slot.locator_hints
+        locator
+        for slot in contract.required_slots
+        for locator in slot.locator_hints
     }
     assert {"Table 3", "Equation 2", "Theorem 1", "Appendix D"} <= all_locators
     assert contract.route_decision is not None
@@ -368,9 +198,7 @@ async def test_authoritative_source_mapping_survives_reordered_canonical_ids() -
 
 
 @pytest.mark.asyncio
-async def test_multisource_direct_planner_without_mapping_degrades_without_zip_pairing() -> (
-    None
-):
+async def test_multisource_direct_planner_without_mapping_degrades_without_zip_pairing() -> None:
     contract = await QuestionContractPlanner().plan(
         question="From nnMamba.pdf, report the value in Table 2.",
         authorized_source_names=["nnMamba.pdf", "Other.pdf"],

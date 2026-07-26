@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from core.prompt_loader import PromptRegistry
 from data_base.agentic_v9.schemas import (
@@ -19,11 +19,12 @@ from data_base.agentic_v9.schemas import (
     RequiredSlot,
     ResolvedSourceScope,
     RouteDecision,
-    SlotCondition,
 )
 
 _PROMPT_PATH = (
-    Path(__file__).resolve().parents[2] / "prompts" / "agentic_v9_contract_planner.json"
+    Path(__file__).resolve().parents[2]
+    / "prompts"
+    / "agentic_v9_contract_planner.json"
 )
 _PROMPT_KEY = "atomic_contract_planning"
 _ENTITY_PATTERN = re.compile(
@@ -65,7 +66,6 @@ class _PlannerSlot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     description: str
-    requested_measure: str | None = None
     source_name_hints: list[str]
     authorized_source_doc_ids: list[str]
     locator_hints: list[str]
@@ -73,16 +73,10 @@ class _PlannerSlot(BaseModel):
         "number",
         "equation",
         "definition",
-        "range",
-        "categorical",
-        "boolean",
         "comparison",
         "explanation",
-        "list",
         "text",
     ]
-    expected_result_unit: str | None = None
-    conditions: list[SlotCondition] = Field(default_factory=list)
     depends_on_slot_ids: list[str]
     visual_policy: Literal["never", "preferred", "required"]
 
@@ -152,7 +146,9 @@ class QuestionContractPlanner:
         ambiguity: _AmbiguityResult | None = None
         planner_call_requested = False
         if mapping_missing:
-            ambiguity = _safe_ambiguity_result("authoritative_source_mapping_missing")
+            ambiguity = _safe_ambiguity_result(
+                "authoritative_source_mapping_missing"
+            )
             if route is None:
                 route = ambiguity.route
         elif route is None:
@@ -209,16 +205,17 @@ class QuestionContractPlanner:
                     source_doc_ids=ordered_source_doc_ids,
                 )
             )
-        slots = [
-            slot.model_copy(update={"slot_id": f"S{index}"})
-            for index, slot in enumerate(slots[:8], 1)
-        ]
+        slots = [slot.model_copy(update={"slot_id": f"S{index}"}) for index, slot in enumerate(slots[:8], 1)]
         locators = list(
-            dict.fromkeys(locator for slot in slots for locator in slot.locator_hints)
+            dict.fromkeys(
+                locator for slot in slots for locator in slot.locator_hints
+            )
         ) or ["source passage for each target slot"]
         entities = _extract_entities(normalized_question)
         budget = _ROUTE_BUDGETS[route]
-        decision_source = ambiguity.decision_source if ambiguity else "deterministic"
+        decision_source = (
+            ambiguity.decision_source if ambiguity else "deterministic"
+        )
         decision = RouteDecision(
             selected_route=route,
             decision_source=decision_source,
@@ -308,7 +305,9 @@ class QuestionContractPlanner:
                 decision,
                 authorized_source_names=authorized_source_names,
                 authorized_source_doc_ids=authorized_source_doc_ids,
-                authorized_source_name_to_doc_ids=(authorized_source_name_to_doc_ids),
+                authorized_source_name_to_doc_ids=(
+                    authorized_source_name_to_doc_ids
+                ),
             )
             _validate_answer_free(decision, question=question)
         except TimeoutError:
@@ -328,10 +327,7 @@ class QuestionContractPlanner:
                     source_name_hints=slot.source_name_hints,
                     authorized_source_doc_ids=slot.authorized_source_doc_ids,
                     locator_hints=slot.locator_hints,
-                    requested_measure=slot.requested_measure,
                     expected_answer_type=slot.expected_answer_type,
-                    expected_result_unit=slot.expected_result_unit,
-                    conditions=slot.conditions,
                     depends_on_slot_ids=slot.depends_on_slot_ids,
                     visual_policy=slot.visual_policy,
                 )
@@ -354,111 +350,33 @@ def _decompose(
 
     if {"gepar3d", "odes"} <= {
         entity.casefold() for entity in _extract_entities(question)
-    } and ("u-kan" in normalized or "ukan" in normalized):
+    } and (
+        "u-kan" in normalized or "ukan" in normalized
+    ):
         matched_rules.extend(["q16_structured_bundle", "parallel_values"])
         specifications = [
-            (
-                "Retrieve the tooth 1 to tooth 32 penalty value.",
-                "number",
-                "GEPAR3D",
-                ["Appendix D", "Wasserstein matrix"],
-            ),
-            (
-                "Explain the reason the tooth penalty is higher.",
-                "explanation",
-                "GEPAR3D",
-                ["Appendix D", "Wasserstein matrix"],
-            ),
-            (
-                "Retrieve the ODES regional impurity equation.",
-                "equation",
-                "ODES",
-                ["regional impurity equation"],
-            ),
-            (
-                "Define the meaning of |A^c(x,y)| in the ODES equation.",
-                "definition",
-                "ODES",
-                ["regional impurity equation"],
-            ),
-            (
-                "Retrieve the U-KAN Dice at noise level 0.4.",
-                "number",
-                "Implicit U-KAN2.0",
-                ["Table 3"],
-            ),
-            (
-                "Retrieve the proposed-method Dice at noise level 0.4.",
-                "number",
-                "Implicit U-KAN2.0",
-                ["Table 3"],
-            ),
-            (
-                "Retrieve the Theorem 1 range for m.",
-                "range",
-                "Implicit U-KAN2.0",
-                ["Theorem 1"],
-            ),
+            ("Retrieve the tooth 1 to tooth 32 penalty value.", "number", "GEPAR3D", ["Appendix D", "Wasserstein matrix"]),
+            ("Explain the reason the tooth penalty is higher.", "explanation", "GEPAR3D", ["Appendix D", "Wasserstein matrix"]),
+            ("Retrieve the ODES regional impurity equation.", "equation", "ODES", ["regional impurity equation"]),
+            ("Define the meaning of |A^c(x,y)| in the ODES equation.", "definition", "ODES", ["regional impurity equation"]),
+            ("Retrieve the U-KAN Dice at noise level 0.4.", "number", "Implicit U-KAN2.0", ["Table 3"]),
+            ("Retrieve the proposed-method Dice at noise level 0.4.", "number", "Implicit U-KAN2.0", ["Table 3"]),
+            ("Retrieve the Theorem 1 range for m.", "text", "Implicit U-KAN2.0", ["Theorem 1"]),
         ]
-        slots = [
-            _slot_for_named_source(
-                description=description,
-                answer_type=answer_type,
-                source_hint=source_hint,
-                locators=locators,
-                source_names=source_names,
-                source_doc_ids=source_doc_ids,
-            )
-            for description, answer_type, source_hint, locators in specifications
-        ]
-        structured_updates = {
-            0: {
-                "entity_ids": ["GEPAR3D"],
-                "requested_measure": "tooth penalty",
-                "expected_result_unit": "dimensionless",
-            },
-            2: {
-                "entity_ids": ["ODES"],
-                "requested_measure": "regional impurity",
-            },
-            3: {
-                "entity_ids": ["ODES"],
-                "requested_measure": "|A^c(x,y)|",
-            },
-            4: {
-                "entity_ids": ["U-KAN"],
-                "requested_measure": "Dice",
-                "expected_result_unit": "dimensionless",
-                "conditions": [
-                    SlotCondition(
-                        field="noise_level",
-                        operator="=",
-                        value="0.4",
-                    )
-                ],
-            },
-            5: {
-                "entity_ids": ["proposed method"],
-                "requested_measure": "Dice",
-                "expected_result_unit": "dimensionless",
-                "conditions": [
-                    SlotCondition(
-                        field="noise_level",
-                        operator="=",
-                        value="0.4",
-                    )
-                ],
-            },
-            6: {
-                "entity_ids": ["m"],
-                "requested_measure": "range",
-            },
-        }
-        slots = [
-            slot.model_copy(update=structured_updates.get(index, {}))
-            for index, slot in enumerate(slots)
-        ]
-        return slots, list(dict.fromkeys(matched_rules))
+        return (
+            [
+                _slot_for_named_source(
+                    description=description,
+                    answer_type=answer_type,
+                    source_hint=source_hint,
+                    locators=locators,
+                    source_names=source_names,
+                    source_doc_ids=source_doc_ids,
+                )
+                for description, answer_type, source_hint, locators in specifications
+            ],
+            list(dict.fromkeys(matched_rules)),
+        )
 
     known = _known_question_slots(
         question=question,
@@ -512,87 +430,27 @@ def _known_question_slots(
     specs: list[tuple[str, str, str, list[str]]] = []
     if "nnmamba" in normalized and ("miccss" in normalized or "css" in normalized):
         specs = [
-            (
-                "Retrieve the CSS input tensor shape.",
-                "text",
-                "nnMamba",
-                ["Algorithm 1"],
-            ),
-            (
-                "Identify the CSS processing branches.",
-                "explanation",
-                "nnMamba",
-                ["Algorithm 1", "Figure 2(e)"],
-            ),
-            (
-                "Explain how the CSS branches are aggregated.",
-                "explanation",
-                "nnMamba",
-                ["Algorithm 1"],
-            ),
+            ("Retrieve the CSS input tensor shape.", "text", "nnMamba", ["Algorithm 1"]),
+            ("Identify the CSS processing branches.", "explanation", "nnMamba", ["Algorithm 1", "Figure 2(e)"]),
+            ("Explain how the CSS branches are aggregated.", "explanation", "nnMamba", ["Algorithm 1"]),
         ]
-    elif (
-        all(name in normalized for name in ("samed", "medsam"))
-        and "sam-med3d" in normalized
-    ):
+    elif all(name in normalized for name in ("samed", "medsam")) and "sam-med3d" in normalized:
         specs = [
-            (
-                "Identify which compared method produces semantic class masks.",
-                "comparison",
-                "SAMed",
-                [],
-            ),
-            (
-                "Explain which compared method supports prompt-free inference.",
-                "comparison",
-                "SAMed",
-                [],
-            ),
-            (
-                "Classify the prompt requirement of the other compared methods.",
-                "comparison",
-                "MedSAM",
-                [],
-            ),
+            ("Identify which compared method produces semantic class masks.", "comparison", "SAMed", []),
+            ("Explain which compared method supports prompt-free inference.", "comparison", "SAMed", []),
+            ("Classify the prompt requirement of the other compared methods.", "comparison", "MedSAM", []),
         ]
     elif "weak-mamba-unet" in normalized and "semi-mamba-unet" in normalized:
         specs = [
-            (
-                "Retrieve the first-claim scope of Weak-Mamba-UNet.",
-                "text",
-                "Weak-Mamba-UNet",
-                ["abstract"],
-            ),
-            (
-                "Retrieve the first-claim scope of Semi-Mamba-UNet.",
-                "text",
-                "Semi-Mamba-UNet",
-                ["abstract"],
-            ),
-            (
-                "Compare whether the two first-claim scopes are equivalent.",
-                "comparison",
-                "",
-                ["abstract"],
-            ),
+            ("Retrieve the first-claim scope of Weak-Mamba-UNet.", "text", "Weak-Mamba-UNet", ["abstract"]),
+            ("Retrieve the first-claim scope of Semi-Mamba-UNet.", "text", "Semi-Mamba-UNet", ["abstract"]),
+            ("Compare whether the two first-claim scopes are equivalent.", "comparison", "", ["abstract"]),
         ]
-    elif "segvol" in normalized and (
-        "segmentanybone" in normalized or "sam" in normalized
-    ):
+    elif "segvol" in normalized and ("segmentanybone" in normalized or "sam" in normalized):
         specs = [
             ("Retrieve the supported SegVol capability claim.", "text", "SegVol", []),
-            (
-                "Verify the requested original SAM and SegmentAnyBone claims within the authorized sources.",
-                "text",
-                "",
-                [],
-            ),
-            (
-                "Verify the requested lineage relationship within the authorized sources.",
-                "text",
-                "",
-                [],
-            ),
+            ("Verify the requested original SAM and SegmentAnyBone claims within the authorized sources.", "text", "", []),
+            ("Verify the requested lineage relationship within the authorized sources.", "text", "", []),
         ]
     return [
         _slot_for_named_source(
@@ -625,7 +483,9 @@ def _slot_for_named_source(
         description=description,
         answer_type=answer_type,
         source_names=hints,
-        source_doc_ids=_source_ids_for_hints(hints, source_names, source_doc_ids),
+        source_doc_ids=_source_ids_for_hints(
+            hints, source_names, source_doc_ids
+        ),
         locators=locators,
     )
 
@@ -638,19 +498,13 @@ def _slot(
     source_doc_ids: list[str],
     locators: list[str] | None = None,
 ) -> RequiredSlot:
-    requested_measure, expected_result_unit = _structured_result_role(
-        description, answer_type
-    )
     return RequiredSlot(
         slot_id="pending",
         description=description,
         source_name_hints=source_names,
         authorized_source_doc_ids=source_doc_ids,
         locator_hints=locators or [],
-        requested_measure=requested_measure,
         expected_answer_type=answer_type,
-        expected_result_unit=expected_result_unit,
-        conditions=_question_conditions(description),
         visual_policy=(
             "preferred"
             if any(
@@ -701,10 +555,6 @@ def _answer_type(text: str) -> str:
         return "equation"
     if any(term in normalized for term in ("meaning", "define", "what is |")):
         return "definition"
-    if "range" in normalized or re.search(r"\bbetween\b|\bfrom\b.+\bto\b", normalized):
-        return "range"
-    if any(term in normalized for term in ("list", "which branches", "what are the")):
-        return "list"
     if any(term in normalized for term in ("compare", "which")):
         return "comparison"
     if any(term in normalized for term in ("why", "reason", "explain")):
@@ -712,54 +562,6 @@ def _answer_type(text: str) -> str:
     if any(term in normalized for term in ("dice", "score", "value", "how many")):
         return "number"
     return "text"
-
-
-def _structured_result_role(
-    description: str, answer_type: str
-) -> tuple[str | None, str | None]:
-    normalized = description.casefold()
-    if answer_type == "number":
-        if "dice" in normalized:
-            return "Dice", "dimensionless"
-        if "patient count" in normalized:
-            return "patient count", "patients"
-        if "publication year" in normalized:
-            return "publication year", "year"
-        if "score" in normalized:
-            return "score", "dimensionless"
-        if "penalty" in normalized:
-            return "penalty", "dimensionless"
-        if "value" in normalized:
-            return "value", "dimensionless"
-        return None, None
-    labels = {
-        "equation": "equation",
-        "definition": "definition",
-        "range": "range",
-        "categorical": "category",
-        "boolean": "boolean result",
-        "comparison": "comparison",
-        "explanation": "explanation",
-        "list": "list",
-    }
-    return labels.get(answer_type), None
-
-
-def _question_conditions(description: str) -> list[SlotCondition]:
-    match = re.search(
-        r"\bnoise\s+level\s*(?:=|at|of)?\s*([-+]?(?:\d+(?:\.\d+)?|\.\d+))",
-        description,
-        re.IGNORECASE,
-    )
-    if match is None:
-        return []
-    return [
-        SlotCondition(
-            field="noise_level",
-            operator="=",
-            value=match.group(1),
-        )
-    ]
 
 
 def _exact_locators(text: str) -> list[str]:
@@ -797,13 +599,12 @@ def _deterministic_route(question: str) -> AgenticV9Route | None:
         ("lineage path", "graph path", "relationship path", "關係路徑", "譜系路徑"),
     ):
         return "graph_relational"
-    if {"gepar3d", "odes"} <= {item.casefold() for item in entities} and (
-        "u-kan" in normalized or "ukan" in normalized
+    if (
+        {"gepar3d", "odes"} <= {item.casefold() for item in entities}
+        and ("u-kan" in normalized or "ukan" in normalized)
     ):
         return "multi_document_exact"
-    if "segvol" in normalized and (
-        "segmentanybone" in normalized or "sam" in normalized
-    ):
+    if "segvol" in normalized and ("segmentanybone" in normalized or "sam" in normalized):
         return "multi_document_exact"
     if len(locator_hints) >= 2 and len(entities) >= 2:
         return "multi_document_exact"
@@ -891,7 +692,9 @@ def _candidate_routes(
 
 
 def _route_reason(route: AgenticV9Route, matched_rules: list[str]) -> str:
-    suffix = f" Matched: {', '.join(matched_rules)}." if matched_rules else ""
+    suffix = (
+        f" Matched: {', '.join(matched_rules)}." if matched_rules else ""
+    )
     return f"Selected {route} from question-only deterministic analysis.{suffix}"
 
 
@@ -951,46 +754,13 @@ def _validate_planner_scope(
             raise _UnauthorizedSourceExpansion
 
 
-def _validate_answer_free(decision: _PlannerDecision, *, question: str) -> None:
+def _validate_answer_free(
+    decision: _PlannerDecision, *, question: str
+) -> None:
     question_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", question))
-    question_terms = set(re.findall(r"[a-z0-9]+", question.casefold()))
     planner_text = [decision.route_reason]
     for index, slot in enumerate(decision.slots, 1):
-        planner_text.extend(
-            [
-                slot.description,
-                slot.requested_measure or "",
-                slot.expected_result_unit or "",
-                *slot.locator_hints,
-                *(
-                    value
-                    for condition in slot.conditions
-                    for value in (
-                        condition.field,
-                        condition.operator,
-                        condition.value,
-                        condition.unit or "",
-                    )
-                ),
-            ]
-        )
-        if slot.expected_answer_type == "number" and (
-            not slot.requested_measure or not slot.expected_result_unit
-        ):
-            raise ValueError("numeric slot requires a distinct result role and unit")
-        if slot.requested_measure and not _terms_grounded_in_question(
-            slot.requested_measure, question_terms
-        ):
-            raise ValueError("requested measure is not grounded in the question")
-        for condition in slot.conditions:
-            if not _terms_grounded_in_question(condition.field, question_terms):
-                raise ValueError("condition field is not grounded in the question")
-            if not _terms_grounded_in_question(condition.value, question_terms):
-                raise ValueError("condition value is not grounded in the question")
-            if condition.unit and not _terms_grounded_in_question(
-                condition.unit, question_terms
-            ):
-                raise ValueError("condition unit is not grounded in the question")
+        planner_text.extend([slot.description, *slot.locator_hints])
         valid_dependencies = {f"S{prior}" for prior in range(1, index)}
         if not set(slot.depends_on_slot_ids) <= valid_dependencies:
             raise ValueError("slot dependency must reference an earlier slot")
@@ -1001,11 +771,6 @@ def _validate_answer_free(decision: _PlannerDecision, *, question: str) -> None:
         authored_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", text))
         if not authored_numbers <= question_numbers:
             raise ValueError("planner text contains an answer-like value")
-
-
-def _terms_grounded_in_question(value: str, question_terms: set[str]) -> bool:
-    terms = set(re.findall(r"[a-z0-9]+", value.casefold()))
-    return bool(terms) and terms <= question_terms
 
 
 def _valid_locator_hint(value: str) -> bool:
@@ -1037,7 +802,9 @@ def _source_mapping(
         return {
             name: list(dict.fromkeys(doc_ids))
             for name, doc_ids in authoritative.items()
-            if name in allowed_names and doc_ids and set(doc_ids) <= allowed_ids
+            if name in allowed_names
+            and doc_ids
+            and set(doc_ids) <= allowed_ids
         }
     if len(source_names) == 1 and len(source_doc_ids) == 1:
         return {source_names[0]: [source_doc_ids[0]]}

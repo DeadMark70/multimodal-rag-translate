@@ -327,7 +327,9 @@ class RetrievalTaskCompiler:
 def _scope_for_doc(scope: ResolvedSourceScope, doc_id: str) -> ResolvedSourceScope:
     """Narrow a resolver-owned scope without adding a source identifier."""
     return ResolvedSourceScope(
-        requested_doc_ids=[doc_id] if doc_id in scope.requested_doc_ids else [],
+        requested_doc_ids=[doc_id]
+        if doc_id in scope.requested_doc_ids
+        else [],
         requested_source_names=[],
         resolved_doc_ids=[doc_id] if doc_id in scope.resolved_doc_ids else [],
         authorized_doc_ids=[doc_id],
@@ -341,7 +343,11 @@ def _scope_for_docs(
     authorized = [doc_id for doc_id in scope.authorized_doc_ids if doc_id in doc_ids]
     authorized_set = set(authorized)
     source_mapping = {
-        name: [doc_id for doc_id in mapped_doc_ids if doc_id in authorized_set]
+        name: [
+            doc_id
+            for doc_id in mapped_doc_ids
+            if doc_id in authorized_set
+        ]
         for name, mapped_doc_ids in scope.source_name_to_doc_ids.items()
         if any(doc_id in authorized_set for doc_id in mapped_doc_ids)
     }
@@ -367,23 +373,6 @@ def _atomic_query(slots: list[RequiredSlot]) -> str:
         parts.extend(slot.source_name_hints)
         parts.extend(slot.entity_ids)
         parts.append(slot.description)
-        if slot.requested_measure:
-            parts.append(slot.requested_measure)
-        if slot.expected_result_unit:
-            parts.append(slot.expected_result_unit)
-        parts.extend(
-            " ".join(
-                value
-                for value in (
-                    condition.field,
-                    condition.operator,
-                    condition.value,
-                    condition.unit or "",
-                )
-                if value
-            )
-            for condition in slot.conditions
-        )
         parts.extend(slot.locator_hints)
     query = " ".join(_unique(parts))
     if not query:
