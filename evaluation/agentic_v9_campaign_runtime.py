@@ -25,7 +25,7 @@ from data_base.agentic_v9.budget_feasibility import (
     validate_post_contract_feasibility,
     validate_pre_route_feasibility,
 )
-from data_base.agentic_v9.budgeted_llm import BudgetedLlmInvoker
+from data_base.agentic_v9.budgeted_llm import BudgetedLlmInvoker, LlmCallObserver
 from data_base.agentic_v9.context_packer import (
     EvidenceContextPacker,
     PackedEvidenceContext,
@@ -95,6 +95,7 @@ from evaluation.agentic_v9_admission import (
     DocumentReferenceResolver,
     build_v9_admission_contract,
 )
+from evaluation.observability import current_llm_call_observer
 from evaluation.retrieval_profiles import AGENTIC_EVAL_PROFILE
 
 
@@ -130,6 +131,7 @@ class AgenticV9CampaignRuntime:
         provider_factory: ProviderFactory | None = None,
         policy_runtime: V9ExecutionPolicyRuntime | None = None,
         document_reference_resolver: DocumentReferenceResolver | None = None,
+        llm_call_observer: LlmCallObserver | None = None,
     ) -> None:
         self._retrieve_documents = retrieve_documents or _retrieve_documents
         self._graph_locator = graph_locator or _locate_graph_documents
@@ -137,6 +139,7 @@ class AgenticV9CampaignRuntime:
         self._visual_asset_resolver = visual_asset_resolver or VisualAssetResolver()
         self._provider_factory = provider_factory or _provider_for_purpose
         self._policy_runtime = policy_runtime or V9ExecutionPolicyRuntime()
+        self._llm_call_observer = llm_call_observer
         self._document_reference_resolver = (
             document_reference_resolver or _resolve_document_references
         )
@@ -186,6 +189,15 @@ class AgenticV9CampaignRuntime:
                 setup_snapshot, _pre_route_token_budget(setup_snapshot)
             ),
         )
+        llm_call_observer = (
+            self._llm_call_observer or current_llm_call_observer()
+        )
+        provider_name = str(setup_snapshot.get("provider") or "unknown")
+        model_name = str(
+            setup_snapshot.get("model_name")
+            or setup_snapshot.get("model")
+            or "unknown"
+        )
         if (
             runtime_contract.route_decision is not None
             and runtime_contract.route_decision.decision_source == "safe_fallback"
@@ -195,6 +207,9 @@ class AgenticV9CampaignRuntime:
                 llm_invoker=BudgetedLlmInvoker(
                     controller=budget_controller,
                     provider_factory=self._provider_factory,
+                    observer=llm_call_observer,
+                    provider_name=provider_name,
+                    model_name=model_name,
                 )
             ).plan(
                 question=question,
@@ -552,6 +567,9 @@ class AgenticV9CampaignRuntime:
                 llm_invoker=BudgetedLlmInvoker(
                     controller=controller,
                     provider_factory=self._provider_factory,
+                    observer=llm_call_observer,
+                    provider_name=provider_name,
+                    model_name=model_name,
                 ),
                 arbitration=arbitration,
                 sufficiency_report=sufficiency_report,
@@ -978,6 +996,7 @@ async def _extract_visual_evidence(
         BudgetedLlmInvoker(
             controller=controller,
             provider_factory=_provider_for_purpose,
+            observer=current_llm_call_observer(),
         )
     )
     return await extractor.extract(

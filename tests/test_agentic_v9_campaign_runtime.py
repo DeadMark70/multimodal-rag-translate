@@ -57,6 +57,19 @@ class _Provider:
         )
 
 
+class _AttemptObserver:
+    def __init__(self) -> None:
+        self.calls: list[object] = []
+        self.partial_reasons: list[str] = []
+
+    async def on_terminal_attempt(self, observation: object) -> bool:
+        self.calls.append(observation)
+        return True
+
+    def mark_partial(self, reason: str) -> None:
+        self.partial_reasons.append(reason)
+
+
 class _InvalidProvider:
     def __init__(self) -> None:
         self.ainvoke = AsyncMock(
@@ -158,6 +171,7 @@ async def _async_value(value):
 @pytest.mark.asyncio
 async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> None:
     provider = _Provider()
+    observer = _AttemptObserver()
     retrieve_documents = AsyncMock(
         return_value=[
             Document(
@@ -170,13 +184,18 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
         retrieve_documents=retrieve_documents,
         provider_factory=lambda _purpose: provider,
         document_reference_resolver=_identity_reference_resolver,
+        llm_call_observer=observer,
     )
 
     result = await runtime.execute(
         question="What is the reported score?",
         user_id="user-a",
         authorized_doc_ids=["doc-1"],
-        setup_snapshot=_setup(),
+        setup_snapshot={
+            **_setup(),
+            "provider": "gemini",
+            "model_name": "gemini-2.5-flash",
+        },
         trace_id="attempt-trace-1",
     )
 
@@ -190,6 +209,12 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     assert result.documents
     retrieve_documents.assert_awaited()
     provider.ainvoke.assert_awaited_once()
+    assert len(observer.calls) == 1
+    observed = observer.calls[0]
+    assert observed.phase == "final_answer"
+    assert observed.provider == "gemini"
+    assert observed.model_name == "gemini-2.5-flash"
+    assert observed.status == "success"
 
 
 @pytest.mark.asyncio

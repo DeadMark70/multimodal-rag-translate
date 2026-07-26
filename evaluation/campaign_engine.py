@@ -46,7 +46,7 @@ from evaluation.evidence import (
     expected_evidence_matches_doc,
     text_mentions_fact,
 )
-from evaluation.observability import EvaluationRunRecorder
+from evaluation.observability import EvaluationRunRecorder, llm_call_observer_scope
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.agentic_campaign_adapter import effective_agentic_execution_version
 from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
@@ -106,6 +106,7 @@ class ExecutedCampaignUnit:
     completed_at: datetime
     total_latency_ms: float
     model_config: dict[str, Any]
+    observability_partial: bool = False
 
 
 def _unit_key(unit: CampaignUnit) -> tuple[str, str, int, str | None]:
@@ -1765,6 +1766,7 @@ class CampaignEngine:
                         self._execute_unit(
                             unit=unit,
                             user_id=user_id,
+                            campaign_id=campaign_id,
                             model_config=config.model_preset.model_dump(mode="json"),
                             rate_budget=rate_budget,
                             run_number=unit.run_number,
@@ -1964,6 +1966,7 @@ class CampaignEngine:
         *,
         unit: CampaignUnit,
         user_id: str,
+        campaign_id: str,
         model_config: dict,
         rate_budget: RateBudget,
         run_number: int,
@@ -1976,18 +1979,31 @@ class CampaignEngine:
         request_id = str(uuid4())
         started_at = _utc_now()
         runner_started_perf = time.perf_counter()
+        recorder = EvaluationRunRecorder(
+            run_id=run_id,
+            campaign_id=campaign_id,
+            user_id=user_id,
+            request_id=request_id,
+            provider_name=str(model_config.get("provider") or "unknown"),
+            model_name=str(
+                model_config.get("model_name")
+                or model_config.get("model")
+                or "unknown"
+            ),
+        )
         try:
-            payload = await self._runner(
-                test_case=unit.test_case,
-                user_id=user_id,
-                mode=unit.mode,
-                model_config=model_config,
-                run_number=repeat_number,
-                ablation_flags=ablation_flags,
-                budget=budget,
-                agentic_execution_version=unit.agentic_execution_version,
-                shadow_evaluation_policy=unit.shadow_evaluation_policy,
-            )
+            with llm_call_observer_scope(recorder):
+                payload = await self._runner(
+                    test_case=unit.test_case,
+                    user_id=user_id,
+                    mode=unit.mode,
+                    model_config=model_config,
+                    run_number=repeat_number,
+                    ablation_flags=ablation_flags,
+                    budget=budget,
+                    agentic_execution_version=unit.agentic_execution_version,
+                    shadow_evaluation_policy=unit.shadow_evaluation_policy,
+                )
         except Exception as exc:  # noqa: BLE001
             payload = exc
         completed_at = _utc_now()
@@ -2003,6 +2019,7 @@ class CampaignEngine:
             completed_at=completed_at,
             total_latency_ms=total_latency_ms,
             model_config=dict(model_config),
+            observability_partial=recorder.observability_partial,
         )
 
     async def _persist_unit_result(
@@ -2034,6 +2051,9 @@ class CampaignEngine:
             payload.answer = ""
             payload.error_message = failure_diagnostics["safe_error_message"]
         derived_metrics = _build_derived_metrics(unit=unit, payload=payload)
+        derived_metrics["observability_status"] = (
+            "partial" if execution.observability_partial else "complete"
+        )
 
         if isinstance(payload, Exception):
             created = await self._result_repository.create(

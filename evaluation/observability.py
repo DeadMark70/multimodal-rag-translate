@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 from types import TracebackType
-from typing import Optional
+from typing import Iterator, Optional
 from uuid import uuid4
 
 from evaluation.observability_storage import EvaluationObservabilityRepository
+from data_base.agentic_v9.budgeted_llm import (
+    LlmAttemptObservation,
+    LlmCallObserver,
+)
 from evaluation.token_cost import normalize_llm_usage, price_llm_usage
 from evaluation.trace_schemas import (
     EvaluationClaim,
@@ -26,6 +31,26 @@ from evaluation.trace_schemas import (
 from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
 
 logger = logging.getLogger(__name__)
+_llm_call_observer: ContextVar[LlmCallObserver | None] = ContextVar(
+    "evaluation_llm_call_observer", default=None
+)
+
+
+@contextmanager
+def llm_call_observer_scope(
+    observer: LlmCallObserver,
+) -> Iterator[LlmCallObserver]:
+    """Expose one run-aware observer to nested Agentic v9 construction."""
+    token = _llm_call_observer.set(observer)
+    try:
+        yield observer
+    finally:
+        _llm_call_observer.reset(token)
+
+
+def current_llm_call_observer() -> LlmCallObserver | None:
+    """Return the observer bound to the current campaign run."""
+    return _llm_call_observer.get()
 
 
 def _utc_now() -> datetime:
@@ -159,6 +184,8 @@ class EvaluationRunRecorder:
         human_rating_repository: EvaluationObservabilityRepository | None = None,
         graph_event_repository: EvaluationObservabilityRepository | None = None,
         graph_evidence_item_repository: EvaluationObservabilityRepository | None = None,
+        provider_name: str = "unknown",
+        model_name: str = "unknown",
         strict: bool = False,
     ) -> None:
         repository = trace_repository or EvaluationObservabilityRepository()
@@ -166,6 +193,8 @@ class EvaluationRunRecorder:
         self.campaign_id = campaign_id
         self.user_id = user_id
         self.request_id = request_id
+        self.provider_name = provider_name or "unknown"
+        self.model_name = model_name or "unknown"
         self.trace_repository = repository
         self.llm_call_repository = llm_call_repository or repository
         self.retrieval_event_repository = retrieval_event_repository or repository
@@ -178,6 +207,8 @@ class EvaluationRunRecorder:
         self.graph_event_repository = graph_event_repository or repository
         self.graph_evidence_item_repository = graph_evidence_item_repository or repository
         self.strict = strict
+        self.observability_partial = False
+        self.observability_partial_reasons: list[str] = []
         self._sequence = 0
         self._span_stack: ContextVar[tuple[EvaluationSpan, ...]] = ContextVar(
             f"evaluation_span_stack_{id(self)}",
@@ -257,8 +288,55 @@ class EvaluationRunRecorder:
         )
         await self._safe_record(self.trace_repository.record_trace_event, event)
 
-    async def record_llm_call(self, call: EvaluationLlmCall) -> None:
-        await self._safe_record(self.llm_call_repository.record_llm_call, call)
+    async def record_llm_call(self, call: EvaluationLlmCall) -> bool:
+        return await self._safe_record(
+            self.llm_call_repository.record_llm_call, call
+        )
+
+    async def on_terminal_attempt(
+        self, observation: LlmAttemptObservation
+    ) -> bool:
+        """Persist one BudgetedLlmInvoker terminal attempt."""
+        usage = observation.usage
+        call = EvaluationLlmCall(
+            llm_call_id=str(uuid4()),
+            run_id=self.run_id,
+            campaign_id=self.campaign_id,
+            span_id=self.current_span.span_id if self.current_span else None,
+            provider=(
+                observation.provider
+                if observation.provider != "unknown"
+                else self.provider_name
+            ),
+            model_name=(
+                observation.model_name
+                if observation.model_name != "unknown"
+                else self.model_name
+            ),
+            phase=observation.phase,
+            purpose=observation.purpose,
+            reservation_id=observation.reservation_id,
+            provider_attempt=observation.provider_attempt,
+            prompt_tokens=int(usage["input_tokens"]),
+            completion_tokens=int(usage["output_tokens"]),
+            total_tokens=int(usage["total_tokens"]),
+            reasoning_tokens=int(usage["reasoning_tokens"]),
+            other_tokens=int(usage["other_tokens"]),
+            prompt_hash=observation.prompt_hash,
+            response_hash=observation.response_hash,
+            latency_ms=observation.latency_ms,
+            status=observation.status,
+            error=dict(observation.error),
+            payload={"usage_status": usage["usage_status"]},
+            created_at=_utc_now(),
+        )
+        return await self.record_llm_call(call)
+
+    def mark_partial(self, reason: str) -> None:
+        """Retain best-effort failure without changing the provider result."""
+        self.observability_partial = True
+        if reason not in self.observability_partial_reasons:
+            self.observability_partial_reasons.append(reason)
 
     async def record_llm_usage(
         self,
@@ -356,10 +434,13 @@ class EvaluationRunRecorder:
             self.graph_evidence_item_repository.record_graph_evidence_items, items
         )
 
-    async def _safe_record(self, record_fn, payload) -> None:
+    async def _safe_record(self, record_fn, payload) -> bool:
         try:
             await record_fn(payload)
         except Exception:
             logger.warning("Failed to record evaluation observability event", exc_info=True)
+            self.mark_partial("observability_write_failed")
             if self.strict:
                 raise
+            return False
+        return True

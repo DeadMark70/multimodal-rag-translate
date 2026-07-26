@@ -18,6 +18,8 @@ import pytest
 
 from core.auth import get_current_user_id
 from core.llm_usage_context import emit_direct_usage
+from data_base.agentic_v9.budget_controller import RunBudgetController
+from data_base.agentic_v9.budgeted_llm import invoke_budgeted_llm
 from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.agentic_evaluation_service import AGENTIC_EVAL_PROFILE
 from evaluation.campaign_engine import CampaignEngine
@@ -37,6 +39,7 @@ from evaluation.db import (
 )
 from evaluation.job_store import EvaluationJobStore
 from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.observability import current_llm_call_observer
 from evaluation.rag_modes import (
     BenchmarkExecutionResult,
     CONTEXT_POLICY_VERSION,
@@ -927,6 +930,90 @@ async def test_completed_run_persists_snapshots_and_root_observability_span() ->
         assert llm_calls[0].completion_tokens == 22
         assert llm_calls[0].total_tokens == 77
         assert llm_calls[0].span_id == trace_events[0].span_id
+
+
+@pytest.mark.asyncio
+async def test_llm_observer_write_failure_preserves_answer_and_marks_run_partial() -> None:
+    class Provider:
+        async def ainvoke(self, messages: object) -> object:
+            return {
+                "content": "observed answer",
+                "usage_metadata": {
+                    "input_tokens": 2,
+                    "output_tokens": 1,
+                    "total_tokens": 3,
+                },
+            }
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        observer = current_llm_call_observer()
+        assert observer is not None
+        response = await invoke_budgeted_llm(
+            controller=RunBudgetController(
+                max_llm_calls=1,
+                runtime_token_budget=200,
+                setup_snapshot={"max_output_tokens": 100, "thinking_mode": False},
+                final_input_tokens=100,
+            ),
+            provider=Provider(),
+            observer=observer,
+            provider_name="gemini",
+            model_name="gemini-2.5-flash",
+            phase="final_answer",
+            purpose="synthesizer",
+            messages=[{"role": "user", "content": "answer"}],
+            estimated_input_tokens=100,
+        )
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer=response["content"],
+            token_usage={"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
+        )
+
+    db_path = _make_db_path()
+    test_case = TestCase(
+        id="Q-OBSERVER-PARTIAL",
+        question="Answer?",
+        ground_truth="observed answer",
+    )
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        campaign = await campaign_repo.create(
+            user_id="user-a",
+            name="Observer partial",
+            config=_campaign_config_for_test_case_ids(
+                [test_case.id], modes=["naive"]
+            ),
+        )
+        engine = CampaignEngine(
+            runner=runner,
+            ragas_evaluator=FakeRagasEvaluator(progress_total=1),
+        )
+        with patch.object(
+            EvaluationObservabilityRepository,
+            "record_llm_call",
+            new=AsyncMock(side_effect=OSError("storage unavailable")),
+        ):
+            await engine._run_campaign(
+                user_id="user-a",
+                campaign_id=campaign.id,
+                config=campaign.config,
+                test_cases=[test_case],
+            )
+
+        result = (
+            await result_repo.list_for_campaign(
+                user_id="user-a", campaign_id=campaign.id
+            )
+        )[0]
+        assert result.answer == "observed answer"
+        assert result.status == CampaignResultStatus.COMPLETED
+        assert result.derived_metrics["observability_status"] == "partial"
 
 
 @pytest.mark.asyncio
