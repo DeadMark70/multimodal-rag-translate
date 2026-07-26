@@ -40,6 +40,7 @@ from evaluation.observability_storage import (
     CampaignReleaseObservabilitySnapshot,
     EvaluationObservabilityRepository,
 )
+from evaluation.analytics import reconcile_official_tokens
 
 
 class ReleaseMetric(BaseModel):
@@ -125,6 +126,8 @@ class ReleaseRun:
     category: str | None
     contract_version: str | None = None
     slot_plan_status: str | None = None
+    token_reconciliation_status: str = "complete"
+    token_reconciliation_reasons: tuple[str, ...] = ()
 
     def benchmark_run(self) -> BenchmarkRun:
         return BenchmarkRun(
@@ -178,6 +181,12 @@ def derive_release_metrics(
             or run.phase_attribution_status != "complete"
         ):
             reasons.add("partial_accounting")
+        if run.token_reconciliation_status != "complete":
+            reasons.add("partial_token_observability")
+            reasons.update(
+                f"token_reconciliation:{reason}"
+                for reason in run.token_reconciliation_reasons
+            )
     if any(run.runtime_tokens is None for run in official_runs):
         reasons.add("runtime_token_instrumentation_missing")
     if any(run.latency_ms is None for run in official_runs):
@@ -523,6 +532,7 @@ class ReleaseMetricsService:
             evaluator_fingerprints,
             accounting_snapshot,
             observability_snapshot,
+            llm_calls_by_run,
         ) in snapshots:
             runs.extend(
                 self._build_release_runs(
@@ -531,6 +541,7 @@ class ReleaseMetricsService:
                     evaluator_fingerprints=evaluator_fingerprints,
                     accounting_snapshot=accounting_snapshot,
                     observability_snapshot=observability_snapshot,
+                    llm_calls_by_run=llm_calls_by_run,
                 )
             )
         report = derive_release_metrics(benchmark_id=benchmark_id, runs=runs)
@@ -539,12 +550,24 @@ class ReleaseMetricsService:
         return report
 
     async def _load_campaign_inputs(self, *, user_id: str, campaign_id: str):
+        llm_call_loader = getattr(
+            self._observability, "list_llm_calls_for_campaign", None
+        )
+
+        async def load_llm_calls():
+            return (
+                await llm_call_loader(campaign_id)
+                if llm_call_loader is not None
+                else {}
+            )
+
         (
             results,
             scores,
             work_metadata,
             accounting_snapshot,
             observability_snapshot,
+            llm_calls_by_run,
         ) = await asyncio.gather(
             self._results.list_for_campaign_release(
                 user_id=user_id, campaign_id=campaign_id
@@ -555,6 +578,7 @@ class ReleaseMetricsService:
             ),
             self._accounting.load_campaign_snapshot(campaign_id),
             self._observability.load_campaign_release_snapshot(campaign_id),
+            load_llm_calls(),
         )
         score_by_result: dict[str, dict[str, float]] = {}
         for row in scores:
@@ -569,6 +593,7 @@ class ReleaseMetricsService:
             evaluator_fingerprints_from_work_metadata(work_metadata),
             accounting_snapshot,
             observability_snapshot,
+            llm_calls_by_run,
         )
 
     def _build_release_runs(
@@ -579,6 +604,7 @@ class ReleaseMetricsService:
         evaluator_fingerprints: dict[str, str | None],
         accounting_snapshot: CampaignAccountingSnapshot,
         observability_snapshot: CampaignReleaseObservabilitySnapshot,
+        llm_calls_by_run: dict[str, list[Any]],
     ) -> list[ReleaseRun]:
         return [
             self._release_run_from_snapshots(
@@ -587,6 +613,7 @@ class ReleaseMetricsService:
                 evaluator_fingerprint=evaluator_fingerprints.get(result.id),
                 accounting_snapshot=accounting_snapshot,
                 observability_snapshot=observability_snapshot,
+                llm_calls=llm_calls_by_run.get(result.id, []),
             )
             for result in results
         ]
@@ -599,8 +626,14 @@ class ReleaseMetricsService:
         evaluator_fingerprint: str | None,
         accounting_snapshot: CampaignAccountingSnapshot,
         observability_snapshot: CampaignReleaseObservabilitySnapshot,
+        llm_calls: list[Any],
     ) -> ReleaseRun:
         breakdown = self._snapshot_run_tokens(result.id, accounting_snapshot)
+        reconciliation = reconcile_official_tokens(
+            runtime_total_tokens=breakdown.total_tokens,
+            calls=llm_calls,
+        )
+        enforce_attempt_reconciliation = result.agentic_execution_version == "v9"
         v9 = self._v9_snapshot_for_result(result, observability_snapshot)
         final_claims = v9["final_claims"] if v9 else []
         required_metrics = {"answer_correctness", "faithfulness", "answer_relevancy"}
@@ -641,7 +674,12 @@ class ReleaseMetricsService:
             completed=result.status.value == "completed",
             timed_out="timeout" in (result.error_message or "").lower(),
             accounting_status=breakdown.accounting_status,
-            phase_attribution_status=breakdown.phase_attribution_status,
+            phase_attribution_status=(
+                breakdown.phase_attribution_status
+                if not enforce_attempt_reconciliation
+                or reconciliation.status == "complete"
+                else "partial"
+            ),
             required_ragas_complete=required_metrics.issubset(score_map),
             golden_available=bool(result.question_snapshot),
             used_evidence_mapped=(
@@ -694,6 +732,14 @@ class ReleaseMetricsService:
             category=result.category,
             contract_version=contract.contract_version if contract else None,
             slot_plan_status=contract.slot_plan_status if contract else None,
+            token_reconciliation_status=(
+                reconciliation.status
+                if enforce_attempt_reconciliation
+                else "complete"
+            ),
+            token_reconciliation_reasons=(
+                reconciliation.reasons if enforce_attempt_reconciliation else ()
+            ),
         )
 
     @staticmethod

@@ -715,6 +715,25 @@ def test_release_metrics_fail_closed_on_evaluator_or_runtime_instrumentation_mis
         == "release_gate_blocked:runtime_token_instrumentation_missing"
     )
 
+    phase_mismatch = derive_release_metrics(
+        benchmark_id="bench-1",
+        runs=[
+            _run(run_id="naive", mode="naive", version="v8"),
+            _run(run_id="v8", mode="agentic", version="v8"),
+            replace(
+                _run(run_id="v9", mode="agentic", version="v9"),
+                token_reconciliation_status="partial",
+                token_reconciliation_reasons=("provider_runtime_total_mismatch",),
+            ),
+        ],
+    )
+    assert phase_mismatch.comparable is False
+    assert "partial_token_observability" in phase_mismatch.gate_reasons
+    assert (
+        "token_reconciliation:provider_runtime_total_mismatch"
+        in phase_mismatch.gate_reasons
+    )
+
 
 def test_evaluator_work_metadata_requires_a_complete_deterministic_signature_per_result() -> (
     None

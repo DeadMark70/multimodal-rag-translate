@@ -614,7 +614,7 @@ class RunMetricsResponse(BaseModel):
     campaign_id: str
     derived_metrics: dict[str, Any] = Field(default_factory=dict)
     token_usage: dict[str, Any] = Field(default_factory=dict)
-    total_tokens: int = Field(default=0, ge=0)
+    total_tokens: Optional[int] = Field(default=None, ge=0)
     latency_ms: float = Field(default=0, ge=0)
     total_latency_ms: Optional[float] = Field(default=None, ge=0)
 

@@ -109,6 +109,130 @@ _GRAPH_ABLATION_METRICS = (
 _V9_GOLDEN_DATASET = Path(__file__).resolve().parent / "golden" / "agentic_v9_questions_v2.json"
 
 
+@dataclass(frozen=True, slots=True)
+class OfficialTokenReconciliation:
+    status: Literal["complete", "partial", "not_available"]
+    runtime_total_tokens: int | None
+    provider_total_tokens: int | None
+    by_phase: dict[str, int]
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    reasoning_tokens: int | None
+    other_tokens: int | None
+    retry_count: int
+    reasons: tuple[str, ...]
+
+
+def reconcile_official_tokens(
+    *,
+    runtime_total_tokens: int | None,
+    calls: list[Any],
+    observability_partial_reasons: tuple[str, ...] | list[str] = (),
+) -> OfficialTokenReconciliation:
+    """Fail closed when provider-attempt rows cannot prove the runtime total."""
+    reasons = {str(reason) for reason in observability_partial_reasons if reason}
+    unique: dict[str, Any] = {}
+    identities: set[tuple[str, str, int]] = set()
+    for call in calls:
+        call_id = str(getattr(call, "llm_call_id", "") or "")
+        if not call_id:
+            reasons.add("llm_call_id_missing")
+            continue
+        if call_id in unique:
+            reasons.add("duplicate_llm_call_id")
+            continue
+        unique[call_id] = call
+        phase = str(getattr(call, "phase", "") or "unknown")
+        reservation_id = str(getattr(call, "reservation_id", "") or "")
+        provider_attempt = getattr(call, "provider_attempt", None)
+        if phase == "unknown":
+            reasons.add("provider_phase_unknown")
+        if not reservation_id or not isinstance(provider_attempt, int):
+            reasons.add("provider_attempt_identity_incomplete")
+        else:
+            identity = (phase, reservation_id, provider_attempt)
+            if identity in identities:
+                reasons.add("duplicate_provider_attempt")
+            identities.add(identity)
+        payload = getattr(call, "payload", {}) or {}
+        usage_status = payload.get("usage_status") if isinstance(payload, dict) else None
+        if usage_status in {"missing", "failed", "unavailable"}:
+            reasons.add("provider_usage_missing")
+
+    if runtime_total_tokens is None:
+        reasons.add("official_runtime_tokens_unknown")
+    if not unique:
+        reasons.add("provider_attempts_missing")
+
+    component_attributes = (
+        "prompt_tokens",
+        "completion_tokens",
+        "reasoning_tokens",
+        "other_tokens",
+    )
+    component_values: dict[str, int | None] = {}
+    for attribute in component_attributes:
+        values = [getattr(call, attribute, None) for call in unique.values()]
+        component_values[attribute] = (
+            sum(int(value) for value in values)
+            if values and all(isinstance(value, int) for value in values)
+            else None
+        )
+    provider_total_tokens = (
+        sum(int(getattr(call, "total_tokens")) for call in unique.values())
+        if unique
+        and all(
+            isinstance(getattr(call, "total_tokens", None), int)
+            for call in unique.values()
+        )
+        else None
+    )
+    by_phase: defaultdict[str, int] = defaultdict(int)
+    for call in unique.values():
+        total = getattr(call, "total_tokens", None)
+        if isinstance(total, int):
+            by_phase[str(getattr(call, "phase", "") or "unknown")] += total
+    if provider_total_tokens is None and unique:
+        reasons.add("provider_total_tokens_unknown")
+    if (
+        runtime_total_tokens is not None
+        and provider_total_tokens is not None
+        and provider_total_tokens != runtime_total_tokens
+    ):
+        reasons.add("provider_runtime_total_mismatch")
+    if provider_total_tokens is not None and all(
+        component_values[name] is not None for name in component_attributes
+    ):
+        if (
+            sum(int(component_values[name] or 0) for name in component_attributes)
+            != provider_total_tokens
+        ):
+            reasons.add("provider_component_total_mismatch")
+
+    attempts_by_reservation: defaultdict[str, set[int]] = defaultdict(set)
+    for phase, reservation_id, provider_attempt in identities:
+        attempts_by_reservation[f"{phase}:{reservation_id}"].add(provider_attempt)
+    retry_count = sum(
+        max(len(attempts) - 1, 0) for attempts in attempts_by_reservation.values()
+    )
+    status: Literal["complete", "partial", "not_available"] = (
+        "not_available"
+        if runtime_total_tokens is None and provider_total_tokens is None
+        else "partial"
+        if reasons
+        else "complete"
+    )
+    return OfficialTokenReconciliation(
+        status=status,
+        runtime_total_tokens=runtime_total_tokens,
+        provider_total_tokens=provider_total_tokens,
+        by_phase=dict(sorted(by_phase.items())),
+        retry_count=retry_count,
+        reasons=tuple(sorted(reasons)),
+        **component_values,
+    )
+
+
 def _dump(value: BaseModel) -> dict[str, Any]:
     return value.model_dump(mode="json")
 
@@ -1349,12 +1473,39 @@ class EvaluationAnalyticsService:
     async def run_metrics(self, *, user_id: str, run_id: str) -> RunMetricsResponse:
         campaign_id = await self._campaign_id_for_owned_run(user_id=user_id, run_id=run_id)
         result = await self._result_repository.get(user_id=user_id, campaign_id=campaign_id, result_id=run_id)
+        calls = [
+            call
+            for call in await self._observability_repository.list_llm_calls_for_run(
+                run_id
+            )
+            if call.campaign_id == campaign_id
+        ]
+        partial_reasons = result.derived_metrics.get(
+            "observability_partial_reasons", []
+        )
+        reconciliation = reconcile_official_tokens(
+            runtime_total_tokens=result.total_tokens,
+            calls=calls,
+            observability_partial_reasons=(
+                partial_reasons if isinstance(partial_reasons, list) else []
+            ),
+        )
         return RunMetricsResponse(
             run_id=run_id,
             campaign_id=campaign_id,
             derived_metrics=result.derived_metrics,
-            token_usage=result.token_usage,
-            total_tokens=result.total_tokens or 0,
+            token_usage={
+                **result.token_usage,
+                "phase_reconciliation": {
+                    "status": reconciliation.status,
+                    "runtime_total_tokens": reconciliation.runtime_total_tokens,
+                    "provider_total_tokens": reconciliation.provider_total_tokens,
+                    "by_phase": reconciliation.by_phase,
+                    "retry_count": reconciliation.retry_count,
+                    "reasons": list(reconciliation.reasons),
+                },
+            },
+            total_tokens=result.total_tokens,
             latency_ms=result.latency_ms,
             total_latency_ms=result.total_latency_ms,
         )

@@ -19,6 +19,7 @@ from evaluation.db import (
 from evaluation.research_analytics import (
     ResearchAnalyticsService,
     _evaluator_identity,
+    _tokens,
     nearest_rank,
 )
 from evaluation.job_store import build_legacy_evaluator_compatibility_signature
@@ -29,6 +30,49 @@ from evaluation.trace_schemas import EvaluationV9AttemptMaterialization
 def test_nearest_rank_percentiles_are_observed_values() -> None:
     assert nearest_rank([100, 200, 300, 400, 500], 0.50) == 300
     assert nearest_rank([100, 200, 300, 400, 500], 0.95) == 500
+
+
+def test_token_breakdown_requires_provider_phase_rows_to_match_runtime_total() -> None:
+    scope = SimpleNamespace(
+        status="completed",
+        observed_call_count=1,
+        measured_call_count=1,
+        missing_usage_call_count=0,
+    )
+    event = SimpleNamespace(
+        usage_status="measured",
+        reconciliation_status="balanced",
+        phase="answer_generation",
+        purpose="evaluation",
+        provider="google",
+        input_tokens=6,
+        output_text_tokens=2,
+        reasoning_tokens=1,
+        other_tokens=1,
+    )
+    provider_call = SimpleNamespace(
+        llm_call_id="call-1",
+        phase="final_answer",
+        reservation_id="reservation-1",
+        provider_attempt=1,
+        total_tokens=9,
+        prompt_tokens=5,
+        completion_tokens=2,
+        reasoning_tokens=1,
+        other_tokens=1,
+        payload={"usage_status": "measured"},
+    )
+
+    breakdown = _tokens(
+        [scope],
+        [event],
+        provider_attempts=[provider_call],
+        runtime_total_tokens=10,
+    )
+
+    assert breakdown.total_tokens == 10
+    assert breakdown.phase_attribution_status == "partial"
+    assert "provider_runtime_total_mismatch" in breakdown.phase_attribution_reasons
 
 
 def test_legacy_identity_preserves_evaluator_config_differences() -> None:

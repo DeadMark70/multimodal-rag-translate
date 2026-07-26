@@ -44,6 +44,7 @@ from evaluation.job_store import (
     build_evaluator_compatibility_signature,
 )
 from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.analytics import reconcile_official_tokens
 
 PRIMARY_QUALITY_METRICS = ("answer_correctness", "faithfulness", "answer_relevancy")
 OPTIONAL_CONTEXT_METRICS = ("context_precision", "context_recall")
@@ -1376,7 +1377,14 @@ def _best_quality_mode(rows: list[QuestionModeComparison]) -> str | None:
     return str(winner.mode)
 
 
-def _tokens(scopes, events, legacy_status="incomplete_legacy"):
+def _tokens(
+    scopes,
+    events,
+    legacy_status="incomplete_legacy",
+    *,
+    provider_attempts=None,
+    runtime_total_tokens=None,
+):
     if not scopes:
         return TokenBreakdown(
             accounting_status=legacy_status, phase_attribution_status="not_available"
@@ -1468,6 +1476,16 @@ def _tokens(scopes, events, legacy_status="incomplete_legacy"):
         if status == "complete"
         else None
     )
+    if provider_attempts is not None:
+        reconciliation = reconcile_official_tokens(
+            runtime_total_tokens=runtime_total_tokens,
+            calls=list(provider_attempts),
+        )
+        values["by_phase"] = reconciliation.by_phase
+        values["phase_attribution_status"] = (
+            "complete" if reconciliation.status == "complete" else "partial"
+        )
+        values["phase_attribution_reasons"] = list(reconciliation.reasons)
     return TokenBreakdown(**values)
 
 

@@ -52,6 +52,7 @@ class TokenBreakdown(BaseModel):
     missing_usage_by_provider: dict[str, int] = Field(default_factory=dict)
     accounting_status: TokenAccountingStatus
     phase_attribution_status: PhaseAttributionStatus
+    phase_attribution_reasons: list[str] = Field(default_factory=list)
 
 
 class CostSummary(BaseModel):
