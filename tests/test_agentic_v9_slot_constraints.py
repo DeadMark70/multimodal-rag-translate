@@ -109,6 +109,77 @@ def test_q16_noise_condition_preserves_independent_ukan_dice_value() -> None:
     )
 
 
+def test_unrelated_case_count_is_not_a_numeric_dice_result() -> None:
+    ukan = _numeric_slot(
+        "S5",
+        "Retrieve the U-KAN Dice at noise level 0.4.",
+    )
+    proposed = _numeric_slot(
+        "S6",
+        "Retrieve the proposed-method Dice at noise level 0.4.",
+    )
+
+    assert not slot_content_matches_chunk(
+        slot=ukan,
+        peer_slots=[proposed],
+        text=(
+            "U-KAN was evaluated on 10 cases at noise level 0.4; "
+            "the Dice analysis is pending."
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "U-KAN Dice: 0.81; the proposed method is listed.",
+        "U-KAN scored 0.81; the proposed method is listed.",
+    ],
+    ids=["label", "scored"],
+)
+def test_numeric_result_requires_explicit_ukan_association(text: str) -> None:
+    ukan = _numeric_slot("S5", "Retrieve the U-KAN Dice.")
+    proposed = _numeric_slot("S6", "Retrieve the proposed-method Dice.")
+
+    assert slot_content_matches_chunk(
+        slot=ukan,
+        peer_slots=[proposed],
+        text=text,
+    )
+    assert not slot_content_matches_chunk(
+        slot=proposed,
+        peer_slots=[ukan],
+        text=text,
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "U-KAN Dice was 0.81, while the proposed-method Dice was not reported.",
+        (
+            "U-KAN Dice was 0.81, while the proposed-method Dice was 0.75 "
+            "but not reported."
+        ),
+    ],
+    ids=["peer-without-value", "peer-negated-value"],
+)
+def test_unavailable_peer_does_not_negate_ukan_result(text: str) -> None:
+    ukan = _numeric_slot("S5", "Retrieve the U-KAN Dice.")
+    proposed = _numeric_slot("S6", "Retrieve the proposed-method Dice.")
+
+    assert slot_content_matches_chunk(
+        slot=ukan,
+        peer_slots=[proposed],
+        text=text,
+    )
+    assert not slot_content_matches_chunk(
+        slot=proposed,
+        peer_slots=[ukan],
+        text=text,
+    )
+
+
 def test_negated_numeric_result_is_not_answer_evidence() -> None:
     ukan = _numeric_slot(
         "S5",

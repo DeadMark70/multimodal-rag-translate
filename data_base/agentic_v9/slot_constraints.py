@@ -72,7 +72,7 @@ _UNAVAILABLE_PATTERN = re.compile(
 )
 _NUMERIC_ANSWER_LINK_PATTERN = re.compile(
     r"(?:\b(?:is|are|was|were|equals?|scored|reached|achieved)\b"
-    r"|\b(?:reported\s+as|measured\s+at)\b|[=:])\s*$",
+    r"|\b(?:reported\s+as|measured\s+at|as|of)\b|[=:])\s*$",
     re.IGNORECASE,
 )
 _NUMERIC_CONDITION_CUES = {
@@ -192,15 +192,20 @@ def slot_content_matches_chunk(
     if not discriminators:
         return False
 
-    signal_spans = _answer_signal_spans(slot, text)
+    competitor_discriminators = [
+        _unique_discriminators(peer, all_slots) for peer in peers
+    ]
+    signal_spans = _answer_signal_spans(
+        slot,
+        text,
+        discriminators=discriminators,
+        competitor_discriminators=competitor_discriminators,
+    )
     if not signal_spans:
         return False
     if slot.expected_answer_type not in {"number", "equation", "definition"}:
         return discriminators.issubset(set(_content_tokens(text)))
 
-    competitor_discriminators = [
-        _unique_discriminators(peer, all_slots) for peer in peers
-    ]
     for signal_span in signal_spans:
         slot_distance = _association_distance(discriminators, text, signal_span)
         if slot_distance is None:
@@ -228,7 +233,13 @@ def _unique_discriminators(
     return _slot_descriptor_terms(slot).difference(other_terms)
 
 
-def _answer_signal_spans(slot: RequiredSlot, text: str) -> tuple[tuple[int, int], ...]:
+def _answer_signal_spans(
+    slot: RequiredSlot,
+    text: str,
+    *,
+    discriminators: set[str],
+    competitor_discriminators: Iterable[set[str]],
+) -> tuple[tuple[int, int], ...]:
     without_locators = _STRUCTURED_LOCATOR_PATTERN.sub(
         lambda match: " " * len(match.group(0)), text
     )
@@ -237,11 +248,22 @@ def _answer_signal_spans(slot: RequiredSlot, text: str) -> tuple[tuple[int, int]
         spans: list[tuple[int, int]] = []
         for match in _NUMBER_PATTERN.finditer(without_locators):
             span = match.span()
-            if _numeric_signal_is_unavailable(text, span):
-                continue
+            independently_reported = _is_independently_reported_number(
+                slot,
+                text,
+                span,
+                discriminators=discriminators,
+            )
             value = _canonical_number(match.group(0))
-            if value in condition_numbers and not _is_independently_reported_number(
-                slot, text, span
+            if value in condition_numbers and not independently_reported:
+                continue
+            if not independently_reported:
+                continue
+            if _numeric_signal_is_unavailable(
+                text,
+                span,
+                discriminators=discriminators,
+                competitor_discriminators=competitor_discriminators,
             ):
                 continue
             spans.append(span)
@@ -281,8 +303,22 @@ def _canonical_number(value: str) -> str:
     return f"{number.normalize():f}{suffix}"
 
 
-def _numeric_signal_is_unavailable(text: str, signal_span: tuple[int, int]) -> bool:
-    start, end = _sentence_bounds(text, signal_span)
+def _numeric_signal_is_unavailable(
+    text: str,
+    signal_span: tuple[int, int],
+    *,
+    discriminators: set[str],
+    competitor_discriminators: Iterable[set[str]],
+) -> bool:
+    start = _associated_discriminator_start(discriminators, text, signal_span)
+    _, end = _sentence_bounds(text, signal_span)
+    competitor_start = _next_discriminator_start(
+        competitor_discriminators,
+        text,
+        signal_span[1],
+    )
+    if competitor_start is not None:
+        end = min(end, competitor_start)
     return _UNAVAILABLE_PATTERN.search(text[start:end]) is not None
 
 
@@ -290,6 +326,8 @@ def _is_independently_reported_number(
     slot: RequiredSlot,
     text: str,
     signal_span: tuple[int, int],
+    *,
+    discriminators: set[str],
 ) -> bool:
     clause_start, _ = _clause_bounds(text, signal_span)
     prefix = text[clause_start : signal_span[0]]
@@ -299,10 +337,44 @@ def _is_independently_reported_number(
     subject_tokens = _content_tokens(prefix[: link.start()])
     if not subject_tokens:
         return False
+    if not discriminators.issubset(set(subject_tokens)):
+        return False
     closest_subject = subject_tokens[-1]
     return (
         closest_subject not in _NUMERIC_CONDITION_CUES
         and closest_subject in _slot_descriptor_terms(slot)
+    )
+
+
+def _associated_discriminator_start(
+    discriminators: set[str],
+    text: str,
+    signal_span: tuple[int, int],
+) -> int:
+    starts_by_term: dict[str, int] = {}
+    for match in _CONTENT_TOKEN_PATTERN.finditer(text, 0, signal_span[0]):
+        term = match.group(0).casefold()
+        if term in discriminators:
+            starts_by_term[term] = match.start()
+    if discriminators.issubset(starts_by_term):
+        return min(starts_by_term.values())
+    clause_start, _ = _clause_bounds(text, signal_span)
+    return clause_start
+
+
+def _next_discriminator_start(
+    discriminator_sets: Iterable[set[str]],
+    text: str,
+    start: int,
+) -> int | None:
+    terms = {term for discriminators in discriminator_sets for term in discriminators}
+    return next(
+        (
+            match.start()
+            for match in _CONTENT_TOKEN_PATTERN.finditer(text, start)
+            if match.group(0).casefold() in terms
+        ),
+        None,
     )
 
 
