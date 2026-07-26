@@ -23,8 +23,9 @@ from evaluation.research_analytics import (
     nearest_rank,
 )
 from evaluation.job_store import build_legacy_evaluator_compatibility_signature
+from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.schemas import ModelConfig
-from evaluation.trace_schemas import EvaluationV9AttemptMaterialization
+from evaluation.trace_schemas import EvaluationLlmCall, EvaluationV9AttemptMaterialization
 
 
 def test_nearest_rank_percentiles_are_observed_values() -> None:
@@ -266,6 +267,71 @@ async def _execution_scope(
 
 async def _official_scope(campaign_id: str, result_id: str, attempt: str) -> None:
     await _execution_scope(campaign_id, result_id, attempt, official=True)
+
+
+@pytest.mark.asyncio
+async def test_production_research_paths_reconcile_v9_provider_attempts(
+    research_service,
+) -> None:
+    campaign_id = "production-token-reconciliation"
+    await _campaign(campaign_id, ["agentic"])
+    result_id = await _result(campaign_id, "agentic", "attempt-v9")
+    await _official_scope(campaign_id, result_id, "attempt-v9")
+    await evaluation_db.init_db()
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            """
+            UPDATE campaign_results
+            SET system_version_snapshot_json = ?
+            WHERE id = ?
+            """,
+            (json.dumps({"agentic_execution_version": "v9"}), result_id),
+        )
+        await connection.commit()
+    await EvaluationObservabilityRepository().record_llm_call(
+        EvaluationLlmCall(
+            llm_call_id="provider-attempt-v9",
+            run_id=result_id,
+            campaign_id=campaign_id,
+            provider="google",
+            model_name="gemini-2.5-flash",
+            phase="final_answer",
+            purpose="synthesizer",
+            reservation_id="reservation-v9",
+            provider_attempt=1,
+            prompt_tokens=9,
+            completion_tokens=5,
+            total_tokens=14,
+            reasoning_tokens=0,
+            other_tokens=0,
+            payload={"usage_status": "measured", "official_total_tokens": 14},
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id=campaign_id
+    )
+    selected = await research_service.get_run_token_breakdown(
+        campaign_id=campaign_id,
+        run_id=result_id,
+        agentic_execution_version="v9",
+    )
+    comparison = await research_service.get_question_comparison(
+        user_id="user-1", campaign_id=campaign_id
+    )
+    behavior = await research_service.get_agent_behavior(
+        user_id="user-1", campaign_id=campaign_id
+    )
+
+    assert summary.tokens.phase_attribution_status == "partial"
+    assert summary.modes[0].tokens.phase_attribution_status == "partial"
+    assert "provider_runtime_total_mismatch" in (
+        summary.tokens.phase_attribution_reasons
+    )
+    assert selected.phase_attribution_status == "partial"
+    assert comparison.rows[0].by_mode[0].accounting_status == "partial"
+    assert behavior.rows[0].accounting_status == "partial"
 
 
 def _primary_score_rows(

@@ -134,6 +134,11 @@ def reconcile_official_tokens(
     unique: dict[str, Any] = {}
     identities: set[tuple[str, str, int]] = set()
     for call in calls:
+        if (
+            getattr(call, "reservation_id", None) is None
+            and getattr(call, "provider_attempt", None) is None
+        ):
+            continue
         call_id = str(getattr(call, "llm_call_id", "") or "")
         if not call_id:
             reasons.add("llm_call_id_missing")
@@ -158,12 +163,23 @@ def reconcile_official_tokens(
         usage_status = payload.get("usage_status") if isinstance(payload, dict) else None
         if usage_status in {"missing", "failed", "unavailable"}:
             reasons.add("provider_usage_missing")
+        if usage_status != "measured":
+            reasons.add("provider_usage_not_official")
 
     if runtime_total_tokens is None:
         reasons.add("official_runtime_tokens_unknown")
     if not unique:
         reasons.add("provider_attempts_missing")
 
+    official_usage_complete = bool(unique) and all(
+        isinstance(getattr(call, "payload", None), dict)
+        and getattr(call, "payload").get("usage_status") == "measured"
+        and getattr(call, "payload").get(
+            "official_total_tokens", getattr(call, "total_tokens", None)
+        )
+        is not None
+        for call in unique.values()
+    )
     component_attributes = (
         "prompt_tokens",
         "completion_tokens",
@@ -175,12 +191,21 @@ def reconcile_official_tokens(
         values = [getattr(call, attribute, None) for call in unique.values()]
         component_values[attribute] = (
             sum(int(value) for value in values)
-            if values and all(isinstance(value, int) for value in values)
+            if official_usage_complete
+            and values
+            and all(isinstance(value, int) for value in values)
             else None
         )
     provider_total_tokens = (
-        sum(int(getattr(call, "total_tokens")) for call in unique.values())
-        if unique
+        sum(
+            int(
+                getattr(call, "payload").get(
+                    "official_total_tokens", getattr(call, "total_tokens")
+                )
+            )
+            for call in unique.values()
+        )
+        if official_usage_complete
         and all(
             isinstance(getattr(call, "total_tokens", None), int)
             for call in unique.values()
@@ -188,7 +213,7 @@ def reconcile_official_tokens(
         else None
     )
     by_phase: defaultdict[str, int] = defaultdict(int)
-    for call in unique.values():
+    for call in unique.values() if official_usage_complete else ():
         total = getattr(call, "total_tokens", None)
         if isinstance(total, int):
             by_phase[str(getattr(call, "phase", "") or "unknown")] += total

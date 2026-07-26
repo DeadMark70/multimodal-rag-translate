@@ -105,6 +105,10 @@ class ResearchAnalyticsService:
             user_id=user_id, campaign_id=campaign_id
         )
 
+    async def _list_llm_calls_for_campaign(self, campaign_id: str):
+        loader = getattr(self._observability, "list_llm_calls_for_campaign", None)
+        return await loader(campaign_id) if loader is not None else {}
+
     async def get_summary(
         self, *, user_id: str, campaign_id: str
     ) -> CampaignResearchSummaryResponse:
@@ -127,6 +131,7 @@ class ResearchAnalyticsService:
         events_by_scope: dict[str, list] = defaultdict(list)
         for event in events:
             events_by_scope[event.scope_id].append(event)
+        llm_calls_by_run = await self._list_llm_calls_for_campaign(campaign_id)
         requested_metrics = _requested_metrics(scopes)
         execution_scope_modes = {
             scope.scope_id: _execution_scope_mode(scope, all_results)
@@ -152,6 +157,7 @@ class ResearchAnalyticsService:
                 has_unattributed_execution_scopes,
                 canonical_identities,
                 all_results,
+                llm_calls_by_run,
             )
             modes.append(summary)
             warnings.extend(
@@ -174,6 +180,13 @@ class ResearchAnalyticsService:
             all_results,
         )
         tokens = _tokens(official_scopes, official_events)
+        tokens = _reconcile_v9_result_tokens(
+            tokens=tokens,
+            scopes=official_scopes,
+            events=official_events,
+            results=completed,
+            llm_calls_by_run=llm_calls_by_run,
+        )
         if has_unattributed_execution_scopes:
             tokens = _partial_for_missing_mode_attribution(tokens)
         warnings.extend(
@@ -250,7 +263,12 @@ class ResearchAnalyticsService:
         )
 
     async def get_run_token_breakdown(
-        self, *, campaign_id: str, run_id: str
+        self,
+        *,
+        campaign_id: str,
+        run_id: str,
+        agentic_execution_version: str = "v8",
+        observability_partial_reasons: list[str] | None = None,
     ) -> TokenBreakdown:
         """Return strict accounting for one selected execution run."""
         scopes = await self._accounting.list_campaign_scopes(campaign_id)
@@ -273,9 +291,20 @@ class ResearchAnalyticsService:
         for event in events:
             if event.scope_id in {scope.scope_id for scope in run_scopes}:
                 events_by_scope[event.scope_id].append(event)
+        tokens = _tokens(
+            run_scopes,
+            [event for rows in events_by_scope.values() for event in rows],
+        )
+        if agentic_execution_version != "v9":
+            return tokens
         return _tokens(
             run_scopes,
             [event for rows in events_by_scope.values() for event in rows],
+            provider_attempts=(
+                await self._observability.list_llm_calls_for_run(run_id)
+            ),
+            runtime_total_tokens=tokens.total_tokens,
+            observability_partial_reasons=observability_partial_reasons,
         )
 
     async def get_question_comparison(
@@ -310,6 +339,7 @@ class ResearchAnalyticsService:
         events_by_scope: dict[str, list] = defaultdict(list)
         for event in events:
             events_by_scope[event.scope_id].append(event)
+        llm_calls_by_run = await self._list_llm_calls_for_campaign(campaign_id)
 
         score_map: dict[str, dict[str, float]] = defaultdict(dict)
         for score in scores:
@@ -341,7 +371,16 @@ class ResearchAnalyticsService:
                 continue
             breakdown = _tokens([scope], events_by_scope[scope.scope_id])
             for result_id in result_ids:
-                tokens_by_result[str(result_id)] = breakdown
+                result = result_by_id.get(str(result_id))
+                tokens_by_result[str(result_id)] = (
+                    _reconcile_v9_result_tokens(
+                        tokens=breakdown,
+                        scopes=[scope],
+                        events=events_by_scope[scope.scope_id],
+                        results=[result] if result is not None else [],
+                        llm_calls_by_run=llm_calls_by_run,
+                    )
+                )
 
         results_by_question: dict[str, list] = defaultdict(list)
         for result in completed:
@@ -398,6 +437,7 @@ class ResearchAnalyticsService:
                     for item in token_values
                     if item is not None
                     and item.accounting_status == "complete"
+                    and item.phase_attribution_status == "complete"
                     and item.total_tokens is not None
                 ]
                 if mode_results and len(complete_tokens) == len(mode_results):
@@ -637,6 +677,7 @@ class ResearchAnalyticsService:
         events_by_scope: dict[str, list] = defaultdict(list)
         for event in events:
             events_by_scope[event.scope_id].append(event)
+        llm_calls_by_run = await self._list_llm_calls_for_campaign(campaign_id)
         rows: list[AgentBehaviorRow] = []
         for result in results:
             trace = traces_by_result.get(result.id)
@@ -669,9 +710,22 @@ class ResearchAnalyticsService:
                     for event in events_by_scope[scope.scope_id]
                 ],
             )
+            token_breakdown = _reconcile_v9_result_tokens(
+                tokens=token_breakdown,
+                scopes=run_scopes,
+                events=[
+                    event
+                    for scope in run_scopes
+                    for event in events_by_scope[scope.scope_id]
+                ],
+                results=[result],
+                llm_calls_by_run=llm_calls_by_run,
+            )
             token_status = (
                 "not_available"
                 if token_breakdown.accounting_status == "incomplete_legacy"
+                else "partial"
+                if token_breakdown.phase_attribution_status != "complete"
                 else token_breakdown.accounting_status
             )
             quality_scores = score_map.get(str(result.id), {})
@@ -878,6 +932,7 @@ def _mode_summary(
     has_unattributed_execution_scopes,
     canonical_identities,
     campaign_results,
+    llm_calls_by_run,
 ):
     official = _official_execution_scopes(results, scopes)
     official_events = [
@@ -901,6 +956,13 @@ def _mode_summary(
         campaign_results,
     )
     tokens = _tokens(official, official_events)
+    tokens = _reconcile_v9_result_tokens(
+        tokens=tokens,
+        scopes=official,
+        events=official_events,
+        results=results,
+        llm_calls_by_run=llm_calls_by_run,
+    )
     if has_unattributed_execution_scopes:
         tokens = _partial_for_missing_mode_attribution(tokens)
     cost = _cost(official_events, operational_events=operational)
@@ -919,7 +981,10 @@ def _mode_summary(
         )
     if tokens.accounting_status == "incomplete_legacy":
         reasons.append("legacy_accounting")
-    elif tokens.accounting_status != "complete":
+    elif (
+        tokens.accounting_status != "complete"
+        or tokens.phase_attribution_status != "complete"
+    ):
         reasons.append("incomplete_accounting")
     # Token-only evaluations do not require a monetary price list. Pricing is
     # still returned as an independent optional status, but unknown/partial
@@ -1377,6 +1442,46 @@ def _best_quality_mode(rows: list[QuestionModeComparison]) -> str | None:
     return str(winner.mode)
 
 
+def _reconcile_v9_result_tokens(
+    *,
+    tokens: TokenBreakdown,
+    scopes,
+    events,
+    results,
+    llm_calls_by_run,
+) -> TokenBreakdown:
+    v9_results = [
+        result
+        for result in results
+        if getattr(result, "agentic_execution_version", "v8") == "v9"
+    ]
+    if not v9_results:
+        return tokens
+    partial_reasons = sorted(
+        {
+            str(reason)
+            for result in v9_results
+            for reason in (
+                (getattr(result, "derived_metrics", {}) or {}).get(
+                    "observability_partial_reasons", []
+                )
+            )
+            if reason
+        }
+    )
+    return _tokens(
+        scopes,
+        events,
+        provider_attempts=[
+            call
+            for result in v9_results
+            for call in llm_calls_by_run.get(str(result.id), [])
+        ],
+        runtime_total_tokens=tokens.total_tokens,
+        observability_partial_reasons=partial_reasons,
+    )
+
+
 def _tokens(
     scopes,
     events,
@@ -1384,6 +1489,7 @@ def _tokens(
     *,
     provider_attempts=None,
     runtime_total_tokens=None,
+    observability_partial_reasons=None,
 ):
     if not scopes:
         return TokenBreakdown(
@@ -1480,6 +1586,7 @@ def _tokens(
         reconciliation = reconcile_official_tokens(
             runtime_total_tokens=runtime_total_tokens,
             calls=list(provider_attempts),
+            observability_partial_reasons=observability_partial_reasons or [],
         )
         values["by_phase"] = reconciliation.by_phase
         values["phase_attribution_status"] = (

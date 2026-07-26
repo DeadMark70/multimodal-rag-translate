@@ -1,6 +1,8 @@
 """Tests for the provider boundary that reserves before invoking."""
 
 import asyncio
+import hashlib
+import json
 
 import pytest
 
@@ -45,6 +47,23 @@ class _ResponseProvider:
                 "total_tokens": 21,
             },
         }
+
+
+class _ComponentUsageWithoutOfficialTotalProvider:
+    async def ainvoke(self, messages: object) -> object:
+        return {
+            "content": "provider answer",
+            "usage_metadata": {
+                "input_tokens": 11,
+                "output_tokens": 5,
+                "reasoning_tokens": 3,
+            },
+        }
+
+
+class _ResponseWithoutUsageProvider:
+    async def ainvoke(self, messages: object) -> object:
+        return {"content": "provider answer"}
 
 
 class _TimeoutProvider:
@@ -194,6 +213,7 @@ async def test_successful_admitted_attempt_emits_complete_terminal_observation()
         "other_tokens": 2,
         "total_tokens": 21,
         "usage_status": "measured",
+        "official_total_tokens": 21,
     }
 
 
@@ -382,3 +402,93 @@ async def test_prompt_capture_is_execution_time_bounded_and_sanitized() -> None:
     assert call.prompt_capture_status == "redacted"
     assert call.full_prompt is None
     assert call.full_prompt_capture_status == "not_captured_at_execution"
+
+
+@pytest.mark.asyncio
+async def test_prompt_capture_sanitizes_nested_structured_secret_values_before_hashing() -> None:
+    observer = _RecordingObserver()
+    await invoke_budgeted_llm(
+        controller=_controller(),
+        provider=_ResponseProvider(),
+        observer=observer,
+        provider_name="gemini",
+        model_name="gemini-2.5-flash",
+        capture_policy={
+            "hash": True,
+            "preview": True,
+            "full_prompt": True,
+            "preview_max_chars": 4096,
+        },
+        phase="evidence_extract",
+        purpose="extract_evidence",
+        messages=[
+            {
+                "role": "user",
+                "content": {
+                    "password": "hunter2",
+                    "nested": [
+                        {"api_key": "quoted-api-key"},
+                        {"token": "quoted-token"},
+                        {"authorization": "Bearer quoted-credential"},
+                    ],
+                    "note": "safe",
+                },
+            }
+        ],
+        estimated_input_tokens=10,
+    )
+
+    call = observer.calls[0]
+    safe_messages = [
+        {
+            "role": "user",
+            "content": {
+                "password": "[REDACTED]",
+                "nested": [
+                    {"api_key": "[REDACTED]"},
+                    {"token": "[REDACTED]"},
+                    {"authorization": "[REDACTED]"},
+                ],
+                "note": "safe",
+            },
+        }
+    ]
+    safe_canonical = json.dumps(
+        safe_messages,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    assert call.prompt_preview == safe_canonical
+    assert call.full_prompt == safe_canonical
+    assert call.prompt_hash == hashlib.sha256(
+        safe_canonical.encode("utf-8")
+    ).hexdigest()
+    assert call.prompt_capture_status == "redacted"
+    assert call.full_prompt_capture_status == "redacted"
+    assert "hunter2" not in call.prompt_preview
+    assert "hunter2" not in call.full_prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider",
+    [_ComponentUsageWithoutOfficialTotalProvider(), _ResponseWithoutUsageProvider()],
+)
+async def test_attempt_without_provider_official_total_stays_estimated(provider) -> None:
+    observer = _RecordingObserver()
+    await invoke_budgeted_llm(
+        controller=_controller(),
+        provider=provider,
+        observer=observer,
+        provider_name="gemini",
+        model_name="gemini-2.5-flash",
+        phase="evidence_extract",
+        purpose="extract_evidence",
+        messages=[{"role": "user", "content": "extract"}],
+        estimated_input_tokens=10,
+    )
+
+    usage = observer.calls[0].usage
+    assert usage["usage_status"] == "estimated"
+    assert usage["official_total_tokens"] is None

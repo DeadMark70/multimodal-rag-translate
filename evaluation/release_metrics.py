@@ -629,9 +629,14 @@ class ReleaseMetricsService:
         llm_calls: list[Any],
     ) -> ReleaseRun:
         breakdown = self._snapshot_run_tokens(result.id, accounting_snapshot)
+        derived_metrics = getattr(result, "derived_metrics", {}) or {}
+        partial_reasons = derived_metrics.get("observability_partial_reasons", [])
         reconciliation = reconcile_official_tokens(
             runtime_total_tokens=breakdown.total_tokens,
             calls=llm_calls,
+            observability_partial_reasons=(
+                partial_reasons if isinstance(partial_reasons, list) else []
+            ),
         )
         enforce_attempt_reconciliation = result.agentic_execution_version == "v9"
         v9 = self._v9_snapshot_for_result(result, observability_snapshot)
@@ -733,9 +738,7 @@ class ReleaseMetricsService:
             contract_version=contract.contract_version if contract else None,
             slot_plan_status=contract.slot_plan_status if contract else None,
             token_reconciliation_status=(
-                reconciliation.status
-                if enforce_attempt_reconciliation
-                else "complete"
+                reconciliation.status if enforce_attempt_reconciliation else "complete"
             ),
             token_reconciliation_reasons=(
                 reconciliation.reasons if enforce_attempt_reconciliation else ()

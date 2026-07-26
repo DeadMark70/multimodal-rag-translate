@@ -101,7 +101,17 @@ async def _seed_export_rows(*, run_id: str, campaign_id: str) -> None:
             latency_ms=12,
             status="failed",
             error={"message": "apiKey=sk-secret exploded with stack trace"},
-            payload={"full_prompt": "SECRET FULL PROMPT", "other_field": "kept"},
+            payload={
+                "full_prompt": (
+                    '{"content":{"password":"hunter2","note":"safe"},'
+                    '"authorization":"Bearer quoted-credential"}'
+                ),
+                "structured": {
+                    "api_key": "quoted-api-key",
+                    "token": "quoted-token",
+                },
+                "other_field": "kept",
+            },
             created_at=now,
         )
     )
@@ -271,7 +281,11 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         full_llm_call = next(
             item for item in full_export.json()["llm_calls"] if item["llm_call_id"] == f"{run_id}-llm"
         )
-        assert full_llm_call["payload"]["full_prompt"] == "SECRET FULL PROMPT"
+        assert "hunter2" not in full_export.text
+        assert "quoted-api-key" not in full_export.text
+        assert "quoted-token" not in full_export.text
+        assert "quoted-credential" not in full_export.text
+        assert full_llm_call["payload"]["other_field"] == "kept"
         unavailable = next(
             item
             for item in full_export.json()["llm_calls"]

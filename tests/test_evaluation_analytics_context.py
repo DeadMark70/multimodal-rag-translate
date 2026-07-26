@@ -229,6 +229,50 @@ def test_official_token_reconciliation_counts_retries_and_token_components() -> 
             "provider_usage_missing",
         ),
         (10, [], ("llm_call_observer_failed",), "llm_call_observer_failed"),
+        (
+            10,
+            [
+                SimpleNamespace(
+                    llm_call_id="call-balanced-but-observer-partial",
+                    phase="final_answer",
+                    reservation_id="reservation-balanced",
+                    provider_attempt=1,
+                    total_tokens=10,
+                    prompt_tokens=5,
+                    completion_tokens=5,
+                    reasoning_tokens=0,
+                    other_tokens=0,
+                    payload={
+                        "usage_status": "measured",
+                        "official_total_tokens": 10,
+                    },
+                )
+            ],
+            ("llm_call_observer_failed",),
+            "llm_call_observer_failed",
+        ),
+        (
+            200,
+            [
+                SimpleNamespace(
+                    llm_call_id="call-estimated",
+                    phase="final_answer",
+                    reservation_id="reservation-estimated",
+                    provider_attempt=1,
+                    total_tokens=200,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    reasoning_tokens=0,
+                    other_tokens=200,
+                    payload={
+                        "usage_status": "estimated",
+                        "official_total_tokens": None,
+                    },
+                )
+            ],
+            (),
+            "provider_usage_not_official",
+        ),
     ],
 )
 def test_official_token_reconciliation_fails_closed(
@@ -244,6 +288,8 @@ def test_official_token_reconciliation_fails_closed(
     assert expected_reason in result.reasons
     if runtime_total is None:
         assert result.runtime_total_tokens is None
+    if expected_reason == "provider_usage_not_official":
+        assert result.provider_total_tokens is None
 
 
 class SingleRunCampaignRepository:

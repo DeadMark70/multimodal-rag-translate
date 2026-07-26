@@ -958,7 +958,6 @@ async def test_llm_observer_write_failure_preserves_answer_and_marks_run_partial
             ),
             provider=Provider(),
             observer=observer,
-            provider_name="gemini",
             model_name="gemini-2.5-flash",
             phase="final_answer",
             purpose="synthesizer",
@@ -998,7 +997,7 @@ async def test_llm_observer_write_failure_preserves_answer_and_marks_run_partial
             EvaluationObservabilityRepository,
             "record_llm_call",
             new=AsyncMock(side_effect=OSError("storage unavailable")),
-        ):
+        ) as record_llm_call:
             await engine._run_campaign(
                 user_id="user-a",
                 campaign_id=campaign.id,
@@ -1014,6 +1013,12 @@ async def test_llm_observer_write_failure_preserves_answer_and_marks_run_partial
         assert result.answer == "observed answer"
         assert result.status == CampaignResultStatus.COMPLETED
         assert result.derived_metrics["observability_status"] == "partial"
+        assert set(result.derived_metrics["observability_partial_reasons"]) == {
+            "observability_write_failed",
+            "llm_call_observer_failed",
+        }
+        attempted_call = record_llm_call.await_args_list[0].args[0]
+        assert attempted_call.provider == "google"
 
 
 @pytest.mark.asyncio

@@ -53,9 +53,7 @@ class LlmAttemptObservation:
 class LlmCallObserver(Protocol):
     """Best-effort sink for admitted provider terminal attempts."""
 
-    async def on_terminal_attempt(
-        self, observation: LlmAttemptObservation
-    ) -> bool:
+    async def on_terminal_attempt(self, observation: LlmAttemptObservation) -> bool:
         """Persist one terminal attempt and return whether it was recorded."""
 
     def mark_partial(self, reason: str) -> None:
@@ -191,14 +189,19 @@ async def invoke_budgeted_llm(
         if phase == "final_answer":
             return _final_qualified_partial()
         raise
-    flat_usage = get_flat_llm_usage(response)
+    flat_usage = get_flat_llm_usage(response, include_provenance=True)
+    provider_total_reported = bool(flat_usage.pop("provider_total_reported", False))
+    known_tokens = (
+        flat_usage.get("input_tokens", 0)
+        + flat_usage.get("output_tokens", 0)
+        + flat_usage.get("reasoning_tokens", 0)
+    )
     flat_usage["other_tokens"] = max(
-        flat_usage.get("total_tokens", 0)
-        - flat_usage.get("input_tokens", 0)
-        - flat_usage.get("output_tokens", 0)
-        - flat_usage.get("reasoning_tokens", 0),
+        flat_usage.get("total_tokens", known_tokens) - known_tokens,
         0,
     )
+    if not provider_total_reported:
+        flat_usage.pop("total_tokens", None)
     usage = await controller.reconcile_usage(reservation.reservation_id, flat_usage)
     await _observe_terminal(
         observer=observer,
@@ -257,6 +260,9 @@ async def _observe_terminal(
             "other_tokens": usage.other_tokens,
             "total_tokens": usage.total_tokens,
             "usage_status": usage.usage_status,
+            "official_total_tokens": (
+                usage.total_tokens if usage.usage_status == "measured" else None
+            ),
         },
     )
     try:
@@ -293,12 +299,44 @@ class _PromptCapture:
 
 
 _SECRET_PATTERNS = (
-    re.compile(
-        r"(?i)\b(api[_-]?key|password|secret|token)\s*[:=]\s*[^\s,;\"}]+"
-    ),
+    re.compile(r"(?i)\b(api[_-]?key|password|secret|token)\s*[:=]\s*[^\s,;\"}]+"),
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{6,}\b"),
 )
+_SENSITIVE_PROMPT_KEYS = frozenset(
+    {"apikey", "authorization", "password", "secret", "token"}
+)
+
+
+def _sanitize_prompt_value(value: Any) -> tuple[Any, bool]:
+    if isinstance(value, Mapping):
+        sanitized: dict[str, Any] = {}
+        redacted = False
+        for key, item in value.items():
+            key_text = str(key)
+            normalized_key = re.sub(r"[^a-z0-9]", "", key_text.lower())
+            if normalized_key in _SENSITIVE_PROMPT_KEYS:
+                sanitized[key_text] = "[REDACTED]"
+                redacted = True
+                continue
+            sanitized_item, item_redacted = _sanitize_prompt_value(item)
+            sanitized[key_text] = sanitized_item
+            redacted = redacted or item_redacted
+        return sanitized, redacted
+    if isinstance(value, (list, tuple)):
+        items = []
+        redacted = False
+        for item in value:
+            sanitized_item, item_redacted = _sanitize_prompt_value(item)
+            items.append(sanitized_item)
+            redacted = redacted or item_redacted
+        return items, redacted
+    if isinstance(value, str):
+        sanitized = value
+        for pattern in _SECRET_PATTERNS:
+            sanitized = pattern.sub("[REDACTED]", sanitized)
+        return sanitized, sanitized != value
+    return value, False
 
 
 def _capture_prompt(
@@ -317,21 +355,20 @@ def _capture_prompt(
     ):
         preview_max_chars = 512
     try:
-        canonical = _stable_serialize(messages)
-        sanitized = canonical
+        sanitized_value, structured_redacted = _sanitize_prompt_value(messages)
+        sanitized = _stable_serialize(sanitized_value)
+        canonical = sanitized
         for pattern in _SECRET_PATTERNS:
             sanitized = pattern.sub("[REDACTED]", sanitized)
-        was_redacted = sanitized != canonical
+        was_redacted = structured_redacted or sanitized != canonical
         prompt_hash = (
-            hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            hashlib.sha256(sanitized.encode("utf-8")).hexdigest()
             if capture_hash
             else None
         )
         return _PromptCapture(
             prompt_hash=prompt_hash,
-            prompt_preview=(
-                sanitized[:preview_max_chars] if capture_preview else None
-            ),
+            prompt_preview=(sanitized[:preview_max_chars] if capture_preview else None),
             full_prompt=sanitized if capture_full else None,
             prompt_capture_status=(
                 "redacted"

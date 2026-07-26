@@ -36,7 +36,14 @@ MAX_V9_OBSERVABILITY_PAYLOAD_BYTES = 256 * 1024
 DEFAULT_EVIDENCE_EXCERPT_CHARS = 500
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]+"),
-    re.compile(r"(?:api[_-]?key|authorization|bearer)\s*[:=]?\s*\S+", re.IGNORECASE),
+    re.compile(
+        r"(?:api[_-]?key|authorization|password|secret|token|bearer)"
+        r"\s*[:=]?\s*(?:\"[^\"]*\"|'[^']*'|\S+)",
+        re.IGNORECASE,
+    ),
+)
+_SENSITIVE_KEYS = frozenset(
+    {"apikey", "authorization", "password", "secret", "token"}
 )
 
 
@@ -97,6 +104,16 @@ def safe_plain_text_excerpt(value: Any, *, limit: int = DEFAULT_EVIDENCE_EXCERPT
 def redact_sensitive_text(value: Any) -> str:
     """Redact credentials without altering otherwise authorized export content."""
     text = str(value or "")
+    try:
+        parsed = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        parsed = None
+    if isinstance(parsed, (dict, list)):
+        return json.dumps(
+            redact_sensitive_value(parsed),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub("[redacted]", text)
     return text
@@ -105,7 +122,16 @@ def redact_sensitive_text(value: Any) -> str:
 def redact_sensitive_value(value: Any) -> Any:
     """Apply credential redaction recursively to JSON-shaped export payloads."""
     if isinstance(value, dict):
-        return {str(key): redact_sensitive_value(item) for key, item in value.items()}
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            normalized_key = re.sub(r"[^a-z0-9]", "", key_text.lower())
+            redacted[key_text] = (
+                "[redacted]"
+                if normalized_key in _SENSITIVE_KEYS
+                else redact_sensitive_value(item)
+            )
+        return redacted
     if isinstance(value, list):
         return [redact_sensitive_value(item) for item in value]
     if isinstance(value, tuple):

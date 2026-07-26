@@ -1475,6 +1475,7 @@ class CampaignResearchResult:
     category: Optional[str]
     difficulty: Optional[str]
     required_modalities: list[Any] | None
+    system_version_snapshot: dict[str, Any]
     derived_metrics: dict[str, Any]
     source_attempt_id: Optional[str]
     status: CampaignResultStatus
@@ -1484,6 +1485,11 @@ class CampaignResearchResult:
     def repeat_number(self) -> int:
         value = self.derived_metrics.get("repeat_number")
         return value if isinstance(value, int) else self.run_number
+
+    @property
+    def agentic_execution_version(self) -> str:
+        version = self.system_version_snapshot.get("agentic_execution_version", "v8")
+        return version if version in {"v8", "v9"} else "v8"
 
 
 @dataclass(frozen=True, slots=True)
@@ -2164,6 +2170,7 @@ class CampaignResultRepository:
                     difficulty,
                     json_extract(question_snapshot_json, '$.required_modalities')
                         AS required_modalities_json,
+                    system_version_snapshot_json,
                     derived_metrics_json,
                     source_attempt_id,
                     status,
@@ -2189,6 +2196,9 @@ class CampaignResultRepository:
                 difficulty=row["difficulty"],
                 required_modalities=_json_loads(
                     row["required_modalities_json"], None
+                ),
+                system_version_snapshot=_json_loads(
+                    row["system_version_snapshot_json"], {}
                 ),
                 derived_metrics=_json_loads(row["derived_metrics_json"], {}),
                 source_attempt_id=row["source_attempt_id"] or None,

@@ -334,6 +334,7 @@ class EvaluationRunRecorder:
             error=dict(observation.error),
             payload={
                 "usage_status": usage["usage_status"],
+                "official_total_tokens": usage.get("official_total_tokens"),
                 **(
                     {"full_prompt": observation.full_prompt}
                     if observation.full_prompt is not None

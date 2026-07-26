@@ -189,14 +189,10 @@ class AgenticV9CampaignRuntime:
                 setup_snapshot, _pre_route_token_budget(setup_snapshot)
             ),
         )
-        llm_call_observer = (
-            self._llm_call_observer or current_llm_call_observer()
-        )
+        llm_call_observer = self._llm_call_observer or current_llm_call_observer()
         provider_name = str(setup_snapshot.get("provider") or "unknown")
         model_name = str(
-            setup_snapshot.get("model_name")
-            or setup_snapshot.get("model")
-            or "unknown"
+            setup_snapshot.get("model_name") or setup_snapshot.get("model") or "unknown"
         )
         if (
             runtime_contract.route_decision is not None

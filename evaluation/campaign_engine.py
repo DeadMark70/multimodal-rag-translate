@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable, Literal, Optional
 from uuid import uuid4
 
 from core.errors import AppError, ErrorCode
+from core.providers import get_llm_provider_name
 from evaluation.campaign_schemas import (
     AblationCondition,
     CampaignMetricsResponse,
@@ -107,6 +108,8 @@ class ExecutedCampaignUnit:
     total_latency_ms: float
     model_config: dict[str, Any]
     observability_partial: bool = False
+    observability_partial_reasons: tuple[str, ...] = ()
+    provider_name: str = "unknown"
 
 
 def _unit_key(unit: CampaignUnit) -> tuple[str, str, int, str | None]:
@@ -477,13 +480,7 @@ async def _record_unit_llm_usage(
         return
 
     model_name = execution.model_config.get("model_name")
-    provider = execution.model_config.get("provider")
-    if (
-        provider is None
-        and isinstance(model_name, str)
-        and model_name.startswith("gemini")
-    ):
-        provider = "google"
+    provider = execution.provider_name
 
     recorder = EvaluationRunRecorder(
         run_id=run_id,
@@ -1983,12 +1980,18 @@ class CampaignEngine:
         request_id = str(uuid4())
         started_at = _utc_now()
         runner_started_perf = time.perf_counter()
+        effective_model_config = {
+            **model_config,
+            "provider": str(
+                model_config.get("provider") or get_llm_provider_name()
+            ),
+        }
         recorder = EvaluationRunRecorder(
             run_id=run_id,
             campaign_id=campaign_id,
             user_id=user_id,
             request_id=request_id,
-            provider_name=str(model_config.get("provider") or "unknown"),
+            provider_name=str(effective_model_config["provider"]),
             model_name=str(
                 model_config.get("model_name")
                 or model_config.get("model")
@@ -2002,7 +2005,7 @@ class CampaignEngine:
                     test_case=unit.test_case,
                     user_id=user_id,
                     mode=unit.mode,
-                    model_config=model_config,
+                    model_config=effective_model_config,
                     run_number=repeat_number,
                     ablation_flags=ablation_flags,
                     budget=budget,
@@ -2025,6 +2028,10 @@ class CampaignEngine:
             total_latency_ms=total_latency_ms,
             model_config=dict(model_config),
             observability_partial=recorder.observability_partial,
+            observability_partial_reasons=tuple(
+                recorder.observability_partial_reasons
+            ),
+            provider_name=str(effective_model_config["provider"]),
         )
 
     async def _persist_unit_result(
@@ -2058,6 +2065,9 @@ class CampaignEngine:
         derived_metrics = _build_derived_metrics(unit=unit, payload=payload)
         derived_metrics["observability_status"] = (
             "partial" if execution.observability_partial else "complete"
+        )
+        derived_metrics["observability_partial_reasons"] = list(
+            execution.observability_partial_reasons
         )
 
         if isinstance(payload, Exception):
