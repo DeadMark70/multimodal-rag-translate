@@ -81,7 +81,13 @@ class VisualAssetResolver:
     ) -> VisualAssetResolution:
         """Read a bounded manifest, then preserve authorization and locator stages."""
         store = self._store_factory(user_id)
-        links = store.get_asset_links(limit=100)
+        authorized_doc_ids = set(task.source_scope.authorized_doc_ids)
+        links = store.get_asset_links(
+            authorized_doc_ids=authorized_doc_ids,
+            limit=100,
+        )
+        if not links:
+            links = store.get_asset_links(limit=1)
         slot_ids_by_asset: dict[str, list[str]] = {}
         for slot in slots:
             authorized = set(

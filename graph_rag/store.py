@@ -1110,16 +1110,22 @@ class GraphStore:
         self.asset_links[validated.asset_id] = validated.model_copy(deep=True)
         self.mark_dirty()
 
-    def get_asset_links(self, *, limit: int = 100) -> List[GraphAssetLink]:
-        """Return a bounded deterministic manifest snapshot for staged filtering."""
+    def get_asset_links(
+        self,
+        *,
+        authorized_doc_ids: Set[str] | None = None,
+        limit: int = 100,
+    ) -> List[GraphAssetLink]:
+        """Return a bounded manifest snapshot, applying authorization before its cap."""
         if limit < 1:
             return []
         return [
             link.model_copy(deep=True)
             for link in sorted(
                 self.asset_links.values(), key=lambda item: item.asset_id
-            )[: min(limit, 1_000)]
-        ]
+            )
+            if authorized_doc_ids is None or link.doc_id in authorized_doc_ids
+        ][: min(limit, 1_000)]
 
     def get_asset_links_for_doc(self, doc_id: str) -> List[GraphAssetLink]:
         """Return deterministic copies of one document's registered assets."""

@@ -17,6 +17,7 @@ from data_base.agentic_v9.schemas import (
 )
 from data_base.agentic_v9.visual_asset_resolver import VisualAssetResolver
 from graph_rag.schemas import GraphAssetLink
+from graph_rag.store import GraphStore
 
 
 def _task(
@@ -180,7 +181,8 @@ def test_resolve_task_uses_bounded_manifest_lookup(
     _write_png(upload_root, "user-1/doc-1/page.png")
 
     class Store:
-        def get_asset_links(self, *, limit):
+        def get_asset_links(self, *, authorized_doc_ids=None, limit):
+            assert authorized_doc_ids == {"doc-1"}
             assert limit == 100
             return [_link()]
 
@@ -200,6 +202,45 @@ def test_resolve_task_uses_bounded_manifest_lookup(
 
     assert [asset.asset_id for asset in result.assets] == ["asset-1"]
     assert result.assets[0].slot_ids == ["S1"]
+
+
+def test_resolve_task_applies_manifest_cap_after_authorization(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    upload_root = tmp_path / "uploads"
+    monkeypatch.setattr(uploads, "BASE_UPLOAD_FOLDER", str(upload_root))
+    _write_png(upload_root, "user-1/doc-1/page.png")
+    store = GraphStore("user-1", storage_dir=tmp_path / "graph")
+    for index in range(100):
+        store.record_asset_link(
+            _link(
+                asset_id=f"a{index:03d}",
+                doc_id="other-doc",
+                reference=f"user-1/other-doc/page-{index}.png",
+            )
+        )
+    store.record_asset_link(_link(asset_id="z-target"))
+
+    result = VisualAssetResolver(store_factory=lambda _user_id: store).resolve_task(
+        user_id="user-1",
+        task=_task(),
+        slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Figure 1 result",
+                locator_hints=["Figure 1"],
+                authorized_source_doc_ids=["doc-1"],
+                visual_policy="required",
+            )
+        ],
+    )
+
+    assert [asset.asset_id for asset in result.assets] == ["z-target"]
+    assert result.diagnostics.manifest_count == 1
+    assert result.diagnostics.authorized_count == 1
+    assert result.diagnostics.locator_match_count == 1
+    assert result.diagnostics.terminal_reason is None
 
 
 @pytest.mark.parametrize(
@@ -226,8 +267,12 @@ def test_resolve_task_preserves_manifest_authorization_locator_stages(
     monkeypatch.setattr(uploads, "BASE_UPLOAD_FOLDER", str(upload_root))
 
     class Store:
-        def get_asset_links(self, *, limit):
-            assert limit == 100
+        def get_asset_links(self, *, authorized_doc_ids=None, limit):
+            if authorized_doc_ids is not None:
+                assert authorized_doc_ids == {"doc-1"}
+                assert limit == 100
+                return [link] if link.doc_id in authorized_doc_ids else []
+            assert limit == 1
             return [link]
 
     result = VisualAssetResolver(store_factory=lambda _user_id: Store()).resolve_task(
