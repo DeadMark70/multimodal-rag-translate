@@ -10,6 +10,7 @@ from data_base.agentic_v9.schemas import (
     QueryContract,
     RequiredSlot,
     ResolvedSourceScope,
+    SlotCondition,
 )
 
 
@@ -182,7 +183,16 @@ def test_q16_compiles_atomic_source_and_locator_groups_without_answer_text() -> 
                 source_name_hints=["Implicit-U-KAN2.0.pdf"],
                 authorized_source_doc_ids=["ukan"],
                 locator_hints=["Table 3"],
+                requested_measure="Dice",
                 expected_answer_type="number",
+                expected_result_unit="dimensionless",
+                conditions=[
+                    SlotCondition(
+                        field="noise_level",
+                        operator="=",
+                        value="0.4",
+                    )
+                ],
             ),
             RequiredSlot(
                 slot_id="S6",
@@ -191,7 +201,16 @@ def test_q16_compiles_atomic_source_and_locator_groups_without_answer_text() -> 
                 source_name_hints=["Implicit-U-KAN2.0.pdf"],
                 authorized_source_doc_ids=["ukan"],
                 locator_hints=["Table 3"],
+                requested_measure="Dice",
                 expected_answer_type="number",
+                expected_result_unit="dimensionless",
+                conditions=[
+                    SlotCondition(
+                        field="noise_level",
+                        operator="=",
+                        value="0.4",
+                    )
+                ],
             ),
             RequiredSlot(
                 slot_id="S7",
@@ -226,6 +245,9 @@ def test_q16_compiles_atomic_source_and_locator_groups_without_answer_text() -> 
     assert all("0.9079" not in task.query for task in plan.tasks)
     assert "ODES.pdf" in groups[("S3",)].query
     assert "Transcribe the ODES equation." in groups[("S3",)].query
+    assert "Dice" in groups[("S5", "S6")].query
+    assert "dimensionless" in groups[("S5", "S6")].query
+    assert "noise_level = 0.4" in groups[("S5", "S6")].query
 
 
 @pytest.mark.parametrize(
@@ -257,7 +279,9 @@ def test_q1_q2_multi_hop_tasks_have_round_two_dependencies(
     assert all(task.target_slot_ids == ["slot-main"] for task in initial_tasks)
     assert dependent_task.round_id == "round-2"
     assert dependent_task.target_slot_ids == ["slot-qualification"]
-    assert dependent_task.depends_on_task_ids == [task.task_id for task in initial_tasks]
+    assert dependent_task.depends_on_task_ids == [
+        task.task_id for task in initial_tasks
+    ]
     assert dependent_task.graph_policy == "locator_fallback"
 
 

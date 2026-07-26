@@ -21,6 +21,7 @@ from data_base.agentic_v9.schemas import (
     ResolvedSourceScope,
     RequiredSlot,
     RouteDecision,
+    SlotCondition,
     SlotResolution,
     SourceLocator,
     SupportedFinding,
@@ -145,15 +146,20 @@ def test_slot_resolution_rejects_incoherent_evidence_links(
         SlotResolution(slot_id="slot-1", status=status, evidence_ids=evidence_ids)
 
 
-def test_slot_resolution_accepts_only_positive_evidence_for_supported_or_conflicted() -> None:
+def test_slot_resolution_accepts_only_positive_evidence_for_supported_or_conflicted() -> (
+    None
+):
     assert SlotResolution(
         slot_id="slot-1", status="supported", evidence_ids=["evidence-1"]
     ).evidence_ids == ["evidence-1"]
-    assert SlotResolution(
-        slot_id="slot-1",
-        status="conflicted",
-        evidence_ids=["evidence-1", "evidence-2"],
-    ).status == "conflicted"
+    assert (
+        SlotResolution(
+            slot_id="slot-1",
+            status="conflicted",
+            evidence_ids=["evidence-1", "evidence-2"],
+        ).status
+        == "conflicted"
+    )
 
 
 @pytest.mark.parametrize(
@@ -190,7 +196,7 @@ def test_slot_resolution_accepts_only_positive_evidence_for_supported_or_conflic
     ],
 )
 def test_sufficiency_report_rejects_internally_incoherent_completion(
-    report: dict[str, object]
+    report: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
         SufficiencyReport(**report)
@@ -264,9 +270,12 @@ def test_query_contract_v2_carries_atomic_slot_and_route_provenance() -> None:
     slot = RequiredSlot(
         slot_id="S1",
         description="Retrieve the reported metric.",
+        requested_measure="Dice",
         source_name_hints=["paper.pdf"],
         authorized_source_doc_ids=["doc-1"],
         expected_answer_type="number",
+        expected_result_unit="dimensionless",
+        conditions=[SlotCondition(field="noise_level", operator="=", value="0.4")],
         depends_on_slot_ids=[],
         visual_policy="preferred",
     )
@@ -291,10 +300,49 @@ def test_query_contract_v2_carries_atomic_slot_and_route_provenance() -> None:
         "locator_hints": [],
         "source_name_hints": ["paper.pdf"],
         "authorized_source_doc_ids": ["doc-1"],
+        "requested_measure": "Dice",
         "expected_answer_type": "number",
+        "expected_result_unit": "dimensionless",
+        "conditions": [
+            {
+                "field": "noise_level",
+                "operator": "=",
+                "value": "0.4",
+                "unit": None,
+            }
+        ],
         "depends_on_slot_ids": [],
         "visual_policy": "preferred",
     }
+
+
+def test_required_slot_structured_result_fields_round_trip_and_old_payloads_remain_readable() -> (
+    None
+):
+    structured = RequiredSlot(
+        slot_id="S5",
+        description="Retrieve U-KAN Dice under the requested condition.",
+        entity_ids=["U-KAN"],
+        requested_measure="Dice",
+        expected_answer_type="number",
+        expected_result_unit="dimensionless",
+        conditions=[SlotCondition(field="noise_level", operator="=", value="0.4")],
+    )
+
+    restored = RequiredSlot.model_validate_json(structured.model_dump_json())
+    legacy = RequiredSlot.model_validate(
+        {
+            "slot_id": "S5",
+            "description": "Retrieve U-KAN Dice at noise level 0.4.",
+            "expected_answer_type": "number",
+        }
+    )
+
+    assert restored == structured
+    assert restored.conditions[0].value == "0.4"
+    assert legacy.requested_measure is None
+    assert legacy.expected_result_unit is None
+    assert legacy.conditions == []
 
 
 def test_query_contract_v2_missing_slot_plan_status_stays_missing() -> None:
@@ -345,7 +393,9 @@ def test_actual_routing_trace_has_first_class_route_provenance() -> None:
 
 
 @pytest.mark.parametrize("extra_field", ["user_id", "authorized_doc_ids"])
-def test_request_rejects_adapter_injected_authorization_fields(extra_field: str) -> None:
+def test_request_rejects_adapter_injected_authorization_fields(
+    extra_field: str,
+) -> None:
     payload = {
         "question": "What is the reported score?",
         "trace_id": "trace-1",

@@ -26,8 +26,12 @@ ExpectedAnswerType = Literal[
     "number",
     "equation",
     "definition",
+    "range",
+    "categorical",
+    "boolean",
     "comparison",
     "explanation",
+    "list",
     "text",
 ]
 ResponseStatus = Literal["complete", "qualified_partial", "insufficient"]
@@ -58,6 +62,17 @@ def default_graph_policy(route: AgenticV9Route) -> GraphPolicy:
     return ROUTE_GRAPH_POLICIES[route]
 
 
+class SlotCondition(BaseModel):
+    """One answer-free condition constraining a requested slot result."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: str = Field(min_length=1)
+    operator: str = Field(min_length=1)
+    value: str = Field(min_length=1)
+    unit: str | None = None
+
+
 class RequiredSlot(BaseModel):
     """One fact, comparison, or locator the answer must resolve."""
 
@@ -68,7 +83,10 @@ class RequiredSlot(BaseModel):
     locator_hints: list[str] = Field(default_factory=list)
     source_name_hints: list[str] = Field(default_factory=list)
     authorized_source_doc_ids: list[str] = Field(default_factory=list)
+    requested_measure: str | None = None
     expected_answer_type: ExpectedAnswerType = "text"
+    expected_result_unit: str | None = None
+    conditions: list[SlotCondition] = Field(default_factory=list)
     depends_on_slot_ids: list[str] = Field(default_factory=list)
     visual_policy: VisualPolicy = "never"
 
@@ -133,6 +151,12 @@ class QueryContract(BaseModel):
             self.atomic_completeness = None
         elif self.contract_version == "2":
             self.slot_semantics = "atomic"
+            if any(
+                slot.expected_answer_type == "number"
+                and (not slot.requested_measure or not slot.expected_result_unit)
+                for slot in self.required_slots
+            ):
+                self.slot_plan_status = "degraded"
         if self.visual_required:
             self.visual_requested = True
         return self

@@ -1,6 +1,6 @@
 import pytest
 
-from data_base.agentic_v9.schemas import RequiredSlot
+from data_base.agentic_v9.schemas import RequiredSlot, SlotCondition
 from data_base.agentic_v9.slot_constraints import slot_content_matches_chunk
 
 
@@ -10,13 +10,209 @@ def _numeric_slot(
     *,
     entity_ids: list[str] | None = None,
     locator_hints: list[str] | None = None,
+    requested_measure: str | None = None,
+    expected_result_unit: str | None = None,
+    conditions: list[SlotCondition] | None = None,
 ) -> RequiredSlot:
+    if entity_ids is None:
+        entity_ids = (
+            ["proposed method"] if "proposed" in description.casefold() else ["U-KAN"]
+        )
+    normalized = description.casefold()
+    if requested_measure is None:
+        if "dice" in normalized:
+            requested_measure = "Dice"
+        elif "accuracy" in normalized:
+            requested_measure = "accuracy"
+        elif "patient count" in normalized:
+            requested_measure = "patient count"
+        elif "training duration" in normalized:
+            requested_measure = "training duration"
+        else:
+            requested_measure = "metric"
+    if expected_result_unit is None:
+        if "percentage" in normalized:
+            expected_result_unit = "percent"
+        elif "patient count" in normalized:
+            expected_result_unit = "patients"
+        elif "in years" in normalized:
+            expected_result_unit = "years"
+        else:
+            expected_result_unit = "dimensionless"
     return RequiredSlot(
         slot_id=slot_id,
         description=description,
-        entity_ids=entity_ids or ["Implicit-U-KAN2.0"],
+        entity_ids=entity_ids,
         locator_hints=locator_hints or [],
+        requested_measure=requested_measure,
         expected_answer_type="number",
+        expected_result_unit=expected_result_unit,
+        conditions=conditions or [],
+    )
+
+
+def test_dimensionless_dice_rejects_condition_counts_patients_and_years() -> None:
+    slot = _numeric_slot(
+        "S5",
+        "Retrieve U-KAN Dice under the requested condition.",
+        conditions=[SlotCondition(field="noise_level", operator="=", value="0.4")],
+    )
+
+    for text in (
+        "U-KAN Dice was 10 cases at noise level 0.4.",
+        "U-KAN Dice was patient count 10 at noise level 0.4.",
+        "U-KAN Dice was year 2024 at noise level 0.4.",
+        "U-KAN was evaluated at noise level 0.4; Dice was not reported.",
+    ):
+        assert not slot_content_matches_chunk(
+            slot=slot,
+            peer_slots=[],
+            text=text,
+        )
+
+
+def test_dice_result_binds_measure_value_unit_and_noise_condition() -> None:
+    slot = _numeric_slot(
+        "S5",
+        "Retrieve U-KAN Dice under the requested condition.",
+        conditions=[SlotCondition(field="noise_level", operator="=", value="0.4")],
+    )
+
+    assert slot_content_matches_chunk(
+        slot=slot,
+        peer_slots=[],
+        text="U-KAN Dice was 0.81 at noise level 0.4.",
+    )
+    assert not slot_content_matches_chunk(
+        slot=slot,
+        peer_slots=[],
+        text="U-KAN result was 0.81 at noise level 0.4.",
+    )
+
+
+@pytest.mark.parametrize(
+    ("slot", "text"),
+    [
+        (
+            _numeric_slot(
+                "count",
+                "Retrieve the U-KAN patient count.",
+                requested_measure="patient count",
+                expected_result_unit="patients",
+            ),
+            "U-KAN patient count was 10 patients.",
+        ),
+        (
+            _numeric_slot(
+                "year",
+                "Retrieve the U-KAN publication year.",
+                requested_measure="publication year",
+                expected_result_unit="year",
+            ),
+            "U-KAN publication year was 2024.",
+        ),
+    ],
+    ids=["patient-count", "publication-year"],
+)
+def test_requested_patient_count_and_year_are_supported(
+    slot: RequiredSlot,
+    text: str,
+) -> None:
+    assert slot_content_matches_chunk(slot=slot, peer_slots=[], text=text)
+
+
+@pytest.mark.parametrize(
+    ("answer_type", "requested_measure", "positive", "negative"),
+    [
+        (
+            "equation",
+            "regional impurity",
+            "Regional impurity = p(1-p).",
+            "Regional impurity is discussed.",
+        ),
+        (
+            "definition",
+            "A complement",
+            "A complement is defined as the values outside A.",
+            "A complement appears in the theorem.",
+        ),
+        (
+            "range",
+            "m",
+            "The range for m is 1 <= m < n.",
+            "The theorem mentions m.",
+        ),
+        (
+            "categorical",
+            "mask type",
+            "The mask type is semantic.",
+            "The mask type appears in the source.",
+        ),
+        (
+            "boolean",
+            "prompt-free inference",
+            "Prompt-free inference is supported.",
+            "Prompt-free inference is discussed.",
+        ),
+        (
+            "comparison",
+            "method performance",
+            "Method performance is better for A than B.",
+            "Method performance for A and B is listed.",
+        ),
+        (
+            "explanation",
+            "penalty reason",
+            "The penalty reason is higher overlap because adjacent teeth touch.",
+            "The penalty reason is stated.",
+        ),
+        (
+            "list",
+            "processing branches",
+            "The processing branches are convolution, state space, and skip.",
+            "The processing branches are described.",
+        ),
+    ],
+)
+def test_nonnumeric_result_types_use_type_appropriate_checks(
+    answer_type: str,
+    requested_measure: str,
+    positive: str,
+    negative: str,
+) -> None:
+    slot = RequiredSlot(
+        slot_id="S1",
+        description=f"Retrieve the {requested_measure}.",
+        requested_measure=requested_measure,
+        expected_answer_type=answer_type,
+    )
+
+    assert slot_content_matches_chunk(
+        slot=slot,
+        peer_slots=[],
+        text=positive,
+    )
+    assert not slot_content_matches_chunk(
+        slot=slot,
+        peer_slots=[],
+        text=negative,
+    )
+
+
+def test_existing_v2_numeric_payload_without_result_role_fails_closed() -> None:
+    slot = RequiredSlot.model_validate(
+        {
+            "slot_id": "S5",
+            "description": "Retrieve U-KAN Dice at noise level 0.4.",
+            "entity_ids": ["U-KAN"],
+            "expected_answer_type": "number",
+        }
+    )
+
+    assert not slot_content_matches_chunk(
+        slot=slot,
+        peer_slots=[],
+        text="U-KAN Dice was 0.81 at noise level 0.4.",
     )
 
 
@@ -261,7 +457,7 @@ def test_numeric_result_allows_explicitly_requested_unit(
     "text",
     [
         "U-KAN Dice: 0.81; the proposed method is listed.",
-        "U-KAN scored 0.81; the proposed method is listed.",
+        "U-KAN Dice scored 0.81; the proposed method is listed.",
     ],
     ids=["label", "scored"],
 )

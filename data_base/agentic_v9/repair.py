@@ -94,7 +94,9 @@ def build_repair_plan(
         not_found_slot_ids
     )
     missing_slots = [
-        slot for slot in contract.required_slots if slot.required and slot.slot_id in missing_slot_ids
+        slot
+        for slot in contract.required_slots
+        if slot.required and slot.slot_id in missing_slot_ids
     ]
     if not missing_slots:
         return RepairPlan(
@@ -141,9 +143,7 @@ def build_repair_plan(
                     for hint in (slot.locator_hints or contract.locator_hints)
                 ),
                 graph_policy=contract.graph_policy or "never",
-                visual_required=any(
-                    slot.visual_policy == "required" for slot in slots
-                ),
+                visual_required=any(slot.visual_policy == "required" for slot in slots),
             )
         )
     if not tasks:
@@ -167,6 +167,23 @@ def _repair_query_for_slots(
         parts.extend(slot.source_name_hints)
         parts.extend(slot.entity_ids or contract.entities)
         parts.append(slot.description)
+        if slot.requested_measure:
+            parts.append(slot.requested_measure)
+        if slot.expected_result_unit:
+            parts.append(slot.expected_result_unit)
+        parts.extend(
+            " ".join(
+                value
+                for value in (
+                    condition.field,
+                    condition.operator,
+                    condition.value,
+                    condition.unit or "",
+                )
+                if value
+            )
+            for condition in slot.conditions
+        )
         parts.extend(slot.locator_hints or contract.locator_hints)
     query = " ".join(_unique(parts))
     if not query:
@@ -183,11 +200,7 @@ def _scope_for_docs(
     authorized = [doc_id for doc_id in scope.authorized_doc_ids if doc_id in doc_ids]
     authorized_set = set(authorized)
     source_mapping = {
-        name: [
-            doc_id
-            for doc_id in mapped_doc_ids
-            if doc_id in authorized_set
-        ]
+        name: [doc_id for doc_id in mapped_doc_ids if doc_id in authorized_set]
         for name, mapped_doc_ids in scope.source_name_to_doc_ids.items()
         if any(doc_id in authorized_set for doc_id in mapped_doc_ids)
     }
