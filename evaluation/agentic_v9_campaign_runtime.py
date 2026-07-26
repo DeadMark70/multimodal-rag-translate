@@ -67,9 +67,7 @@ from data_base.agentic_v9.schemas import (
 from data_base.agentic_v9.sufficiency_gate import SufficiencyEvaluation, evaluate_sufficiency
 from data_base.agentic_v9.slot_constraints import (
     authorized_doc_ids_for_slot,
-    canonical_locator_set,
     locator_hints_match_chunk,
-    slot_content_matches_chunk,
 )
 from data_base.agentic_v9.asset_locator import VisualAssetCandidate
 from data_base.agentic_v9.visual_evidence_extractor import (
@@ -1265,17 +1263,14 @@ def _evidence_packets_for_results(
                 continue
             if doc_id not in task.source_scope.authorized_doc_ids:
                 continue
-            if contract.contract_version == "2":
-                if not locator_hints_match_chunk(task.locator_hints, chunk):
-                    continue
-                slot_ids = _slot_ids_supported_by_chunk(
-                    contract=contract,
-                    slot_ids=task.target_slot_ids,
-                    doc_id=doc_id,
-                    chunk=chunk,
-                )
-            else:
-                slot_ids = list(task.target_slot_ids)
+            if not locator_hints_match_chunk(task.locator_hints, chunk):
+                continue
+            slot_ids = _slot_ids_supported_by_chunk(
+                contract=contract,
+                slot_ids=task.target_slot_ids,
+                doc_id=doc_id,
+                chunk=chunk,
+            )
             if not slot_ids:
                 continue
             digest = hashlib.sha256(
@@ -1386,32 +1381,16 @@ def _slot_ids_supported_by_chunk(
     scope = contract.resolved_source_scope
     if scope is None:
         return []
-    candidates = [
-        slot
-        for slot_id in slot_ids
-        if (slot := slots_by_id.get(slot_id)) is not None
-    ]
     authorized: list[str] = []
-    for slot in candidates:
+    for slot_id in slot_ids:
+        slot = slots_by_id.get(slot_id)
+        if slot is None:
+            continue
         if doc_id not in authorized_doc_ids_for_slot(slot, scope):
             continue
         if not locator_hints_match_chunk(slot.locator_hints, chunk):
             continue
-        peers = [
-            peer
-            for peer in candidates
-            if peer.slot_id != slot.slot_id
-            and doc_id in authorized_doc_ids_for_slot(peer, scope)
-            and canonical_locator_set(peer.locator_hints)
-            == canonical_locator_set(slot.locator_hints)
-        ]
-        if not slot_content_matches_chunk(
-            slot=slot,
-            peer_slots=peers,
-            text=str(chunk.get("text") or ""),
-        ):
-            continue
-        authorized.append(slot.slot_id)
+        authorized.append(slot_id)
     return authorized
 
 
