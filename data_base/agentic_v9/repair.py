@@ -11,6 +11,12 @@ from data_base.agentic_v9.schemas import (
     ResolvedSourceScope,
     RetrievalTask,
 )
+from data_base.agentic_v9.slot_constraints import (
+    authorized_doc_ids_for_slot,
+    canonical_locator_set,
+    canonical_term_set,
+    display_locator_hints,
+)
 from data_base.agentic_v9.sufficiency_gate import SufficiencyEvaluation
 
 
@@ -101,16 +107,20 @@ def build_repair_plan(
         list[RequiredSlot],
     ] = {}
     for slot in missing_slots:
-        authorized_doc_ids = _authorized_doc_ids_for_slot(slot, scope)
+        authorized_doc_ids = authorized_doc_ids_for_slot(slot, scope)
         if not authorized_doc_ids:
             continue
         locators = _unique(slot.locator_hints or contract.locator_hints)
         terms = _unique(slot.entity_ids or contract.entities)
-        key = (tuple(authorized_doc_ids), tuple(locators), tuple(terms))
+        key = (
+            tuple(authorized_doc_ids),
+            canonical_locator_set(locators),
+            canonical_term_set(terms),
+        )
         grouped_slots.setdefault(key, []).append(slot)
 
     tasks: list[RetrievalTask] = []
-    for index, ((doc_ids, locators, _terms), slots) in enumerate(
+    for index, ((doc_ids, _locators, _terms), slots) in enumerate(
         grouped_slots.items(), start=1
     ):
         if len(tasks) >= MAX_REPAIR_QUERIES_PER_ROUND:
@@ -125,7 +135,11 @@ def build_repair_plan(
                 target_slot_ids=[slot.slot_id for slot in slots],
                 source_scope=_scope_for_docs(scope, list(doc_ids)),
                 source_group_id=source_group_id,
-                locator_hints=list(locators),
+                locator_hints=display_locator_hints(
+                    hint
+                    for slot in slots
+                    for hint in (slot.locator_hints or contract.locator_hints)
+                ),
                 graph_policy=contract.graph_policy or "never",
                 visual_required=any(
                     slot.visual_policy == "required" for slot in slots
@@ -161,25 +175,6 @@ def _repair_query_for_slots(
             f"repair slots have no slot, entity, or locator content: {slot_ids}"
         )
     return query
-
-
-def _authorized_doc_ids_for_slot(
-    slot: RequiredSlot, scope: ResolvedSourceScope
-) -> list[str]:
-    slot_ids = set(slot.authorized_source_doc_ids)
-    named_ids = {
-        doc_id
-        for name in slot.source_name_hints
-        for doc_id in scope.source_name_to_doc_ids.get(name, ())
-    }
-    if not slot_ids and not named_ids:
-        return list(scope.authorized_doc_ids)
-    candidates = slot_ids
-    if named_ids:
-        candidates = candidates.intersection(named_ids) if candidates else named_ids
-    return [
-        doc_id for doc_id in scope.authorized_doc_ids if doc_id in candidates
-    ]
 
 
 def _scope_for_docs(

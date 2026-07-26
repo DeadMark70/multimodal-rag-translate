@@ -91,6 +91,7 @@ FinalStage = Callable[
 DeterministicPartialStage = Callable[
     [QueryContract, SufficiencyEvaluation], FinalAnswerResult
 ]
+RepairTerminalStage = Callable[[str], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +109,7 @@ class V9ExecutionStages:
     pack: PackStage
     generate_final: FinalStage
     deterministic_partial: DeterministicPartialStage
+    record_repair_terminal: RepairTerminalStage | None = None
 
 
 class V9ExecutionCore:
@@ -186,10 +188,29 @@ class V9ExecutionCore:
             contract, tuple(evidence_packets)
         )
         repair_round = 0
-        while (
-            repair_round < min(contract.max_repair_rounds, MAX_REPAIR_ROUNDS)
-            and self._runtime.has_final_reserve(deadline)
-        ):
+        repair_cap = min(contract.max_repair_rounds, MAX_REPAIR_ROUNDS)
+        while repair_round < repair_cap:
+            if (
+                sufficiency.report.evidence_complete
+                or not sufficiency.repairable_slot_ids
+            ):
+                self._record_repair_terminal(
+                    repair_round,
+                    (
+                        "evidence_complete"
+                        if sufficiency.report.evidence_complete
+                        else "no_repairable_slots"
+                    ),
+                )
+                break
+            if not deadline.has_time_remaining():
+                self._record_repair_terminal(repair_round, "deadline_exhausted")
+                break
+            if not self._runtime.has_final_reserve(deadline):
+                self._record_repair_terminal(
+                    repair_round, "final_budget_protected"
+                )
+                break
             repair_tasks = tuple(
                 self._stages.plan_repair(
                     contract, sufficiency, request.trace_id, repair_round + 1
@@ -208,6 +229,10 @@ class V9ExecutionCore:
             )
             sufficiency = self._stages.evaluate_sufficiency(
                 contract, tuple(evidence_packets)
+            )
+        else:
+            self._record_repair_terminal(
+                repair_round, "repair_round_cap_reached"
             )
 
         # One final prose batch may curate packets; it cannot produce an answer.
@@ -299,6 +324,13 @@ class V9ExecutionCore:
                 "arbitration_call_count": conflict.arbitration_call_count,
             },
         )
+
+    def _record_repair_terminal(
+        self, executed_rounds: int, reason: str
+    ) -> None:
+        if executed_rounds and self._stages.record_repair_terminal is not None:
+            self._stages.record_repair_terminal(reason)
+
     def _initial_tasks(
         self, request: V9ExecutionRequest, contract: QueryContract
     ) -> tuple[RetrievalTask, ...]:

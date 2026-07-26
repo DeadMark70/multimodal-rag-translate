@@ -259,3 +259,59 @@ def test_persisted_trace_rejects_executed_repair_without_stop_reason() -> None:
 
     with pytest.raises(ValidationError, match="persisted stop reason"):
         AgenticV9TracePayload(repairs=[plan])
+
+
+def test_equivalent_locator_and_term_variants_group_before_two_task_cap() -> None:
+    scope = ResolvedSourceScope(authorized_doc_ids=["ukan"])
+    contract = QueryContract(
+        contract_version="2",
+        route="multi_document_exact",
+        intent="repair ordered atomic facts",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="first Table 3 metric",
+                entity_ids=["U-KAN", "Metric"],
+                authorized_source_doc_ids=["ukan"],
+                locator_hints=[" Table 3 "],
+            ),
+            RequiredSlot(
+                slot_id="S2",
+                description="second Table 3 metric",
+                entity_ids=[" metric ", "u-kan"],
+                authorized_source_doc_ids=["ukan"],
+                locator_hints=["table   3"],
+            ),
+            RequiredSlot(
+                slot_id="S3",
+                description="Theorem 1 boundary",
+                entity_ids=["U-KAN"],
+                authorized_source_doc_ids=["ukan"],
+                locator_hints=["Theorem 1"],
+            ),
+            RequiredSlot(
+                slot_id="S4",
+                description="Appendix A qualification",
+                entity_ids=["U-KAN"],
+                authorized_source_doc_ids=["ukan"],
+                locator_hints=["Appendix A"],
+            ),
+        ],
+        max_repair_rounds=2,
+        resolved_source_scope=scope,
+    )
+    sufficiency = evaluate_sufficiency(contract, [])
+
+    plan = build_repair_plan(
+        contract=contract,
+        sufficiency=sufficiency,
+        query_id="canonical-grouping",
+        repair_round_index=1,
+        final_budget_available=True,
+    )
+
+    assert [task.target_slot_ids for task in plan.tasks] == [
+        ["S1", "S2"],
+        ["S3"],
+    ]
+    assert plan.tasks[0].locator_hints == ["Table 3"]

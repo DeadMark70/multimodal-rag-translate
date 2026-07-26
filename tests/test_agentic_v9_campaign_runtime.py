@@ -9,18 +9,25 @@ from unittest.mock import AsyncMock
 import pytest
 from langchain_core.documents import Document
 
-from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
+from evaluation.agentic_v9_campaign_runtime import (
+    AgenticV9CampaignRuntime,
+    _evidence_packets_for_results,
+)
 from evaluation.agentic_v9_admission import V9AdmissionContract
 from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
     EvidenceSource,
     QueryContract,
+    RagRetrievalResult,
     RequiredSlot,
     ResolvedSourceScope,
+    RetrievalTask,
     SourceLocator,
+    TaskRetrievalResult,
 )
 from data_base.agentic_v9.visual_evidence_extractor import VisualEvidenceExtractionResult
+from data_base.agentic_v9.execution_policy import V9ExecutionPolicyRuntime
 
 
 class _Provider:
@@ -85,6 +92,16 @@ class _ContractProvider:
                 usage_metadata={"input_tokens": 8, "output_tokens": 4},
             )
         )
+
+
+class _ReserveCutoffRuntime(V9ExecutionPolicyRuntime):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reserve_checks = 0
+
+    def has_final_reserve(self, deadline) -> bool:
+        self.reserve_checks += 1
+        return self.reserve_checks <= 2
 
 
 def _setup() -> dict[str, object]:
@@ -1028,6 +1045,183 @@ async def test_text_evidence_outside_atomic_slot_authorized_ids_cannot_support_i
 
 
 @pytest.mark.asyncio
+async def test_source_name_only_slot_rejects_a_different_globally_authorized_doc(
+    monkeypatch,
+) -> None:
+    scope = ResolvedSourceScope(
+        authorized_doc_ids=["doc-a", "doc-b"],
+        source_name_to_doc_ids={"Alpha.pdf": ["doc-a"], "Beta.pdf": ["doc-b"]},
+    )
+    contract = QueryContract(
+        contract_version="2",
+        route="exact_structured",
+        intent="source-name-bound fact",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Report Alpha's result.",
+                source_name_hints=["Alpha.pdf"],
+            )
+        ],
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=2,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+        slot_plan_status="complete",
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract",
+        admission,
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="Beta has a plausible result.",
+                    metadata={"doc_id": "doc-b", "chunk_id": "chunk-b"},
+                )
+            ]
+        ),
+        provider_factory=lambda _purpose: _Provider(),
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What is Alpha's result?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-a", "doc-b"],
+        setup_snapshot=_setup(),
+        trace_id="source-name-only-filter",
+    )
+
+    assert result.agent_trace["agentic_v9"]["evidence_packets"] == []
+
+
+@pytest.mark.asyncio
+async def test_same_document_chunk_with_wrong_locator_cannot_support_slot(
+    monkeypatch,
+) -> None:
+    scope = ResolvedSourceScope(authorized_doc_ids=["doc-a"])
+    contract = QueryContract(
+        contract_version="2",
+        route="exact_structured",
+        intent="table-bound fact",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Report the Table 3 result.",
+                authorized_source_doc_ids=["doc-a"],
+                locator_hints=["Table 3"],
+            )
+        ],
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=2,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+        slot_plan_status="complete",
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract",
+        admission,
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="A result from the wrong table.",
+                    metadata={
+                        "doc_id": "doc-a",
+                        "chunk_id": "chunk-a",
+                        "table_id": "Table 4",
+                    },
+                )
+            ]
+        ),
+        provider_factory=lambda _purpose: _Provider(),
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What is the Table 3 result?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-a"],
+        setup_snapshot=_setup(),
+        trace_id="wrong-locator-filter",
+    )
+
+    assert result.agent_trace["agentic_v9"]["evidence_packets"] == []
+
+
+def test_grouped_task_chunk_is_bound_only_to_its_matching_atomic_slot() -> None:
+    scope = ResolvedSourceScope(authorized_doc_ids=["doc-a"])
+    contract = QueryContract(
+        contract_version="2",
+        route="multi_document_exact",
+        intent="two table facts",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Table 3 fact.",
+                authorized_source_doc_ids=["doc-a"],
+                locator_hints=["Table 3"],
+            ),
+            RequiredSlot(
+                slot_id="S2",
+                description="Table 4 fact.",
+                authorized_source_doc_ids=["doc-a"],
+                locator_hints=["Table 4"],
+            ),
+        ],
+        resolved_source_scope=scope,
+    )
+    task = RetrievalTask(
+        task_id="Q:round-1:group",
+        round_id="round-1",
+        query_id="Q",
+        query="table facts",
+        target_slot_ids=["S1", "S2"],
+        source_scope=scope,
+        locator_hints=["Table 3", "Table 4"],
+    )
+    results = (
+        TaskRetrievalResult(
+            task_id=task.task_id,
+            retrieval=RagRetrievalResult(
+                retrieval_id="retrieval",
+                chunks=[
+                    {
+                        "doc_id": "doc-a",
+                        "chunk_id": "chunk-a",
+                        "text": "Only Table 3 is present.",
+                        "table_id": "Table 3",
+                    }
+                ],
+            ),
+        ),
+    )
+
+    packets = _evidence_packets_for_results(
+        results=results,
+        contract=contract,
+        trace_id="trace",
+        tasks_by_id={task.task_id: task},
+    )
+
+    assert [packet.slot_ids for packet in packets] == [["S1"]]
+    assert packets[0].locator.table_id == "Table 3"
+
+
+@pytest.mark.asyncio
 async def test_q16_repair_trace_persists_constraints_evidence_and_stop_reason(
     monkeypatch,
 ) -> None:
@@ -1096,6 +1290,13 @@ async def test_q16_repair_trace_persists_constraints_evidence_and_stop_reason(
         if locator in {"Equation 2", "Theorem 1"} and calls_by_locator[locator] == 1:
             return []
         doc_id = doc_ids[0]
+        locator_metadata = (
+            {"formula_id": locator}
+            if locator == "Equation 2"
+            else {"table_id": locator}
+            if locator == "Table 3"
+            else {"section": locator}
+        )
         return [
             Document(
                 page_content=f"Located evidence for {locator}.",
@@ -1103,6 +1304,7 @@ async def test_q16_repair_trace_persists_constraints_evidence_and_stop_reason(
                     "doc_id": doc_id,
                     "chunk_id": f"chunk-{locator}",
                     "page_number": 2,
+                    **locator_metadata,
                 },
             )
         ]
@@ -1126,6 +1328,7 @@ async def test_q16_repair_trace_persists_constraints_evidence_and_stop_reason(
     )
 
     repair = result.agent_trace["agentic_v9"]["repairs"][0]
+    assert len(result.agent_trace["agentic_v9"]["repairs"]) == 1
     assert repair["repair_round_index"] == 1
     assert [task["target_slot_ids"] for task in repair["tasks"]] == [
         ["S3"],
@@ -1144,6 +1347,59 @@ async def test_q16_repair_trace_persists_constraints_evidence_and_stop_reason(
     repair_queries = [query for query, _doc_ids in retrieval_calls[3:]]
     assert all("SECRET-ODES" not in query for query in repair_queries)
     assert all("SECRET-THEOREM" not in query for query in repair_queries)
+
+
+@pytest.mark.asyncio
+async def test_runtime_persists_terminal_reserve_reason_after_repair(
+    monkeypatch,
+) -> None:
+    scope = ResolvedSourceScope(authorized_doc_ids=["doc-a"])
+    contract = QueryContract(
+        contract_version="2",
+        route="multi_document_exact",
+        intent="missing atomic fact",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Locate the missing fact.",
+                authorized_source_doc_ids=["doc-a"],
+            )
+        ],
+        max_retrieval_rounds=1,
+        max_repair_rounds=2,
+        max_llm_calls=2,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+        slot_plan_status="complete",
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract",
+        admission,
+    )
+    policy_runtime = _ReserveCutoffRuntime()
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(return_value=[]),
+        provider_factory=lambda _purpose: _Provider(),
+        policy_runtime=policy_runtime,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What is the missing fact?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-a"],
+        setup_snapshot=_setup(),
+        trace_id="repair-reserve-terminal",
+    )
+
+    repairs = result.agent_trace["agentic_v9"]["repairs"]
+    assert len(repairs) == 1
+    assert repairs[0]["tasks"]
+    assert repairs[0]["stop_reason"] == "final_budget_protected"
 
 
 @pytest.mark.asyncio

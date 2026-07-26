@@ -54,6 +54,7 @@ from data_base.agentic_v9.schemas import (
     RagRetrievalResult,
     RequiredSlot,
     ResolvedSourceScope,
+    RetrievalTask,
     SlotResolution,
     SourceLocator,
     SufficiencyReport,
@@ -64,6 +65,10 @@ from data_base.agentic_v9.schemas import (
     UnresolvedRequirement,
 )
 from data_base.agentic_v9.sufficiency_gate import SufficiencyEvaluation, evaluate_sufficiency
+from data_base.agentic_v9.slot_constraints import (
+    authorized_doc_ids_for_slot,
+    locator_hints_match_chunk,
+)
 from data_base.agentic_v9.asset_locator import VisualAssetCandidate
 from data_base.agentic_v9.visual_evidence_extractor import (
     VisualEvidenceExtractionResult,
@@ -208,7 +213,7 @@ class AgenticV9CampaignRuntime:
             "evidence_packets": [],
             "post_contract": None,
             "budget_controller": budget_controller,
-            "task_slot_ids": {},
+            "tasks_by_id": {},
             "graph_execution": None,
             "visual_execution": None,
             "visual_packets": [],
@@ -260,7 +265,7 @@ class AgenticV9CampaignRuntime:
             results: list[TaskRetrievalResult] = []
             visual_documents: list[Document] = []
             for task in tasks:
-                state["task_slot_ids"][task.task_id] = list(task.target_slot_ids)
+                state["tasks_by_id"][task.task_id] = task
                 docs = await self._retrieve_documents(
                     user_id, task.query, list(task.source_scope.authorized_doc_ids)
                 )
@@ -353,7 +358,7 @@ class AgenticV9CampaignRuntime:
                 results=results,
                 contract=contract,
                 trace_id=trace_id,
-                task_slot_ids=state["task_slot_ids"],
+                tasks_by_id=state["tasks_by_id"],
             )
             if not state["visual_packets_emitted"]:
                 packets.extend(state["visual_packets"])
@@ -413,6 +418,13 @@ class AgenticV9CampaignRuntime:
             )
             state["repairs"].append(repair)
             return repair.tasks
+
+        def record_repair_terminal(reason: str) -> None:
+            if not state["repairs"] or not state["repairs"][-1].tasks:
+                return
+            state["repairs"][-1] = state["repairs"][-1].model_copy(
+                update={"stop_reason": reason}
+            )
 
         async def prose_curate(
             _: str, __: QueryContract, packets: tuple[EvidencePacket, ...]
@@ -517,6 +529,7 @@ class AgenticV9CampaignRuntime:
                 pack=pack,
                 generate_final=generate_final,
                 deterministic_partial=deterministic_partial,
+                record_repair_terminal=record_repair_terminal,
             ),
             runtime=self._policy_runtime,
         )
@@ -1222,6 +1235,11 @@ def _chunk_projection(document: Document, index: int) -> dict[str, Any]:
         "text": str(document.page_content or ""),
         "page_number": metadata.get("page_number"),
         "section": metadata.get("section"),
+        "printed_page_label": metadata.get("printed_page_label"),
+        "figure_id": metadata.get("figure_id"),
+        "table_id": metadata.get("table_id"),
+        "formula_id": metadata.get("formula_id"),
+        "bbox": metadata.get("bbox"),
     }
 
 
@@ -1230,26 +1248,28 @@ def _evidence_packets_for_results(
     results: tuple[TaskRetrievalResult, ...],
     contract: QueryContract,
     trace_id: str,
-    task_slot_ids: dict[str, list[str]],
+    tasks_by_id: dict[str, RetrievalTask],
 ) -> list[EvidencePacket]:
     packets: list[EvidencePacket] = []
     for task_result in results:
         task_id = task_result.task_id
+        task = tasks_by_id.get(task_id)
+        if task is None:
+            continue
         for index, chunk in enumerate(task_result.retrieval.chunks):
             doc_id = chunk.get("doc_id")
             text = str(chunk.get("text") or "").strip()
             if not isinstance(doc_id, str) or not doc_id or not text:
                 continue
-            scope = contract.resolved_source_scope
-            if scope is None or doc_id not in scope.authorized_doc_ids:
+            if doc_id not in task.source_scope.authorized_doc_ids:
                 continue
-            slot_ids = task_slot_ids.get(
-                task_id, [slot.slot_id for slot in contract.required_slots]
-            )
-            slot_ids = _slot_ids_authorized_for_doc(
+            if not locator_hints_match_chunk(task.locator_hints, chunk):
+                continue
+            slot_ids = _slot_ids_supported_by_chunk(
                 contract=contract,
-                slot_ids=slot_ids,
+                slot_ids=task.target_slot_ids,
                 doc_id=doc_id,
+                chunk=chunk,
             )
             if not slot_ids:
                 continue
@@ -1257,11 +1277,23 @@ def _evidence_packets_for_results(
                 f"{trace_id}:{task_id}:{doc_id}:{chunk.get('chunk_id')}:{index}".encode()
             ).hexdigest()[:24]
             page = chunk.get("page_number")
-            locator = (
-                SourceLocator(pdf_page_index=page)
-                if isinstance(page, int) and page >= 0
-                else SourceLocator(section=str(chunk.get("section") or "retrieved_context"))
-            )
+            locator_values = {
+                "pdf_page_index": (
+                    page if isinstance(page, int) and page >= 0 else None
+                ),
+                "printed_page_label": chunk.get("printed_page_label"),
+                "section": (
+                    str(chunk.get("formula_id"))
+                    if chunk.get("formula_id")
+                    else str(chunk.get("section") or "") or None
+                ),
+                "table_id": chunk.get("table_id"),
+                "figure_id": chunk.get("figure_id"),
+                "bbox": chunk.get("bbox"),
+            }
+            if not any(value is not None and value != "" for value in locator_values.values()):
+                locator_values["section"] = "retrieved_context"
+            locator = SourceLocator(**locator_values)
             packets.append(
                 EvidencePacket(
                     schema_version="1",
@@ -1317,6 +1349,8 @@ def _record_repair_stop_reason(
     if not repairs or not repairs[-1].tasks:
         return
     repair = repairs[-1]
+    if repair.stop_reason not in {None, "continue_repair"}:
+        return
     if evaluation.report.evidence_complete:
         stop_reason = "evidence_complete"
     elif not evaluation.repairable_slot_ids:
@@ -1335,21 +1369,26 @@ def _record_repair_stop_reason(
     repairs[-1] = repair.model_copy(update={"stop_reason": stop_reason})
 
 
-def _slot_ids_authorized_for_doc(
-    *, contract: QueryContract, slot_ids: list[str], doc_id: str
+def _slot_ids_supported_by_chunk(
+    *,
+    contract: QueryContract,
+    slot_ids: list[str],
+    doc_id: str,
+    chunk: dict[str, Any],
 ) -> list[str]:
-    """Retain only slots whose canonical source constraint admits the document."""
+    """Bind a chunk independently to each compatible atomic slot."""
     slots_by_id = {slot.slot_id: slot for slot in contract.required_slots}
+    scope = contract.resolved_source_scope
+    if scope is None:
+        return []
     authorized: list[str] = []
     for slot_id in slot_ids:
         slot = slots_by_id.get(slot_id)
         if slot is None:
             continue
-        if (
-            contract.contract_version == "2"
-            and slot.authorized_source_doc_ids
-            and doc_id not in slot.authorized_source_doc_ids
-        ):
+        if doc_id not in authorized_doc_ids_for_slot(slot, scope):
+            continue
+        if not locator_hints_match_chunk(slot.locator_hints, chunk):
             continue
         authorized.append(slot_id)
     return authorized

@@ -12,6 +12,7 @@ from data_base.agentic_v9.schemas import (
     ResolvedSourceScope,
     RetrievalTask,
 )
+from data_base.agentic_v9.slot_constraints import authorized_doc_ids_for_slot
 
 
 class RetrievalTaskPlan(BaseModel):
@@ -112,7 +113,7 @@ class RetrievalTaskCompiler:
             tuple[tuple[str, ...], tuple[str, ...], str], list[RequiredSlot]
         ] = {}
         for slot in contract.required_slots:
-            authorized_doc_ids = _authorized_doc_ids_for_slot(slot, scope)
+            authorized_doc_ids = authorized_doc_ids_for_slot(slot, scope)
             if not authorized_doc_ids:
                 raise ValueError(
                     f"atomic slot has no authorized source intersection: {slot.slot_id}"
@@ -363,29 +364,6 @@ def _scope_for_docs(
         authorized_doc_ids=authorized,
         source_name_to_doc_ids=source_mapping,
     )
-
-
-def _authorized_doc_ids_for_slot(
-    slot: RequiredSlot, scope: ResolvedSourceScope
-) -> list[str]:
-    """Intersect slot IDs and authoritative source-name mappings with run scope."""
-    global_ids = set(scope.authorized_doc_ids)
-    slot_ids = set(slot.authorized_source_doc_ids)
-    named_ids = {
-        doc_id
-        for name in slot.source_name_hints
-        for doc_id in scope.source_name_to_doc_ids.get(name, ())
-    }
-    if not slot_ids and not named_ids:
-        return list(scope.authorized_doc_ids)
-    candidates = slot_ids
-    if named_ids:
-        candidates = candidates.intersection(named_ids) if candidates else named_ids
-    return [
-        doc_id
-        for doc_id in scope.authorized_doc_ids
-        if doc_id in global_ids and doc_id in candidates
-    ]
 
 
 def _atomic_query(slots: list[RequiredSlot]) -> str:
