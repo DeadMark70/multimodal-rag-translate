@@ -12,6 +12,8 @@ from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
     EvidenceSource,
+    FinalAnswerDraft,
+    FinalAnswerResult,
     FinalClaim,
     GraphPolicy,
     QueryContract,
@@ -19,8 +21,10 @@ from data_base.agentic_v9.schemas import (
     ResolvedSourceScope,
     SlotResolution,
     SourceLocator,
+    SupportedFinding,
     SufficiencyReport,
     TaskRetrievalResult,
+    UnresolvedRequirement,
     V9ExecutionResult,
     V9ExecutionRequest,
     default_graph_policy,
@@ -260,6 +264,56 @@ def test_final_claim_rejects_evidence_only_scope_constraint_support_type() -> No
             statement="The frozen source scope cannot establish this claim.",
             support_type="scope_constraint",
         )
+
+
+def test_structured_final_draft_has_strict_supported_and_unresolved_rows() -> None:
+    draft = FinalAnswerDraft(
+        supported_findings=[
+            SupportedFinding(
+                slot_id="score",
+                statement="The reported score is 0.91.",
+                evidence_ids=["E1"],
+            )
+        ],
+        unresolved_requirements=[
+            UnresolvedRequirement(slot_id="source", reason="Source was not found.")
+        ],
+    )
+
+    assert draft.supported_findings[0].slot_id == "score"
+    assert draft.unresolved_requirements[0].slot_id == "source"
+    with pytest.raises(ValidationError):
+        FinalAnswerDraft(answer="provider-authored prose")
+    with pytest.raises(ValidationError):
+        SupportedFinding(
+            slot_id="score",
+            statement="The reported score is 0.91.",
+            evidence_ids=["E1"],
+            qualifier="maybe",
+        )
+
+
+def test_existing_final_claim_and_result_payloads_remain_compatible() -> None:
+    claim = FinalClaim.model_validate(
+        {
+            "claim_id": "claim-1",
+            "statement": "The score is 0.91.",
+            "support_type": "direct",
+            "evidence_ids": ["E1"],
+        }
+    )
+    result = FinalAnswerResult.model_validate(
+        {
+            "response_status": "complete",
+            "answer": "The score is 0.91.",
+            "claims": [claim.model_dump()],
+            "used_evidence_ids": ["E1"],
+            "final_generation_count": 1,
+        }
+    )
+
+    assert claim.slot_id is None
+    assert result.claims == [claim]
 
 
 def test_trace_execution_version_is_backward_compatible_and_summary_preserves_it() -> (

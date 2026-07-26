@@ -60,21 +60,49 @@ class _RecordingInvoker:
 
 
 @pytest.mark.asyncio
+async def test_structured_supported_finding_is_persisted_as_slot_bound_claim() -> None:
+    invoker = _RecordingInvoker(
+        {
+            "supported_findings": [
+                {
+                    "slot_id": "score",
+                    "statement": "The reported score is 0.91.",
+                    "evidence_ids": ["E1"],
+                }
+            ],
+            "unresolved_requirements": [],
+        }
+    )
+
+    result = await generate_final_answer(
+        question="What is the reported score?",
+        contract=_contract(),
+        packed_packets=[_packet()],
+        slot_resolutions=[
+            SlotResolution(slot_id="score", status="supported", evidence_ids=["E1"])
+        ],
+        llm_invoker=invoker,
+    )
+
+    assert result.claims[0].slot_id == "score"
+    assert result.claims[0].evidence_ids == ["E1"]
+
+
+@pytest.mark.asyncio
 async def test_final_answer_uses_only_packed_evidence_and_renders_versioned_citations() -> (
     None
 ):
     invoker = _RecordingInvoker(
         SimpleNamespace(
             content={
-                "answer": "The score is 0.91.",
-                "claims": [
+                "supported_findings": [
                     {
-                        "claim_id": "claim-1",
+                        "slot_id": "score",
                         "statement": "The score is 0.91.",
-                        "support_type": "direct",
                         "evidence_ids": ["E1"],
                     }
                 ],
+                "unresolved_requirements": [],
             }
         )
     )
@@ -102,15 +130,14 @@ async def test_final_answer_uses_only_packed_evidence_and_renders_versioned_cita
 async def test_invalid_claim_is_qualified_without_a_second_final_generation() -> None:
     invoker = _RecordingInvoker(
         {
-            "answer": "The score is 0.99.",
-            "claims": [
+            "supported_findings": [
                 {
-                    "claim_id": "claim-1",
+                    "slot_id": "score",
                     "statement": "The score is 0.99.",
-                    "support_type": "direct",
                     "evidence_ids": ["E1"],
                 }
             ],
+            "unresolved_requirements": [],
         }
     )
 
@@ -131,30 +158,24 @@ async def test_invalid_claim_is_qualified_without_a_second_final_generation() ->
 
 
 @pytest.mark.asyncio
-async def test_high_risk_prose_uses_one_batched_verifier_and_qualifies_rejected_claim() -> (
+async def test_structured_findings_do_not_request_a_second_provider_generation() -> (
     None
 ):
     invoker = _RecordingInvoker(
         {
-            "answer": "The approach is best.",
-            "claims": [
+            "supported_findings": [
                 {
-                    "claim_id": "claim-1",
-                    "statement": "The approach is best.",
-                    "support_type": "comparative_inference",
-                    "premise_evidence_ids": ["E1"],
+                    "slot_id": "score",
+                    "statement": "The reported score is 0.91.",
+                    "evidence_ids": ["E1"],
                 }
             ],
-        },
-        {
-            "verdicts": [
-                {"claim_id": "claim-1", "supported": False, "reason": "not established"}
-            ]
+            "unresolved_requirements": [],
         },
     )
 
     result = await generate_final_answer(
-        question="Which approach is best?",
+        question="What is the reported score?",
         contract=_contract(),
         packed_packets=[_packet()],
         slot_resolutions=[
@@ -164,11 +185,9 @@ async def test_high_risk_prose_uses_one_batched_verifier_and_qualifies_rejected_
     )
 
     assert result.final_generation_count == 1
-    assert result.claims[0].support_type == "qualified"
-    assert result.claims[0].qualified_reason == "not established"
+    assert result.claims[0].support_type == "direct"
     assert [(call["phase"], call["purpose"]) for call in invoker.calls] == [
         ("final_answer", "final_answer"),
-        ("claim_verifier", "claim_verifier"),
     ]
 
 
@@ -176,15 +195,14 @@ async def test_high_risk_prose_uses_one_batched_verifier_and_qualifies_rejected_
 async def test_unpacked_evidence_cannot_support_a_final_claim() -> None:
     invoker = _RecordingInvoker(
         {
-            "answer": "The score is 0.91.",
-            "claims": [
+            "supported_findings": [
                 {
-                    "claim_id": "claim-1",
+                    "slot_id": "score",
                     "statement": "The score is 0.91.",
-                    "support_type": "direct",
                     "evidence_ids": ["E2"],
                 }
             ],
+            "unresolved_requirements": [],
         }
     )
 
@@ -207,15 +225,14 @@ async def test_unpacked_evidence_cannot_support_a_final_claim() -> None:
 async def test_final_answer_accepts_the_typed_packer_packet_projection() -> None:
     invoker = _RecordingInvoker(
         {
-            "answer": "The score is 0.91.",
-            "claims": [
+            "supported_findings": [
                 {
-                    "claim_id": "claim-1",
+                    "slot_id": "score",
                     "statement": "The score is 0.91.",
-                    "support_type": "direct",
                     "evidence_ids": ["E1"],
                 }
             ],
+            "unresolved_requirements": [],
         }
     )
 

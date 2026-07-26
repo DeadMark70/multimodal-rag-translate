@@ -6,8 +6,6 @@ from collections.abc import Iterable, Sequence
 import json
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from data_base.agentic_v9.citation_renderer import render_verified_answer
 from data_base.agentic_v9.claim_verifier import (
     ClaimVerifier,
@@ -18,6 +16,7 @@ from data_base.agentic_v9.claim_verifier import (
 from data_base.agentic_v9.schemas import (
     ConflictCandidate,
     EvidencePacket,
+    FinalAnswerDraft,
     FinalAnswerResult,
     FinalClaim,
     LlmInvoker,
@@ -29,15 +28,6 @@ from data_base.agentic_v9.schemas import (
 _FINAL_GENERATION_UNAVAILABLE_ANSWER = (
     "Final generation was unavailable; evidence is returned as a qualified partial."
 )
-
-
-class FinalAnswerDraft(BaseModel):
-    """Strict, typed provider output before deterministic claim verification."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    answer: str = ""
-    claims: list[FinalClaim] = Field(default_factory=list)
 
 
 class PackedEvidenceProjection(Protocol):
@@ -96,8 +86,19 @@ class FinalAnswerRenderer:
                 return response
             if isinstance(response, FinalAnswerResult):
                 response = {
-                    "answer": response.answer,
-                    "claims": response.claims,
+                    "supported_findings": [
+                        {
+                            "slot_id": claim.slot_id
+                            or _single_supported_slot_id(slot_resolutions),
+                            "statement": claim.statement,
+                            "evidence_ids": [
+                                *claim.evidence_ids,
+                                *claim.premise_evidence_ids,
+                            ],
+                        }
+                        for claim in response.claims
+                    ],
+                    "unresolved_requirements": [],
                 }
             draft = FinalAnswerDraft.model_validate(_response_content(response))
         except Exception:
@@ -109,7 +110,14 @@ class FinalAnswerRenderer:
 
         accepted: list[FinalClaim] = []
         unresolved: list[FinalClaim] = []
-        for claim in draft.claims:
+        for index, finding in enumerate(draft.supported_findings, start=1):
+            claim = FinalClaim(
+                claim_id=f"claim-{index}",
+                slot_id=finding.slot_id,
+                statement=finding.statement,
+                support_type="direct",
+                evidence_ids=finding.evidence_ids,
+            )
             verdict = verify_claim_deterministically(claim, packets_by_id)
             if verdict.reason in {
                 "claim_has_no_evidence_ids",
@@ -263,6 +271,17 @@ def _response_status(
     ):
         return "complete"
     return "qualified_partial"
+
+
+def _single_supported_slot_id(
+    slot_resolutions: Sequence[SlotResolution],
+) -> str:
+    supported = [
+        resolution.slot_id
+        for resolution in slot_resolutions
+        if resolution.status == "supported"
+    ]
+    return supported[0] if len(supported) == 1 else "legacy-unbound"
 
 
 __all__ = ["FinalAnswerDraft", "FinalAnswerRenderer", "generate_final_answer"]

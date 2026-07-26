@@ -270,10 +270,39 @@ class ConflictCandidate(BaseModel):
     unresolved: bool = True
 
 
+class SupportedFinding(BaseModel):
+    """Provider-proposed finding bound to one required slot and its evidence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slot_id: str = Field(min_length=1)
+    statement: str = Field(min_length=1)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class UnresolvedRequirement(BaseModel):
+    """Provider acknowledgement that a required slot remains unresolved."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slot_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
+class FinalAnswerDraft(BaseModel):
+    """Strict provider output; deterministic code owns final prose and status."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    supported_findings: list[SupportedFinding] = Field(default_factory=list)
+    unresolved_requirements: list[UnresolvedRequirement] = Field(default_factory=list)
+
+
 class FinalClaim(BaseModel):
     """A rendered answer claim linked to its supporting evidence packet IDs."""
 
     claim_id: str = Field(min_length=1)
+    slot_id: str | None = None
     statement: str = Field(min_length=1)
     support_type: ClaimSupportType
     evidence_ids: list[str] = Field(default_factory=list)
