@@ -26,7 +26,10 @@ from data_base.agentic_v9.budget_feasibility import (
     validate_pre_route_feasibility,
 )
 from data_base.agentic_v9.budgeted_llm import BudgetedLlmInvoker
-from data_base.agentic_v9.context_packer import EvidenceContextPacker, PackedEvidenceContext
+from data_base.agentic_v9.context_packer import (
+    EvidenceContextPacker,
+    PackedEvidenceContext,
+)
 from data_base.agentic_v9.contract_planner import QuestionContractPlanner
 from data_base.agentic_v9.citation_renderer import render_verified_answer
 from data_base.agentic_v9.execution_core import (
@@ -64,7 +67,10 @@ from data_base.agentic_v9.schemas import (
     V9RuntimeContext,
     UnresolvedRequirement,
 )
-from data_base.agentic_v9.sufficiency_gate import SufficiencyEvaluation, evaluate_sufficiency
+from data_base.agentic_v9.sufficiency_gate import (
+    SufficiencyEvaluation,
+    evaluate_sufficiency,
+)
 from data_base.agentic_v9.slot_constraints import (
     authorized_doc_ids_for_slot,
     locator_hints_match_chunk,
@@ -176,8 +182,7 @@ class AgenticV9CampaignRuntime:
         if (
             runtime_contract.route_decision is not None
             and runtime_contract.route_decision.decision_source == "safe_fallback"
-            and runtime_contract.route_decision.fallback_reason
-            == "planner_unavailable"
+            and runtime_contract.route_decision.fallback_reason == "planner_unavailable"
         ):
             runtime_contract = await QuestionContractPlanner(
                 llm_invoker=BudgetedLlmInvoker(
@@ -186,9 +191,7 @@ class AgenticV9CampaignRuntime:
                 )
             ).plan(
                 question=question,
-                authorized_source_names=list(
-                    source_scope.requested_source_names
-                ),
+                authorized_source_names=list(source_scope.requested_source_names),
                 authorized_source_doc_ids=list(source_scope.authorized_doc_ids),
                 setup_policy=dict(setup_snapshot),
                 authorized_source_name_to_doc_ids=dict(
@@ -281,7 +284,9 @@ class AgenticV9CampaignRuntime:
                             list(task.source_scope.authorized_doc_ids),
                             state["contract"],
                         )
-                    except Exception as error:  # Stage admitted; preserve partial answer.
+                    except (
+                        Exception
+                    ) as error:  # Stage admitted; preserve partial answer.
                         state["graph_execution"] = _failed_required_stage(
                             policy="required_locator", error=error
                         )
@@ -294,7 +299,10 @@ class AgenticV9CampaignRuntime:
                         contract=state["contract"],
                     )
                 )
-                chunks = [_chunk_projection(document, index) for index, document in enumerate(docs)]
+                chunks = [
+                    _chunk_projection(document, index)
+                    for index, document in enumerate(docs)
+                ]
                 results.append(
                     TaskRetrievalResult(
                         task_id=task.task_id,
@@ -422,6 +430,18 @@ class AgenticV9CampaignRuntime:
         def record_repair_terminal(reason: str) -> None:
             if not state["repairs"] or not state["repairs"][-1].tasks:
                 return
+            current_reason = state["repairs"][-1].stop_reason
+            precedence = {
+                None: 0,
+                "continue_repair": 0,
+                "repair_round_cap_reached": 1,
+                "deadline_exhausted": 2,
+                "final_budget_protected": 2,
+                "no_repairable_slots": 3,
+                "evidence_complete": 4,
+            }
+            if precedence.get(reason, 0) < precedence.get(current_reason, 0):
+                return
             state["repairs"][-1] = state["repairs"][-1].model_copy(
                 update={"stop_reason": reason}
             )
@@ -447,7 +467,10 @@ class AgenticV9CampaignRuntime:
             __: SufficiencyEvaluation,
         ) -> PackedEvidenceContext:
             setup_input = _setup_positive_int(
-                setup_snapshot, "setup_max_input_tokens", "max_input_tokens", default=8192
+                setup_snapshot,
+                "setup_max_input_tokens",
+                "max_input_tokens",
+                default=8192,
             )
             packer = EvidenceContextPacker(
                 setup_input_ceiling=min(setup_input, contract.runtime_token_budget),
@@ -562,7 +585,9 @@ class AgenticV9CampaignRuntime:
                 "reconciled_tokens": budget_snapshot.reconciled_tokens,
             }
         )
-        final = executed.final_answer or FinalAnswerResult(response_status="insufficient")
+        final = executed.final_answer or FinalAnswerResult(
+            response_status="insufficient"
+        )
         graph_execution = state["graph_execution"] or _initial_graph_execution(
             state["contract"]
         )
@@ -595,21 +620,31 @@ class AgenticV9CampaignRuntime:
             "agentic_v9": {
                 "schema_version": "1",
                 "query_contract": state["contract"].model_dump(mode="json"),
-                "evidence_packets": [packet.model_dump(mode="json") for packet in state["evidence_packets"]],
+                "evidence_packets": [
+                    packet.model_dump(mode="json")
+                    for packet in state["evidence_packets"]
+                ],
                 "slot_resolutions": [
                     resolution.model_dump(mode="json")
                     for resolution in state["final_slot_resolutions"]
                 ],
-                "sufficiency": executed.sufficiency.model_dump(mode="json") if executed.sufficiency else None,
+                "sufficiency": executed.sufficiency.model_dump(mode="json")
+                if executed.sufficiency
+                else None,
                 "context_pack": _context_pack_projection(packed),
                 "graph_execution": graph_execution,
                 "visual_execution": visual_execution,
                 "budget_reservations": [
-                    item.model_dump(mode="json") for item in await controller.reservations()
+                    item.model_dump(mode="json")
+                    for item in await controller.reservations()
                 ],
-                "repairs": [repair.model_dump(mode="json") for repair in state["repairs"]],
+                "repairs": [
+                    repair.model_dump(mode="json") for repair in state["repairs"]
+                ],
                 "conflicts": [],
-                "final_claims": [claim.model_dump(mode="json") for claim in final.claims],
+                "final_claims": [
+                    claim.model_dump(mode="json") for claim in final.claims
+                ],
                 "metrics": metrics.model_dump(mode="json"),
                 "completion": {"status": final.response_status},
             },
@@ -711,10 +746,7 @@ def _apply_required_capability_constraints(
         if resolution.slot_id not in required_slot_ids:
             adjusted.append(resolution)
             continue
-        if (
-            visual_failed
-            and resolution.slot_id in missing_required_visual_slot_ids
-        ):
+        if visual_failed and resolution.slot_id in missing_required_visual_slot_ids:
             reason = (visual_execution or {}).get("failure_reason") or (
                 "Required visual evidence is unavailable."
             )
@@ -804,9 +836,7 @@ def _unresolved_requirements(
     contract: QueryContract,
     resolutions: Sequence[SlotResolution],
 ) -> tuple[UnresolvedRequirement, ...]:
-    resolutions_by_slot = {
-        resolution.slot_id: resolution for resolution in resolutions
-    }
+    resolutions_by_slot = {resolution.slot_id: resolution for resolution in resolutions}
     rows: list[UnresolvedRequirement] = []
     for slot in contract.required_slots:
         if not slot.required:
@@ -883,9 +913,7 @@ def _failed_required_stage(*, policy: str, error: Exception) -> dict[str, Any]:
         "policy": policy,
         "required": policy == "visual_required",
         "state": (
-            "required_but_not_satisfied"
-            if required
-            else "attempted_without_evidence"
+            "required_but_not_satisfied" if required else "attempted_without_evidence"
         ),
         "attempted": True,
         "failure_reason": f"{error.__class__.__name__}:stage_execution_failed",
@@ -957,7 +985,9 @@ def _visual_assets_from_documents(
             continue
         assets.append(
             VisualAssetCandidate(
-                asset_id=str(metadata.get("asset_id") or f"{doc_id}:page:{page}:{index}"),
+                asset_id=str(
+                    metadata.get("asset_id") or f"{doc_id}:page:{page}:{index}"
+                ),
                 source=EvidenceSource(
                     doc_id=doc_id,
                     chunk_id=str(metadata.get("chunk_id") or index + 1),
@@ -1063,9 +1093,7 @@ def _bind_visual_result_to_contract(
     contract: QueryContract,
 ) -> VisualEvidenceExtractionResult:
     """Remove source/locator slot claims outside the exact query contract."""
-    slots_by_id = {
-        slot.slot_id: slot for slot in _requested_visual_slots(contract)
-    }
+    slots_by_id = {slot.slot_id: slot for slot in _requested_visual_slots(contract)}
     packets: list[EvidencePacket] = []
     for packet in result.packets:
         bound_slot_ids = [
@@ -1081,9 +1109,7 @@ def _bind_visual_result_to_contract(
             )
         ]
         if bound_slot_ids:
-            packets.append(
-                packet.model_copy(update={"slot_ids": bound_slot_ids})
-            )
+            packets.append(packet.model_copy(update={"slot_ids": bound_slot_ids}))
     return result.model_copy(update={"packets": tuple(packets)})
 
 
@@ -1095,17 +1121,14 @@ def _slot_accepts_visual_source(
     table_id: object,
     formula_id: object,
 ) -> bool:
-    if (
-        slot.authorized_source_doc_ids
-        and doc_id not in slot.authorized_source_doc_ids
-    ):
+    if slot.authorized_source_doc_ids and doc_id not in slot.authorized_source_doc_ids:
         return False
     visual_hints = [
         hint
         for hint in slot.locator_hints
-        if hint.strip().casefold().startswith(
-            ("figure", "fig.", "table", "formula", "equation")
-        )
+        if hint.strip()
+        .casefold()
+        .startswith(("figure", "fig.", "table", "formula", "equation"))
     ]
     if not visual_hints:
         return True
@@ -1150,9 +1173,7 @@ def _visual_identifier_matches(
 
 
 def _visual_locator_key(value: str) -> str:
-    key = "".join(
-        character for character in value.casefold() if character.isalnum()
-    )
+    key = "".join(character for character in value.casefold() if character.isalnum())
     if key.startswith("fig") and not key.startswith("figure"):
         key = f"figure{key.removeprefix('fig')}"
     if key.startswith("equation"):
@@ -1182,11 +1203,7 @@ def _visual_execution_projection(
 ) -> dict[str, Any]:
     packet_count = len(result.packets)
     supported_slot_ids = sorted(
-        {
-            slot_id
-            for packet in result.packets
-            for slot_id in packet.slot_ids
-        }
+        {slot_id for packet in result.packets for slot_id in packet.slot_ids}
     )
     return {
         "required": required,
@@ -1263,7 +1280,9 @@ def _evidence_packets_for_results(
                 continue
             if doc_id not in task.source_scope.authorized_doc_ids:
                 continue
-            if not locator_hints_match_chunk(task.locator_hints, chunk):
+            if contract.contract_version == "2" and not locator_hints_match_chunk(
+                task.locator_hints, chunk
+            ):
                 continue
             slot_ids = _slot_ids_supported_by_chunk(
                 contract=contract,
@@ -1291,7 +1310,9 @@ def _evidence_packets_for_results(
                 "figure_id": chunk.get("figure_id"),
                 "bbox": chunk.get("bbox"),
             }
-            if not any(value is not None and value != "" for value in locator_values.values()):
+            if not any(
+                value is not None and value != "" for value in locator_values.values()
+            ):
                 locator_values["section"] = "retrieved_context"
             locator = SourceLocator(**locator_values)
             packets.append(
@@ -1388,7 +1409,9 @@ def _slot_ids_supported_by_chunk(
             continue
         if doc_id not in authorized_doc_ids_for_slot(slot, scope):
             continue
-        if not locator_hints_match_chunk(slot.locator_hints, chunk):
+        if contract.contract_version == "2" and not locator_hints_match_chunk(
+            slot.locator_hints, chunk
+        ):
             continue
         authorized.append(slot_id)
     return authorized
@@ -1416,7 +1439,9 @@ def _configuration_incompatible_result(
             "response_status": "configuration_incompatible",
             "agentic_v9": {
                 "schema_version": "1",
-                "query_contract": contract.model_dump(mode="json") if contract else None,
+                "query_contract": contract.model_dump(mode="json")
+                if contract
+                else None,
                 "evidence_packets": [],
                 "slot_resolutions": [],
                 "sufficiency": None,
@@ -1438,9 +1463,7 @@ def _configuration_incompatible_result(
     )
 
 
-def _setup_positive_int(
-    snapshot: dict[str, Any], *keys: str, default: int
-) -> int:
+def _setup_positive_int(snapshot: dict[str, Any], *keys: str, default: int) -> int:
     for key in keys:
         value = snapshot.get(key)
         if isinstance(value, int) and not isinstance(value, bool) and value > 0:
@@ -1473,7 +1496,9 @@ def _final_input_reserve(snapshot: dict[str, Any], runtime_token_budget: int) ->
     )
 
 
-def _context_pack_projection(packed: PackedEvidenceContext | None) -> dict[str, Any] | None:
+def _context_pack_projection(
+    packed: PackedEvidenceContext | None,
+) -> dict[str, Any] | None:
     if packed is None:
         return None
     return {

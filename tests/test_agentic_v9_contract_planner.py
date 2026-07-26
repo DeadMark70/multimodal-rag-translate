@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from data_base.agentic_v9 import contract_planner
 from data_base.agentic_v9.contract_planner import QuestionContractPlanner
 from data_base.agentic_v9.schemas import BudgetExceededError
 
@@ -107,6 +108,73 @@ async def test_q16_uses_generic_experimental_planning_without_benchmark_bundle()
         "|A^c(x,y)|",
     ):
         assert forbidden not in serialized
+
+
+def test_deterministic_route_source_contains_no_known_corpus_or_model_identifiers() -> (
+    None
+):
+    source = inspect.getsource(contract_planner._deterministic_route).casefold()
+
+    for identifier in (
+        "css",
+        "gepar3d",
+        "implicit-u-kan",
+        "mednext",
+        "medsam",
+        "miccss",
+        "nnmamba",
+        "odes",
+        "sam-med3d",
+        "samed",
+        "segmentanybone",
+        "segvol",
+        "semi-mamba-unet",
+        "swinunetr",
+        "u-kan",
+        "weak-mamba-unet",
+    ):
+        assert identifier not in source
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("corpus_question", "generic_question"),
+    [
+        (
+            "Explain how nnMamba MICCSS reconstructs the input.",
+            "Explain how Model-A Module-B reconstructs the input.",
+        ),
+        (
+            "Explain SAMed and MedSAM behavior.",
+            "Explain Model-A and Model-B behavior.",
+        ),
+    ],
+)
+async def test_model_named_and_generic_equivalent_questions_route_equivalently(
+    corpus_question: str,
+    generic_question: str,
+) -> None:
+    async def plan(question: str):
+        return await QuestionContractPlanner().plan(
+            question=question,
+            authorized_source_names=["paper.pdf"],
+            authorized_source_doc_ids=["doc-1"],
+            authorized_source_name_to_doc_ids={"paper.pdf": ["doc-1"]},
+            setup_policy={},
+        )
+
+    named = await plan(corpus_question)
+    generic = await plan(generic_question)
+
+    assert (
+        named.route,
+        named.slot_plan_status,
+        named.route_decision.decision_source,
+    ) == (
+        generic.route,
+        generic.slot_plan_status,
+        generic.route_decision.decision_source,
+    )
 
 
 @pytest.mark.asyncio

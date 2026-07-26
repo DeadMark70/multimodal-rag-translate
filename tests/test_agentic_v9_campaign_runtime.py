@@ -1191,6 +1191,109 @@ async def test_same_document_chunk_with_wrong_locator_cannot_support_slot(
     assert result.agent_trace["agentic_v9"]["evidence_packets"] == []
 
 
+def test_v1_locator_hint_accepts_ordinary_retrieved_chunk_without_metadata() -> None:
+    scope = ResolvedSourceScope(authorized_doc_ids=["doc-a"])
+    contract = QueryContract(
+        contract_version="1",
+        route="exact_structured",
+        intent="table-bound fact",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Report the Table 3 result.",
+                authorized_source_doc_ids=["doc-a"],
+                locator_hints=["Table 3"],
+            )
+        ],
+        resolved_source_scope=scope,
+    )
+    task = RetrievalTask(
+        task_id="Q:round-1:S1",
+        round_id="round-1",
+        query_id="Q",
+        query="Table 3 result",
+        target_slot_ids=["S1"],
+        source_scope=scope,
+        locator_hints=["Table 3"],
+    )
+    results = (
+        TaskRetrievalResult(
+            task_id=task.task_id,
+            retrieval=RagRetrievalResult(
+                retrieval_id="retrieval",
+                chunks=[
+                    {
+                        "doc_id": "doc-a",
+                        "chunk_id": "chunk-a",
+                        "text": "An ordinary retrieved result.",
+                    }
+                ],
+            ),
+        ),
+    )
+
+    packets = _evidence_packets_for_results(
+        results=results,
+        contract=contract,
+        trace_id="trace",
+        tasks_by_id={task.task_id: task},
+    )
+
+    assert [packet.slot_ids for packet in packets] == [["S1"]]
+    assert packets[0].source.doc_id == "doc-a"
+
+
+def test_v2_locator_hint_rejects_ordinary_retrieved_chunk_without_metadata() -> None:
+    scope = ResolvedSourceScope(authorized_doc_ids=["doc-a"])
+    contract = QueryContract(
+        contract_version="2",
+        route="exact_structured",
+        intent="table-bound fact",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Report the Table 3 result.",
+                authorized_source_doc_ids=["doc-a"],
+                locator_hints=["Table 3"],
+            )
+        ],
+        resolved_source_scope=scope,
+    )
+    task = RetrievalTask(
+        task_id="Q:round-1:S1",
+        round_id="round-1",
+        query_id="Q",
+        query="Table 3 result",
+        target_slot_ids=["S1"],
+        source_scope=scope,
+        locator_hints=["Table 3"],
+    )
+    results = (
+        TaskRetrievalResult(
+            task_id=task.task_id,
+            retrieval=RagRetrievalResult(
+                retrieval_id="retrieval",
+                chunks=[
+                    {
+                        "doc_id": "doc-a",
+                        "chunk_id": "chunk-a",
+                        "text": "An ordinary retrieved result.",
+                    }
+                ],
+            ),
+        ),
+    )
+
+    packets = _evidence_packets_for_results(
+        results=results,
+        contract=contract,
+        trace_id="trace",
+        tasks_by_id={task.task_id: task},
+    )
+
+    assert packets == []
+
+
 def test_grouped_task_chunk_is_bound_only_to_its_matching_atomic_slot() -> None:
     scope = ResolvedSourceScope(authorized_doc_ids=["doc-a"])
     contract = QueryContract(
@@ -1297,7 +1400,7 @@ async def test_q16_repair_trace_persists_constraints_evidence_and_stop_reason(
             ),
         ],
         max_retrieval_rounds=1,
-        max_repair_rounds=2,
+        max_repair_rounds=1,
         max_llm_calls=3,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,

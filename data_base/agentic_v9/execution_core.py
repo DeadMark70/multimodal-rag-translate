@@ -229,7 +229,17 @@ class V9ExecutionCore:
                 contract, tuple(evidence_packets)
             )
         else:
-            self._record_repair_terminal(repair_round, "repair_round_cap_reached")
+            if sufficiency.report.evidence_complete:
+                terminal_reason = "evidence_complete"
+            elif not sufficiency.repairable_slot_ids:
+                terminal_reason = "no_repairable_slots"
+            elif not deadline.has_time_remaining():
+                terminal_reason = "deadline_exhausted"
+            elif not self._runtime.has_final_reserve(deadline):
+                terminal_reason = "final_budget_protected"
+            else:
+                terminal_reason = "repair_round_cap_reached"
+            self._record_repair_terminal(repair_round, terminal_reason)
 
         # One final prose batch may curate packets; it cannot produce an answer.
         curated_packets = tuple(

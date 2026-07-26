@@ -496,14 +496,10 @@ def _deterministic_route(question: str) -> AgenticV9Route | None:
         normalized, ("calculate", "how many", "計算", "列出", "擷取")
     ):
         return "exact_structured"
-    if "nnmamba" in normalized and ("miccss" in normalized or "css" in normalized):
-        return "exact_structured"
     if _contains_any(
         normalized,
         ("compare", "versus", " vs ", "which performs", "比較", "是否優於"),
     ):
-        return "bounded_compare"
-    if all(name in normalized for name in ("samed", "medsam")):
         return "bounded_compare"
     if _contains_any(normalized, ("what is", "what are", "find ", "什麼是", "何謂")):
         return "single_lookup"
