@@ -26,7 +26,9 @@ from data_base.agentic_v9.schemas import (
     SourceLocator,
     TaskRetrievalResult,
 )
-from data_base.agentic_v9.visual_evidence_extractor import VisualEvidenceExtractionResult
+from data_base.agentic_v9.visual_evidence_extractor import (
+    VisualEvidenceExtractionResult,
+)
 from data_base.agentic_v9.execution_policy import V9ExecutionPolicyRuntime
 
 
@@ -38,18 +40,18 @@ class _Provider:
         payload = json.loads(messages[-1]["content"])
         packet = payload["packed_evidence_packets"][0]
         return SimpleNamespace(
-                content={
-                    "supported_findings": [
-                        {
-                            "slot_id": packet["slot_ids"][0],
-                            "statement": packet["statement"],
-                            "evidence_ids": [packet["evidence_id"]],
-                        }
-                    ],
-                    "unresolved_requirements": [],
-                },
-                usage_metadata={"input_tokens": 12, "output_tokens": 7},
-            )
+            content={
+                "supported_findings": [
+                    {
+                        "slot_id": packet["slot_ids"][0],
+                        "statement": packet["statement"],
+                        "evidence_ids": [packet["evidence_id"]],
+                    }
+                ],
+                "unresolved_requirements": [],
+            },
+            usage_metadata={"input_tokens": 12, "output_tokens": 7},
+        )
 
 
 class _InvalidProvider:
@@ -199,9 +201,13 @@ async def test_runtime_plans_ambiguity_once_and_persists_exact_v2_contract() -> 
     assert planning_provider.ainvoke.await_count == 1
     assert contract["contract_version"] == "2"
     assert contract["slot_plan_status"] == "complete"
+    assert contract["slot_semantics"] == "heuristic_experimental"
+    assert contract["atomic_completeness"] is None
+    assert contract["atomic_completeness_reason"] == "atomic_slot_matching_experimental"
     assert contract["route_decision"]["decision_source"] == "llm_planner"
     assert contract["route_decision"]["planner_call_used"] is True
     assert contract["required_slots"][0]["authorized_source_doc_ids"] == ["doc-1"]
+    assert result.agent_trace["response_status"] != "complete"
 
 
 @pytest.mark.asyncio
@@ -250,7 +256,9 @@ async def test_degraded_runtime_slot_plan_cannot_return_complete() -> None:
 
 
 @pytest.mark.asyncio
-async def test_v9_campaign_runtime_resolves_filename_scope_to_canonical_document_id() -> None:
+async def test_v9_campaign_runtime_resolves_filename_scope_to_canonical_document_id() -> (
+    None
+):
     provider = _Provider()
     retrieve_documents = AsyncMock(
         return_value=[
@@ -261,7 +269,9 @@ async def test_v9_campaign_runtime_resolves_filename_scope_to_canonical_document
         ]
     )
 
-    async def resolve_references(_user_id: str, references: list[str]) -> dict[str, str]:
+    async def resolve_references(
+        _user_id: str, references: list[str]
+    ) -> dict[str, str]:
         assert references == ["paper.pdf"]
         return {"paper.pdf": "doc-1"}
 
@@ -279,14 +289,20 @@ async def test_v9_campaign_runtime_resolves_filename_scope_to_canonical_document
         trace_id="attempt-trace-filename-scope",
     )
 
-    assert result.agent_trace["agentic_v9"]["query_contract"]["resolved_source_scope"]["authorized_doc_ids"] == ["doc-1"]
-    assert result.agent_trace["agentic_v9"]["query_contract"]["resolved_source_scope"]["requested_doc_ids"] == ["doc-1"]
-    assert result.agent_trace["response_status"] == "complete"
+    assert result.agent_trace["agentic_v9"]["query_contract"]["resolved_source_scope"][
+        "authorized_doc_ids"
+    ] == ["doc-1"]
+    assert result.agent_trace["agentic_v9"]["query_contract"]["resolved_source_scope"][
+        "requested_doc_ids"
+    ] == ["doc-1"]
+    assert result.agent_trace["response_status"] == "qualified_partial"
     retrieve_documents.assert_awaited()
 
 
 @pytest.mark.asyncio
-async def test_v9_runtime_rejects_incompatible_setup_before_provider_or_retrieval() -> None:
+async def test_v9_runtime_rejects_incompatible_setup_before_provider_or_retrieval() -> (
+    None
+):
     provider = _Provider()
     retrieve_documents = AsyncMock()
     runtime = AgenticV9CampaignRuntime(
@@ -304,7 +320,10 @@ async def test_v9_runtime_rejects_incompatible_setup_before_provider_or_retrieva
     )
 
     assert result.agent_trace["response_status"] == "configuration_incompatible"
-    assert result.agent_trace["agentic_v9"]["configuration_incompatible"]["stage"] == "pre_route"
+    assert (
+        result.agent_trace["agentic_v9"]["configuration_incompatible"]["stage"]
+        == "pre_route"
+    )
     assert result.documents == []
     retrieve_documents.assert_not_awaited()
     provider.ainvoke.assert_not_awaited()
@@ -389,7 +408,9 @@ async def test_required_graph_locator_is_executed_and_recorded_before_complete_a
         )
     )
     scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"], resolved_doc_ids=["doc-1"], authorized_doc_ids=["doc-1"]
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
     )
     contract = QueryContract(
         route="graph_relational",
@@ -456,7 +477,9 @@ async def test_required_graph_locator_without_source_evidence_is_insufficient(
         )
     )
     scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"], resolved_doc_ids=["doc-1"], authorized_doc_ids=["doc-1"]
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
     )
     contract = QueryContract(
         route="graph_relational",
@@ -495,18 +518,24 @@ async def test_required_graph_locator_without_source_evidence_is_insufficient(
     assert result.agent_trace["response_status"] == "insufficient"
     assert graph_execution["state"] == "required_but_not_satisfied"
     assert graph_execution["failure_reason"] == "no_source_bound_graph_evidence"
-    assert result.agent_trace["agentic_v9"]["slot_resolutions"][0]["status"] != "supported"
+    assert (
+        result.agent_trace["agentic_v9"]["slot_resolutions"][0]["status"] != "supported"
+    )
 
 
 @pytest.mark.asyncio
-async def test_required_visual_evidence_is_recorded_before_complete_answer(monkeypatch) -> None:
+async def test_required_visual_evidence_is_recorded_before_complete_answer(
+    monkeypatch,
+) -> None:
     provider = _Provider()
     document = Document(
         page_content="Table 1 reports the result.",
         metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
     )
     scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"], resolved_doc_ids=["doc-1"], authorized_doc_ids=["doc-1"]
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
     )
     contract = QueryContract(
         route="exact_structured",
@@ -576,7 +605,9 @@ async def test_missing_required_visual_evidence_is_insufficient(monkeypatch) -> 
         metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
     )
     scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"], resolved_doc_ids=["doc-1"], authorized_doc_ids=["doc-1"]
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
     )
     contract = QueryContract(
         route="exact_structured",
@@ -681,7 +712,7 @@ async def test_missing_preferred_visual_evidence_does_not_block_text_completion(
     )
 
     visual_extractor.assert_awaited_once()
-    assert result.agent_trace["response_status"] == "complete"
+    assert result.agent_trace["response_status"] == "qualified_partial"
     assert result.agent_trace["agentic_v9"]["visual_execution"]["state"] == (
         "attempted_without_evidence"
     )
@@ -967,9 +998,7 @@ async def test_multidocument_visual_call_aggregates_sources_and_binds_packets_pe
     }
     assert "wrong-source-visual" not in visual_evidence_ids
     assert ("later-source-visual" in visual_evidence_ids) is later_asset_present
-    resolutions = {
-        row["slot_id"]: row["status"] for row in v9["slot_resolutions"]
-    }
+    resolutions = {row["slot_id"]: row["status"] for row in v9["slot_resolutions"]}
     assert resolutions["S1"] == "supported"
     assert resolutions["S2"] == expected_required_status
 

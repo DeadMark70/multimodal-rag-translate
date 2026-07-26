@@ -22,9 +22,7 @@ from data_base.agentic_v9.schemas import (
 )
 
 _PROMPT_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "prompts"
-    / "agentic_v9_contract_planner.json"
+    Path(__file__).resolve().parents[2] / "prompts" / "agentic_v9_contract_planner.json"
 )
 _PROMPT_KEY = "atomic_contract_planning"
 _ENTITY_PATTERN = re.compile(
@@ -146,9 +144,7 @@ class QuestionContractPlanner:
         ambiguity: _AmbiguityResult | None = None
         planner_call_requested = False
         if mapping_missing:
-            ambiguity = _safe_ambiguity_result(
-                "authoritative_source_mapping_missing"
-            )
+            ambiguity = _safe_ambiguity_result("authoritative_source_mapping_missing")
             if route is None:
                 route = ambiguity.route
         elif route is None:
@@ -205,17 +201,16 @@ class QuestionContractPlanner:
                     source_doc_ids=ordered_source_doc_ids,
                 )
             )
-        slots = [slot.model_copy(update={"slot_id": f"S{index}"}) for index, slot in enumerate(slots[:8], 1)]
+        slots = [
+            slot.model_copy(update={"slot_id": f"S{index}"})
+            for index, slot in enumerate(slots[:8], 1)
+        ]
         locators = list(
-            dict.fromkeys(
-                locator for slot in slots for locator in slot.locator_hints
-            )
+            dict.fromkeys(locator for slot in slots for locator in slot.locator_hints)
         ) or ["source passage for each target slot"]
         entities = _extract_entities(normalized_question)
         budget = _ROUTE_BUDGETS[route]
-        decision_source = (
-            ambiguity.decision_source if ambiguity else "deterministic"
-        )
+        decision_source = ambiguity.decision_source if ambiguity else "deterministic"
         decision = RouteDecision(
             selected_route=route,
             decision_source=decision_source,
@@ -305,9 +300,7 @@ class QuestionContractPlanner:
                 decision,
                 authorized_source_names=authorized_source_names,
                 authorized_source_doc_ids=authorized_source_doc_ids,
-                authorized_source_name_to_doc_ids=(
-                    authorized_source_name_to_doc_ids
-                ),
+                authorized_source_name_to_doc_ids=(authorized_source_name_to_doc_ids),
             )
             _validate_answer_free(decision, question=question)
         except TimeoutError:
@@ -343,49 +336,9 @@ class QuestionContractPlanner:
 def _decompose(
     *, question: str, source_names: list[str], source_doc_ids: list[str]
 ) -> tuple[list[RequiredSlot], list[str]]:
-    normalized = question.casefold()
     matched_rules: list[str] = []
     if len(source_names) > 1:
         matched_rules.append("multiple_named_sources")
-
-    if {"gepar3d", "odes"} <= {
-        entity.casefold() for entity in _extract_entities(question)
-    } and (
-        "u-kan" in normalized or "ukan" in normalized
-    ):
-        matched_rules.extend(["q16_structured_bundle", "parallel_values"])
-        specifications = [
-            ("Retrieve the tooth 1 to tooth 32 penalty value.", "number", "GEPAR3D", ["Appendix D", "Wasserstein matrix"]),
-            ("Explain the reason the tooth penalty is higher.", "explanation", "GEPAR3D", ["Appendix D", "Wasserstein matrix"]),
-            ("Retrieve the ODES regional impurity equation.", "equation", "ODES", ["regional impurity equation"]),
-            ("Define the meaning of |A^c(x,y)| in the ODES equation.", "definition", "ODES", ["regional impurity equation"]),
-            ("Retrieve the U-KAN Dice at noise level 0.4.", "number", "Implicit U-KAN2.0", ["Table 3"]),
-            ("Retrieve the proposed-method Dice at noise level 0.4.", "number", "Implicit U-KAN2.0", ["Table 3"]),
-            ("Retrieve the Theorem 1 range for m.", "text", "Implicit U-KAN2.0", ["Theorem 1"]),
-        ]
-        return (
-            [
-                _slot_for_named_source(
-                    description=description,
-                    answer_type=answer_type,
-                    source_hint=source_hint,
-                    locators=locators,
-                    source_names=source_names,
-                    source_doc_ids=source_doc_ids,
-                )
-                for description, answer_type, source_hint, locators in specifications
-            ],
-            list(dict.fromkeys(matched_rules)),
-        )
-
-    known = _known_question_slots(
-        question=question,
-        source_names=source_names,
-        source_doc_ids=source_doc_ids,
-    )
-    if known:
-        matched_rules.append("technical_entity_bundle")
-        return known, matched_rules
 
     clauses = _split_clauses(question)
     if len(clauses) > 1:
@@ -421,73 +374,6 @@ def _decompose(
                 )
             )
     return slots, list(dict.fromkeys(matched_rules))
-
-
-def _known_question_slots(
-    *, question: str, source_names: list[str], source_doc_ids: list[str]
-) -> list[RequiredSlot]:
-    normalized = question.casefold()
-    specs: list[tuple[str, str, str, list[str]]] = []
-    if "nnmamba" in normalized and ("miccss" in normalized or "css" in normalized):
-        specs = [
-            ("Retrieve the CSS input tensor shape.", "text", "nnMamba", ["Algorithm 1"]),
-            ("Identify the CSS processing branches.", "explanation", "nnMamba", ["Algorithm 1", "Figure 2(e)"]),
-            ("Explain how the CSS branches are aggregated.", "explanation", "nnMamba", ["Algorithm 1"]),
-        ]
-    elif all(name in normalized for name in ("samed", "medsam")) and "sam-med3d" in normalized:
-        specs = [
-            ("Identify which compared method produces semantic class masks.", "comparison", "SAMed", []),
-            ("Explain which compared method supports prompt-free inference.", "comparison", "SAMed", []),
-            ("Classify the prompt requirement of the other compared methods.", "comparison", "MedSAM", []),
-        ]
-    elif "weak-mamba-unet" in normalized and "semi-mamba-unet" in normalized:
-        specs = [
-            ("Retrieve the first-claim scope of Weak-Mamba-UNet.", "text", "Weak-Mamba-UNet", ["abstract"]),
-            ("Retrieve the first-claim scope of Semi-Mamba-UNet.", "text", "Semi-Mamba-UNet", ["abstract"]),
-            ("Compare whether the two first-claim scopes are equivalent.", "comparison", "", ["abstract"]),
-        ]
-    elif "segvol" in normalized and ("segmentanybone" in normalized or "sam" in normalized):
-        specs = [
-            ("Retrieve the supported SegVol capability claim.", "text", "SegVol", []),
-            ("Verify the requested original SAM and SegmentAnyBone claims within the authorized sources.", "text", "", []),
-            ("Verify the requested lineage relationship within the authorized sources.", "text", "", []),
-        ]
-    return [
-        _slot_for_named_source(
-            description=description,
-            answer_type=answer_type,
-            source_hint=source_hint,
-            locators=locators,
-            source_names=source_names,
-            source_doc_ids=source_doc_ids,
-        )
-        for description, answer_type, source_hint, locators in specs
-    ]
-
-
-def _slot_for_named_source(
-    *,
-    description: str,
-    answer_type: str,
-    source_hint: str,
-    locators: list[str],
-    source_names: list[str],
-    source_doc_ids: list[str],
-) -> RequiredSlot:
-    hints = [
-        name
-        for name in source_names
-        if source_hint and source_hint.casefold() in name.casefold()
-    ] or source_names
-    return _slot(
-        description=description,
-        answer_type=answer_type,
-        source_names=hints,
-        source_doc_ids=_source_ids_for_hints(
-            hints, source_names, source_doc_ids
-        ),
-        locators=locators,
-    )
 
 
 def _slot(
@@ -599,27 +485,11 @@ def _deterministic_route(question: str) -> AgenticV9Route | None:
         ("lineage path", "graph path", "relationship path", "關係路徑", "譜系路徑"),
     ):
         return "graph_relational"
-    if (
-        {"gepar3d", "odes"} <= {item.casefold() for item in entities}
-        and ("u-kan" in normalized or "ukan" in normalized)
-    ):
-        return "multi_document_exact"
-    if "segvol" in normalized and ("segmentanybone" in normalized or "sam" in normalized):
-        return "multi_document_exact"
     if len(locator_hints) >= 2 and len(entities) >= 2:
         return "multi_document_exact"
     if _contains_any(normalized, ("from ", "至 ", "從", "源自", "追溯")) or (
         len(entities) >= 3
         and _contains_any(normalized, ("compare", "which", "比較", "判斷"))
-    ):
-        return "multi_hop"
-    if "weak-mamba-unet" in normalized and "semi-mamba-unet" in normalized:
-        return "multi_hop"
-    if len(entities) >= 3 and (
-        {"swinunetr", "mednext", "nnmamba"}
-        <= {entity.casefold() for entity in entities}
-        or {"medsam", "sam-med3d", "medsam-2"}
-        <= {entity.casefold() for entity in entities}
     ):
         return "multi_hop"
     if locator_hints or _contains_any(
@@ -692,9 +562,7 @@ def _candidate_routes(
 
 
 def _route_reason(route: AgenticV9Route, matched_rules: list[str]) -> str:
-    suffix = (
-        f" Matched: {', '.join(matched_rules)}." if matched_rules else ""
-    )
+    suffix = f" Matched: {', '.join(matched_rules)}." if matched_rules else ""
     return f"Selected {route} from question-only deterministic analysis.{suffix}"
 
 
@@ -754,9 +622,7 @@ def _validate_planner_scope(
             raise _UnauthorizedSourceExpansion
 
 
-def _validate_answer_free(
-    decision: _PlannerDecision, *, question: str
-) -> None:
+def _validate_answer_free(decision: _PlannerDecision, *, question: str) -> None:
     question_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", question))
     planner_text = [decision.route_reason]
     for index, slot in enumerate(decision.slots, 1):
@@ -802,9 +668,7 @@ def _source_mapping(
         return {
             name: list(dict.fromkeys(doc_ids))
             for name, doc_ids in authoritative.items()
-            if name in allowed_names
-            and doc_ids
-            and set(doc_ids) <= allowed_ids
+            if name in allowed_names and doc_ids and set(doc_ids) <= allowed_ids
         }
     if len(source_names) == 1 and len(source_doc_ids) == 1:
         return {source_names[0]: [source_doc_ids[0]]}

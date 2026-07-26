@@ -23,7 +23,18 @@ from evaluation import db as evaluation_db
 from main import app
 
 
-def _run(*, run_id: str, mode: str, version: str, complete: bool = True, golden: bool = True, used_evidence: bool = True, accounting: str = "complete", contract_version: str | None = "2", slot_plan_status: str | None = "complete") -> ReleaseRun:
+def _run(
+    *,
+    run_id: str,
+    mode: str,
+    version: str,
+    complete: bool = True,
+    golden: bool = True,
+    used_evidence: bool = True,
+    accounting: str = "complete",
+    contract_version: str | None = "2",
+    slot_plan_status: str | None = "complete",
+) -> ReleaseRun:
     return ReleaseRun(
         run_id=run_id,
         campaign_id="campaign",
@@ -77,10 +88,13 @@ def test_release_metrics_fail_closed_without_used_evidence_mapping() -> None:
     assert report.comparable is False
     assert "missing_used_evidence_mapping" in report.gate_reasons
     assert report.token_ratio.value is None
-    assert report.token_ratio.reason == "release_gate_blocked:missing_used_evidence_mapping"
+    assert (
+        report.token_ratio.reason
+        == "release_gate_blocked:missing_used_evidence_mapping"
+    )
 
 
-def test_release_metrics_emit_measured_v9_evidence_metrics_when_complete() -> None:
+def test_release_metrics_keep_ragas_and_process_metrics_without_atomic_gate() -> None:
     report = derive_release_metrics(
         benchmark_id="bench-1",
         runs=[
@@ -91,13 +105,17 @@ def test_release_metrics_emit_measured_v9_evidence_metrics_when_complete() -> No
     )
 
     assert report.comparable is True
-    assert report.required_slot_coverage.value == 1.0
+    assert report.required_slot_coverage.value is None
+    assert report.required_slot_coverage.reason == "atomic_slot_matching_experimental"
     assert report.important_unsupported_claim_rate.value == 0.0
     assert report.pack_efficiency.value == 0.75
     assert report.final_generation_count.value == 1
     assert report.token_ratio.value == 2.0
     assert report.token_ratio.reason is None
-    assert report.statistics["final_generation_count_aggregation"] == "maximum_across_official_v9_runs"
+    assert (
+        report.statistics["final_generation_count_aggregation"]
+        == "maximum_across_official_v9_runs"
+    )
 
 
 def test_release_metrics_never_substitute_zero_for_partial_accounting() -> None:
@@ -112,10 +130,13 @@ def test_release_metrics_never_substitute_zero_for_partial_accounting() -> None:
 
     assert "partial_accounting" in report.gate_reasons
     assert report.required_slot_coverage.value is None
-    assert report.required_slot_coverage.reason == "release_gate_blocked:partial_accounting"
+    assert (
+        report.required_slot_coverage.reason
+        == "release_gate_blocked:partial_accounting"
+    )
 
 
-def test_release_metrics_fail_closed_for_degraded_v2_slot_plan() -> None:
+def test_release_metrics_do_not_gate_on_experimental_degraded_v2_slot_plan() -> None:
     report = derive_release_metrics(
         benchmark_id="bench-1",
         runs=[
@@ -130,12 +151,16 @@ def test_release_metrics_fail_closed_for_degraded_v2_slot_plan() -> None:
         ],
     )
 
-    assert report.comparable is False
-    assert "degraded_v2_slot_plan" in report.gate_reasons
+    assert report.comparable is True
+    assert "degraded_v2_slot_plan" not in report.gate_reasons
     assert report.required_slot_coverage.value is None
+    assert report.important_unsupported_claim_rate.value == 0.0
+    assert report.paired_quality_delta.value is not None
 
 
-def test_release_metrics_fail_closed_for_missing_v2_slot_plan_status() -> None:
+def test_release_metrics_do_not_gate_on_missing_experimental_v2_slot_plan_status() -> (
+    None
+):
     report = derive_release_metrics(
         benchmark_id="bench-1",
         runs=[
@@ -150,8 +175,9 @@ def test_release_metrics_fail_closed_for_missing_v2_slot_plan_status() -> None:
         ],
     )
 
-    assert report.comparable is False
-    assert "missing_v2_slot_plan_status" in report.gate_reasons
+    assert report.comparable is True
+    assert "missing_v2_slot_plan_status" not in report.gate_reasons
+    assert report.required_slot_coverage.reason == "atomic_slot_matching_experimental"
 
 
 def test_release_metrics_report_atomic_completeness_na_for_v1_contract() -> None:
@@ -179,7 +205,9 @@ def test_release_metrics_report_atomic_completeness_na_for_v1_contract() -> None
     assert report.final_generation_count.value == 1
 
 
-def test_release_metrics_use_all_v9_runs_for_non_atomic_metrics_in_mixed_contracts() -> None:
+def test_release_metrics_use_all_v9_runs_for_non_atomic_metrics_in_mixed_contracts() -> (
+    None
+):
     v1 = replace(
         _run(
             run_id="v9-v1",
@@ -211,7 +239,8 @@ def test_release_metrics_use_all_v9_runs_for_non_atomic_metrics_in_mixed_contrac
         ],
     )
 
-    assert report.required_slot_coverage.value == 1.0
+    assert report.required_slot_coverage.value is None
+    assert report.required_slot_coverage.reason == "atomic_slot_matching_experimental"
     assert report.important_unsupported_claim_rate.value == 0.25
     assert report.pack_efficiency.value == 0.5
     assert report.graph_locator_success.value == 2
@@ -302,7 +331,9 @@ class _ReleaseMetricsCacheCampaigns:
         self.campaigns = campaigns
 
     async def get(self, *, user_id: str, campaign_id: str):
-        return next(campaign for campaign in self.campaigns if campaign.id == campaign_id)
+        return next(
+            campaign for campaign in self.campaigns if campaign.id == campaign_id
+        )
 
     async def list_by_user(self, *, user_id: str):
         return self.campaigns
@@ -392,29 +423,45 @@ def _release_metrics_cache_service(campaigns):
 
 @pytest.mark.asyncio
 async def test_release_metrics_caches_unchanged_terminal_benchmark_loads() -> None:
-    service, results, scores, accounting, observability = _release_metrics_cache_service(
-        [_release_metrics_cache_campaign("campaign-1")]
+    service, results, scores, accounting, observability = (
+        _release_metrics_cache_service([_release_metrics_cache_campaign("campaign-1")])
     )
 
     await service.get_report(user_id="user-1", campaign_id="campaign-1")
     await service.get_report(user_id="user-1", campaign_id="campaign-1")
 
-    assert (results.calls, scores.score_calls, scores.metadata_calls, accounting.calls, observability.calls) == (1, 1, 1, 1, 1)
+    assert (
+        results.calls,
+        scores.score_calls,
+        scores.metadata_calls,
+        accounting.calls,
+        observability.calls,
+    ) == (1, 1, 1, 1, 1)
 
 
 @pytest.mark.asyncio
-async def test_release_metrics_reloads_when_any_selected_campaign_marker_changes() -> None:
+async def test_release_metrics_reloads_when_any_selected_campaign_marker_changes() -> (
+    None
+):
     campaigns = [
         _release_metrics_cache_campaign("campaign-1"),
         _release_metrics_cache_campaign("campaign-2"),
     ]
-    service, results, scores, accounting, observability = _release_metrics_cache_service(campaigns)
+    service, results, scores, accounting, observability = (
+        _release_metrics_cache_service(campaigns)
+    )
 
     await service.get_report(user_id="user-1", campaign_id="campaign-1")
     campaigns[1].updated_at += timedelta(seconds=1)
     await service.get_report(user_id="user-1", campaign_id="campaign-1")
 
-    assert (results.calls, scores.score_calls, scores.metadata_calls, accounting.calls, observability.calls) == (4, 4, 4, 4, 4)
+    assert (
+        results.calls,
+        scores.score_calls,
+        scores.metadata_calls,
+        accounting.calls,
+        observability.calls,
+    ) == (4, 4, 4, 4, 4)
 
 
 @pytest.mark.asyncio
@@ -425,14 +472,22 @@ async def test_release_metrics_reloads_when_any_selected_campaign_marker_changes
 async def test_release_metrics_does_not_cache_nonterminal_benchmark_loads(
     status: CampaignLifecycleStatus,
 ) -> None:
-    service, results, scores, accounting, observability = _release_metrics_cache_service(
-        [_release_metrics_cache_campaign("campaign-1", status=status)]
+    service, results, scores, accounting, observability = (
+        _release_metrics_cache_service(
+            [_release_metrics_cache_campaign("campaign-1", status=status)]
+        )
     )
 
     await service.get_report(user_id="user-1", campaign_id="campaign-1")
     await service.get_report(user_id="user-1", campaign_id="campaign-1")
 
-    assert (results.calls, scores.score_calls, scores.metadata_calls, accounting.calls, observability.calls) == (2, 2, 2, 2, 2)
+    assert (
+        results.calls,
+        scores.score_calls,
+        scores.metadata_calls,
+        accounting.calls,
+        observability.calls,
+    ) == (2, 2, 2, 2, 2)
 
 
 @pytest.mark.asyncio
@@ -483,7 +538,9 @@ async def test_release_metrics_160_run_benchmark_keeps_repository_call_count_con
                 for result in release_metrics_160_run_fixture
             ]
 
-        async def list_work_metadata_for_campaign(self, *, user_id: str, campaign_id: str):
+        async def list_work_metadata_for_campaign(
+            self, *, user_id: str, campaign_id: str
+        ):
             self.metadata_calls += 1
             return []
 
@@ -520,7 +577,13 @@ async def test_release_metrics_160_run_benchmark_keeps_repository_call_count_con
         observability=observability,
     ).get_report(user_id="user-1", campaign_id="campaign-1")
 
-    assert (results.calls, scores.score_calls, scores.metadata_calls, accounting.calls, observability.calls) == (1, 1, 1, 1, 1)
+    assert (
+        results.calls,
+        scores.score_calls,
+        scores.metadata_calls,
+        accounting.calls,
+        observability.calls,
+    ) == (1, 1, 1, 1, 1)
 
 
 def test_fingerprint_layers_keep_distinct_goldens_out_of_shared_environment() -> None:
@@ -559,14 +622,20 @@ def test_fingerprint_layers_keep_distinct_goldens_out_of_shared_environment() ->
         "condition_id": "agentic-v9-official",
     }
 
-    assert golden_question_fingerprint(question_one) != golden_question_fingerprint(question_two)
-    assert environment_fingerprint(base_environment) == environment_fingerprint(other_arm)
+    assert golden_question_fingerprint(question_one) != golden_question_fingerprint(
+        question_two
+    )
+    assert environment_fingerprint(base_environment) == environment_fingerprint(
+        other_arm
+    )
     assert environment_fingerprint(base_environment) != environment_fingerprint(
         {**other_arm, "system": {"prompt": {"template": "prompt-v2"}}}
     )
 
 
-def test_release_metrics_accepts_production_shaped_distinct_goldens_in_one_environment() -> None:
+def test_release_metrics_accepts_production_shaped_distinct_goldens_in_one_environment() -> (
+    None
+):
     question_snapshots = {
         "Q1": {
             "id": "Q1",
@@ -606,17 +675,24 @@ def test_release_metrics_accepts_production_shaped_distinct_goldens_in_one_envir
     report = derive_release_metrics(benchmark_id="bench-1", runs=runs)
 
     assert report.comparable is True
-    assert report.manifest["environment_fingerprint"] == environment_fingerprint(frozen_environment)
+    assert report.manifest["environment_fingerprint"] == environment_fingerprint(
+        frozen_environment
+    )
     assert "snapshot_fingerprint" not in report.manifest
 
 
-def test_release_metrics_fail_closed_on_evaluator_or_runtime_instrumentation_mismatch() -> None:
+def test_release_metrics_fail_closed_on_evaluator_or_runtime_instrumentation_mismatch() -> (
+    None
+):
     evaluator_mismatch = derive_release_metrics(
         benchmark_id="bench-1",
         runs=[
             _run(run_id="naive", mode="naive", version="v8"),
             _run(run_id="v8", mode="agentic", version="v8"),
-            replace(_run(run_id="v9", mode="agentic", version="v9"), evaluator_fingerprint="evaluator-v2"),
+            replace(
+                _run(run_id="v9", mode="agentic", version="v9"),
+                evaluator_fingerprint="evaluator-v2",
+            ),
         ],
     )
     assert evaluator_mismatch.comparable is False
@@ -627,15 +703,22 @@ def test_release_metrics_fail_closed_on_evaluator_or_runtime_instrumentation_mis
         runs=[
             _run(run_id="naive", mode="naive", version="v8"),
             _run(run_id="v8", mode="agentic", version="v8"),
-            replace(_run(run_id="v9", mode="agentic", version="v9"), runtime_tokens=None),
+            replace(
+                _run(run_id="v9", mode="agentic", version="v9"), runtime_tokens=None
+            ),
         ],
     )
     assert missing_tokens.comparable is False
     assert "runtime_token_instrumentation_missing" in missing_tokens.gate_reasons
-    assert missing_tokens.token_ratio.reason == "release_gate_blocked:runtime_token_instrumentation_missing"
+    assert (
+        missing_tokens.token_ratio.reason
+        == "release_gate_blocked:runtime_token_instrumentation_missing"
+    )
 
 
-def test_evaluator_work_metadata_requires_a_complete_deterministic_signature_per_result() -> None:
+def test_evaluator_work_metadata_requires_a_complete_deterministic_signature_per_result() -> (
+    None
+):
     complete = [
         {
             "campaign_result_id": "run-1",
@@ -649,7 +732,9 @@ def test_evaluator_work_metadata_requires_a_complete_deterministic_signature_per
         }
         for metric in ("answer_correctness", "faithfulness", "answer_relevancy")
     ]
-    assert evaluator_fingerprints_from_work_metadata(complete) == {"run-1": evaluator_fingerprints_from_work_metadata(complete)["run-1"]}
+    assert evaluator_fingerprints_from_work_metadata(complete) == {
+        "run-1": evaluator_fingerprints_from_work_metadata(complete)["run-1"]
+    }
     assert evaluator_fingerprints_from_work_metadata(complete)["run-1"] is not None
     assert evaluator_fingerprints_from_work_metadata(complete[:-1])["run-1"] is None
 
@@ -664,7 +749,9 @@ def test_release_metrics_api_serializes_fail_closed_values(tmp_path) -> None:
                 runs=[
                     _run(run_id="naive", mode="naive", version="v8"),
                     _run(run_id="v8", mode="agentic", version="v8"),
-                    _run(run_id="v9", mode="agentic", version="v9", used_evidence=False),
+                    _run(
+                        run_id="v9", mode="agentic", version="v9", used_evidence=False
+                    ),
                 ],
             )
 
@@ -674,10 +761,14 @@ def test_release_metrics_api_serializes_fail_closed_values(tmp_path) -> None:
         with (
             patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
             patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
-            patch.object(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db"),
+            patch.object(
+                evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db"
+            ),
             TestClient(app) as client,
         ):
-            response = client.get("/api/evaluation/campaigns/campaign-1/release-metrics")
+            response = client.get(
+                "/api/evaluation/campaigns/campaign-1/release-metrics"
+            )
         assert response.status_code == 200
         assert response.json()["token_ratio"] == {
             "value": None,
@@ -692,5 +783,7 @@ def test_runtime_openapi_exposes_release_metrics_and_benchmark_identity() -> Non
 
     assert "/api/evaluation/campaigns/{campaign_id}/release-metrics" in schema["paths"]
     assert "ReleaseMetricsReport" in schema["components"]["schemas"]
-    benchmark_schema = schema["components"]["schemas"]["CampaignCreateRequest"]["properties"]["benchmark_id"]
+    benchmark_schema = schema["components"]["schemas"]["CampaignCreateRequest"][
+        "properties"
+    ]["benchmark_id"]
     assert {item["type"] for item in benchmark_schema["anyOf"]} == {"string", "null"}

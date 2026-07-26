@@ -69,9 +69,7 @@ class FinalAnswerRenderer:
                 messages=[
                     {
                         "role": "system",
-                        "content": (
-                            _final_answer_prompt()
-                        ),
+                        "content": (_final_answer_prompt()),
                     },
                     {
                         "role": "user",
@@ -313,6 +311,11 @@ def _response_status(
     if not claims:
         return "insufficient"
     if sufficiency_report is not None:
+        if (
+            contract.contract_version == "2"
+            and sufficiency_report.response_status == "complete"
+        ):
+            return "qualified_partial"
         return sufficiency_report.response_status
     required_slot_ids = {
         slot.slot_id for slot in contract.required_slots if slot.required
@@ -322,10 +325,12 @@ def _response_status(
         for resolution in slot_resolutions
         if resolution.slot_id in required_slot_ids
     ]
-    if required_slot_ids and len(required_resolutions) == len(required_slot_ids) and all(
-        resolution.status == "supported" for resolution in required_resolutions
+    if (
+        required_slot_ids
+        and len(required_resolutions) == len(required_slot_ids)
+        and all(resolution.status == "supported" for resolution in required_resolutions)
     ):
-        return "complete"
+        return "qualified_partial" if contract.contract_version == "2" else "complete"
     return "qualified_partial"
 
 
@@ -380,18 +385,14 @@ def _required_unresolved_requirements(
                 "not_found": "Required source-bound evidence was not found.",
             }[status]
         )
-        unresolved.append(
-            UnresolvedRequirement(slot_id=slot.slot_id, reason=reason)
-        )
+        unresolved.append(UnresolvedRequirement(slot_id=slot.slot_id, reason=reason))
     return unresolved
 
 
 @lru_cache(maxsize=1)
 def _final_answer_prompt() -> str:
     registry = PromptRegistry(
-        Path(__file__).resolve().parents[2]
-        / "prompts"
-        / "agentic_v9_final_answer.json"
+        Path(__file__).resolve().parents[2] / "prompts" / "agentic_v9_final_answer.json"
     )
     return registry.format("final_answer")
 

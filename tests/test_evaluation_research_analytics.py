@@ -366,6 +366,7 @@ async def test_agent_behavior_projects_materialized_v9_evidence_not_legacy_step_
                     campaign_id=campaign_id,
                     trace_payload={
                         "query_contract": {
+                            "contract_version": "2",
                             "route": "multi_hop",
                             "graph_policy": "required_locator",
                             "visual_requested": True,
@@ -379,7 +380,10 @@ async def test_agent_behavior_projects_materialized_v9_evidence_not_legacy_step_
                             "final_generation_count": 1,
                             "reconciled_tokens": 15,
                         },
-                        "sufficiency": {"supported_slot_ids": ["S1"]},
+                        "sufficiency": {
+                            "evidence_complete": True,
+                            "supported_slot_ids": ["S1"],
+                        },
                         "context_pack": {"packed_evidence_ids": ["E1"]},
                         "budget_reservations": [{"reserved_tokens": 32}],
                         "repairs": [],
@@ -393,7 +397,9 @@ async def test_agent_behavior_projects_materialized_v9_evidence_not_legacy_step_
             }
 
         async def list_v9_behavior_counts_for_campaign(self, campaign_id):
-            return {result_id: {"evidence_packet_count": 13, "slot_resolution_count": 1}}
+            return {
+                result_id: {"evidence_packet_count": 13, "slot_resolution_count": 1}
+            }
 
         async def list_graph_events_for_campaign(self, campaign_id):
             return {}
@@ -412,6 +418,9 @@ async def test_agent_behavior_projects_materialized_v9_evidence_not_legacy_step_
     assert row.v9 is not None
     assert row.v9.evidence_packet_count == 13
     assert row.v9.slot_resolution_count == 1
+    assert row.v9.slot_semantics == "heuristic_experimental"
+    assert row.v9.atomic_completeness is None
+    assert row.v9.atomic_completeness_reason == "atomic_slot_matching_experimental"
     assert row.v9.graph_execution == "required_but_not_satisfied"
     assert row.v9.visual_requested is True
     assert row.v9.visual_required is False
@@ -465,6 +474,7 @@ async def test_agent_behavior_projects_v1_contract_as_non_atomic_na(
     assert response.rows[0].v9.contract_version == "1"
     assert response.rows[0].v9.slot_semantics == "legacy_generic"
     assert response.rows[0].v9.atomic_completeness is None
+    assert response.rows[0].v9.atomic_completeness_reason is None
 
 
 @pytest.mark.asyncio
@@ -694,6 +704,7 @@ async def test_legacy_context_policy_signatures_do_not_hide_agentic_scores(
         campaign_id="legacy-context-cohort",
         score_rows=legacy_rows,
     )
+
     async def legacy_metadata(*, user_id: str, campaign_id: str) -> list[dict]:
         return work_metadata
 
@@ -1426,9 +1437,7 @@ async def test_research_aggregates_use_bounded_result_projection_for_large_paylo
             campaign_result_queries.append(sql.lower())
         return await original_execute(connection, sql, parameters)
 
-    monkeypatch.setattr(
-        evaluation_db.aiosqlite.Connection, "execute", capture_execute
-    )
+    monkeypatch.setattr(evaluation_db.aiosqlite.Connection, "execute", capture_execute)
     results = ResultRepositorySpy()
     service = ResearchAnalyticsService(results=results)
 

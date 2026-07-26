@@ -145,15 +145,20 @@ def test_slot_resolution_rejects_incoherent_evidence_links(
         SlotResolution(slot_id="slot-1", status=status, evidence_ids=evidence_ids)
 
 
-def test_slot_resolution_accepts_only_positive_evidence_for_supported_or_conflicted() -> None:
+def test_slot_resolution_accepts_only_positive_evidence_for_supported_or_conflicted() -> (
+    None
+):
     assert SlotResolution(
         slot_id="slot-1", status="supported", evidence_ids=["evidence-1"]
     ).evidence_ids == ["evidence-1"]
-    assert SlotResolution(
-        slot_id="slot-1",
-        status="conflicted",
-        evidence_ids=["evidence-1", "evidence-2"],
-    ).status == "conflicted"
+    assert (
+        SlotResolution(
+            slot_id="slot-1",
+            status="conflicted",
+            evidence_ids=["evidence-1", "evidence-2"],
+        ).status
+        == "conflicted"
+    )
 
 
 @pytest.mark.parametrize(
@@ -190,7 +195,7 @@ def test_slot_resolution_accepts_only_positive_evidence_for_supported_or_conflic
     ],
 )
 def test_sufficiency_report_rejects_internally_incoherent_completion(
-    report: dict[str, object]
+    report: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
         SufficiencyReport(**report)
@@ -280,7 +285,9 @@ def test_query_contract_v2_carries_atomic_slot_and_route_provenance() -> None:
         slot_plan_status="complete",
     )
 
-    assert contract.slot_semantics == "atomic"
+    assert contract.slot_semantics == "heuristic_experimental"
+    assert contract.atomic_completeness is None
+    assert contract.atomic_completeness_reason == "atomic_slot_matching_experimental"
     assert contract.slot_plan_status == "complete"
     assert contract.route_decision == route_decision
     assert contract.required_slots[0].model_dump() == {
@@ -305,7 +312,9 @@ def test_query_contract_v2_missing_slot_plan_status_stays_missing() -> None:
         required_slots=[RequiredSlot(slot_id="S1", description="Retrieve the fact.")],
     )
 
-    assert contract.slot_semantics == "atomic"
+    assert contract.slot_semantics == "heuristic_experimental"
+    assert contract.atomic_completeness is None
+    assert contract.atomic_completeness_reason == "atomic_slot_matching_experimental"
     assert contract.slot_plan_status is None
 
 
@@ -320,6 +329,7 @@ def test_query_contract_v1_projects_legacy_generic_atomic_completeness_na() -> N
     assert contract.slot_semantics == "legacy_generic"
     assert contract.slot_plan_status is None
     assert contract.atomic_completeness is None
+    assert contract.atomic_completeness_reason is None
 
 
 def test_actual_routing_trace_has_first_class_route_provenance() -> None:
@@ -345,7 +355,9 @@ def test_actual_routing_trace_has_first_class_route_provenance() -> None:
 
 
 @pytest.mark.parametrize("extra_field", ["user_id", "authorized_doc_ids"])
-def test_request_rejects_adapter_injected_authorization_fields(extra_field: str) -> None:
+def test_request_rejects_adapter_injected_authorization_fields(
+    extra_field: str,
+) -> None:
     payload = {
         "question": "What is the reported score?",
         "trace_id": "trace-1",

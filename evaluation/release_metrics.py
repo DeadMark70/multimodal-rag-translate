@@ -18,6 +18,7 @@ from evaluation.benchmark_release import (
     validate_benchmark_runs,
 )
 from data_base.agentic_v9.schemas import (
+    ATOMIC_SLOT_MATCHING_EXPERIMENTAL,
     EvidencePacket,
     FinalClaim,
     QueryContract,
@@ -25,9 +26,16 @@ from data_base.agentic_v9.schemas import (
     SufficiencyReport,
     V9ExecutionMetrics,
 )
-from evaluation.accounting_store import CampaignAccountingSnapshot, EvaluationAccountingStore
+from evaluation.accounting_store import (
+    CampaignAccountingSnapshot,
+    EvaluationAccountingStore,
+)
 from evaluation.campaign_schemas import CampaignLifecycleStatus, V9ContextPack
-from evaluation.db import CampaignRepository, CampaignResultRepository, RagasScoreRepository
+from evaluation.db import (
+    CampaignRepository,
+    CampaignResultRepository,
+    RagasScoreRepository,
+)
 from evaluation.observability_storage import (
     CampaignReleaseObservabilitySnapshot,
     EvaluationObservabilityRepository,
@@ -61,7 +69,9 @@ class ReleaseMetricsReport(BaseModel):
     manifest: dict[str, object] = Field(default_factory=dict)
     arms: list[ReleaseArmSummary] = Field(default_factory=list)
     required_slot_coverage: ReleaseMetric = Field(default_factory=ReleaseMetric)
-    important_unsupported_claim_rate: ReleaseMetric = Field(default_factory=ReleaseMetric)
+    important_unsupported_claim_rate: ReleaseMetric = Field(
+        default_factory=ReleaseMetric
+    )
     provenance_failure_rate: ReleaseMetric = Field(default_factory=ReleaseMetric)
     pack_efficiency: ReleaseMetric = Field(default_factory=ReleaseMetric)
     graph_locator_success: ReleaseMetric = Field(default_factory=ReleaseMetric)
@@ -143,7 +153,9 @@ class ReleaseRun:
         )
 
 
-def derive_release_metrics(*, benchmark_id: str, runs: list[ReleaseRun]) -> ReleaseMetricsReport:
+def derive_release_metrics(
+    *, benchmark_id: str, runs: list[ReleaseRun]
+) -> ReleaseMetricsReport:
     """Derive release data once; gate failure blanks every derived number."""
     benchmark_runs = [run.benchmark_run() for run in runs]
     validation = validate_benchmark_runs(benchmark_runs)
@@ -153,32 +165,33 @@ def derive_release_metrics(*, benchmark_id: str, runs: list[ReleaseRun]) -> Rele
     for run in runs:
         if not run.golden_available:
             reasons.add("missing_golden_data")
-        if run.agentic_execution_version == "v9" and not run.shadow_evaluation_policy and not run.used_evidence_mapped:
+        if (
+            run.agentic_execution_version == "v9"
+            and not run.shadow_evaluation_policy
+            and not run.used_evidence_mapped
+        ):
             reasons.add("missing_used_evidence_mapping")
         if not run.required_ragas_complete:
             reasons.add("required_ragas_incomplete")
-        if run.accounting_status != "complete" or run.phase_attribution_status != "complete":
+        if (
+            run.accounting_status != "complete"
+            or run.phase_attribution_status != "complete"
+        ):
             reasons.add("partial_accounting")
-        if (
-            run.agentic_execution_version == "v9"
-            and not run.shadow_evaluation_policy
-            and run.contract_version == "2"
-            and run.slot_plan_status == "degraded"
-        ):
-            reasons.add("degraded_v2_slot_plan")
-        if (
-            run.agentic_execution_version == "v9"
-            and not run.shadow_evaluation_policy
-            and run.contract_version == "2"
-            and run.slot_plan_status is None
-        ):
-            reasons.add("missing_v2_slot_plan_status")
     if any(run.runtime_tokens is None for run in official_runs):
         reasons.add("runtime_token_instrumentation_missing")
     if any(run.latency_ms is None for run in official_runs):
         reasons.add("latency_instrumentation_missing")
-    naive_tokens = [run.runtime_tokens for run in official_runs if run.identity.official_label == "naive"]
-    if naive_tokens and all(token is not None for token in naive_tokens) and sum(int(token) for token in naive_tokens) <= 0:
+    naive_tokens = [
+        run.runtime_tokens
+        for run in official_runs
+        if run.identity.official_label == "naive"
+    ]
+    if (
+        naive_tokens
+        and all(token is not None for token in naive_tokens)
+        and sum(int(token) for token in naive_tokens) <= 0
+    ):
         reasons.add("runtime_token_denominator_nonpositive")
     reasons = sorted(reasons)
     report = ReleaseMetricsReport(
@@ -226,7 +239,11 @@ def _blocked_report(report: ReleaseMetricsReport) -> ReleaseMetricsReport:
 
 def _release_gate_reason(reasons: list[str]) -> str:
     """Expose the concrete gate causes on every unavailable derived metric."""
-    return "release_gate_blocked" if not reasons else f"release_gate_blocked:{','.join(sorted(reasons))}"
+    return (
+        "release_gate_blocked"
+        if not reasons
+        else f"release_gate_blocked:{','.join(sorted(reasons))}"
+    )
 
 
 def _measured_report(
@@ -239,54 +256,75 @@ def _measured_report(
         for run in runs
         if run.agentic_execution_version == "v9" and not run.shadow_evaluation_policy
     ]
-    atomic_runs = [
-        run for run in all_evidence_runs if run.contract_version == "2"
-    ]
-    if all_evidence_runs and not atomic_runs:
+    atomic_runs = [run for run in all_evidence_runs if run.contract_version == "2"]
+    if atomic_runs:
+        report.required_slot_coverage = ReleaseMetric(
+            reason=ATOMIC_SLOT_MATCHING_EXPERIMENTAL
+        )
+    elif all_evidence_runs:
         report.required_slot_coverage = ReleaseMetric(
             reason="atomic_completeness_not_applicable"
         )
     else:
-        report.required_slot_coverage = _ratio_metric(
-            sum(run.supported_slot_count or 0 for run in atomic_runs),
-            sum(run.required_slot_count or 0 for run in atomic_runs),
-            "required_slot_instrumentation_missing",
-            bool(atomic_runs) and all(run.required_slot_count is not None and run.supported_slot_count is not None for run in atomic_runs),
+        report.required_slot_coverage = ReleaseMetric(
+            reason="atomic_completeness_not_applicable"
         )
     report.important_unsupported_claim_rate = _ratio_metric(
         sum(run.unsupported_important_claim_count or 0 for run in all_evidence_runs),
         sum(run.important_claim_count or 0 for run in all_evidence_runs),
         "important_claim_instrumentation_missing",
-        bool(all_evidence_runs) and all(run.important_claim_count is not None and run.unsupported_important_claim_count is not None for run in all_evidence_runs),
+        bool(all_evidence_runs)
+        and all(
+            run.important_claim_count is not None
+            and run.unsupported_important_claim_count is not None
+            for run in all_evidence_runs
+        ),
     )
     report.provenance_failure_rate = _ratio_metric(
         sum(run.provenance_failure_count or 0 for run in all_evidence_runs),
         len(all_evidence_runs),
         "provenance_instrumentation_missing",
-        bool(all_evidence_runs) and all(run.provenance_failure_count is not None for run in all_evidence_runs),
+        bool(all_evidence_runs)
+        and all(run.provenance_failure_count is not None for run in all_evidence_runs),
     )
     report.pack_efficiency = _ratio_metric(
         sum(run.packed_evidence_count or 0 for run in all_evidence_runs),
         sum(run.available_evidence_count or 0 for run in all_evidence_runs),
         "context_pack_instrumentation_missing",
-        bool(all_evidence_runs) and all(run.packed_evidence_count is not None and run.available_evidence_count is not None for run in all_evidence_runs),
+        bool(all_evidence_runs)
+        and all(
+            run.packed_evidence_count is not None
+            and run.available_evidence_count is not None
+            for run in all_evidence_runs
+        ),
     )
     graph_instrumented = all(
-        run.graph_locator_success_count is not None and run.graph_locator_fallback_count is not None
+        run.graph_locator_success_count is not None
+        and run.graph_locator_fallback_count is not None
         for run in all_evidence_runs
     )
     report.graph_locator_success = ReleaseMetric(
-        value=sum(run.graph_locator_success_count or 0 for run in all_evidence_runs) if graph_instrumented else None,
+        value=sum(run.graph_locator_success_count or 0 for run in all_evidence_runs)
+        if graph_instrumented
+        else None,
         reason=None if graph_instrumented else "graph_not_instrumented",
     )
     report.graph_locator_fallback = ReleaseMetric(
-        value=sum(run.graph_locator_fallback_count or 0 for run in all_evidence_runs) if graph_instrumented else None,
+        value=sum(run.graph_locator_fallback_count or 0 for run in all_evidence_runs)
+        if graph_instrumented
+        else None,
         reason=None if graph_instrumented else "graph_not_instrumented",
     )
-    final_instrumented = bool(all_evidence_runs) and all(run.final_generation_count is not None for run in all_evidence_runs)
+    final_instrumented = bool(all_evidence_runs) and all(
+        run.final_generation_count is not None for run in all_evidence_runs
+    )
     report.final_generation_count = ReleaseMetric(
-        value=max((run.final_generation_count or 0) for run in all_evidence_runs) if final_instrumented else None,
-        reason=None if final_instrumented else "final_generation_instrumentation_missing",
+        value=max((run.final_generation_count or 0) for run in all_evidence_runs)
+        if final_instrumented
+        else None,
+        reason=None
+        if final_instrumented
+        else "final_generation_instrumentation_missing",
     )
     v9 = [run for run in benchmark_runs if run.identity.official_label == "agentic-v9"]
     naive = [run for run in benchmark_runs if run.identity.official_label == "naive"]
@@ -301,9 +339,18 @@ def _measured_report(
         reason=None if latency_p95 is not None else "latency_p95_unavailable",
     )
     bootstrap = clustered_paired_bootstrap(benchmark_runs, seed=20260722)
-    report.paired_quality_delta = ReleaseMetric(value=bootstrap.mean_delta, reason=None if bootstrap.mean_delta is not None else "quality_score_missing")
-    report.paired_quality_ci_lower = ReleaseMetric(value=bootstrap.ci_lower, reason=None if bootstrap.ci_lower is not None else "quality_score_missing")
-    report.paired_quality_ci_upper = ReleaseMetric(value=bootstrap.ci_upper, reason=None if bootstrap.ci_upper is not None else "quality_score_missing")
+    report.paired_quality_delta = ReleaseMetric(
+        value=bootstrap.mean_delta,
+        reason=None if bootstrap.mean_delta is not None else "quality_score_missing",
+    )
+    report.paired_quality_ci_lower = ReleaseMetric(
+        value=bootstrap.ci_lower,
+        reason=None if bootstrap.ci_lower is not None else "quality_score_missing",
+    )
+    report.paired_quality_ci_upper = ReleaseMetric(
+        value=bootstrap.ci_upper,
+        reason=None if bootstrap.ci_upper is not None else "quality_score_missing",
+    )
     report.statistics = {
         "method": bootstrap.method,
         "seed": bootstrap.seed,
@@ -313,12 +360,18 @@ def _measured_report(
         "token_ratio_method": "ratio_of_summed_official_runtime_tokens",
         "final_generation_count_aggregation": "maximum_across_official_v9_runs",
     }
-    report.category_quality_deltas = _quality_deltas(runs, group=lambda item: item.category or "uncategorized")
-    report.per_question_quality_deltas = _quality_deltas(runs, group=lambda item: item.question_id)
+    report.category_quality_deltas = _quality_deltas(
+        runs, group=lambda item: item.category or "uncategorized"
+    )
+    report.per_question_quality_deltas = _quality_deltas(
+        runs, group=lambda item: item.question_id
+    )
     return report
 
 
-def _ratio_metric(numerator: int, denominator: int, missing_reason: str, instrumented: bool) -> ReleaseMetric:
+def _ratio_metric(
+    numerator: int, denominator: int, missing_reason: str, instrumented: bool
+) -> ReleaseMetric:
     if not instrumented:
         return ReleaseMetric(reason=missing_reason)
     if denominator == 0:
@@ -329,7 +382,13 @@ def _ratio_metric(numerator: int, denominator: int, missing_reason: str, instrum
 def _arm_summaries(runs: list[ReleaseRun]) -> list[ReleaseArmSummary]:
     grouped: dict[tuple[str, str, str, str, str | None], list[ReleaseRun]] = {}
     for run in runs:
-        key = (run.mode, run.condition_id, run.execution_profile, run.agentic_execution_version, run.shadow_evaluation_policy)
+        key = (
+            run.mode,
+            run.condition_id,
+            run.execution_profile,
+            run.agentic_execution_version,
+            run.shadow_evaluation_policy,
+        )
         grouped.setdefault(key, []).append(run)
     summaries: list[ReleaseArmSummary] = []
     for key, members in sorted(grouped.items()):
@@ -348,7 +407,8 @@ def _arm_summaries(runs: list[ReleaseRun]) -> list[ReleaseArmSummary]:
                 run_count=len(members),
                 complete_run_count=sum(item.completed for item in members),
                 accounting_complete_run_count=sum(
-                    item.accounting_status == "complete" and item.phase_attribution_status == "complete"
+                    item.accounting_status == "complete"
+                    and item.phase_attribution_status == "complete"
                     for item in members
                 ),
             )
@@ -365,11 +425,24 @@ def _quality_deltas(runs: list[ReleaseRun], *, group) -> dict[str, ReleaseMetric
         arm = benchmark.identity.official_label
         if arm not in {"naive", "agentic-v9"}:
             continue
-        by_group.setdefault(group(run), {}).setdefault(benchmark.pair_key, {})[arm] = run
+        by_group.setdefault(group(run), {}).setdefault(benchmark.pair_key, {})[arm] = (
+            run
+        )
     result: dict[str, ReleaseMetric] = {}
     for name, pairs in sorted(by_group.items()):
-        deltas = [arms["agentic-v9"].quality_score - arms["naive"].quality_score for arms in pairs.values() if "naive" in arms and "agentic-v9" in arms and arms["agentic-v9"].quality_score is not None and arms["naive"].quality_score is not None]
-        result[name] = ReleaseMetric(value=mean(deltas), reason=None) if deltas else ReleaseMetric(reason="unpaired_quality_data")
+        deltas = [
+            arms["agentic-v9"].quality_score - arms["naive"].quality_score
+            for arms in pairs.values()
+            if "naive" in arms
+            and "agentic-v9" in arms
+            and arms["agentic-v9"].quality_score is not None
+            and arms["naive"].quality_score is not None
+        ]
+        result[name] = (
+            ReleaseMetric(value=mean(deltas), reason=None)
+            if deltas
+            else ReleaseMetric(reason="unpaired_quality_data")
+        )
     return result
 
 
@@ -396,7 +469,9 @@ class ReleaseMetricsService:
             tuple[tuple[str, str, str], ...], ReleaseMetricsReport
         ] = {}
 
-    async def get_report(self, *, user_id: str, campaign_id: str) -> ReleaseMetricsReport:
+    async def get_report(
+        self, *, user_id: str, campaign_id: str
+    ) -> ReleaseMetricsReport:
         anchor = await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
         if not anchor.config.benchmark_id:
             return ReleaseMetricsReport(
@@ -414,7 +489,10 @@ class ReleaseMetricsService:
             campaign
             for campaign in campaigns
             if campaign.id == campaign_id
-            or (anchor.config.benchmark_id and campaign.config.benchmark_id == anchor.config.benchmark_id)
+            or (
+                anchor.config.benchmark_id
+                and campaign.config.benchmark_id == anchor.config.benchmark_id
+            )
         ]
         cache_key = tuple(
             (campaign.id, campaign.updated_at.isoformat(), campaign.status.value)
@@ -427,7 +505,10 @@ class ReleaseMetricsService:
             CampaignLifecycleStatus.CANCELLED,
         }
         cacheable = all(campaign.status in terminal_statuses for campaign in selected)
-        if cacheable and (cached := self._terminal_report_cache.get(cache_key)) is not None:
+        if (
+            cacheable
+            and (cached := self._terminal_report_cache.get(cache_key)) is not None
+        ):
             return cached.model_copy(deep=True)
         snapshots = await asyncio.gather(
             *(
@@ -436,7 +517,13 @@ class ReleaseMetricsService:
             )
         )
         runs: list[ReleaseRun] = []
-        for results, score_by_result, evaluator_fingerprints, accounting_snapshot, observability_snapshot in snapshots:
+        for (
+            results,
+            score_by_result,
+            evaluator_fingerprints,
+            accounting_snapshot,
+            observability_snapshot,
+        ) in snapshots:
             runs.extend(
                 self._build_release_runs(
                     results=results,
@@ -452,10 +539,20 @@ class ReleaseMetricsService:
         return report
 
     async def _load_campaign_inputs(self, *, user_id: str, campaign_id: str):
-        results, scores, work_metadata, accounting_snapshot, observability_snapshot = await asyncio.gather(
-            self._results.list_for_campaign_release(user_id=user_id, campaign_id=campaign_id),
+        (
+            results,
+            scores,
+            work_metadata,
+            accounting_snapshot,
+            observability_snapshot,
+        ) = await asyncio.gather(
+            self._results.list_for_campaign_release(
+                user_id=user_id, campaign_id=campaign_id
+            ),
             self._scores.list_for_campaign(user_id=user_id, campaign_id=campaign_id),
-            self._scores.list_work_metadata_for_campaign(user_id=user_id, campaign_id=campaign_id),
+            self._scores.list_work_metadata_for_campaign(
+                user_id=user_id, campaign_id=campaign_id
+            ),
             self._accounting.load_campaign_snapshot(campaign_id),
             self._observability.load_campaign_release_snapshot(campaign_id),
         )
@@ -463,7 +560,9 @@ class ReleaseMetricsService:
         for row in scores:
             value = row.get("metric_value")
             if isinstance(value, (int, float)):
-                score_by_result.setdefault(str(row["campaign_result_id"]), {})[str(row["metric_name"])] = float(value)
+                score_by_result.setdefault(str(row["campaign_result_id"]), {})[
+                    str(row["metric_name"])
+                ] = float(value)
         return (
             results,
             score_by_result,
@@ -509,8 +608,17 @@ class ReleaseMetricsService:
         context_pack = v9["context_pack"] if v9 else None
         graph_events = observability_snapshot.graph_events_by_run_id.get(result.id, [])
         graph_requested = bool(contract and contract.graph_policy != "never")
-        graph_success = sum(1 for event in graph_events if event.graph_to_chunk_success_rate and event.graph_to_chunk_success_rate > 0)
-        graph_fallback = sum(1 for event in graph_events if event.graph_route.lower().startswith("fallback"))
+        graph_success = sum(
+            1
+            for event in graph_events
+            if event.graph_to_chunk_success_rate
+            and event.graph_to_chunk_success_rate > 0
+        )
+        graph_fallback = sum(
+            1
+            for event in graph_events
+            if event.graph_route.lower().startswith("fallback")
+        )
         environment_snapshot = {
             "model_thinking": result.model_config_snapshot,
             "system": {
@@ -525,7 +633,8 @@ class ReleaseMetricsService:
             question_id=result.question_id,
             repeat_number=result.repeat_number,
             mode=result.mode,
-            condition_id=result.condition_id or f"{result.mode}-{result.agentic_execution_version}",
+            condition_id=result.condition_id
+            or f"{result.mode}-{result.agentic_execution_version}",
             execution_profile=result.execution_profile or "not_recorded",
             agentic_execution_version=result.agentic_execution_version,
             shadow_evaluation_policy=result.shadow_evaluation_policy,
@@ -537,7 +646,8 @@ class ReleaseMetricsService:
             golden_available=bool(result.question_snapshot),
             used_evidence_mapped=(
                 bool(final_claims) and all(claim.evidence_ids for claim in final_claims)
-                if result.agentic_execution_version == "v9" and not result.shadow_evaluation_policy
+                if result.agentic_execution_version == "v9"
+                and not result.shadow_evaluation_policy
                 else True
             ),
             golden_question_fingerprint=(
@@ -553,14 +663,30 @@ class ReleaseMetricsService:
             evaluator_fingerprint=evaluator_fingerprint,
             response_status=result.response_status,
             required_slot_count=len(contract.required_slots) if contract else None,
-            supported_slot_count=len(v9["sufficiency"].supported_slot_ids) if v9 and v9["sufficiency"] else None,
+            supported_slot_count=len(v9["sufficiency"].supported_slot_ids)
+            if v9 and v9["sufficiency"]
+            else None,
             important_claim_count=len(final_claims) if v9 else None,
-            unsupported_important_claim_count=sum(not claim.evidence_ids for claim in final_claims) if v9 else None,
-            provenance_failure_count=sum(not claim.evidence_ids for claim in final_claims) if v9 else None,
-            packed_evidence_count=len(context_pack.packed_evidence_ids) if context_pack else None,
+            unsupported_important_claim_count=sum(
+                not claim.evidence_ids for claim in final_claims
+            )
+            if v9
+            else None,
+            provenance_failure_count=sum(
+                not claim.evidence_ids for claim in final_claims
+            )
+            if v9
+            else None,
+            packed_evidence_count=len(context_pack.packed_evidence_ids)
+            if context_pack
+            else None,
             available_evidence_count=v9["evidence_count"] if v9 else None,
-            graph_locator_success_count=graph_success if graph_requested and graph_events else None,
-            graph_locator_fallback_count=graph_fallback if graph_requested and graph_events else None,
+            graph_locator_success_count=graph_success
+            if graph_requested and graph_events
+            else None,
+            graph_locator_fallback_count=graph_fallback
+            if graph_requested and graph_events
+            else None,
             final_generation_count=v9["metrics"].final_generation_count if v9 else None,
             runtime_tokens=breakdown.total_tokens,
             latency_ms=result.total_latency_ms,
@@ -576,16 +702,25 @@ class ReleaseMetricsService:
         matching = [
             scope
             for scope in scopes
-            if scope.scope_type == "execution_run" and scope.accounting_schema_version == "2"
+            if scope.scope_type == "execution_run"
+            and scope.accounting_schema_version == "2"
         ]
         if not matching:
             from evaluation.accounting_schemas import TokenBreakdown
-            return TokenBreakdown(accounting_status="incomplete_legacy", phase_attribution_status="not_available")
+
+            return TokenBreakdown(
+                accounting_status="incomplete_legacy",
+                phase_attribution_status="not_available",
+            )
         from evaluation.research_analytics import _tokens
 
         return _tokens(
             matching,
-            [event for scope in matching for event in snapshot.events_by_scope_id.get(scope.scope_id, [])],
+            [
+                event
+                for scope in matching
+                for event in snapshot.events_by_scope_id.get(scope.scope_id, [])
+            ],
         )
 
     @staticmethod
@@ -613,11 +748,22 @@ class ReleaseMetricsService:
                 if item.attempt_id == materialization.attempt_id
             ]
             return {
-                "contract": QueryContract.model_validate(payload["query_contract"]) if payload.get("query_contract") else None,
-                "sufficiency": SufficiencyReport.model_validate(payload["sufficiency"]) if payload.get("sufficiency") else None,
-                "context_pack": V9ContextPack.model_validate(payload["context_pack"]) if payload.get("context_pack") else None,
-                "final_claims": [FinalClaim.model_validate(item) for item in payload.get("final_claims", [])],
-                "metrics": V9ExecutionMetrics.model_validate(payload.get("metrics", {})),
+                "contract": QueryContract.model_validate(payload["query_contract"])
+                if payload.get("query_contract")
+                else None,
+                "sufficiency": SufficiencyReport.model_validate(payload["sufficiency"])
+                if payload.get("sufficiency")
+                else None,
+                "context_pack": V9ContextPack.model_validate(payload["context_pack"])
+                if payload.get("context_pack")
+                else None,
+                "final_claims": [
+                    FinalClaim.model_validate(item)
+                    for item in payload.get("final_claims", [])
+                ],
+                "metrics": V9ExecutionMetrics.model_validate(
+                    payload.get("metrics", {})
+                ),
                 "evidence_count": len(evidence),
             }
         except (KeyError, TypeError, ValueError):
@@ -661,10 +807,7 @@ def golden_question_fingerprint(question_snapshot: dict[str, Any]) -> str:
     from evaluation.benchmark_release import stable_snapshot_fingerprint
 
     return stable_snapshot_fingerprint(
-        {
-            key: question_snapshot.get(key)
-            for key in _GOLDEN_QUESTION_SNAPSHOT_KEYS
-        }
+        {key: question_snapshot.get(key) for key in _GOLDEN_QUESTION_SNAPSHOT_KEYS}
     )
 
 
@@ -704,7 +847,11 @@ def evaluator_fingerprints_from_work_metadata(
     for row in metadata_rows:
         result_id = row.get("campaign_result_id")
         metric_name = row.get("metric_name")
-        if not isinstance(result_id, str) or not result_id or metric_name not in _REQUIRED_RAGAS_METRICS:
+        if (
+            not isinstance(result_id, str)
+            or not result_id
+            or metric_name not in _REQUIRED_RAGAS_METRICS
+        ):
             continue
         grouped.setdefault(result_id, {}).setdefault(str(metric_name), []).append(row)
 
@@ -722,14 +869,17 @@ def evaluator_fingerprints_from_work_metadata(
         valid = set(by_metric) == _REQUIRED_RAGAS_METRICS
         for metric_name in _REQUIRED_RAGAS_METRICS:
             rows = by_metric.get(metric_name, [])
-            if len(rows) != 1 or any(rows[0].get(field) is None for field in required_fields):
+            if len(rows) != 1 or any(
+                rows[0].get(field) is None for field in required_fields
+            ):
                 valid = False
                 continue
             descriptor[metric_name] = {
-                field: rows[0][field]
-                for field in required_fields
+                field: rows[0][field] for field in required_fields
             }
         fingerprints[result_id] = (
-            stable_snapshot_fingerprint({"required_ragas": descriptor}) if valid else None
+            stable_snapshot_fingerprint({"required_ragas": descriptor})
+            if valid
+            else None
         )
     return fingerprints

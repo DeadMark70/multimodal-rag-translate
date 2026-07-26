@@ -207,9 +207,7 @@ class V9ExecutionCore:
                 self._record_repair_terminal(repair_round, "deadline_exhausted")
                 break
             if not self._runtime.has_final_reserve(deadline):
-                self._record_repair_terminal(
-                    repair_round, "final_budget_protected"
-                )
+                self._record_repair_terminal(repair_round, "final_budget_protected")
                 break
             repair_tasks = tuple(
                 self._stages.plan_repair(
@@ -231,9 +229,7 @@ class V9ExecutionCore:
                 contract, tuple(evidence_packets)
             )
         else:
-            self._record_repair_terminal(
-                repair_round, "repair_round_cap_reached"
-            )
+            self._record_repair_terminal(repair_round, "repair_round_cap_reached")
 
         # One final prose batch may curate packets; it cannot produce an answer.
         curated_packets = tuple(
@@ -305,7 +301,7 @@ class V9ExecutionCore:
                 )
 
         final_answer = _prevent_response_status_upgrade(
-            final_answer, conflict.sufficiency.report
+            final_answer, conflict.sufficiency.report, contract
         )
         final_generation_count = final_answer.final_generation_count
         assert final_generation_count <= 1
@@ -325,9 +321,7 @@ class V9ExecutionCore:
             },
         )
 
-    def _record_repair_terminal(
-        self, executed_rounds: int, reason: str
-    ) -> None:
+    def _record_repair_terminal(self, executed_rounds: int, reason: str) -> None:
         if executed_rounds and self._stages.record_repair_terminal is not None:
             self._stages.record_repair_terminal(reason)
 
@@ -399,15 +393,18 @@ class V9ExecutionCore:
 
 
 def _prevent_response_status_upgrade(
-    final_answer: FinalAnswerResult, sufficiency: SufficiencyReport
+    final_answer: FinalAnswerResult,
+    sufficiency: SufficiencyReport,
+    contract: QueryContract,
 ) -> FinalAnswerResult:
-    """Keep the deterministic sufficiency gate authoritative over provider output."""
+    """Apply deterministic sufficiency and experimental-v2 status ceilings."""
     rank = {"insufficient": 0, "qualified_partial": 1, "complete": 2}
-    if rank[final_answer.response_status] <= rank[sufficiency.response_status]:
+    maximum_status = sufficiency.response_status
+    if contract.contract_version == "2" and maximum_status == "complete":
+        maximum_status = "qualified_partial"
+    if rank[final_answer.response_status] <= rank[maximum_status]:
         return final_answer
-    return final_answer.model_copy(
-        update={"response_status": sufficiency.response_status}
-    )
+    return final_answer.model_copy(update={"response_status": maximum_status})
 
 
 async def _resolve(value: _MaybeAwaitable[_T]) -> _T:

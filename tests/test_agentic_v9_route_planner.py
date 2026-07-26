@@ -103,7 +103,7 @@ async def test_deterministic_regressions_emit_complete_retrieval_contracts() -> 
 
 
 @pytest.mark.asyncio
-async def test_r2_planner_contract_compiles_its_required_qualification_round() -> None:
+async def test_generic_comparison_does_not_invent_a_qualification_round() -> None:
     contract = await RoutePlanner(llm_invoker=_NeverInvoker()).plan(
         question="SwinUNETR and nnU-Net: which performs better?",
         resolved_source_scope=_scope(),
@@ -116,7 +116,7 @@ async def test_r2_planner_contract_compiles_its_required_qualification_round() -
     )
 
     assert contract.max_retrieval_rounds == 2
-    assert [task.round_id for task in plan.tasks] == ["round-1", "round-1", "round-2"]
+    assert [task.round_id for task in plan.tasks] == ["round-1"]
 
 
 @pytest.mark.asyncio
@@ -133,20 +133,18 @@ async def test_r2_planner_contract_compiles_its_required_qualification_round() -
         ),
     ],
 )
-async def test_q1_q2_shape_as_multi_hop_slot_contracts(
+async def test_named_model_questions_use_generic_fallback_without_benchmark_routes(
     question: str, expected_entities: set[str]
 ) -> None:
-    planner = RoutePlanner(llm_invoker=_NeverInvoker())
+    planner = RoutePlanner()
 
     contract = await planner.plan(question=question, resolved_source_scope=_scope())
 
-    assert contract.route == "multi_hop"
     assert expected_entities.issubset(contract.entities)
-    assert len(contract.required_slots) >= 2
-    assert contract.graph_policy == "locator_fallback"
-    assert contract.max_retrieval_rounds == 2
-    assert contract.max_repair_rounds == 1
-    assert contract.max_llm_calls == 3
+    assert contract.slot_semantics == "heuristic_experimental"
+    assert contract.route_decision is not None
+    assert "technical_entity_bundle" not in contract.route_decision.matched_rules
+    assert 1 <= len(contract.required_slots) <= 8
 
 
 @pytest.mark.asyncio
@@ -219,7 +217,9 @@ async def test_only_ambiguous_question_uses_one_budgeted_route_plan_call() -> No
     assert len(invoker.calls) == 1
     assert invoker.calls[0]["phase"] == "contract_planning"
     assert invoker.calls[0]["purpose"] == "atomic_contract_planning"
-    assert contract.max_llm_calls == 4  # route-plan + evidence extraction + visual reserve + final
+    assert (
+        contract.max_llm_calls == 4
+    )  # route-plan + evidence extraction + visual reserve + final
     assert "answer" not in contract.model_dump()
 
 

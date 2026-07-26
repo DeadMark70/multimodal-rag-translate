@@ -20,7 +20,7 @@ AgenticV9Route = Literal[
 GraphPolicy = Literal["never", "locator_fallback", "required_locator"]
 DecisionSource = Literal["deterministic", "llm_planner", "safe_fallback"]
 SlotPlanStatus = Literal["complete", "degraded"]
-SlotSemantics = Literal["atomic", "legacy_generic"]
+SlotSemantics = Literal["heuristic_experimental", "atomic", "legacy_generic"]
 VisualPolicy = Literal["never", "preferred", "required"]
 ExpectedAnswerType = Literal[
     "number",
@@ -31,6 +31,7 @@ ExpectedAnswerType = Literal[
     "text",
 ]
 ResponseStatus = Literal["complete", "qualified_partial", "insufficient"]
+ATOMIC_SLOT_MATCHING_EXPERIMENTAL = "atomic_slot_matching_experimental"
 EvidenceSupportType = Literal[
     "direct", "calculated", "scope_constraint", "contradictory"
 ]
@@ -120,6 +121,7 @@ class QueryContract(BaseModel):
     slot_plan_status: SlotPlanStatus | None = None
     slot_semantics: SlotSemantics | None = None
     atomic_completeness: bool | None = None
+    atomic_completeness_reason: str | None = None
 
     @model_validator(mode="after")
     def apply_route_graph_policy(self) -> QueryContract:
@@ -131,8 +133,11 @@ class QueryContract(BaseModel):
         if self.contract_version == "1":
             self.slot_semantics = "legacy_generic"
             self.atomic_completeness = None
+            self.atomic_completeness_reason = None
         elif self.contract_version == "2":
-            self.slot_semantics = "atomic"
+            self.slot_semantics = "heuristic_experimental"
+            self.atomic_completeness = None
+            self.atomic_completeness_reason = ATOMIC_SLOT_MATCHING_EXPERIMENTAL
         if self.visual_required:
             self.visual_requested = True
         return self

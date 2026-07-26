@@ -10,6 +10,7 @@ import math
 from collections import defaultdict
 from statistics import mean
 
+from data_base.agentic_v9.schemas import ATOMIC_SLOT_MATCHING_EXPERIMENTAL
 from evaluation.accounting_schemas import (
     CampaignResearchSummaryResponse,
     CostSummary,
@@ -96,9 +97,7 @@ class ResearchAnalyticsService:
 
     async def _list_for_campaign_research(self, *, user_id: str, campaign_id: str):
         """Prefer the bounded projection, retaining injected legacy doubles."""
-        list_research = getattr(
-            self._results, "list_for_campaign_research", None
-        )
+        list_research = getattr(self._results, "list_for_campaign_research", None)
         if list_research is not None:
             return await list_research(user_id=user_id, campaign_id=campaign_id)
         return await self._results.list_for_campaign(
@@ -249,7 +248,9 @@ class ResearchAnalyticsService:
             warnings=warnings,
         )
 
-    async def get_run_token_breakdown(self, *, campaign_id: str, run_id: str) -> TokenBreakdown:
+    async def get_run_token_breakdown(
+        self, *, campaign_id: str, run_id: str
+    ) -> TokenBreakdown:
         """Return strict accounting for one selected execution run."""
         scopes = await self._accounting.list_campaign_scopes(campaign_id)
         events = await self._accounting.list_campaign_events(campaign_id)
@@ -349,7 +350,9 @@ class ResearchAnalyticsService:
             getattr(getattr(campaign, "config", None), "modes", None) or []
         )
         configured_modes.extend(
-            str(result.mode) for result in all_results if str(result.mode) not in configured_modes
+            str(result.mode)
+            for result in all_results
+            if str(result.mode) not in configured_modes
         )
 
         rows: list[QuestionComparisonRow] = []
@@ -364,8 +367,7 @@ class ResearchAnalyticsService:
             mode_tokens: dict[str, float | None] = {}
             mode_accounting: dict[str, str] = {}
             modes_for_question = sorted(
-                {str(mode) for mode in configured_modes}
-                | set(by_mode_results.keys())
+                {str(mode) for mode in configured_modes} | set(by_mode_results.keys())
             )
             for mode in modes_for_question:
                 mode_results = by_mode_results.get(mode, [])
@@ -377,7 +379,9 @@ class ResearchAnalyticsService:
                     ]
                     present = [value for value in values if value is not None]
                     mode_quality[mode][metric] = (
-                        mean(present) if present and len(present) == len(values) else None
+                        mean(present)
+                        if present and len(present) == len(values)
+                        else None
                     )
                 latency_values = [
                     result.total_latency_ms
@@ -430,9 +434,7 @@ class ResearchAnalyticsService:
                 )
 
             best_mode = _best_quality_mode(mode_rows)
-            baseline = next(
-                (row for row in mode_rows if row.mode == "naive"), None
-            )
+            baseline = next((row for row in mode_rows if row.mode == "naive"), None)
             target = next(
                 (
                     row
@@ -518,29 +520,29 @@ class ResearchAnalyticsService:
                     difficulty=getattr(first, "difficulty", None),
                     required_modalities=(
                         list(first.required_modalities)
-                        if isinstance(
-                            getattr(first, "required_modalities", None), list
-                        )
+                        if isinstance(getattr(first, "required_modalities", None), list)
                         else None
                     ),
                     by_mode=mode_rows,
                     delta_correctness=delta_correctness
-                    if comparability_reason not in {"incomplete_quality", "comparison_mode_missing"}
+                    if comparability_reason
+                    not in {"incomplete_quality", "comparison_mode_missing"}
                     else None,
                     delta_faithfulness=delta_faithfulness
-                    if comparability_reason not in {"incomplete_quality", "comparison_mode_missing"}
+                    if comparability_reason
+                    not in {"incomplete_quality", "comparison_mode_missing"}
                     else None,
                     delta_latency_ms=delta_latency
-                    if comparability_reason not in {"incomplete_quality", "comparison_mode_missing"}
+                    if comparability_reason
+                    not in {"incomplete_quality", "comparison_mode_missing"}
                     else None,
-                    delta_tokens=delta_tokens
-                    if comparability_reason is None
-                    else None,
+                    delta_tokens=delta_tokens if comparability_reason is None else None,
                     ecr_correctness=ecr if comparability_reason is None else None,
                     best_quality_mode=best_mode,
                     evidence_coverage=(
                         mean(evidence_values)
-                        if evidence_values and len(evidence_values) == len(question_results)
+                        if evidence_values
+                        and len(evidence_values) == len(question_results)
                         else None
                     ),
                     unsupported_claim_ratio=(
@@ -581,15 +583,25 @@ class ResearchAnalyticsService:
             user_id=user_id, campaign_id=campaign_id
         )
         completed = [
-            result for result in results if result.status == CampaignResultStatus.COMPLETED
+            result
+            for result in results
+            if result.status == CampaignResultStatus.COMPLETED
         ]
         traces = await self._traces.list_for_campaign(
             user_id=user_id, campaign_id=campaign_id
         )
         traces_by_result = {trace.campaign_result_id: trace for trace in traces}
-        v9_materializations = await self._observability.list_v9_attempt_materializations_for_campaign(campaign_id)
-        v9_counts = await self._observability.list_v9_behavior_counts_for_campaign(campaign_id)
-        graph_events_by_run = await self._observability.list_graph_events_for_campaign(campaign_id)
+        v9_materializations = (
+            await self._observability.list_v9_attempt_materializations_for_campaign(
+                campaign_id
+            )
+        )
+        v9_counts = await self._observability.list_v9_behavior_counts_for_campaign(
+            campaign_id
+        )
+        graph_events_by_run = await self._observability.list_graph_events_for_campaign(
+            campaign_id
+        )
         scores = await self._ragas_scores.list_for_campaign(
             user_id=user_id, campaign_id=campaign_id
         )
@@ -628,7 +640,11 @@ class ResearchAnalyticsService:
         for result in results:
             trace = traces_by_result.get(result.id)
             materialization = v9_materializations.get(str(result.id))
-            is_v9 = bool(materialization or (trace is not None and trace.agentic_execution_version == "v9") or str(result.mode) in {"agentic-v9", "v9", "agentic-v9-shadow"})
+            is_v9 = bool(
+                materialization
+                or (trace is not None and trace.agentic_execution_version == "v9")
+                or str(result.mode) in {"agentic-v9", "v9", "agentic-v9-shadow"}
+            )
             metrics = result.derived_metrics or {}
             run_scopes = [
                 scope
@@ -659,19 +675,29 @@ class ResearchAnalyticsService:
             )
             quality_scores = score_map.get(str(result.id), {})
             behavior_schema = "v9" if is_v9 else "v8" if trace else "not_applicable"
-            trace_status = _agent_behavior_trace_status(result=result, trace=trace, is_v9=is_v9)
-            legacy = LegacyAgentBehaviorMetrics(
-                subtasks=trace.subtask_count,
-                tool_calls=trace.tool_call_count,
-                visual_calls=trace.visual_tool_call_count,
-                graph_calls=trace.graph_tool_call_count,
-                drilldown_depth=trace.drilldown_depth,
-            ) if trace is not None and not is_v9 else None
-            v9 = _v9_behavior_metrics(
-                trace_payload=materialization.trace_payload,
-                counts=v9_counts.get(str(result.id), {}),
-                graph_events=graph_events_by_run.get(str(result.id), []),
-            ) if is_v9 and materialization is not None else None
+            trace_status = _agent_behavior_trace_status(
+                result=result, trace=trace, is_v9=is_v9
+            )
+            legacy = (
+                LegacyAgentBehaviorMetrics(
+                    subtasks=trace.subtask_count,
+                    tool_calls=trace.tool_call_count,
+                    visual_calls=trace.visual_tool_call_count,
+                    graph_calls=trace.graph_tool_call_count,
+                    drilldown_depth=trace.drilldown_depth,
+                )
+                if trace is not None and not is_v9
+                else None
+            )
+            v9 = (
+                _v9_behavior_metrics(
+                    trace_payload=materialization.trace_payload,
+                    counts=v9_counts.get(str(result.id), {}),
+                    graph_events=graph_events_by_run.get(str(result.id), []),
+                )
+                if is_v9 and materialization is not None
+                else None
+            )
             rows.append(
                 AgentBehaviorRow(
                     run_id=result.id,
@@ -734,7 +760,9 @@ def _optional_nonnegative_int(value: object) -> int | None:
     return value if isinstance(value, int) and value >= 0 else None
 
 
-def _v9_behavior_metrics(*, trace_payload: dict, counts: dict, graph_events: list) -> V9AgentBehaviorMetrics:
+def _v9_behavior_metrics(
+    *, trace_payload: dict, counts: dict, graph_events: list
+) -> V9AgentBehaviorMetrics:
     contract = trace_payload.get("query_contract") or {}
     metrics = trace_payload.get("metrics") or {}
     sufficiency = trace_payload.get("sufficiency") or {}
@@ -779,38 +807,60 @@ def _v9_behavior_metrics(*, trace_payload: dict, counts: dict, graph_events: lis
             if visual_requested
             else "not_requested"
         )
+    contract_version = str(contract.get("contract_version") or "1")
+    experimental_slots = contract_version == "2"
     return V9AgentBehaviorMetrics(
         route=contract.get("route"),
-        contract_version=str(contract.get("contract_version") or "1"),
+        contract_version=contract_version,
         slot_plan_status=contract.get("slot_plan_status"),
         slot_semantics=(
-            "atomic"
-            if str(contract.get("contract_version") or "1") == "2"
-            else "legacy_generic"
+            "heuristic_experimental" if experimental_slots else "legacy_generic"
         ),
-        atomic_completeness=(
-            bool(sufficiency.get("evidence_complete"))
-            if str(contract.get("contract_version") or "1") == "2"
-            and isinstance(sufficiency.get("evidence_complete"), bool)
-            else None
+        atomic_completeness=None,
+        atomic_completeness_reason=(
+            ATOMIC_SLOT_MATCHING_EXPERIMENTAL if experimental_slots else None
         ),
         graph_policy=graph_policy,
         visual_requested=(
             visual_requested if isinstance(visual_requested, bool) else None
         ),
         visual_required=visual_required if isinstance(visual_required, bool) else None,
-        evidence_extraction_required=contract.get("evidence_extraction_required") if isinstance(contract.get("evidence_extraction_required"), bool) else None,
-        retrieval_query_count=_optional_nonnegative_int(metrics.get("retrieval_query_count")),
-        provider_attempt_count=_optional_nonnegative_int(metrics.get("provider_attempt_count")),
-        final_generation_count=_optional_nonnegative_int(metrics.get("final_generation_count")),
-        evidence_packet_count=_optional_nonnegative_int(counts.get("evidence_packet_count")),
-        packed_evidence_count=_optional_nonnegative_int(len(context_pack.get("packed_evidence_ids", []))),
-        slot_resolution_count=_optional_nonnegative_int(counts.get("slot_resolution_count")),
-        required_slot_count=_optional_nonnegative_int(len(contract.get("required_slots", []))),
-        supported_slot_count=_optional_nonnegative_int(len(sufficiency.get("supported_slot_ids", []))),
+        evidence_extraction_required=contract.get("evidence_extraction_required")
+        if isinstance(contract.get("evidence_extraction_required"), bool)
+        else None,
+        retrieval_query_count=_optional_nonnegative_int(
+            metrics.get("retrieval_query_count")
+        ),
+        provider_attempt_count=_optional_nonnegative_int(
+            metrics.get("provider_attempt_count")
+        ),
+        final_generation_count=_optional_nonnegative_int(
+            metrics.get("final_generation_count")
+        ),
+        evidence_packet_count=_optional_nonnegative_int(
+            counts.get("evidence_packet_count")
+        ),
+        packed_evidence_count=_optional_nonnegative_int(
+            len(context_pack.get("packed_evidence_ids", []))
+        ),
+        slot_resolution_count=_optional_nonnegative_int(
+            counts.get("slot_resolution_count")
+        ),
+        required_slot_count=_optional_nonnegative_int(
+            len(contract.get("required_slots", []))
+        ),
+        supported_slot_count=_optional_nonnegative_int(
+            len(sufficiency.get("supported_slot_ids", []))
+        ),
         repair_count=_optional_nonnegative_int(len(trace_payload.get("repairs", []))),
-        final_claim_count=_optional_nonnegative_int(len(trace_payload.get("final_claims", []))),
-        reserved_tokens=sum(int(item.get("reserved_tokens", 0) or 0) for item in trace_payload.get("budget_reservations", []) if isinstance(item, dict)),
+        final_claim_count=_optional_nonnegative_int(
+            len(trace_payload.get("final_claims", []))
+        ),
+        reserved_tokens=sum(
+            int(item.get("reserved_tokens", 0) or 0)
+            for item in trace_payload.get("budget_reservations", [])
+            if isinstance(item, dict)
+        ),
         reconciled_tokens=_optional_nonnegative_int(metrics.get("reconciled_tokens")),
         graph_execution=graph_execution,
         visual_execution=visual_execution,
@@ -910,7 +960,10 @@ def _mode_summary(
 def _token_warning_tuples(tokens: TokenBreakdown) -> list[tuple[str, str]]:
     """Return stable, non-sensitive reasons for incomplete token accounting."""
     warnings: list[tuple[str, str]] = []
-    if tokens.observed_call_count == 0 and tokens.accounting_status != "incomplete_legacy":
+    if (
+        tokens.observed_call_count == 0
+        and tokens.accounting_status != "incomplete_legacy"
+    ):
         warnings.append(
             (
                 "no_usage_events",
@@ -1221,9 +1274,7 @@ def _has_noncanonical_current_scores(results, scores, canonical_identities) -> b
         and row.get("source_attempt_id")
         == attempts_by_result[row["campaign_result_id"]]
         and row["metric_name"] in canonical_identities
-        and _evaluator_identity(
-            row, results_by_id.get(row["campaign_result_id"])
-        )
+        and _evaluator_identity(row, results_by_id.get(row["campaign_result_id"]))
         != canonical_identities[row["metric_name"]]
         for row in scores
     )
@@ -1334,8 +1385,7 @@ def _tokens(scopes, events, legacy_status="incomplete_legacy"):
     measured_call_count = sum(event.usage_status == "measured" for event in events)
     missing_usage_call_count = sum(event.usage_status == "missing" for event in events)
     unbalanced_call_count = sum(
-        event.usage_status == "measured"
-        and event.reconciliation_status != "balanced"
+        event.usage_status == "measured" and event.reconciliation_status != "balanced"
         for event in events
     )
     unclassified_phase_call_count = sum(
@@ -1489,7 +1539,11 @@ def _overall_quality_status(quality):
 
 
 def _optional_metric(value) -> float | None:
-    return float(value) if isinstance(value, (int, float)) and math.isfinite(float(value)) else None
+    return (
+        float(value)
+        if isinstance(value, (int, float)) and math.isfinite(float(value))
+        else None
+    )
 
 
 def _derived_correctness(metrics: dict) -> float | None:

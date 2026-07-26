@@ -13,6 +13,7 @@ from data_base.agentic_v9.execution_core import (
     ConflictStageResult,
     V9ExecutionCore,
     V9ExecutionStages,
+    _prevent_response_status_upgrade,
 )
 from data_base.agentic_v9.execution_policy import (
     ExecutionDeadline,
@@ -85,6 +86,49 @@ def _complete_sufficiency() -> SufficiencyEvaluation:
             supported_slot_ids=["score"],
         ),
     )
+
+
+def test_experimental_v2_slot_support_never_produces_a_complete_answer() -> None:
+    contract = QueryContract.model_validate(
+        {**_contract().model_dump(), "contract_version": "2"}
+    )
+    complete = _complete_sufficiency().report
+
+    clamped = _prevent_response_status_upgrade(
+        FinalAnswerResult(
+            response_status="complete",
+            answer="All heuristic slots appear supported.",
+            final_generation_count=1,
+        ),
+        complete,
+        contract,
+    )
+
+    assert clamped.response_status == "qualified_partial"
+    assert contract.atomic_completeness is None
+    assert contract.atomic_completeness_reason == "atomic_slot_matching_experimental"
+
+
+def test_experimental_v2_policy_preserves_insufficient_without_usable_evidence() -> (
+    None
+):
+    contract = QueryContract.model_validate(
+        {**_contract().model_dump(), "contract_version": "2"}
+    )
+    insufficient = SufficiencyReport(
+        evidence_complete=False,
+        answerable=False,
+        response_status="insufficient",
+        not_found_slot_ids=["score"],
+    )
+
+    result = _prevent_response_status_upgrade(
+        FinalAnswerResult(response_status="insufficient"),
+        insufficient,
+        contract,
+    )
+
+    assert result.response_status == "insufficient"
 
 
 async def _event_sink(_: object) -> None:
@@ -245,9 +289,7 @@ async def test_core_recomputes_sufficiency_after_each_of_at_most_two_repairs() -
         return tuple(
             TaskRetrievalResult(
                 task_id=task.task_id,
-                retrieval=RagRetrievalResult(
-                    retrieval_id=f"retrieval:{task.task_id}"
-                ),
+                retrieval=RagRetrievalResult(retrieval_id=f"retrieval:{task.task_id}"),
             )
             for task in tasks
         )
@@ -257,9 +299,7 @@ async def test_core_recomputes_sufficiency_after_each_of_at_most_two_repairs() -
     ) -> SufficiencyEvaluation:
         evaluation_calls.append(len(packets))
         return SufficiencyEvaluation(
-            slot_resolutions=(
-                SlotResolution(slot_id="score", status="not_found"),
-            ),
+            slot_resolutions=(SlotResolution(slot_id="score", status="not_found"),),
             report=SufficiencyReport(
                 evidence_complete=False,
                 answerable=False,
@@ -315,7 +355,9 @@ async def test_core_recomputes_sufficiency_after_each_of_at_most_two_repairs() -
 
 
 @pytest.mark.asyncio
-async def test_core_does_not_request_repair_when_initial_sufficiency_is_terminal() -> None:
+async def test_core_does_not_request_repair_when_initial_sufficiency_is_terminal() -> (
+    None
+):
     repair_decisions: list[int] = []
     contract = _contract().model_copy(update={"max_repair_rounds": 2})
     stages = V9ExecutionStages(
@@ -510,9 +552,7 @@ async def test_incomplete_sufficiency_cannot_be_upgraded_by_final_provider() -> 
             evaluate_sufficiency=lambda *_: degraded,
             plan_repair=lambda *_: (),
             prose_curate=lambda _, __, packets: packets,
-            resolve_conflicts=lambda *args: ConflictStageResult(
-                sufficiency=args[-1]
-            ),
+            resolve_conflicts=lambda *args: ConflictStageResult(sufficiency=args[-1]),
             pack=lambda _, __, packets, ___: SimpleNamespace(
                 packets=packets, is_packable=True
             ),

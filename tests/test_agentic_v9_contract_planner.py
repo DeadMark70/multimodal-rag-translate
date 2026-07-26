@@ -27,24 +27,14 @@ def _questions() -> dict[str, dict]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("question_id", "expected_route", "minimum_slots"),
-    [
-        ("Q5", "exact_structured", 3),
-        ("Q7", "bounded_compare", 2),
-        ("Q11", "multi_hop", 2),
-        ("Q14", "multi_document_exact", 3),
-        ("Q16", "multi_document_exact", 7),
-    ],
+    "question_id",
+    ["Q5", "Q7", "Q11", "Q14"],
 )
-async def test_formal_questions_decompose_into_atomic_answer_free_slots(
+async def test_formal_questions_use_bounded_experimental_answer_free_slots(
     question_id: str,
-    expected_route: str,
-    minimum_slots: int,
 ) -> None:
     case = _questions()[question_id]
-    doc_ids = [
-        f"doc-{index}" for index, _ in enumerate(case["source_docs"], 1)
-    ]
+    doc_ids = [f"doc-{index}" for index, _ in enumerate(case["source_docs"], 1)]
 
     contract = await QuestionContractPlanner().plan(
         question=case["question"],
@@ -52,29 +42,43 @@ async def test_formal_questions_decompose_into_atomic_answer_free_slots(
         authorized_source_doc_ids=doc_ids,
         authorized_source_name_to_doc_ids={
             name: [doc_id]
-            for name, doc_id in zip(
-                case["source_docs"], doc_ids, strict=True
-            )
+            for name, doc_id in zip(case["source_docs"], doc_ids, strict=True)
         },
         setup_policy={"max_llm_calls": 5, "max_output_tokens": 8192},
     )
 
     assert contract.contract_version == "2"
-    assert contract.slot_plan_status == "complete"
-    assert contract.route == expected_route
-    assert len(contract.required_slots) >= minimum_slots
-    assert len(contract.required_slots) <= 8
+    assert contract.slot_semantics == "heuristic_experimental"
+    assert contract.atomic_completeness is None
+    assert contract.slot_plan_status in {"complete", "degraded"}
+    assert 1 <= len(contract.required_slots) <= 8
     assert [slot.slot_id for slot in contract.required_slots] == [
         f"S{index}" for index in range(1, len(contract.required_slots) + 1)
     ]
     assert all(slot.description.strip() for slot in contract.required_slots)
-    assert all(
-        slot.authorized_source_doc_ids for slot in contract.required_slots
-    )
+    assert all(slot.authorized_source_doc_ids for slot in contract.required_slots)
 
 
 @pytest.mark.asyncio
-async def test_q16_has_seven_ordered_slots_without_expected_numeric_answers() -> None:
+async def test_q16_uses_generic_experimental_planning_without_benchmark_bundle() -> (
+    None
+):
+    planner_source = (
+        Path(__file__).resolve().parents[1]
+        / "data_base"
+        / "agentic_v9"
+        / "contract_planner.py"
+    ).read_text(encoding="utf-8")
+    assert "q16_structured_bundle" not in planner_source
+    assert "_known_question_slots" not in planner_source
+    for benchmark_name in (
+        "gepar3d",
+        "segmentanybone",
+        "weak-mamba-unet",
+        "swinunetr",
+    ):
+        assert benchmark_name not in planner_source.casefold()
+
     case = _questions()["Q16"]
 
     contract = await QuestionContractPlanner().plan(
@@ -90,24 +94,19 @@ async def test_q16_has_seven_ordered_slots_without_expected_numeric_answers() ->
         setup_policy={"max_llm_calls": 5, "max_output_tokens": 8192},
     )
 
-    assert [slot.slot_id for slot in contract.required_slots] == [
-        "S1",
-        "S2",
-        "S3",
-        "S4",
-        "S5",
-        "S6",
-        "S7",
-    ]
-    descriptions = [slot.description for slot in contract.required_slots]
-    assert ["penalty" in descriptions[0].casefold(), "reason" in descriptions[1].casefold()] == [True, True]
-    assert "equation" in descriptions[2].casefold()
-    assert "|a^c" in descriptions[3].casefold()
-    assert "u-kan" in descriptions[4].casefold()
-    assert "proposed" in descriptions[5].casefold()
-    assert "theorem" in descriptions[6].casefold()
+    assert contract.slot_semantics == "heuristic_experimental"
+    assert contract.atomic_completeness is None
+    assert contract.route_decision is not None
+    assert "q16_structured_bundle" not in contract.route_decision.matched_rules
+    serialized = contract.model_dump_json()
     for forbidden in ("0.179", "0.4064", "0.9079", "0 ≤", "0 <="):
-        assert all(forbidden not in description for description in descriptions)
+        assert forbidden not in serialized
+    for forbidden in (
+        "tooth 1 to tooth 32 penalty",
+        "regional impurity equation",
+        "|A^c(x,y)|",
+    ):
+        assert forbidden not in serialized
 
 
 @pytest.mark.asyncio
@@ -129,9 +128,7 @@ async def test_numbered_parallel_source_and_locator_clauses_split_stably() -> No
 
     assert len(contract.required_slots) >= 5
     all_locators = {
-        locator
-        for slot in contract.required_slots
-        for locator in slot.locator_hints
+        locator for slot in contract.required_slots for locator in slot.locator_hints
     }
     assert {"Table 3", "Equation 2", "Theorem 1", "Appendix D"} <= all_locators
     assert contract.route_decision is not None
@@ -198,7 +195,9 @@ async def test_authoritative_source_mapping_survives_reordered_canonical_ids() -
 
 
 @pytest.mark.asyncio
-async def test_multisource_direct_planner_without_mapping_degrades_without_zip_pairing() -> None:
+async def test_multisource_direct_planner_without_mapping_degrades_without_zip_pairing() -> (
+    None
+):
     contract = await QuestionContractPlanner().plan(
         question="From nnMamba.pdf, report the value in Table 2.",
         authorized_source_names=["nnMamba.pdf", "Other.pdf"],
