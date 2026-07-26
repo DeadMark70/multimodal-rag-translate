@@ -177,6 +177,15 @@ def test_locator_enforces_encoded_byte_and_dimension_caps_before_invocation() ->
     }
 
 
+def test_locator_accepts_resolver_loaded_asset_without_chunk_metadata() -> None:
+    asset = _asset("manifest-asset")
+
+    result = AssetLocator().locate(task=_task(), assets=[asset])
+
+    assert [item.asset_id for item in result.located_assets] == ["manifest-asset"]
+    assert result.located_assets[0].source.asset_id == "manifest-asset"
+
+
 @pytest.mark.asyncio
 async def test_extractor_invokes_only_v9_visual_phase_with_locator_bound_packet_json() -> None:
     task = _task()

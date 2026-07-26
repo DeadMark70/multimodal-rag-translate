@@ -183,15 +183,23 @@ class AssetLocator:
 
     @staticmethod
     def _matches_locator_hint(task: RetrievalTask, asset: VisualAssetCandidate) -> bool:
-        hints = {hint.strip().lower() for hint in task.locator_hints}
+        hints = {hint.strip().casefold() for hint in task.locator_hints}
         if not hints:
             return any((asset.figure_id, asset.table_id, asset.formula_id, asset.bbox))
-        return (
-            ("figure" in hints and bool(asset.figure_id))
-            or ("table" in hints and bool(asset.table_id))
-            or ("formula" in hints and bool(asset.formula_id))
-            or ("bbox" in hints and asset.bbox is not None)
-        )
+        for hint in hints:
+            normalized = _locator_key(hint)
+            if normalized in {"figure", "fig"} and asset.figure_id:
+                return True
+            if normalized == "table" and asset.table_id:
+                return True
+            if normalized in {"formula", "equation"} and asset.formula_id:
+                return True
+            if normalized == "bbox" and asset.bbox is not None:
+                return True
+            for identifier in (asset.figure_id, asset.table_id, asset.formula_id):
+                if identifier and _locator_key(identifier) == normalized:
+                    return True
+        return False
 
     def _located_asset(self, asset: VisualAssetCandidate) -> LocatedVisualAsset | None:
         use_crop = asset.bbox is not None and asset.crop_image_base64 is not None
@@ -242,6 +250,10 @@ def _encoded_bytes(value: str) -> int | None:
         return len(base64.b64decode(value, validate=True))
     except (ValueError, TypeError):
         return None
+
+
+def _locator_key(value: str) -> str:
+    return "".join(character for character in value.casefold() if character.isalnum())
 
 
 __all__ = [

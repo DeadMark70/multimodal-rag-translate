@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from langchain_core.documents import Document
@@ -29,6 +30,7 @@ from data_base.agentic_v9.schemas import (
 from data_base.agentic_v9.visual_evidence_extractor import (
     VisualEvidenceExtractionResult,
 )
+from data_base.agentic_v9.asset_locator import VisualAssetCandidate
 from data_base.agentic_v9.execution_policy import V9ExecutionPolicyRuntime
 
 
@@ -112,6 +114,33 @@ def _setup() -> dict[str, object]:
         "max_output_tokens": 256,
         "thinking_mode": False,
     }
+
+
+def _manifest_visual_candidate(
+    *,
+    asset_id: str = "manifest-asset",
+    doc_id: str = "doc-1",
+    slot_id: str = "S1",
+    figure_id: str | None = "Figure 1",
+    table_id: str | None = None,
+) -> VisualAssetCandidate:
+    encoded = base64.b64encode(b"image").decode("ascii")
+    return VisualAssetCandidate(
+        asset_id=asset_id,
+        source=EvidenceSource(
+            doc_id=doc_id,
+            chunk_id=f"graph:asset:{asset_id}",
+            asset_id=asset_id,
+        ),
+        pdf_page_index=2,
+        slot_ids=[slot_id],
+        figure_id=figure_id,
+        table_id=table_id,
+        page_image_base64=encoded,
+        page_encoded_bytes=5,
+        page_width=12,
+        page_height=8,
+    )
 
 
 async def _identity_reference_resolver(
@@ -646,7 +675,7 @@ async def test_missing_required_visual_evidence_is_insufficient(monkeypatch) -> 
     visual = result.agent_trace["agentic_v9"]["visual_execution"]
     assert result.agent_trace["response_status"] == "insufficient"
     assert visual["state"] == "required_but_not_satisfied"
-    assert visual["failure_reason"] == "no_eligible_visual_evidence"
+    assert visual["failure_reason"] == "asset_manifest_empty"
     assert result.agent_trace["agentic_v9"]["slot_resolutions"][0]["status"] == (
         "explicitly_unavailable"
     )
@@ -880,22 +909,12 @@ async def test_multidocument_visual_call_aggregates_sources_and_binds_packets_pe
         if len(doc_ids) != 1:
             return []
         doc_id = doc_ids[0]
-        has_asset = doc_id == "doc-a" or later_asset_present
         metadata = {
             "doc_id": doc_id,
             "chunk_id": f"chunk-{doc_id}",
             "page_number": 1,
             "table_id": "Table A" if doc_id == "doc-a" else "Table Z",
         }
-        if has_asset:
-            metadata.update(
-                {
-                    "asset_id": f"asset-{doc_id}",
-                    "page_image_base64": "aW1hZ2U=",
-                    "page_width": 10,
-                    "page_height": 10,
-                }
-            )
         return [
             Document(
                 page_content=f"{doc_id} contains its requested fact.",
@@ -905,14 +924,13 @@ async def test_multidocument_visual_call_aggregates_sources_and_binds_packets_pe
 
     visual_calls: list[list[tuple[str, list[str]]]] = []
 
-    async def extract_visual(task, documents, _question, _controller):
+    async def extract_visual(task, assets, _question, _controller):
         asset_bindings = [
             (
-                document.metadata["doc_id"],
-                document.metadata["visual_slot_ids"],
+                asset.source.doc_id,
+                asset.slot_ids,
             )
-            for document in documents
-            if document.metadata.get("page_image_base64")
+            for asset in assets
         ]
         visual_calls.append(asset_bindings)
         asset_doc_ids = [doc_id for doc_id, _slot_ids in asset_bindings]
@@ -969,8 +987,45 @@ async def test_multidocument_visual_call_aggregates_sources_and_binds_packets_pe
         "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract",
         admission,
     )
+    resolved_assets = [
+        _manifest_visual_candidate(
+            asset_id="asset-doc-a",
+            doc_id="doc-a",
+            slot_id="S1",
+            figure_id=None,
+            table_id="Table A",
+        )
+    ]
+    if later_asset_present:
+        resolved_assets.append(
+            _manifest_visual_candidate(
+                asset_id="asset-doc-z",
+                doc_id="doc-z",
+                slot_id="S2",
+                figure_id=None,
+                table_id="Table Z",
+            )
+        )
+    resolver = Mock()
+    resolver.resolve_task.return_value = SimpleNamespace(
+        assets=tuple(resolved_assets),
+        diagnostics=SimpleNamespace(
+            model_dump=lambda: {
+                "manifest_count": len(resolved_assets),
+                "authorized_count": len(resolved_assets),
+                "locator_match_count": len(resolved_assets),
+                "loaded_count": len(resolved_assets),
+                "selected_count": len(resolved_assets),
+                "dropped_count": 0,
+                "evidence_packet_count": 0,
+                "covered_slot_count": len(resolved_assets),
+                "terminal_reason": None,
+            }
+        ),
+    )
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=retrieve_documents,
+        visual_asset_resolver=resolver,
         visual_extractor=extract_visual,
         provider_factory=lambda _purpose: provider,
         document_reference_resolver=_identity_reference_resolver,
@@ -1001,6 +1056,100 @@ async def test_multidocument_visual_call_aggregates_sources_and_binds_packets_pe
     resolutions = {row["slot_id"]: row["status"] for row in v9["slot_resolutions"]}
     assert resolutions["S1"] == "supported"
     assert resolutions["S2"] == expected_required_status
+
+
+@pytest.mark.asyncio
+async def test_runtime_resolves_visual_manifest_without_chunk_base64(
+    monkeypatch,
+) -> None:
+    provider = _Provider()
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        contract_version="2",
+        route="exact_structured",
+        intent="figure fact",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Figure 1 fact",
+                authorized_source_doc_ids=["doc-1"],
+                locator_hints=["Figure 1"],
+                visual_policy="required",
+            )
+        ],
+        visual_requested=True,
+        visual_required=True,
+        evidence_extraction_required=True,
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=3,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+        slot_plan_status="complete",
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    class Resolution:
+        assets = (_manifest_visual_candidate(),)
+        diagnostics = SimpleNamespace(
+            model_dump=lambda: {
+                "manifest_count": 1,
+                "authorized_count": 1,
+                "locator_match_count": 1,
+                "loaded_count": 1,
+                "selected_count": 1,
+                "dropped_count": 0,
+                "evidence_packet_count": 0,
+                "covered_slot_count": 1,
+                "terminal_reason": None,
+            }
+        )
+
+    resolver = Mock()
+    resolver.resolve_task.return_value = Resolution()
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract",
+        admission,
+    )
+    visual_calls = []
+
+    async def extract_visual(task, assets, _question, _controller):
+        visual_calls.extend(assets)
+        return VisualEvidenceExtractionResult()
+
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="Figure 1 is discussed here.",
+                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+                )
+            ]
+        ),
+        visual_asset_resolver=resolver,
+        visual_extractor=extract_visual,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What does Figure 1 show?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "max_output_tokens": 8192},
+        trace_id="manifest-visual-trace",
+    )
+
+    assert [asset.asset_id for asset in visual_calls] == ["manifest-asset"]
+    visual = result.agent_trace["agentic_v9"]["visual_execution"]
+    assert visual["manifest_count"] == 1
+    assert visual["loaded_count"] == 1
 
 
 @pytest.mark.asyncio

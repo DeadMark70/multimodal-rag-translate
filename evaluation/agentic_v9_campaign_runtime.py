@@ -76,6 +76,10 @@ from data_base.agentic_v9.slot_constraints import (
     locator_hints_match_chunk,
 )
 from data_base.agentic_v9.asset_locator import VisualAssetCandidate
+from data_base.agentic_v9.visual_asset_resolver import (
+    VisualAssetResolutionDiagnostics,
+    VisualAssetResolver,
+)
 from data_base.agentic_v9.visual_evidence_extractor import (
     VisualEvidenceExtractionResult,
     VisualEvidenceExtractor,
@@ -99,7 +103,7 @@ GraphLocator = Callable[
     Awaitable[GraphSourceLocatorResult],
 ]
 VisualExtractor = Callable[
-    [Any, list[Document], str, RunBudgetController],
+    [Any, list[VisualAssetCandidate], str, RunBudgetController],
     Awaitable[VisualEvidenceExtractionResult],
 ]
 ProviderFactory = Callable[[str], Any]
@@ -121,6 +125,7 @@ class AgenticV9CampaignRuntime:
         retrieve_documents: RetrievalAdapter | None = None,
         graph_locator: GraphLocator | None = None,
         visual_extractor: VisualExtractor | None = None,
+        visual_asset_resolver: VisualAssetResolver | None = None,
         provider_factory: ProviderFactory | None = None,
         policy_runtime: V9ExecutionPolicyRuntime | None = None,
         document_reference_resolver: DocumentReferenceResolver | None = None,
@@ -128,6 +133,7 @@ class AgenticV9CampaignRuntime:
         self._retrieve_documents = retrieve_documents or _retrieve_documents
         self._graph_locator = graph_locator or _locate_graph_documents
         self._visual_extractor = visual_extractor or _extract_visual_evidence
+        self._visual_asset_resolver = visual_asset_resolver or VisualAssetResolver()
         self._provider_factory = provider_factory or _provider_for_purpose
         self._policy_runtime = policy_runtime or V9ExecutionPolicyRuntime()
         self._document_reference_resolver = (
@@ -221,6 +227,7 @@ class AgenticV9CampaignRuntime:
             "visual_execution": None,
             "visual_packets": [],
             "visual_packets_emitted": False,
+            "visual_resolution_diagnostics": None,
             "final_slot_resolutions": (),
         }
 
@@ -266,7 +273,6 @@ class AgenticV9CampaignRuntime:
             tasks: tuple[Any, ...],
         ) -> tuple[TaskRetrievalResult, ...]:
             results: list[TaskRetrievalResult] = []
-            visual_documents: list[Document] = []
             for task in tasks:
                 state["tasks_by_id"][task.task_id] = task
                 docs = await self._retrieve_documents(
@@ -293,12 +299,6 @@ class AgenticV9CampaignRuntime:
                     else:
                         state["graph_execution"] = _graph_execution_projection(located)
                         docs = list(located.documents)
-                visual_documents.extend(
-                    _visual_documents_for_contract(
-                        documents=docs,
-                        contract=state["contract"],
-                    )
-                )
                 chunks = [
                     _chunk_projection(document, index)
                     for index, document in enumerate(docs)
@@ -332,9 +332,15 @@ class AgenticV9CampaignRuntime:
                     }
                 )
                 try:
+                    resolution = self._visual_asset_resolver.resolve_task(
+                        user_id=user_id,
+                        task=visual_task,
+                        slots=_requested_visual_slots(state["contract"]),
+                    )
+                    state["visual_resolution_diagnostics"] = resolution.diagnostics
                     visual_result = await self._visual_extractor(
                         visual_task,
-                        _deduplicate_visual_documents(visual_documents),
+                        list(resolution.assets),
                         question,
                         controller,
                     )
@@ -355,6 +361,9 @@ class AgenticV9CampaignRuntime:
                     state["visual_execution"] = _visual_execution_projection(
                         visual_result,
                         required=state["contract"].visual_required,
+                        resolution_diagnostics=state[
+                            "visual_resolution_diagnostics"
+                        ],
                     )
                     state["visual_packets"].extend(visual_result.packets)
             return tuple(results)
@@ -937,11 +946,11 @@ def _failed_required_stage(*, policy: str, error: Exception) -> dict[str, Any]:
 
 async def _extract_visual_evidence(
     task: Any,
-    documents: list[Document],
+    assets: list[VisualAssetCandidate],
     question: str,
     controller: RunBudgetController,
 ) -> VisualEvidenceExtractionResult:
-    """Extract only selected, source-bound visual evidence from retrieved docs."""
+    """Extract only manifest-resolved, source-bound visual evidence."""
     extractor = VisualEvidenceExtractor(
         BudgetedLlmInvoker(
             controller=controller,
@@ -950,61 +959,9 @@ async def _extract_visual_evidence(
     )
     return await extractor.extract(
         task=task,
-        assets=_visual_assets_from_documents(documents),
+        assets=assets,
         question_fragment=question,
     )
-
-
-def _visual_assets_from_documents(
-    documents: list[Document],
-) -> list[VisualAssetCandidate]:
-    """Project only fully located page images supplied by retrieval metadata."""
-    assets: list[VisualAssetCandidate] = []
-    for index, document in enumerate(documents):
-        metadata = dict(document.metadata or {})
-        image_base64 = metadata.get("page_image_base64") or metadata.get("image_base64")
-        page = metadata.get("page_number")
-        width = metadata.get("page_width") or metadata.get("image_width")
-        height = metadata.get("page_height") or metadata.get("image_height")
-        doc_id = get_document_id(metadata)
-        slot_ids = metadata.get("visual_slot_ids")
-        if not (
-            isinstance(image_base64, str)
-            and image_base64
-            and isinstance(page, int)
-            and page >= 0
-            and isinstance(width, int)
-            and width > 0
-            and isinstance(height, int)
-            and height > 0
-            and isinstance(doc_id, str)
-            and doc_id
-            and isinstance(slot_ids, list)
-            and slot_ids
-        ):
-            continue
-        assets.append(
-            VisualAssetCandidate(
-                asset_id=str(
-                    metadata.get("asset_id") or f"{doc_id}:page:{page}:{index}"
-                ),
-                source=EvidenceSource(
-                    doc_id=doc_id,
-                    chunk_id=str(metadata.get("chunk_id") or index + 1),
-                ),
-                pdf_page_index=page,
-                slot_ids=list(slot_ids),
-                figure_id=metadata.get("figure_id"),
-                table_id=metadata.get("table_id"),
-                formula_id=metadata.get("formula_id"),
-                bbox=metadata.get("bbox"),
-                page_image_base64=image_base64,
-                page_encoded_bytes=int(metadata.get("page_encoded_bytes") or 0),
-                page_width=width,
-                page_height=height,
-            )
-        )
-    return assets
 
 
 def _requested_visual_slots(contract: QueryContract) -> list[RequiredSlot]:
@@ -1016,75 +973,6 @@ def _requested_visual_slots(contract: QueryContract) -> list[RequiredSlot]:
     if contract.visual_required and not slots:
         return [slot for slot in contract.required_slots if slot.required]
     return slots
-
-
-def _visual_documents_for_contract(
-    *,
-    documents: list[Document],
-    contract: QueryContract,
-) -> list[Document]:
-    """Bind each retrieved visual candidate to compatible authorized slots."""
-    visual_documents: list[Document] = []
-    for document in documents:
-        metadata = dict(document.metadata or {})
-        doc_id = get_document_id(metadata)
-        if not isinstance(doc_id, str) or not doc_id:
-            continue
-        if not _has_visual_candidate_metadata(metadata):
-            continue
-        slot_ids = [
-            slot.slot_id
-            for slot in _requested_visual_slots(contract)
-            if _slot_accepts_visual_source(
-                slot=slot,
-                doc_id=doc_id,
-                figure_id=metadata.get("figure_id"),
-                table_id=metadata.get("table_id"),
-                formula_id=metadata.get("formula_id"),
-            )
-        ]
-        if not slot_ids:
-            continue
-        metadata["visual_slot_ids"] = slot_ids
-        visual_documents.append(
-            Document(page_content=document.page_content, metadata=metadata)
-        )
-    return visual_documents
-
-
-def _has_visual_candidate_metadata(metadata: dict[str, Any]) -> bool:
-    image = metadata.get("page_image_base64") or metadata.get("image_base64")
-    width = metadata.get("page_width") or metadata.get("image_width")
-    height = metadata.get("page_height") or metadata.get("image_height")
-    return bool(
-        isinstance(image, str)
-        and image
-        and isinstance(metadata.get("page_number"), int)
-        and isinstance(width, int)
-        and width > 0
-        and isinstance(height, int)
-        and height > 0
-    )
-
-
-def _deduplicate_visual_documents(documents: list[Document]) -> list[Document]:
-    deduplicated: list[Document] = []
-    seen: set[tuple[object, ...]] = set()
-    for document in documents:
-        metadata = document.metadata or {}
-        key = (
-            metadata.get("asset_id"),
-            get_document_id(metadata),
-            metadata.get("page_number"),
-            metadata.get("figure_id"),
-            metadata.get("table_id"),
-            metadata.get("formula_id"),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        deduplicated.append(document)
-    return deduplicated
 
 
 def _bind_visual_result_to_contract(
@@ -1193,6 +1081,13 @@ def _initial_visual_execution(contract: QueryContract | None) -> dict[str, Any]:
         "dropped_asset_count": 0,
         "evidence_packet_count": 0,
         "supported_slot_ids": [],
+        "manifest_count": 0,
+        "authorized_count": 0,
+        "locator_match_count": 0,
+        "loaded_count": 0,
+        "selected_count": 0,
+        "dropped_count": 0,
+        "covered_slot_count": 0,
     }
 
 
@@ -1200,12 +1095,35 @@ def _visual_execution_projection(
     result: VisualEvidenceExtractionResult,
     *,
     required: bool,
+    resolution_diagnostics: VisualAssetResolutionDiagnostics | None = None,
 ) -> dict[str, Any]:
     packet_count = len(result.packets)
     supported_slot_ids = sorted(
         {slot_id for packet in result.packets for slot_id in packet.slot_ids}
     )
+    diagnostics = (
+        resolution_diagnostics.model_dump()
+        if resolution_diagnostics is not None
+        else {
+            "manifest_count": 0,
+            "authorized_count": 0,
+            "locator_match_count": 0,
+            "loaded_count": 0,
+            "selected_count": 0,
+            "dropped_count": 0,
+            "evidence_packet_count": 0,
+            "covered_slot_count": 0,
+            "terminal_reason": None,
+        }
+    )
+    diagnostics.update(
+        {
+            "evidence_packet_count": packet_count,
+            "covered_slot_count": len(supported_slot_ids),
+        }
+    )
     return {
+        **diagnostics,
         "required": required,
         "state": (
             "executed"
@@ -1221,7 +1139,8 @@ def _visual_execution_projection(
             else (
                 result.dropped_assets[0].reason
                 if result.dropped_assets
-                else "no_eligible_visual_evidence"
+                else diagnostics["terminal_reason"]
+                or "no_eligible_visual_evidence"
             )
         ),
         "selected_asset_count": len(result.located_assets),
