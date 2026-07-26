@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from data_base.agentic_v9.contract_planner import QuestionContractPlanner
+from data_base.agentic_v9.schemas import BudgetExceededError
 
 
 QUESTIONS_PATH = (
@@ -144,3 +145,107 @@ def test_planner_api_cannot_accept_question_snapshot_or_gold_fields() -> None:
             authorized_source_doc_ids=["doc-1"],
             setup_policy={},
         )
+
+
+class _PlannerInvoker:
+    def __init__(self, response: object = None, error: Exception | None = None):
+        self.response = response
+        self.error = error
+        self.calls: list[dict[str, object]] = []
+
+    async def invoke(self, **kwargs: object) -> object:
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_question_uses_one_contract_planning_call() -> None:
+    invoker = _PlannerInvoker(
+        {
+            "content": json.dumps(
+                {
+                    "selected_route": "bounded_compare",
+                    "slots": [
+                        {
+                            "description": "Compare the requested source-bound claims.",
+                            "source_name_hints": ["paper.pdf"],
+                            "authorized_source_doc_ids": ["doc-1"],
+                            "locator_hints": [],
+                            "expected_answer_type": "comparison",
+                            "depends_on_slot_ids": [],
+                            "visual_policy": "never",
+                        }
+                    ],
+                    "route_reason": "The question has an ambiguous comparison.",
+                    "confidence": 0.8,
+                }
+            )
+        }
+    )
+
+    contract = await QuestionContractPlanner(llm_invoker=invoker).plan(
+        question="Please help me understand how these claims relate.",
+        authorized_source_names=["paper.pdf"],
+        authorized_source_doc_ids=["doc-1"],
+        setup_policy={"max_llm_calls": 5, "max_output_tokens": 512},
+    )
+
+    assert len(invoker.calls) == 1
+    assert invoker.calls[0]["phase"] == "contract_planning"
+    assert contract.route_decision.decision_source == "llm_planner"
+    assert contract.route_decision.planner_call_used is True
+    assert contract.slot_plan_status == "complete"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "error", "fallback_reason"),
+    [
+        ({"content": "not-json"}, None, "invalid_planner_output"),
+        (None, TimeoutError("slow"), "planner_timeout"),
+        (None, BudgetExceededError("budget"), "planner_budget_rejected"),
+        (
+            {
+                "content": json.dumps(
+                    {
+                        "selected_route": "single_lookup",
+                        "slots": [
+                            {
+                                "description": "Retrieve the requested fact.",
+                                "source_name_hints": ["outside.pdf"],
+                                "authorized_source_doc_ids": ["outside"],
+                                "locator_hints": [],
+                                "expected_answer_type": "text",
+                                "depends_on_slot_ids": [],
+                                "visual_policy": "never",
+                            }
+                        ],
+                        "route_reason": "Expanded scope.",
+                        "confidence": 0.7,
+                    }
+                )
+            },
+            None,
+            "unauthorized_source_expansion",
+        ),
+    ],
+)
+async def test_planner_failures_return_degraded_safe_fallback(
+    response: object, error: Exception | None, fallback_reason: str
+) -> None:
+    invoker = _PlannerInvoker(response=response, error=error)
+
+    contract = await QuestionContractPlanner(llm_invoker=invoker).plan(
+        question="Please investigate this unclear request.",
+        authorized_source_names=["paper.pdf"],
+        authorized_source_doc_ids=["doc-1"],
+        setup_policy={"max_llm_calls": 5, "max_output_tokens": 512},
+    )
+
+    assert len(invoker.calls) == 1
+    assert contract.route_decision.decision_source == "safe_fallback"
+    assert contract.route_decision.fallback_reason == fallback_reason
+    assert contract.slot_plan_status == "degraded"
+    assert contract.required_slots[0].authorized_source_doc_ids == ["doc-1"]

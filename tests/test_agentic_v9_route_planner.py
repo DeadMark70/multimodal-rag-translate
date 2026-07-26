@@ -194,8 +194,8 @@ async def test_only_ambiguous_question_uses_one_budgeted_route_plan_call() -> No
 
     assert contract.route == "single_lookup"
     assert len(invoker.calls) == 1
-    assert invoker.calls[0]["phase"] == "route_plan"
-    assert invoker.calls[0]["purpose"] == "resolve_ambiguous_query_contract"
+    assert invoker.calls[0]["phase"] == "contract_planning"
+    assert invoker.calls[0]["purpose"] == "atomic_contract_planning"
     assert contract.max_llm_calls == 4  # route-plan + evidence extraction + visual reserve + final
     assert "answer" not in contract.model_dump()
 
@@ -208,10 +208,13 @@ async def test_ambiguous_planner_output_with_an_answer_or_scope_is_rejected() ->
             '"authorized_doc_ids":["outside"]}'
         }
     )
-    with pytest.raises(ValueError, match="valid route decision"):
-        await RoutePlanner(llm_invoker=invoker).plan(
-            question="Can you check this?", resolved_source_scope=_scope()
-        )
+    contract = await RoutePlanner(llm_invoker=invoker).plan(
+        question="Can you check this?", resolved_source_scope=_scope()
+    )
+
+    assert contract.slot_plan_status == "degraded"
+    assert contract.route_decision.decision_source == "safe_fallback"
+    assert contract.route_decision.fallback_reason == "invalid_planner_output"
 
 
 @pytest.mark.asyncio

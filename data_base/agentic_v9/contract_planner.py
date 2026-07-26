@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict
 
 from data_base.agentic_v9.schemas import (
     AgenticV9Route,
+    BudgetExceededError,
     LlmInvoker,
     QueryContract,
     RequiredSlot,
@@ -20,7 +21,9 @@ from data_base.agentic_v9.schemas import (
 )
 
 _PROMPT_PATH = (
-    Path(__file__).resolve().parents[2] / "prompts" / "agentic_v9_route_planner.json"
+    Path(__file__).resolve().parents[2]
+    / "prompts"
+    / "agentic_v9_contract_planner.json"
 )
 _ENTITY_PATTERN = re.compile(
     r"(?<![\w-])[A-Za-z][A-Za-z0-9]*(?:[-.][A-Za-z0-9]+)*(?![\w-])"
@@ -57,10 +60,29 @@ _ROUTE_BUDGETS: dict[AgenticV9Route, _RouteBudget] = {
 }
 
 
+class _PlannerSlot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    description: str
+    source_name_hints: list[str]
+    authorized_source_doc_ids: list[str]
+    locator_hints: list[str]
+    expected_answer_type: Literal[
+        "number",
+        "equation",
+        "definition",
+        "comparison",
+        "explanation",
+        "text",
+    ]
+    depends_on_slot_ids: list[str]
+    visual_policy: Literal["never", "preferred", "required"]
+
+
 class _PlannerDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    route: Literal[
+    selected_route: Literal[
         "single_lookup",
         "bounded_compare",
         "exact_structured",
@@ -68,6 +90,19 @@ class _PlannerDecision(BaseModel):
         "multi_hop",
         "graph_relational",
     ]
+    slots: list[_PlannerSlot]
+    route_reason: str
+    confidence: float
+
+
+@dataclass(frozen=True, slots=True)
+class _AmbiguityResult:
+    route: AgenticV9Route
+    slots: list[RequiredSlot] | None
+    route_reason: str
+    confidence: float
+    decision_source: Literal["llm_planner", "safe_fallback"]
+    fallback_reason: str | None
 
 
 class QuestionContractPlanner:
@@ -90,17 +125,24 @@ class QuestionContractPlanner:
             raise ValueError("question must not be empty")
 
         route = _deterministic_route(normalized_question)
-        planner_call_used = route is None
+        ambiguity: _AmbiguityResult | None = None
         if route is None:
-            route = await self._resolve_ambiguous_route(
+            ambiguity = await self._resolve_ambiguous_contract(
                 question=normalized_question,
+                authorized_source_names=authorized_source_names,
                 authorized_source_doc_ids=authorized_source_doc_ids,
             )
-        slots, matched_rules = _decompose(
-            question=normalized_question,
-            source_names=authorized_source_names,
-            source_doc_ids=authorized_source_doc_ids,
-        )
+            route = ambiguity.route
+        planner_call_used = ambiguity is not None
+        if ambiguity and ambiguity.slots:
+            slots = ambiguity.slots
+            matched_rules = ["llm_atomic_decomposition"]
+        else:
+            slots, matched_rules = _decompose(
+                question=normalized_question,
+                source_names=authorized_source_names,
+                source_doc_ids=authorized_source_doc_ids,
+            )
         if not slots:
             slots = [
                 _slot(
@@ -132,22 +174,22 @@ class QuestionContractPlanner:
         ) or ["source passage for each target slot"]
         entities = _extract_entities(normalized_question)
         budget = _ROUTE_BUDGETS[route]
-        decision_source = "llm_planner" if planner_call_used and self._llm_invoker else (
-            "safe_fallback" if planner_call_used else "deterministic"
+        decision_source = (
+            ambiguity.decision_source if ambiguity else "deterministic"
         )
         decision = RouteDecision(
             selected_route=route,
             decision_source=decision_source,
             matched_rules=matched_rules,
             candidate_routes=_candidate_routes(route, matched_rules),
-            route_reason=_route_reason(route, matched_rules),
-            planner_call_used=planner_call_used and self._llm_invoker is not None,
-            fallback_reason=(
-                "planner_unavailable"
-                if planner_call_used and self._llm_invoker is None
-                else None
+            route_reason=(
+                ambiguity.route_reason
+                if ambiguity
+                else _route_reason(route, matched_rules)
             ),
-            confidence=1.0 if not planner_call_used else 0.6,
+            planner_call_used=planner_call_used and self._llm_invoker is not None,
+            fallback_reason=ambiguity.fallback_reason if ambiguity else None,
+            confidence=ambiguity.confidence if ambiguity else 1.0,
         )
         visual_required = any(
             locator.casefold().startswith(("figure", "table"))
@@ -180,28 +222,71 @@ class QuestionContractPlanner:
             ),
         )
 
-    async def _resolve_ambiguous_route(
-        self, *, question: str, authorized_source_doc_ids: list[str]
-    ) -> AgenticV9Route:
+    async def _resolve_ambiguous_contract(
+        self,
+        *,
+        question: str,
+        authorized_source_names: list[str],
+        authorized_source_doc_ids: list[str],
+    ) -> _AmbiguityResult:
         if self._llm_invoker is None:
-            return "single_lookup"
+            return _safe_ambiguity_result("planner_unavailable")
         prompt = json.loads(_PROMPT_PATH.read_text(encoding="utf-8"))
-        response = await self._llm_invoker.invoke(
-            phase="route_plan",
-            purpose="resolve_ambiguous_query_contract",
-            messages=[
-                {"role": "system", "content": prompt["system"]},
-                {
-                    "role": "user",
-                    "content": prompt["user_template"].format(
-                        question=question,
-                        authorized_doc_ids=", ".join(authorized_source_doc_ids)
-                        or "none",
-                    ),
-                },
+        try:
+            response = await self._llm_invoker.invoke(
+                phase="contract_planning",
+                purpose="atomic_contract_planning",
+                messages=[
+                    {"role": "system", "content": prompt["system"]},
+                    {
+                        "role": "user",
+                        "content": prompt["user_template"].format(
+                            question=question,
+                            authorized_source_names=json.dumps(
+                                authorized_source_names, ensure_ascii=False
+                            ),
+                            authorized_doc_ids=json.dumps(
+                                authorized_source_doc_ids
+                            ),
+                        ),
+                    },
+                ],
+            )
+            decision = _parse_decision(response)
+            _validate_planner_scope(
+                decision,
+                authorized_source_names=authorized_source_names,
+                authorized_source_doc_ids=authorized_source_doc_ids,
+            )
+            _validate_answer_free(decision, question=question)
+        except TimeoutError:
+            return _safe_ambiguity_result("planner_timeout")
+        except BudgetExceededError:
+            return _safe_ambiguity_result("planner_budget_rejected")
+        except _UnauthorizedSourceExpansion:
+            return _safe_ambiguity_result("unauthorized_source_expansion")
+        except (TypeError, ValueError):
+            return _safe_ambiguity_result("invalid_planner_output")
+        return _AmbiguityResult(
+            route=decision.selected_route,
+            slots=[
+                RequiredSlot(
+                    slot_id=f"S{index}",
+                    description=slot.description,
+                    source_name_hints=slot.source_name_hints,
+                    authorized_source_doc_ids=slot.authorized_source_doc_ids,
+                    locator_hints=slot.locator_hints,
+                    expected_answer_type=slot.expected_answer_type,
+                    depends_on_slot_ids=slot.depends_on_slot_ids,
+                    visual_policy=slot.visual_policy,
+                )
+                for index, slot in enumerate(decision.slots[:8], 1)
             ],
+            route_reason=decision.route_reason,
+            confidence=max(0.0, min(decision.confidence, 1.0)),
+            decision_source="llm_planner",
+            fallback_reason=None,
         )
-        return _parse_route(response)
 
 
 def _decompose(
@@ -574,20 +659,63 @@ def _intent_for_route(route: AgenticV9Route, question: str) -> str:
     return f"{labels[route]}: {question}"
 
 
-def _parse_route(response: Any) -> AgenticV9Route:
+class _UnauthorizedSourceExpansion(ValueError):
+    """Planner attempted to add a source outside the authorized intersection."""
+
+
+def _parse_decision(response: Any) -> _PlannerDecision:
     content = response
     if isinstance(response, dict) and "content" in response:
         content = response["content"]
     elif hasattr(response, "content"):
         content = response.content
     if not isinstance(content, str):
-        raise ValueError("route planner response must contain JSON text")
+        raise ValueError("contract planner response must contain JSON text")
     try:
-        return _PlannerDecision.model_validate_json(content).route
+        decision = _PlannerDecision.model_validate_json(content)
     except ValueError as error:
-        raise ValueError(
-            "route planner response is not a valid route decision"
-        ) from error
+        raise ValueError("invalid contract planner response") from error
+    if not 1 <= len(decision.slots) <= 8:
+        raise ValueError("contract planner must return one to eight slots")
+    return decision
+
+
+def _validate_planner_scope(
+    decision: _PlannerDecision,
+    *,
+    authorized_source_names: list[str],
+    authorized_source_doc_ids: list[str],
+) -> None:
+    allowed_names = set(authorized_source_names)
+    allowed_ids = set(authorized_source_doc_ids)
+    for slot in decision.slots:
+        if not set(slot.source_name_hints) <= allowed_names:
+            raise _UnauthorizedSourceExpansion
+        if not set(slot.authorized_source_doc_ids) <= allowed_ids:
+            raise _UnauthorizedSourceExpansion
+
+
+def _validate_answer_free(
+    decision: _PlannerDecision, *, question: str
+) -> None:
+    question_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", question))
+    for slot in decision.slots:
+        description_numbers = set(
+            re.findall(r"\b\d+(?:\.\d+)?\b", slot.description)
+        )
+        if not description_numbers <= question_numbers:
+            raise ValueError("slot description contains an answer-like value")
+
+
+def _safe_ambiguity_result(reason: str) -> _AmbiguityResult:
+    return _AmbiguityResult(
+        route="single_lookup",
+        slots=None,
+        route_reason="Ambiguity planning failed; use bounded safe retrieval.",
+        confidence=0.0,
+        decision_source="safe_fallback",
+        fallback_reason=reason,
+    )
 
 
 __all__ = ["QuestionContractPlanner"]

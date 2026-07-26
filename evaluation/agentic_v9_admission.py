@@ -30,6 +30,7 @@ async def build_v9_admission_contract(
     user_id: str,
     source_references: list[str],
     document_reference_resolver: DocumentReferenceResolver = resolve_document_references,
+    setup_policy: Mapping[str, object] | None = None,
 ) -> V9AdmissionContract:
     """Resolve test-case references before creating the real runtime contract."""
     references = list(dict.fromkeys(value for value in source_references if value))
@@ -52,6 +53,7 @@ async def build_v9_admission_contract(
     contract = await plan_query_contract(
         question=question,
         resolved_source_scope=source_scope,
+        setup_policy=dict(setup_policy or {}),
     )
     return V9AdmissionContract(source_scope=source_scope, contract=contract)
 

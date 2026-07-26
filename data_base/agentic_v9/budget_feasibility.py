@@ -19,6 +19,7 @@ from data_base.agentic_v9.schemas import QueryContract
 
 ADMISSION_PRIORITY: tuple[str, ...] = (
     "final_answer",
+    "contract_planning",
     "route_plan",
     "visual_extract",
     "graph_route",
@@ -132,7 +133,13 @@ def validate_pre_route_feasibility(
     reserves the final-answer envelope so an otherwise supported route is not
     stranded after planning.
     """
-    required = {"route_plan": 1, "final_answer": 1}
+    required = {
+        "contract_planning": 1,
+        "graph_route": 1,
+        "visual_extract": 1,
+        "evidence_extract": 1,
+        "final_answer": 1,
+    }
     output_ceiling, reasoning_reserve = _setup_feasibility(setup_snapshot)
     if output_ceiling is None:
         return _result(
@@ -159,7 +166,7 @@ def validate_pre_route_feasibility(
     if remaining_llm_calls < sum(required.values()):
         return _result(
             status=FeasibilityStatus.CONFIGURATION_INCOMPATIBLE,
-            reason="route_or_final_reserve_exceeds_call_budget",
+            reason="planning_or_downstream_reserve_exceeds_call_budget",
             required_provider_calls=required,
             max_tool_operations=0,
             reserved_tokens=reserved_tokens,
@@ -167,7 +174,7 @@ def validate_pre_route_feasibility(
     if remaining_token_budget < reserved_tokens:
         return _result(
             status=FeasibilityStatus.CONFIGURATION_INCOMPATIBLE,
-            reason="route_or_final_reserve_exceeds_remaining_token_budget",
+            reason="planning_or_downstream_reserve_exceeds_remaining_token_budget",
             required_provider_calls=required,
             max_tool_operations=0,
             reserved_tokens=reserved_tokens,
@@ -192,7 +199,7 @@ def validate_post_contract_feasibility(
     """Validate a resolved route against the current non-mutating ledger view."""
     pending_provider_calls: dict[str, int] = {"final_answer": 1}
     charged_provider_calls: dict[str, int] = (
-        {"route_plan": 1} if route_plan_used else {}
+        {"contract_planning": 1} if route_plan_used else {}
     )
     if contract.graph_policy == "required_locator":
         pending_provider_calls["graph_route"] = 1

@@ -21,6 +21,7 @@ from data_base.agentic_v9.model_paths import (
     V9VisualHelper,
 )
 from graph_rag.generic_mode import GenericGraphRouter
+from evaluation.agentic_v9_admission import build_v9_admission_contract
 
 
 class _RecordingInvoker:
@@ -53,6 +54,25 @@ def test_v9_runtime_has_no_provider_ainvoke_bypass_outside_budget_gateway() -> N
         )
 
     assert bypasses == []
+
+
+@pytest.mark.asyncio
+async def test_preflight_admission_never_invokes_a_provider() -> None:
+    async def resolve(user_id: str, references: list[str]) -> dict[str, str]:
+        assert user_id == "user-1"
+        return {reference: "doc-1" for reference in references}
+
+    admission = await build_v9_admission_contract(
+        question="Please investigate this unclear request.",
+        user_id="user-1",
+        source_references=["paper.pdf"],
+        document_reference_resolver=resolve,
+        setup_policy={"max_llm_calls": 5, "max_output_tokens": 512},
+    )
+
+    assert admission.contract.route_decision.decision_source == "safe_fallback"
+    assert admission.contract.route_decision.planner_call_used is False
+    assert admission.contract.slot_plan_status == "degraded"
 
 
 @pytest.mark.asyncio
@@ -151,6 +171,39 @@ async def test_concrete_invoker_applies_phase_policy_while_creating_and_invoking
             0.9,
             40,
         )
+
+
+@pytest.mark.asyncio
+async def test_contract_planning_provider_limits_come_from_evaluation_setup() -> None:
+    observed: list[dict[str, object]] = []
+
+    class _Provider:
+        async def ainvoke(self, messages: object) -> object:
+            observed.append(current_llm_runtime_overrides())
+            return {"usage_metadata": {"input_tokens": 1, "output_tokens": 1}}
+
+    controller = RunBudgetController(
+        max_llm_calls=2,
+        runtime_token_budget=2_000,
+        setup_snapshot={
+            "max_input_tokens": 777,
+            "max_output_tokens": 123,
+            "thinking_enabled": False,
+        },
+        final_input_tokens=10,
+    )
+    await BudgetedLlmInvoker(
+        controller=controller,
+        provider_factory=lambda purpose: _Provider(),
+    ).invoke(
+        phase="contract_planning",
+        purpose="atomic_contract_planning",
+        messages=[{"role": "user", "content": "plan"}],
+    )
+
+    assert observed[0]["max_input_tokens"] <= 777
+    assert observed[0]["max_output_tokens"] == 123
+    assert observed[0]["temperature"] == 0.1
 
 
 @pytest.mark.asyncio

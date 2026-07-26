@@ -14,6 +14,7 @@ from evaluation.model_capabilities import normalize_model_config_for_runtime
 @pytest.mark.parametrize(
     ("phase", "temperature", "top_p", "top_k", "output_cap"),
     [
+        ("contract_planning", 0.10, 0.80, 20, 768),
         ("route_plan", 0.10, 0.80, 20, 384),
         ("query_rewrite", 0.10, 0.80, 20, 192),
         ("retrieval_judge", 0.10, 0.70, 10, 96),
