@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
-from decimal import Decimal
 from typing import Any
 
 from data_base.agentic_v9.schemas import RequiredSlot, ResolvedSourceScope
@@ -50,9 +49,8 @@ _CONTENT_STOPWORDS = {
     "to",
     "value",
 }
-_NUMBER_PATTERN = re.compile(r"(?<![\w.])[-+]?(?:\d+(?:\.\d+)?|\.\d+)%?(?!\w)(?!\.\d)")
-_CONSTRAINT_NUMBER_PATTERN = re.compile(
-    r"(?<!\d)[-+]?(?:\d+(?:\.\d+)?|\.\d+)%?(?!\d)(?!\.\d)"
+_NUMBER_PATTERN = re.compile(
+    r"(?<![\w.])[-+]?(?:\d+(?:\.\d+)?|\.\d+)%?(?!\w)(?!\.\d)"
 )
 _STRUCTURED_LOCATOR_PATTERN = re.compile(
     r"\b(?:figure|fig\.?|table|equation|eq\.?|formula|theorem|appendix|section)"
@@ -63,33 +61,6 @@ _DEFINITION_PATTERN = re.compile(
     r"\b(?:is|are)\s+defined\s+as\b|\bmeans\b|\brefers\s+to\b",
     re.IGNORECASE,
 )
-_UNAVAILABLE_PATTERN = re.compile(
-    r"\bunavailable\b"
-    r"|\bnot\s+(?:available|reported|provided|given|found|stated|shown|listed)\b"
-    r"|\bno\s+(?:(?:numeric|requested)\s+)?"
-    r"(?:result|value|score|metric|dice)\b",
-    re.IGNORECASE,
-)
-_NUMERIC_ANSWER_LINK_PATTERN = re.compile(
-    r"(?:\b(?:is|are|was|were|equals?|scored|reached|achieved)\b"
-    r"|\b(?:reported\s+as|measured\s+at)\b|[=:])\s*$",
-    re.IGNORECASE,
-)
-_NUMERIC_CONDITION_CUES = {
-    "condition",
-    "epoch",
-    "epochs",
-    "fold",
-    "folds",
-    "level",
-    "model",
-    "noise",
-    "release",
-    "seed",
-    "setting",
-    "version",
-    "year",
-}
 
 
 def authorized_doc_ids_for_slot(
@@ -108,7 +79,9 @@ def authorized_doc_ids_for_slot(
         candidates = direct_ids.intersection(named_ids)
     else:
         candidates = direct_ids or named_ids
-    return [doc_id for doc_id in scope.authorized_doc_ids if doc_id in candidates]
+    return [
+        doc_id for doc_id in scope.authorized_doc_ids if doc_id in candidates
+    ]
 
 
 def canonical_locator_set(hints: Iterable[str]) -> tuple[tuple[str, str], ...]:
@@ -167,7 +140,9 @@ def canonical_term_set(terms: Iterable[str]) -> tuple[str, ...]:
     )
 
 
-def locator_hints_match_chunk(hints: Iterable[str], chunk: Mapping[str, Any]) -> bool:
+def locator_hints_match_chunk(
+    hints: Iterable[str], chunk: Mapping[str, Any]
+) -> bool:
     """Require at least one declared locator to match structured chunk metadata."""
     expected = set(canonical_locator_set(hints))
     if not expected:
@@ -192,7 +167,7 @@ def slot_content_matches_chunk(
     if not discriminators:
         return False
 
-    signal_spans = _answer_signal_spans(slot, text)
+    signal_spans = _answer_signal_spans(slot.expected_answer_type, text)
     if not signal_spans:
         return False
     if slot.expected_answer_type not in {"number", "equation", "definition"}:
@@ -209,7 +184,8 @@ def slot_content_matches_chunk(
             distance
             for terms in competitor_discriminators
             if terms
-            if (distance := _association_distance(terms, text, signal_span)) is not None
+            if (distance := _association_distance(terms, text, signal_span))
+            is not None
         ]
         if all(slot_distance < distance for distance in competitor_distances):
             return True
@@ -228,125 +204,22 @@ def _unique_discriminators(
     return _slot_descriptor_terms(slot).difference(other_terms)
 
 
-def _answer_signal_spans(slot: RequiredSlot, text: str) -> tuple[tuple[int, int], ...]:
+def _answer_signal_spans(
+    expected_answer_type: str, text: str
+) -> tuple[tuple[int, int], ...]:
     without_locators = _STRUCTURED_LOCATOR_PATTERN.sub(
         lambda match: " " * len(match.group(0)), text
     )
-    if slot.expected_answer_type == "number":
-        condition_numbers = _slot_condition_numbers(slot)
-        spans: list[tuple[int, int]] = []
-        for match in _NUMBER_PATTERN.finditer(without_locators):
-            span = match.span()
-            if _numeric_signal_is_unavailable(text, span):
-                continue
-            value = _canonical_number(match.group(0))
-            if value in condition_numbers and not _is_independently_reported_number(
-                slot, text, span
-            ):
-                continue
-            spans.append(span)
-        return tuple(spans)
-    if slot.expected_answer_type == "equation":
-        return tuple(
-            (index, index + 1) for index, char in enumerate(text) if char == "="
-        )
-    if slot.expected_answer_type == "definition":
+    if expected_answer_type == "number":
+        return tuple(match.span() for match in _NUMBER_PATTERN.finditer(without_locators))
+    if expected_answer_type == "equation":
+        return tuple((index, index + 1) for index, char in enumerate(text) if char == "=")
+    if expected_answer_type == "definition":
         return tuple(match.span() for match in _DEFINITION_PATTERN.finditer(text))
-    if slot.expected_answer_type == "comparison":
+    if expected_answer_type == "comparison":
         match = re.search(r"\b(?:than|versus|vs\.?|compared)\b", text, re.IGNORECASE)
         return (match.span(),) if match is not None else ()
     return ((0, len(text)),) if text.strip() else ()
-
-
-def _slot_condition_numbers(slot: RequiredSlot) -> set[str]:
-    values: set[str] = set()
-    constraint_texts = (
-        slot.description,
-        *slot.entity_ids,
-        *slot.locator_hints,
-        *slot.source_name_hints,
-        *slot.authorized_source_doc_ids,
-    )
-    for value in constraint_texts:
-        values.update(
-            _canonical_number(match.group(0))
-            for match in _CONSTRAINT_NUMBER_PATTERN.finditer(value)
-        )
-    return values
-
-
-def _canonical_number(value: str) -> str:
-    suffix = "%" if value.endswith("%") else ""
-    number = Decimal(value.removesuffix("%"))
-    return f"{number.normalize():f}{suffix}"
-
-
-def _numeric_signal_is_unavailable(text: str, signal_span: tuple[int, int]) -> bool:
-    start, end = _sentence_bounds(text, signal_span)
-    return _UNAVAILABLE_PATTERN.search(text[start:end]) is not None
-
-
-def _is_independently_reported_number(
-    slot: RequiredSlot,
-    text: str,
-    signal_span: tuple[int, int],
-) -> bool:
-    clause_start, _ = _clause_bounds(text, signal_span)
-    prefix = text[clause_start : signal_span[0]]
-    link = _NUMERIC_ANSWER_LINK_PATTERN.search(prefix)
-    if link is None:
-        return False
-    subject_tokens = _content_tokens(prefix[: link.start()])
-    if not subject_tokens:
-        return False
-    closest_subject = subject_tokens[-1]
-    return (
-        closest_subject not in _NUMERIC_CONDITION_CUES
-        and closest_subject in _slot_descriptor_terms(slot)
-    )
-
-
-def _clause_bounds(text: str, signal_span: tuple[int, int]) -> tuple[int, int]:
-    start = 0
-    for index in range(signal_span[0] - 1, -1, -1):
-        if _is_clause_boundary(text, index):
-            start = index + 1
-            break
-    end = len(text)
-    for index in range(signal_span[1], len(text)):
-        if _is_clause_boundary(text, index):
-            end = index
-            break
-    return start, end
-
-
-def _sentence_bounds(text: str, signal_span: tuple[int, int]) -> tuple[int, int]:
-    start = 0
-    for index in range(signal_span[0] - 1, -1, -1):
-        if _is_sentence_boundary(text, index):
-            start = index + 1
-            break
-    end = len(text)
-    for index in range(signal_span[1], len(text)):
-        if _is_sentence_boundary(text, index):
-            end = index
-            break
-    return start, end
-
-
-def _is_clause_boundary(text: str, index: int) -> bool:
-    char = text[index]
-    if char in ";\r\n!?":
-        return True
-    if char != ".":
-        return False
-    previous_is_digit = index > 0 and text[index - 1].isdigit()
-    next_is_digit = index + 1 < len(text) and text[index + 1].isdigit()
-    return not (previous_is_digit and next_is_digit)
-
-
-def _is_sentence_boundary(text: str, index: int) -> bool:
-    return text[index] != ";" and _is_clause_boundary(text, index)
 
 
 def _association_distance(
@@ -378,8 +251,7 @@ def _content_tokens(value: str) -> tuple[str, ...]:
     return tuple(
         token
         for token in (
-            match.group(0).casefold()
-            for match in _CONTENT_TOKEN_PATTERN.finditer(value)
+            match.group(0).casefold() for match in _CONTENT_TOKEN_PATTERN.finditer(value)
         )
         if token not in _CONTENT_STOPWORDS
     )
