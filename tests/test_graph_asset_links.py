@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from types import SimpleNamespace
+
+from PIL import Image
+
 from graph_rag.schemas import GraphAssetLink
 from graph_rag.store import GraphStore
 
@@ -72,7 +78,6 @@ def test_asset_probe_requires_a_matching_parsed_document_asset(tmp_path) -> None
 
 
 def test_visual_asset_link_uses_the_indexed_summary_chunk() -> None:
-    from types import SimpleNamespace
     from graph_rag.assets import build_visual_asset_links
 
     element = SimpleNamespace(
@@ -90,3 +95,164 @@ def test_visual_asset_link_uses_the_indexed_summary_chunk() -> None:
     assert links[0].asset_type == "figure"
     assert links[0].source_chunk_id == f"graph:asset:{links[0].asset_id}"
     assert element.asset_id == links[0].asset_id
+
+
+def test_graph_asset_link_round_trips_resolvable_optional_metadata(tmp_path) -> None:
+    link = GraphAssetLink(
+        asset_id="figure-doc-1-1",
+        doc_id="doc-1",
+        page=2,
+        asset_type="figure",
+        caption="Figure 1",
+        storage_reference="user-1/doc-1/page-2.png",
+        sha256="a" * 64,
+        width=640,
+        height=480,
+        printed_page_label="A-2",
+        formula_id="Equation 4",
+    )
+    store = GraphStore("user-1", storage_dir=tmp_path)
+
+    store.record_asset_link(link)
+    store.save_sidecars()
+
+    reloaded = GraphStore("user-1", storage_dir=tmp_path)
+    assert reloaded.get_asset_links_for_doc("doc-1") == [link]
+    payload = json.loads((tmp_path / "graph.asset_links.json").read_text("utf-8"))
+    serialized = json.dumps(payload)
+    assert "user-1/doc-1/page-2.png" in serialized
+    assert "base64" not in serialized
+    assert "data:image" not in serialized
+
+
+def test_graph_asset_link_loads_legacy_sidecar_without_resolvable_metadata(
+    tmp_path,
+) -> None:
+    (tmp_path / "graph.asset_links.json").write_text(
+        json.dumps(
+            {
+                "assets": [
+                    {
+                        "asset_id": "legacy-table",
+                        "doc_id": "doc-1",
+                        "page": 4,
+                        "asset_type": "table",
+                        "caption": "Table 2",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    links = GraphStore("user-1", storage_dir=tmp_path).get_asset_links_for_doc(
+        "doc-1"
+    )
+
+    assert len(links) == 1
+    assert links[0].storage_reference is None
+    assert links[0].sha256 is None
+    assert links[0].width is None
+    assert links[0].height is None
+    assert links[0].printed_page_label is None
+    assert links[0].formula_id is None
+
+
+def test_asset_lookup_is_authorized_locator_bound_and_bounded(tmp_path) -> None:
+    store = GraphStore("user-1", storage_dir=tmp_path)
+    for link in (
+        GraphAssetLink(
+            asset_id="figure-1",
+            doc_id="doc-1",
+            page=2,
+            asset_type="figure",
+            caption="Figure 1",
+        ),
+        GraphAssetLink(
+            asset_id="table-1",
+            doc_id="doc-1",
+            page=3,
+            asset_type="table",
+            caption="Table 1",
+        ),
+        GraphAssetLink(
+            asset_id="formula-1",
+            doc_id="doc-1",
+            page=4,
+            asset_type="formula",
+            formula_id="Equation 4",
+        ),
+        GraphAssetLink(
+            asset_id="cross-document",
+            doc_id="doc-2",
+            page=2,
+            asset_type="figure",
+            caption="Figure 1",
+        ),
+    ):
+        store.record_asset_link(link)
+
+    assert [
+        link.asset_id
+        for link in store.lookup_asset_links(
+            authorized_doc_ids={"doc-1"},
+            page=2,
+            figure_id="Figure 1",
+            limit=1,
+        )
+    ] == ["figure-1"]
+    assert [
+        link.asset_id
+        for link in store.lookup_asset_links(
+            authorized_doc_ids={"doc-1"},
+            table_id="Table 1",
+        )
+    ] == ["table-1"]
+    assert [
+        link.asset_id
+        for link in store.lookup_asset_links(
+            authorized_doc_ids={"doc-1"},
+            formula_id="Equation 4",
+        )
+    ] == ["formula-1"]
+    assert (
+        store.lookup_asset_links(
+            authorized_doc_ids={"doc-2"},
+            page=2,
+            figure_id="Figure 1",
+            limit=0,
+        )
+        == []
+    )
+
+
+def test_visual_asset_link_records_relative_reference_hash_and_dimensions(
+    tmp_path,
+) -> None:
+    from graph_rag.assets import build_visual_asset_links
+
+    upload_root = tmp_path / "uploads"
+    image_path = upload_root / "user-1" / "doc-1" / "page-2.png"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (13, 17), "white").save(image_path)
+    expected_hash = hashlib.sha256(image_path.read_bytes()).hexdigest()
+    element = SimpleNamespace(
+        id="visual-1",
+        type="figure",
+        page_number=2,
+        image_path=str(image_path),
+        bbox=[0, 0, 13, 17],
+        summary="A source figure.",
+        figure_reference="Figure 1",
+    )
+
+    links = build_visual_asset_links(
+        doc_id="doc-1",
+        elements=[element],
+        upload_root=upload_root,
+    )
+
+    assert links[0].storage_reference == "user-1/doc-1/page-2.png"
+    assert links[0].sha256 == expected_hash
+    assert links[0].width == 13
+    assert links[0].height == 17

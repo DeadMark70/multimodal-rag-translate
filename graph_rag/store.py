@@ -59,6 +59,17 @@ NODE_VECTOR_MAP_FILENAME = "node_index_map.json"
 NODE_VECTOR_META_FILENAME = "node_index.meta.json"
 _UNSET = object()
 
+
+def _normalized_asset_locator(value: str) -> str:
+    return "".join(character for character in value.casefold() if character.isalnum())
+
+
+def _asset_locator_matches(value: str | None, requested: str) -> bool:
+    return bool(
+        value
+        and _normalized_asset_locator(value) == _normalized_asset_locator(requested)
+    )
+
 AUTO_MERGE_ENTITY_TYPES = {
     EntityType.PAPER,
     EntityType.DATASET,
@@ -1052,6 +1063,61 @@ class GraphStore:
             for link in sorted(self.asset_links.values(), key=lambda item: item.asset_id)
             if link.doc_id == doc_id
         ]
+
+    def lookup_asset_links(
+        self,
+        *,
+        authorized_doc_ids: Set[str],
+        page: int | None = None,
+        printed_page_label: str | None = None,
+        figure_id: str | None = None,
+        table_id: str | None = None,
+        formula_id: str | None = None,
+        limit: int = 3,
+    ) -> List[GraphAssetLink]:
+        """Return at most three authorized assets matching an explicit locator."""
+        if not authorized_doc_ids or limit < 1:
+            return []
+        if all(
+            value is None
+            for value in (
+                page,
+                printed_page_label,
+                figure_id,
+                table_id,
+                formula_id,
+            )
+        ):
+            return []
+        matches: List[GraphAssetLink] = []
+        for link in sorted(self.asset_links.values(), key=lambda item: item.asset_id):
+            if link.doc_id not in authorized_doc_ids:
+                continue
+            if page is not None and link.page != page:
+                continue
+            if printed_page_label is not None and not _asset_locator_matches(
+                link.printed_page_label, printed_page_label
+            ):
+                continue
+            if figure_id is not None and (
+                link.asset_type != "figure"
+                or not _asset_locator_matches(link.caption, figure_id)
+            ):
+                continue
+            if table_id is not None and (
+                link.asset_type != "table"
+                or not _asset_locator_matches(link.caption, table_id)
+            ):
+                continue
+            if formula_id is not None and (
+                link.asset_type != "formula"
+                or not _asset_locator_matches(link.formula_id, formula_id)
+            ):
+                continue
+            matches.append(link.model_copy(deep=True))
+            if len(matches) == min(limit, 3):
+                break
+        return matches
 
     def has_usable_asset_links(
         self,

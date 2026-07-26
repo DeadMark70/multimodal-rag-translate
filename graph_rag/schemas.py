@@ -658,6 +658,12 @@ class GraphAssetLink(BaseModel):
     asset_parse_status: Literal["parsed", "partial", "failed", "not_attempted"] = "not_attempted"
     bbox: Optional[List[float]] = None
     source_chunk_id: Optional[str] = None
+    storage_reference: Optional[str] = None
+    sha256: Optional[str] = None
+    width: Optional[int] = Field(default=None, ge=1)
+    height: Optional[int] = Field(default=None, ge=1)
+    printed_page_label: Optional[str] = None
+    formula_id: Optional[str] = None
 
 
 class GraphHint(BaseModel):
