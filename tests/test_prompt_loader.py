@@ -235,12 +235,14 @@ def test_agentic_v9_contract_planner_prompt_uses_standard_registry_contract() ->
         "question",
         "authorized_source_names",
         "authorized_doc_ids",
+        "authorized_source_mapping",
     )
     rendered = registry.format(
         "atomic_contract_planning",
         question="What is reported?",
         authorized_source_names='["paper.pdf"]',
         authorized_doc_ids='["doc-1"]',
+        authorized_source_mapping='{"paper.pdf": ["doc-1"]}',
     )
     assert "What is reported?" in rendered
     assert "paper.pdf" in rendered
@@ -250,4 +252,5 @@ def test_agentic_v9_contract_planner_prompt_uses_standard_registry_contract() ->
             "atomic_contract_planning",
             question="What is reported?",
             authorized_source_names='["paper.pdf"]',
+            authorized_source_mapping='{"paper.pdf": ["doc-1"]}',
         )

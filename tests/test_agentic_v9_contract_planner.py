@@ -42,11 +42,20 @@ async def test_formal_questions_decompose_into_atomic_answer_free_slots(
     minimum_slots: int,
 ) -> None:
     case = _questions()[question_id]
+    doc_ids = [
+        f"doc-{index}" for index, _ in enumerate(case["source_docs"], 1)
+    ]
 
     contract = await QuestionContractPlanner().plan(
         question=case["question"],
         authorized_source_names=case["source_docs"],
-        authorized_source_doc_ids=[f"doc-{index}" for index, _ in enumerate(case["source_docs"], 1)],
+        authorized_source_doc_ids=doc_ids,
+        authorized_source_name_to_doc_ids={
+            name: [doc_id]
+            for name, doc_id in zip(
+                case["source_docs"], doc_ids, strict=True
+            )
+        },
         setup_policy={"max_llm_calls": 5, "max_output_tokens": 8192},
     )
 
@@ -72,6 +81,12 @@ async def test_q16_has_seven_ordered_slots_without_expected_numeric_answers() ->
         question=case["question"],
         authorized_source_names=case["source_docs"],
         authorized_source_doc_ids=["gepar", "odes", "ukan"],
+        authorized_source_name_to_doc_ids={
+            name: [doc_id]
+            for name, doc_id in zip(
+                case["source_docs"], ["gepar", "odes", "ukan"], strict=True
+            )
+        },
         setup_policy={"max_llm_calls": 5, "max_output_tokens": 8192},
     )
 
@@ -105,6 +120,10 @@ async def test_numbered_parallel_source_and_locator_clauses_split_stably() -> No
         ),
         authorized_source_names=["Alpha.pdf", "Beta.pdf"],
         authorized_source_doc_ids=["alpha", "beta"],
+        authorized_source_name_to_doc_ids={
+            "Alpha.pdf": ["alpha"],
+            "Beta.pdf": ["beta"],
+        },
         setup_policy={"max_llm_calls": 5},
     )
 
@@ -179,6 +198,31 @@ async def test_authoritative_source_mapping_survives_reordered_canonical_ids() -
 
 
 @pytest.mark.asyncio
+async def test_multisource_direct_planner_without_mapping_degrades_without_zip_pairing() -> None:
+    contract = await QuestionContractPlanner().plan(
+        question="From nnMamba.pdf, report the value in Table 2.",
+        authorized_source_names=["nnMamba.pdf", "Other.pdf"],
+        authorized_source_doc_ids=["doc-a", "doc-z"],
+        setup_policy={},
+    )
+
+    assert contract.slot_plan_status == "degraded"
+    assert contract.route_decision.decision_source == "safe_fallback"
+    assert (
+        contract.route_decision.fallback_reason
+        == "authoritative_source_mapping_missing"
+    )
+    assert contract.required_slots[0].source_name_hints == [
+        "nnMamba.pdf",
+        "Other.pdf",
+    ]
+    assert contract.required_slots[0].authorized_source_doc_ids == [
+        "doc-a",
+        "doc-z",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_ambiguous_question_uses_one_contract_planning_call() -> None:
     invoker = _PlannerInvoker(
         {
@@ -214,6 +258,48 @@ async def test_ambiguous_question_uses_one_contract_planning_call() -> None:
     assert invoker.calls[0]["phase"] == "contract_planning"
     assert contract.route_decision.decision_source == "llm_planner"
     assert contract.route_decision.planner_call_used is True
+    assert contract.slot_plan_status == "complete"
+
+
+@pytest.mark.asyncio
+async def test_ambiguity_prompt_contains_authoritative_source_mapping() -> None:
+    invoker = _PlannerInvoker(
+        {
+            "content": json.dumps(
+                {
+                    "selected_route": "single_lookup",
+                    "slots": [
+                        {
+                            "description": "Retrieve the requested fact.",
+                            "source_name_hints": ["nnMamba.pdf"],
+                            "authorized_source_doc_ids": ["doc-z"],
+                            "locator_hints": [],
+                            "expected_answer_type": "text",
+                            "depends_on_slot_ids": [],
+                            "visual_policy": "never",
+                        }
+                    ],
+                    "route_reason": "One source-bound lookup.",
+                    "confidence": 0.8,
+                }
+            )
+        }
+    )
+
+    contract = await QuestionContractPlanner(llm_invoker=invoker).plan(
+        question="Please investigate this unclear request.",
+        authorized_source_names=["nnMamba.pdf", "Other.pdf"],
+        authorized_source_doc_ids=["doc-a", "doc-z"],
+        authorized_source_name_to_doc_ids={
+            "nnMamba.pdf": ["doc-z"],
+            "Other.pdf": ["doc-a"],
+        },
+        setup_policy={},
+    )
+
+    prompt = invoker.calls[0]["messages"][0]["content"]
+    assert '"nnMamba.pdf": ["doc-z"]' in prompt
+    assert '"Other.pdf": ["doc-a"]' in prompt
     assert contract.slot_plan_status == "complete"
 
 

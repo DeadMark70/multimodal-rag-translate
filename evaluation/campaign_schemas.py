@@ -352,6 +352,7 @@ BehaviorExecutionState = Literal[
     "executed",
     "failed",
     "required_but_not_satisfied",
+    "attempted_without_evidence",
     "not_instrumented",
 ]
 
@@ -375,6 +376,7 @@ class V9AgentBehaviorMetrics(BaseModel):
     slot_semantics: str | None = None
     atomic_completeness: bool | None = None
     graph_policy: str | None = None
+    visual_requested: bool | None = None
     visual_required: bool | None = None
     evidence_extraction_required: bool | None = None
     retrieval_query_count: int | None = Field(default=None, ge=0)

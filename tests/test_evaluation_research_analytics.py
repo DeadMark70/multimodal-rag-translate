@@ -368,6 +368,7 @@ async def test_agent_behavior_projects_materialized_v9_evidence_not_legacy_step_
                         "query_contract": {
                             "route": "multi_hop",
                             "graph_policy": "required_locator",
+                            "visual_requested": True,
                             "visual_required": False,
                             "evidence_extraction_required": True,
                             "required_slots": [{"slot_id": "S1"}],
@@ -383,6 +384,10 @@ async def test_agent_behavior_projects_materialized_v9_evidence_not_legacy_step_
                         "budget_reservations": [{"reserved_tokens": 32}],
                         "repairs": [],
                         "final_claims": [{"claim_id": "C1"}],
+                        "visual_execution": {
+                            "state": "attempted_without_evidence",
+                            "attempted": True,
+                        },
                     },
                 )
             }
@@ -408,6 +413,9 @@ async def test_agent_behavior_projects_materialized_v9_evidence_not_legacy_step_
     assert row.v9.evidence_packet_count == 13
     assert row.v9.slot_resolution_count == 1
     assert row.v9.graph_execution == "required_but_not_satisfied"
+    assert row.v9.visual_requested is True
+    assert row.v9.visual_required is False
+    assert row.v9.visual_execution == "attempted_without_evidence"
 
 
 @pytest.mark.asyncio

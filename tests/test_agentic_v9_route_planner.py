@@ -49,6 +49,27 @@ def _scope() -> ResolvedSourceScope:
 
 
 @pytest.mark.asyncio
+async def test_legacy_multisource_scope_without_mapping_fails_closed() -> None:
+    contract = await RoutePlanner().plan(
+        question="From nnMamba.pdf, report the value in Table 2.",
+        resolved_source_scope=ResolvedSourceScope(
+            requested_source_names=["nnMamba.pdf", "Other.pdf"],
+            authorized_doc_ids=["doc-a", "doc-z"],
+        ),
+    )
+
+    assert contract.slot_plan_status == "degraded"
+    assert (
+        contract.route_decision.fallback_reason
+        == "authoritative_source_mapping_missing"
+    )
+    assert all(
+        slot.source_name_hints == ["nnMamba.pdf", "Other.pdf"]
+        for slot in contract.required_slots
+    )
+
+
+@pytest.mark.asyncio
 async def test_deterministic_regressions_emit_complete_retrieval_contracts() -> None:
     cases = json.loads(ROUTES_PATH.read_text(encoding="utf-8"))["cases"]
     invoker = _NeverInvoker()

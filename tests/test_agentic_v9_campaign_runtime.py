@@ -717,13 +717,43 @@ async def test_required_visual_failure_only_downgrades_required_policy_slots(
     async def admission(**_kwargs):
         return V9AdmissionContract(source_scope=scope, contract=contract)
 
+    visual_target_slot_ids: list[str] = []
+
+    async def extract_visual(task, _documents, _question, _controller):
+        visual_target_slot_ids.extend(task.target_slot_ids)
+        return VisualEvidenceExtractionResult(
+            packets=(
+                EvidencePacket(
+                    schema_version="1",
+                    evidence_id="preferred-slot-visual",
+                    task_id=task.task_id,
+                    round_id=task.round_id,
+                    query_id=task.query_id,
+                    slot_ids=["S2"],
+                    statement="The preferred slot has visual evidence.",
+                    support_type="direct",
+                    source=EvidenceSource(
+                        doc_id="doc-1",
+                        chunk_id="chunk-1",
+                        asset_id="asset-preferred",
+                    ),
+                    scope=EvidenceScope(),
+                    locator=SourceLocator(
+                        pdf_page_index=1,
+                        table_id="table-preferred",
+                    ),
+                    validation_status="deterministic_valid",
+                ),
+            )
+        )
+
     monkeypatch.setattr(
         "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract",
         admission,
     )
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(return_value=[document]),
-        visual_extractor=AsyncMock(return_value=VisualEvidenceExtractionResult()),
+        visual_extractor=extract_visual,
         provider_factory=lambda _purpose: provider,
         document_reference_resolver=_identity_reference_resolver,
     )
@@ -740,6 +770,10 @@ async def test_required_visual_failure_only_downgrades_required_policy_slots(
         row["slot_id"]: row["status"]
         for row in result.agent_trace["agentic_v9"]["slot_resolutions"]
     }
+    visual = result.agent_trace["agentic_v9"]["visual_execution"]
+    assert visual_target_slot_ids == ["S1", "S2"]
+    assert visual["state"] == "executed"
+    assert visual["supported_slot_ids"] == ["S2"]
     assert resolutions == {"S1": "explicitly_unavailable", "S2": "supported"}
 
 

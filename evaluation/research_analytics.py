@@ -740,6 +740,7 @@ def _v9_behavior_metrics(*, trace_payload: dict, counts: dict, graph_events: lis
     sufficiency = trace_payload.get("sufficiency") or {}
     context_pack = trace_payload.get("context_pack") or {}
     graph_policy = contract.get("graph_policy")
+    visual_requested = contract.get("visual_requested")
     visual_required = contract.get("visual_required")
     graph_execution_payload = trace_payload.get("graph_execution") or {}
     visual_execution_payload = trace_payload.get("visual_execution") or {}
@@ -768,10 +769,15 @@ def _v9_behavior_metrics(*, trace_payload: dict, counts: dict, graph_events: lis
         "executed",
         "failed",
         "required_but_not_satisfied",
+        "attempted_without_evidence",
         "not_instrumented",
     }:
         visual_execution = (
-            "required_but_not_satisfied" if visual_required else "not_requested"
+            "required_but_not_satisfied"
+            if visual_required
+            else "not_triggered"
+            if visual_requested
+            else "not_requested"
         )
     return V9AgentBehaviorMetrics(
         route=contract.get("route"),
@@ -789,6 +795,9 @@ def _v9_behavior_metrics(*, trace_payload: dict, counts: dict, graph_events: lis
             else None
         ),
         graph_policy=graph_policy,
+        visual_requested=(
+            visual_requested if isinstance(visual_requested, bool) else None
+        ),
         visual_required=visual_required if isinstance(visual_required, bool) else None,
         evidence_extraction_required=contract.get("evidence_extraction_required") if isinstance(contract.get("evidence_extraction_required"), bool) else None,
         retrieval_query_count=_optional_nonnegative_int(metrics.get("retrieval_query_count")),

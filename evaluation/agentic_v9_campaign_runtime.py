@@ -282,9 +282,29 @@ class AgenticV9CampaignRuntime:
                 ):
                     controller = state["budget_controller"]
                     assert isinstance(controller, RunBudgetController)
+                    visual_slot_ids = [
+                        slot.slot_id
+                        for slot in state["contract"].required_slots
+                        if slot.visual_policy in {"preferred", "required"}
+                    ]
+                    if (
+                        state["contract"].visual_required
+                        and not visual_slot_ids
+                    ):
+                        visual_slot_ids = [
+                            slot.slot_id
+                            for slot in state["contract"].required_slots
+                            if slot.required
+                        ]
+                    visual_task = task.model_copy(
+                        update={
+                            "target_slot_ids": visual_slot_ids,
+                            "visual_required": True,
+                        }
+                    )
                     try:
                         visual_result = await self._visual_extractor(
-                            task, docs, question, controller
+                            visual_task, docs, question, controller
                         )
                     except Exception as error:  # Stage admitted; preserve partial answer.
                         state["visual_execution"] = _failed_required_stage(
@@ -639,10 +659,13 @@ def _apply_required_capability_constraints(
         contract.graph_policy == "required_locator"
         and (graph_execution or {}).get("state") != "executed"
     )
-    visual_failed = bool(
-        contract.visual_required
-        and (visual_execution or {}).get("state") != "executed"
+    visual_supported_slot_ids = set(
+        (visual_execution or {}).get("supported_slot_ids") or ()
     )
+    missing_required_visual_slot_ids = (
+        required_visual_slot_ids - visual_supported_slot_ids
+    )
+    visual_failed = bool(missing_required_visual_slot_ids)
     if not graph_failed and not visual_failed:
         return evaluation
 
@@ -651,7 +674,10 @@ def _apply_required_capability_constraints(
         if resolution.slot_id not in required_slot_ids:
             adjusted.append(resolution)
             continue
-        if visual_failed and resolution.slot_id in required_visual_slot_ids:
+        if (
+            visual_failed
+            and resolution.slot_id in missing_required_visual_slot_ids
+        ):
             reason = (visual_execution or {}).get("failure_reason") or (
                 "Required visual evidence is unavailable."
             )
@@ -840,6 +866,7 @@ def _failed_required_stage(*, policy: str, error: Exception) -> dict[str, Any]:
         "selected_asset_count": 0,
         "dropped_asset_count": 0,
         "evidence_packet_count": 0,
+        "supported_slot_ids": [],
     }
 
 
@@ -920,6 +947,7 @@ def _initial_visual_execution(contract: QueryContract | None) -> dict[str, Any]:
         "selected_asset_count": 0,
         "dropped_asset_count": 0,
         "evidence_packet_count": 0,
+        "supported_slot_ids": [],
     }
 
 
@@ -929,6 +957,13 @@ def _visual_execution_projection(
     required: bool,
 ) -> dict[str, Any]:
     packet_count = len(result.packets)
+    supported_slot_ids = sorted(
+        {
+            slot_id
+            for packet in result.packets
+            for slot_id in packet.slot_ids
+        }
+    )
     return {
         "required": required,
         "state": (
@@ -951,6 +986,7 @@ def _visual_execution_projection(
         "selected_asset_count": len(result.located_assets),
         "dropped_asset_count": len(result.dropped_assets),
         "evidence_packet_count": packet_count,
+        "supported_slot_ids": supported_slot_ids,
     }
 
 

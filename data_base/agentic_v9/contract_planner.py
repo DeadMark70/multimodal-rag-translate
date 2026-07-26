@@ -138,10 +138,21 @@ class QuestionContractPlanner:
         ]
         if not ordered_source_doc_ids:
             ordered_source_doc_ids = list(authorized_source_doc_ids)
+        mapping_missing = bool(authorized_source_names) and (
+            set(source_mapping) != set(authorized_source_names)
+        )
 
         route = _deterministic_route(normalized_question)
         ambiguity: _AmbiguityResult | None = None
-        if route is None:
+        planner_call_requested = False
+        if mapping_missing:
+            ambiguity = _safe_ambiguity_result(
+                "authoritative_source_mapping_missing"
+            )
+            if route is None:
+                route = ambiguity.route
+        elif route is None:
+            planner_call_requested = True
             ambiguity = await self._resolve_ambiguous_contract(
                 question=normalized_question,
                 authorized_source_names=authorized_source_names,
@@ -149,8 +160,20 @@ class QuestionContractPlanner:
                 authorized_source_name_to_doc_ids=source_mapping,
             )
             route = ambiguity.route
-        planner_call_used = ambiguity is not None
-        if ambiguity and ambiguity.slots:
+        if mapping_missing:
+            slots = [
+                _slot(
+                    description=(
+                        "Resolve the bounded requirement without assuming "
+                        "source-name-to-document-ID pairing."
+                    ),
+                    answer_type="text",
+                    source_names=authorized_source_names,
+                    source_doc_ids=authorized_source_doc_ids,
+                )
+            ]
+            matched_rules = ["authoritative_source_mapping_missing"]
+        elif ambiguity and ambiguity.slots:
             slots = ambiguity.slots
             matched_rules = ["llm_atomic_decomposition"]
         else:
@@ -203,7 +226,9 @@ class QuestionContractPlanner:
                 if ambiguity
                 else _route_reason(route, matched_rules)
             ),
-            planner_call_used=planner_call_used and self._llm_invoker is not None,
+            planner_call_used=(
+                planner_call_requested and self._llm_invoker is not None
+            ),
             fallback_reason=ambiguity.fallback_reason if ambiguity else None,
             confidence=ambiguity.confidence if ambiguity else 1.0,
         )
@@ -223,7 +248,7 @@ class QuestionContractPlanner:
             evidence_extraction_required=True,
             max_retrieval_rounds=budget.max_retrieval_rounds,
             max_repair_rounds=budget.max_repair_rounds,
-            max_llm_calls=budget.max_llm_calls + int(planner_call_used),
+            max_llm_calls=budget.max_llm_calls + int(planner_call_requested),
             runtime_token_budget=budget.runtime_token_budget,
             resolved_source_scope=ResolvedSourceScope(
                 requested_source_names=authorized_source_names,
@@ -232,7 +257,11 @@ class QuestionContractPlanner:
                 source_name_to_doc_ids=source_mapping,
             ),
             strategy_tier=(
-                "deterministic" if not planner_call_used else "budgeted_ambiguity"
+                "budgeted_ambiguity"
+                if planner_call_requested
+                else "safe_fallback"
+                if mapping_missing
+                else "deterministic"
             ),
             route_decision=decision,
             slot_plan_status=(
@@ -257,6 +286,11 @@ class QuestionContractPlanner:
                 authorized_source_names, ensure_ascii=False
             ),
             authorized_doc_ids=json.dumps(authorized_source_doc_ids),
+            authorized_source_mapping=json.dumps(
+                authorized_source_name_to_doc_ids,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
         )
         try:
             response = await self._llm_invoker.invoke(
@@ -762,7 +796,7 @@ def _source_mapping(
     source_doc_ids: list[str],
     authoritative: dict[str, list[str]] | None,
 ) -> dict[str, list[str]]:
-    if authoritative:
+    if authoritative is not None:
         allowed_ids = set(source_doc_ids)
         allowed_names = set(source_names)
         return {
@@ -772,10 +806,9 @@ def _source_mapping(
             and doc_ids
             and set(doc_ids) <= allowed_ids
         }
-    return {
-        name: [doc_id]
-        for name, doc_id in zip(source_names, source_doc_ids, strict=False)
-    }
+    if len(source_names) == 1 and len(source_doc_ids) == 1:
+        return {source_names[0]: [source_doc_ids[0]]}
+    return {}
 
 
 def _safe_ambiguity_result(reason: str) -> _AmbiguityResult:
