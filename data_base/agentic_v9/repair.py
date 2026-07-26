@@ -88,7 +88,7 @@ def build_repair_plan(
             source_group_id=f"repair-{repair_round_index}",
             locator_hints=_unique(slot.locator_hints or contract.locator_hints),
             graph_policy=contract.graph_policy or "never",
-            visual_required=contract.visual_required,
+            visual_required=contract.visual_requested,
         )
         for slot in missing_slots[:MAX_REPAIR_QUERIES_PER_ROUND]
     ]

@@ -128,6 +128,7 @@ def test_planner_api_cannot_accept_question_snapshot_or_gold_fields() -> None:
         "question",
         "authorized_source_names",
         "authorized_source_doc_ids",
+        "authorized_source_name_to_doc_ids",
         "setup_policy",
     }
 
@@ -158,6 +159,23 @@ class _PlannerInvoker:
         if self.error is not None:
             raise self.error
         return self.response
+
+
+@pytest.mark.asyncio
+async def test_authoritative_source_mapping_survives_reordered_canonical_ids() -> None:
+    contract = await QuestionContractPlanner().plan(
+        question="From nnMamba.pdf, report the value in Table 2.",
+        authorized_source_names=["nnMamba.pdf", "Other.pdf"],
+        authorized_source_doc_ids=["doc-a", "doc-z"],
+        authorized_source_name_to_doc_ids={
+            "nnMamba.pdf": ["doc-z"],
+            "Other.pdf": ["doc-a"],
+        },
+        setup_policy={},
+    )
+
+    assert contract.required_slots[0].source_name_hints == ["nnMamba.pdf"]
+    assert contract.required_slots[0].authorized_source_doc_ids == ["doc-z"]
 
 
 @pytest.mark.asyncio
@@ -197,6 +215,104 @@ async def test_ambiguous_question_uses_one_contract_planning_call() -> None:
     assert contract.route_decision.decision_source == "llm_planner"
     assert contract.route_decision.planner_call_used is True
     assert contract.slot_plan_status == "complete"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("route_reason", "The answer is 0.9079."),
+        ("locator_hints", ["0.9079"]),
+        ("depends_on_slot_ids", ["S99"]),
+    ],
+)
+async def test_planner_authored_answer_values_and_invalid_dependencies_degrade(
+    field: str, value: object
+) -> None:
+    slot = {
+        "description": "Retrieve the requested source-bound fact.",
+        "source_name_hints": ["paper.pdf"],
+        "authorized_source_doc_ids": ["doc-1"],
+        "locator_hints": [],
+        "expected_answer_type": "text",
+        "depends_on_slot_ids": [],
+        "visual_policy": "never",
+    }
+    payload = {
+        "selected_route": "single_lookup",
+        "slots": [slot],
+        "route_reason": "The request needs one lookup.",
+        "confidence": 0.8,
+    }
+    if field in slot:
+        slot[field] = value
+    else:
+        payload[field] = value
+    invoker = _PlannerInvoker({"content": json.dumps(payload)})
+
+    contract = await QuestionContractPlanner(llm_invoker=invoker).plan(
+        question="Please investigate this unclear request.",
+        authorized_source_names=["paper.pdf"],
+        authorized_source_doc_ids=["doc-1"],
+        setup_policy={},
+    )
+
+    assert contract.slot_plan_status == "degraded"
+    assert contract.route_decision.fallback_reason == "invalid_planner_output"
+
+
+@pytest.mark.asyncio
+async def test_planner_rejects_authorized_id_paired_with_wrong_source_name() -> None:
+    invoker = _PlannerInvoker(
+        {
+            "content": json.dumps(
+                {
+                    "selected_route": "single_lookup",
+                    "slots": [
+                        {
+                            "description": "Retrieve the requested fact.",
+                            "source_name_hints": ["nnMamba.pdf"],
+                            "authorized_source_doc_ids": ["doc-a"],
+                            "locator_hints": [],
+                            "expected_answer_type": "text",
+                            "depends_on_slot_ids": [],
+                            "visual_policy": "never",
+                        }
+                    ],
+                    "route_reason": "One source-bound lookup.",
+                    "confidence": 0.8,
+                }
+            )
+        }
+    )
+
+    contract = await QuestionContractPlanner(llm_invoker=invoker).plan(
+        question="Please investigate this unclear request.",
+        authorized_source_names=["nnMamba.pdf", "Other.pdf"],
+        authorized_source_doc_ids=["doc-a", "doc-z"],
+        authorized_source_name_to_doc_ids={
+            "nnMamba.pdf": ["doc-z"],
+            "Other.pdf": ["doc-a"],
+        },
+        setup_policy={},
+    )
+
+    assert contract.slot_plan_status == "degraded"
+    assert contract.route_decision.fallback_reason == "unauthorized_source_expansion"
+
+
+@pytest.mark.asyncio
+async def test_preferred_visual_slot_is_requested_but_not_required() -> None:
+    contract = await QuestionContractPlanner().plan(
+        question="What is the table score?",
+        authorized_source_names=["paper.pdf"],
+        authorized_source_doc_ids=["doc-1"],
+        setup_policy={},
+    )
+
+    assert contract.required_slots[0].visual_policy == "preferred"
+    assert contract.visual_requested is True
+    assert contract.visual_required is False
 
 
 @pytest.mark.asyncio

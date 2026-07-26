@@ -142,10 +142,12 @@ async def test_visual_and_graph_routes_reserve_their_required_provider_phases() 
     )
 
     assert visual_contract.route == "exact_structured"
-    assert visual_contract.visual_required is True
+    assert visual_contract.visual_requested is True
+    assert visual_contract.visual_required is False
     assert visual_contract.max_llm_calls == 3
     assert graph_visual_contract.route == "graph_relational"
-    assert graph_visual_contract.visual_required is True
+    assert graph_visual_contract.visual_requested is True
+    assert graph_visual_contract.visual_required is False
     assert graph_visual_contract.max_llm_calls == 4
 
 

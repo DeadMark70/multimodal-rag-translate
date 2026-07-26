@@ -297,6 +297,18 @@ def test_query_contract_v2_carries_atomic_slot_and_route_provenance() -> None:
     }
 
 
+def test_query_contract_v2_missing_slot_plan_status_stays_missing() -> None:
+    contract = QueryContract(
+        contract_version="2",
+        route="single_lookup",
+        intent="Resolve one atomic source-bound fact.",
+        required_slots=[RequiredSlot(slot_id="S1", description="Retrieve the fact.")],
+    )
+
+    assert contract.slot_semantics == "atomic"
+    assert contract.slot_plan_status is None
+
+
 def test_query_contract_v1_projects_legacy_generic_atomic_completeness_na() -> None:
     contract = QueryContract(
         route="single_lookup",

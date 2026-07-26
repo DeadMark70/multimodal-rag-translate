@@ -135,6 +135,25 @@ def test_release_metrics_fail_closed_for_degraded_v2_slot_plan() -> None:
     assert report.required_slot_coverage.value is None
 
 
+def test_release_metrics_fail_closed_for_missing_v2_slot_plan_status() -> None:
+    report = derive_release_metrics(
+        benchmark_id="bench-1",
+        runs=[
+            _run(run_id="naive", mode="naive", version="v8"),
+            _run(run_id="v8", mode="agentic", version="v8"),
+            _run(
+                run_id="v9",
+                mode="agentic",
+                version="v9",
+                slot_plan_status=None,
+            ),
+        ],
+    )
+
+    assert report.comparable is False
+    assert "missing_v2_slot_plan_status" in report.gate_reasons
+
+
 def test_release_metrics_report_atomic_completeness_na_for_v1_contract() -> None:
     report = derive_release_metrics(
         benchmark_id="bench-1",
@@ -153,6 +172,49 @@ def test_release_metrics_report_atomic_completeness_na_for_v1_contract() -> None
 
     assert report.required_slot_coverage.value is None
     assert report.required_slot_coverage.reason == "atomic_completeness_not_applicable"
+    assert report.important_unsupported_claim_rate.value == 0.0
+    assert report.provenance_failure_rate.value == 0.0
+    assert report.pack_efficiency.value == 0.75
+    assert report.graph_locator_success.value == 1
+    assert report.final_generation_count.value == 1
+
+
+def test_release_metrics_use_all_v9_runs_for_non_atomic_metrics_in_mixed_contracts() -> None:
+    v1 = replace(
+        _run(
+            run_id="v9-v1",
+            mode="agentic",
+            version="v9",
+            contract_version="1",
+            slot_plan_status=None,
+        ),
+        question_id="Q8",
+        unsupported_important_claim_count=1,
+        packed_evidence_count=1,
+    )
+    v2 = _run(run_id="v9-v2", mode="agentic", version="v9")
+    report = derive_release_metrics(
+        benchmark_id="bench-1",
+        runs=[
+            replace(
+                _run(run_id="naive-q8", mode="naive", version="v8"),
+                question_id="Q8",
+            ),
+            replace(
+                _run(run_id="v8-q8", mode="agentic", version="v8"),
+                question_id="Q8",
+            ),
+            _run(run_id="naive-q9", mode="naive", version="v8"),
+            _run(run_id="v8-q9", mode="agentic", version="v8"),
+            v1,
+            v2,
+        ],
+    )
+
+    assert report.required_slot_coverage.value == 1.0
+    assert report.important_unsupported_claim_rate.value == 0.25
+    assert report.pack_efficiency.value == 0.5
+    assert report.graph_locator_success.value == 2
 
 
 @pytest.fixture

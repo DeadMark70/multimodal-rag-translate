@@ -180,6 +180,9 @@ class AgenticV9CampaignRuntime:
                 ),
                 authorized_source_doc_ids=list(source_scope.authorized_doc_ids),
                 setup_policy=dict(setup_snapshot),
+                authorized_source_name_to_doc_ids=dict(
+                    source_scope.source_name_to_doc_ids
+                ),
             )
             runtime_contract = runtime_contract.model_copy(
                 update={"resolved_source_scope": source_scope}
@@ -274,7 +277,7 @@ class AgenticV9CampaignRuntime:
                         state["graph_execution"] = _graph_execution_projection(located)
                         docs = list(located.documents)
                 if (
-                    state["contract"].visual_required
+                    state["contract"].visual_requested
                     and not state["visual_execution"]["attempted"]
                 ):
                     controller = state["budget_controller"]
@@ -285,11 +288,17 @@ class AgenticV9CampaignRuntime:
                         )
                     except Exception as error:  # Stage admitted; preserve partial answer.
                         state["visual_execution"] = _failed_required_stage(
-                            policy="visual_required", error=error
+                            policy=(
+                                "visual_required"
+                                if state["contract"].visual_required
+                                else "visual_preferred"
+                            ),
+                            error=error,
                         )
                     else:
                         state["visual_execution"] = _visual_execution_projection(
-                            visual_result
+                            visual_result,
+                            required=state["contract"].visual_required,
                         )
                         state["visual_packets"].extend(visual_result.packets)
                 chunks = [_chunk_projection(document, index) for index, document in enumerate(docs)]
@@ -617,6 +626,15 @@ def _apply_required_capability_constraints(
     required_slot_ids = {
         slot.slot_id for slot in contract.required_slots if slot.required
     }
+    required_visual_slot_ids = {
+        slot.slot_id
+        for slot in contract.required_slots
+        if slot.required and slot.visual_policy == "required"
+    }
+    if contract.visual_required and not required_visual_slot_ids:
+        # Legacy v1 contracts expressed required visual evidence only through
+        # the contract-level flag, so retain their all-required-slot behavior.
+        required_visual_slot_ids = set(required_slot_ids)
     graph_failed = bool(
         contract.graph_policy == "required_locator"
         and (graph_execution or {}).get("state") != "executed"
@@ -633,7 +651,7 @@ def _apply_required_capability_constraints(
         if resolution.slot_id not in required_slot_ids:
             adjusted.append(resolution)
             continue
-        if visual_failed:
+        if visual_failed and resolution.slot_id in required_visual_slot_ids:
             reason = (visual_execution or {}).get("failure_reason") or (
                 "Required visual evidence is unavailable."
             )
@@ -645,6 +663,9 @@ def _apply_required_capability_constraints(
                     resolution_stage="required_visual_capability",
                 )
             )
+            continue
+        if not graph_failed:
+            adjusted.append(resolution)
             continue
         graph_failure_reason = (graph_execution or {}).get("failure_reason")
         graph_stage_failed = (graph_execution or {}).get("fallback") == (
@@ -794,10 +815,15 @@ def _graph_execution_projection(
 
 def _failed_required_stage(*, policy: str, error: Exception) -> dict[str, Any]:
     """Project an admitted stage failure without leaking provider internals."""
+    required = policy in {"visual_required", "required_locator"}
     return {
         "policy": policy,
         "required": policy == "visual_required",
-        "state": "required_but_not_satisfied",
+        "state": (
+            "required_but_not_satisfied"
+            if required
+            else "attempted_without_evidence"
+        ),
         "attempted": True,
         "failure_reason": f"{error.__class__.__name__}:stage_execution_failed",
         "route": None,
@@ -885,9 +911,10 @@ def _visual_assets_from_documents(
 
 def _initial_visual_execution(contract: QueryContract | None) -> dict[str, Any]:
     required = bool(contract and contract.visual_required)
+    requested = bool(contract and contract.visual_requested)
     return {
         "required": required,
-        "state": "not_triggered" if required else "not_requested",
+        "state": "not_triggered" if requested else "not_requested",
         "attempted": False,
         "failure_reason": None,
         "selected_asset_count": 0,
@@ -898,11 +925,19 @@ def _initial_visual_execution(contract: QueryContract | None) -> dict[str, Any]:
 
 def _visual_execution_projection(
     result: VisualEvidenceExtractionResult,
+    *,
+    required: bool,
 ) -> dict[str, Any]:
     packet_count = len(result.packets)
     return {
-        "required": True,
-        "state": "executed" if packet_count else "required_but_not_satisfied",
+        "required": required,
+        "state": (
+            "executed"
+            if packet_count
+            else "required_but_not_satisfied"
+            if required
+            else "attempted_without_evidence"
+        ),
         "attempted": True,
         "failure_reason": (
             None

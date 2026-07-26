@@ -93,6 +93,7 @@ class ResolvedSourceScope(BaseModel):
     requested_source_names: list[str] = Field(default_factory=list)
     resolved_doc_ids: list[str] = Field(default_factory=list)
     authorized_doc_ids: list[str] = Field(default_factory=list)
+    source_name_to_doc_ids: dict[str, list[str]] = Field(default_factory=dict)
     rejected_source_names: list[str] = Field(default_factory=list)
 
 
@@ -106,6 +107,7 @@ class QueryContract(BaseModel):
     entities: list[str] = Field(default_factory=list)
     locator_hints: list[str] = Field(default_factory=list)
     graph_policy: GraphPolicy | None = None
+    visual_requested: bool = False
     visual_required: bool = False
     evidence_extraction_required: bool = False
     max_retrieval_rounds: int = Field(default=0, ge=0)
@@ -131,8 +133,8 @@ class QueryContract(BaseModel):
             self.atomic_completeness = None
         elif self.contract_version == "2":
             self.slot_semantics = "atomic"
-            if self.slot_plan_status is None:
-                self.slot_plan_status = "complete"
+        if self.visual_required:
+            self.visual_requested = True
         return self
 
 

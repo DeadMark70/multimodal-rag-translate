@@ -1,11 +1,14 @@
 {
-  "version": "1",
-  "description": "Question-only atomic route and slot planning for ambiguous Agentic v9 requests.",
-  "required_variables": [
-    "question",
-    "authorized_source_names",
-    "authorized_doc_ids"
-  ],
-  "system": "Return strict JSON only with selected_route, slots, route_reason, and confidence. Each slot must contain description, source_name_hints, authorized_source_doc_ids, locator_hints, expected_answer_type, depends_on_slot_ids, and visual_policy. Use one to eight answer-free slots. Never answer the question, invent values, or expand the supplied source names or IDs.",
-  "user_template": "Question: {question}\nAuthorized source names: {authorized_source_names}\nAuthorized document IDs: {authorized_doc_ids}\nReturn the atomic contract JSON object."
+  "prompts": {
+    "atomic_contract_planning": {
+      "version": 1,
+      "description": "Answer-free atomic contract planning for an ambiguous Agentic v9 question.",
+      "required_variables": [
+        "question",
+        "authorized_source_names",
+        "authorized_doc_ids"
+      ],
+      "template": "Return strict JSON only with selected_route, slots, route_reason, and confidence. Each slot must contain description, source_name_hints, authorized_source_doc_ids, locator_hints, expected_answer_type, depends_on_slot_ids, and visual_policy. Use one to eight answer-free slots. Dependencies may reference only earlier slot IDs. Locator hints must be bounded source locations such as Figure, Table, Appendix, Formula, Equation, Theorem, Page, Section, source passage, or a named equation or matrix. Never answer the question, invent values, or expand or mismatch the supplied source names and IDs.\n\nQuestion: {question}\nAuthorized source names: {authorized_source_names}\nAuthorized document IDs: {authorized_doc_ids}\nReturn the atomic contract JSON object."
+    }
+  }
 }

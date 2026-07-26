@@ -605,6 +605,145 @@ async def test_missing_required_visual_evidence_is_insufficient(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_missing_preferred_visual_evidence_does_not_block_text_completion(
+    monkeypatch,
+) -> None:
+    provider = _Provider()
+    document = Document(
+        page_content="Table 1 reports the result.",
+        metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+    )
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        contract_version="2",
+        route="exact_structured",
+        intent="table value",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="table value",
+                visual_policy="preferred",
+            )
+        ],
+        visual_requested=True,
+        visual_required=False,
+        evidence_extraction_required=True,
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=3,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+        slot_plan_status="complete",
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    visual_extractor = AsyncMock(return_value=VisualEvidenceExtractionResult())
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract",
+        admission,
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(return_value=[document]),
+        visual_extractor=visual_extractor,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What is in the table?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "max_output_tokens": 8192},
+        trace_id="preferred-visual-trace",
+    )
+
+    visual_extractor.assert_awaited_once()
+    assert result.agent_trace["response_status"] == "complete"
+    assert result.agent_trace["agentic_v9"]["visual_execution"]["state"] == (
+        "attempted_without_evidence"
+    )
+    assert result.agent_trace["agentic_v9"]["slot_resolutions"][0]["status"] == (
+        "supported"
+    )
+
+
+@pytest.mark.asyncio
+async def test_required_visual_failure_only_downgrades_required_policy_slots(
+    monkeypatch,
+) -> None:
+    provider = _Provider()
+    document = Document(
+        page_content="The source contains both requested facts.",
+        metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+    )
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        contract_version="2",
+        route="exact_structured",
+        intent="two facts",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="required table fact",
+                visual_policy="required",
+            ),
+            RequiredSlot(
+                slot_id="S2",
+                description="preferred table fact",
+                visual_policy="preferred",
+            ),
+        ],
+        visual_requested=True,
+        visual_required=True,
+        evidence_extraction_required=True,
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=3,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+        slot_plan_status="complete",
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract",
+        admission,
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(return_value=[document]),
+        visual_extractor=AsyncMock(return_value=VisualEvidenceExtractionResult()),
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What are the two facts?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "max_output_tokens": 8192},
+        trace_id="mixed-visual-policy-trace",
+    )
+
+    resolutions = {
+        row["slot_id"]: row["status"]
+        for row in result.agent_trace["agentic_v9"]["slot_resolutions"]
+    }
+    assert resolutions == {"S1": "explicitly_unavailable", "S2": "supported"}
+
+
+@pytest.mark.asyncio
 async def test_invalid_final_provider_output_uses_deterministic_sections() -> None:
     provider = _InvalidProvider()
     runtime = AgenticV9CampaignRuntime(

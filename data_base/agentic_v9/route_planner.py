@@ -30,6 +30,9 @@ class RoutePlanner:
             authorized_source_names=resolved_source_scope.requested_source_names,
             authorized_source_doc_ids=resolved_source_scope.authorized_doc_ids,
             setup_policy=setup_policy or {},
+            authorized_source_name_to_doc_ids=(
+                resolved_source_scope.source_name_to_doc_ids
+            ),
         )
         return contract.model_copy(
             update={"resolved_source_scope": resolved_source_scope}

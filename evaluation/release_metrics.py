@@ -166,6 +166,13 @@ def derive_release_metrics(*, benchmark_id: str, runs: list[ReleaseRun]) -> Rele
             and run.slot_plan_status == "degraded"
         ):
             reasons.add("degraded_v2_slot_plan")
+        if (
+            run.agentic_execution_version == "v9"
+            and not run.shadow_evaluation_policy
+            and run.contract_version == "2"
+            and run.slot_plan_status is None
+        ):
+            reasons.add("missing_v2_slot_plan_status")
     if any(run.runtime_tokens is None for run in official_runs):
         reasons.add("runtime_token_instrumentation_missing")
     if any(run.latency_ms is None for run in official_runs):
@@ -232,51 +239,53 @@ def _measured_report(
         for run in runs
         if run.agentic_execution_version == "v9" and not run.shadow_evaluation_policy
     ]
-    evidence_runs = [run for run in all_evidence_runs if run.contract_version == "2"]
-    if all_evidence_runs and not evidence_runs:
+    atomic_runs = [
+        run for run in all_evidence_runs if run.contract_version == "2"
+    ]
+    if all_evidence_runs and not atomic_runs:
         report.required_slot_coverage = ReleaseMetric(
             reason="atomic_completeness_not_applicable"
         )
     else:
         report.required_slot_coverage = _ratio_metric(
-            sum(run.supported_slot_count or 0 for run in evidence_runs),
-            sum(run.required_slot_count or 0 for run in evidence_runs),
+            sum(run.supported_slot_count or 0 for run in atomic_runs),
+            sum(run.required_slot_count or 0 for run in atomic_runs),
             "required_slot_instrumentation_missing",
-            bool(evidence_runs) and all(run.required_slot_count is not None and run.supported_slot_count is not None for run in evidence_runs),
+            bool(atomic_runs) and all(run.required_slot_count is not None and run.supported_slot_count is not None for run in atomic_runs),
         )
     report.important_unsupported_claim_rate = _ratio_metric(
-        sum(run.unsupported_important_claim_count or 0 for run in evidence_runs),
-        sum(run.important_claim_count or 0 for run in evidence_runs),
+        sum(run.unsupported_important_claim_count or 0 for run in all_evidence_runs),
+        sum(run.important_claim_count or 0 for run in all_evidence_runs),
         "important_claim_instrumentation_missing",
-        bool(evidence_runs) and all(run.important_claim_count is not None and run.unsupported_important_claim_count is not None for run in evidence_runs),
+        bool(all_evidence_runs) and all(run.important_claim_count is not None and run.unsupported_important_claim_count is not None for run in all_evidence_runs),
     )
     report.provenance_failure_rate = _ratio_metric(
-        sum(run.provenance_failure_count or 0 for run in evidence_runs),
-        len(evidence_runs),
+        sum(run.provenance_failure_count or 0 for run in all_evidence_runs),
+        len(all_evidence_runs),
         "provenance_instrumentation_missing",
-        bool(evidence_runs) and all(run.provenance_failure_count is not None for run in evidence_runs),
+        bool(all_evidence_runs) and all(run.provenance_failure_count is not None for run in all_evidence_runs),
     )
     report.pack_efficiency = _ratio_metric(
-        sum(run.packed_evidence_count or 0 for run in evidence_runs),
-        sum(run.available_evidence_count or 0 for run in evidence_runs),
+        sum(run.packed_evidence_count or 0 for run in all_evidence_runs),
+        sum(run.available_evidence_count or 0 for run in all_evidence_runs),
         "context_pack_instrumentation_missing",
-        bool(evidence_runs) and all(run.packed_evidence_count is not None and run.available_evidence_count is not None for run in evidence_runs),
+        bool(all_evidence_runs) and all(run.packed_evidence_count is not None and run.available_evidence_count is not None for run in all_evidence_runs),
     )
     graph_instrumented = all(
         run.graph_locator_success_count is not None and run.graph_locator_fallback_count is not None
-        for run in evidence_runs
+        for run in all_evidence_runs
     )
     report.graph_locator_success = ReleaseMetric(
-        value=sum(run.graph_locator_success_count or 0 for run in evidence_runs) if graph_instrumented else None,
+        value=sum(run.graph_locator_success_count or 0 for run in all_evidence_runs) if graph_instrumented else None,
         reason=None if graph_instrumented else "graph_not_instrumented",
     )
     report.graph_locator_fallback = ReleaseMetric(
-        value=sum(run.graph_locator_fallback_count or 0 for run in evidence_runs) if graph_instrumented else None,
+        value=sum(run.graph_locator_fallback_count or 0 for run in all_evidence_runs) if graph_instrumented else None,
         reason=None if graph_instrumented else "graph_not_instrumented",
     )
-    final_instrumented = bool(evidence_runs) and all(run.final_generation_count is not None for run in evidence_runs)
+    final_instrumented = bool(all_evidence_runs) and all(run.final_generation_count is not None for run in all_evidence_runs)
     report.final_generation_count = ReleaseMetric(
-        value=max((run.final_generation_count or 0) for run in evidence_runs) if final_instrumented else None,
+        value=max((run.final_generation_count or 0) for run in all_evidence_runs) if final_instrumented else None,
         reason=None if final_instrumented else "final_generation_instrumentation_missing",
     )
     v9 = [run for run in benchmark_runs if run.identity.official_label == "agentic-v9"]

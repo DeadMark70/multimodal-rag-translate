@@ -203,7 +203,7 @@ def validate_post_contract_feasibility(
     )
     if contract.graph_policy == "required_locator":
         pending_provider_calls["graph_route"] = 1
-    if contract.visual_required:
+    if contract.visual_requested:
         pending_provider_calls["visual_extract"] = 1
     if contract.evidence_extraction_required:
         pending_provider_calls["evidence_extract"] = 1
@@ -213,7 +213,7 @@ def validate_post_contract_feasibility(
         contract.max_retrieval_rounds
         + contract.max_repair_rounds
         + int(contract.graph_policy != "never")
-        + int(contract.visual_required)
+        + int(contract.visual_requested)
     )
     output_ceiling, reasoning_reserve = _setup_feasibility(setup_snapshot)
     if output_ceiling is None:

@@ -257,7 +257,7 @@ class RetrievalTaskCompiler:
             source_group_id=source_group_id,
             locator_hints=contract.locator_hints,
             graph_policy=contract.graph_policy or "never",
-            visual_required=contract.visual_required,
+            visual_required=contract.visual_requested,
             depends_on_task_ids=depends_on_task_ids or [],
         )
 

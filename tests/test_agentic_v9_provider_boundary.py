@@ -76,6 +76,26 @@ async def test_preflight_admission_never_invokes_a_provider() -> None:
 
 
 @pytest.mark.asyncio
+async def test_admission_preserves_authoritative_name_to_id_mapping() -> None:
+    async def resolve(_user_id: str, _references: list[str]) -> dict[str, str]:
+        return {"nnMamba.pdf": "doc-z", "Other.pdf": "doc-a"}
+
+    admission = await build_v9_admission_contract(
+        question="From nnMamba.pdf, report the value in Table 2.",
+        user_id="user-1",
+        source_references=["nnMamba.pdf", "Other.pdf"],
+        document_reference_resolver=resolve,
+        setup_policy={},
+    )
+
+    assert admission.source_scope.source_name_to_doc_ids == {
+        "nnMamba.pdf": ["doc-z"],
+        "Other.pdf": ["doc-a"],
+    }
+    assert admission.contract.required_slots[0].authorized_source_doc_ids == ["doc-z"]
+
+
+@pytest.mark.asyncio
 async def test_v9_multi_query_rewrite_uses_the_injected_budgeted_invoker() -> None:
     invoker = _RecordingInvoker(
         SimpleNamespace(content="1. first alternate query\n2. second alternate query")

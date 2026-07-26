@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from core.prompt_loader import PromptRegistry
 from data_base.agentic_v9.schemas import (
     AgenticV9Route,
     BudgetExceededError,
@@ -25,6 +26,7 @@ _PROMPT_PATH = (
     / "prompts"
     / "agentic_v9_contract_planner.json"
 )
+_PROMPT_KEY = "atomic_contract_planning"
 _ENTITY_PATTERN = re.compile(
     r"(?<![\w-])[A-Za-z][A-Za-z0-9]*(?:[-.][A-Za-z0-9]+)*(?![\w-])"
 )
@@ -118,11 +120,24 @@ class QuestionContractPlanner:
         authorized_source_names: list[str],
         authorized_source_doc_ids: list[str],
         setup_policy: dict[str, Any],
+        authorized_source_name_to_doc_ids: dict[str, list[str]] | None = None,
     ) -> QueryContract:
         del setup_policy  # Task 6 applies these authoritative provider limits.
         normalized_question = question.strip()
         if not normalized_question:
             raise ValueError("question must not be empty")
+        source_mapping = _source_mapping(
+            source_names=authorized_source_names,
+            source_doc_ids=authorized_source_doc_ids,
+            authoritative=authorized_source_name_to_doc_ids,
+        )
+        ordered_source_doc_ids = [
+            source_mapping[name][0]
+            for name in authorized_source_names
+            if source_mapping.get(name)
+        ]
+        if not ordered_source_doc_ids:
+            ordered_source_doc_ids = list(authorized_source_doc_ids)
 
         route = _deterministic_route(normalized_question)
         ambiguity: _AmbiguityResult | None = None
@@ -131,6 +146,7 @@ class QuestionContractPlanner:
                 question=normalized_question,
                 authorized_source_names=authorized_source_names,
                 authorized_source_doc_ids=authorized_source_doc_ids,
+                authorized_source_name_to_doc_ids=source_mapping,
             )
             route = ambiguity.route
         planner_call_used = ambiguity is not None
@@ -141,7 +157,7 @@ class QuestionContractPlanner:
             slots, matched_rules = _decompose(
                 question=normalized_question,
                 source_names=authorized_source_names,
-                source_doc_ids=authorized_source_doc_ids,
+                source_doc_ids=ordered_source_doc_ids,
             )
         if not slots:
             slots = [
@@ -149,7 +165,7 @@ class QuestionContractPlanner:
                     description="Resolve the source-bound requirement in the question.",
                     answer_type="text",
                     source_names=authorized_source_names,
-                    source_doc_ids=authorized_source_doc_ids,
+                    source_doc_ids=ordered_source_doc_ids,
                 )
             ]
         if len(slots) == 1 and route in {
@@ -163,7 +179,7 @@ class QuestionContractPlanner:
                     description="Resolve the independent source-bound comparison or qualification.",
                     answer_type="comparison",
                     source_names=authorized_source_names,
-                    source_doc_ids=authorized_source_doc_ids,
+                    source_doc_ids=ordered_source_doc_ids,
                 )
             )
         slots = [slot.model_copy(update={"slot_id": f"S{index}"}) for index, slot in enumerate(slots[:8], 1)]
@@ -191,10 +207,10 @@ class QuestionContractPlanner:
             fallback_reason=ambiguity.fallback_reason if ambiguity else None,
             confidence=ambiguity.confidence if ambiguity else 1.0,
         )
-        visual_required = any(
-            locator.casefold().startswith(("figure", "table"))
-            for locator in locators
+        visual_requested = any(
+            slot.visual_policy in {"preferred", "required"} for slot in slots
         )
+        visual_required = any(slot.visual_policy == "required" for slot in slots)
         return QueryContract(
             contract_version="2",
             route=route,
@@ -202,6 +218,7 @@ class QuestionContractPlanner:
             required_slots=slots,
             entities=entities,
             locator_hints=locators,
+            visual_requested=visual_requested,
             visual_required=visual_required,
             evidence_extraction_required=True,
             max_retrieval_rounds=budget.max_retrieval_rounds,
@@ -212,6 +229,7 @@ class QuestionContractPlanner:
                 requested_source_names=authorized_source_names,
                 resolved_doc_ids=authorized_source_doc_ids,
                 authorized_doc_ids=authorized_source_doc_ids,
+                source_name_to_doc_ids=source_mapping,
             ),
             strategy_tier=(
                 "deterministic" if not planner_call_used else "budgeted_ambiguity"
@@ -228,28 +246,24 @@ class QuestionContractPlanner:
         question: str,
         authorized_source_names: list[str],
         authorized_source_doc_ids: list[str],
+        authorized_source_name_to_doc_ids: dict[str, list[str]],
     ) -> _AmbiguityResult:
         if self._llm_invoker is None:
             return _safe_ambiguity_result("planner_unavailable")
-        prompt = json.loads(_PROMPT_PATH.read_text(encoding="utf-8"))
+        prompt = PromptRegistry(_PROMPT_PATH).format(
+            _PROMPT_KEY,
+            question=question,
+            authorized_source_names=json.dumps(
+                authorized_source_names, ensure_ascii=False
+            ),
+            authorized_doc_ids=json.dumps(authorized_source_doc_ids),
+        )
         try:
             response = await self._llm_invoker.invoke(
                 phase="contract_planning",
                 purpose="atomic_contract_planning",
                 messages=[
-                    {"role": "system", "content": prompt["system"]},
-                    {
-                        "role": "user",
-                        "content": prompt["user_template"].format(
-                            question=question,
-                            authorized_source_names=json.dumps(
-                                authorized_source_names, ensure_ascii=False
-                            ),
-                            authorized_doc_ids=json.dumps(
-                                authorized_source_doc_ids
-                            ),
-                        ),
-                    },
+                    {"role": "user", "content": prompt},
                 ],
             )
             decision = _parse_decision(response)
@@ -257,6 +271,9 @@ class QuestionContractPlanner:
                 decision,
                 authorized_source_names=authorized_source_names,
                 authorized_source_doc_ids=authorized_source_doc_ids,
+                authorized_source_name_to_doc_ids=(
+                    authorized_source_name_to_doc_ids
+                ),
             )
             _validate_answer_free(decision, question=question)
         except TimeoutError:
@@ -685,6 +702,7 @@ def _validate_planner_scope(
     *,
     authorized_source_names: list[str],
     authorized_source_doc_ids: list[str],
+    authorized_source_name_to_doc_ids: dict[str, list[str]],
 ) -> None:
     allowed_names = set(authorized_source_names)
     allowed_ids = set(authorized_source_doc_ids)
@@ -693,18 +711,71 @@ def _validate_planner_scope(
             raise _UnauthorizedSourceExpansion
         if not set(slot.authorized_source_doc_ids) <= allowed_ids:
             raise _UnauthorizedSourceExpansion
+        paired_ids = {
+            doc_id
+            for name in slot.source_name_hints
+            for doc_id in authorized_source_name_to_doc_ids.get(name, ())
+        }
+        if not set(slot.authorized_source_doc_ids) <= paired_ids:
+            raise _UnauthorizedSourceExpansion
 
 
 def _validate_answer_free(
     decision: _PlannerDecision, *, question: str
 ) -> None:
     question_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", question))
-    for slot in decision.slots:
-        description_numbers = set(
-            re.findall(r"\b\d+(?:\.\d+)?\b", slot.description)
+    planner_text = [decision.route_reason]
+    for index, slot in enumerate(decision.slots, 1):
+        planner_text.extend([slot.description, *slot.locator_hints])
+        valid_dependencies = {f"S{prior}" for prior in range(1, index)}
+        if not set(slot.depends_on_slot_ids) <= valid_dependencies:
+            raise ValueError("slot dependency must reference an earlier slot")
+        for locator in slot.locator_hints:
+            if not _valid_locator_hint(locator):
+                raise ValueError("invalid planner locator hint")
+    for text in planner_text:
+        authored_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", text))
+        if not authored_numbers <= question_numbers:
+            raise ValueError("planner text contains an answer-like value")
+
+
+def _valid_locator_hint(value: str) -> bool:
+    """Admit only bounded source-location descriptions, never free-form values."""
+    normalized = value.strip().casefold()
+    if not normalized or len(normalized) > 120:
+        return False
+    return bool(
+        re.match(
+            r"^(figure|fig\.?|table|appendix|formula|equation|theorem|page|section)\b",
+            normalized,
         )
-        if not description_numbers <= question_numbers:
-            raise ValueError("slot description contains an answer-like value")
+        or any(
+            term in normalized
+            for term in ("source passage", "regional impurity equation", "matrix")
+        )
+    )
+
+
+def _source_mapping(
+    *,
+    source_names: list[str],
+    source_doc_ids: list[str],
+    authoritative: dict[str, list[str]] | None,
+) -> dict[str, list[str]]:
+    if authoritative:
+        allowed_ids = set(source_doc_ids)
+        allowed_names = set(source_names)
+        return {
+            name: list(dict.fromkeys(doc_ids))
+            for name, doc_ids in authoritative.items()
+            if name in allowed_names
+            and doc_ids
+            and set(doc_ids) <= allowed_ids
+        }
+    return {
+        name: [doc_id]
+        for name, doc_id in zip(source_names, source_doc_ids, strict=False)
+    }
 
 
 def _safe_ambiguity_result(reason: str) -> _AmbiguityResult:
