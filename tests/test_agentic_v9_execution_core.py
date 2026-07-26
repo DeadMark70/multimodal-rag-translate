@@ -29,6 +29,7 @@ from data_base.agentic_v9.schemas import (
     RagRetrievalResult,
     RequiredSlot,
     ResolvedSourceScope,
+    RetrievalTask,
     SlotResolution,
     SourceLocator,
     SufficiencyReport,
@@ -229,6 +230,89 @@ async def test_core_runs_the_evidence_first_stages_in_order_and_enforces_call_ca
     assert result.metrics.prose_curator_call_count == 1
     assert result.metrics.arbitration_call_count == 0
     assert result.metrics.final_generation_count == 1
+
+
+@pytest.mark.asyncio
+async def test_core_recomputes_sufficiency_after_each_of_at_most_two_repairs() -> None:
+    contract = _contract().model_copy(update={"max_repair_rounds": 5})
+    evaluation_calls: list[int] = []
+    repair_rounds: list[int] = []
+    retrieval_rounds: list[str] = []
+
+    async def retrieve(
+        tasks: tuple[RetrievalTask, ...],
+    ) -> tuple[TaskRetrievalResult, ...]:
+        retrieval_rounds.extend(task.round_id for task in tasks)
+        return tuple(
+            TaskRetrievalResult(
+                task_id=task.task_id,
+                retrieval=RagRetrievalResult(
+                    retrieval_id=f"retrieval:{task.task_id}"
+                ),
+            )
+            for task in tasks
+        )
+
+    def evaluate(
+        _: QueryContract, packets: tuple[EvidencePacket, ...]
+    ) -> SufficiencyEvaluation:
+        evaluation_calls.append(len(packets))
+        return SufficiencyEvaluation(
+            slot_resolutions=(
+                SlotResolution(slot_id="score", status="not_found"),
+            ),
+            report=SufficiencyReport(
+                evidence_complete=False,
+                answerable=False,
+                response_status="insufficient",
+                not_found_slot_ids=["score"],
+            ),
+            repairable_slot_ids=("score",),
+        )
+
+    def repair(
+        _: QueryContract,
+        __: SufficiencyEvaluation,
+        query_id: str,
+        round_index: int,
+    ) -> tuple[RetrievalTask, ...]:
+        repair_rounds.append(round_index)
+        return (
+            RetrievalTask(
+                task_id=f"{query_id}:repair-{round_index}:score",
+                round_id=f"repair-{round_index}",
+                query_id=query_id,
+                query="reported score",
+                target_slot_ids=["score"],
+                source_scope=ResolvedSourceScope(authorized_doc_ids=["doc-1"]),
+            ),
+        )
+
+    stages = V9ExecutionStages(
+        resolve_scope=lambda _: ResolvedSourceScope(authorized_doc_ids=["doc-1"]),
+        plan_contract=lambda *_: contract,
+        retrieve=retrieve,
+        deterministic_candidates=lambda *_: (),
+        evaluate_sufficiency=evaluate,
+        plan_repair=repair,
+        prose_curate=lambda _question, _contract, packets: packets,
+        resolve_conflicts=lambda _contract, _packets, sufficiency: ConflictStageResult(
+            sufficiency=sufficiency
+        ),
+        pack=lambda *_: SimpleNamespace(packets=(), is_packable=False),
+        generate_final=lambda *_: FinalAnswerResult(response_status="insufficient"),
+        deterministic_partial=lambda _contract, sufficiency: FinalAnswerResult(
+            response_status=sufficiency.report.response_status
+        ),
+    )
+
+    await V9ExecutionCore(stages=stages).execute(
+        _request(), runtime_context=_runtime_context()
+    )
+
+    assert repair_rounds == [1, 2]
+    assert retrieval_rounds == ["round-1", "repair-1", "repair-2"]
+    assert evaluation_calls == [0, 0, 0, 0]
 
 
 @pytest.mark.asyncio

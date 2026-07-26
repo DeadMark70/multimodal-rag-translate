@@ -280,6 +280,18 @@ class AgenticV9TracePayload(BaseModel):
     evidence_packet_ids: list[str] = Field(default_factory=list)
     slot_resolution_ids: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def require_bounded_complete_repair_rounds(self) -> AgenticV9TracePayload:
+        """Reject incomplete or unbounded repair history at persistence."""
+        if len(self.repairs) > 2:
+            raise ValueError("agentic v9 traces permit at most two repair rounds")
+        round_indexes = [repair.repair_round_index for repair in self.repairs]
+        if round_indexes != sorted(set(round_indexes)):
+            raise ValueError("repair rounds must be unique and ordered")
+        if any(repair.tasks and not repair.stop_reason for repair in self.repairs):
+            raise ValueError("executed repair rounds require a persisted stop reason")
+        return self
+
 
 class EvaluationRunSummary(BaseModel):
     """Selected-run identity and strict token projection."""

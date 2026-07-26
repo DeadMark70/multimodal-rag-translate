@@ -17,6 +17,7 @@ from data_base.agentic_v9.execution_policy import (
     ExecutionDeadline,
     V9ExecutionPolicyRuntime,
 )
+from data_base.agentic_v9.repair import MAX_REPAIR_ROUNDS
 from data_base.agentic_v9.retrieval_tasks import RetrievalTaskCompiler
 from data_base.agentic_v9.schemas import (
     EvidencePacket,
@@ -186,7 +187,7 @@ class V9ExecutionCore:
         )
         repair_round = 0
         while (
-            repair_round < contract.max_repair_rounds
+            repair_round < min(contract.max_repair_rounds, MAX_REPAIR_ROUNDS)
             and self._runtime.has_final_reserve(deadline)
         ):
             repair_tasks = tuple(

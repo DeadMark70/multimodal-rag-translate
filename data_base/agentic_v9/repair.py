@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from data_base.agentic_v9.schemas import AgenticV9Route, QueryContract, RetrievalTask
+from data_base.agentic_v9.schemas import (
+    AgenticV9Route,
+    QueryContract,
+    RequiredSlot,
+    ResolvedSourceScope,
+    RetrievalTask,
+)
 from data_base.agentic_v9.sufficiency_gate import SufficiencyEvaluation
 
 
@@ -19,6 +25,7 @@ ROUTE_REPAIR_CAPS: dict[AgenticV9Route, int] = {
 """Frozen repair-round caps from the v9 evidence-first design."""
 
 MAX_REPAIR_QUERIES_PER_ROUND = 2
+MAX_REPAIR_ROUNDS = 2
 
 
 class RepairPlan(BaseModel):
@@ -28,6 +35,7 @@ class RepairPlan(BaseModel):
 
     repair_round_index: int = Field(ge=1)
     tasks: list[RetrievalTask] = Field(default_factory=list, max_length=2)
+    resulting_evidence_ids: list[str] = Field(default_factory=list)
     stop_reason: str | None = None
 
 
@@ -60,14 +68,25 @@ def build_repair_plan(
             stop_reason="final_budget_protected",
         )
 
-    cap = min(ROUTE_REPAIR_CAPS[contract.route], contract.max_repair_rounds)
+    cap = min(
+        ROUTE_REPAIR_CAPS[contract.route],
+        contract.max_repair_rounds,
+        MAX_REPAIR_ROUNDS,
+    )
     if repair_round_index > cap:
         return RepairPlan(
             repair_round_index=repair_round_index,
             stop_reason="repair_round_cap_reached",
         )
 
-    missing_slot_ids = set(sufficiency.repairable_slot_ids)
+    not_found_slot_ids = {
+        resolution.slot_id
+        for resolution in sufficiency.slot_resolutions
+        if resolution.status == "not_found"
+    }
+    missing_slot_ids = set(sufficiency.repairable_slot_ids).intersection(
+        not_found_slot_ids
+    )
     missing_slots = [
         slot for slot in contract.required_slots if slot.required and slot.slot_id in missing_slot_ids
     ]
@@ -77,33 +96,119 @@ def build_repair_plan(
             stop_reason="no_repairable_slots",
         )
 
-    tasks = [
-        RetrievalTask(
-            task_id=f"{normalized_query_id}:repair-{repair_round_index}:{slot.slot_id}",
-            round_id=f"repair-{repair_round_index}",
-            query_id=normalized_query_id,
-            query=_repair_query(contract=contract, slot_id=slot.slot_id),
-            target_slot_ids=[slot.slot_id],
-            source_scope=scope,
-            source_group_id=f"repair-{repair_round_index}",
-            locator_hints=_unique(slot.locator_hints or contract.locator_hints),
-            graph_policy=contract.graph_policy or "never",
-            visual_required=contract.visual_requested,
+    grouped_slots: dict[
+        tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]],
+        list[RequiredSlot],
+    ] = {}
+    for slot in missing_slots:
+        authorized_doc_ids = _authorized_doc_ids_for_slot(slot, scope)
+        if not authorized_doc_ids:
+            continue
+        locators = _unique(slot.locator_hints or contract.locator_hints)
+        terms = _unique(slot.entity_ids or contract.entities)
+        key = (tuple(authorized_doc_ids), tuple(locators), tuple(terms))
+        grouped_slots.setdefault(key, []).append(slot)
+
+    tasks: list[RetrievalTask] = []
+    for index, ((doc_ids, locators, _terms), slots) in enumerate(
+        grouped_slots.items(), start=1
+    ):
+        if len(tasks) >= MAX_REPAIR_QUERIES_PER_ROUND:
+            break
+        source_group_id = f"repair-{repair_round_index}:source-group-{index}"
+        tasks.append(
+            RetrievalTask(
+                task_id=f"{normalized_query_id}:{source_group_id}",
+                round_id=f"repair-{repair_round_index}",
+                query_id=normalized_query_id,
+                query=_repair_query_for_slots(contract=contract, slots=slots),
+                target_slot_ids=[slot.slot_id for slot in slots],
+                source_scope=_scope_for_docs(scope, list(doc_ids)),
+                source_group_id=source_group_id,
+                locator_hints=list(locators),
+                graph_policy=contract.graph_policy or "never",
+                visual_required=any(
+                    slot.visual_policy == "required" for slot in slots
+                ),
+            )
         )
-        for slot in missing_slots[:MAX_REPAIR_QUERIES_PER_ROUND]
-    ]
+    if not tasks:
+        return RepairPlan(
+            repair_round_index=repair_round_index,
+            stop_reason="no_authorized_repair_groups",
+        )
     return RepairPlan(repair_round_index=repair_round_index, tasks=tasks)
 
 
 def _repair_query(*, contract: QueryContract, slot_id: str) -> str:
     slot = next(slot for slot in contract.required_slots if slot.slot_id == slot_id)
-    entities = slot.entity_ids or contract.entities
-    locators = slot.locator_hints or contract.locator_hints
-    parts = [*entities, slot.description, *locators]
+    return _repair_query_for_slots(contract=contract, slots=[slot])
+
+
+def _repair_query_for_slots(
+    *, contract: QueryContract, slots: list[RequiredSlot]
+) -> str:
+    parts: list[str] = []
+    for slot in slots:
+        parts.extend(slot.source_name_hints)
+        parts.extend(slot.entity_ids or contract.entities)
+        parts.append(slot.description)
+        parts.extend(slot.locator_hints or contract.locator_hints)
     query = " ".join(_unique(parts))
     if not query:
-        raise ValueError(f"repair slot has no slot, entity, or locator content: {slot_id}")
+        slot_ids = ", ".join(slot.slot_id for slot in slots)
+        raise ValueError(
+            f"repair slots have no slot, entity, or locator content: {slot_ids}"
+        )
     return query
+
+
+def _authorized_doc_ids_for_slot(
+    slot: RequiredSlot, scope: ResolvedSourceScope
+) -> list[str]:
+    slot_ids = set(slot.authorized_source_doc_ids)
+    named_ids = {
+        doc_id
+        for name in slot.source_name_hints
+        for doc_id in scope.source_name_to_doc_ids.get(name, ())
+    }
+    if not slot_ids and not named_ids:
+        return list(scope.authorized_doc_ids)
+    candidates = slot_ids
+    if named_ids:
+        candidates = candidates.intersection(named_ids) if candidates else named_ids
+    return [
+        doc_id for doc_id in scope.authorized_doc_ids if doc_id in candidates
+    ]
+
+
+def _scope_for_docs(
+    scope: ResolvedSourceScope, doc_ids: list[str]
+) -> ResolvedSourceScope:
+    authorized = [doc_id for doc_id in scope.authorized_doc_ids if doc_id in doc_ids]
+    authorized_set = set(authorized)
+    source_mapping = {
+        name: [
+            doc_id
+            for doc_id in mapped_doc_ids
+            if doc_id in authorized_set
+        ]
+        for name, mapped_doc_ids in scope.source_name_to_doc_ids.items()
+        if any(doc_id in authorized_set for doc_id in mapped_doc_ids)
+    }
+    return ResolvedSourceScope(
+        requested_doc_ids=[
+            doc_id for doc_id in scope.requested_doc_ids if doc_id in authorized_set
+        ],
+        requested_source_names=[
+            name for name in scope.requested_source_names if name in source_mapping
+        ],
+        resolved_doc_ids=[
+            doc_id for doc_id in scope.resolved_doc_ids if doc_id in authorized_set
+        ],
+        authorized_doc_ids=authorized,
+        source_name_to_doc_ids=source_mapping,
+    )
 
 
 def _unique(values: list[str]) -> list[str]:
@@ -112,6 +217,7 @@ def _unique(values: list[str]) -> list[str]:
 
 __all__ = [
     "MAX_REPAIR_QUERIES_PER_ROUND",
+    "MAX_REPAIR_ROUNDS",
     "ROUTE_REPAIR_CAPS",
     "RepairPlan",
     "build_repair_plan",

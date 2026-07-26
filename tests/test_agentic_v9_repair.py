@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from data_base.agentic_v9.repair import build_repair_plan
 from data_base.agentic_v9.schemas import (
     QueryContract,
     RequiredSlot,
     ResolvedSourceScope,
+    SlotResolution,
+    SufficiencyReport,
 )
-from data_base.agentic_v9.sufficiency_gate import evaluate_sufficiency
+from data_base.agentic_v9.sufficiency_gate import (
+    SufficiencyEvaluation,
+    evaluate_sufficiency,
+)
+from evaluation.trace_schemas import AgenticV9TracePayload
 
 
 def _contract(*, route: str = "exact_structured", repair_rounds: int = 1) -> QueryContract:
@@ -107,3 +116,146 @@ def test_single_lookup_never_repairs_even_when_a_slot_is_missing() -> None:
 
     assert plan.tasks == []
     assert plan.stop_reason == "repair_round_cap_reached"
+
+
+def test_atomic_repair_groups_only_required_not_found_slots_by_constraints() -> None:
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["gepar", "odes", "ukan"],
+        resolved_doc_ids=["gepar", "odes", "ukan"],
+        authorized_doc_ids=["gepar", "odes", "ukan"],
+        source_name_to_doc_ids={
+            "GEPAR3D.pdf": ["gepar"],
+            "ODES.pdf": ["odes"],
+            "Implicit-U-KAN2.0.pdf": ["ukan"],
+        },
+    )
+    slots = [
+        RequiredSlot(
+            slot_id="S1",
+            description="already supported",
+            authorized_source_doc_ids=["gepar"],
+        ),
+        RequiredSlot(
+            slot_id="S2",
+            description="conflicted value",
+            authorized_source_doc_ids=["odes"],
+        ),
+        RequiredSlot(
+            slot_id="S3",
+            description="explicitly unavailable appendix",
+            authorized_source_doc_ids=["odes"],
+        ),
+        RequiredSlot(
+            slot_id="S4",
+            description="U-KAN metric",
+            entity_ids=["Implicit-U-KAN2.0"],
+            source_name_hints=["Implicit-U-KAN2.0.pdf"],
+            authorized_source_doc_ids=["ukan"],
+            locator_hints=["Table 3"],
+        ),
+        RequiredSlot(
+            slot_id="S5",
+            description="proposed method metric",
+            entity_ids=["Implicit-U-KAN2.0"],
+            source_name_hints=["Implicit-U-KAN2.0.pdf"],
+            authorized_source_doc_ids=["ukan"],
+            locator_hints=["Table 3"],
+        ),
+        RequiredSlot(
+            slot_id="S6",
+            description="theorem boundary",
+            entity_ids=["Implicit-U-KAN2.0"],
+            source_name_hints=["Implicit-U-KAN2.0.pdf"],
+            authorized_source_doc_ids=["ukan"],
+            locator_hints=["Theorem 1"],
+        ),
+    ]
+    contract = QueryContract(
+        contract_version="2",
+        route="multi_document_exact",
+        intent="atomic repair",
+        required_slots=slots,
+        max_repair_rounds=5,
+        resolved_source_scope=scope,
+    )
+    resolutions = (
+        SlotResolution(
+            slot_id="S1", status="supported", evidence_ids=["evidence-supported"]
+        ),
+        SlotResolution(
+            slot_id="S2",
+            status="conflicted",
+            evidence_ids=["evidence-a", "evidence-b"],
+        ),
+        SlotResolution(slot_id="S3", status="explicitly_unavailable"),
+        SlotResolution(slot_id="S4", status="not_found"),
+        SlotResolution(slot_id="S5", status="not_found"),
+        SlotResolution(slot_id="S6", status="not_found"),
+    )
+    sufficiency = SufficiencyEvaluation(
+        slot_resolutions=resolutions,
+        report=SufficiencyReport(
+            evidence_complete=False,
+            answerable=True,
+            response_status="qualified_partial",
+            supported_slot_ids=["S1"],
+            conflicted_slot_ids=["S2"],
+            explicitly_unavailable_slot_ids=["S3"],
+            not_found_slot_ids=["S4", "S5", "S6"],
+        ),
+        repairable_slot_ids=("S1", "S2", "S3", "S4", "S5", "S6"),
+    )
+
+    plan = build_repair_plan(
+        contract=contract,
+        sufficiency=sufficiency,
+        query_id="Q16",
+        repair_round_index=1,
+        final_budget_available=True,
+    )
+
+    assert [task.target_slot_ids for task in plan.tasks] == [["S4", "S5"], ["S6"]]
+    assert all(task.source_scope.authorized_doc_ids == ["ukan"] for task in plan.tasks)
+    assert [task.locator_hints for task in plan.tasks] == [
+        ["Table 3"],
+        ["Theorem 1"],
+    ]
+    assert "U-KAN metric" in plan.tasks[0].query
+    assert "proposed method metric" in plan.tasks[0].query
+    assert "theorem boundary" in plan.tasks[1].query
+    assert all(
+        excluded not in task.target_slot_ids
+        for task in plan.tasks
+        for excluded in ("S1", "S2", "S3")
+    )
+    assert plan.resulting_evidence_ids == []
+
+
+def test_repair_has_an_absolute_two_round_cap() -> None:
+    contract = _contract(route="multi_document_exact", repair_rounds=5)
+    sufficiency = evaluate_sufficiency(contract, [])
+
+    plan = build_repair_plan(
+        contract=contract,
+        sufficiency=sufficiency,
+        query_id="query-absolute-cap",
+        repair_round_index=3,
+        final_budget_available=True,
+    )
+
+    assert plan.tasks == []
+    assert plan.stop_reason == "repair_round_cap_reached"
+
+
+def test_persisted_trace_rejects_executed_repair_without_stop_reason() -> None:
+    contract = _contract()
+    plan = build_repair_plan(
+        contract=contract,
+        sufficiency=evaluate_sufficiency(contract, []),
+        query_id="query-trace",
+        repair_round_index=1,
+        final_budget_available=True,
+    )
+
+    with pytest.raises(ValidationError, match="persisted stop reason"):
+        AgenticV9TracePayload(repairs=[plan])

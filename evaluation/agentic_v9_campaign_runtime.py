@@ -39,7 +39,12 @@ from data_base.agentic_v9.execution_policy import (
     V9ExecutionPolicyRuntime,
 )
 from data_base.agentic_v9.final_answer import generate_final_answer
-from data_base.agentic_v9.repair import build_repair_plan
+from data_base.agentic_v9.repair import (
+    MAX_REPAIR_ROUNDS,
+    ROUTE_REPAIR_CAPS,
+    RepairPlan,
+    build_repair_plan,
+)
 from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
@@ -353,6 +358,11 @@ class AgenticV9CampaignRuntime:
             if not state["visual_packets_emitted"]:
                 packets.extend(state["visual_packets"])
                 state["visual_packets_emitted"] = True
+            _record_repair_evidence(
+                repairs=state["repairs"],
+                results=results,
+                packets=packets,
+            )
             state["evidence_packets"].extend(packets)
             return tuple(packets)
 
@@ -381,6 +391,11 @@ class AgenticV9CampaignRuntime:
                     }
                 )
             state["final_slot_resolutions"] = evaluation.slot_resolutions
+            _record_repair_stop_reason(
+                repairs=state["repairs"],
+                contract=contract,
+                evaluation=evaluation,
+            )
             return evaluation
 
         def plan_repair(
@@ -1266,6 +1281,58 @@ def _evidence_packets_for_results(
                 )
             )
     return packets
+
+
+def _record_repair_evidence(
+    *,
+    repairs: list[RepairPlan],
+    results: tuple[TaskRetrievalResult, ...],
+    packets: list[EvidencePacket],
+) -> None:
+    """Attach evidence produced by a repair round to its durable trace record."""
+    result_task_ids = {result.task_id for result in results}
+    for index in range(len(repairs) - 1, -1, -1):
+        repair = repairs[index]
+        repair_task_ids = {task.task_id for task in repair.tasks}
+        if not result_task_ids.intersection(repair_task_ids):
+            continue
+        evidence_ids = [
+            packet.evidence_id
+            for packet in packets
+            if packet.task_id in repair_task_ids
+        ]
+        repairs[index] = repair.model_copy(
+            update={"resulting_evidence_ids": list(dict.fromkeys(evidence_ids))}
+        )
+        return
+
+
+def _record_repair_stop_reason(
+    *,
+    repairs: list[RepairPlan],
+    contract: QueryContract,
+    evaluation: SufficiencyEvaluation,
+) -> None:
+    """Persist the post-sufficiency decision for the latest executed repair."""
+    if not repairs or not repairs[-1].tasks:
+        return
+    repair = repairs[-1]
+    if evaluation.report.evidence_complete:
+        stop_reason = "evidence_complete"
+    elif not evaluation.repairable_slot_ids:
+        stop_reason = "no_repairable_slots"
+    else:
+        cap = min(
+            contract.max_repair_rounds,
+            ROUTE_REPAIR_CAPS[contract.route],
+            MAX_REPAIR_ROUNDS,
+        )
+        stop_reason = (
+            "repair_round_cap_reached"
+            if repair.repair_round_index >= cap
+            else "continue_repair"
+        )
+    repairs[-1] = repair.model_copy(update={"stop_reason": stop_reason})
 
 
 def _slot_ids_authorized_for_doc(

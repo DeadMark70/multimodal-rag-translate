@@ -1028,6 +1028,125 @@ async def test_text_evidence_outside_atomic_slot_authorized_ids_cannot_support_i
 
 
 @pytest.mark.asyncio
+async def test_q16_repair_trace_persists_constraints_evidence_and_stop_reason(
+    monkeypatch,
+) -> None:
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["odes", "ukan"],
+        requested_source_names=["ODES.pdf", "Implicit-U-KAN2.0.pdf"],
+        resolved_doc_ids=["odes", "ukan"],
+        authorized_doc_ids=["odes", "ukan"],
+        source_name_to_doc_ids={
+            "ODES.pdf": ["odes"],
+            "Implicit-U-KAN2.0.pdf": ["ukan"],
+        },
+    )
+    contract = QueryContract(
+        contract_version="2",
+        route="multi_document_exact",
+        intent="retrieve Q16 atomic facts",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S3",
+                description="Transcribe the ODES equation.",
+                entity_ids=["ODES"],
+                source_name_hints=["ODES.pdf"],
+                authorized_source_doc_ids=["odes"],
+                locator_hints=["Equation 2"],
+                expected_answer_type="equation",
+            ),
+            RequiredSlot(
+                slot_id="S5",
+                description="Report the U-KAN metric.",
+                entity_ids=["Implicit-U-KAN2.0"],
+                source_name_hints=["Implicit-U-KAN2.0.pdf"],
+                authorized_source_doc_ids=["ukan"],
+                locator_hints=["Table 3"],
+                expected_answer_type="number",
+            ),
+            RequiredSlot(
+                slot_id="S7",
+                description="State the theorem boundary.",
+                entity_ids=["Implicit-U-KAN2.0"],
+                source_name_hints=["Implicit-U-KAN2.0.pdf"],
+                authorized_source_doc_ids=["ukan"],
+                locator_hints=["Theorem 1"],
+            ),
+        ],
+        max_retrieval_rounds=1,
+        max_repair_rounds=2,
+        max_llm_calls=3,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+        slot_plan_status="complete",
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    calls_by_locator: dict[str, int] = {}
+    retrieval_calls: list[tuple[str, list[str]]] = []
+
+    async def retrieve_documents(_user_id, query, doc_ids):
+        retrieval_calls.append((query, list(doc_ids)))
+        locator = next(
+            value for value in ("Equation 2", "Table 3", "Theorem 1") if value in query
+        )
+        calls_by_locator[locator] = calls_by_locator.get(locator, 0) + 1
+        if locator in {"Equation 2", "Theorem 1"} and calls_by_locator[locator] == 1:
+            return []
+        doc_id = doc_ids[0]
+        return [
+            Document(
+                page_content=f"Located evidence for {locator}.",
+                metadata={
+                    "doc_id": doc_id,
+                    "chunk_id": f"chunk-{locator}",
+                    "page_number": 2,
+                },
+            )
+        ]
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract",
+        admission,
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve_documents,
+        provider_factory=lambda _purpose: _Provider(),
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="Gold answers are SECRET-ODES and SECRET-THEOREM.",
+        user_id="user-a",
+        authorized_doc_ids=["odes", "ukan"],
+        setup_snapshot={**_setup(), "max_output_tokens": 8192},
+        trace_id="Q16-repair-trace",
+    )
+
+    repair = result.agent_trace["agentic_v9"]["repairs"][0]
+    assert repair["repair_round_index"] == 1
+    assert [task["target_slot_ids"] for task in repair["tasks"]] == [
+        ["S3"],
+        ["S7"],
+    ]
+    assert [task["source_scope"]["authorized_doc_ids"] for task in repair["tasks"]] == [
+        ["odes"],
+        ["ukan"],
+    ]
+    assert [task["locator_hints"] for task in repair["tasks"]] == [
+        ["Equation 2"],
+        ["Theorem 1"],
+    ]
+    assert repair["resulting_evidence_ids"]
+    assert repair["stop_reason"] == "evidence_complete"
+    repair_queries = [query for query, _doc_ids in retrieval_calls[3:]]
+    assert all("SECRET-ODES" not in query for query in repair_queries)
+    assert all("SECRET-THEOREM" not in query for query in repair_queries)
+
+
+@pytest.mark.asyncio
 async def test_invalid_final_provider_output_uses_deterministic_sections() -> None:
     provider = _InvalidProvider()
     runtime = AgenticV9CampaignRuntime(
