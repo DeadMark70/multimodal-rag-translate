@@ -411,6 +411,55 @@ async def test_agent_behavior_projects_materialized_v9_evidence_not_legacy_step_
 
 
 @pytest.mark.asyncio
+async def test_agent_behavior_projects_v1_contract_as_non_atomic_na(
+    research_service,
+) -> None:
+    await _campaign("agent-behavior-v1-contract", ["agentic"])
+    result_id = await _result(
+        "agent-behavior-v1-contract", "agentic", "attempt-v1-contract"
+    )
+    await _official_scope(
+        "agent-behavior-v1-contract", result_id, "attempt-v1-contract"
+    )
+
+    class Observability:
+        async def list_v9_attempt_materializations_for_campaign(self, campaign_id):
+            return {
+                result_id: EvaluationV9AttemptMaterialization(
+                    attempt_id="attempt-v1-contract",
+                    run_id=result_id,
+                    campaign_id=campaign_id,
+                    trace_payload={
+                        "query_contract": {
+                            "contract_version": "1",
+                            "route": "single_lookup",
+                            "intent": "legacy",
+                            "required_slots": [
+                                {"slot_id": "fact", "description": "generic fact"}
+                            ],
+                        }
+                    },
+                )
+            }
+
+        async def list_v9_behavior_counts_for_campaign(self, campaign_id):
+            return {result_id: {}}
+
+        async def list_graph_events_for_campaign(self, campaign_id):
+            return {}
+
+    research_service._observability = Observability()
+
+    response = await research_service.get_agent_behavior(
+        user_id="user-1", campaign_id="agent-behavior-v1-contract"
+    )
+
+    assert response.rows[0].v9.contract_version == "1"
+    assert response.rows[0].v9.slot_semantics == "legacy_generic"
+    assert response.rows[0].v9.atomic_completeness is None
+
+
+@pytest.mark.asyncio
 async def test_agent_behavior_projects_failed_v9_reason_without_endpoint_failure(
     research_service,
 ) -> None:

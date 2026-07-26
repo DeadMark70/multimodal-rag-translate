@@ -23,7 +23,7 @@ from evaluation import db as evaluation_db
 from main import app
 
 
-def _run(*, run_id: str, mode: str, version: str, complete: bool = True, golden: bool = True, used_evidence: bool = True, accounting: str = "complete") -> ReleaseRun:
+def _run(*, run_id: str, mode: str, version: str, complete: bool = True, golden: bool = True, used_evidence: bool = True, accounting: str = "complete", contract_version: str | None = "2", slot_plan_status: str | None = "complete") -> ReleaseRun:
     return ReleaseRun(
         run_id=run_id,
         campaign_id="campaign",
@@ -59,6 +59,8 @@ def _run(*, run_id: str, mode: str, version: str, complete: bool = True, golden:
         latency_ms=1000.0,
         quality_score=0.8,
         category="retrieval",
+        contract_version=contract_version,
+        slot_plan_status=slot_plan_status,
     )
 
 
@@ -111,6 +113,46 @@ def test_release_metrics_never_substitute_zero_for_partial_accounting() -> None:
     assert "partial_accounting" in report.gate_reasons
     assert report.required_slot_coverage.value is None
     assert report.required_slot_coverage.reason == "release_gate_blocked:partial_accounting"
+
+
+def test_release_metrics_fail_closed_for_degraded_v2_slot_plan() -> None:
+    report = derive_release_metrics(
+        benchmark_id="bench-1",
+        runs=[
+            _run(run_id="naive", mode="naive", version="v8"),
+            _run(run_id="v8", mode="agentic", version="v8"),
+            _run(
+                run_id="v9",
+                mode="agentic",
+                version="v9",
+                slot_plan_status="degraded",
+            ),
+        ],
+    )
+
+    assert report.comparable is False
+    assert "degraded_v2_slot_plan" in report.gate_reasons
+    assert report.required_slot_coverage.value is None
+
+
+def test_release_metrics_report_atomic_completeness_na_for_v1_contract() -> None:
+    report = derive_release_metrics(
+        benchmark_id="bench-1",
+        runs=[
+            _run(run_id="naive", mode="naive", version="v8"),
+            _run(run_id="v8", mode="agentic", version="v8"),
+            _run(
+                run_id="v9",
+                mode="agentic",
+                version="v9",
+                contract_version="1",
+                slot_plan_status=None,
+            ),
+        ],
+    )
+
+    assert report.required_slot_coverage.value is None
+    assert report.required_slot_coverage.reason == "atomic_completeness_not_applicable"
 
 
 @pytest.fixture

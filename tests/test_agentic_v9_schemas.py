@@ -19,6 +19,8 @@ from data_base.agentic_v9.schemas import (
     QueryContract,
     RagRetrievalResult,
     ResolvedSourceScope,
+    RequiredSlot,
+    RouteDecision,
     SlotResolution,
     SourceLocator,
     SupportedFinding,
@@ -29,7 +31,11 @@ from data_base.agentic_v9.schemas import (
     V9ExecutionRequest,
     default_graph_policy,
 )
-from evaluation.trace_schemas import AgentTraceDetail, summarize_agent_trace
+from evaluation.trace_schemas import (
+    AgentTraceDetail,
+    EvaluationRoutingDecision,
+    summarize_agent_trace,
+)
 
 
 def _evidence_packet(*, support_type: str = "direct") -> EvidencePacket:
@@ -243,6 +249,87 @@ def test_query_contract_rejects_a_runtime_budget_without_provider_call_budget() 
             max_llm_calls=0,
             runtime_token_budget=1,
         )
+
+
+def test_query_contract_v2_carries_atomic_slot_and_route_provenance() -> None:
+    route_decision = RouteDecision(
+        selected_route="multi_document_exact",
+        decision_source="deterministic",
+        matched_rules=["numbered_subquestions", "multiple_named_sources"],
+        candidate_routes=["multi_document_exact", "exact_structured"],
+        route_reason="Multiple exact requirements span named sources.",
+        planner_call_used=False,
+        confidence=1.0,
+    )
+    slot = RequiredSlot(
+        slot_id="S1",
+        description="Retrieve the reported metric.",
+        source_name_hints=["paper.pdf"],
+        authorized_source_doc_ids=["doc-1"],
+        expected_answer_type="number",
+        depends_on_slot_ids=[],
+        visual_policy="preferred",
+    )
+
+    contract = QueryContract(
+        contract_version="2",
+        route="multi_document_exact",
+        intent="Resolve each requested fact.",
+        required_slots=[slot],
+        route_decision=route_decision,
+        slot_plan_status="complete",
+    )
+
+    assert contract.slot_semantics == "atomic"
+    assert contract.slot_plan_status == "complete"
+    assert contract.route_decision == route_decision
+    assert contract.required_slots[0].model_dump() == {
+        "slot_id": "S1",
+        "description": "Retrieve the reported metric.",
+        "required": True,
+        "entity_ids": [],
+        "locator_hints": [],
+        "source_name_hints": ["paper.pdf"],
+        "authorized_source_doc_ids": ["doc-1"],
+        "expected_answer_type": "number",
+        "depends_on_slot_ids": [],
+        "visual_policy": "preferred",
+    }
+
+
+def test_query_contract_v1_projects_legacy_generic_atomic_completeness_na() -> None:
+    contract = QueryContract(
+        route="single_lookup",
+        intent="Read the legacy generic fact.",
+        required_slots=[RequiredSlot(slot_id="fact", description="generic fact")],
+    )
+
+    assert contract.contract_version == "1"
+    assert contract.slot_semantics == "legacy_generic"
+    assert contract.slot_plan_status is None
+    assert contract.atomic_completeness is None
+
+
+def test_actual_routing_trace_has_first_class_route_provenance() -> None:
+    decision = EvaluationRoutingDecision(
+        routing_decision_id="route-1",
+        run_id="run-1",
+        campaign_id="campaign-1",
+        selected_mode="agentic",
+        analysis_type="actual",
+        decision_source="safe_fallback",
+        candidate_routes=["multi_hop", "exact_structured"],
+        matched_rules=["mixed_requirements"],
+        fallback_reason="planner_timeout",
+        reason="Use the bounded safe route.",
+        confidence=0.25,
+        created_at=datetime.now(timezone.utc),
+    )
+
+    assert decision.decision_source == "safe_fallback"
+    assert decision.candidate_routes == ["multi_hop", "exact_structured"]
+    assert decision.matched_rules == ["mixed_requirements"]
+    assert decision.fallback_reason == "planner_timeout"
 
 
 @pytest.mark.parametrize("extra_field", ["user_id", "authorized_doc_ids"])

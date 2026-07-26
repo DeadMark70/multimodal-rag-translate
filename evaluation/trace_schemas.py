@@ -168,6 +168,12 @@ class EvaluationRoutingDecision(BaseModel):
     span_id: Optional[str] = None
     selected_mode: CampaignMode
     analysis_type: Literal["retrospective", "actual"] = "retrospective"
+    decision_source: Literal[
+        "deterministic", "llm_planner", "safe_fallback"
+    ] | None = None
+    candidate_routes: list[str] = Field(default_factory=list)
+    matched_rules: list[str] = Field(default_factory=list)
+    fallback_reason: Optional[str] = None
     confidence: Optional[float] = None
     reason: Optional[str] = None
     payload: dict[str, Any] = Field(default_factory=dict)

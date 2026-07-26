@@ -370,6 +370,10 @@ class V9AgentBehaviorMetrics(BaseModel):
     """Durable evidence-first execution observations for one v9 run."""
 
     route: str | None = None
+    contract_version: str | None = None
+    slot_plan_status: str | None = None
+    slot_semantics: str | None = None
+    atomic_completeness: bool | None = None
     graph_policy: str | None = None
     visual_required: bool | None = None
     evidence_extraction_required: bool | None = None

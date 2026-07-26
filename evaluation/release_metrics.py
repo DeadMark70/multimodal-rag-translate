@@ -113,6 +113,8 @@ class ReleaseRun:
     latency_ms: float | None
     quality_score: float | None
     category: str | None
+    contract_version: str | None = None
+    slot_plan_status: str | None = None
 
     def benchmark_run(self) -> BenchmarkRun:
         return BenchmarkRun(
@@ -157,6 +159,13 @@ def derive_release_metrics(*, benchmark_id: str, runs: list[ReleaseRun]) -> Rele
             reasons.add("required_ragas_incomplete")
         if run.accounting_status != "complete" or run.phase_attribution_status != "complete":
             reasons.add("partial_accounting")
+        if (
+            run.agentic_execution_version == "v9"
+            and not run.shadow_evaluation_policy
+            and run.contract_version == "2"
+            and run.slot_plan_status == "degraded"
+        ):
+            reasons.add("degraded_v2_slot_plan")
     if any(run.runtime_tokens is None for run in official_runs):
         reasons.add("runtime_token_instrumentation_missing")
     if any(run.latency_ms is None for run in official_runs):
@@ -218,13 +227,23 @@ def _measured_report(
     runs: list[ReleaseRun],
     benchmark_runs: list[BenchmarkRun],
 ) -> ReleaseMetricsReport:
-    evidence_runs = [run for run in runs if run.agentic_execution_version == "v9" and not run.shadow_evaluation_policy]
-    report.required_slot_coverage = _ratio_metric(
-        sum(run.supported_slot_count or 0 for run in evidence_runs),
-        sum(run.required_slot_count or 0 for run in evidence_runs),
-        "required_slot_instrumentation_missing",
-        bool(evidence_runs) and all(run.required_slot_count is not None and run.supported_slot_count is not None for run in evidence_runs),
-    )
+    all_evidence_runs = [
+        run
+        for run in runs
+        if run.agentic_execution_version == "v9" and not run.shadow_evaluation_policy
+    ]
+    evidence_runs = [run for run in all_evidence_runs if run.contract_version == "2"]
+    if all_evidence_runs and not evidence_runs:
+        report.required_slot_coverage = ReleaseMetric(
+            reason="atomic_completeness_not_applicable"
+        )
+    else:
+        report.required_slot_coverage = _ratio_metric(
+            sum(run.supported_slot_count or 0 for run in evidence_runs),
+            sum(run.required_slot_count or 0 for run in evidence_runs),
+            "required_slot_instrumentation_missing",
+            bool(evidence_runs) and all(run.required_slot_count is not None and run.supported_slot_count is not None for run in evidence_runs),
+        )
     report.important_unsupported_claim_rate = _ratio_metric(
         sum(run.unsupported_important_claim_count or 0 for run in evidence_runs),
         sum(run.important_claim_count or 0 for run in evidence_runs),
@@ -538,6 +557,8 @@ class ReleaseMetricsService:
             latency_ms=result.total_latency_ms,
             quality_score=score_map.get("answer_correctness"),
             category=result.category,
+            contract_version=contract.contract_version if contract else None,
+            slot_plan_status=contract.slot_plan_status if contract else None,
         )
 
     @staticmethod

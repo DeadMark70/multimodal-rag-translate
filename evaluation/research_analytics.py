@@ -775,6 +775,19 @@ def _v9_behavior_metrics(*, trace_payload: dict, counts: dict, graph_events: lis
         )
     return V9AgentBehaviorMetrics(
         route=contract.get("route"),
+        contract_version=str(contract.get("contract_version") or "1"),
+        slot_plan_status=contract.get("slot_plan_status"),
+        slot_semantics=(
+            "atomic"
+            if str(contract.get("contract_version") or "1") == "2"
+            else "legacy_generic"
+        ),
+        atomic_completeness=(
+            bool(sufficiency.get("evidence_complete"))
+            if str(contract.get("contract_version") or "1") == "2"
+            and isinstance(sufficiency.get("evidence_complete"), bool)
+            else None
+        ),
         graph_policy=graph_policy,
         visual_required=visual_required if isinstance(visual_required, bool) else None,
         evidence_extraction_required=contract.get("evidence_extraction_required") if isinstance(contract.get("evidence_extraction_required"), bool) else None,

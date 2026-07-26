@@ -18,6 +18,18 @@ AgenticV9Route = Literal[
     "graph_relational",
 ]
 GraphPolicy = Literal["never", "locator_fallback", "required_locator"]
+DecisionSource = Literal["deterministic", "llm_planner", "safe_fallback"]
+SlotPlanStatus = Literal["complete", "degraded"]
+SlotSemantics = Literal["atomic", "legacy_generic"]
+VisualPolicy = Literal["never", "preferred", "required"]
+ExpectedAnswerType = Literal[
+    "number",
+    "equation",
+    "definition",
+    "comparison",
+    "explanation",
+    "text",
+]
 ResponseStatus = Literal["complete", "qualified_partial", "insufficient"]
 EvidenceSupportType = Literal[
     "direct", "calculated", "scope_constraint", "contradictory"
@@ -54,6 +66,24 @@ class RequiredSlot(BaseModel):
     required: bool = True
     entity_ids: list[str] = Field(default_factory=list)
     locator_hints: list[str] = Field(default_factory=list)
+    source_name_hints: list[str] = Field(default_factory=list)
+    authorized_source_doc_ids: list[str] = Field(default_factory=list)
+    expected_answer_type: ExpectedAnswerType = "text"
+    depends_on_slot_ids: list[str] = Field(default_factory=list)
+    visual_policy: VisualPolicy = "never"
+
+
+class RouteDecision(BaseModel):
+    """Auditable provenance for the route selected by contract planning."""
+
+    selected_route: AgenticV9Route
+    decision_source: DecisionSource
+    matched_rules: list[str] = Field(default_factory=list)
+    candidate_routes: list[AgenticV9Route] = Field(default_factory=list)
+    route_reason: str = Field(min_length=1)
+    planner_call_used: bool = False
+    fallback_reason: str | None = None
+    confidence: float = Field(ge=0, le=1)
 
 
 class ResolvedSourceScope(BaseModel):
@@ -84,6 +114,10 @@ class QueryContract(BaseModel):
     runtime_token_budget: int = Field(default=0, ge=0)
     resolved_source_scope: ResolvedSourceScope | None = None
     strategy_tier: str | None = None
+    route_decision: RouteDecision | None = None
+    slot_plan_status: SlotPlanStatus | None = None
+    slot_semantics: SlotSemantics | None = None
+    atomic_completeness: bool | None = None
 
     @model_validator(mode="after")
     def apply_route_graph_policy(self) -> QueryContract:
@@ -92,6 +126,13 @@ class QueryContract(BaseModel):
             self.graph_policy = default_graph_policy(self.route)
         if self.runtime_token_budget and not self.max_llm_calls:
             raise ValueError("runtime_token_budget requires max_llm_calls")
+        if self.contract_version == "1":
+            self.slot_semantics = "legacy_generic"
+            self.atomic_completeness = None
+        elif self.contract_version == "2":
+            self.slot_semantics = "atomic"
+            if self.slot_plan_status is None:
+                self.slot_plan_status = "complete"
         return self
 
 
