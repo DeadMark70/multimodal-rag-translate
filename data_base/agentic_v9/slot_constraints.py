@@ -90,56 +90,6 @@ _NUMERIC_CONDITION_CUES = {
     "version",
     "year",
 }
-_FOLLOWING_NUMERIC_UNIT_PATTERN = re.compile(
-    r"\s*(?:[-–—]\s*|\(\s*)?(%|[a-z]+)",
-    re.IGNORECASE,
-)
-_NUMERIC_UNIT_ALIASES = {
-    "case": "case",
-    "cases": "case",
-    "epoch": "epoch",
-    "epochs": "epoch",
-    "figure": "figure",
-    "figures": "figure",
-    "fold": "fold",
-    "folds": "fold",
-    "image": "image",
-    "images": "image",
-    "iteration": "iteration",
-    "iterations": "iteration",
-    "page": "page",
-    "pages": "page",
-    "patient": "patient",
-    "patients": "patient",
-    "percent": "percent",
-    "percentage": "percent",
-    "percentages": "percent",
-    "pct": "percent",
-    "run": "run",
-    "runs": "run",
-    "sample": "sample",
-    "samples": "sample",
-    "seed": "seed",
-    "seeds": "seed",
-    "subject": "subject",
-    "subjects": "subject",
-    "table": "table",
-    "tables": "table",
-    "year": "year",
-    "years": "year",
-}
-_PERCENT_RESULT_TERMS = {
-    "accuracy",
-    "percentage",
-    "percent",
-    "rate",
-    "result",
-    "score",
-    "value",
-}
-_COUNT_SHAPE_TERMS = {"count", "number", "size", "total"}
-_IN_MEASUREMENT_UNITS = {"epoch", "iteration", "year"}
-_YEAR_RESULT_TERMS = {"calendar", "publication", "release"}
 
 
 def authorized_doc_ids_for_slot(
@@ -309,8 +259,6 @@ def _answer_signal_spans(
                 continue
             if not independently_reported:
                 continue
-            if _numeric_candidate_has_unrequested_unit(slot, text, match):
-                continue
             if _numeric_signal_is_unavailable(
                 text,
                 span,
@@ -353,74 +301,6 @@ def _canonical_number(value: str) -> str:
     suffix = "%" if value.endswith("%") else ""
     number = Decimal(value.removesuffix("%"))
     return f"{number.normalize():f}{suffix}"
-
-
-def _numeric_candidate_has_unrequested_unit(
-    slot: RequiredSlot,
-    text: str,
-    match: re.Match[str],
-) -> bool:
-    unit = _numeric_candidate_unit(text, match)
-    if unit is None:
-        return False
-    return unit not in _requested_numeric_units(slot)
-
-
-def _numeric_candidate_unit(
-    text: str,
-    match: re.Match[str],
-) -> str | None:
-    if match.group(0).endswith("%"):
-        return "percent"
-    unit_match = _FOLLOWING_NUMERIC_UNIT_PATTERN.match(text, match.end())
-    if unit_match is None:
-        return None
-    raw_unit = unit_match.group(1).casefold()
-    if raw_unit == "%":
-        return "percent"
-    return _NUMERIC_UNIT_ALIASES.get(raw_unit)
-
-
-def _requested_numeric_units(slot: RequiredSlot) -> set[str]:
-    if slot.expected_answer_type != "number":
-        return set()
-
-    tokens = [
-        match.group(0).casefold()
-        for match in _CONTENT_TOKEN_PATTERN.finditer(slot.description)
-    ]
-    requested: set[str] = set()
-    for index, token in enumerate(tokens):
-        unit = _NUMERIC_UNIT_ALIASES.get(token)
-        if unit is None:
-            continue
-        previous = tokens[index - 1] if index >= 1 else ""
-        previous_two = tokens[index - 2 : index]
-        following = tokens[index + 1] if index + 1 < len(tokens) else ""
-        following_two = tokens[index + 1 : index + 3]
-
-        if unit == "percent" and (
-            previous in _PERCENT_RESULT_TERMS
-            or following in _PERCENT_RESULT_TERMS
-            or previous == "in"
-            or previous_two == ["as", "a"]
-        ):
-            requested.add(unit)
-            continue
-        if (
-            previous in _COUNT_SHAPE_TERMS
-            or following in _COUNT_SHAPE_TERMS
-            or (len(previous_two) == 2 and previous_two[0] in _COUNT_SHAPE_TERMS)
-            or previous_two == ["how", "many"]
-            or (previous == "in" and unit in _IN_MEASUREMENT_UNITS)
-        ):
-            requested.add(unit)
-            continue
-        if unit == "year" and (
-            previous in _YEAR_RESULT_TERMS or following_two == ["of", "publication"]
-        ):
-            requested.add(unit)
-    return requested
 
 
 def _numeric_signal_is_unavailable(
