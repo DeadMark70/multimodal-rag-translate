@@ -12,7 +12,6 @@ from core.prompt_loader import PromptRegistry
 from data_base.agentic_v9.citation_renderer import render_verified_answer
 from data_base.agentic_v9.claim_verifier import (
     ClaimVerifier,
-    qualify_failed_claim,
     requires_prose_verification,
     verify_claim_deterministically,
 )
@@ -25,6 +24,7 @@ from data_base.agentic_v9.schemas import (
     LlmInvoker,
     QueryContract,
     SlotResolution,
+    SufficiencyReport,
     UnresolvedRequirement,
 )
 
@@ -56,6 +56,7 @@ class FinalAnswerRenderer:
         contract: QueryContract,
         packed_packets: Iterable[EvidencePacket] | PackedEvidenceProjection,
         slot_resolutions: Sequence[SlotResolution],
+        sufficiency_report: SufficiencyReport | None = None,
         arbitration: Any | None = None,
     ) -> FinalAnswerResult:
         """Use only packed evidence, with one final call and at most one verifier call."""
@@ -85,21 +86,21 @@ class FinalAnswerRenderer:
                 ],
             )
         except Exception:
-            unresolved_requirements = _required_unresolved_requirements(
-                contract, slot_resolutions
-            )
-            return FinalAnswerResult(
-                response_status="qualified_partial" if packets else "insufficient",
-                answer=render_verified_answer(
-                    (),
-                    packets,
-                    unresolved_requirements=unresolved_requirements,
-                    citation_format_version=self._citation_format_version,
-                ),
-                final_generation_count=0,
+            return _render_no_claim_fallback(
+                contract=contract,
+                packets=packets,
+                slot_resolutions=slot_resolutions,
+                sufficiency_report=sufficiency_report,
+                citation_format_version=self._citation_format_version,
             )
         if _is_fixed_no_claim_fallback(response):
-            return response
+            return _render_no_claim_fallback(
+                contract=contract,
+                packets=packets,
+                slot_resolutions=slot_resolutions,
+                sufficiency_report=sufficiency_report,
+                citation_format_version=self._citation_format_version,
+            )
         if isinstance(response, FinalAnswerResult):
             response = {
                 "supported_findings": [
@@ -158,7 +159,7 @@ class FinalAnswerRenderer:
             }:
                 continue
             if not verdict.supported:
-                accepted.append(qualify_failed_claim(claim, verdict))
+                continue
             elif requires_prose_verification(claim):
                 unresolved.append(claim)
             else:
@@ -169,9 +170,8 @@ class FinalAnswerRenderer:
         )
         for claim in unresolved:
             verdict = verifier_verdicts[claim.claim_id]
-            accepted.append(
-                claim if verdict.supported else qualify_failed_claim(claim, verdict)
-            )
+            if verdict.supported:
+                accepted.append(claim)
 
         used_evidence_ids = list(
             dict.fromkeys(
@@ -180,7 +180,12 @@ class FinalAnswerRenderer:
                 for evidence_id in [*claim.evidence_ids, *claim.premise_evidence_ids]
             )
         )
-        response_status = _response_status(accepted, slot_resolutions)
+        response_status = _response_status(
+            accepted,
+            contract,
+            slot_resolutions,
+            sufficiency_report=sufficiency_report,
+        )
         unresolved_requirements = _required_unresolved_requirements(
             contract, slot_resolutions
         )
@@ -205,6 +210,7 @@ async def generate_final_answer(
     packed_packets: Iterable[EvidencePacket] | PackedEvidenceProjection,
     slot_resolutions: Sequence[SlotResolution],
     llm_invoker: LlmInvoker,
+    sufficiency_report: SufficiencyReport | None = None,
     arbitration: Any | None = None,
     citation_format_version: str = "1",
 ) -> FinalAnswerResult:
@@ -216,6 +222,7 @@ async def generate_final_answer(
         contract=contract,
         packed_packets=packed_packets,
         slot_resolutions=slot_resolutions,
+        sufficiency_report=sufficiency_report,
         arbitration=arbitration,
     )
 
@@ -297,15 +304,56 @@ def _is_fixed_no_claim_fallback(response: Any) -> bool:
 
 
 def _response_status(
-    claims: Sequence[FinalClaim], slot_resolutions: Sequence[SlotResolution]
+    claims: Sequence[FinalClaim],
+    contract: QueryContract,
+    slot_resolutions: Sequence[SlotResolution],
+    *,
+    sufficiency_report: SufficiencyReport | None,
 ) -> str:
     if not claims:
         return "insufficient"
-    if all(resolution.status == "supported" for resolution in slot_resolutions) and all(
-        claim.qualified_reason is None for claim in claims
+    if sufficiency_report is not None:
+        return sufficiency_report.response_status
+    required_slot_ids = {
+        slot.slot_id for slot in contract.required_slots if slot.required
+    }
+    required_resolutions = [
+        resolution
+        for resolution in slot_resolutions
+        if resolution.slot_id in required_slot_ids
+    ]
+    if required_slot_ids and len(required_resolutions) == len(required_slot_ids) and all(
+        resolution.status == "supported" for resolution in required_resolutions
     ):
         return "complete"
     return "qualified_partial"
+
+
+def _render_no_claim_fallback(
+    *,
+    contract: QueryContract,
+    packets: Sequence[EvidencePacket],
+    slot_resolutions: Sequence[SlotResolution],
+    sufficiency_report: SufficiencyReport | None,
+    citation_format_version: str,
+) -> FinalAnswerResult:
+    status = "qualified_partial" if packets else "insufficient"
+    if sufficiency_report is not None:
+        rank = {"insufficient": 0, "qualified_partial": 1, "complete": 2}
+        if rank[status] > rank[sufficiency_report.response_status]:
+            status = sufficiency_report.response_status
+    return FinalAnswerResult(
+        response_status=status,
+        answer=render_verified_answer(
+            (),
+            packets,
+            unresolved_requirements=_required_unresolved_requirements(
+                contract, slot_resolutions
+            ),
+            citation_format_version=citation_format_version,
+        ),
+        final_generation_count=0,
+    )
 
 
 def _required_unresolved_requirements(

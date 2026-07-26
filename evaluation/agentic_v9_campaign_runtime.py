@@ -384,6 +384,7 @@ class AgenticV9CampaignRuntime:
                     provider_factory=self._provider_factory,
                 ),
                 arbitration=arbitration,
+                sufficiency_report=sufficiency_report,
             )
 
         def deterministic_partial(

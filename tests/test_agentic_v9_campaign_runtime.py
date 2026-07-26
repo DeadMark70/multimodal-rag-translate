@@ -55,6 +55,11 @@ class _InvalidProvider:
         )
 
 
+class _FailingProvider:
+    def __init__(self) -> None:
+        self.ainvoke = AsyncMock(side_effect=RuntimeError("provider unavailable"))
+
+
 def _setup() -> dict[str, object]:
     return {
         "max_input_tokens": 4096,
@@ -511,3 +516,38 @@ async def test_invalid_final_provider_output_uses_deterministic_sections() -> No
     assert "Supported conclusions" in result.answer
     assert "Unresolved/unverifiable requirements" in result.answer
     assert result.agent_trace["response_status"] == "insufficient"
+
+
+@pytest.mark.asyncio
+async def test_budgeted_final_provider_failure_uses_deterministic_sections() -> None:
+    provider = _FailingProvider()
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="The source reports a score of 0.91.",
+                    metadata={
+                        "doc_id": "doc-1",
+                        "page_number": 2,
+                        "chunk_id": "chunk-1",
+                    },
+                )
+            ]
+        ),
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What is the reported score?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot=_setup(),
+        trace_id="failed-final-provider",
+    )
+
+    assert "Final generation was unavailable" not in result.answer
+    assert "Supported conclusions" in result.answer
+    assert "Unresolved/unverifiable requirements" in result.answer
+    assert result.agent_trace["response_status"] == "qualified_partial"
+    assert result.agent_trace["agentic_v9"]["metrics"]["final_generation_count"] == 0

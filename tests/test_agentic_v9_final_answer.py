@@ -18,6 +18,7 @@ from data_base.agentic_v9.schemas import (
     RequiredSlot,
     SlotResolution,
     SourceLocator,
+    SufficiencyReport,
 )
 
 
@@ -127,7 +128,7 @@ async def test_final_answer_uses_only_packed_evidence_and_renders_versioned_cita
 
 
 @pytest.mark.asyncio
-async def test_invalid_claim_is_qualified_without_a_second_final_generation() -> None:
+async def test_false_finding_is_absent_from_claims_and_supported_conclusions() -> None:
     invoker = _RecordingInvoker(
         {
             "supported_findings": [
@@ -152,8 +153,8 @@ async def test_invalid_claim_is_qualified_without_a_second_final_generation() ->
     )
 
     assert result.final_generation_count == 1
-    assert result.claims[0].support_type == "qualified"
-    assert "does not match cited exact evidence" in result.claims[0].qualified_reason
+    assert result.claims == []
+    assert "0.99" not in result.answer
     assert len(invoker.calls) == 1
 
 
@@ -251,7 +252,7 @@ async def test_final_answer_accepts_the_typed_packer_packet_projection() -> None
 
 
 @pytest.mark.asyncio
-async def test_direct_final_result_is_treated_as_an_untrusted_draft_and_qualified() -> (
+async def test_false_legacy_final_claim_is_excluded_from_persistence_and_rendering() -> (
     None
 ):
     invoker = _RecordingInvoker(
@@ -282,9 +283,8 @@ async def test_direct_final_result_is_treated_as_an_untrusted_draft_and_qualifie
     )
 
     assert result.final_generation_count == 1
-    assert result.claims[0].support_type == "qualified"
-    assert "does not match cited exact evidence" in result.claims[0].qualified_reason
-    assert "[v1:paper.pdf p.5, Table 1; E1]" in result.answer
+    assert result.claims == []
+    assert "0.99" not in result.answer
 
 
 @pytest.mark.asyncio
@@ -339,10 +339,61 @@ async def test_fixed_no_claim_final_fallback_remains_a_qualified_partial() -> No
     )
 
     assert result.response_status == "qualified_partial"
-    assert result.answer == fallback_answer
+    assert fallback_answer not in result.answer
+    assert "Supported conclusions" in result.answer
+    assert "Unresolved/unverifiable requirements" in result.answer
     assert result.claims == []
     assert result.used_evidence_ids == []
     assert result.final_generation_count == 0
+
+
+@pytest.mark.asyncio
+async def test_missing_optional_slot_does_not_downgrade_complete_required_sufficiency() -> (
+    None
+):
+    contract = QueryContract(
+        route="exact_structured",
+        intent="Report the required score.",
+        required_slots=[
+            RequiredSlot(slot_id="score", description="Reported score"),
+            RequiredSlot(
+                slot_id="optional-note",
+                description="Optional context",
+                required=False,
+            ),
+        ],
+    )
+    invoker = _RecordingInvoker(
+        {
+            "supported_findings": [
+                {
+                    "slot_id": "score",
+                    "statement": "The reported score is 0.91.",
+                    "evidence_ids": ["E1"],
+                }
+            ],
+            "unresolved_requirements": [],
+        }
+    )
+
+    result = await generate_final_answer(
+        question="What is the reported score?",
+        contract=contract,
+        packed_packets=[_packet()],
+        slot_resolutions=[
+            SlotResolution(slot_id="score", status="supported", evidence_ids=["E1"]),
+            SlotResolution(slot_id="optional-note", status="not_found"),
+        ],
+        sufficiency_report=SufficiencyReport(
+            evidence_complete=True,
+            answerable=True,
+            response_status="complete",
+            supported_slot_ids=["score"],
+        ),
+        llm_invoker=invoker,
+    )
+
+    assert result.response_status == "complete"
 
 
 @pytest.mark.asyncio
