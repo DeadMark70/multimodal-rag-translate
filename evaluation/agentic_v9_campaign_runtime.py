@@ -1231,6 +1231,13 @@ def _evidence_packets_for_results(
             slot_ids = task_slot_ids.get(
                 task_id, [slot.slot_id for slot in contract.required_slots]
             )
+            slot_ids = _slot_ids_authorized_for_doc(
+                contract=contract,
+                slot_ids=slot_ids,
+                doc_id=doc_id,
+            )
+            if not slot_ids:
+                continue
             digest = hashlib.sha256(
                 f"{trace_id}:{task_id}:{doc_id}:{chunk.get('chunk_id')}:{index}".encode()
             ).hexdigest()[:24]
@@ -1259,6 +1266,26 @@ def _evidence_packets_for_results(
                 )
             )
     return packets
+
+
+def _slot_ids_authorized_for_doc(
+    *, contract: QueryContract, slot_ids: list[str], doc_id: str
+) -> list[str]:
+    """Retain only slots whose canonical source constraint admits the document."""
+    slots_by_id = {slot.slot_id: slot for slot in contract.required_slots}
+    authorized: list[str] = []
+    for slot_id in slot_ids:
+        slot = slots_by_id.get(slot_id)
+        if slot is None:
+            continue
+        if (
+            contract.contract_version == "2"
+            and slot.authorized_source_doc_ids
+            and doc_id not in slot.authorized_source_doc_ids
+        ):
+            continue
+        authorized.append(slot_id)
+    return authorized
 
 
 def _configuration_incompatible_result(

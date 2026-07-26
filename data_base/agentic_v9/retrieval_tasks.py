@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from data_base.agentic_v9.schemas import (
     QueryContract,
+    RequiredSlot,
     ResolvedSourceScope,
     RetrievalTask,
 )
@@ -50,7 +51,13 @@ class RetrievalTaskCompiler:
         if scope is None or not scope.authorized_doc_ids:
             raise ValueError("retrieval tasks require an authorized source scope")
 
-        if contract.route == "bounded_compare":
+        if contract.contract_version == "2":
+            tasks = self._compile_atomic_slots(
+                query_id=normalized_query_id,
+                contract=contract,
+                scope=scope,
+            )
+        elif contract.route == "bounded_compare":
             tasks = self._compile_bounded_compare(
                 question=normalized_question,
                 query_id=normalized_query_id,
@@ -93,6 +100,53 @@ class RetrievalTaskCompiler:
             contract_version=contract.contract_version,
             tasks=tasks,
         )
+
+    def _compile_atomic_slots(
+        self,
+        *,
+        query_id: str,
+        contract: QueryContract,
+        scope: ResolvedSourceScope,
+    ) -> list[RetrievalTask]:
+        grouped_slots: dict[
+            tuple[tuple[str, ...], tuple[str, ...], str], list[RequiredSlot]
+        ] = {}
+        for slot in contract.required_slots:
+            authorized_doc_ids = _authorized_doc_ids_for_slot(slot, scope)
+            if not authorized_doc_ids:
+                raise ValueError(
+                    f"atomic slot has no authorized source intersection: {slot.slot_id}"
+                )
+            locator_hints = _unique(slot.locator_hints)
+            key = (
+                tuple(authorized_doc_ids),
+                tuple(locator_hints),
+                slot.visual_policy,
+            )
+            grouped_slots.setdefault(key, []).append(slot)
+
+        tasks: list[RetrievalTask] = []
+        for index, ((doc_ids, locator_hints, visual_policy), slots) in enumerate(
+            grouped_slots.items(), start=1
+        ):
+            source_group_id = f"source-group-{index}"
+            tasks.append(
+                RetrievalTask(
+                    task_id=f"{query_id}:round-1:{source_group_id}",
+                    round_id="round-1",
+                    query_id=query_id,
+                    query=_atomic_query(slots),
+                    target_slot_ids=[slot.slot_id for slot in slots],
+                    source_scope=_scope_for_docs(scope, list(doc_ids)),
+                    source_group_id=source_group_id,
+                    locator_hints=list(locator_hints),
+                    graph_policy=contract.graph_policy or "never",
+                    visual_required=visual_policy == "required",
+                )
+            )
+        if not tasks:
+            raise ValueError("atomic retrieval contract requires at least one slot")
+        return tasks
 
     def _compile_bounded_compare(
         self,
@@ -279,6 +333,73 @@ def _scope_for_doc(scope: ResolvedSourceScope, doc_id: str) -> ResolvedSourceSco
         resolved_doc_ids=[doc_id] if doc_id in scope.resolved_doc_ids else [],
         authorized_doc_ids=[doc_id],
     )
+
+
+def _scope_for_docs(
+    scope: ResolvedSourceScope, doc_ids: list[str]
+) -> ResolvedSourceScope:
+    """Narrow an authorized scope to canonical IDs without expanding it."""
+    authorized = [doc_id for doc_id in scope.authorized_doc_ids if doc_id in doc_ids]
+    authorized_set = set(authorized)
+    source_mapping = {
+        name: [
+            doc_id
+            for doc_id in mapped_doc_ids
+            if doc_id in authorized_set
+        ]
+        for name, mapped_doc_ids in scope.source_name_to_doc_ids.items()
+        if any(doc_id in authorized_set for doc_id in mapped_doc_ids)
+    }
+    return ResolvedSourceScope(
+        requested_doc_ids=[
+            doc_id for doc_id in scope.requested_doc_ids if doc_id in authorized_set
+        ],
+        requested_source_names=[
+            name for name in scope.requested_source_names if name in source_mapping
+        ],
+        resolved_doc_ids=[
+            doc_id for doc_id in scope.resolved_doc_ids if doc_id in authorized_set
+        ],
+        authorized_doc_ids=authorized,
+        source_name_to_doc_ids=source_mapping,
+    )
+
+
+def _authorized_doc_ids_for_slot(
+    slot: RequiredSlot, scope: ResolvedSourceScope
+) -> list[str]:
+    """Intersect slot IDs and authoritative source-name mappings with run scope."""
+    global_ids = set(scope.authorized_doc_ids)
+    slot_ids = set(slot.authorized_source_doc_ids)
+    named_ids = {
+        doc_id
+        for name in slot.source_name_hints
+        for doc_id in scope.source_name_to_doc_ids.get(name, ())
+    }
+    if not slot_ids and not named_ids:
+        return list(scope.authorized_doc_ids)
+    candidates = slot_ids
+    if named_ids:
+        candidates = candidates.intersection(named_ids) if candidates else named_ids
+    return [
+        doc_id
+        for doc_id in scope.authorized_doc_ids
+        if doc_id in global_ids and doc_id in candidates
+    ]
+
+
+def _atomic_query(slots: list[RequiredSlot]) -> str:
+    """Build answer-free retrieval text from planner-owned atomic slot metadata."""
+    parts: list[str] = []
+    for slot in slots:
+        parts.extend(slot.source_name_hints)
+        parts.extend(slot.entity_ids)
+        parts.append(slot.description)
+        parts.extend(slot.locator_hints)
+    query = " ".join(_unique(parts))
+    if not query:
+        raise ValueError("atomic retrieval group has no query content")
+    return query
 
 
 def _unique(values: Iterable[str]) -> list[str]:

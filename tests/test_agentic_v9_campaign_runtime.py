@@ -958,6 +958,76 @@ async def test_multidocument_visual_call_aggregates_sources_and_binds_packets_pe
 
 
 @pytest.mark.asyncio
+async def test_text_evidence_outside_atomic_slot_authorized_ids_cannot_support_it(
+    monkeypatch,
+) -> None:
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-a", "doc-b"],
+        resolved_doc_ids=["doc-a", "doc-b"],
+        authorized_doc_ids=["doc-a", "doc-b"],
+        source_name_to_doc_ids={"Alpha.pdf": ["doc-a"], "Beta.pdf": ["doc-b"]},
+    )
+    contract = QueryContract(
+        contract_version="2",
+        route="exact_structured",
+        intent="one source-bound fact",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Report the Alpha result.",
+                source_name_hints=["Alpha.pdf"],
+                authorized_source_doc_ids=["doc-a"],
+                locator_hints=["Table 1"],
+            )
+        ],
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=2,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+        slot_plan_status="complete",
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    async def retrieve_documents(_user_id, _query, _doc_ids):
+        return [
+            Document(
+                page_content="Beta contains a plausible but unauthorized result.",
+                metadata={
+                    "doc_id": "doc-b",
+                    "chunk_id": "chunk-b",
+                    "page_number": 1,
+                },
+            )
+        ]
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract",
+        admission,
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve_documents,
+        provider_factory=lambda _purpose: _Provider(),
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What is the Alpha result?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-a", "doc-b"],
+        setup_snapshot=_setup(),
+        trace_id="atomic-slot-source-filter",
+    )
+
+    v9 = result.agent_trace["agentic_v9"]
+    assert v9["evidence_packets"] == []
+    assert v9["slot_resolutions"][0]["status"] == "not_found"
+    assert result.agent_trace["response_status"] == "insufficient"
+
+
+@pytest.mark.asyncio
 async def test_invalid_final_provider_output_uses_deterministic_sections() -> None:
     provider = _InvalidProvider()
     runtime = AgenticV9CampaignRuntime(
