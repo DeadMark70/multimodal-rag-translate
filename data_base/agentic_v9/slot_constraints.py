@@ -21,6 +21,35 @@ _LOCATOR_TYPE_ALIASES = {
     "eq.": "formula",
     "equation": "formula",
 }
+_CONTENT_TOKEN_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*", re.IGNORECASE)
+_CONTENT_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "by",
+    "describe",
+    "explain",
+    "fact",
+    "for",
+    "from",
+    "give",
+    "identify",
+    "in",
+    "metric",
+    "of",
+    "on",
+    "report",
+    "result",
+    "retrieve",
+    "score",
+    "state",
+    "the",
+    "to",
+    "value",
+}
+_NUMBER_PATTERN = re.compile(r"(?<![\w.])[-+]?(?:\d+(?:\.\d+)?|\.\d+)%?(?![\w.])")
 
 
 def authorized_doc_ids_for_slot(
@@ -111,6 +140,52 @@ def locator_hints_match_chunk(
     return bool(expected.intersection(actual))
 
 
+def slot_content_matches_chunk(
+    *,
+    slot: RequiredSlot,
+    peer_slots: Iterable[RequiredSlot],
+    text: str,
+) -> bool:
+    """Disambiguate co-located atomic slots without consulting answer values."""
+    peers = [peer for peer in peer_slots if peer.slot_id != slot.slot_id]
+    if not peers:
+        return True
+
+    slot_terms = _slot_descriptor_terms(slot)
+    peer_terms = {
+        term for peer in peers for term in _slot_descriptor_terms(peer)
+    }
+    discriminators = slot_terms.difference(peer_terms)
+    content_terms = set(_content_tokens(text))
+    if discriminators and not discriminators.issubset(content_terms):
+        return False
+
+    answer_types = {peer.expected_answer_type for peer in peers}
+    if slot.expected_answer_type not in answer_types:
+        if slot.expected_answer_type == "number":
+            return _NUMBER_PATTERN.search(text) is not None
+        if slot.expected_answer_type == "equation":
+            return "=" in text
+    return True
+
+
+def _slot_descriptor_terms(slot: RequiredSlot) -> set[str]:
+    terms = set(_content_tokens(slot.description))
+    for entity_id in slot.entity_ids:
+        terms.update(_content_tokens(entity_id))
+    return terms
+
+
+def _content_tokens(value: str) -> tuple[str, ...]:
+    return tuple(
+        token
+        for token in (
+            match.group(0).casefold() for match in _CONTENT_TOKEN_PATTERN.finditer(value)
+        )
+        if token not in _CONTENT_STOPWORDS
+    )
+
+
 def _chunk_locator_set(chunk: Mapping[str, Any]) -> set[tuple[str, str]]:
     actual: set[tuple[str, str]] = set()
     typed_values = (
@@ -139,4 +214,5 @@ __all__ = [
     "canonical_term_set",
     "display_locator_hints",
     "locator_hints_match_chunk",
+    "slot_content_matches_chunk",
 ]

@@ -230,10 +230,32 @@ class V9ExecutionCore:
             sufficiency = self._stages.evaluate_sufficiency(
                 contract, tuple(evidence_packets)
             )
-        else:
-            self._record_repair_terminal(
-                repair_round, "repair_round_cap_reached"
-            )
+            if (
+                sufficiency.report.evidence_complete
+                or not sufficiency.repairable_slot_ids
+            ):
+                self._record_repair_terminal(
+                    repair_round,
+                    (
+                        "evidence_complete"
+                        if sufficiency.report.evidence_complete
+                        else "no_repairable_slots"
+                    ),
+                )
+                break
+            if not deadline.has_time_remaining():
+                self._record_repair_terminal(repair_round, "deadline_exhausted")
+                break
+            if not self._runtime.has_final_reserve(deadline):
+                self._record_repair_terminal(
+                    repair_round, "final_budget_protected"
+                )
+                break
+            if repair_round >= repair_cap:
+                self._record_repair_terminal(
+                    repair_round, "repair_round_cap_reached"
+                )
+                break
 
         # One final prose batch may curate packets; it cannot produce an answer.
         curated_packets = tuple(
