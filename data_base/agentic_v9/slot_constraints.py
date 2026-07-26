@@ -49,18 +49,7 @@ _CONTENT_STOPWORDS = {
     "to",
     "value",
 }
-_NUMBER_PATTERN = re.compile(
-    r"(?<![\w.])[-+]?(?:\d+(?:\.\d+)?|\.\d+)%?(?!\w)(?!\.\d)"
-)
-_STRUCTURED_LOCATOR_PATTERN = re.compile(
-    r"\b(?:figure|fig\.?|table|equation|eq\.?|formula|theorem|appendix|section)"
-    r"\s*[-:#.]?\s*[a-z0-9.]+\b",
-    re.IGNORECASE,
-)
-_DEFINITION_PATTERN = re.compile(
-    r"\b(?:is|are)\s+defined\s+as\b|\bmeans\b|\brefers\s+to\b",
-    re.IGNORECASE,
-)
+_NUMBER_PATTERN = re.compile(r"(?<![\w.])[-+]?(?:\d+(?:\.\d+)?|\.\d+)%?(?![\w.])")
 
 
 def authorized_doc_ids_for_slot(
@@ -162,82 +151,22 @@ def slot_content_matches_chunk(
     if not peers:
         return True
 
-    all_slots = [slot, *peers]
-    discriminators = _unique_discriminators(slot, all_slots)
-    if not discriminators:
-        return False
-
-    signal_spans = _answer_signal_spans(slot.expected_answer_type, text)
-    if not signal_spans:
-        return False
-    if slot.expected_answer_type not in {"number", "equation", "definition"}:
-        return discriminators.issubset(set(_content_tokens(text)))
-
-    competitor_discriminators = [
-        _unique_discriminators(peer, all_slots) for peer in peers
-    ]
-    for signal_span in signal_spans:
-        slot_distance = _association_distance(discriminators, text, signal_span)
-        if slot_distance is None:
-            continue
-        competitor_distances = [
-            distance
-            for terms in competitor_discriminators
-            if terms
-            if (distance := _association_distance(terms, text, signal_span))
-            is not None
-        ]
-        if all(slot_distance < distance for distance in competitor_distances):
-            return True
-    return False
-
-
-def _unique_discriminators(
-    slot: RequiredSlot, all_slots: Iterable[RequiredSlot]
-) -> set[str]:
-    other_terms = {
-        term
-        for other in all_slots
-        if other.slot_id != slot.slot_id
-        for term in _slot_descriptor_terms(other)
+    slot_terms = _slot_descriptor_terms(slot)
+    peer_terms = {
+        term for peer in peers for term in _slot_descriptor_terms(peer)
     }
-    return _slot_descriptor_terms(slot).difference(other_terms)
+    discriminators = slot_terms.difference(peer_terms)
+    content_terms = set(_content_tokens(text))
+    if discriminators and not discriminators.issubset(content_terms):
+        return False
 
-
-def _answer_signal_spans(
-    expected_answer_type: str, text: str
-) -> tuple[tuple[int, int], ...]:
-    without_locators = _STRUCTURED_LOCATOR_PATTERN.sub(
-        lambda match: " " * len(match.group(0)), text
-    )
-    if expected_answer_type == "number":
-        return tuple(match.span() for match in _NUMBER_PATTERN.finditer(without_locators))
-    if expected_answer_type == "equation":
-        return tuple((index, index + 1) for index, char in enumerate(text) if char == "=")
-    if expected_answer_type == "definition":
-        return tuple(match.span() for match in _DEFINITION_PATTERN.finditer(text))
-    if expected_answer_type == "comparison":
-        match = re.search(r"\b(?:than|versus|vs\.?|compared)\b", text, re.IGNORECASE)
-        return (match.span(),) if match is not None else ()
-    return ((0, len(text)),) if text.strip() else ()
-
-
-def _association_distance(
-    terms: set[str],
-    text: str,
-    signal_span: tuple[int, int],
-) -> float | None:
-    token_spans: dict[str, list[tuple[int, int]]] = {}
-    for match in _CONTENT_TOKEN_PATTERN.finditer(text):
-        token_spans.setdefault(match.group(0).casefold(), []).append(match.span())
-    if any(term not in token_spans for term in terms):
-        return None
-    signal_center = sum(signal_span) / 2
-    distances = [
-        min(abs((start + end) / 2 - signal_center) for start, end in token_spans[term])
-        for term in terms
-    ]
-    return sum(distances) / len(distances)
+    answer_types = {peer.expected_answer_type for peer in peers}
+    if slot.expected_answer_type not in answer_types:
+        if slot.expected_answer_type == "number":
+            return _NUMBER_PATTERN.search(text) is not None
+        if slot.expected_answer_type == "equation":
+            return "=" in text
+    return True
 
 
 def _slot_descriptor_terms(slot: RequiredSlot) -> set[str]:
