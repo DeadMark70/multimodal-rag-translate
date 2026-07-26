@@ -740,10 +740,10 @@ async def test_missing_preferred_visual_evidence_does_not_block_text_completion(
         trace_id="preferred-visual-trace",
     )
 
-    visual_extractor.assert_awaited_once()
+    visual_extractor.assert_not_awaited()
     assert result.agent_trace["response_status"] == "qualified_partial"
     assert result.agent_trace["agentic_v9"]["visual_execution"]["state"] == (
-        "attempted_without_evidence"
+        "not_needed_text_satisfied"
     )
     assert result.agent_trace["agentic_v9"]["slot_resolutions"][0]["status"] == (
         "supported"
@@ -848,9 +848,9 @@ async def test_required_visual_failure_only_downgrades_required_policy_slots(
         for row in result.agent_trace["agentic_v9"]["slot_resolutions"]
     }
     visual = result.agent_trace["agentic_v9"]["visual_execution"]
-    assert visual_target_slot_ids == ["S1", "S2"]
-    assert visual["state"] == "executed"
-    assert visual["supported_slot_ids"] == ["S2"]
+    assert visual_target_slot_ids == ["S1"]
+    assert visual["state"] == "required_but_not_satisfied"
+    assert visual["supported_slot_ids"] == []
     assert resolutions == {"S1": "explicitly_unavailable", "S2": "supported"}
 
 

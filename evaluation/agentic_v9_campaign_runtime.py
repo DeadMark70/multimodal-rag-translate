@@ -83,6 +83,7 @@ from data_base.agentic_v9.visual_asset_resolver import (
 from data_base.agentic_v9.visual_evidence_extractor import (
     VisualEvidenceExtractionResult,
     VisualEvidenceExtractor,
+    visual_slots_requiring_extraction,
 )
 from data_base.document_metadata import get_document_id
 from data_base.rag_filtering import filter_and_rerank_retrieval
@@ -311,15 +312,40 @@ class AgenticV9CampaignRuntime:
                         ),
                     )
                 )
+            text_packets = _evidence_packets_for_results(
+                results=tuple(results),
+                contract=state["contract"],
+                trace_id=trace_id,
+                tasks_by_id=state["tasks_by_id"],
+            )
+            text_evaluation = evaluate_sufficiency(
+                state["contract"],
+                tuple(text_packets),
+            )
+            visual_slots = visual_slots_requiring_extraction(
+                state["contract"],
+                text_supported_slot_ids=set(
+                    text_evaluation.report.supported_slot_ids
+                ),
+            )
             if (
                 state["contract"].visual_requested
+                and not visual_slots
+                and not state["visual_execution"]["attempted"]
+            ):
+                state["visual_execution"] = {
+                    **state["visual_execution"],
+                    "state": "not_needed_text_satisfied",
+                    "failure_reason": None,
+                }
+            if (
+                state["contract"].visual_requested
+                and visual_slots
                 and not state["visual_execution"]["attempted"]
             ):
                 controller = state["budget_controller"]
                 assert isinstance(controller, RunBudgetController)
-                visual_slot_ids = [
-                    slot.slot_id for slot in _requested_visual_slots(state["contract"])
-                ]
+                visual_slot_ids = [slot.slot_id for slot in visual_slots]
                 visual_task = tasks[0].model_copy(
                     update={
                         "target_slot_ids": visual_slot_ids,
@@ -335,7 +361,7 @@ class AgenticV9CampaignRuntime:
                     resolution = self._visual_asset_resolver.resolve_task(
                         user_id=user_id,
                         task=visual_task,
-                        slots=_requested_visual_slots(state["contract"]),
+                        slots=visual_slots,
                     )
                     state["visual_resolution_diagnostics"] = resolution.diagnostics
                     visual_result = await self._visual_extractor(
@@ -357,6 +383,7 @@ class AgenticV9CampaignRuntime:
                     visual_result = _bind_visual_result_to_contract(
                         result=visual_result,
                         contract=state["contract"],
+                        allowed_slot_ids=set(visual_slot_ids),
                     )
                     state["visual_execution"] = _visual_execution_projection(
                         visual_result,
@@ -979,6 +1006,7 @@ def _bind_visual_result_to_contract(
     *,
     result: VisualEvidenceExtractionResult,
     contract: QueryContract,
+    allowed_slot_ids: set[str] | None = None,
 ) -> VisualEvidenceExtractionResult:
     """Remove source/locator slot claims outside the exact query contract."""
     slots_by_id = {slot.slot_id: slot for slot in _requested_visual_slots(contract)}
@@ -987,6 +1015,7 @@ def _bind_visual_result_to_contract(
         bound_slot_ids = [
             slot_id
             for slot_id in packet.slot_ids
+            if (allowed_slot_ids is None or slot_id in allowed_slot_ids)
             if (slot := slots_by_id.get(slot_id)) is not None
             and _slot_accepts_visual_source(
                 slot=slot,

@@ -31,6 +31,7 @@ ExpectedAnswerType = Literal[
     "text",
 ]
 ResponseStatus = Literal["complete", "qualified_partial", "insufficient"]
+VisualAssetBackfillStatus = Literal["completed", "visual_assets_unavailable"]
 ATOMIC_SLOT_MATCHING_EXPERIMENTAL = "atomic_slot_matching_experimental"
 EvidenceSupportType = Literal[
     "direct", "calculated", "scope_constraint", "contradictory"
@@ -159,6 +160,15 @@ class RetrievalTask(BaseModel):
     graph_policy: GraphPolicy = "never"
     visual_required: bool = False
     depends_on_task_ids: list[str] = Field(default_factory=list)
+
+
+class VisualAssetBackfillResult(BaseModel):
+    """Bounded, idempotent visual-manifest migration result."""
+
+    status: VisualAssetBackfillStatus
+    scanned_count: int = Field(default=0, ge=0)
+    added_count: int = Field(default=0, ge=0)
+    existing_count: int = Field(default=0, ge=0)
 
 
 class RagRetrievalResult(BaseModel):

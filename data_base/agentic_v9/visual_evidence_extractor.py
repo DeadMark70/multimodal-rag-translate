@@ -15,7 +15,13 @@ from data_base.agentic_v9.asset_locator import (
     LocatedVisualAsset,
     VisualAssetCandidate,
 )
-from data_base.agentic_v9.schemas import EvidencePacket, LlmInvoker, RetrievalTask
+from data_base.agentic_v9.schemas import (
+    EvidencePacket,
+    LlmInvoker,
+    QueryContract,
+    RequiredSlot,
+    RetrievalTask,
+)
 
 
 class VisualExtractionPolicy(BaseModel):
@@ -39,6 +45,29 @@ class VisualEvidenceExtractionResult(BaseModel):
     packets: tuple[EvidencePacket, ...] = ()
     located_assets: tuple[LocatedVisualAsset, ...] = ()
     dropped_assets: tuple[DroppedVisualAsset, ...] = ()
+
+
+def visual_slots_requiring_extraction(
+    contract: QueryContract,
+    *,
+    text_supported_slot_ids: set[str],
+) -> list[RequiredSlot]:
+    """Apply never/preferred/required after deterministic text resolution."""
+    slots = [
+        slot
+        for slot in contract.required_slots
+        if slot.visual_policy == "required"
+        or (
+            slot.visual_policy == "preferred"
+            and slot.slot_id not in text_supported_slot_ids
+        )
+    ]
+    if contract.visual_required and not any(
+        slot.visual_policy in {"preferred", "required"}
+        for slot in contract.required_slots
+    ):
+        return [slot for slot in contract.required_slots if slot.required]
+    return slots
 
 
 class VisualEvidenceExtractor:
@@ -258,4 +287,5 @@ __all__ = [
     "VisualEvidenceExtractionResult",
     "VisualEvidenceExtractor",
     "VisualExtractionPolicy",
+    "visual_slots_requiring_extraction",
 ]
