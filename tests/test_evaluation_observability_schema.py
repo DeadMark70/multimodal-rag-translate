@@ -8,6 +8,7 @@ from evaluation.trace_schemas import (
     AgentTraceDetail,
     EvaluationClaim,
     EvaluationEvidencePacket,
+    EvaluationLlmCall,
     EvaluationSlotResolution,
     EvaluationTraceEvent,
 )
@@ -141,6 +142,16 @@ async def test_observability_tables_columns_and_indexes_are_created(tmp_path, mo
 
     context_pack_columns = await _table_columns("evaluation_context_packs")
     assert "retrieved_but_not_packed_evidence_json" in context_pack_columns
+    llm_call_columns = await _table_columns("evaluation_llm_calls")
+    assert {
+        "phase",
+        "reservation_id",
+        "provider_attempt",
+        "prompt_capture_status",
+        "full_prompt_capture_status",
+        "reasoning_tokens",
+        "other_tokens",
+    }.issubset(llm_call_columns)
 
     index_names = await _index_names()
     assert {
@@ -150,7 +161,13 @@ async def test_observability_tables_columns_and_indexes_are_created(tmp_path, mo
         "idx_eval_claims_run_created",
         "idx_eval_human_ratings_run_created",
         "idx_eval_retrieval_chunks_event",
+        "idx_eval_llm_calls_attempt_identity",
     }.issubset(index_names)
+    assert await _index_columns("idx_eval_llm_calls_attempt_identity") == [
+        "run_id",
+        "reservation_id",
+        "provider_attempt",
+    ]
 
     campaign_index_prefixes = {
         "idx_eval_trace_events_campaign_run": ["campaign_id", "run_id"],
@@ -198,6 +215,83 @@ async def test_observability_migration_repairs_partial_tables(tmp_path, monkeypa
     assert {"attempt_id", "schema_version", "slot_id", "resolution_json"}.issubset(
         resolution_columns
     )
+
+
+@pytest.mark.asyncio
+async def test_llm_call_migration_preserves_legacy_rows_as_unknown(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "evaluation.db"
+    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE evaluation_llm_calls (
+                llm_call_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                campaign_id TEXT NOT NULL,
+                purpose TEXT NOT NULL DEFAULT 'unknown',
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'success',
+                error_json TEXT NOT NULL DEFAULT '{}',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO evaluation_llm_calls (
+                llm_call_id, run_id, campaign_id, created_at
+            ) VALUES ('legacy-call', 'legacy-run', 'legacy-campaign', '2026-07-01T00:00:00+00:00')
+            """
+        )
+        connection.commit()
+
+    await evaluation_db.init_db()
+    await evaluation_db.init_db()
+
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT * FROM evaluation_llm_calls WHERE llm_call_id = 'legacy-call'"
+        ).fetchone()
+    assert row is not None
+    assert row["phase"] == "unknown"
+    assert row["reservation_id"] is None
+    assert row["provider_attempt"] is None
+    assert row["prompt_capture_status"] == "unknown"
+    assert row["full_prompt_capture_status"] == "unknown"
+    assert row["reasoning_tokens"] is None
+    assert row["other_tokens"] is None
+
+
+def test_llm_call_schema_exposes_attempt_and_capture_provenance() -> None:
+    call = EvaluationLlmCall(
+        llm_call_id="llm-attempt-1",
+        run_id="run-1",
+        campaign_id="campaign-1",
+        phase="evidence_extract",
+        purpose="extract_evidence",
+        reservation_id="reservation-1",
+        provider_attempt=2,
+        prompt_capture_status="captured",
+        full_prompt_capture_status="not_captured_at_execution",
+        reasoning_tokens=7,
+        other_tokens=3,
+        created_at=datetime.now(timezone.utc),
+    )
+
+    assert call.phase == "evidence_extract"
+    assert call.reservation_id == "reservation-1"
+    assert call.provider_attempt == 2
+    assert call.prompt_capture_status == "captured"
+    assert call.full_prompt_capture_status == "not_captured_at_execution"
+    assert call.reasoning_tokens == 7
+    assert call.other_tokens == 3
 
 
 @pytest.mark.asyncio

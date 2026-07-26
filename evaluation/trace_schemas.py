@@ -17,6 +17,21 @@ TracePhase = Literal["planning", "execution", "drilldown", "evaluation", "synthe
 TraceStatus = Literal["completed", "partial", "failed"]
 TraceSummaryStatus = Literal["completed", "partial", "failed", "not_instrumented"]
 TraceEventStatus = Literal["running", "success", "failed", "skipped", "timeout", "partial"]
+LlmCallPhase = Literal[
+    "unknown",
+    "contract_planning",
+    "evidence_extract",
+    "retrieval_judge",
+    "visual_extract",
+    "final_answer",
+]
+PromptCaptureStatus = Literal[
+    "unknown",
+    "captured",
+    "redacted",
+    "not_captured_at_execution",
+    "capture_failed",
+]
 TraceStageType = Literal[
     "routing",
     "planning",
@@ -66,14 +81,21 @@ class EvaluationLlmCall(BaseModel):
     span_id: Optional[str] = None
     provider: Optional[str] = None
     model_name: Optional[str] = None
+    phase: LlmCallPhase = "unknown"
     purpose: str = Field(default="unknown", min_length=1)
+    reservation_id: Optional[str] = None
+    provider_attempt: Optional[int] = Field(default=None, ge=1)
     prompt_tokens: int = Field(default=0, ge=0)
     completion_tokens: int = Field(default=0, ge=0)
     total_tokens: int = Field(default=0, ge=0)
+    reasoning_tokens: Optional[int] = Field(default=None, ge=0)
+    other_tokens: Optional[int] = Field(default=None, ge=0)
     estimated_cost_usd: Optional[float] = Field(default=None, ge=0)
     estimated_cost_twd: Optional[float] = Field(default=None, ge=0)
     prompt_hash: Optional[str] = None
     prompt_preview: Optional[str] = None
+    prompt_capture_status: PromptCaptureStatus = "unknown"
+    full_prompt_capture_status: PromptCaptureStatus = "unknown"
     response_hash: Optional[str] = None
     latency_ms: Optional[float] = Field(default=None, ge=0)
     status: TraceEventStatus = "success"
