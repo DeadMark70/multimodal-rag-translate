@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
-from data_base.agentic_v9.schemas import EvidencePacket, FinalClaim
+from data_base.agentic_v9.schemas import (
+    EvidencePacket,
+    FinalClaim,
+    UnresolvedRequirement,
+)
 
 
 def render_evidence_citation(
@@ -55,11 +59,12 @@ def render_verified_answer(
     claims: Iterable[FinalClaim],
     packets: Iterable[EvidencePacket],
     *,
+    unresolved_requirements: Iterable[UnresolvedRequirement] = (),
     citation_format_version: str = "1",
 ) -> str:
     """Project only verified claims into a deterministic cited answer."""
     packets_by_id = {packet.evidence_id: packet for packet in packets}
-    lines: list[str] = []
+    lines: list[str] = ["## Supported conclusions"]
     for claim in claims:
         statement = claim.statement
         if claim.qualified_reason:
@@ -70,6 +75,12 @@ def render_verified_answer(
             citation_format_version=citation_format_version,
         )
         lines.append(f"{statement}{' ' + citations if citations else ''}")
+    lines.append("")
+    lines.append("## Unresolved/unverifiable requirements")
+    lines.extend(
+        f"- {requirement.slot_id}: {requirement.reason}"
+        for requirement in unresolved_requirements
+    )
     return "\n".join(lines)
 
 

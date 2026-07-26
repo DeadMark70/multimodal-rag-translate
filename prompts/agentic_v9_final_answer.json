@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "prompts": {
+    "final_answer": {
+      "version": 1,
+      "description": "Agentic v9 slot-bound final finding extraction",
+      "required_variables": [],
+      "template": "Return JSON only with exactly two arrays: supported_findings and unresolved_requirements. Each supported finding must contain exactly slot_id, statement, and evidence_ids. Each unresolved requirement must contain exactly slot_id and reason. Use only supplied slot IDs and packed evidence IDs. A supported finding is allowed only for a supported slot, and every cited evidence packet must be assigned to that same slot. Do not return an answer field, claims, qualifiers, caveated guesses, or any other fields. Never turn an unsupported, conflicted, unavailable, or not-found requirement into a finding."
+    }
+  }
+}

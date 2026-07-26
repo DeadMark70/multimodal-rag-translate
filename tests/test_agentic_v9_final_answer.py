@@ -311,7 +311,8 @@ async def test_only_the_fixed_no_claim_final_fallback_bypasses_draft_validation(
 
     assert result.final_generation_count == 1
     assert result.response_status == "insufficient"
-    assert result.answer == ""
+    assert "Supported conclusions" in result.answer
+    assert "Unresolved/unverifiable requirements" in result.answer
 
 
 @pytest.mark.asyncio
@@ -342,3 +343,146 @@ async def test_fixed_no_claim_final_fallback_remains_a_qualified_partial() -> No
     assert result.claims == []
     assert result.used_evidence_ids == []
     assert result.final_generation_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,evidence_ids",
+    [
+        ("not_found", []),
+        ("conflicted", ["E1", "E2"]),
+        ("explicitly_unavailable", []),
+    ],
+)
+async def test_findings_for_non_supported_slots_are_rejected(
+    status: str, evidence_ids: list[str]
+) -> None:
+    invoker = _RecordingInvoker(
+        {
+            "supported_findings": [
+                {
+                    "slot_id": "score",
+                    "statement": "Maybe the score is 0.91.",
+                    "evidence_ids": evidence_ids or ["E1"],
+                }
+            ],
+            "unresolved_requirements": [],
+        }
+    )
+    packets = [_packet(), _packet("E2")]
+
+    result = await generate_final_answer(
+        question="What is the reported score?",
+        contract=_contract(),
+        packed_packets=packets,
+        slot_resolutions=[
+            SlotResolution(slot_id="score", status=status, evidence_ids=evidence_ids)
+        ],
+        llm_invoker=invoker,
+    )
+
+    assert result.claims == []
+    assert "Maybe the score" not in result.answer
+    assert "score" in result.answer
+
+
+@pytest.mark.asyncio
+async def test_unknown_slot_and_cross_slot_evidence_are_rejected() -> None:
+    other_slot_packet = _packet()
+    other_slot_packet.slot_ids = ["other"]
+    invoker = _RecordingInvoker(
+        {
+            "supported_findings": [
+                {
+                    "slot_id": "unknown",
+                    "statement": "Unknown finding.",
+                    "evidence_ids": ["E1"],
+                },
+                {
+                    "slot_id": "score",
+                    "statement": "Cross-slot finding.",
+                    "evidence_ids": ["E1"],
+                },
+            ],
+            "unresolved_requirements": [],
+        }
+    )
+
+    result = await generate_final_answer(
+        question="What is the reported score?",
+        contract=_contract(),
+        packed_packets=[other_slot_packet],
+        slot_resolutions=[
+            SlotResolution(slot_id="score", status="supported", evidence_ids=["E1"])
+        ],
+        llm_invoker=invoker,
+    )
+
+    assert result.claims == []
+    assert "Unknown finding" not in result.answer
+    assert "Cross-slot finding" not in result.answer
+
+
+@pytest.mark.asyncio
+async def test_missing_required_unresolved_row_is_built_deterministically() -> None:
+    invoker = _RecordingInvoker(
+        {"supported_findings": [], "unresolved_requirements": []}
+    )
+
+    result = await generate_final_answer(
+        question="What is the reported score?",
+        contract=_contract(),
+        packed_packets=[],
+        slot_resolutions=[
+            SlotResolution(
+                slot_id="score",
+                status="not_found",
+                reason="No source-bound evidence was found.",
+            )
+        ],
+        llm_invoker=invoker,
+    )
+
+    assert "Supported conclusions" in result.answer
+    assert "Unresolved/unverifiable requirements" in result.answer
+    assert "score: No source-bound evidence was found." in result.answer
+
+
+@pytest.mark.asyncio
+async def test_q14_unsupported_segmentanybone_finding_is_never_rendered() -> None:
+    invoker = _RecordingInvoker(
+        {
+            "supported_findings": [
+                {
+                    "slot_id": "source",
+                    "statement": "SegmentAnyBone嚗皜穿?",
+                    "evidence_ids": ["E1"],
+                }
+            ],
+            "unresolved_requirements": [],
+        }
+    )
+    contract = QueryContract(
+        route="exact_structured",
+        intent="Identify the source requirement.",
+        required_slots=[
+            RequiredSlot(slot_id="source", description="Source requirement")
+        ],
+    )
+
+    result = await generate_final_answer(
+        question="Which source establishes the requirement?",
+        contract=contract,
+        packed_packets=[_packet()],
+        slot_resolutions=[
+            SlotResolution(
+                slot_id="source",
+                status="not_found",
+                reason="Required source evidence was not found.",
+            )
+        ],
+        llm_invoker=invoker,
+    )
+
+    assert "SegmentAnyBone" not in result.answer
+    assert "source: Required source evidence was not found." in result.answer

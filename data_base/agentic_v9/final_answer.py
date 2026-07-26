@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from functools import lru_cache
 import json
+from pathlib import Path
 from typing import Any, Protocol
 
+from core.prompt_loader import PromptRegistry
 from data_base.agentic_v9.citation_renderer import render_verified_answer
 from data_base.agentic_v9.claim_verifier import (
     ClaimVerifier,
@@ -22,6 +25,7 @@ from data_base.agentic_v9.schemas import (
     LlmInvoker,
     QueryContract,
     SlotResolution,
+    UnresolvedRequirement,
 )
 
 
@@ -65,9 +69,7 @@ class FinalAnswerRenderer:
                     {
                         "role": "system",
                         "content": (
-                            "Answer only from supplied evidence. Return JSON with exactly "
-                            "answer and claims. Every claim must list its evidence_ids or "
-                            "premise_evidence_ids; do not cite any other ID."
+                            _final_answer_prompt()
                         ),
                     },
                     {
@@ -82,35 +84,64 @@ class FinalAnswerRenderer:
                     },
                 ],
             )
-            if _is_fixed_no_claim_fallback(response):
-                return response
-            if isinstance(response, FinalAnswerResult):
-                response = {
-                    "supported_findings": [
-                        {
-                            "slot_id": claim.slot_id
-                            or _single_supported_slot_id(slot_resolutions),
-                            "statement": claim.statement,
-                            "evidence_ids": [
-                                *claim.evidence_ids,
-                                *claim.premise_evidence_ids,
-                            ],
-                        }
-                        for claim in response.claims
-                    ],
-                    "unresolved_requirements": [],
-                }
-            draft = FinalAnswerDraft.model_validate(_response_content(response))
         except Exception:
+            unresolved_requirements = _required_unresolved_requirements(
+                contract, slot_resolutions
+            )
             return FinalAnswerResult(
                 response_status="qualified_partial" if packets else "insufficient",
-                answer="Final generation was unavailable; no verified answer was produced.",
+                answer=render_verified_answer(
+                    (),
+                    packets,
+                    unresolved_requirements=unresolved_requirements,
+                    citation_format_version=self._citation_format_version,
+                ),
                 final_generation_count=0,
             )
+        if _is_fixed_no_claim_fallback(response):
+            return response
+        if isinstance(response, FinalAnswerResult):
+            response = {
+                "supported_findings": [
+                    {
+                        "slot_id": claim.slot_id
+                        or _single_supported_slot_id(slot_resolutions),
+                        "statement": claim.statement,
+                        "evidence_ids": [
+                            *claim.evidence_ids,
+                            *claim.premise_evidence_ids,
+                        ],
+                    }
+                    for claim in response.claims
+                ],
+                "unresolved_requirements": [],
+            }
+        try:
+            draft = FinalAnswerDraft.model_validate(_response_content(response))
+        except Exception:
+            draft = FinalAnswerDraft()
 
         accepted: list[FinalClaim] = []
         unresolved: list[FinalClaim] = []
+        contract_slot_ids = {slot.slot_id for slot in contract.required_slots}
+        resolutions_by_slot = {
+            resolution.slot_id: resolution for resolution in slot_resolutions
+        }
         for index, finding in enumerate(draft.supported_findings, start=1):
+            resolution = resolutions_by_slot.get(finding.slot_id)
+            if (
+                finding.slot_id not in contract_slot_ids
+                or resolution is None
+                or resolution.status != "supported"
+                or not finding.evidence_ids
+                or any(
+                    evidence_id not in packets_by_id
+                    or finding.slot_id not in packets_by_id[evidence_id].slot_ids
+                    or evidence_id not in resolution.evidence_ids
+                    for evidence_id in finding.evidence_ids
+                )
+            ):
+                continue
             claim = FinalClaim(
                 claim_id=f"claim-{index}",
                 slot_id=finding.slot_id,
@@ -150,11 +181,15 @@ class FinalAnswerRenderer:
             )
         )
         response_status = _response_status(accepted, slot_resolutions)
+        unresolved_requirements = _required_unresolved_requirements(
+            contract, slot_resolutions
+        )
         return FinalAnswerResult(
             response_status=response_status,
             answer=render_verified_answer(
                 accepted,
                 packets,
+                unresolved_requirements=unresolved_requirements,
                 citation_format_version=self._citation_format_version,
             ),
             claims=accepted,
@@ -271,6 +306,46 @@ def _response_status(
     ):
         return "complete"
     return "qualified_partial"
+
+
+def _required_unresolved_requirements(
+    contract: QueryContract,
+    slot_resolutions: Sequence[SlotResolution],
+) -> list[UnresolvedRequirement]:
+    resolutions_by_slot = {
+        resolution.slot_id: resolution for resolution in slot_resolutions
+    }
+    unresolved: list[UnresolvedRequirement] = []
+    for slot in contract.required_slots:
+        if not slot.required:
+            continue
+        resolution = resolutions_by_slot.get(slot.slot_id)
+        if resolution is not None and resolution.status == "supported":
+            continue
+        status = resolution.status if resolution is not None else "not_found"
+        reason = (
+            resolution.reason
+            if resolution is not None and resolution.reason
+            else {
+                "conflicted": "Conflicting source-bound evidence remains unresolved.",
+                "explicitly_unavailable": "Required evidence is explicitly unavailable.",
+                "not_found": "Required source-bound evidence was not found.",
+            }[status]
+        )
+        unresolved.append(
+            UnresolvedRequirement(slot_id=slot.slot_id, reason=reason)
+        )
+    return unresolved
+
+
+@lru_cache(maxsize=1)
+def _final_answer_prompt() -> str:
+    registry = PromptRegistry(
+        Path(__file__).resolve().parents[2]
+        / "prompts"
+        / "agentic_v9_final_answer.json"
+    )
+    return registry.format("final_answer")
 
 
 def _single_supported_slot_id(
