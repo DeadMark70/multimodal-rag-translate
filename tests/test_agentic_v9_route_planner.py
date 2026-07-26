@@ -212,3 +212,22 @@ async def test_ambiguous_planner_output_with_an_answer_or_scope_is_rejected() ->
         await RoutePlanner(llm_invoker=invoker).plan(
             question="Can you check this?", resolved_source_scope=_scope()
         )
+
+
+@pytest.mark.asyncio
+async def test_route_planner_delegates_to_v2_atomic_contract_planner() -> None:
+    contract = await RoutePlanner().plan(
+        question=(
+            "Using Alpha.pdf and Beta.pdf, report the values in Table 2 "
+            "and explain Equation 3."
+        ),
+        resolved_source_scope=ResolvedSourceScope(
+            requested_source_names=["Alpha.pdf", "Beta.pdf"],
+            resolved_doc_ids=["alpha", "beta"],
+            authorized_doc_ids=["alpha", "beta"],
+        ),
+    )
+
+    assert contract.contract_version == "2"
+    assert [slot.slot_id for slot in contract.required_slots] == ["S1", "S2"]
+    assert contract.route_decision is not None
