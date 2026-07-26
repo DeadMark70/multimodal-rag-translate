@@ -52,14 +52,20 @@ def backfill_visual_asset_manifest(
             existing_count += 1
             continue
         try:
-            payload = image_path.read_bytes()
-            with Image.open(image_path) as image:
+            resolved_image_path = uploads.resolve_upload_storage_reference(
+                user_id=user_id,
+                doc_id=doc_id,
+                storage_reference=reference,
+            )
+            payload = resolved_image_path.read_bytes()
+            with Image.open(resolved_image_path) as image:
                 width, height = image.size
-        except (OSError, UnidentifiedImageError):
+        except (OSError, UnidentifiedImageError, ValueError):
             continue
-        asset_id = "asset:backfill:" + hashlib.sha256(
-            f"{doc_id}|{reference}".encode("utf-8")
-        ).hexdigest()[:20]
+        asset_id = (
+            "asset:backfill:"
+            + hashlib.sha256(f"{doc_id}|{reference}".encode("utf-8")).hexdigest()[:20]
+        )
         graph_store.record_asset_link(
             GraphAssetLink(
                 asset_id=asset_id,
@@ -76,6 +82,11 @@ def backfill_visual_asset_manifest(
         added_count += 1
     if added_count:
         graph_store.save_sidecars()
+    if added_count == 0 and existing_count == 0:
+        return VisualAssetBackfillResult(
+            status="visual_assets_unavailable",
+            scanned_count=len(image_paths),
+        )
     return VisualAssetBackfillResult(
         status="completed",
         scanned_count=len(image_paths),

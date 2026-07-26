@@ -61,7 +61,9 @@ def _link(
     )
 
 
-def _write_png(upload_root: Path, relative: str, size: tuple[int, int] = (12, 8)) -> bytes:
+def _write_png(
+    upload_root: Path, relative: str, size: tuple[int, int] = (12, 8)
+) -> bytes:
     path = upload_root / Path(relative)
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", size, "white").save(path)
@@ -110,7 +112,12 @@ def test_authorized_manifest_locator_loads_into_asset_locator(
             1_000_000,
             "locator_not_matched",
         ),
-        ([_link(reference="user-1/doc-1/missing.png")], _task(), 1_000_000, "asset_load_failed"),
+        (
+            [_link(reference="user-1/doc-1/missing.png")],
+            _task(),
+            1_000_000,
+            "asset_load_failed",
+        ),
         ([_link()], _task(), 4, "asset_exceeds_cap"),
     ],
 )
@@ -157,7 +164,7 @@ def test_resolver_rejects_traversal_and_cross_document_references(
     result = VisualAssetResolver().resolve(
         user_id="user-1",
         task=_task(),
-        links=[_link(reference=reference)],
+        links=[_link().model_copy(update={"storage_reference": reference})],
     )
 
     assert result.assets == ()
@@ -173,10 +180,8 @@ def test_resolve_task_uses_bounded_manifest_lookup(
     _write_png(upload_root, "user-1/doc-1/page.png")
 
     class Store:
-        def lookup_asset_links(self, **kwargs):
-            assert kwargs["authorized_doc_ids"] == {"doc-1"}
-            assert kwargs["figure_id"] == "Figure 1"
-            assert kwargs["limit"] == 3
+        def get_asset_links(self, *, limit):
+            assert limit == 100
             return [_link()]
 
     result = VisualAssetResolver(store_factory=lambda _user_id: Store()).resolve_task(
@@ -195,3 +200,69 @@ def test_resolve_task_uses_bounded_manifest_lookup(
 
     assert [asset.asset_id for asset in result.assets] == ["asset-1"]
     assert result.assets[0].slot_ids == ["S1"]
+
+
+@pytest.mark.parametrize(
+    ("link", "expected_reason", "authorized_count", "locator_count"),
+    [
+        (_link(caption="Figure 9"), "locator_not_matched", 1, 0),
+        (
+            _link(doc_id="doc-2", reference="user-1/doc-2/page.png"),
+            "source_not_authorized",
+            0,
+            0,
+        ),
+    ],
+)
+def test_resolve_task_preserves_manifest_authorization_locator_stages(
+    tmp_path,
+    monkeypatch,
+    link,
+    expected_reason: str,
+    authorized_count: int,
+    locator_count: int,
+) -> None:
+    upload_root = tmp_path / "uploads"
+    monkeypatch.setattr(uploads, "BASE_UPLOAD_FOLDER", str(upload_root))
+
+    class Store:
+        def get_asset_links(self, *, limit):
+            assert limit == 100
+            return [link]
+
+    result = VisualAssetResolver(store_factory=lambda _user_id: Store()).resolve_task(
+        user_id="user-1",
+        task=_task(),
+        slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Figure 1 result",
+                locator_hints=["Figure 1"],
+                authorized_source_doc_ids=["doc-1"],
+                visual_policy="required",
+            )
+        ],
+    )
+
+    assert result.diagnostics.manifest_count == 1
+    assert result.diagnostics.authorized_count == authorized_count
+    assert result.diagnostics.locator_match_count == locator_count
+    assert result.diagnostics.terminal_reason == expected_reason
+
+
+def test_resolver_distinguishes_selection_from_failed_load(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    upload_root = tmp_path / "uploads"
+    monkeypatch.setattr(uploads, "BASE_UPLOAD_FOLDER", str(upload_root))
+
+    result = VisualAssetResolver().resolve(
+        user_id="user-1",
+        task=_task(),
+        links=[_link(reference="user-1/doc-1/missing.png")],
+    )
+
+    assert result.diagnostics.selected_count == 1
+    assert result.diagnostics.loaded_count == 0
+    assert result.diagnostics.terminal_reason == "asset_load_failed"

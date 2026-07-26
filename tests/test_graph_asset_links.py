@@ -4,7 +4,9 @@ import hashlib
 import json
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image
+from pydantic import ValidationError
 
 from graph_rag.schemas import GraphAssetLink
 from graph_rag.store import GraphStore
@@ -145,9 +147,7 @@ def test_graph_asset_link_loads_legacy_sidecar_without_resolvable_metadata(
         encoding="utf-8",
     )
 
-    links = GraphStore("user-1", storage_dir=tmp_path).get_asset_links_for_doc(
-        "doc-1"
-    )
+    links = GraphStore("user-1", storage_dir=tmp_path).get_asset_links_for_doc("doc-1")
 
     assert len(links) == 1
     assert links[0].storage_reference is None
@@ -256,3 +256,70 @@ def test_visual_asset_link_records_relative_reference_hash_and_dimensions(
     assert links[0].sha256 == expected_hash
     assert links[0].width == 13
     assert links[0].height == 17
+
+
+@pytest.mark.parametrize(
+    "storage_reference",
+    [
+        "C:/outside/secret.png",
+        "C:outside/secret.png",
+        "/outside/secret.png",
+        "\\\\server\\share\\secret.png",
+        "../doc-2/secret.png",
+        "user-1/../doc-2/secret.png",
+        "https://example.test/page.png",
+        "file:///outside/secret.png",
+        "data:image/png;base64,AAAA",
+        "user-1\\doc-1\\page.png",
+        "user-1//doc-1/page.png",
+        "./user-1/doc-1/page.png",
+    ],
+)
+def test_graph_asset_link_rejects_noncanonical_storage_references(
+    storage_reference: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        GraphAssetLink(
+            asset_id="invalid-reference",
+            doc_id="doc-1",
+            asset_type="figure",
+            storage_reference=storage_reference,
+        )
+
+
+def test_graph_asset_link_accepts_legacy_none_and_canonical_relative_reference() -> (
+    None
+):
+    legacy = GraphAssetLink(
+        asset_id="legacy",
+        doc_id="doc-1",
+        asset_type="figure",
+    )
+    canonical = GraphAssetLink(
+        asset_id="canonical",
+        doc_id="doc-1",
+        asset_type="figure",
+        storage_reference="user-1/doc-1/page.png",
+    )
+
+    assert legacy.storage_reference is None
+    assert canonical.storage_reference == "user-1/doc-1/page.png"
+
+
+def test_store_revalidates_storage_reference_at_record_and_write_boundaries(
+    tmp_path,
+) -> None:
+    invalid = GraphAssetLink.model_construct(
+        asset_id="bypassed",
+        doc_id="doc-1",
+        asset_type="figure",
+        storage_reference="data:image/png;base64,AAAA",
+    )
+    store = GraphStore("user-1", storage_dir=tmp_path)
+
+    with pytest.raises(ValidationError):
+        store.record_asset_link(invalid)
+
+    store.asset_links[invalid.asset_id] = invalid
+    with pytest.raises(ValidationError):
+        store.save_sidecars()

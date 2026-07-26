@@ -13,6 +13,7 @@ from langchain_core.documents import Document
 from evaluation.agentic_v9_campaign_runtime import (
     AgenticV9CampaignRuntime,
     _evidence_packets_for_results,
+    _initial_visual_execution,
 )
 from evaluation.agentic_v9_admission import V9AdmissionContract
 from data_base.agentic_v9.schemas import (
@@ -748,6 +749,40 @@ async def test_missing_preferred_visual_evidence_does_not_block_text_completion(
     assert result.agent_trace["agentic_v9"]["slot_resolutions"][0]["status"] == (
         "supported"
     )
+    for field in (
+        "manifest_count",
+        "authorized_count",
+        "locator_match_count",
+        "loaded_count",
+        "selected_count",
+        "dropped_count",
+        "evidence_packet_count",
+        "covered_slot_count",
+    ):
+        assert result.agent_trace["agentic_v9"]["visual_execution"][field] is None
+
+
+def test_unexecuted_visual_trace_counts_are_unknown_not_zero() -> None:
+    not_requested = _initial_visual_execution(None)
+    not_triggered = _initial_visual_execution(
+        QueryContract(
+            route="exact_structured",
+            intent="visual",
+            visual_requested=True,
+        )
+    )
+
+    assert not_requested["state"] == "not_requested"
+    assert not_triggered["state"] == "not_triggered"
+    for projection in (not_requested, not_triggered):
+        assert projection["manifest_count"] is None
+        assert projection["authorized_count"] is None
+        assert projection["locator_match_count"] is None
+        assert projection["loaded_count"] is None
+        assert projection["selected_count"] is None
+        assert projection["dropped_count"] is None
+        assert projection["evidence_packet_count"] is None
+        assert projection["covered_slot_count"] is None
 
 
 @pytest.mark.asyncio

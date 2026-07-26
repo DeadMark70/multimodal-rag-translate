@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from PIL import Image
 
 from core import uploads
@@ -84,3 +85,33 @@ def test_backfill_returns_explicit_unavailable_result_and_obeys_bound(
         (tmp_path / "graph" / "graph.asset_links.json").read_text("utf-8")
     )
     assert len(payload["assets"]) == 1
+
+
+def test_backfill_rejects_file_symlink_escape_before_reading(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    upload_root = tmp_path / "uploads"
+    document_dir = upload_root / "user-1" / "doc-1"
+    document_dir.mkdir(parents=True)
+    outside = tmp_path / "outside.png"
+    Image.new("RGB", (5, 5), "red").save(outside)
+    link = document_dir / "page.png"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+    monkeypatch.setattr(uploads, "BASE_UPLOAD_FOLDER", str(upload_root))
+    store = GraphStore("user-1", storage_dir=tmp_path / "graph")
+
+    result = backfill_visual_asset_manifest(
+        user_id="user-1",
+        doc_id="doc-1",
+        document_dir=document_dir,
+        store=store,
+        max_assets=10,
+    )
+
+    assert result.status == "visual_assets_unavailable"
+    assert result.added_count == 0
+    assert store.get_asset_links_for_doc("doc-1") == []

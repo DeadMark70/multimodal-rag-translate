@@ -324,9 +324,7 @@ class AgenticV9CampaignRuntime:
             )
             visual_slots = visual_slots_requiring_extraction(
                 state["contract"],
-                text_supported_slot_ids=set(
-                    text_evaluation.report.supported_slot_ids
-                ),
+                text_supported_slot_ids=set(text_evaluation.report.supported_slot_ids),
             )
             if (
                 state["contract"].visual_requested
@@ -388,9 +386,7 @@ class AgenticV9CampaignRuntime:
                     state["visual_execution"] = _visual_execution_projection(
                         visual_result,
                         required=state["contract"].visual_required,
-                        resolution_diagnostics=state[
-                            "visual_resolution_diagnostics"
-                        ],
+                        resolution_diagnostics=state["visual_resolution_diagnostics"],
                     )
                     state["visual_packets"].extend(visual_result.packets)
             return tuple(results)
@@ -964,9 +960,9 @@ def _failed_required_stage(*, policy: str, error: Exception) -> dict[str, Any]:
         "packed_item_ids": [],
         "resolved_source_doc_ids": [],
         "resolved_source_chunk_ids": [],
-        "selected_asset_count": 0,
-        "dropped_asset_count": 0,
-        "evidence_packet_count": 0,
+        "selected_asset_count": None,
+        "dropped_asset_count": None,
+        "evidence_packet_count": None,
         "supported_slot_ids": [],
     }
 
@@ -1106,17 +1102,17 @@ def _initial_visual_execution(contract: QueryContract | None) -> dict[str, Any]:
         "state": "not_triggered" if requested else "not_requested",
         "attempted": False,
         "failure_reason": None,
-        "selected_asset_count": 0,
-        "dropped_asset_count": 0,
-        "evidence_packet_count": 0,
+        "selected_asset_count": None,
+        "dropped_asset_count": None,
+        "evidence_packet_count": None,
         "supported_slot_ids": [],
-        "manifest_count": 0,
-        "authorized_count": 0,
-        "locator_match_count": 0,
-        "loaded_count": 0,
-        "selected_count": 0,
-        "dropped_count": 0,
-        "covered_slot_count": 0,
+        "manifest_count": None,
+        "authorized_count": None,
+        "locator_match_count": None,
+        "loaded_count": None,
+        "selected_count": None,
+        "dropped_count": None,
+        "covered_slot_count": None,
     }
 
 
@@ -1134,14 +1130,14 @@ def _visual_execution_projection(
         resolution_diagnostics.model_dump()
         if resolution_diagnostics is not None
         else {
-            "manifest_count": 0,
-            "authorized_count": 0,
-            "locator_match_count": 0,
-            "loaded_count": 0,
-            "selected_count": 0,
-            "dropped_count": 0,
-            "evidence_packet_count": 0,
-            "covered_slot_count": 0,
+            "manifest_count": None,
+            "authorized_count": None,
+            "locator_match_count": None,
+            "loaded_count": None,
+            "selected_count": None,
+            "dropped_count": None,
+            "evidence_packet_count": None,
+            "covered_slot_count": None,
             "terminal_reason": None,
         }
     )
@@ -1168,8 +1164,7 @@ def _visual_execution_projection(
             else (
                 result.dropped_assets[0].reason
                 if result.dropped_assets
-                else diagnostics["terminal_reason"]
-                or "no_eligible_visual_evidence"
+                else diagnostics["terminal_reason"] or "no_eligible_visual_evidence"
             )
         ),
         "selected_asset_count": len(result.located_assets),

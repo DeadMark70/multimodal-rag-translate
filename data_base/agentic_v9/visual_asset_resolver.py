@@ -30,14 +30,14 @@ class VisualAssetResolutionDiagnostics(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    manifest_count: int = Field(ge=0)
-    authorized_count: int = Field(ge=0)
-    locator_match_count: int = Field(ge=0)
-    loaded_count: int = Field(ge=0)
-    selected_count: int = Field(ge=0)
-    dropped_count: int = Field(ge=0)
-    evidence_packet_count: int = Field(default=0, ge=0)
-    covered_slot_count: int = Field(default=0, ge=0)
+    manifest_count: int | None = Field(default=None, ge=0)
+    authorized_count: int | None = Field(default=None, ge=0)
+    locator_match_count: int | None = Field(default=None, ge=0)
+    loaded_count: int | None = Field(default=None, ge=0)
+    selected_count: int | None = Field(default=None, ge=0)
+    dropped_count: int | None = Field(default=None, ge=0)
+    evidence_packet_count: int | None = Field(default=0, ge=0)
+    covered_slot_count: int | None = Field(default=0, ge=0)
     terminal_reason: str | None = None
 
 
@@ -79,30 +79,24 @@ class VisualAssetResolver:
         task: RetrievalTask,
         slots: Sequence[RequiredSlot],
     ) -> VisualAssetResolution:
-        """Read only bounded manifest rows named by authorized slot locators."""
+        """Read a bounded manifest, then preserve authorization and locator stages."""
         store = self._store_factory(user_id)
-        links_by_id: dict[str, GraphAssetLink] = {}
+        links = store.get_asset_links(limit=100)
         slot_ids_by_asset: dict[str, list[str]] = {}
         for slot in slots:
             authorized = set(
-                slot.authorized_source_doc_ids
-                or task.source_scope.authorized_doc_ids
+                slot.authorized_source_doc_ids or task.source_scope.authorized_doc_ids
             )
-            for locator in slot.locator_hints or task.locator_hints:
-                lookup = _lookup_arguments(locator)
-                if lookup is None:
+            locators = slot.locator_hints or task.locator_hints
+            for link in links:
+                if link.doc_id not in authorized:
                     continue
-                for link in store.lookup_asset_links(
-                    authorized_doc_ids=authorized,
-                    limit=self._max_assets_per_run,
-                    **lookup,
-                ):
-                    links_by_id[link.asset_id] = link
+                if _matches_locators(locators, link):
                     slot_ids_by_asset.setdefault(link.asset_id, []).append(slot.slot_id)
         return self.resolve(
             user_id=user_id,
             task=task,
-            links=links_by_id.values(),
+            links=links,
             slot_ids_by_asset=slot_ids_by_asset,
         )
 
@@ -118,7 +112,15 @@ class VisualAssetResolver:
         manifest = sorted(links, key=lambda link: link.asset_id)
         authorized_ids = set(task.source_scope.authorized_doc_ids)
         authorized = [link for link in manifest if link.doc_id in authorized_ids]
-        matched = [link for link in authorized if _matches_task_locator(task, link)]
+        matched = [
+            link
+            for link in authorized
+            if (
+                link.asset_id in slot_ids_by_asset
+                if slot_ids_by_asset is not None
+                else _matches_task_locator(task, link)
+            )
+        ]
         selected_links = matched[: self._max_assets_per_run]
         assets: list[VisualAssetCandidate] = []
         load_failures = 0
@@ -129,8 +131,7 @@ class VisualAssetResolver:
                 task=task,
                 link=link,
                 slot_ids=(
-                    (slot_ids_by_asset or {}).get(link.asset_id)
-                    or task.target_slot_ids
+                    (slot_ids_by_asset or {}).get(link.asset_id) or task.target_slot_ids
                 ),
             )
             if isinstance(result, VisualAssetCandidate):
@@ -147,9 +148,7 @@ class VisualAssetResolver:
             load_failures=load_failures,
             cap_failures=cap_failures,
         )
-        covered_slots = {
-            slot_id for asset in assets for slot_id in asset.slot_ids
-        }
+        covered_slots = {slot_id for asset in assets for slot_id in asset.slot_ids}
         return VisualAssetResolution(
             assets=tuple(assets),
             diagnostics=VisualAssetResolutionDiagnostics(
@@ -157,7 +156,7 @@ class VisualAssetResolver:
                 authorized_count=len(authorized),
                 locator_match_count=len(matched),
                 loaded_count=len(assets),
-                selected_count=len(assets),
+                selected_count=len(selected_links),
                 dropped_count=len(manifest) - len(assets),
                 covered_slot_count=len(covered_slots),
                 terminal_reason=terminal_reason,
@@ -192,10 +191,7 @@ class VisualAssetResolver:
             return "asset_load_failed"
         if link.sha256 and hashlib.sha256(payload).hexdigest() != link.sha256:
             return "asset_load_failed"
-        if (
-            width > self._max_image_width
-            or height > self._max_image_height
-        ):
+        if width > self._max_image_width or height > self._max_image_height:
             return "asset_exceeds_cap"
         return VisualAssetCandidate(
             asset_id=link.asset_id,
@@ -246,9 +242,13 @@ def _lookup_arguments(locator: str) -> dict[str, object] | None:
 
 
 def _matches_task_locator(task: RetrievalTask, link: GraphAssetLink) -> bool:
-    if not task.locator_hints:
+    return _matches_locators(task.locator_hints, link)
+
+
+def _matches_locators(locators: Sequence[str], link: GraphAssetLink) -> bool:
+    if not locators:
         return True
-    for locator in task.locator_hints:
+    for locator in locators:
         lookup = _lookup_arguments(locator)
         if lookup is None:
             continue
