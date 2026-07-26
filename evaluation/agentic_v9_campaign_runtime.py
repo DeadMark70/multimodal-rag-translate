@@ -27,6 +27,7 @@ from data_base.agentic_v9.budget_feasibility import (
 )
 from data_base.agentic_v9.budgeted_llm import BudgetedLlmInvoker
 from data_base.agentic_v9.context_packer import EvidenceContextPacker, PackedEvidenceContext
+from data_base.agentic_v9.contract_planner import QuestionContractPlanner
 from data_base.agentic_v9.citation_renderer import render_verified_answer
 from data_base.agentic_v9.execution_core import (
     ConflictStageResult,
@@ -149,9 +150,40 @@ class AgenticV9CampaignRuntime:
             user_id=user_id,
             source_references=authorized_doc_ids,
             document_reference_resolver=self._document_reference_resolver,
+            setup_policy=setup_snapshot,
         )
         source_scope = admission.source_scope
         runtime_contract = admission.contract
+        budget_controller = RunBudgetController(
+            max_llm_calls=_pre_route_llm_calls(setup_snapshot),
+            runtime_token_budget=_pre_route_token_budget(setup_snapshot),
+            setup_snapshot=setup_snapshot,
+            final_input_tokens=_final_input_reserve(
+                setup_snapshot, _pre_route_token_budget(setup_snapshot)
+            ),
+        )
+        if (
+            runtime_contract.route_decision is not None
+            and runtime_contract.route_decision.decision_source == "safe_fallback"
+            and runtime_contract.route_decision.fallback_reason
+            == "planner_unavailable"
+        ):
+            runtime_contract = await QuestionContractPlanner(
+                llm_invoker=BudgetedLlmInvoker(
+                    controller=budget_controller,
+                    provider_factory=self._provider_factory,
+                )
+            ).plan(
+                question=question,
+                authorized_source_names=list(
+                    source_scope.requested_source_names
+                ),
+                authorized_source_doc_ids=list(source_scope.authorized_doc_ids),
+                setup_policy=dict(setup_snapshot),
+            )
+            runtime_contract = runtime_contract.model_copy(
+                update={"resolved_source_scope": source_scope}
+            )
         request = V9ExecutionRequest(
             question=question,
             requested_doc_ids=list(source_scope.authorized_doc_ids),
@@ -166,7 +198,7 @@ class AgenticV9CampaignRuntime:
             "repairs": [],
             "evidence_packets": [],
             "post_contract": None,
-            "budget_controller": None,
+            "budget_controller": budget_controller,
             "task_slot_ids": {},
             "graph_execution": None,
             "visual_execution": None,
@@ -189,8 +221,19 @@ class AgenticV9CampaignRuntime:
                 contract=contract,
                 setup_snapshot=setup_snapshot,
                 remaining_token_budget=contract.runtime_token_budget,
-                remaining_llm_calls=contract.max_llm_calls,
-                route_plan_used=False,
+                remaining_llm_calls=(
+                    contract.max_llm_calls
+                    - int(
+                        bool(
+                            contract.route_decision
+                            and contract.route_decision.planner_call_used
+                        )
+                    )
+                ),
+                route_plan_used=bool(
+                    contract.route_decision
+                    and contract.route_decision.planner_call_used
+                ),
             )
             state["contract"] = contract
             state["post_contract"] = post_contract
@@ -200,14 +243,6 @@ class AgenticV9CampaignRuntime:
                 raise _ConfigurationIncompatible(
                     stage="post_contract", feasibility=post_contract
                 )
-            state["budget_controller"] = RunBudgetController(
-                max_llm_calls=contract.max_llm_calls,
-                runtime_token_budget=contract.runtime_token_budget,
-                setup_snapshot=setup_snapshot,
-                final_input_tokens=_final_input_reserve(
-                    setup_snapshot, contract.runtime_token_budget
-                ),
-            )
             return contract
 
         async def retrieve(
@@ -292,6 +327,21 @@ class AgenticV9CampaignRuntime:
                 graph_execution=state["graph_execution"],
                 visual_execution=state["visual_execution"],
             )
+            if (
+                contract.slot_plan_status == "degraded"
+                and evaluation.report.response_status == "complete"
+            ):
+                evaluation = evaluation.model_copy(
+                    update={
+                        "report": evaluation.report.model_copy(
+                            update={
+                                "evidence_complete": False,
+                                "response_status": "qualified_partial",
+                                "stop_reason": "slot_plan_degraded",
+                            }
+                        )
+                    }
+                )
             state["final_slot_resolutions"] = evaluation.slot_resolutions
             return evaluation
 
@@ -1010,7 +1060,7 @@ def _pre_route_token_budget(snapshot: dict[str, Any]) -> int:
 
 
 def _pre_route_llm_calls(snapshot: dict[str, Any]) -> int:
-    return _setup_positive_int(snapshot, "max_llm_calls", default=3)
+    return _setup_positive_int(snapshot, "max_llm_calls", default=5)
 
 
 def _final_input_reserve(snapshot: dict[str, Any], runtime_token_budget: int) -> int:

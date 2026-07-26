@@ -60,6 +60,33 @@ class _FailingProvider:
         self.ainvoke = AsyncMock(side_effect=RuntimeError("provider unavailable"))
 
 
+class _ContractProvider:
+    def __init__(self) -> None:
+        self.ainvoke = AsyncMock(
+            return_value=SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "selected_route": "single_lookup",
+                        "slots": [
+                            {
+                                "description": "Retrieve the requested source-bound fact.",
+                                "source_name_hints": ["paper.pdf"],
+                                "authorized_source_doc_ids": ["doc-1"],
+                                "locator_hints": [],
+                                "expected_answer_type": "text",
+                                "depends_on_slot_ids": [],
+                                "visual_policy": "never",
+                            }
+                        ],
+                        "route_reason": "One ambiguous source-bound request.",
+                        "confidence": 0.75,
+                    }
+                ),
+                usage_metadata={"input_tokens": 8, "output_tokens": 4},
+            )
+        )
+
+
 def _setup() -> dict[str, object]:
     return {
         "max_input_tokens": 4096,
@@ -73,6 +100,10 @@ async def _identity_reference_resolver(
 ) -> dict[str, str]:
     """Keep unit tests independent of the production document repository."""
     return {reference: reference for reference in references}
+
+
+async def _async_value(value):
+    return value
 
 
 @pytest.mark.asyncio
@@ -110,6 +141,95 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     assert result.documents
     retrieve_documents.assert_awaited()
     provider.ainvoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_runtime_plans_ambiguity_once_and_persists_exact_v2_contract() -> None:
+    planning_provider = _ContractProvider()
+    final_provider = _Provider()
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="The requested source-bound fact is stated here.",
+                    metadata={
+                        "doc_id": "doc-1",
+                        "page_number": 1,
+                        "chunk_id": "chunk-1",
+                    },
+                )
+            ]
+        ),
+        provider_factory=lambda purpose: (
+            planning_provider
+            if purpose == "atomic_contract_planning"
+            else final_provider
+        ),
+        document_reference_resolver=lambda _user_id, _references: _async_value(
+            {"paper.pdf": "doc-1"}
+        ),
+    )
+
+    result = await runtime.execute(
+        question="Please investigate this unclear request.",
+        user_id="user-a",
+        authorized_doc_ids=["paper.pdf"],
+        setup_snapshot={**_setup(), "max_llm_calls": 5},
+        trace_id="ambiguous-contract-once",
+    )
+
+    contract = result.agent_trace["agentic_v9"]["query_contract"]
+    assert planning_provider.ainvoke.await_count == 1
+    assert contract["contract_version"] == "2"
+    assert contract["slot_plan_status"] == "complete"
+    assert contract["route_decision"]["decision_source"] == "llm_planner"
+    assert contract["route_decision"]["planner_call_used"] is True
+    assert contract["required_slots"][0]["authorized_source_doc_ids"] == ["doc-1"]
+
+
+@pytest.mark.asyncio
+async def test_degraded_runtime_slot_plan_cannot_return_complete() -> None:
+    invalid_planning_provider = SimpleNamespace(
+        ainvoke=AsyncMock(
+            return_value=SimpleNamespace(
+                content="not-json",
+                usage_metadata={"input_tokens": 1, "output_tokens": 1},
+            )
+        )
+    )
+    final_provider = _Provider()
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="A source-bound fact is present.",
+                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+                )
+            ]
+        ),
+        provider_factory=lambda purpose: (
+            invalid_planning_provider
+            if purpose == "atomic_contract_planning"
+            else final_provider
+        ),
+        document_reference_resolver=lambda _user_id, _references: _async_value(
+            {"paper.pdf": "doc-1"}
+        ),
+    )
+
+    result = await runtime.execute(
+        question="Please investigate this unclear request.",
+        user_id="user-a",
+        authorized_doc_ids=["paper.pdf"],
+        setup_snapshot={**_setup(), "max_llm_calls": 5},
+        trace_id="degraded-contract",
+    )
+
+    assert (
+        result.agent_trace["agentic_v9"]["query_contract"]["slot_plan_status"]
+        == "degraded"
+    )
+    assert result.agent_trace["response_status"] != "complete"
 
 
 @pytest.mark.asyncio

@@ -326,7 +326,19 @@ class EvaluationRunRecorder:
         await self._safe_record(self.tool_call_repository.record_tool_call, call)
 
     async def record_routing_decision(self, decision: EvaluationRoutingDecision) -> None:
-        await self._safe_record(self.routing_decision_repository.record_routing_decision, decision)
+        payload = dict(decision.payload)
+        payload.update(
+            {
+                "decision_source": decision.decision_source,
+                "candidate_routes": list(decision.candidate_routes),
+                "matched_rules": list(decision.matched_rules),
+                "fallback_reason": decision.fallback_reason,
+            }
+        )
+        await self._safe_record(
+            self.routing_decision_repository.record_routing_decision,
+            decision.model_copy(update={"payload": payload}),
+        )
 
     async def record_claim(self, claim: EvaluationClaim) -> None:
         await self._safe_record(self.claim_repository.record_claim, claim)

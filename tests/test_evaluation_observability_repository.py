@@ -335,6 +335,59 @@ async def test_observability_repository_round_trips_run_details(tmp_path, monkey
 
 
 @pytest.mark.asyncio
+async def test_actual_and_retrospective_routing_rows_keep_distinct_provenance(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db"
+    )
+    await _seed_campaign("campaign-route-types")
+    repository = EvaluationObservabilityRepository()
+    created_at = datetime(2026, 7, 26, tzinfo=timezone.utc)
+
+    await repository.record_routing_decision(
+        EvaluationRoutingDecision(
+            routing_decision_id="route-retrospective",
+            run_id="run-route-types",
+            campaign_id="campaign-route-types",
+            selected_mode="agentic",
+            analysis_type="retrospective",
+            reason="policy analysis",
+            created_at=created_at,
+        )
+    )
+    await repository.record_routing_decision(
+        EvaluationRoutingDecision(
+            routing_decision_id="route-actual",
+            run_id="run-route-types",
+            campaign_id="campaign-route-types",
+            selected_mode="agentic",
+            analysis_type="actual",
+            decision_source="safe_fallback",
+            candidate_routes=["single_lookup"],
+            matched_rules=["ambiguous"],
+            fallback_reason="planner_timeout",
+            reason="Use bounded safe retrieval.",
+            confidence=0.0,
+            created_at=created_at + timedelta(microseconds=1),
+        )
+    )
+
+    decisions = await repository.list_routing_decisions_for_run(
+        "run-route-types"
+    )
+    assert [decision.analysis_type for decision in decisions] == [
+        "retrospective",
+        "actual",
+    ]
+    assert decisions[0].decision_source is None
+    assert decisions[1].decision_source == "safe_fallback"
+    assert decisions[1].candidate_routes == ["single_lookup"]
+    assert decisions[1].matched_rules == ["ambiguous"]
+    assert decisions[1].fallback_reason == "planner_timeout"
+
+
+@pytest.mark.asyncio
 async def test_observability_repository_serializes_common_non_json_payload_values(
     tmp_path, monkeypatch
 ) -> None:

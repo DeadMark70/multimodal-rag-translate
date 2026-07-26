@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from evaluation.accounting_schemas import TokenBreakdown
 from evaluation.campaign_schemas import CampaignMode
@@ -178,6 +178,31 @@ class EvaluationRoutingDecision(BaseModel):
     reason: Optional[str] = None
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
+
+    @model_validator(mode="after")
+    def project_persisted_provenance(self) -> EvaluationRoutingDecision:
+        """Restore additive provenance fields from legacy payload-backed rows."""
+        if self.decision_source is None:
+            self.decision_source = self.payload.get("decision_source")
+        if not self.candidate_routes:
+            self.candidate_routes = list(
+                self.payload.get("candidate_routes") or []
+            )
+        if not self.matched_rules:
+            self.matched_rules = list(self.payload.get("matched_rules") or [])
+        if self.fallback_reason is None:
+            self.fallback_reason = self.payload.get("fallback_reason")
+        elif self.payload.get("fallback_reason") is None:
+            self.payload["fallback_reason"] = self.fallback_reason
+        if self.decision_source is not None:
+            self.payload.setdefault("decision_source", self.decision_source)
+        if self.candidate_routes:
+            self.payload.setdefault(
+                "candidate_routes", list(self.candidate_routes)
+            )
+        if self.matched_rules:
+            self.payload.setdefault("matched_rules", list(self.matched_rules))
+        return self
 
 
 class EvaluationClaim(BaseModel):

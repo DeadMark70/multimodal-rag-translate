@@ -1042,6 +1042,106 @@ async def test_agentic_trace_persists_routing_and_tool_observability() -> None:
 
 
 @pytest.mark.asyncio
+async def test_v9_actual_route_is_persisted_separately_from_retrospective_route() -> None:
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="bounded answer",
+            contexts=["ctx"],
+            source_doc_ids=["doc-a"],
+            expected_sources=["doc-a"],
+            latency_ms=9,
+            token_usage={"total_tokens": 12},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+            execution_profile="agentic-v9-eval",
+            agent_trace={
+                "classifier_decision": {
+                    "routing_reason": "retrospective policy view",
+                    "confidence": 0.4,
+                },
+                "agentic_v9": {
+                    "query_contract": {
+                        "contract_version": "2",
+                        "route": "multi_document_exact",
+                        "intent": "Resolve exact facts.",
+                        "slot_plan_status": "complete",
+                        "route_decision": {
+                            "selected_route": "multi_document_exact",
+                            "decision_source": "deterministic",
+                            "matched_rules": ["multiple_named_sources"],
+                            "candidate_routes": [
+                                "multi_document_exact",
+                                "exact_structured",
+                            ],
+                            "route_reason": "Multiple named sources.",
+                            "planner_call_used": False,
+                            "fallback_reason": None,
+                            "confidence": 1.0,
+                        },
+                    }
+                },
+            },
+        )
+
+    db_path = _make_db_path()
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        observability_repo = EvaluationObservabilityRepository()
+        campaign = await campaign_repo.create(
+            user_id="user-a",
+            name="Actual routing observability",
+            config=_campaign_config_for_test_case_ids(
+                ["Q-ACTUAL"], modes=["agentic"]
+            ),
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+        await engine._run_campaign(
+            user_id="user-a",
+            campaign_id=campaign.id,
+            config=campaign.config,
+            test_cases=[
+                TestCase(
+                    id="Q-ACTUAL",
+                    question="Compare the sources.",
+                    ground_truth="Evidence",
+                    category="routing",
+                    difficulty="hard",
+                )
+            ],
+        )
+
+        result = (
+            await result_repo.list_for_campaign(
+                user_id="user-a", campaign_id=campaign.id
+            )
+        )[0]
+        decisions = await observability_repo.list_routing_decisions_for_run(
+            result.id
+        )
+
+    assert [decision.analysis_type for decision in decisions] == [
+        "retrospective",
+        "actual",
+    ]
+    actual = decisions[1]
+    assert actual.decision_source == "deterministic"
+    assert actual.candidate_routes == [
+        "multi_document_exact",
+        "exact_structured",
+    ]
+    assert actual.matched_rules == ["multiple_named_sources"]
+    assert actual.reason == "Multiple named sources."
+    assert actual.confidence == 1.0
+    assert actual.fallback_reason is None
+
+
+@pytest.mark.asyncio
 async def test_campaign_result_records_retrieval_context_and_evidence_flow() -> None:
     async def runner(**kwargs) -> BenchmarkExecutionResult:
         test_case = kwargs["test_case"]

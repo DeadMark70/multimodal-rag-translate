@@ -582,6 +582,61 @@ async def _record_unit_research_observability(
             )
 
     v9_payload = trace_payload.get("agentic_v9")
+    query_contract = (
+        v9_payload.get("query_contract") if isinstance(v9_payload, dict) else None
+    )
+    actual_route = (
+        query_contract.get("route_decision")
+        if isinstance(query_contract, dict)
+        else None
+    )
+    if isinstance(actual_route, dict):
+        async with recorder.start_span(
+            stage_type="routing",
+            stage_name="agentic_v9_actual_routing",
+            event_type="routing_decision",
+            payload={
+                "request_id": request_id,
+                "question_id": execution.unit.test_case.id,
+                "selected_route": actual_route.get("selected_route"),
+                "decision_source": actual_route.get("decision_source"),
+            },
+        ) as routing_span:
+            await recorder.record_routing_decision(
+                EvaluationRoutingDecision(
+                    routing_decision_id=str(uuid4()),
+                    run_id=run_id,
+                    campaign_id=campaign_id,
+                    span_id=routing_span.span_id,
+                    selected_mode=execution.unit.mode,
+                    analysis_type="actual",
+                    decision_source=actual_route.get("decision_source"),
+                    candidate_routes=list(
+                        actual_route.get("candidate_routes") or []
+                    ),
+                    matched_rules=list(actual_route.get("matched_rules") or []),
+                    fallback_reason=actual_route.get("fallback_reason"),
+                    confidence=actual_route.get("confidence"),
+                    reason=actual_route.get("route_reason"),
+                    payload={
+                        "selected_route": actual_route.get("selected_route"),
+                        "decision_source": actual_route.get("decision_source"),
+                        "candidate_routes": list(
+                            actual_route.get("candidate_routes") or []
+                        ),
+                        "matched_rules": list(
+                            actual_route.get("matched_rules") or []
+                        ),
+                        "planner_call_used": bool(
+                            actual_route.get("planner_call_used")
+                        ),
+                        "fallback_reason": actual_route.get(
+                            "fallback_reason"
+                        ),
+                    },
+                    created_at=created_at,
+                )
+            )
     graph_execution = (
         v9_payload.get("graph_execution") if isinstance(v9_payload, dict) else None
     )
