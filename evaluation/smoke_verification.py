@@ -486,8 +486,14 @@ def _verify_supported_claims(runs: list[dict[str, Any]]) -> RequirementResult:
             item = _as_mapping(claim)
             slot_id = str(item.get("slot_id") or "")
             claim_status = str(item.get("status") or item.get("support_type") or "")
-            if slot_id and claim_status in positive_support and resolutions.get(slot_id) != "supported":
+            if claim_status not in positive_support:
+                continue
+            if not slot_id:
+                return RequirementResult("fail", "supported final claim is missing a slot binding")
+            if resolutions.get(slot_id) != "supported":
                 return RequirementResult("fail", "unsupported slot emitted as a supported final claim")
+            if not _as_strings(item.get("evidence_ids")):
+                return RequirementResult("fail", "supported final claim is missing evidence provenance")
     return RequirementResult("pass")
 
 

@@ -390,6 +390,24 @@ def test_unsupported_slot_cannot_be_exported_as_a_supported_final_claim() -> Non
 
 
 @pytest.mark.parametrize(
+    "claim",
+    [
+        {"support_type": "direct", "evidence_ids": []},
+        {"slot_id": "unknown-slot", "support_type": "calculated", "evidence_ids": ["evidence-a"]},
+        {"slot_id": "fact-a", "support_type": "comparative_inference", "evidence_ids": []},
+    ],
+)
+def test_positive_final_claims_require_slot_and_evidence_provenance(claim: dict[str, Any]) -> None:
+    artifact = _complete_export()
+    artifact["runs"][0]["agent_trace"]["agentic_v9"]["final_claims"] = [claim]
+
+    report = verify_campaign_export(artifact)
+
+    assert report.status == "fail"
+    assert report.requirements["supported_claims"].status == "fail"
+
+
+@pytest.mark.parametrize(
     "mutate",
     [
         lambda artifact: artifact["runs"][0]["agent_trace"]["agentic_v9"].pop("budget_reservations"),
