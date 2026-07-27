@@ -109,6 +109,14 @@ def _recovery_diagnostics_export() -> dict[str, Any]:
         v9["query_contract"]["required_slots"][0]["authorized_source_doc_ids"] = [
             "doc-authorized"
         ]
+        v9["query_contract"]["resolved_source_scope"] = {
+            "authorized_doc_ids": ["doc-authorized"],
+            "source_name_to_doc_ids": {},
+        }
+        if question_id in {"Q14", "Q16"}:
+            v9["query_contract"]["required_slots"][0]["locator_hints"] = [
+                "Table 3"
+            ]
         v9["evidence_packets"] = [
             {
                 "evidence_id": "evidence-a",
@@ -401,6 +409,67 @@ def test_recovery_diagnostics_fail_closed_on_task_1_to_3_regressions() -> None:
     reranking = lost_rerank_candidates["runs"][0]["agent_trace"]["agentic_v9"]["retrieval_diagnostics"][0]["reranking"]
     reranking.update({"fallback_reason": "exception", "selected_count": 0})
     assert verify_campaign_export(lost_rerank_candidates).status == "fail"
+
+
+def test_locator_diagnostics_must_cover_each_structured_slot() -> None:
+    artifact = _recovery_diagnostics_export()
+    q14 = artifact["runs"][3]["agent_trace"]["agentic_v9"]
+    q14["query_contract"]["required_slots"].append(
+        {
+            "slot_id": "ordinary-slot",
+            "description": "State the ordinary result.",
+            "authorized_source_doc_ids": ["doc-authorized"],
+        }
+    )
+    q14["slot_resolutions"].append(
+        {
+            "slot_id": "ordinary-slot",
+            "status": "supported",
+            "evidence_ids": ["evidence-a"],
+        }
+    )
+    q14["final_claims"].append(
+        {
+            "slot_id": "ordinary-slot",
+            "support_type": "direct",
+            "evidence_ids": ["evidence-a"],
+        }
+    )
+    q14["locator_diagnostics"] = [{"slot_id": "ordinary-slot", "state": "matched"}]
+
+    report = verify_campaign_export(artifact)
+
+    assert report.status == "fail"
+    assert report.requirements["retrieval_evidence_recovery"].status == "fail"
+
+
+def test_packet_source_scope_uses_source_name_slot_authorization() -> None:
+    artifact = _recovery_diagnostics_export()
+    v9 = artifact["runs"][0]["agent_trace"]["agentic_v9"]
+    contract = v9["query_contract"]
+    contract["resolved_source_scope"] = {
+        "authorized_doc_ids": ["doc-alpha", "doc-beta"],
+        "source_name_to_doc_ids": {"Alpha.pdf": ["doc-alpha"]},
+    }
+    slot = contract["required_slots"][0]
+    slot["authorized_source_doc_ids"] = []
+    slot["source_name_hints"] = ["Alpha.pdf"]
+    v9["evidence_packets"][0]["source"]["doc_id"] = "doc-alpha"
+
+    report = verify_campaign_export(artifact)
+
+    assert report.status == "pass"
+
+
+def test_packet_source_scope_rejects_unknown_slot_ids() -> None:
+    artifact = _recovery_diagnostics_export()
+    packet = artifact["runs"][0]["agent_trace"]["agentic_v9"]["evidence_packets"][0]
+    packet["slot_ids"] = ["unknown-slot"]
+
+    report = verify_campaign_export(artifact)
+
+    assert report.status == "fail"
+    assert report.requirements["retrieval_evidence_recovery"].status == "fail"
 
 
 def test_manifest_recursively_redacts_setup_secrets(tmp_path: Path) -> None:

@@ -10,9 +10,9 @@ from data_base.agentic_v9.schemas import RequiredSlot, ResolvedSourceScope
 
 
 _LOCATOR_PATTERN = re.compile(
-    r"^(figure|fig\.?|table|equation|eq\.?|formula|theorem|appendix|section)"
-    r"\s*[-:#.]?\s*(.*)$",
-    re.IGNORECASE,
+    r"^((?i:figure|fig\.?|table|equation|eq\.?|formula|theorem|appendix|section))"
+    r"\s*[-:#.]?\s*"
+    r"(\(?\d+[A-Za-z]{0,3}\)?(?:\.\d+[A-Za-z]{0,3}){0,4}(?:\([A-Za-z0-9]{1,3}\))?|[A-Z]{1,3}\d*)$"
 )
 _LOCATOR_TYPE_ALIASES = {
     "fig": "figure",

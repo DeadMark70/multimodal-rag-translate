@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
 
+from data_base.agentic_v9.slot_constraints import canonical_locator_set
 from core.sensitive_data import sanitize_credential_value
 
 
@@ -549,12 +550,9 @@ def _verify_retrieval_evidence_recovery(
                 )
 
         if question_id in {"Q14", "Q16"}:
-            locator_diagnostics = _as_list(v9.get("locator_diagnostics"))
-            if not locator_diagnostics:
-                return RequirementResult("partial", "locator state diagnostics are missing")
-            states = {str(item.get("state") or "") for item in locator_diagnostics}
-            if not states.issubset({"matched", "mismatched", "unavailable"}):
-                return RequirementResult("fail", "locator diagnostics contain an invalid state")
+            locator_error = _verify_structured_locator_diagnostics(v9)
+            if locator_error is not None:
+                return locator_error
 
         evidence_calls = [
             call for call in _calls_for_run(llm_calls, run) if call.get("phase") == "evidence_extract"
@@ -574,9 +572,7 @@ def _verify_packet_source_scope(
     scope = _as_mapping(contract.get("resolved_source_scope"))
     default_ids = set(_as_strings(scope.get("authorized_doc_ids")))
     slots = {
-        str(slot.get("slot_id") or ""): set(
-            _as_strings(slot.get("authorized_source_doc_ids"))
-        )
+        str(slot.get("slot_id") or ""): slot
         for slot in _as_list(contract.get("required_slots"))
         if str(slot.get("slot_id") or "")
     }
@@ -586,12 +582,104 @@ def _verify_packet_source_scope(
         if not doc_id or not slot_ids:
             return RequirementResult("partial", "evidence packet source scope is incomplete")
         for slot_id in slot_ids:
-            authorized = slots.get(slot_id, default_ids)
+            slot = slots.get(slot_id)
+            if slot is None:
+                return RequirementResult("fail", "evidence packet references an unknown slot")
+            authorized = _effective_slot_doc_ids(slot, scope, default_ids)
             if not authorized:
                 return RequirementResult("partial", "slot authorization diagnostics are missing")
             if doc_id not in authorized:
                 return RequirementResult("fail", "out-of-scope document entered evidence")
     return None
+
+
+def _verify_structured_locator_diagnostics(
+    v9: Mapping[str, Any],
+) -> RequirementResult | None:
+    """Require one valid locator state per requested structured slot."""
+    contract = _as_mapping(v9.get("query_contract")) or _as_mapping(v9.get("contract"))
+    slots = {
+        str(slot.get("slot_id") or ""): slot
+        for slot in _as_list(contract.get("required_slots"))
+        if str(slot.get("slot_id") or "")
+    }
+    structured_slot_ids = {
+        slot_id
+        for slot_id, slot in slots.items()
+        if canonical_locator_set(_as_strings(slot.get("locator_hints")))
+    }
+    if not structured_slot_ids:
+        return None
+    raw_diagnostics = v9.get("locator_diagnostics")
+    if not isinstance(raw_diagnostics, list):
+        return RequirementResult("partial", "locator state diagnostics are missing")
+    diagnostics = _as_list(raw_diagnostics)
+    if len(diagnostics) != len(raw_diagnostics):
+        return RequirementResult("fail", "locator diagnostic is malformed")
+    if not diagnostics:
+        return RequirementResult("partial", "locator state diagnostics are missing")
+    task_slots = _serialized_task_slots(v9)
+    covered_slot_ids: set[str] = set()
+    for diagnostic in diagnostics:
+        slot_id = str(diagnostic.get("slot_id") or "").strip()
+        if not slot_id or slot_id not in slots:
+            return RequirementResult("fail", "locator diagnostic references an unknown slot")
+        task_id = diagnostic.get("task_id")
+        if task_id is not None:
+            normalized_task_id = str(task_id).strip()
+            if not normalized_task_id:
+                return RequirementResult("fail", "locator diagnostic task reference is malformed")
+            declared_slots = task_slots.get(normalized_task_id)
+            if declared_slots is not None and slot_id not in declared_slots:
+                return RequirementResult("fail", "locator diagnostic is not bound to its task slot")
+        if slot_id not in structured_slot_ids:
+            continue
+        if str(diagnostic.get("state") or "") not in {
+            "matched",
+            "mismatched",
+            "unavailable",
+        }:
+            return RequirementResult("fail", "locator diagnostics contain an invalid state")
+        covered_slot_ids.add(slot_id)
+    if structured_slot_ids.difference(covered_slot_ids):
+        return RequirementResult("fail", "structured slot lacks locator state diagnostics")
+    return None
+
+
+def _serialized_task_slots(v9: Mapping[str, Any]) -> dict[str, set[str]]:
+    """Return task-slot bindings only when the serialized trace provides them."""
+    bindings: dict[str, set[str]] = {}
+    tasks = _as_list(v9.get("retrieval_tasks"))
+    tasks.extend(
+        task
+        for repair in _as_list(v9.get("repairs"))
+        for task in _as_list(repair.get("tasks"))
+    )
+    for task in tasks:
+        task_id = str(task.get("task_id") or "").strip()
+        if task_id:
+            bindings[task_id] = set(_as_strings(task.get("target_slot_ids")))
+    return bindings
+
+
+def _effective_slot_doc_ids(
+    slot: Mapping[str, Any], scope: Mapping[str, Any], global_doc_ids: set[str]
+) -> set[str]:
+    """Mirror the runtime's slot authorization using serialized contract fields."""
+    direct_ids = set(_as_strings(slot.get("authorized_source_doc_ids")))
+    source_name_to_doc_ids = _as_mapping(scope.get("source_name_to_doc_ids"))
+    named_ids = {
+        doc_id
+        for source_name in _as_strings(slot.get("source_name_hints"))
+        for doc_id in _as_strings(source_name_to_doc_ids.get(source_name))
+    }
+    if not direct_ids and not named_ids:
+        candidates = global_doc_ids
+    elif direct_ids and named_ids:
+        candidates = direct_ids.intersection(named_ids)
+    else:
+        candidates = direct_ids or named_ids
+    return candidates.intersection(global_doc_ids)
 
 
 def _not_executed_report(reason: str) -> VerificationReport:
