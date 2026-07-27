@@ -242,7 +242,7 @@ class QuestionContractPlanner:
             locator_hints=locators,
             visual_requested=visual_requested,
             visual_required=visual_required,
-            evidence_extraction_required=True,
+            evidence_extraction_required=False,
             max_retrieval_rounds=budget.max_retrieval_rounds,
             max_repair_rounds=budget.max_repair_rounds,
             max_llm_calls=budget.max_llm_calls + int(planner_call_requested),

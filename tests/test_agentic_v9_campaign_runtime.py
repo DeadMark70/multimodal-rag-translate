@@ -212,6 +212,40 @@ class _EvidenceThenFinalProvider:
         )
 
 
+class _MalformedEvidenceThenFinalProvider:
+    """Return malformed evidence curation, then support a valid final call."""
+
+    def __init__(self) -> None:
+        self.ainvoke = AsyncMock(side_effect=self._respond)
+        self.extraction_calls = 0
+
+    async def _respond(self, messages):
+        content = messages[-1]["content"]
+        if isinstance(content, str) and "Source evidence:" in content:
+            self.extraction_calls += 1
+            return SimpleNamespace(
+                content={"invalid": "not an evidence packet response"},
+                usage_metadata={"input_tokens": 12, "output_tokens": 7},
+            )
+
+        payload = json.loads(content)
+        packets = payload["packed_evidence_packets"]
+        return SimpleNamespace(
+            content={
+                "supported_findings": [
+                    {
+                        "slot_id": packet["slot_ids"][0],
+                        "statement": packet["statement"],
+                        "evidence_ids": [packet["evidence_id"]],
+                    }
+                    for packet in packets
+                ],
+                "unresolved_requirements": [],
+            },
+            usage_metadata={"input_tokens": 12, "output_tokens": 7},
+        )
+
+
 class _ReserveCutoffRuntime(V9ExecutionPolicyRuntime):
     def __init__(self) -> None:
         super().__init__()
@@ -308,14 +342,13 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     assert v9["sufficiency"]["response_status"] == "complete"
     assert result.documents
     retrieve_documents.assert_awaited()
-    assert provider.ainvoke.await_count == 2
-    assert len(observer.calls) == 2
-    observed = observer.calls[-1]
+    assert provider.ainvoke.await_count == 1
+    assert len(observer.calls) == 1
+    observed = observer.calls[0]
     assert observed.phase == "final_answer"
     assert observed.provider == "gemini"
     assert observed.model_name == "gemini-2.5-flash"
     assert observed.status == "success"
-    assert observer.calls[0].phase == "evidence_extract"
 
 
 @pytest.mark.asyncio
@@ -385,6 +418,70 @@ async def test_runtime_curates_two_atomic_slots_once_from_authorized_reranked_ca
     assert {packet["source"]["doc_id"] for packet in packets} == {"doc-authorized"}
     assert provider.extraction_calls == 1
     assert result.documents
+
+
+@pytest.mark.asyncio
+async def test_runtime_preserves_authorized_candidates_when_strict_curation_is_malformed(
+    monkeypatch,
+) -> None:
+    provider = _MalformedEvidenceThenFinalProvider()
+    scope = ResolvedSourceScope(authorized_doc_ids=["doc-authorized"])
+    contract = QueryContract(
+        contract_version="2",
+        route="single_lookup",
+        intent="bind an ordinary source fact",
+        required_slots=[
+            RequiredSlot(slot_id="S1", description="State the authorized fact.")
+        ],
+        evidence_extraction_required=True,
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=2,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+        slot_plan_status="complete",
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract",
+        admission,
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="Authorized ordinary evidence.",
+                    metadata={
+                        "doc_id": "doc-authorized",
+                        "chunk_id": "chunk-authorized",
+                    },
+                ),
+                Document(
+                    page_content="Blocked evidence.",
+                    metadata={"doc_id": "doc-blocked", "chunk_id": "chunk-blocked"},
+                ),
+            ]
+        ),
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What is the authorized fact?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-authorized"],
+        setup_snapshot=_setup(),
+        trace_id="candidate-admission-fallback",
+    )
+
+    packets = result.agent_trace["agentic_v9"]["evidence_packets"]
+    assert packets
+    assert {packet["source"]["doc_id"] for packet in packets} == {"doc-authorized"}
+    assert result.documents
+    assert provider.extraction_calls == 1
 
 
 @pytest.mark.asyncio

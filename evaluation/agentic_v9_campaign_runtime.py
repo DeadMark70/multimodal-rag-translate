@@ -538,12 +538,13 @@ class AgenticV9CampaignRuntime:
                         capture_policy=setup_snapshot.get("prompt_capture_policy"),
                     )
                 )
-                curated_text = await extractor.extract(
+                extracted_text = await extractor.extract(
                     contract,
                     text_candidates,
                     repairs_complete=True,
                     question=question,
                 )
+                curated_text = extracted_text or text_candidates
             else:
                 # Legacy/manual contracts that did not reserve the extraction
                 # phase retain their pre-v9 candidate projection. Production

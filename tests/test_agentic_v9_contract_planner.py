@@ -62,6 +62,27 @@ async def test_formal_questions_use_bounded_experimental_answer_free_slots(
 
 
 @pytest.mark.asyncio
+async def test_production_contract_does_not_require_strict_evidence_extraction() -> (
+    None
+):
+    case = _questions()["Q5"]
+    doc_ids = [f"doc-{index}" for index, _ in enumerate(case["source_docs"], 1)]
+
+    contract = await QuestionContractPlanner().plan(
+        question=case["question"],
+        authorized_source_names=case["source_docs"],
+        authorized_source_doc_ids=doc_ids,
+        authorized_source_name_to_doc_ids={
+            name: [doc_id]
+            for name, doc_id in zip(case["source_docs"], doc_ids, strict=True)
+        },
+        setup_policy={"max_llm_calls": 5, "max_output_tokens": 8192},
+    )
+
+    assert contract.evidence_extraction_required is False
+
+
+@pytest.mark.asyncio
 async def test_q16_uses_generic_experimental_planning_without_benchmark_bundle() -> (
     None
 ):
