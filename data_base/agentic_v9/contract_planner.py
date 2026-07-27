@@ -20,6 +20,7 @@ from data_base.agentic_v9.schemas import (
     ResolvedSourceScope,
     RouteDecision,
 )
+from data_base.agentic_v9.slot_constraints import canonical_structured_locator
 
 _PROMPT_PATH = (
     Path(__file__).resolve().parents[2] / "prompts" / "agentic_v9_contract_planner.json"
@@ -451,12 +452,18 @@ def _answer_type(text: str) -> str:
 
 
 def _exact_locators(text: str) -> list[str]:
-    return list(
-        dict.fromkeys(
+    locators: list[str] = []
+    for match in _EXACT_LOCATOR_PATTERN.finditer(text):
+        locator = (
             f"{match.group(1).title().replace('Fig.', 'Figure')} {match.group(2)}"
-            for match in _EXACT_LOCATOR_PATTERN.finditer(text)
         )
-    )
+        if match.group(1).casefold() == "section":
+            if canonical_structured_locator(locator) is None:
+                continue
+            if re.match(r"\s+[A-Za-z]", text[match.end() :]):
+                continue
+        locators.append(locator)
+    return list(dict.fromkeys(locators))
 
 
 def _source_hints(text: str, source_names: list[str]) -> list[str]:
@@ -640,6 +647,8 @@ def _valid_locator_hint(value: str) -> bool:
     normalized = value.strip().casefold()
     if not normalized or len(normalized) > 120:
         return False
+    if normalized.startswith("section"):
+        return canonical_structured_locator(value) is not None
     return bool(
         re.match(
             r"^(figure|fig\.?|table|appendix|formula|equation|theorem|page|section)\b",

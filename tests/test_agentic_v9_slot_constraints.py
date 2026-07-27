@@ -19,7 +19,12 @@ def test_ordinary_text_is_not_a_structured_locator() -> None:
 
 @pytest.mark.parametrize(
     "locator",
-    ["Table", "Table discusses ablation results", "Section explains architecture"],
+    [
+        "Table",
+        "Table discusses ablation results",
+        "Section",
+        "Section explains architecture",
+    ],
 )
 def test_type_prefixed_prose_is_not_a_structured_locator(locator: str) -> None:
     assert canonical_structured_locator(locator) is None
@@ -36,6 +41,9 @@ def test_type_prefixed_prose_is_not_a_structured_locator(locator: str) -> None:
         ("Section 3.2", ("section", "3.2")),
         ("Section Results", ("section", "results")),
         ("Section Methods", ("section", "methods")),
+        ("Section Overview", ("section", "overview")),
+        ("Section Dataset", ("section", "dataset")),
+        ("Section Ablation", ("section", "ablation")),
     ],
 )
 def test_representative_structured_locators_are_canonical(
@@ -59,7 +67,7 @@ def test_different_relevant_table_is_mismatched() -> None:
 
 def test_different_named_section_is_mismatched() -> None:
     assert structured_locator_state(
-        ["Section Results"], {"section": "Section Methods"}
+        ["Section Overview"], {"section": "Section Methods"}
     ) == "mismatched"
 
 

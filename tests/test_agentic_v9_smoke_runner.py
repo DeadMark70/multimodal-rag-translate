@@ -447,7 +447,7 @@ def test_named_section_locator_diagnostic_must_cover_the_requested_slot() -> Non
     artifact = _recovery_diagnostics_export()
     q14 = artifact["runs"][3]["agent_trace"]["agentic_v9"]
     q14["query_contract"]["required_slots"][0]["locator_hints"] = [
-        "Section Results"
+        "Section Overview"
     ]
     q14["query_contract"]["required_slots"].append(
         {
@@ -484,7 +484,7 @@ def test_correctly_diagnosed_named_section_slot_is_accepted() -> None:
     artifact = _recovery_diagnostics_export()
     q14 = artifact["runs"][3]["agent_trace"]["agentic_v9"]
     q14["query_contract"]["required_slots"][0]["locator_hints"] = [
-        "Section Results"
+        "Section Overview"
     ]
 
     report = verify_campaign_export(artifact)
