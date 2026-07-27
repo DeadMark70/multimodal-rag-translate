@@ -492,6 +492,19 @@ def test_correctly_diagnosed_named_section_slot_is_accepted() -> None:
     assert report.status == "pass"
 
 
+def test_prose_section_predicate_is_not_an_applicable_smoke_locator() -> None:
+    artifact = _recovery_diagnostics_export()
+    q14 = artifact["runs"][3]["agent_trace"]["agentic_v9"]
+    q14["query_contract"]["required_slots"][0]["locator_hints"] = [
+        "Section explains"
+    ]
+    q14["locator_diagnostics"] = []
+
+    report = verify_campaign_export(artifact)
+
+    assert report.status == "pass"
+
+
 def test_packet_source_scope_uses_source_name_slot_authorization() -> None:
     artifact = _recovery_diagnostics_export()
     v9 = artifact["runs"][0]["agent_trace"]["agentic_v9"]

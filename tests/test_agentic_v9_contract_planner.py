@@ -236,6 +236,7 @@ def test_exact_section_locator_extraction_rejects_truncated_prose() -> None:
     assert contract_planner._exact_locators("Retrieve Section Overview.") == [
         "Section Overview"
     ]
+    assert contract_planner._exact_locators("Section explains.") == []
     assert contract_planner._exact_locators("Section explains architecture.") == []
 
 
@@ -383,6 +384,7 @@ async def test_ambiguity_prompt_contains_authoritative_source_mapping() -> None:
     [
         ("route_reason", "The answer is 0.9079."),
         ("locator_hints", ["0.9079"]),
+        ("locator_hints", ["Section explains"]),
         ("locator_hints", ["Section explains architecture"]),
         ("depends_on_slot_ids", ["S99"]),
     ],

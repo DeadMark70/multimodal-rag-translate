@@ -14,7 +14,7 @@ _LOCATOR_PATTERN = re.compile(
     r"\s*[-:#.]?\s*"
     r"(\(?\d+[A-Za-z]{0,3}\)?(?:\.\d+[A-Za-z]{0,3}){0,4}(?:\([A-Za-z0-9]{1,3}\))?|[A-Z]{1,3}\d*)$"
 )
-_NAMED_SECTION_PATTERN = re.compile(r"^(?i:section)\s+([A-Za-z][A-Za-z0-9]*)$")
+_NAMED_SECTION_PATTERN = re.compile(r"^(?i:section)\s+([A-Z][A-Za-z0-9]*)$")
 _LOCATOR_TYPE_ALIASES = {
     "fig": "figure",
     "fig.": "figure",

@@ -23,6 +23,7 @@ def test_ordinary_text_is_not_a_structured_locator() -> None:
         "Table",
         "Table discusses ablation results",
         "Section",
+        "Section explains",
         "Section explains architecture",
     ],
 )
@@ -69,6 +70,12 @@ def test_different_named_section_is_mismatched() -> None:
     assert structured_locator_state(
         ["Section Overview"], {"section": "Section Methods"}
     ) == "mismatched"
+
+
+def test_prose_section_predicate_is_not_requested() -> None:
+    assert structured_locator_state(
+        ["Section explains"], {"section": "Section Results"}
+    ) == "not_requested"
 
 
 def test_absent_requested_table_metadata_is_unavailable() -> None:
