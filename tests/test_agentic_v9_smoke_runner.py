@@ -443,6 +443,55 @@ def test_locator_diagnostics_must_cover_each_structured_slot() -> None:
     assert report.requirements["retrieval_evidence_recovery"].status == "fail"
 
 
+def test_named_section_locator_diagnostic_must_cover_the_requested_slot() -> None:
+    artifact = _recovery_diagnostics_export()
+    q14 = artifact["runs"][3]["agent_trace"]["agentic_v9"]
+    q14["query_contract"]["required_slots"][0]["locator_hints"] = [
+        "Section Results"
+    ]
+    q14["query_contract"]["required_slots"].append(
+        {
+            "slot_id": "ordinary-slot",
+            "description": "State the ordinary result.",
+            "authorized_source_doc_ids": ["doc-authorized"],
+        }
+    )
+    q14["slot_resolutions"].append(
+        {
+            "slot_id": "ordinary-slot",
+            "status": "supported",
+            "evidence_ids": ["evidence-a"],
+        }
+    )
+    q14["final_claims"].append(
+        {
+            "slot_id": "ordinary-slot",
+            "support_type": "direct",
+            "evidence_ids": ["evidence-a"],
+        }
+    )
+    q14["locator_diagnostics"] = [
+        {"slot_id": "ordinary-slot", "state": "matched"}
+    ]
+
+    report = verify_campaign_export(artifact)
+
+    assert report.status == "fail"
+    assert report.requirements["retrieval_evidence_recovery"].status == "fail"
+
+
+def test_correctly_diagnosed_named_section_slot_is_accepted() -> None:
+    artifact = _recovery_diagnostics_export()
+    q14 = artifact["runs"][3]["agent_trace"]["agentic_v9"]
+    q14["query_contract"]["required_slots"][0]["locator_hints"] = [
+        "Section Results"
+    ]
+
+    report = verify_campaign_export(artifact)
+
+    assert report.status == "pass"
+
+
 def test_packet_source_scope_uses_source_name_slot_authorization() -> None:
     artifact = _recovery_diagnostics_export()
     v9 = artifact["runs"][0]["agent_trace"]["agentic_v9"]

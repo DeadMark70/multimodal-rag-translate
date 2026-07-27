@@ -14,6 +14,28 @@ _LOCATOR_PATTERN = re.compile(
     r"\s*[-:#.]?\s*"
     r"(\(?\d+[A-Za-z]{0,3}\)?(?:\.\d+[A-Za-z]{0,3}){0,4}(?:\([A-Za-z0-9]{1,3}\))?|[A-Z]{1,3}\d*)$"
 )
+_NAMED_SECTION_PATTERN = re.compile(r"^(?i:section)\s+(.+)$")
+_NAMED_SECTION_IDENTIFIERS = frozenset(
+    {
+        "abstract",
+        "background",
+        "conclusion",
+        "conclusions",
+        "discussion",
+        "evaluation",
+        "experimental setup",
+        "experiments",
+        "future work",
+        "introduction",
+        "limitations",
+        "literature review",
+        "materials and methods",
+        "methods",
+        "methodology",
+        "related work",
+        "results",
+    }
+)
 _LOCATOR_TYPE_ALIASES = {
     "fig": "figure",
     "fig.": "figure",
@@ -74,12 +96,18 @@ def canonical_structured_locator(value: object) -> tuple[str, str] | None:
     if not normalized:
         return None
     match = _LOCATOR_PATTERN.match(normalized)
-    if match is None:
+    if match is not None:
+        locator_type = match.group(1).casefold()
+        locator_type = _LOCATOR_TYPE_ALIASES.get(locator_type, locator_type)
+        identifier = " ".join(match.group(2).split()).casefold()
+        return (locator_type, identifier)
+    named_section_match = _NAMED_SECTION_PATTERN.match(normalized)
+    if named_section_match is None:
         return None
-    locator_type = match.group(1).casefold()
-    locator_type = _LOCATOR_TYPE_ALIASES.get(locator_type, locator_type)
-    identifier = " ".join(match.group(2).split()).casefold()
-    return (locator_type, identifier)
+    identifier = " ".join(named_section_match.group(1).split()).casefold()
+    if identifier not in _NAMED_SECTION_IDENTIFIERS:
+        return None
+    return ("section", identifier)
 
 
 def display_locator_hints(hints: Iterable[str]) -> list[str]:

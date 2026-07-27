@@ -34,6 +34,8 @@ def test_type_prefixed_prose_is_not_a_structured_locator(locator: str) -> None:
         ("Theorem 1", ("theorem", "1")),
         ("Appendix A", ("appendix", "a")),
         ("Section 3.2", ("section", "3.2")),
+        ("Section Results", ("section", "results")),
+        ("Section Methods", ("section", "methods")),
     ],
 )
 def test_representative_structured_locators_are_canonical(
@@ -52,6 +54,12 @@ def test_matching_table_locator_is_matched() -> None:
 def test_different_relevant_table_is_mismatched() -> None:
     assert structured_locator_state(
         ["Table 3"], {"table_id": "Table 4"}
+    ) == "mismatched"
+
+
+def test_different_named_section_is_mismatched() -> None:
+    assert structured_locator_state(
+        ["Section Results"], {"section": "Section Methods"}
     ) == "mismatched"
 
 
