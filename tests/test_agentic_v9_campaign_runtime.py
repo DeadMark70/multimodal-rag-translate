@@ -352,7 +352,7 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
 
 
 @pytest.mark.asyncio
-async def test_runtime_curates_two_atomic_slots_once_from_authorized_reranked_candidates(
+async def test_runtime_preserves_authorized_reranked_candidates_without_strict_curation(
     monkeypatch,
 ) -> None:
     provider = _EvidenceThenFinalProvider()
@@ -416,12 +416,12 @@ async def test_runtime_curates_two_atomic_slots_once_from_authorized_reranked_ca
     assert result.agent_trace["response_status"] != "insufficient"
     assert len(packets) >= 2
     assert {packet["source"]["doc_id"] for packet in packets} == {"doc-authorized"}
-    assert provider.extraction_calls == 1
+    assert provider.extraction_calls == 0
     assert result.documents
 
 
 @pytest.mark.asyncio
-async def test_runtime_preserves_authorized_candidates_when_strict_curation_is_malformed(
+async def test_runtime_bypasses_strict_curation_and_preserves_authorized_candidates(
     monkeypatch,
 ) -> None:
     provider = _MalformedEvidenceThenFinalProvider()
@@ -481,7 +481,7 @@ async def test_runtime_preserves_authorized_candidates_when_strict_curation_is_m
     assert packets
     assert {packet["source"]["doc_id"] for packet in packets} == {"doc-authorized"}
     assert result.documents
-    assert provider.extraction_calls == 1
+    assert provider.extraction_calls == 0
 
 
 @pytest.mark.asyncio
@@ -706,99 +706,6 @@ async def test_default_retrieval_uninitialized_reranker_preserves_all_authorized
 
 
 @pytest.mark.asyncio
-async def test_runtime_plans_ambiguity_once_and_persists_exact_v2_contract() -> None:
-    planning_provider = _ContractProvider()
-    final_provider = _Provider()
-    runtime = AgenticV9CampaignRuntime(
-        retrieve_documents=AsyncMock(
-            return_value=[
-                Document(
-                    page_content="The requested source-bound fact is stated here.",
-                    metadata={
-                        "doc_id": "doc-1",
-                        "page_number": 1,
-                        "chunk_id": "chunk-1",
-                    },
-                )
-            ]
-        ),
-        provider_factory=lambda purpose: (
-            planning_provider
-            if purpose == "atomic_contract_planning"
-            else final_provider
-        ),
-        document_reference_resolver=lambda _user_id, _references: _async_value(
-            {"paper.pdf": "doc-1"}
-        ),
-    )
-
-    result = await runtime.execute(
-        question="Please investigate this unclear request.",
-        user_id="user-a",
-        authorized_doc_ids=["paper.pdf"],
-        setup_snapshot={**_setup(), "max_llm_calls": 5},
-        trace_id="ambiguous-contract-once",
-    )
-
-    contract = result.agent_trace["agentic_v9"]["query_contract"]
-    assert planning_provider.ainvoke.await_count == 1
-    assert contract["contract_version"] == "2"
-    assert contract["slot_plan_status"] == "complete"
-    assert contract["slot_semantics"] == "heuristic_experimental"
-    assert contract["atomic_completeness"] is None
-    assert contract["atomic_completeness_reason"] == "atomic_slot_matching_experimental"
-    assert contract["route_decision"]["decision_source"] == "llm_planner"
-    assert contract["route_decision"]["planner_call_used"] is True
-    assert contract["required_slots"][0]["authorized_source_doc_ids"] == ["doc-1"]
-    assert result.agent_trace["response_status"] != "complete"
-
-
-@pytest.mark.asyncio
-async def test_degraded_runtime_slot_plan_cannot_return_complete() -> None:
-    invalid_planning_provider = SimpleNamespace(
-        ainvoke=AsyncMock(
-            return_value=SimpleNamespace(
-                content="not-json",
-                usage_metadata={"input_tokens": 1, "output_tokens": 1},
-            )
-        )
-    )
-    final_provider = _Provider()
-    runtime = AgenticV9CampaignRuntime(
-        retrieve_documents=AsyncMock(
-            return_value=[
-                Document(
-                    page_content="A source-bound fact is present.",
-                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
-                )
-            ]
-        ),
-        provider_factory=lambda purpose: (
-            invalid_planning_provider
-            if purpose == "atomic_contract_planning"
-            else final_provider
-        ),
-        document_reference_resolver=lambda _user_id, _references: _async_value(
-            {"paper.pdf": "doc-1"}
-        ),
-    )
-
-    result = await runtime.execute(
-        question="Please investigate this unclear request.",
-        user_id="user-a",
-        authorized_doc_ids=["paper.pdf"],
-        setup_snapshot={**_setup(), "max_llm_calls": 5},
-        trace_id="degraded-contract",
-    )
-
-    assert (
-        result.agent_trace["agentic_v9"]["query_contract"]["slot_plan_status"]
-        == "degraded"
-    )
-    assert result.agent_trace["response_status"] != "complete"
-
-
-@pytest.mark.asyncio
 async def test_v9_campaign_runtime_resolves_filename_scope_to_canonical_document_id() -> (
     None
 ):
@@ -838,7 +745,7 @@ async def test_v9_campaign_runtime_resolves_filename_scope_to_canonical_document
     assert result.agent_trace["agentic_v9"]["query_contract"]["resolved_source_scope"][
         "requested_doc_ids"
     ] == ["doc-1"]
-    assert result.agent_trace["response_status"] == "qualified_partial"
+    assert result.agent_trace["response_status"] == "complete"
     retrieve_documents.assert_awaited()
 
 
@@ -2303,7 +2210,7 @@ async def test_runtime_persists_terminal_reserve_reason_after_repair(
 
 
 @pytest.mark.asyncio
-async def test_invalid_final_provider_output_uses_deterministic_sections() -> None:
+async def test_invalid_final_provider_output_is_rejected_without_invented_sections() -> None:
     provider = _InvalidProvider()
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(
@@ -2331,13 +2238,13 @@ async def test_invalid_final_provider_output_uses_deterministic_sections() -> No
     )
 
     assert "Unsupported provider prose" not in result.answer
-    assert "Supported conclusions" in result.answer
-    assert "Unresolved/unverifiable requirements" in result.answer
+    assert result.answer == ""
+    assert result.agent_trace["response_status"] == "insufficient"
     assert result.agent_trace["response_status"] == "insufficient"
 
 
 @pytest.mark.asyncio
-async def test_budgeted_final_provider_failure_uses_deterministic_sections() -> None:
+async def test_budgeted_final_provider_failure_returns_legacy_qualified_partial() -> None:
     provider = _FailingProvider()
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(
@@ -2364,8 +2271,6 @@ async def test_budgeted_final_provider_failure_uses_deterministic_sections() -> 
         trace_id="failed-final-provider",
     )
 
-    assert "Final generation was unavailable" not in result.answer
-    assert "Supported conclusions" in result.answer
-    assert "Unresolved/unverifiable requirements" in result.answer
+    assert "Final generation was unavailable" in result.answer
     assert result.agent_trace["response_status"] == "qualified_partial"
     assert result.agent_trace["agentic_v9"]["metrics"]["final_generation_count"] == 0

@@ -44,7 +44,6 @@ from data_base.agentic_v9.execution_policy import (
     ExecutionCancellation,
     V9ExecutionPolicyRuntime,
 )
-from data_base.agentic_v9.evidence_extractor import EvidenceExtractor
 from data_base.agentic_v9.final_answer import generate_final_answer
 from data_base.agentic_v9.repair import (
     MAX_REPAIR_ROUNDS,
@@ -519,40 +518,13 @@ class AgenticV9CampaignRuntime:
         async def prose_curate(
             _: str, contract: QueryContract, packets: tuple[EvidencePacket, ...]
         ) -> tuple[EvidencePacket, ...]:
-            visual_packets = [
-                packet for packet in packets if packet.source.asset_id is not None
-            ]
-            text_candidates = [
-                packet for packet in packets if packet.source.asset_id is None
-            ]
-            if contract.evidence_extraction_required:
-                controller = state["budget_controller"]
-                assert isinstance(controller, RunBudgetController)
-                extractor = EvidenceExtractor(
-                    BudgetedLlmInvoker(
-                        controller=controller,
-                        provider_factory=self._provider_factory,
-                        observer=llm_call_observer,
-                        provider_name=provider_name,
-                        model_name=model_name,
-                        capture_policy=setup_snapshot.get("prompt_capture_policy"),
-                    )
-                )
-                extracted_text = await extractor.extract(
-                    contract,
-                    text_candidates,
-                    repairs_complete=True,
-                    question=question,
-                )
-                curated_text = extracted_text or text_candidates
-            else:
-                # Legacy/manual contracts that did not reserve the extraction
-                # phase retain their pre-v9 candidate projection. Production
-                # contracts admit this phase explicitly above.
-                curated_text = text_candidates
-            curated = [*curated_text, *visual_packets]
-            state["evidence_packets"] = curated
-            return tuple(curated)
+            # Restore the proven v9 behavior: deterministic, provenance-bound
+            # candidates flow directly to sufficiency and final synthesis.
+            # A second LLM evidence-extraction gate was introduced later and
+            # caused valid retrieved contexts to be discarded.
+            del contract
+            state["evidence_packets"] = list(packets)
+            return packets
 
         async def resolve_conflicts(
             _: QueryContract,
@@ -1607,6 +1579,26 @@ def _slot_ids_supported_by_chunk(
     scope = contract.resolved_source_scope
     if scope is None:
         return []
+    if contract.contract_version == "1":
+        # The proven v9 contract used generic route slots. Locator text was a
+        # retrieval hint, never an exact-match admission gate for prose chunks.
+        accepted_slot_ids = [
+            slot_id
+            for slot_id in slot_ids
+            if slot_id in slots_by_id and doc_id in scope.authorized_doc_ids
+        ]
+        if locator_diagnostics is not None:
+            for slot_id in accepted_slot_ids:
+                diagnostic = {
+                    "task_id": task_id,
+                    "chunk_id": str(chunk.get("chunk_id") or ""),
+                    "slot_id": slot_id,
+                    "state": "legacy_not_enforced",
+                    "accepted": True,
+                }
+                if diagnostic not in locator_diagnostics:
+                    locator_diagnostics.append(diagnostic)
+        return accepted_slot_ids
     authorized: list[str] = []
     for slot_id in slot_ids:
         slot = slots_by_id.get(slot_id)

@@ -3,35 +3,41 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from functools import lru_cache
 import json
-from pathlib import Path
 from typing import Any, Protocol
 
-from core.prompt_loader import PromptRegistry
+from pydantic import BaseModel, ConfigDict, Field
+
 from data_base.agentic_v9.citation_renderer import render_verified_answer
 from data_base.agentic_v9.claim_verifier import (
     ClaimVerifier,
+    qualify_failed_claim,
     requires_prose_verification,
     verify_claim_deterministically,
 )
 from data_base.agentic_v9.schemas import (
     ConflictCandidate,
     EvidencePacket,
-    FinalAnswerDraft,
     FinalAnswerResult,
     FinalClaim,
     LlmInvoker,
     QueryContract,
     SlotResolution,
-    SufficiencyReport,
-    UnresolvedRequirement,
 )
 
 
 _FINAL_GENERATION_UNAVAILABLE_ANSWER = (
     "Final generation was unavailable; evidence is returned as a qualified partial."
 )
+
+
+class FinalAnswerDraft(BaseModel):
+    """Strict, typed provider output before deterministic claim verification."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str = ""
+    claims: list[FinalClaim] = Field(default_factory=list)
 
 
 class PackedEvidenceProjection(Protocol):
@@ -56,7 +62,6 @@ class FinalAnswerRenderer:
         contract: QueryContract,
         packed_packets: Iterable[EvidencePacket] | PackedEvidenceProjection,
         slot_resolutions: Sequence[SlotResolution],
-        sufficiency_report: SufficiencyReport | None = None,
         arbitration: Any | None = None,
     ) -> FinalAnswerResult:
         """Use only packed evidence, with one final call and at most one verifier call."""
@@ -69,7 +74,11 @@ class FinalAnswerRenderer:
                 messages=[
                     {
                         "role": "system",
-                        "content": (_final_answer_prompt()),
+                        "content": (
+                            "Answer only from supplied evidence. Return JSON with exactly "
+                            "answer and claims. Every claim must list its evidence_ids or "
+                            "premise_evidence_ids; do not cite any other ID."
+                        ),
                     },
                     {
                         "role": "user",
@@ -83,71 +92,26 @@ class FinalAnswerRenderer:
                     },
                 ],
             )
-        except Exception:
-            return _render_no_claim_fallback(
-                contract=contract,
-                packets=packets,
-                slot_resolutions=slot_resolutions,
-                sufficiency_report=sufficiency_report,
-                citation_format_version=self._citation_format_version,
+            if _is_fixed_no_claim_fallback(response):
+                return response
+            if isinstance(response, FinalAnswerResult):
+                response = {
+                    "answer": response.answer,
+                    "claims": response.claims,
+                }
+            draft = FinalAnswerDraft.model_validate(
+                _legacy_compatible_draft(_response_content(response))
             )
-        if _is_fixed_no_claim_fallback(response):
-            return _render_no_claim_fallback(
-                contract=contract,
-                packets=packets,
-                slot_resolutions=slot_resolutions,
-                sufficiency_report=sufficiency_report,
-                citation_format_version=self._citation_format_version,
-            )
-        if isinstance(response, FinalAnswerResult):
-            response = {
-                "supported_findings": [
-                    {
-                        "slot_id": claim.slot_id
-                        or _single_supported_slot_id(slot_resolutions),
-                        "statement": claim.statement,
-                        "evidence_ids": [
-                            *claim.evidence_ids,
-                            *claim.premise_evidence_ids,
-                        ],
-                    }
-                    for claim in response.claims
-                ],
-                "unresolved_requirements": [],
-            }
-        try:
-            draft = FinalAnswerDraft.model_validate(_response_content(response))
         except Exception:
-            draft = FinalAnswerDraft()
+            return FinalAnswerResult(
+                response_status="qualified_partial" if packets else "insufficient",
+                answer="Final generation was unavailable; no verified answer was produced.",
+                final_generation_count=0,
+            )
 
         accepted: list[FinalClaim] = []
         unresolved: list[FinalClaim] = []
-        contract_slot_ids = {slot.slot_id for slot in contract.required_slots}
-        resolutions_by_slot = {
-            resolution.slot_id: resolution for resolution in slot_resolutions
-        }
-        for index, finding in enumerate(draft.supported_findings, start=1):
-            resolution = resolutions_by_slot.get(finding.slot_id)
-            if (
-                finding.slot_id not in contract_slot_ids
-                or resolution is None
-                or resolution.status != "supported"
-                or not finding.evidence_ids
-                or any(
-                    evidence_id not in packets_by_id
-                    or finding.slot_id not in packets_by_id[evidence_id].slot_ids
-                    or evidence_id not in resolution.evidence_ids
-                    for evidence_id in finding.evidence_ids
-                )
-            ):
-                continue
-            claim = FinalClaim(
-                claim_id=f"claim-{index}",
-                slot_id=finding.slot_id,
-                statement=finding.statement,
-                support_type="direct",
-                evidence_ids=finding.evidence_ids,
-            )
+        for claim in draft.claims:
             verdict = verify_claim_deterministically(claim, packets_by_id)
             if verdict.reason in {
                 "claim_has_no_evidence_ids",
@@ -157,7 +121,7 @@ class FinalAnswerRenderer:
             }:
                 continue
             if not verdict.supported:
-                continue
+                accepted.append(qualify_failed_claim(claim, verdict))
             elif requires_prose_verification(claim):
                 unresolved.append(claim)
             else:
@@ -168,8 +132,9 @@ class FinalAnswerRenderer:
         )
         for claim in unresolved:
             verdict = verifier_verdicts[claim.claim_id]
-            if verdict.supported:
-                accepted.append(claim)
+            accepted.append(
+                claim if verdict.supported else qualify_failed_claim(claim, verdict)
+            )
 
         used_evidence_ids = list(
             dict.fromkeys(
@@ -178,22 +143,17 @@ class FinalAnswerRenderer:
                 for evidence_id in [*claim.evidence_ids, *claim.premise_evidence_ids]
             )
         )
-        response_status = _response_status(
-            accepted,
-            contract,
-            slot_resolutions,
-            sufficiency_report=sufficiency_report,
-        )
-        unresolved_requirements = _required_unresolved_requirements(
-            contract, slot_resolutions
-        )
+        response_status = _response_status(accepted, slot_resolutions)
         return FinalAnswerResult(
             response_status=response_status,
-            answer=render_verified_answer(
-                accepted,
-                packets,
-                unresolved_requirements=unresolved_requirements,
-                citation_format_version=self._citation_format_version,
+            answer=(
+                render_verified_answer(
+                    accepted,
+                    packets,
+                    citation_format_version=self._citation_format_version,
+                )
+                if accepted
+                else ""
             ),
             claims=accepted,
             used_evidence_ids=used_evidence_ids,
@@ -208,11 +168,12 @@ async def generate_final_answer(
     packed_packets: Iterable[EvidencePacket] | PackedEvidenceProjection,
     slot_resolutions: Sequence[SlotResolution],
     llm_invoker: LlmInvoker,
-    sufficiency_report: SufficiencyReport | None = None,
+    sufficiency_report: Any | None = None,
     arbitration: Any | None = None,
     citation_format_version: str = "1",
 ) -> FinalAnswerResult:
     """Functional entry point for the v9 execution core."""
+    del sufficiency_report  # Current runtime compatibility; legacy synthesis is claim-led.
     return await FinalAnswerRenderer(
         llm_invoker, citation_format_version=citation_format_version
     ).render(
@@ -220,7 +181,6 @@ async def generate_final_answer(
         contract=contract,
         packed_packets=packed_packets,
         slot_resolutions=slot_resolutions,
-        sufficiency_report=sufficiency_report,
         arbitration=arbitration,
     )
 
@@ -266,6 +226,35 @@ def _serialize_arbitration(arbitration: Any | None) -> Any | None:
     return arbitration
 
 
+def _legacy_compatible_draft(content: Any) -> Any:
+    """Accept the newer finding envelope without restoring its hard gates."""
+    if not isinstance(content, dict) or "claims" in content:
+        return content
+    findings = content.get("supported_findings")
+    if not isinstance(findings, list):
+        return content
+    claims: list[dict[str, Any]] = []
+    for index, finding in enumerate(findings, start=1):
+        if not isinstance(finding, dict):
+            continue
+        statement = finding.get("statement")
+        evidence_ids = finding.get("evidence_ids")
+        if not isinstance(statement, str) or not statement.strip():
+            continue
+        if not isinstance(evidence_ids, list):
+            evidence_ids = []
+        claims.append(
+            {
+                "claim_id": f"claim-{index}",
+                "slot_id": finding.get("slot_id"),
+                "statement": statement,
+                "support_type": "direct",
+                "evidence_ids": evidence_ids,
+            }
+        )
+    return {"answer": content.get("answer", ""), "claims": claims}
+
+
 def _packets_by_id(packets: Iterable[EvidencePacket]) -> dict[str, EvidencePacket]:
     result: dict[str, EvidencePacket] = {}
     for packet in packets:
@@ -302,110 +291,15 @@ def _is_fixed_no_claim_fallback(response: Any) -> bool:
 
 
 def _response_status(
-    claims: Sequence[FinalClaim],
-    contract: QueryContract,
-    slot_resolutions: Sequence[SlotResolution],
-    *,
-    sufficiency_report: SufficiencyReport | None,
+    claims: Sequence[FinalClaim], slot_resolutions: Sequence[SlotResolution]
 ) -> str:
     if not claims:
         return "insufficient"
-    if sufficiency_report is not None:
-        if (
-            contract.contract_version == "2"
-            and sufficiency_report.response_status == "complete"
-        ):
-            return "qualified_partial"
-        return sufficiency_report.response_status
-    required_slot_ids = {
-        slot.slot_id for slot in contract.required_slots if slot.required
-    }
-    required_resolutions = [
-        resolution
-        for resolution in slot_resolutions
-        if resolution.slot_id in required_slot_ids
-    ]
-    if (
-        required_slot_ids
-        and len(required_resolutions) == len(required_slot_ids)
-        and all(resolution.status == "supported" for resolution in required_resolutions)
+    if all(resolution.status == "supported" for resolution in slot_resolutions) and all(
+        claim.qualified_reason is None for claim in claims
     ):
-        return "qualified_partial" if contract.contract_version == "2" else "complete"
+        return "complete"
     return "qualified_partial"
-
-
-def _render_no_claim_fallback(
-    *,
-    contract: QueryContract,
-    packets: Sequence[EvidencePacket],
-    slot_resolutions: Sequence[SlotResolution],
-    sufficiency_report: SufficiencyReport | None,
-    citation_format_version: str,
-) -> FinalAnswerResult:
-    status = "qualified_partial" if packets else "insufficient"
-    if sufficiency_report is not None:
-        rank = {"insufficient": 0, "qualified_partial": 1, "complete": 2}
-        if rank[status] > rank[sufficiency_report.response_status]:
-            status = sufficiency_report.response_status
-    return FinalAnswerResult(
-        response_status=status,
-        answer=render_verified_answer(
-            (),
-            packets,
-            unresolved_requirements=_required_unresolved_requirements(
-                contract, slot_resolutions
-            ),
-            citation_format_version=citation_format_version,
-        ),
-        final_generation_count=0,
-    )
-
-
-def _required_unresolved_requirements(
-    contract: QueryContract,
-    slot_resolutions: Sequence[SlotResolution],
-) -> list[UnresolvedRequirement]:
-    resolutions_by_slot = {
-        resolution.slot_id: resolution for resolution in slot_resolutions
-    }
-    unresolved: list[UnresolvedRequirement] = []
-    for slot in contract.required_slots:
-        if not slot.required:
-            continue
-        resolution = resolutions_by_slot.get(slot.slot_id)
-        if resolution is not None and resolution.status == "supported":
-            continue
-        status = resolution.status if resolution is not None else "not_found"
-        reason = (
-            resolution.reason
-            if resolution is not None and resolution.reason
-            else {
-                "conflicted": "Conflicting source-bound evidence remains unresolved.",
-                "explicitly_unavailable": "Required evidence is explicitly unavailable.",
-                "not_found": "Required source-bound evidence was not found.",
-            }[status]
-        )
-        unresolved.append(UnresolvedRequirement(slot_id=slot.slot_id, reason=reason))
-    return unresolved
-
-
-@lru_cache(maxsize=1)
-def _final_answer_prompt() -> str:
-    registry = PromptRegistry(
-        Path(__file__).resolve().parents[2] / "prompts" / "agentic_v9_final_answer.json"
-    )
-    return registry.format("final_answer")
-
-
-def _single_supported_slot_id(
-    slot_resolutions: Sequence[SlotResolution],
-) -> str:
-    supported = [
-        resolution.slot_id
-        for resolution in slot_resolutions
-        if resolution.status == "supported"
-    ]
-    return supported[0] if len(supported) == 1 else "legacy-unbound"
 
 
 __all__ = ["FinalAnswerDraft", "FinalAnswerRenderer", "generate_final_answer"]
