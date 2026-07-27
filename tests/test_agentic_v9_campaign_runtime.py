@@ -1398,6 +1398,15 @@ async def test_same_document_chunk_with_wrong_locator_cannot_support_slot(
     )
 
     assert result.agent_trace["agentic_v9"]["evidence_packets"] == []
+    assert result.agent_trace["agentic_v9"]["locator_diagnostics"] == [
+        {
+            "task_id": "wrong-locator-filter:round-1:source-group-1",
+            "chunk_id": "chunk-a",
+            "slot_id": "S1",
+            "state": "mismatched",
+            "accepted": False,
+        }
+    ]
 
 
 def test_v1_locator_hint_accepts_ordinary_retrieved_chunk_without_metadata() -> None:
@@ -1452,7 +1461,7 @@ def test_v1_locator_hint_accepts_ordinary_retrieved_chunk_without_metadata() -> 
     assert packets[0].source.doc_id == "doc-a"
 
 
-def test_v2_locator_hint_rejects_ordinary_retrieved_chunk_without_metadata() -> None:
+def test_v2_missing_structured_metadata_keeps_candidate_for_semantic_binding() -> None:
     scope = ResolvedSourceScope(authorized_doc_ids=["doc-a"])
     contract = QueryContract(
         contract_version="2",
@@ -1500,7 +1509,69 @@ def test_v2_locator_hint_rejects_ordinary_retrieved_chunk_without_metadata() -> 
         tasks_by_id={task.task_id: task},
     )
 
-    assert packets == []
+    assert [packet.slot_ids for packet in packets] == [["S1"]]
+    assert packets[0].source.doc_id == "doc-a"
+
+
+def test_locator_diagnostics_record_binding_without_chunk_text() -> None:
+    scope = ResolvedSourceScope(authorized_doc_ids=["doc-a"])
+    contract = QueryContract(
+        contract_version="2",
+        route="exact_structured",
+        intent="table-bound fact",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Report the Table 3 result.",
+                authorized_source_doc_ids=["doc-a"],
+                locator_hints=["Table 3"],
+            )
+        ],
+        resolved_source_scope=scope,
+    )
+    task = RetrievalTask(
+        task_id="Q:round-1:S1",
+        round_id="round-1",
+        query_id="Q",
+        query="Table 3 result",
+        target_slot_ids=["S1"],
+        source_scope=scope,
+        locator_hints=["Table 3"],
+    )
+    results = (
+        TaskRetrievalResult(
+            task_id=task.task_id,
+            retrieval=RagRetrievalResult(
+                retrieval_id="retrieval",
+                chunks=[
+                    {
+                        "doc_id": "doc-a",
+                        "chunk_id": "chunk-a",
+                        "text": "A semantic candidate without table metadata.",
+                    }
+                ],
+            ),
+        ),
+    )
+    diagnostics: list[dict[str, object]] = []
+
+    _evidence_packets_for_results(
+        results=results,
+        contract=contract,
+        trace_id="trace",
+        tasks_by_id={task.task_id: task},
+        locator_diagnostics=diagnostics,
+    )
+
+    assert diagnostics == [
+        {
+            "task_id": "Q:round-1:S1",
+            "chunk_id": "chunk-a",
+            "slot_id": "S1",
+            "state": "unavailable",
+            "accepted": True,
+        }
+    ]
 
 
 def test_grouped_task_chunk_is_bound_only_to_its_matching_atomic_slot() -> None:

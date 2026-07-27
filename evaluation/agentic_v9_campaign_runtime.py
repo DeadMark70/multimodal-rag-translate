@@ -73,7 +73,7 @@ from data_base.agentic_v9.sufficiency_gate import (
 )
 from data_base.agentic_v9.slot_constraints import (
     authorized_doc_ids_for_slot,
-    locator_hints_match_chunk,
+    structured_locator_state,
 )
 from data_base.agentic_v9.asset_locator import VisualAssetCandidate
 from data_base.agentic_v9.visual_asset_resolver import (
@@ -233,6 +233,7 @@ class AgenticV9CampaignRuntime:
             "pack": None,
             "repairs": [],
             "evidence_packets": [],
+            "locator_diagnostics": [],
             "post_contract": None,
             "budget_controller": budget_controller,
             "tasks_by_id": {},
@@ -329,6 +330,7 @@ class AgenticV9CampaignRuntime:
                 contract=state["contract"],
                 trace_id=trace_id,
                 tasks_by_id=state["tasks_by_id"],
+                locator_diagnostics=state["locator_diagnostics"],
             )
             text_evaluation = evaluate_sufficiency(
                 state["contract"],
@@ -411,6 +413,7 @@ class AgenticV9CampaignRuntime:
                 contract=contract,
                 trace_id=trace_id,
                 tasks_by_id=state["tasks_by_id"],
+                locator_diagnostics=state["locator_diagnostics"],
             )
             if not state["visual_packets_emitted"]:
                 packets.extend(state["visual_packets"])
@@ -672,6 +675,7 @@ class AgenticV9CampaignRuntime:
                     packet.model_dump(mode="json")
                     for packet in state["evidence_packets"]
                 ],
+                "locator_diagnostics": state["locator_diagnostics"],
                 "slot_resolutions": [
                     resolution.model_dump(mode="json")
                     for resolution in state["final_slot_resolutions"]
@@ -1226,6 +1230,7 @@ def _evidence_packets_for_results(
     contract: QueryContract,
     trace_id: str,
     tasks_by_id: dict[str, RetrievalTask],
+    locator_diagnostics: list[dict[str, Any]] | None = None,
 ) -> list[EvidencePacket]:
     packets: list[EvidencePacket] = []
     for task_result in results:
@@ -1240,15 +1245,13 @@ def _evidence_packets_for_results(
                 continue
             if doc_id not in task.source_scope.authorized_doc_ids:
                 continue
-            if contract.contract_version == "2" and not locator_hints_match_chunk(
-                task.locator_hints, chunk
-            ):
-                continue
             slot_ids = _slot_ids_supported_by_chunk(
                 contract=contract,
                 slot_ids=task.target_slot_ids,
                 doc_id=doc_id,
                 chunk=chunk,
+                task_id=task_id,
+                locator_diagnostics=locator_diagnostics,
             )
             if not slot_ids:
                 continue
@@ -1356,6 +1359,8 @@ def _slot_ids_supported_by_chunk(
     slot_ids: list[str],
     doc_id: str,
     chunk: dict[str, Any],
+    task_id: str = "",
+    locator_diagnostics: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Bind a chunk independently to each compatible atomic slot."""
     slots_by_id = {slot.slot_id: slot for slot in contract.required_slots}
@@ -1369,9 +1374,19 @@ def _slot_ids_supported_by_chunk(
             continue
         if doc_id not in authorized_doc_ids_for_slot(slot, scope):
             continue
-        if contract.contract_version == "2" and not locator_hints_match_chunk(
-            slot.locator_hints, chunk
-        ):
+        state = structured_locator_state(slot.locator_hints, chunk)
+        accepted = state != "mismatched"
+        if locator_diagnostics is not None:
+            diagnostic = {
+                "task_id": task_id,
+                "chunk_id": str(chunk.get("chunk_id") or ""),
+                "slot_id": slot_id,
+                "state": state,
+                "accepted": accepted,
+            }
+            if diagnostic not in locator_diagnostics:
+                locator_diagnostics.append(diagnostic)
+        if not accepted:
             continue
         authorized.append(slot_id)
     return authorized

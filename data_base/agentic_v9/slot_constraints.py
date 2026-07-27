@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
-from typing import Any
+from typing import Any, Literal
 
 from data_base.agentic_v9.schemas import RequiredSlot, ResolvedSourceScope
 
@@ -21,6 +21,10 @@ _LOCATOR_TYPE_ALIASES = {
     "eq.": "formula",
     "equation": "formula",
 }
+
+StructuredLocatorState = Literal[
+    "not_requested", "matched", "mismatched", "unavailable"
+]
 
 
 def authorized_doc_ids_for_slot(
@@ -51,14 +55,19 @@ def canonical_locator_set(hints: Iterable[str]) -> tuple[tuple[str, str], ...]:
             {
                 constraint
                 for hint in hints
-                if (constraint := canonical_locator(hint)) is not None
+                if (constraint := canonical_structured_locator(hint)) is not None
             }
         )
     )
 
 
 def canonical_locator(value: object) -> tuple[str, str] | None:
-    """Normalize a bounded locator into a type and identifier."""
+    """Normalize an explicit structured locator into a type and identifier."""
+    return canonical_structured_locator(value)
+
+
+def canonical_structured_locator(value: object) -> tuple[str, str] | None:
+    """Normalize an explicit structured locator, excluding ordinary prose."""
     if not isinstance(value, str):
         return None
     normalized = " ".join(value.split()).strip()
@@ -66,7 +75,7 @@ def canonical_locator(value: object) -> tuple[str, str] | None:
         return None
     match = _LOCATOR_PATTERN.match(normalized)
     if match is None:
-        return ("text", normalized.casefold())
+        return None
     locator_type = match.group(1).casefold()
     locator_type = _LOCATOR_TYPE_ALIASES.get(locator_type, locator_type)
     identifier = " ".join(match.group(2).split()).casefold()
@@ -79,10 +88,11 @@ def display_locator_hints(hints: Iterable[str]) -> list[str]:
     seen: set[tuple[str, str]] = set()
     for hint in hints:
         normalized = " ".join(hint.split()).strip()
-        constraint = canonical_locator(normalized)
-        if not normalized or constraint is None or constraint in seen:
+        constraint = canonical_structured_locator(normalized)
+        display_key = constraint or ("text", normalized.casefold())
+        if not normalized or display_key in seen:
             continue
-        seen.add(constraint)
+        seen.add(display_key)
         displayed.append(normalized)
     return displayed
 
@@ -103,12 +113,24 @@ def canonical_term_set(terms: Iterable[str]) -> tuple[str, ...]:
 def locator_hints_match_chunk(
     hints: Iterable[str], chunk: Mapping[str, Any]
 ) -> bool:
-    """Require at least one declared locator to match structured chunk metadata."""
+    """Return whether structured locator metadata does not contradict hints."""
+    return structured_locator_state(hints, chunk) != "mismatched"
+
+
+def structured_locator_state(
+    hints: Iterable[str], chunk: Mapping[str, Any]
+) -> StructuredLocatorState:
+    """Classify a chunk's structured locator evidence for the requested hints."""
     expected = set(canonical_locator_set(hints))
     if not expected:
-        return True
+        return "not_requested"
     actual = _chunk_locator_set(chunk)
-    return bool(expected.intersection(actual))
+    if expected.intersection(actual):
+        return "matched"
+    expected_types = {locator_type for locator_type, _identifier in expected}
+    if any(locator_type in expected_types for locator_type, _identifier in actual):
+        return "mismatched"
+    return "unavailable"
 
 
 def _chunk_locator_set(chunk: Mapping[str, Any]) -> set[tuple[str, str]]:
@@ -121,14 +143,17 @@ def _chunk_locator_set(chunk: Mapping[str, Any]) -> set[tuple[str, str]]:
     for locator_type, value in typed_values:
         if not isinstance(value, str) or not value.strip():
             continue
-        parsed = canonical_locator(value)
+        parsed = canonical_structured_locator(value)
         if parsed is not None and parsed[0] == locator_type:
             actual.add(parsed)
         else:
             actual.add((locator_type, " ".join(value.split()).casefold()))
-    section = canonical_locator(chunk.get("section"))
+    section_value = chunk.get("section")
+    section = canonical_structured_locator(section_value)
     if section is not None:
         actual.add(section)
+    elif isinstance(section_value, str) and section_value.strip():
+        actual.add(("section", " ".join(section_value.split()).casefold()))
     return actual
 
 
@@ -136,7 +161,10 @@ __all__ = [
     "authorized_doc_ids_for_slot",
     "canonical_locator",
     "canonical_locator_set",
+    "canonical_structured_locator",
     "canonical_term_set",
     "display_locator_hints",
     "locator_hints_match_chunk",
+    "StructuredLocatorState",
+    "structured_locator_state",
 ]
