@@ -146,6 +146,9 @@ def verify_campaign_export(artifact: Mapping[str, Any] | None) -> VerificationRe
         "token_reconciliation": _verify_tokens(v9_runs, llm_calls),
         "capture_availability": _verify_capture(v9_runs, llm_calls, setup),
         "supported_claims": _verify_supported_claims(v9_runs),
+        "retrieval_evidence_recovery": _verify_retrieval_evidence_recovery(
+            v9_runs, llm_calls
+        ),
     }
     return _report_from_requirements(requirements)
 
@@ -495,6 +498,100 @@ def _verify_supported_claims(runs: list[dict[str, Any]]) -> RequirementResult:
             if not _as_strings(item.get("evidence_ids")):
                 return RequirementResult("fail", "supported final claim is missing evidence provenance")
     return RequirementResult("pass")
+
+
+def _verify_retrieval_evidence_recovery(
+    runs: list[dict[str, Any]], llm_calls: list[dict[str, Any]]
+) -> RequirementResult:
+    """Fail closed on the bounded retrieval diagnostics projected by v9."""
+    empty_context_runs = 0
+    for run in runs:
+        v9 = _v9_payload(run)
+        trace = _as_mapping(run.get("agent_trace"))
+        completion = _as_mapping(v9.get("completion"))
+        if (
+            trace.get("response_status") == "configuration_incompatible"
+            or completion.get("status") == "configuration_incompatible"
+        ):
+            return RequirementResult("fail", "run reports configuration incompatibility")
+
+        packets = _as_list(v9.get("evidence_packets"))
+        if "evidence_packets" not in v9:
+            return RequirementResult("partial", "retrieval evidence packets are missing")
+        question_id = str(run.get("question_id") or "")
+        if question_id in {"Q5", "Q7", "Q11"} and not packets:
+            return RequirementResult("fail", "required recovery question has no evidence packets")
+        source_error = _verify_packet_source_scope(v9, packets)
+        if source_error is not None:
+            return source_error
+
+        context_pack = v9.get("context_pack")
+        if not isinstance(context_pack, Mapping):
+            return RequirementResult("partial", "context-pack diagnostics are missing")
+        packed_ids = context_pack.get("packed_evidence_ids")
+        if not isinstance(packed_ids, list):
+            return RequirementResult("partial", "packed evidence IDs are missing")
+        empty_context_runs += int(not packed_ids)
+
+        diagnostics = _as_list(v9.get("retrieval_diagnostics"))
+        if not diagnostics:
+            return RequirementResult("partial", "retrieval diagnostics are missing")
+        for diagnostic in diagnostics:
+            source_filter = _as_mapping(diagnostic.get("source_filter"))
+            reranking = _as_mapping(diagnostic.get("reranking"))
+            post_filter_count = source_filter.get("post_filter_count")
+            selected_count = reranking.get("selected_count")
+            if not isinstance(post_filter_count, int) or not isinstance(selected_count, int):
+                return RequirementResult("partial", "reranking recovery counts are missing")
+            if reranking.get("fallback_reason") and post_filter_count > 0 and selected_count == 0:
+                return RequirementResult(
+                    "fail", "reranker fallback removed authorized retrieval candidates"
+                )
+
+        if question_id in {"Q14", "Q16"}:
+            locator_diagnostics = _as_list(v9.get("locator_diagnostics"))
+            if not locator_diagnostics:
+                return RequirementResult("partial", "locator state diagnostics are missing")
+            states = {str(item.get("state") or "") for item in locator_diagnostics}
+            if not states.issubset({"matched", "mismatched", "unavailable"}):
+                return RequirementResult("fail", "locator diagnostics contain an invalid state")
+
+        evidence_calls = [
+            call for call in _calls_for_run(llm_calls, run) if call.get("phase") == "evidence_extract"
+        ]
+        if len(evidence_calls) > 1:
+            return RequirementResult("fail", "more than one evidence_extract call was recorded")
+
+    if empty_context_runs == len(runs):
+        return RequirementResult("fail", "all smoke runs have zero packed evidence contexts")
+    return RequirementResult("pass")
+
+
+def _verify_packet_source_scope(
+    v9: Mapping[str, Any], packets: list[dict[str, Any]]
+) -> RequirementResult | None:
+    contract = _as_mapping(v9.get("query_contract")) or _as_mapping(v9.get("contract"))
+    scope = _as_mapping(contract.get("resolved_source_scope"))
+    default_ids = set(_as_strings(scope.get("authorized_doc_ids")))
+    slots = {
+        str(slot.get("slot_id") or ""): set(
+            _as_strings(slot.get("authorized_source_doc_ids"))
+        )
+        for slot in _as_list(contract.get("required_slots"))
+        if str(slot.get("slot_id") or "")
+    }
+    for packet in packets:
+        doc_id = str(_as_mapping(packet.get("source")).get("doc_id") or "")
+        slot_ids = _as_strings(packet.get("slot_ids"))
+        if not doc_id or not slot_ids:
+            return RequirementResult("partial", "evidence packet source scope is incomplete")
+        for slot_id in slot_ids:
+            authorized = slots.get(slot_id, default_ids)
+            if not authorized:
+                return RequirementResult("partial", "slot authorization diagnostics are missing")
+            if doc_id not in authorized:
+                return RequirementResult("fail", "out-of-scope document entered evidence")
+    return None
 
 
 def _not_executed_report(reason: str) -> VerificationReport:

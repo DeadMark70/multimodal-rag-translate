@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 import subprocess
@@ -97,6 +98,60 @@ def _complete_run(question_id: str) -> dict[str, Any]:
             },
         },
     }
+
+
+def _recovery_diagnostics_export() -> dict[str, Any]:
+    """Represent the redacted Task 1--3 Agentic v9 trace projection."""
+    artifact = _complete_export()
+    for run in artifact["runs"]:
+        question_id = run["question_id"]
+        v9 = run["agent_trace"]["agentic_v9"]
+        v9["query_contract"]["required_slots"][0]["authorized_source_doc_ids"] = [
+            "doc-authorized"
+        ]
+        v9["evidence_packets"] = [
+            {
+                "evidence_id": "evidence-a",
+                "slot_ids": ["fact-a"],
+                "source": {"doc_id": "doc-authorized"},
+            }
+        ]
+        v9["context_pack"] = {"packed_evidence_ids": ["evidence-a"], "token_count": 4}
+        v9["retrieval_diagnostics"] = [
+            {
+                "source_filter": {"authorized_doc_ids": ["doc-authorized"], "post_filter_count": 1},
+                "reranking": {"fallback_reason": None, "selected_count": 1},
+            }
+        ]
+        v9["locator_diagnostics"] = (
+            [{"slot_id": "fact-a", "state": "matched"}]
+            if question_id in {"Q14", "Q16"}
+            else []
+        )
+        v9["budget_reservations"].append(
+            {
+                "reservation_id": "evidence-reservation",
+                "phase": "evidence_extract",
+                "provider_attempt": 1,
+            }
+        )
+        run["total_tokens"] = 24
+        v9["metrics"]["reconciled_tokens"] = 24
+        artifact["llm_calls"].append(
+            {
+                "run_id": run["id"],
+                "phase": "evidence_extract",
+                "reservation_id": "evidence-reservation",
+                "provider_attempt": 1,
+                "status": "success",
+                "prompt_hash": "hash-evidence",
+                "prompt_capture_status": "captured",
+                "full_prompt_capture_status": "not_captured_at_execution",
+                "total_tokens": 12,
+                "payload": {"usage_status": "measured", "official_total_tokens": 12},
+            }
+        )
+    return artifact
 
 
 def test_dry_run_has_fixed_v9_questions_and_no_paired_naive() -> None:
@@ -276,7 +331,7 @@ def test_failed_or_wrong_question_v9_run_fails_fixed_plan_coverage() -> None:
 
 
 def test_complete_v9_export_passes_and_writes_a_reproducible_manifest(tmp_path: Path) -> None:
-    artifact = _complete_export()
+    artifact = _recovery_diagnostics_export()
     artifact_path = tmp_path / "campaign-redacted.json"
     artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
 
@@ -297,6 +352,55 @@ def test_complete_v9_export_passes_and_writes_a_reproducible_manifest(tmp_path: 
     }
     assert manifest["input_hashes"]["campaign_export"].startswith("sha256:")
     assert manifest["release_gate_results"]["overall_status"] == "pass"
+
+
+def test_recovery_diagnostics_fail_closed_on_task_1_to_3_regressions() -> None:
+    artifact = _recovery_diagnostics_export()
+
+    assert verify_campaign_export(artifact).requirements["retrieval_evidence_recovery"].status == "pass"
+
+    all_zero_contexts = copy.deepcopy(artifact)
+    for run in all_zero_contexts["runs"]:
+        run["agent_trace"]["agentic_v9"]["context_pack"]["packed_evidence_ids"] = []
+    assert verify_campaign_export(all_zero_contexts).status == "fail"
+
+    outside_scope = copy.deepcopy(artifact)
+    outside_scope["runs"][0]["agent_trace"]["agentic_v9"]["evidence_packets"][0]["source"]["doc_id"] = "doc-blocked"
+    assert verify_campaign_export(outside_scope).status == "fail"
+
+    locator_only_empty_evidence = copy.deepcopy(artifact)
+    locator_only_empty_evidence["runs"][0]["agent_trace"]["agentic_v9"]["evidence_packets"] = []
+    locator_only_empty_evidence["runs"][0]["agent_trace"]["agentic_v9"]["locator_diagnostics"] = [
+        {"slot_id": "fact-a", "state": "unavailable"}
+    ]
+    assert verify_campaign_export(locator_only_empty_evidence).status == "fail"
+
+    configuration_incompatible = copy.deepcopy(artifact)
+    configuration_incompatible["runs"][0]["agent_trace"]["response_status"] = "configuration_incompatible"
+    assert verify_campaign_export(configuration_incompatible).status == "fail"
+
+    absent_locator_state = copy.deepcopy(artifact)
+    absent_locator_state["runs"][3]["agent_trace"]["agentic_v9"]["locator_diagnostics"] = []
+    assert verify_campaign_export(absent_locator_state).status == "partial"
+
+    excessive_evidence_calls = copy.deepcopy(artifact)
+    extra_call = copy.deepcopy(excessive_evidence_calls["llm_calls"][-1])
+    extra_call["provider_attempt"] = 2
+    extra_call["reservation_id"] = "evidence-reservation-2"
+    excessive_evidence_calls["runs"][0]["agent_trace"]["agentic_v9"]["budget_reservations"].append(
+        {
+            "reservation_id": "evidence-reservation-2",
+            "phase": "evidence_extract",
+            "provider_attempt": 2,
+        }
+    )
+    excessive_evidence_calls["llm_calls"].append(extra_call)
+    assert verify_campaign_export(excessive_evidence_calls).status == "fail"
+
+    lost_rerank_candidates = copy.deepcopy(artifact)
+    reranking = lost_rerank_candidates["runs"][0]["agent_trace"]["agentic_v9"]["retrieval_diagnostics"][0]["reranking"]
+    reranking.update({"fallback_reason": "exception", "selected_count": 0})
+    assert verify_campaign_export(lost_rerank_candidates).status == "fail"
 
 
 def test_manifest_recursively_redacts_setup_secrets(tmp_path: Path) -> None:
