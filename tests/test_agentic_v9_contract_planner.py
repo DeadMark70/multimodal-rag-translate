@@ -11,6 +11,7 @@ import pytest
 from data_base.agentic_v9 import contract_planner
 from data_base.agentic_v9.contract_planner import QuestionContractPlanner
 from data_base.agentic_v9.schemas import BudgetExceededError
+from data_base.agentic_v9.slot_constraints import structured_locator_state
 
 
 QUESTIONS_PATH = (
@@ -238,6 +239,30 @@ def test_exact_section_locator_extraction_rejects_truncated_prose() -> None:
     ]
     assert contract_planner._exact_locators("Section explains.") == []
     assert contract_planner._exact_locators("Section explains architecture.") == []
+
+
+def test_exact_locator_extraction_preserves_dotted_identifiers() -> None:
+    assert contract_planner._exact_locators(
+        "Compare Section 3.2, Table 3.2, Figure 1.2, and Equation 2.1."
+    ) == ["Section 3.2", "Table 3.2", "Figure 1.2", "Equation 2.1"]
+
+
+def test_extracted_dotted_locator_matches_only_its_exact_metadata() -> None:
+    locator = contract_planner._exact_locators("Retrieve Table 3.2.")[0]
+
+    assert structured_locator_state(
+        [locator], {"table_id": "Table 3.2"}
+    ) == "matched"
+    assert structured_locator_state(
+        [locator], {"table_id": "Table 3.3"}
+    ) == "mismatched"
+
+
+def test_exact_locator_extraction_rejects_prose_without_swallowing_punctuation() -> None:
+    assert contract_planner._exact_locators("Retrieve Table 3.2. Then summarize.") == [
+        "Table 3.2"
+    ]
+    assert contract_planner._exact_locators("Table discusses ablation results.") == []
 
 
 class _PlannerInvoker:

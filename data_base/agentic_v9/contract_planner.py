@@ -31,7 +31,8 @@ _ENTITY_PATTERN = re.compile(
 )
 _EXACT_LOCATOR_PATTERN = re.compile(
     r"\b(Figure|Fig\.|Table|Appendix|Formula|Equation|Theorem|Page|Section)"
-    r"\s*([A-Za-z0-9]+(?:\([a-z]\))?)",
+    r"\s*(\(?[A-Za-z0-9](?:[A-Za-z0-9_:-]*[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9_:-]+)*(?:\([A-Za-z0-9]{1,3}\))?\)?)",
     re.IGNORECASE,
 )
 _LOCATOR_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -398,6 +399,7 @@ def _slot(
                 locator.casefold().startswith(("figure", "table"))
                 for locator in locators or []
             )
+            or bool(re.search(r"\b(?:figure|table)\b", description, re.IGNORECASE))
             else "never"
         ),
     )
@@ -457,9 +459,9 @@ def _exact_locators(text: str) -> list[str]:
         locator = (
             f"{match.group(1).title().replace('Fig.', 'Figure')} {match.group(2)}"
         )
+        if canonical_structured_locator(locator) is None:
+            continue
         if match.group(1).casefold() == "section":
-            if canonical_structured_locator(locator) is None:
-                continue
             if re.match(r"\s+[A-Za-z]", text[match.end() :]):
                 continue
         locators.append(locator)
