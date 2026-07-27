@@ -18,7 +18,21 @@ AgenticV9Route = Literal[
     "graph_relational",
 ]
 GraphPolicy = Literal["never", "locator_fallback", "required_locator"]
+DecisionSource = Literal["deterministic", "llm_planner", "safe_fallback"]
+SlotPlanStatus = Literal["complete", "degraded"]
+SlotSemantics = Literal["heuristic_experimental", "atomic", "legacy_generic"]
+VisualPolicy = Literal["never", "preferred", "required"]
+ExpectedAnswerType = Literal[
+    "number",
+    "equation",
+    "definition",
+    "comparison",
+    "explanation",
+    "text",
+]
 ResponseStatus = Literal["complete", "qualified_partial", "insufficient"]
+VisualAssetBackfillStatus = Literal["completed", "visual_assets_unavailable"]
+ATOMIC_SLOT_MATCHING_EXPERIMENTAL = "atomic_slot_matching_experimental"
 EvidenceSupportType = Literal[
     "direct", "calculated", "scope_constraint", "contradictory"
 ]
@@ -54,6 +68,24 @@ class RequiredSlot(BaseModel):
     required: bool = True
     entity_ids: list[str] = Field(default_factory=list)
     locator_hints: list[str] = Field(default_factory=list)
+    source_name_hints: list[str] = Field(default_factory=list)
+    authorized_source_doc_ids: list[str] = Field(default_factory=list)
+    expected_answer_type: ExpectedAnswerType = "text"
+    depends_on_slot_ids: list[str] = Field(default_factory=list)
+    visual_policy: VisualPolicy = "never"
+
+
+class RouteDecision(BaseModel):
+    """Auditable provenance for the route selected by contract planning."""
+
+    selected_route: AgenticV9Route
+    decision_source: DecisionSource
+    matched_rules: list[str] = Field(default_factory=list)
+    candidate_routes: list[AgenticV9Route] = Field(default_factory=list)
+    route_reason: str = Field(min_length=1)
+    planner_call_used: bool = False
+    fallback_reason: str | None = None
+    confidence: float = Field(ge=0, le=1)
 
 
 class ResolvedSourceScope(BaseModel):
@@ -63,6 +95,7 @@ class ResolvedSourceScope(BaseModel):
     requested_source_names: list[str] = Field(default_factory=list)
     resolved_doc_ids: list[str] = Field(default_factory=list)
     authorized_doc_ids: list[str] = Field(default_factory=list)
+    source_name_to_doc_ids: dict[str, list[str]] = Field(default_factory=dict)
     rejected_source_names: list[str] = Field(default_factory=list)
 
 
@@ -76,6 +109,7 @@ class QueryContract(BaseModel):
     entities: list[str] = Field(default_factory=list)
     locator_hints: list[str] = Field(default_factory=list)
     graph_policy: GraphPolicy | None = None
+    visual_requested: bool = False
     visual_required: bool = False
     evidence_extraction_required: bool = False
     max_retrieval_rounds: int = Field(default=0, ge=0)
@@ -84,6 +118,11 @@ class QueryContract(BaseModel):
     runtime_token_budget: int = Field(default=0, ge=0)
     resolved_source_scope: ResolvedSourceScope | None = None
     strategy_tier: str | None = None
+    route_decision: RouteDecision | None = None
+    slot_plan_status: SlotPlanStatus | None = None
+    slot_semantics: SlotSemantics | None = None
+    atomic_completeness: bool | None = None
+    atomic_completeness_reason: str | None = None
 
     @model_validator(mode="after")
     def apply_route_graph_policy(self) -> QueryContract:
@@ -92,6 +131,16 @@ class QueryContract(BaseModel):
             self.graph_policy = default_graph_policy(self.route)
         if self.runtime_token_budget and not self.max_llm_calls:
             raise ValueError("runtime_token_budget requires max_llm_calls")
+        if self.contract_version == "1":
+            self.slot_semantics = "legacy_generic"
+            self.atomic_completeness = None
+            self.atomic_completeness_reason = None
+        elif self.contract_version == "2":
+            self.slot_semantics = "heuristic_experimental"
+            self.atomic_completeness = None
+            self.atomic_completeness_reason = ATOMIC_SLOT_MATCHING_EXPERIMENTAL
+        if self.visual_required:
+            self.visual_requested = True
         return self
 
 
@@ -111,6 +160,15 @@ class RetrievalTask(BaseModel):
     graph_policy: GraphPolicy = "never"
     visual_required: bool = False
     depends_on_task_ids: list[str] = Field(default_factory=list)
+
+
+class VisualAssetBackfillResult(BaseModel):
+    """Bounded, idempotent visual-manifest migration result."""
+
+    status: VisualAssetBackfillStatus
+    scanned_count: int = Field(default=0, ge=0)
+    added_count: int = Field(default=0, ge=0)
+    existing_count: int = Field(default=0, ge=0)
 
 
 class RagRetrievalResult(BaseModel):
@@ -270,10 +328,39 @@ class ConflictCandidate(BaseModel):
     unresolved: bool = True
 
 
+class SupportedFinding(BaseModel):
+    """Provider-proposed finding bound to one required slot and its evidence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slot_id: str = Field(min_length=1)
+    statement: str = Field(min_length=1)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class UnresolvedRequirement(BaseModel):
+    """Provider acknowledgement that a required slot remains unresolved."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slot_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
+class FinalAnswerDraft(BaseModel):
+    """Strict provider output; deterministic code owns final prose and status."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    supported_findings: list[SupportedFinding] = Field(default_factory=list)
+    unresolved_requirements: list[UnresolvedRequirement] = Field(default_factory=list)
+
+
 class FinalClaim(BaseModel):
     """A rendered answer claim linked to its supporting evidence packet IDs."""
 
     claim_id: str = Field(min_length=1)
+    slot_id: str | None = None
     statement: str = Field(min_length=1)
     support_type: ClaimSupportType
     evidence_ids: list[str] = Field(default_factory=list)

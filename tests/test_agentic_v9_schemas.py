@@ -12,20 +12,30 @@ from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
     EvidenceSource,
+    FinalAnswerDraft,
+    FinalAnswerResult,
     FinalClaim,
     GraphPolicy,
     QueryContract,
     RagRetrievalResult,
     ResolvedSourceScope,
+    RequiredSlot,
+    RouteDecision,
     SlotResolution,
     SourceLocator,
+    SupportedFinding,
     SufficiencyReport,
     TaskRetrievalResult,
+    UnresolvedRequirement,
     V9ExecutionResult,
     V9ExecutionRequest,
     default_graph_policy,
 )
-from evaluation.trace_schemas import AgentTraceDetail, summarize_agent_trace
+from evaluation.trace_schemas import (
+    AgentTraceDetail,
+    EvaluationRoutingDecision,
+    summarize_agent_trace,
+)
 
 
 def _evidence_packet(*, support_type: str = "direct") -> EvidencePacket:
@@ -135,15 +145,20 @@ def test_slot_resolution_rejects_incoherent_evidence_links(
         SlotResolution(slot_id="slot-1", status=status, evidence_ids=evidence_ids)
 
 
-def test_slot_resolution_accepts_only_positive_evidence_for_supported_or_conflicted() -> None:
+def test_slot_resolution_accepts_only_positive_evidence_for_supported_or_conflicted() -> (
+    None
+):
     assert SlotResolution(
         slot_id="slot-1", status="supported", evidence_ids=["evidence-1"]
     ).evidence_ids == ["evidence-1"]
-    assert SlotResolution(
-        slot_id="slot-1",
-        status="conflicted",
-        evidence_ids=["evidence-1", "evidence-2"],
-    ).status == "conflicted"
+    assert (
+        SlotResolution(
+            slot_id="slot-1",
+            status="conflicted",
+            evidence_ids=["evidence-1", "evidence-2"],
+        ).status
+        == "conflicted"
+    )
 
 
 @pytest.mark.parametrize(
@@ -180,7 +195,7 @@ def test_slot_resolution_accepts_only_positive_evidence_for_supported_or_conflic
     ],
 )
 def test_sufficiency_report_rejects_internally_incoherent_completion(
-    report: dict[str, object]
+    report: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
         SufficiencyReport(**report)
@@ -241,8 +256,108 @@ def test_query_contract_rejects_a_runtime_budget_without_provider_call_budget() 
         )
 
 
+def test_query_contract_v2_carries_atomic_slot_and_route_provenance() -> None:
+    route_decision = RouteDecision(
+        selected_route="multi_document_exact",
+        decision_source="deterministic",
+        matched_rules=["numbered_subquestions", "multiple_named_sources"],
+        candidate_routes=["multi_document_exact", "exact_structured"],
+        route_reason="Multiple exact requirements span named sources.",
+        planner_call_used=False,
+        confidence=1.0,
+    )
+    slot = RequiredSlot(
+        slot_id="S1",
+        description="Retrieve the reported metric.",
+        source_name_hints=["paper.pdf"],
+        authorized_source_doc_ids=["doc-1"],
+        expected_answer_type="number",
+        depends_on_slot_ids=[],
+        visual_policy="preferred",
+    )
+
+    contract = QueryContract(
+        contract_version="2",
+        route="multi_document_exact",
+        intent="Resolve each requested fact.",
+        required_slots=[slot],
+        route_decision=route_decision,
+        slot_plan_status="complete",
+    )
+
+    assert contract.slot_semantics == "heuristic_experimental"
+    assert contract.atomic_completeness is None
+    assert contract.atomic_completeness_reason == "atomic_slot_matching_experimental"
+    assert contract.slot_plan_status == "complete"
+    assert contract.route_decision == route_decision
+    assert contract.required_slots[0].model_dump() == {
+        "slot_id": "S1",
+        "description": "Retrieve the reported metric.",
+        "required": True,
+        "entity_ids": [],
+        "locator_hints": [],
+        "source_name_hints": ["paper.pdf"],
+        "authorized_source_doc_ids": ["doc-1"],
+        "expected_answer_type": "number",
+        "depends_on_slot_ids": [],
+        "visual_policy": "preferred",
+    }
+
+
+def test_query_contract_v2_missing_slot_plan_status_stays_missing() -> None:
+    contract = QueryContract(
+        contract_version="2",
+        route="single_lookup",
+        intent="Resolve one atomic source-bound fact.",
+        required_slots=[RequiredSlot(slot_id="S1", description="Retrieve the fact.")],
+    )
+
+    assert contract.slot_semantics == "heuristic_experimental"
+    assert contract.atomic_completeness is None
+    assert contract.atomic_completeness_reason == "atomic_slot_matching_experimental"
+    assert contract.slot_plan_status is None
+
+
+def test_query_contract_v1_projects_legacy_generic_atomic_completeness_na() -> None:
+    contract = QueryContract(
+        route="single_lookup",
+        intent="Read the legacy generic fact.",
+        required_slots=[RequiredSlot(slot_id="fact", description="generic fact")],
+    )
+
+    assert contract.contract_version == "1"
+    assert contract.slot_semantics == "legacy_generic"
+    assert contract.slot_plan_status is None
+    assert contract.atomic_completeness is None
+    assert contract.atomic_completeness_reason is None
+
+
+def test_actual_routing_trace_has_first_class_route_provenance() -> None:
+    decision = EvaluationRoutingDecision(
+        routing_decision_id="route-1",
+        run_id="run-1",
+        campaign_id="campaign-1",
+        selected_mode="agentic",
+        analysis_type="actual",
+        decision_source="safe_fallback",
+        candidate_routes=["multi_hop", "exact_structured"],
+        matched_rules=["mixed_requirements"],
+        fallback_reason="planner_timeout",
+        reason="Use the bounded safe route.",
+        confidence=0.25,
+        created_at=datetime.now(timezone.utc),
+    )
+
+    assert decision.decision_source == "safe_fallback"
+    assert decision.candidate_routes == ["multi_hop", "exact_structured"]
+    assert decision.matched_rules == ["mixed_requirements"]
+    assert decision.fallback_reason == "planner_timeout"
+
+
 @pytest.mark.parametrize("extra_field", ["user_id", "authorized_doc_ids"])
-def test_request_rejects_adapter_injected_authorization_fields(extra_field: str) -> None:
+def test_request_rejects_adapter_injected_authorization_fields(
+    extra_field: str,
+) -> None:
     payload = {
         "question": "What is the reported score?",
         "trace_id": "trace-1",
@@ -260,6 +375,56 @@ def test_final_claim_rejects_evidence_only_scope_constraint_support_type() -> No
             statement="The frozen source scope cannot establish this claim.",
             support_type="scope_constraint",
         )
+
+
+def test_structured_final_draft_has_strict_supported_and_unresolved_rows() -> None:
+    draft = FinalAnswerDraft(
+        supported_findings=[
+            SupportedFinding(
+                slot_id="score",
+                statement="The reported score is 0.91.",
+                evidence_ids=["E1"],
+            )
+        ],
+        unresolved_requirements=[
+            UnresolvedRequirement(slot_id="source", reason="Source was not found.")
+        ],
+    )
+
+    assert draft.supported_findings[0].slot_id == "score"
+    assert draft.unresolved_requirements[0].slot_id == "source"
+    with pytest.raises(ValidationError):
+        FinalAnswerDraft(answer="provider-authored prose")
+    with pytest.raises(ValidationError):
+        SupportedFinding(
+            slot_id="score",
+            statement="The reported score is 0.91.",
+            evidence_ids=["E1"],
+            qualifier="maybe",
+        )
+
+
+def test_existing_final_claim_and_result_payloads_remain_compatible() -> None:
+    claim = FinalClaim.model_validate(
+        {
+            "claim_id": "claim-1",
+            "statement": "The score is 0.91.",
+            "support_type": "direct",
+            "evidence_ids": ["E1"],
+        }
+    )
+    result = FinalAnswerResult.model_validate(
+        {
+            "response_status": "complete",
+            "answer": "The score is 0.91.",
+            "claims": [claim.model_dump()],
+            "used_evidence_ids": ["E1"],
+            "final_generation_count": 1,
+        }
+    )
+
+    assert claim.slot_id is None
+    assert result.claims == [claim]
 
 
 def test_trace_execution_version_is_backward_compatible_and_summary_preserves_it() -> (

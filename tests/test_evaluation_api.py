@@ -15,8 +15,11 @@ from fastapi.testclient import TestClient
 
 from core.auth import get_current_user_id
 from evaluation import db as evaluation_db
-from evaluation.campaign_schemas import CampaignResultStatus
-from evaluation.campaign_schemas import CampaignLifecycleStatus
+from evaluation.campaign_schemas import (
+    CampaignCreateRequest,
+    CampaignLifecycleStatus,
+    CampaignResultStatus,
+)
 from evaluation.campaign_engine import CampaignEngine
 from evaluation.db import CampaignResultRepository
 from evaluation.job_schemas import EvaluationJob, EvaluationJobType, EvaluationWorkType
@@ -25,6 +28,33 @@ from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.schemas import AvailableModel, EvaluationGraphEvent, EvaluationGraphEvidenceItem
 from evaluation.trace_schemas import EvaluationTraceEvent
 from main import app
+
+
+def test_campaign_prompt_capture_policy_defaults_are_frozen_in_setup() -> None:
+    request = CampaignCreateRequest.model_validate(
+        {
+            "test_case_ids": ["Q-CAPTURE"],
+            "modes": ["agentic"],
+            "model_config": {
+                "id": "cfg",
+                "name": "Capture",
+                "model_name": "gemini-2.5-flash",
+            },
+        }
+    )
+
+    policy = request.to_config().prompt_capture_policy
+    assert policy.hash is True
+    assert policy.preview is True
+    assert policy.full_prompt is False
+    assert request.to_config().model_dump(mode="json", by_alias=True)[
+        "prompt_capture_policy"
+    ] == {
+        "hash": True,
+        "preview": True,
+        "full_prompt": False,
+        "preview_max_chars": 512,
+    }
 
 
 @contextmanager

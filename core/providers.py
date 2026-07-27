@@ -37,6 +37,8 @@ class ProviderError(RuntimeError):
 class LLMProvider(Protocol):
     """LLM provider interface."""
 
+    provider_name: str
+
     def get_llm(self, purpose: LLMPurpose, model_name: Optional[str] = None) -> Any:
         """Return an LLM client for the requested purpose."""
 
@@ -57,6 +59,8 @@ class DatalabProvider(Protocol):
 
 class RealLLMProvider:
     """Production LLM provider backed by core.llm_factory."""
+
+    provider_name = "google"
 
     def get_llm(self, purpose: LLMPurpose, model_name: Optional[str] = None) -> Any:
         return get_real_llm(purpose, model_name=model_name)
@@ -92,6 +96,8 @@ class _FakeLLM:
 
 class FakeLLMProvider:
     """LLM provider that never calls external APIs."""
+
+    provider_name = "fake"
 
     def __init__(self) -> None:
         self._instances: dict[str, _FakeLLM] = {}
@@ -277,6 +283,11 @@ def _get_registry() -> ProviderRegistry:
 def get_llm(purpose: LLMPurpose, model_name: Optional[str] = None) -> Any:
     """Return LLM client from active provider registry."""
     return _get_registry().llm_provider.get_llm(purpose, model_name=model_name)
+
+
+def get_llm_provider_name() -> str:
+    """Return the authoritative identity of the active runtime LLM provider."""
+    return _get_registry().llm_provider.provider_name
 
 
 def get_datalab_provider() -> DatalabProvider:

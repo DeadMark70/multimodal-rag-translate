@@ -6,6 +6,7 @@ from data_base.agentic_v9.schemas import (
     V9ExecutionRequest,
 )
 from data_base.agentic_v9.source_scope_resolver import SourceScopeResolver
+from data_base.agentic_v9.contract_planner import QuestionContractPlanner
 from data_base.agentic_v9.route_planner import RoutePlanner, plan_query_contract
 from data_base.agentic_v9.retrieval_tasks import (
     RetrievalTaskCompiler,
@@ -25,6 +26,7 @@ from data_base.agentic_v9.execution_policy import (
 
 __all__ = [
     "QueryContract",
+    "QuestionContractPlanner",
     "ResolvedSourceScope",
     "SourceScopeResolver",
     "RoutePlanner",

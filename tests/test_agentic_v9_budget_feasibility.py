@@ -20,17 +20,24 @@ def _setup(**overrides: object) -> dict[str, object]:
     return setup
 
 
-def test_pre_route_reserves_route_and_final_calls_with_setup_thinking_budget() -> None:
+def test_preflight_reserves_worst_case_planning_and_downstream_calls() -> None:
     result = validate_pre_route_feasibility(
         setup_snapshot=_setup(),
-        remaining_token_budget=18_304,
-        remaining_llm_calls=2,
+        remaining_token_budget=50_000,
+        remaining_llm_calls=5,
     )
 
     assert result.status is FeasibilityStatus.FEASIBLE
-    assert result.required_provider_calls == {"route_plan": 1, "final_answer": 1}
-    assert result.reserved_tokens == 18_304
+    assert result.required_provider_calls == {
+        "contract_planning": 1,
+        "graph_route": 1,
+        "visual_extract": 1,
+        "evidence_extract": 1,
+        "final_answer": 1,
+    }
+    assert result.reserved_tokens <= 50_000
     assert result.max_provider_calls_by_phase == {
+        "contract_planning": 1,
         "route_plan": 1,
         "query_rewrite": 1,
         "retrieval_judge": 1,
@@ -46,19 +53,22 @@ def test_pre_route_reserves_route_and_final_calls_with_setup_thinking_budget() -
 def test_pre_route_rejects_thinking_budget_that_cannot_fit_route_reservation() -> None:
     result = validate_pre_route_feasibility(
         setup_snapshot=_setup(),
-        remaining_token_budget=18_303,
-        remaining_llm_calls=2,
+        remaining_token_budget=1,
+        remaining_llm_calls=5,
     )
 
     assert result.status is FeasibilityStatus.CONFIGURATION_INCOMPATIBLE
-    assert result.reason == "route_or_final_reserve_exceeds_remaining_token_budget"
+    assert (
+        result.reason
+        == "planning_or_downstream_reserve_exceeds_remaining_token_budget"
+    )
 
 
 def test_pre_route_rejects_dynamic_thinking_without_an_explicit_reserve() -> None:
     result = validate_pre_route_feasibility(
         setup_snapshot=_setup(thinking_budget=-1),
         remaining_token_budget=100_000,
-        remaining_llm_calls=2,
+        remaining_llm_calls=5,
     )
 
     assert result.status is FeasibilityStatus.CONFIGURATION_INCOMPATIBLE
@@ -86,12 +96,12 @@ def test_post_contract_admits_high_thinking_single_lookup_and_charges_final() ->
     assert result.reserved_tokens == 9_728
 
 
-def test_post_contract_charges_a_used_route_plan_to_the_resolved_route_budget() -> None:
+def test_post_contract_charges_used_contract_planning_to_exact_contract() -> None:
     contract = QueryContract(
         route="single_lookup",
         intent="Find the reported score.",
         max_llm_calls=2,
-        runtime_token_budget=18_304,
+        runtime_token_budget=18_688,
     )
 
     result = validate_post_contract_feasibility(
@@ -103,8 +113,11 @@ def test_post_contract_charges_a_used_route_plan_to_the_resolved_route_budget() 
     )
 
     assert result.status is FeasibilityStatus.FEASIBLE
-    assert result.required_provider_calls == {"route_plan": 1, "final_answer": 1}
-    assert result.reserved_tokens == 18_304
+    assert result.required_provider_calls == {
+        "contract_planning": 1,
+        "final_answer": 1,
+    }
+    assert result.reserved_tokens == 18_688
 
 
 def test_post_contract_reserves_required_visual_and_graph_before_curation() -> None:
@@ -136,6 +149,7 @@ def test_post_contract_reserves_required_visual_and_graph_before_curation() -> N
     assert result.max_tool_operations == 5
     assert ADMISSION_PRIORITY == (
         "final_answer",
+        "contract_planning",
         "route_plan",
         "visual_extract",
         "graph_route",

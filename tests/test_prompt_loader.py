@@ -220,3 +220,37 @@ def test_domain_formatters_delegate_to_domain_registries(
     assert format_agentic_rag_prompt("sample", name="Ada") == "agentic Ada"
     assert format_graph_rag_prompt("sample", name="Ada") == "graph Ada"
     assert format_rag_pipeline_prompt("sample", name="Ada") == "pipeline Ada"
+
+
+def test_agentic_v9_contract_planner_prompt_uses_standard_registry_contract() -> None:
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "prompts"
+        / "agentic_v9_contract_planner.json"
+    )
+    registry = PromptRegistry(path)
+    definition = registry.get("atomic_contract_planning")
+
+    assert definition.required_variables == (
+        "question",
+        "authorized_source_names",
+        "authorized_doc_ids",
+        "authorized_source_mapping",
+    )
+    rendered = registry.format(
+        "atomic_contract_planning",
+        question="What is reported?",
+        authorized_source_names='["paper.pdf"]',
+        authorized_doc_ids='["doc-1"]',
+        authorized_source_mapping='{"paper.pdf": ["doc-1"]}',
+    )
+    assert "What is reported?" in rendered
+    assert "paper.pdf" in rendered
+    assert "doc-1" in rendered
+    with pytest.raises(PromptConfigError, match="authorized_doc_ids"):
+        registry.format(
+            "atomic_contract_planning",
+            question="What is reported?",
+            authorized_source_names='["paper.pdf"]',
+            authorized_source_mapping='{"paper.pdf": ["doc-1"]}',
+        )

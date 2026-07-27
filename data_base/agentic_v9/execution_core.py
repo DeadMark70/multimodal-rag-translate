@@ -17,6 +17,7 @@ from data_base.agentic_v9.execution_policy import (
     ExecutionDeadline,
     V9ExecutionPolicyRuntime,
 )
+from data_base.agentic_v9.repair import MAX_REPAIR_ROUNDS
 from data_base.agentic_v9.retrieval_tasks import RetrievalTaskCompiler
 from data_base.agentic_v9.schemas import (
     EvidencePacket,
@@ -25,6 +26,7 @@ from data_base.agentic_v9.schemas import (
     ResolvedSourceScope,
     RetrievalTask,
     SlotResolution,
+    SufficiencyReport,
     TaskRetrievalResult,
     V9ExecutionRequest,
     V9ExecutionResult,
@@ -82,12 +84,14 @@ FinalStage = Callable[
         PackedEvidenceContext,
         tuple[SlotResolution, ...],
         Any | None,
+        SufficiencyReport,
     ],
     _MaybeAwaitable[FinalAnswerResult],
 ]
 DeterministicPartialStage = Callable[
     [QueryContract, SufficiencyEvaluation], FinalAnswerResult
 ]
+RepairTerminalStage = Callable[[str], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +109,7 @@ class V9ExecutionStages:
     pack: PackStage
     generate_final: FinalStage
     deterministic_partial: DeterministicPartialStage
+    record_repair_terminal: RepairTerminalStage | None = None
 
 
 class V9ExecutionCore:
@@ -183,10 +188,27 @@ class V9ExecutionCore:
             contract, tuple(evidence_packets)
         )
         repair_round = 0
-        while (
-            repair_round < contract.max_repair_rounds
-            and self._runtime.has_final_reserve(deadline)
-        ):
+        repair_cap = min(contract.max_repair_rounds, MAX_REPAIR_ROUNDS)
+        while repair_round < repair_cap:
+            if (
+                sufficiency.report.evidence_complete
+                or not sufficiency.repairable_slot_ids
+            ):
+                self._record_repair_terminal(
+                    repair_round,
+                    (
+                        "evidence_complete"
+                        if sufficiency.report.evidence_complete
+                        else "no_repairable_slots"
+                    ),
+                )
+                break
+            if not deadline.has_time_remaining():
+                self._record_repair_terminal(repair_round, "deadline_exhausted")
+                break
+            if not self._runtime.has_final_reserve(deadline):
+                self._record_repair_terminal(repair_round, "final_budget_protected")
+                break
             repair_tasks = tuple(
                 self._stages.plan_repair(
                     contract, sufficiency, request.trace_id, repair_round + 1
@@ -206,6 +228,18 @@ class V9ExecutionCore:
             sufficiency = self._stages.evaluate_sufficiency(
                 contract, tuple(evidence_packets)
             )
+        else:
+            if sufficiency.report.evidence_complete:
+                terminal_reason = "evidence_complete"
+            elif not sufficiency.repairable_slot_ids:
+                terminal_reason = "no_repairable_slots"
+            elif not deadline.has_time_remaining():
+                terminal_reason = "deadline_exhausted"
+            elif not self._runtime.has_final_reserve(deadline):
+                terminal_reason = "final_budget_protected"
+            else:
+                terminal_reason = "repair_round_cap_reached"
+            self._record_repair_terminal(repair_round, terminal_reason)
 
         # One final prose batch may curate packets; it cannot produce an answer.
         curated_packets = tuple(
@@ -266,6 +300,7 @@ class V9ExecutionCore:
                         packed,
                         conflict.sufficiency.slot_resolutions,
                         conflict.arbitration,
+                        conflict.sufficiency.report,
                     ),
                     deadline,
                     cancellation,
@@ -275,6 +310,9 @@ class V9ExecutionCore:
                     contract, conflict.sufficiency
                 )
 
+        final_answer = _prevent_response_status_upgrade(
+            final_answer, conflict.sufficiency.report, contract
+        )
         final_generation_count = final_answer.final_generation_count
         assert final_generation_count <= 1
         subtask_answer_count = 0
@@ -292,6 +330,10 @@ class V9ExecutionCore:
                 "arbitration_call_count": conflict.arbitration_call_count,
             },
         )
+
+    def _record_repair_terminal(self, executed_rounds: int, reason: str) -> None:
+        if executed_rounds and self._stages.record_repair_terminal is not None:
+            self._stages.record_repair_terminal(reason)
 
     def _initial_tasks(
         self, request: V9ExecutionRequest, contract: QueryContract
@@ -358,6 +400,21 @@ class V9ExecutionCore:
         return await self._runtime.run_retrieval(
             operation, phase=phase, deadline=deadline, cancellation=cancellation
         )
+
+
+def _prevent_response_status_upgrade(
+    final_answer: FinalAnswerResult,
+    sufficiency: SufficiencyReport,
+    contract: QueryContract,
+) -> FinalAnswerResult:
+    """Apply deterministic sufficiency and experimental-v2 status ceilings."""
+    rank = {"insufficient": 0, "qualified_partial": 1, "complete": 2}
+    maximum_status = sufficiency.response_status
+    if contract.contract_version == "2" and maximum_status == "complete":
+        maximum_status = "qualified_partial"
+    if rank[final_answer.response_status] <= rank[maximum_status]:
+        return final_answer
+    return final_answer.model_copy(update={"response_status": maximum_status})
 
 
 async def _resolve(value: _MaybeAwaitable[_T]) -> _T:

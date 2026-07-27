@@ -43,6 +43,28 @@ def get_evaluation_dir(user_id: str) -> Path:
     return Path(get_user_upload_dir(user_id)) / "evaluation"
 
 
+def resolve_upload_storage_reference(
+    *,
+    user_id: str,
+    doc_id: str,
+    storage_reference: str,
+) -> Path:
+    """Resolve one manifest reference beneath its exact user/document folder."""
+    if not storage_reference or Path(storage_reference).is_absolute():
+        raise ValueError("storage reference must be upload-root-relative")
+    if any(
+        value in {"", ".", ".."} or "/" in value or "\\" in value
+        for value in (user_id, doc_id)
+    ):
+        raise ValueError("user and document IDs must be single path components")
+    upload_root = Path(ensure_upload_root()).resolve()
+    document_root = (upload_root / user_id / doc_id).resolve()
+    candidate = (upload_root / Path(storage_reference)).resolve()
+    if not candidate.is_relative_to(document_root):
+        raise ValueError("storage reference escapes the authorized document")
+    return candidate
+
+
 def resolve_document_user_folder(
     *,
     user_id: str,

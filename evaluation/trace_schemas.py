@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from evaluation.accounting_schemas import TokenBreakdown
 from evaluation.campaign_schemas import CampaignMode
@@ -17,6 +17,21 @@ TracePhase = Literal["planning", "execution", "drilldown", "evaluation", "synthe
 TraceStatus = Literal["completed", "partial", "failed"]
 TraceSummaryStatus = Literal["completed", "partial", "failed", "not_instrumented"]
 TraceEventStatus = Literal["running", "success", "failed", "skipped", "timeout", "partial"]
+LlmCallPhase = Literal[
+    "unknown",
+    "contract_planning",
+    "evidence_extract",
+    "retrieval_judge",
+    "visual_extract",
+    "final_answer",
+]
+PromptCaptureStatus = Literal[
+    "unknown",
+    "captured",
+    "redacted",
+    "not_captured_at_execution",
+    "capture_failed",
+]
 TraceStageType = Literal[
     "routing",
     "planning",
@@ -66,14 +81,21 @@ class EvaluationLlmCall(BaseModel):
     span_id: Optional[str] = None
     provider: Optional[str] = None
     model_name: Optional[str] = None
+    phase: LlmCallPhase = "unknown"
     purpose: str = Field(default="unknown", min_length=1)
+    reservation_id: Optional[str] = None
+    provider_attempt: Optional[int] = Field(default=None, ge=1)
     prompt_tokens: int = Field(default=0, ge=0)
     completion_tokens: int = Field(default=0, ge=0)
     total_tokens: int = Field(default=0, ge=0)
+    reasoning_tokens: Optional[int] = Field(default=None, ge=0)
+    other_tokens: Optional[int] = Field(default=None, ge=0)
     estimated_cost_usd: Optional[float] = Field(default=None, ge=0)
     estimated_cost_twd: Optional[float] = Field(default=None, ge=0)
     prompt_hash: Optional[str] = None
     prompt_preview: Optional[str] = None
+    prompt_capture_status: PromptCaptureStatus = "unknown"
+    full_prompt_capture_status: PromptCaptureStatus = "unknown"
     response_hash: Optional[str] = None
     latency_ms: Optional[float] = Field(default=None, ge=0)
     status: TraceEventStatus = "success"
@@ -168,10 +190,41 @@ class EvaluationRoutingDecision(BaseModel):
     span_id: Optional[str] = None
     selected_mode: CampaignMode
     analysis_type: Literal["retrospective", "actual"] = "retrospective"
+    decision_source: Literal[
+        "deterministic", "llm_planner", "safe_fallback"
+    ] | None = None
+    candidate_routes: list[str] = Field(default_factory=list)
+    matched_rules: list[str] = Field(default_factory=list)
+    fallback_reason: Optional[str] = None
     confidence: Optional[float] = None
     reason: Optional[str] = None
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
+
+    @model_validator(mode="after")
+    def project_persisted_provenance(self) -> EvaluationRoutingDecision:
+        """Restore additive provenance fields from legacy payload-backed rows."""
+        if self.decision_source is None:
+            self.decision_source = self.payload.get("decision_source")
+        if not self.candidate_routes:
+            self.candidate_routes = list(
+                self.payload.get("candidate_routes") or []
+            )
+        if not self.matched_rules:
+            self.matched_rules = list(self.payload.get("matched_rules") or [])
+        if self.fallback_reason is None:
+            self.fallback_reason = self.payload.get("fallback_reason")
+        elif self.payload.get("fallback_reason") is None:
+            self.payload["fallback_reason"] = self.fallback_reason
+        if self.decision_source is not None:
+            self.payload.setdefault("decision_source", self.decision_source)
+        if self.candidate_routes:
+            self.payload.setdefault(
+                "candidate_routes", list(self.candidate_routes)
+            )
+        if self.matched_rules:
+            self.payload.setdefault("matched_rules", list(self.matched_rules))
+        return self
 
 
 class EvaluationClaim(BaseModel):
@@ -248,6 +301,18 @@ class AgenticV9TracePayload(BaseModel):
     repairs: list[RepairPlan] = Field(default_factory=list)
     evidence_packet_ids: list[str] = Field(default_factory=list)
     slot_resolution_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_bounded_complete_repair_rounds(self) -> AgenticV9TracePayload:
+        """Reject incomplete or unbounded repair history at persistence."""
+        if len(self.repairs) > 2:
+            raise ValueError("agentic v9 traces permit at most two repair rounds")
+        round_indexes = [repair.repair_round_index for repair in self.repairs]
+        if round_indexes != sorted(set(round_indexes)):
+            raise ValueError("repair rounds must be unique and ordered")
+        if any(repair.tasks and not repair.stop_reason for repair in self.repairs):
+            raise ValueError("executed repair rounds require a persisted stop reason")
+        return self
 
 
 class EvaluationRunSummary(BaseModel):

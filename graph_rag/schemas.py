@@ -8,24 +8,33 @@ and API response schemas.
 # Standard library
 from datetime import datetime
 from enum import Enum
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Dict, List, Literal, Optional
 
 # Third-party
-from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 
 class EntityType(str, Enum):
     """
     Entity types for knowledge graph nodes.
-    
+
     Defines the categories of entities that can be extracted
     from academic papers and research documents.
     """
-    CONCEPT = "concept"       # Concepts/theories (e.g., "Attention Mechanism")
-    METHOD = "method"         # Methods/techniques (e.g., "BERT", "Transformer")
-    METRIC = "metric"         # Metrics/measures (e.g., "F1 Score", "Accuracy")
-    RESULT = "result"         # Results/findings (e.g., "State-of-the-art")
-    AUTHOR = "author"         # Authors (e.g., "Vaswani et al.")
+
+    CONCEPT = "concept"  # Concepts/theories (e.g., "Attention Mechanism")
+    METHOD = "method"  # Methods/techniques (e.g., "BERT", "Transformer")
+    METRIC = "metric"  # Metrics/measures (e.g., "F1 Score", "Accuracy")
+    RESULT = "result"  # Results/findings (e.g., "State-of-the-art")
+    AUTHOR = "author"  # Authors (e.g., "Vaswani et al.")
     PAPER = "paper"
     MODEL = "model"
     DATASET = "dataset"
@@ -48,17 +57,18 @@ class EntityType(str, Enum):
 class RelationType(str, Enum):
     """
     Relation types for knowledge graph edges.
-    
+
     Defines the semantic relationships between entities.
     """
-    USES = "uses"                   # Method uses another method/concept
-    OUTPERFORMS = "outperforms"     # Method outperforms another
-    PROPOSES = "proposes"           # Author proposes method/concept
+
+    USES = "uses"  # Method uses another method/concept
+    OUTPERFORMS = "outperforms"  # Method outperforms another
+    PROPOSES = "proposes"  # Author proposes method/concept
     EVALUATES_WITH = "evaluates_with"  # Method evaluated with metric
-    CITES = "cites"                 # Reference citation
-    EXTENDS = "extends"             # Extends/builds upon
-    PART_OF = "part_of"             # Is a component of
-    APPLIES_TO = "applies_to"       # Applied to domain/task
+    CITES = "cites"  # Reference citation
+    EXTENDS = "extends"  # Extends/builds upon
+    PART_OF = "part_of"  # Is a component of
+    APPLIES_TO = "applies_to"  # Applied to domain/task
 
 
 # Legacy graph data remains readable, but schema-v1 extraction accepts only
@@ -116,7 +126,7 @@ GRAPH_EDGE_TYPES_V1 = frozenset(
 class GraphNode(BaseModel):
     """
     Knowledge graph node representing an entity.
-    
+
     Attributes:
         id: Unique identifier for the node.
         label: Display name of the entity.
@@ -126,6 +136,7 @@ class GraphNode(BaseModel):
         pending_resolution: Whether this node needs entity resolution.
         embedding: Optional embedding vector for similarity matching.
     """
+
     id: str = Field(..., description="唯一識別碼")
     label: str = Field(..., description="實體顯示名稱")
     entity_type: EntityType = Field(..., description="實體類別")
@@ -133,7 +144,7 @@ class GraphNode(BaseModel):
     description: Optional[str] = Field(default=None, description="實體描述")
     pending_resolution: bool = Field(default=False, description="是否待融合")
     embedding: Optional[List[float]] = Field(default=None, description="向量嵌入")
-    
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
@@ -151,7 +162,7 @@ class GraphNode(BaseModel):
 class GraphEdge(BaseModel):
     """
     Knowledge graph edge representing a relationship.
-    
+
     Attributes:
         source_id: ID of the source node.
         target_id: ID of the target node.
@@ -160,13 +171,14 @@ class GraphEdge(BaseModel):
         weight: Relationship strength (0.0 to 1.0).
         doc_ids: List of document IDs where this relationship is mentioned.
     """
+
     source_id: str = Field(..., description="來源節點 ID")
     target_id: str = Field(..., description="目標節點 ID")
     relation: str = Field(..., description="關係類型")
     description: Optional[str] = Field(default=None, description="關係描述")
     weight: float = Field(default=1.0, ge=0.0, le=1.0, description="關係強度")
     doc_ids: List[str] = Field(default_factory=list, description="來源文件 ID 列表")
-    
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
@@ -184,10 +196,10 @@ class GraphEdge(BaseModel):
 class Community(BaseModel):
     """
     A community (cluster) of related nodes.
-    
+
     Communities are detected using the Leiden algorithm and
     represent thematically related groups of entities.
-    
+
     Attributes:
         id: Unique community identifier.
         node_ids: List of node IDs in this community.
@@ -195,6 +207,7 @@ class Community(BaseModel):
         title: Short title for the community.
         level: Hierarchy level (Leiden supports multi-level).
     """
+
     id: int = Field(..., description="社群 ID")
     node_ids: List[str] = Field(default_factory=list, description="成員節點 ID 列表")
     summary: Optional[str] = Field(default=None, description="社群摘要 (LLM 生成)")
@@ -204,7 +217,7 @@ class Community(BaseModel):
     child_ids: List[int] = Field(default_factory=list, description="子社群 ID 列表")
     ranking_text: Optional[str] = Field(default=None, description="檢索排序文字")
     summary_version: int = Field(default=1, description="社群摘要版本")
-    
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
@@ -229,9 +242,10 @@ class Community(BaseModel):
 class GraphStatusResponse(BaseModel):
     """
     Response model for graph status API endpoint.
-    
+
     Provides overview information about the user's knowledge graph.
     """
+
     has_graph: bool = Field(..., description="是否有圖譜")
     node_count: int = Field(default=0, description="節點數量")
     edge_count: int = Field(default=0, description="邊數量")
@@ -244,18 +258,38 @@ class GraphStatusResponse(BaseModel):
         default_factory=dict,
         description="各層級社群數量",
     )
-    last_optimized_at: Optional[datetime] = Field(default=None, description="最後優化時間")
-    eligible_document_count: int = Field(default=0, description="可用於 GraphRAG 重建的文件數量")
-    indexed_document_count: int = Field(default=0, description="GraphRAG 成功建入的文件數量")
+    last_optimized_at: Optional[datetime] = Field(
+        default=None, description="最後優化時間"
+    )
+    eligible_document_count: int = Field(
+        default=0, description="可用於 GraphRAG 重建的文件數量"
+    )
+    indexed_document_count: int = Field(
+        default=0, description="GraphRAG 成功建入的文件數量"
+    )
     failed_document_count: int = Field(default=0, description="GraphRAG 失敗文件數量")
-    partial_document_count: int = Field(default=0, description="GraphRAG 部分成功文件數量")
-    empty_document_count: int = Field(default=0, description="GraphRAG 成功執行但未抽出實體的文件數量")
-    active_job_state: Optional[str] = Field(default=None, description="目前進行中的圖譜工作狀態")
-    graph_extraction_model: Optional[str] = Field(default=None, description="預設圖譜抽取模型")
-    graph_extraction_thinking_level: Optional[str] = Field(default=None, description="預設圖譜抽取 thinking level")
-    community_summary_model: Optional[str] = Field(default=None, description="預設社群摘要模型")
-    community_summary_thinking_level: Optional[str] = Field(default=None, description="預設社群摘要 thinking level")
-    
+    partial_document_count: int = Field(
+        default=0, description="GraphRAG 部分成功文件數量"
+    )
+    empty_document_count: int = Field(
+        default=0, description="GraphRAG 成功執行但未抽出實體的文件數量"
+    )
+    active_job_state: Optional[str] = Field(
+        default=None, description="目前進行中的圖譜工作狀態"
+    )
+    graph_extraction_model: Optional[str] = Field(
+        default=None, description="預設圖譜抽取模型"
+    )
+    graph_extraction_thinking_level: Optional[str] = Field(
+        default=None, description="預設圖譜抽取 thinking level"
+    )
+    community_summary_model: Optional[str] = Field(
+        default=None, description="預設社群摘要模型"
+    )
+    community_summary_thinking_level: Optional[str] = Field(
+        default=None, description="預設社群摘要 thinking level"
+    )
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
@@ -280,7 +314,9 @@ class GraphStatusResponse(BaseModel):
     )
 
 
-GraphDocumentExtractionState = Literal["indexed", "partial", "empty", "failed", "running", "skipped"]
+GraphDocumentExtractionState = Literal[
+    "indexed", "partial", "empty", "failed", "running", "skipped"
+]
 
 GraphRebuildJobState = Literal[
     "pending",
@@ -396,20 +432,36 @@ class GraphDocumentStatus(BaseModel):
     entities_added: int = Field(default=0, ge=0, description="新增節點數")
     edges_added: int = Field(default=0, ge=0, description="新增邊數")
     last_error: Optional[str] = Field(default=None, description="最後一次錯誤訊息")
-    last_attempted_at: Optional[datetime] = Field(default=None, description="最後一次嘗試時間")
-    last_succeeded_at: Optional[datetime] = Field(default=None, description="最後一次成功時間")
+    last_attempted_at: Optional[datetime] = Field(
+        default=None, description="最後一次嘗試時間"
+    )
+    last_succeeded_at: Optional[datetime] = Field(
+        default=None, description="最後一次成功時間"
+    )
 
 
 class GraphDocumentStatusItem(GraphDocumentStatus):
     """Graph document status row returned to the frontend."""
 
     file_name: Optional[str] = Field(default=None, description="文件名稱")
-    is_eligible: bool = Field(default=True, description="是否仍具備 OCR artifact 可重建")
-    extraction_model: Optional[str] = Field(default=None, description="最近成功抽取使用的模型")
-    extraction_thinking_level: Optional[str] = Field(default=None, description="最近成功抽取的 thinking level")
-    extraction_profile: Optional[str] = Field(default=None, description="最近成功抽取 profile")
-    extraction_prompt_version: Optional[str] = Field(default=None, description="最近成功抽取 prompt version")
-    extraction_recorded_at: Optional[datetime] = Field(default=None, description="最近成功抽取時間")
+    is_eligible: bool = Field(
+        default=True, description="是否仍具備 OCR artifact 可重建"
+    )
+    extraction_model: Optional[str] = Field(
+        default=None, description="最近成功抽取使用的模型"
+    )
+    extraction_thinking_level: Optional[str] = Field(
+        default=None, description="最近成功抽取的 thinking level"
+    )
+    extraction_profile: Optional[str] = Field(
+        default=None, description="最近成功抽取 profile"
+    )
+    extraction_prompt_version: Optional[str] = Field(
+        default=None, description="最近成功抽取 prompt version"
+    )
+    extraction_recorded_at: Optional[datetime] = Field(
+        default=None, description="最近成功抽取時間"
+    )
 
 
 class GraphDocumentStatusListResponse(BaseModel):
@@ -446,7 +498,9 @@ class NodeVectorSyncStatusResponse(BaseModel):
     reused: int = Field(default=0, ge=0, description="沿用舊向量節點數")
     removed: int = Field(default=0, ge=0, description="移除節點數")
     index_state: Optional[str] = Field(default=None, description="索引狀態")
-    autosync_duration_ms: Optional[int] = Field(default=None, description="同步耗時毫秒")
+    autosync_duration_ms: Optional[int] = Field(
+        default=None, description="同步耗時毫秒"
+    )
     last_error: Optional[str] = Field(default=None, description="最後錯誤")
     started_at: Optional[datetime] = Field(default=None, description="開始時間")
     updated_at: Optional[datetime] = Field(default=None, description="最後更新時間")
@@ -456,16 +510,19 @@ class NodeVectorSyncStatusResponse(BaseModel):
 class ExtractedEntity(BaseModel):
     """
     Entity extracted from text by LLM.
-    
+
     Used as intermediate representation before adding to graph.
     """
+
     label: str = Field(..., description="實體名稱")
     entity_type: EntityType = Field(..., description="實體類別")
     description: Optional[str] = Field(default=None, description="實體描述")
     canonical_name: Optional[str] = Field(default=None, description="正規化實體名稱")
     aliases: List[str] = Field(default_factory=list, description="實體別名")
     confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="抽取信心")
-    anchors: List["EvidenceAnchor"] = Field(default_factory=list, description="來源錨點")
+    anchors: List["EvidenceAnchor"] = Field(
+        default_factory=list, description="來源錨點"
+    )
     claim_identity: Optional["ClaimIdentity"] = None
     extraction_id: Optional[str] = None
 
@@ -473,9 +530,10 @@ class ExtractedEntity(BaseModel):
 class ExtractedRelation(BaseModel):
     """
     Relation extracted from text by LLM.
-    
+
     Used as intermediate representation before adding to graph.
     """
+
     entity1: str = Field(..., description="來源實體名稱")
     entity1_type: EntityType = Field(..., description="來源實體類別")
     relation: str = Field(..., description="關係類型")
@@ -483,7 +541,9 @@ class ExtractedRelation(BaseModel):
     entity2_type: EntityType = Field(..., description="目標實體類別")
     description: Optional[str] = Field(default=None, description="關係描述")
     confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="抽取信心")
-    anchors: List["EvidenceAnchor"] = Field(default_factory=list, description="來源錨點")
+    anchors: List["EvidenceAnchor"] = Field(
+        default_factory=list, description="來源錨點"
+    )
     source_entity_ref: Optional[str] = None
     target_entity_ref: Optional[str] = None
 
@@ -492,6 +552,7 @@ class ExtractionResult(BaseModel):
     """
     Complete extraction result from a document chunk.
     """
+
     entities: List[ExtractedEntity] = Field(default_factory=list)
     relations: List[ExtractedRelation] = Field(default_factory=list)
     doc_id: str = Field(..., description="來源文件 ID")
@@ -615,8 +676,12 @@ class EvidenceAnchor(BaseModel):
     quote_hash: Optional[str] = Field(default=None, description="引文雜湊")
     chunk_hash: Optional[str] = Field(default=None, description="chunk 雜湊")
     source_text_hash: Optional[str] = Field(default=None, description="來源文字雜湊")
-    markdown_char_start: Optional[int] = Field(default=None, description="Markdown 起始位置")
-    markdown_char_end: Optional[int] = Field(default=None, description="Markdown 結束位置")
+    markdown_char_start: Optional[int] = Field(
+        default=None, description="Markdown 起始位置"
+    )
+    markdown_char_end: Optional[int] = Field(
+        default=None, description="Markdown 結束位置"
+    )
     asset_id: Optional[str] = Field(default=None, description="來源資產 ID")
     anchor_type: Literal["text", "table", "figure", "formula", "caption"] = Field(
         default="text",
@@ -655,9 +720,39 @@ class GraphAssetLink(BaseModel):
     caption: Optional[str] = None
     text_or_markdown: Optional[str] = None
     asset_text_hash: Optional[str] = None
-    asset_parse_status: Literal["parsed", "partial", "failed", "not_attempted"] = "not_attempted"
+    asset_parse_status: Literal["parsed", "partial", "failed", "not_attempted"] = (
+        "not_attempted"
+    )
     bbox: Optional[List[float]] = None
     source_chunk_id: Optional[str] = None
+    storage_reference: Optional[str] = None
+    sha256: Optional[str] = None
+    width: Optional[int] = Field(default=None, ge=1)
+    height: Optional[int] = Field(default=None, ge=1)
+    printed_page_label: Optional[str] = None
+    formula_id: Optional[str] = None
+
+    @field_validator("storage_reference")
+    @classmethod
+    def validate_storage_reference(cls, value: Optional[str]) -> Optional[str]:
+        """Require canonical upload-root-relative references for new manifests."""
+        if value is None:
+            return None
+        path = PurePosixPath(value)
+        if (
+            not value
+            or value != value.strip()
+            or "\\" in value
+            or ":" in value
+            or path.is_absolute()
+            or PureWindowsPath(value).drive
+            or path.as_posix() != value
+            or any(part in {"", ".", ".."} for part in value.split("/"))
+        ):
+            raise ValueError(
+                "storage_reference must be a canonical upload-root-relative path"
+            )
+        return value
 
 
 class GraphHint(BaseModel):
@@ -693,7 +788,9 @@ class GraphEvidenceItem(BaseModel):
     summary: str
     confidence: float = Field(ge=0.0, le=1.0)
     provenance_status: Literal["full", "partial", "missing"]
-    resolution_status: Literal["resolved", "fuzzy_resolved", "unresolved", "stale"] = "unresolved"
+    resolution_status: Literal["resolved", "fuzzy_resolved", "unresolved", "stale"] = (
+        "unresolved"
+    )
     verification_status: Literal[
         "quote_match",
         "quote_mismatch",
@@ -751,7 +848,9 @@ class GraphEvidenceItem(BaseModel):
             resolution_status=resolution_status,
             verification_status=verification_status,
             usable_as_context=usable,
-            use_reason="resolved provenance" if usable else "insufficient or unresolved provenance",
+            use_reason="resolved provenance"
+            if usable
+            else "insufficient or unresolved provenance",
         )
 
 

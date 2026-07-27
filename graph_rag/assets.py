@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import re
+from pathlib import Path
 from typing import Any, Sequence
+
+from PIL import Image, UnidentifiedImageError
 
 from graph_rag.schemas import GraphAssetLink
 
@@ -134,6 +137,7 @@ def build_visual_asset_links(
     *,
     doc_id: str,
     elements: Sequence[Any],
+    upload_root: str | Path | None = None,
 ) -> list[GraphAssetLink]:
     """Prepare links for valid visual summaries before their vector metadata is written."""
     links: list[GraphAssetLink] = []
@@ -158,6 +162,10 @@ def build_visual_asset_links(
         except (AttributeError, TypeError):
             pass
         bbox = getattr(element, "bbox", None)
+        storage_reference, sha256, width, height = _visual_file_metadata(
+            getattr(element, "image_path", None),
+            upload_root=upload_root,
+        )
         links.append(
             GraphAssetLink(
                 asset_id=asset_id,
@@ -170,6 +178,53 @@ def build_visual_asset_links(
                 asset_parse_status="parsed",
                 bbox=[float(value) for value in bbox] if bbox else None,
                 source_chunk_id=f"graph:asset:{asset_id}",
+                storage_reference=storage_reference,
+                sha256=sha256,
+                width=width,
+                height=height,
+                printed_page_label=getattr(element, "printed_page_label", None),
+                formula_id=getattr(element, "formula_id", None),
             )
         )
     return links
+
+
+def _visual_file_metadata(
+    image_path_value: object,
+    *,
+    upload_root: str | Path | None,
+) -> tuple[str | None, str | None, int | None, int | None]:
+    """Read optional asset metadata without making text indexing fragile."""
+    if not isinstance(image_path_value, str) or not image_path_value:
+        return None, None, None, None
+    image_path = Path(image_path_value)
+    storage_reference = _relative_storage_reference(
+        image_path,
+        upload_root=upload_root,
+    )
+    sha256: str | None = None
+    width: int | None = None
+    height: int | None = None
+    try:
+        sha256 = hashlib.sha256(image_path.read_bytes()).hexdigest()
+    except OSError:
+        pass
+    try:
+        with Image.open(image_path) as image:
+            width, height = image.size
+    except (OSError, UnidentifiedImageError):
+        pass
+    return storage_reference, sha256, width, height
+
+
+def _relative_storage_reference(
+    image_path: Path,
+    *,
+    upload_root: str | Path | None,
+) -> str | None:
+    if upload_root is None:
+        return None
+    try:
+        return image_path.resolve().relative_to(Path(upload_root).resolve()).as_posix()
+    except (OSError, ValueError):
+        return None

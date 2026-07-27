@@ -384,8 +384,12 @@ def get_llm_usage_metrics(response: Any) -> dict[str, int]:
     return usage
 
 
-def get_flat_llm_usage(response: Any) -> dict[str, int]:
-    """Extract only canonical flat token fields from a provider response."""
+def get_flat_llm_usage(
+    response: Any,
+    *,
+    include_provenance: bool = False,
+) -> dict[str, Any]:
+    """Extract canonical flat token fields from a provider response."""
     usage = getattr(response, "usage_metadata", None)
     if usage is None and isinstance(response, dict):
         usage = response.get("usage_metadata") or response.get("usage")
@@ -421,12 +425,15 @@ def get_flat_llm_usage(response: Any) -> dict[str, int]:
         if reported_total is not None
         else input_tokens + output_tokens + reasoning_tokens
     )
-    return {
+    normalized: dict[str, Any] = {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "reasoning_tokens": reasoning_tokens,
         "total_tokens": total_tokens,
     }
+    if include_provenance:
+        normalized["provider_total_reported"] = reported_total is not None
+    return normalized
 
 
 def _usage_token_int(value: object) -> int:

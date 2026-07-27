@@ -19,16 +19,61 @@ from evaluation.db import (
 from evaluation.research_analytics import (
     ResearchAnalyticsService,
     _evaluator_identity,
+    _tokens,
     nearest_rank,
 )
 from evaluation.job_store import build_legacy_evaluator_compatibility_signature
+from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.schemas import ModelConfig
-from evaluation.trace_schemas import EvaluationV9AttemptMaterialization
+from evaluation.trace_schemas import EvaluationLlmCall, EvaluationV9AttemptMaterialization
 
 
 def test_nearest_rank_percentiles_are_observed_values() -> None:
     assert nearest_rank([100, 200, 300, 400, 500], 0.50) == 300
     assert nearest_rank([100, 200, 300, 400, 500], 0.95) == 500
+
+
+def test_token_breakdown_requires_provider_phase_rows_to_match_runtime_total() -> None:
+    scope = SimpleNamespace(
+        status="completed",
+        observed_call_count=1,
+        measured_call_count=1,
+        missing_usage_call_count=0,
+    )
+    event = SimpleNamespace(
+        usage_status="measured",
+        reconciliation_status="balanced",
+        phase="answer_generation",
+        purpose="evaluation",
+        provider="google",
+        input_tokens=6,
+        output_text_tokens=2,
+        reasoning_tokens=1,
+        other_tokens=1,
+    )
+    provider_call = SimpleNamespace(
+        llm_call_id="call-1",
+        phase="final_answer",
+        reservation_id="reservation-1",
+        provider_attempt=1,
+        total_tokens=9,
+        prompt_tokens=5,
+        completion_tokens=2,
+        reasoning_tokens=1,
+        other_tokens=1,
+        payload={"usage_status": "measured", "official_total_tokens": 9},
+    )
+
+    breakdown = _tokens(
+        [scope],
+        [event],
+        provider_attempts=[provider_call],
+        runtime_total_tokens=10,
+    )
+
+    assert breakdown.total_tokens == 10
+    assert breakdown.phase_attribution_status == "partial"
+    assert "provider_runtime_total_mismatch" in breakdown.phase_attribution_reasons
 
 
 def test_legacy_identity_preserves_evaluator_config_differences() -> None:
@@ -220,8 +265,213 @@ async def _execution_scope(
     await store.finalize_scope(f"scope-{attempt}", scope_status)
 
 
-async def _official_scope(campaign_id: str, result_id: str, attempt: str) -> None:
-    await _execution_scope(campaign_id, result_id, attempt, official=True)
+async def _official_scope(
+    campaign_id: str,
+    result_id: str,
+    attempt: str,
+    *,
+    tokens: int = 15,
+) -> None:
+    await _execution_scope(
+        campaign_id,
+        result_id,
+        attempt,
+        official=True,
+        tokens=tokens,
+    )
+
+
+@pytest.mark.asyncio
+async def test_production_research_paths_reconcile_v9_provider_attempts(
+    research_service,
+) -> None:
+    campaign_id = "production-token-reconciliation"
+    await _campaign(campaign_id, ["agentic"])
+    result_id = await _result(campaign_id, "agentic", "attempt-v9")
+    await _official_scope(campaign_id, result_id, "attempt-v9")
+    await evaluation_db.init_db()
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            """
+            UPDATE campaign_results
+            SET system_version_snapshot_json = ?
+            WHERE id = ?
+            """,
+            (json.dumps({"agentic_execution_version": "v9"}), result_id),
+        )
+        await connection.commit()
+    await EvaluationObservabilityRepository().record_llm_call(
+        EvaluationLlmCall(
+            llm_call_id="provider-attempt-v9",
+            run_id=result_id,
+            campaign_id=campaign_id,
+            provider="google",
+            model_name="gemini-2.5-flash",
+            phase="final_answer",
+            purpose="synthesizer",
+            reservation_id="reservation-v9",
+            provider_attempt=1,
+            prompt_tokens=9,
+            completion_tokens=5,
+            total_tokens=14,
+            reasoning_tokens=0,
+            other_tokens=0,
+            payload={"usage_status": "measured", "official_total_tokens": 14},
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id=campaign_id
+    )
+    selected = await research_service.get_run_token_breakdown(
+        campaign_id=campaign_id,
+        run_id=result_id,
+        agentic_execution_version="v9",
+    )
+    comparison = await research_service.get_question_comparison(
+        user_id="user-1", campaign_id=campaign_id
+    )
+    behavior = await research_service.get_agent_behavior(
+        user_id="user-1", campaign_id=campaign_id
+    )
+
+    assert summary.tokens.phase_attribution_status == "partial"
+    assert summary.modes[0].tokens.phase_attribution_status == "partial"
+    assert "provider_runtime_total_mismatch" in (
+        summary.tokens.phase_attribution_reasons
+    )
+    assert selected.phase_attribution_status == "partial"
+    assert comparison.rows[0].by_mode[0].accounting_status == "partial"
+    assert behavior.rows[0].accounting_status == "partial"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_totals", "expected_status"),
+    [((9, 11), "partial"), ((10, 10), "complete")],
+)
+async def test_research_analytics_reconciles_v9_attempts_per_run_before_aggregation(
+    research_service,
+    provider_totals,
+    expected_status,
+) -> None:
+    campaign_id = "per-run-token-reconciliation"
+    await _campaign(campaign_id, ["agentic"])
+    first_result_id = await _result(
+        campaign_id, "agentic", "attempt-v9-first", run_number=1
+    )
+    second_result_id = await _result(
+        campaign_id, "agentic", "attempt-v9-second", run_number=2
+    )
+    await _official_scope(
+        campaign_id, first_result_id, "attempt-v9-first", tokens=10
+    )
+    await _official_scope(
+        campaign_id, second_result_id, "attempt-v9-second", tokens=10
+    )
+    await evaluation_db.init_db()
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            """
+            UPDATE campaign_results
+            SET system_version_snapshot_json = ?
+            WHERE campaign_id = ?
+            """,
+            (json.dumps({"agentic_execution_version": "v9"}), campaign_id),
+        )
+        await connection.commit()
+
+    repository = EvaluationObservabilityRepository()
+    for run_id, attempt, provider_total in zip(
+        (first_result_id, second_result_id),
+        ("first", "second"),
+        provider_totals,
+        strict=True,
+    ):
+        await repository.record_llm_call(
+            EvaluationLlmCall(
+                llm_call_id=f"provider-{attempt}",
+                run_id=run_id,
+                campaign_id=campaign_id,
+                provider="google",
+                model_name="gemini-2.5-flash",
+                phase="final_answer",
+                purpose="synthesizer",
+                reservation_id=f"reservation-{attempt}",
+                provider_attempt=1,
+                prompt_tokens=provider_total - 5,
+                completion_tokens=5,
+                total_tokens=provider_total,
+                reasoning_tokens=0,
+                other_tokens=0,
+                payload={
+                    "usage_status": "measured",
+                    "official_total_tokens": provider_total,
+                },
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id=campaign_id
+    )
+    selected = await research_service.get_run_token_breakdown(
+        campaign_id=campaign_id,
+        run_id=first_result_id,
+        agentic_execution_version="v9",
+    )
+
+    assert summary.tokens.accounting_status == expected_status
+    assert summary.tokens.phase_attribution_status == expected_status
+    assert summary.modes[0].tokens.accounting_status == expected_status
+    assert summary.modes[0].tokens.phase_attribution_status == expected_status
+    assert selected.accounting_status == (
+        "partial" if provider_totals[0] != 10 else "complete"
+    )
+    assert selected.phase_attribution_status == (
+        "partial" if provider_totals[0] != 10 else "complete"
+    )
+    if expected_status == "partial":
+        assert "provider_runtime_total_mismatch" in (
+            summary.tokens.phase_attribution_reasons
+        )
+
+
+@pytest.mark.asyncio
+async def test_research_analytics_marks_v9_run_partial_when_attempt_mapping_is_missing(
+    research_service,
+) -> None:
+    campaign_id = "missing-v9-provider-attempt-mapping"
+    await _campaign(campaign_id, ["agentic"])
+    result_id = await _result(campaign_id, "agentic", "attempt-v9")
+    await _official_scope(campaign_id, result_id, "attempt-v9", tokens=10)
+    await evaluation_db.init_db()
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            """
+            UPDATE campaign_results
+            SET system_version_snapshot_json = ?
+            WHERE id = ?
+            """,
+            (json.dumps({"agentic_execution_version": "v9"}), result_id),
+        )
+        await connection.commit()
+
+    summary = await research_service.get_summary(
+        user_id="user-1", campaign_id=campaign_id
+    )
+    selected = await research_service.get_run_token_breakdown(
+        campaign_id=campaign_id,
+        run_id=result_id,
+        agentic_execution_version="v9",
+    )
+
+    assert summary.tokens.accounting_status == "partial"
+    assert summary.tokens.phase_attribution_status == "partial"
+    assert summary.modes[0].tokens.accounting_status == "partial"
+    assert selected.accounting_status == "partial"
+    assert "provider_attempts_missing" in summary.tokens.phase_attribution_reasons
 
 
 def _primary_score_rows(
@@ -366,8 +616,10 @@ async def test_agent_behavior_projects_materialized_v9_evidence_not_legacy_step_
                     campaign_id=campaign_id,
                     trace_payload={
                         "query_contract": {
+                            "contract_version": "2",
                             "route": "multi_hop",
                             "graph_policy": "required_locator",
+                            "visual_requested": True,
                             "visual_required": False,
                             "evidence_extraction_required": True,
                             "required_slots": [{"slot_id": "S1"}],
@@ -378,17 +630,26 @@ async def test_agent_behavior_projects_materialized_v9_evidence_not_legacy_step_
                             "final_generation_count": 1,
                             "reconciled_tokens": 15,
                         },
-                        "sufficiency": {"supported_slot_ids": ["S1"]},
+                        "sufficiency": {
+                            "evidence_complete": True,
+                            "supported_slot_ids": ["S1"],
+                        },
                         "context_pack": {"packed_evidence_ids": ["E1"]},
                         "budget_reservations": [{"reserved_tokens": 32}],
                         "repairs": [],
                         "final_claims": [{"claim_id": "C1"}],
+                        "visual_execution": {
+                            "state": "attempted_without_evidence",
+                            "attempted": True,
+                        },
                     },
                 )
             }
 
         async def list_v9_behavior_counts_for_campaign(self, campaign_id):
-            return {result_id: {"evidence_packet_count": 13, "slot_resolution_count": 1}}
+            return {
+                result_id: {"evidence_packet_count": 13, "slot_resolution_count": 1}
+            }
 
         async def list_graph_events_for_campaign(self, campaign_id):
             return {}
@@ -407,7 +668,63 @@ async def test_agent_behavior_projects_materialized_v9_evidence_not_legacy_step_
     assert row.v9 is not None
     assert row.v9.evidence_packet_count == 13
     assert row.v9.slot_resolution_count == 1
+    assert row.v9.slot_semantics == "heuristic_experimental"
+    assert row.v9.atomic_completeness is None
+    assert row.v9.atomic_completeness_reason == "atomic_slot_matching_experimental"
     assert row.v9.graph_execution == "required_but_not_satisfied"
+    assert row.v9.visual_requested is True
+    assert row.v9.visual_required is False
+    assert row.v9.visual_execution == "attempted_without_evidence"
+
+
+@pytest.mark.asyncio
+async def test_agent_behavior_projects_v1_contract_as_non_atomic_na(
+    research_service,
+) -> None:
+    await _campaign("agent-behavior-v1-contract", ["agentic"])
+    result_id = await _result(
+        "agent-behavior-v1-contract", "agentic", "attempt-v1-contract"
+    )
+    await _official_scope(
+        "agent-behavior-v1-contract", result_id, "attempt-v1-contract"
+    )
+
+    class Observability:
+        async def list_v9_attempt_materializations_for_campaign(self, campaign_id):
+            return {
+                result_id: EvaluationV9AttemptMaterialization(
+                    attempt_id="attempt-v1-contract",
+                    run_id=result_id,
+                    campaign_id=campaign_id,
+                    trace_payload={
+                        "query_contract": {
+                            "contract_version": "1",
+                            "route": "single_lookup",
+                            "intent": "legacy",
+                            "required_slots": [
+                                {"slot_id": "fact", "description": "generic fact"}
+                            ],
+                        }
+                    },
+                )
+            }
+
+        async def list_v9_behavior_counts_for_campaign(self, campaign_id):
+            return {result_id: {}}
+
+        async def list_graph_events_for_campaign(self, campaign_id):
+            return {}
+
+    research_service._observability = Observability()
+
+    response = await research_service.get_agent_behavior(
+        user_id="user-1", campaign_id="agent-behavior-v1-contract"
+    )
+
+    assert response.rows[0].v9.contract_version == "1"
+    assert response.rows[0].v9.slot_semantics == "legacy_generic"
+    assert response.rows[0].v9.atomic_completeness is None
+    assert response.rows[0].v9.atomic_completeness_reason is None
 
 
 @pytest.mark.asyncio
@@ -637,6 +954,7 @@ async def test_legacy_context_policy_signatures_do_not_hide_agentic_scores(
         campaign_id="legacy-context-cohort",
         score_rows=legacy_rows,
     )
+
     async def legacy_metadata(*, user_id: str, campaign_id: str) -> list[dict]:
         return work_metadata
 
@@ -1369,9 +1687,7 @@ async def test_research_aggregates_use_bounded_result_projection_for_large_paylo
             campaign_result_queries.append(sql.lower())
         return await original_execute(connection, sql, parameters)
 
-    monkeypatch.setattr(
-        evaluation_db.aiosqlite.Connection, "execute", capture_execute
-    )
+    monkeypatch.setattr(evaluation_db.aiosqlite.Connection, "execute", capture_execute)
     results = ResultRepositorySpy()
     service = ResearchAnalyticsService(results=results)
 

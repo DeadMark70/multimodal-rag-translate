@@ -86,6 +86,7 @@ async def _seed_export_rows(*, run_id: str, campaign_id: str) -> None:
             llm_call_id=f"{run_id}-llm",
             run_id=run_id,
             campaign_id=campaign_id,
+            phase="final_answer",
             purpose="campaign_generation",
             provider="google",
             model_name="gemini-2.5-flash",
@@ -94,11 +95,51 @@ async def _seed_export_rows(*, run_id: str, campaign_id: str) -> None:
             total_tokens=16,
             prompt_hash="prompt-hash",
             prompt_preview="Question: preview only",
+            prompt_capture_status="captured",
+            full_prompt_capture_status="captured",
             response_hash="response-hash",
             latency_ms=12,
             status="failed",
             error={"message": "apiKey=sk-secret exploded with stack trace"},
-            payload={"full_prompt": "SECRET FULL PROMPT", "other_field": "kept"},
+            payload={
+                "full_prompt": (
+                    '{"content":{"password":"hunter2","note":"safe",'
+                    '"access_token":"export-access-token-sentinel",'
+                    '"client_secret":"export-client-secret-sentinel",'
+                    '"refresh_token":"export-refresh-token-sentinel",'
+                    '"id_token":"export-id-token-sentinel",'
+                    '"private_key":"export-private-key-sentinel"},'
+                    '"authorization":"Bearer quoted-credential"}'
+                ),
+                "structured": {
+                    "client_id": "export-public-client-id",
+                    "api_key": "quoted-api-key",
+                    "token": "quoted-token",
+                    "credentials": [
+                        {"access_token": "export-list-access-token-sentinel"},
+                        {"client_secret": "export-list-client-secret-sentinel"},
+                    ],
+                },
+                "other_field": "kept",
+            },
+            created_at=now,
+        )
+    )
+    await repository.record_llm_call(
+        EvaluationLlmCall(
+            llm_call_id=f"{run_id}-not-captured",
+            run_id=run_id,
+            campaign_id=campaign_id,
+            phase="evidence_extract",
+            purpose="evidence_extraction",
+            reservation_id="reservation-not-captured",
+            provider_attempt=1,
+            provider="google",
+            model_name="gemini-2.5-flash",
+            prompt_hash="not-captured-hash",
+            prompt_capture_status="not_captured_at_execution",
+            full_prompt_capture_status="not_captured_at_execution",
+            payload={"full_prompt": "MUST NEVER BE EXPORTED"},
             created_at=now,
         )
     )
@@ -231,7 +272,16 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         assert export_body["redaction"]["include_full_prompts"] is False
         llm_call = next(item for item in export_body["llm_calls"] if item["llm_call_id"] == f"{run_id}-llm")
         assert llm_call["prompt_preview"] == "Question: preview only"
+        assert llm_call["full_prompt_capture_status"] == "redacted"
         assert "full_prompt" not in llm_call["payload"]
+        assert export_body["summary"]["run_count"] == 1
+        assert export_body["summary"]["llm_call_count"] == len(
+            export_body["llm_calls"]
+        )
+        assert export_body["summary"]["per_phase_counts"]["final_answer"] == 1
+        assert export_body["summary"]["per_phase_counts"]["evidence_extract"] == 1
+        assert export_body["summary"]["prompt_hash_availability"]["captured"] >= 2
+        assert export_body["summary"]["full_prompt_availability"]["redacted"] == 1
 
         full_export = client.post(
             f"/api/evaluation/campaigns/{campaign_id}/export",
@@ -241,7 +291,36 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         full_llm_call = next(
             item for item in full_export.json()["llm_calls"] if item["llm_call_id"] == f"{run_id}-llm"
         )
-        assert full_llm_call["payload"]["full_prompt"] == "SECRET FULL PROMPT"
+        assert "hunter2" not in full_export.text
+        assert "quoted-api-key" not in full_export.text
+        assert "quoted-token" not in full_export.text
+        assert "quoted-credential" not in full_export.text
+        assert "export-public-client-id" in full_export.text
+        for sentinel in (
+            "export-access-token-sentinel",
+            "export-client-secret-sentinel",
+            "export-refresh-token-sentinel",
+            "export-id-token-sentinel",
+            "export-private-key-sentinel",
+            "export-list-access-token-sentinel",
+            "export-list-client-secret-sentinel",
+        ):
+            assert sentinel not in full_export.text
+        assert full_llm_call["payload"]["other_field"] == "kept"
+        unavailable = next(
+            item
+            for item in full_export.json()["llm_calls"]
+            if item["llm_call_id"] == f"{run_id}-not-captured"
+        )
+        assert unavailable["full_prompt_capture_status"] == (
+            "not_captured_at_execution"
+        )
+        assert "full_prompt" not in unavailable["payload"]
+        assert "MUST NEVER BE EXPORTED" not in full_export.text
+        assert any(
+            "not captured at execution" in warning.lower()
+            for warning in full_export.json()["availability_warnings"]
+        )
 
         redacted_export = client.post(
             f"/api/evaluation/campaigns/{campaign_id}/export",

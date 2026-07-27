@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
 
@@ -337,6 +338,7 @@ async def process_document_images(
         asset_links = build_visual_asset_links(
             doc_id=doc_id,
             elements=summarized_elements,
+            upload_root=Path(user_folder).resolve().parents[1],
         )
 
         # 4. Index summaries to vector store

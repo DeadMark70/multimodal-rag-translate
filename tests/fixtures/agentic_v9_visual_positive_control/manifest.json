@@ -1,0 +1,12 @@
+{
+  "asset_id": "asset:positive-control:figure-1",
+  "doc_id": "agentic_v9_visual_positive_control",
+  "page": 1,
+  "asset_type": "figure",
+  "caption": "Figure 1",
+  "asset_parse_status": "parsed",
+  "storage_reference": "fixtures/agentic_v9_visual_positive_control/page.png",
+  "width": 16,
+  "height": 12,
+  "source_chunk_id": "graph:asset:asset:positive-control:figure-1"
+}

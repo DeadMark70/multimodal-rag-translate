@@ -3,6 +3,7 @@ from decimal import Decimal
 from uuid import UUID
 
 import pytest
+import aiosqlite
 
 from evaluation import db as evaluation_db
 from evaluation.observability_storage import EvaluationObservabilityRepository
@@ -185,14 +186,21 @@ async def test_observability_repository_round_trips_run_details(tmp_path, monkey
             span_id="span-1",
             provider="gemini",
             model_name="gemini-2.5-flash",
+            phase="final_answer",
             purpose="generation",
+            reservation_id="reservation-1",
+            provider_attempt=1,
             prompt_tokens=10,
             completion_tokens=20,
             total_tokens=30,
+            reasoning_tokens=4,
+            other_tokens=2,
             estimated_cost_usd=0.01,
             estimated_cost_twd=0.32,
             prompt_hash="prompt-hash",
             prompt_preview="prompt preview",
+            prompt_capture_status="captured",
+            full_prompt_capture_status="not_captured_at_execution",
             response_hash="response-hash",
             latency_ms=30.5,
             status="success",
@@ -322,7 +330,15 @@ async def test_observability_repository_round_trips_run_details(tmp_path, monkey
     )
 
     assert (await repository.list_trace_events_for_run("run-1"))[0].payload["query_hash"] == "hash-1"
-    assert (await repository.list_llm_calls_for_run("run-1"))[0].total_tokens == 30
+    llm_call = (await repository.list_llm_calls_for_run("run-1"))[0]
+    assert llm_call.total_tokens == 30
+    assert llm_call.phase == "final_answer"
+    assert llm_call.reservation_id == "reservation-1"
+    assert llm_call.provider_attempt == 1
+    assert llm_call.prompt_capture_status == "captured"
+    assert llm_call.full_prompt_capture_status == "not_captured_at_execution"
+    assert llm_call.reasoning_tokens == 4
+    assert llm_call.other_tokens == 2
     assert (await repository.list_retrieval_events_for_run("run-1"))[0].payload["fusion"] == "rrf"
     assert (await repository.list_retrieval_chunks_for_run("run-1"))[0].expected_evidence_match is True
     assert (await repository.list_context_packs_for_run("run-1"))[0].retrieved_but_not_packed_evidence == [
@@ -332,6 +348,59 @@ async def test_observability_repository_round_trips_run_details(tmp_path, monkey
     assert (await repository.list_routing_decisions_for_run("run-1"))[0].selected_mode == "agentic"
     assert (await repository.list_claims_for_run("run-1"))[0].evidence[0]["doc_id"] == "paper-a.pdf"
     assert (await repository.list_human_ratings_for_run("run-1"))[0].is_blinded is True
+
+
+@pytest.mark.asyncio
+async def test_actual_and_retrospective_routing_rows_keep_distinct_provenance(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db"
+    )
+    await _seed_campaign("campaign-route-types")
+    repository = EvaluationObservabilityRepository()
+    created_at = datetime(2026, 7, 26, tzinfo=timezone.utc)
+
+    await repository.record_routing_decision(
+        EvaluationRoutingDecision(
+            routing_decision_id="route-retrospective",
+            run_id="run-route-types",
+            campaign_id="campaign-route-types",
+            selected_mode="agentic",
+            analysis_type="retrospective",
+            reason="policy analysis",
+            created_at=created_at,
+        )
+    )
+    await repository.record_routing_decision(
+        EvaluationRoutingDecision(
+            routing_decision_id="route-actual",
+            run_id="run-route-types",
+            campaign_id="campaign-route-types",
+            selected_mode="agentic",
+            analysis_type="actual",
+            decision_source="safe_fallback",
+            candidate_routes=["single_lookup"],
+            matched_rules=["ambiguous"],
+            fallback_reason="planner_timeout",
+            reason="Use bounded safe retrieval.",
+            confidence=0.0,
+            created_at=created_at + timedelta(microseconds=1),
+        )
+    )
+
+    decisions = await repository.list_routing_decisions_for_run(
+        "run-route-types"
+    )
+    assert [decision.analysis_type for decision in decisions] == [
+        "retrospective",
+        "actual",
+    ]
+    assert decisions[0].decision_source is None
+    assert decisions[1].decision_source == "safe_fallback"
+    assert decisions[1].candidate_routes == ["single_lookup"]
+    assert decisions[1].matched_rules == ["ambiguous"]
+    assert decisions[1].fallback_reason == "planner_timeout"
 
 
 @pytest.mark.asyncio
@@ -597,3 +666,52 @@ async def test_observability_repository_lists_campaign_details_grouped_by_run(
     assert routing_by_run["run-1"][0].routing_decision_id == "routing-run-1"
     assert claims_by_run["run-1"][0].claim_text == "Claim run-1"
     assert ratings_by_run["run-2"][0].human_rating_id == "rating-run-2"
+
+
+@pytest.mark.asyncio
+async def test_llm_retry_attempt_rows_are_append_only_and_uniquely_addressable(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db"
+    )
+    await _seed_campaign("campaign-retry")
+    repository = EvaluationObservabilityRepository()
+    created_at = datetime(2026, 7, 27, tzinfo=timezone.utc)
+
+    for attempt in (1, 2):
+        await repository.record_llm_call(
+            EvaluationLlmCall(
+                llm_call_id=f"llm-retry-{attempt}",
+                run_id="run-retry",
+                campaign_id="campaign-retry",
+                phase="retrieval_judge",
+                purpose="judge_retrieval",
+                reservation_id="reservation-retry",
+                provider_attempt=attempt,
+                provider="gemini",
+                model_name="gemini-2.5-flash",
+                status="failed" if attempt == 1 else "success",
+                created_at=created_at + timedelta(seconds=attempt),
+            )
+        )
+
+    rows = await repository.list_llm_calls_for_run("run-retry")
+    assert [(row.llm_call_id, row.provider_attempt) for row in rows] == [
+        ("llm-retry-1", 1),
+        ("llm-retry-2", 2),
+    ]
+
+    with pytest.raises(aiosqlite.IntegrityError):
+        await repository.record_llm_call(
+            EvaluationLlmCall(
+                llm_call_id="llm-retry-duplicate",
+                run_id="run-retry",
+                campaign_id="campaign-retry",
+                phase="retrieval_judge",
+                purpose="judge_retrieval",
+                reservation_id="reservation-retry",
+                provider_attempt=2,
+                created_at=created_at + timedelta(seconds=3),
+            )
+        )

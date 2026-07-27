@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from core import uploads
+from data_base.agentic_v9.schemas import QueryContract, RequiredSlot
 from data_base.agentic_v9.asset_locator import AssetLocator, VisualAssetCandidate
 from data_base.agentic_v9.schemas import (
     EvidenceScope,
@@ -20,7 +23,10 @@ from data_base.agentic_v9.schemas import (
 from data_base.agentic_v9.visual_evidence_extractor import (
     VisualEvidenceExtractor,
     VisualExtractionPolicy,
+    visual_slots_requiring_extraction,
 )
+from data_base.agentic_v9.visual_asset_resolver import VisualAssetResolver
+from graph_rag.schemas import GraphAssetLink
 
 
 def _encoded(payload: bytes = b"visual-evidence") -> str:
@@ -177,6 +183,15 @@ def test_locator_enforces_encoded_byte_and_dimension_caps_before_invocation() ->
     }
 
 
+def test_locator_accepts_resolver_loaded_asset_without_chunk_metadata() -> None:
+    asset = _asset("manifest-asset")
+
+    result = AssetLocator().locate(task=_task(), assets=[asset])
+
+    assert [item.asset_id for item in result.located_assets] == ["manifest-asset"]
+    assert result.located_assets[0].source.asset_id == "manifest-asset"
+
+
 @pytest.mark.asyncio
 async def test_extractor_invokes_only_v9_visual_phase_with_locator_bound_packet_json() -> None:
     task = _task()
@@ -316,3 +331,95 @@ async def test_extractor_persists_timeout_and_cancellation_without_legacy_visual
         ("figure-1", "cancelled")
     ]
     assert invoker.calls == []
+
+
+def test_visual_policy_is_applied_per_slot_after_text_resolution() -> None:
+    contract = QueryContract(
+        contract_version="2",
+        route="exact_structured",
+        intent="three visual policies",
+        required_slots=[
+            RequiredSlot(slot_id="never", description="text only", visual_policy="never"),
+            RequiredSlot(
+                slot_id="preferred",
+                description="visual fallback",
+                visual_policy="preferred",
+            ),
+            RequiredSlot(
+                slot_id="required",
+                description="visual mandatory",
+                visual_policy="required",
+            ),
+        ],
+    )
+
+    unresolved = visual_slots_requiring_extraction(
+        contract,
+        text_supported_slot_ids={"never"},
+    )
+    preferred_resolved = visual_slots_requiring_extraction(
+        contract,
+        text_supported_slot_ids={"never", "preferred", "required"},
+    )
+
+    assert [slot.slot_id for slot in unresolved] == ["preferred", "required"]
+    assert [slot.slot_id for slot in preferred_resolved] == ["required"]
+
+
+@pytest.mark.asyncio
+async def test_positive_control_manifest_yields_provenance_bound_packet(
+    monkeypatch,
+) -> None:
+    fixture_dir = (
+        Path(__file__).parent
+        / "fixtures"
+        / "agentic_v9_visual_positive_control"
+    )
+    manifest = json.loads((fixture_dir / "manifest.json").read_text("utf-8"))
+    monkeypatch.setattr(uploads, "BASE_UPLOAD_FOLDER", str(Path(__file__).parent))
+    task = RetrievalTask(
+        task_id="positive:round-1:source-group-1",
+        round_id="round-1",
+        query_id="positive",
+        query="Read Figure 1.",
+        target_slot_ids=["S-positive"],
+        source_scope=ResolvedSourceScope(
+            authorized_doc_ids=["agentic_v9_visual_positive_control"]
+        ),
+        locator_hints=["Figure 1"],
+        visual_required=True,
+    )
+    resolution = VisualAssetResolver().resolve(
+        user_id="fixtures",
+        task=task,
+        links=[GraphAssetLink.model_validate(manifest)],
+        slot_ids_by_asset={"asset:positive-control:figure-1": ["S-positive"]},
+    )
+    asset = resolution.assets[0]
+    response = json.loads(_packet_json(asset))
+    response.update(
+        {
+            "task_id": task.task_id,
+            "round_id": task.round_id,
+            "query_id": task.query_id,
+            "slot_ids": ["S-positive"],
+            "source": asset.source.model_dump(),
+            "locator": SourceLocator(
+                pdf_page_index=asset.pdf_page_index,
+                figure_id=asset.figure_id,
+            ).model_dump(),
+        }
+    )
+
+    result = await VisualEvidenceExtractor(RecordingInvoker(response)).extract(
+        task=task,
+        assets=resolution.assets,
+        question_fragment="Figure 1",
+    )
+
+    assert [item.asset_id for item in result.located_assets] == [
+        "asset:positive-control:figure-1"
+    ]
+    assert len(result.packets) == 1
+    assert result.packets[0].source.asset_id == "asset:positive-control:figure-1"
+    assert result.packets[0].slot_ids == ["S-positive"]

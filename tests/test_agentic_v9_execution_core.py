@@ -13,6 +13,7 @@ from data_base.agentic_v9.execution_core import (
     ConflictStageResult,
     V9ExecutionCore,
     V9ExecutionStages,
+    _prevent_response_status_upgrade,
 )
 from data_base.agentic_v9.execution_policy import (
     ExecutionDeadline,
@@ -29,6 +30,7 @@ from data_base.agentic_v9.schemas import (
     RagRetrievalResult,
     RequiredSlot,
     ResolvedSourceScope,
+    RetrievalTask,
     SlotResolution,
     SourceLocator,
     SufficiencyReport,
@@ -84,6 +86,49 @@ def _complete_sufficiency() -> SufficiencyEvaluation:
             supported_slot_ids=["score"],
         ),
     )
+
+
+def test_experimental_v2_slot_support_never_produces_a_complete_answer() -> None:
+    contract = QueryContract.model_validate(
+        {**_contract().model_dump(), "contract_version": "2"}
+    )
+    complete = _complete_sufficiency().report
+
+    clamped = _prevent_response_status_upgrade(
+        FinalAnswerResult(
+            response_status="complete",
+            answer="All heuristic slots appear supported.",
+            final_generation_count=1,
+        ),
+        complete,
+        contract,
+    )
+
+    assert clamped.response_status == "qualified_partial"
+    assert contract.atomic_completeness is None
+    assert contract.atomic_completeness_reason == "atomic_slot_matching_experimental"
+
+
+def test_experimental_v2_policy_preserves_insufficient_without_usable_evidence() -> (
+    None
+):
+    contract = QueryContract.model_validate(
+        {**_contract().model_dump(), "contract_version": "2"}
+    )
+    insufficient = SufficiencyReport(
+        evidence_complete=False,
+        answerable=False,
+        response_status="insufficient",
+        not_found_slot_ids=["score"],
+    )
+
+    result = _prevent_response_status_upgrade(
+        FinalAnswerResult(response_status="insufficient"),
+        insufficient,
+        contract,
+    )
+
+    assert result.response_status == "insufficient"
 
 
 async def _event_sink(_: object) -> None:
@@ -178,6 +223,7 @@ async def test_core_runs_the_evidence_first_stages_in_order_and_enforces_call_ca
         ___: object,
         ____: tuple[SlotResolution, ...],
         _____: object,
+        ______: SufficiencyReport,
     ) -> FinalAnswerResult:
         calls.append("final")
         return FinalAnswerResult(
@@ -217,7 +263,6 @@ async def test_core_runs_the_evidence_first_stages_in_order_and_enforces_call_ca
         "retrieval:1",
         "deterministic_candidates",
         "sufficiency",
-        "repair",
         "prose_curator",
         "sufficiency",
         "conflict",
@@ -228,6 +273,399 @@ async def test_core_runs_the_evidence_first_stages_in_order_and_enforces_call_ca
     assert result.metrics.prose_curator_call_count == 1
     assert result.metrics.arbitration_call_count == 0
     assert result.metrics.final_generation_count == 1
+
+
+@pytest.mark.asyncio
+async def test_core_recomputes_sufficiency_after_each_of_at_most_two_repairs() -> None:
+    contract = _contract().model_copy(update={"max_repair_rounds": 5})
+    evaluation_calls: list[int] = []
+    repair_rounds: list[int] = []
+    retrieval_rounds: list[str] = []
+
+    async def retrieve(
+        tasks: tuple[RetrievalTask, ...],
+    ) -> tuple[TaskRetrievalResult, ...]:
+        retrieval_rounds.extend(task.round_id for task in tasks)
+        return tuple(
+            TaskRetrievalResult(
+                task_id=task.task_id,
+                retrieval=RagRetrievalResult(retrieval_id=f"retrieval:{task.task_id}"),
+            )
+            for task in tasks
+        )
+
+    def evaluate(
+        _: QueryContract, packets: tuple[EvidencePacket, ...]
+    ) -> SufficiencyEvaluation:
+        evaluation_calls.append(len(packets))
+        return SufficiencyEvaluation(
+            slot_resolutions=(SlotResolution(slot_id="score", status="not_found"),),
+            report=SufficiencyReport(
+                evidence_complete=False,
+                answerable=False,
+                response_status="insufficient",
+                not_found_slot_ids=["score"],
+            ),
+            repairable_slot_ids=("score",),
+        )
+
+    def repair(
+        _: QueryContract,
+        __: SufficiencyEvaluation,
+        query_id: str,
+        round_index: int,
+    ) -> tuple[RetrievalTask, ...]:
+        repair_rounds.append(round_index)
+        return (
+            RetrievalTask(
+                task_id=f"{query_id}:repair-{round_index}:score",
+                round_id=f"repair-{round_index}",
+                query_id=query_id,
+                query="reported score",
+                target_slot_ids=["score"],
+                source_scope=ResolvedSourceScope(authorized_doc_ids=["doc-1"]),
+            ),
+        )
+
+    stages = V9ExecutionStages(
+        resolve_scope=lambda _: ResolvedSourceScope(authorized_doc_ids=["doc-1"]),
+        plan_contract=lambda *_: contract,
+        retrieve=retrieve,
+        deterministic_candidates=lambda *_: (),
+        evaluate_sufficiency=evaluate,
+        plan_repair=repair,
+        prose_curate=lambda _question, _contract, packets: packets,
+        resolve_conflicts=lambda _contract, _packets, sufficiency: ConflictStageResult(
+            sufficiency=sufficiency
+        ),
+        pack=lambda *_: SimpleNamespace(packets=(), is_packable=False),
+        generate_final=lambda *_: FinalAnswerResult(response_status="insufficient"),
+        deterministic_partial=lambda _contract, sufficiency: FinalAnswerResult(
+            response_status=sufficiency.report.response_status
+        ),
+    )
+
+    await V9ExecutionCore(stages=stages).execute(
+        _request(), runtime_context=_runtime_context()
+    )
+
+    assert repair_rounds == [1, 2]
+    assert retrieval_rounds == ["round-1", "repair-1", "repair-2"]
+    assert evaluation_calls == [0, 0, 0, 0]
+
+
+@pytest.mark.asyncio
+async def test_core_does_not_request_repair_when_initial_sufficiency_is_terminal() -> (
+    None
+):
+    repair_decisions: list[int] = []
+    contract = _contract().model_copy(update={"max_repair_rounds": 2})
+    stages = V9ExecutionStages(
+        resolve_scope=lambda _: ResolvedSourceScope(authorized_doc_ids=["doc-1"]),
+        plan_contract=lambda *_: contract,
+        retrieve=lambda tasks: tuple(
+            TaskRetrievalResult(
+                task_id=task.task_id,
+                retrieval=RagRetrievalResult(retrieval_id=task.task_id),
+            )
+            for task in tasks
+        ),
+        deterministic_candidates=lambda *_: (_packet(),),
+        evaluate_sufficiency=lambda *_: _complete_sufficiency(),
+        plan_repair=lambda _contract, _evaluation, _query_id, round_index: (
+            repair_decisions.append(round_index) or ()
+        ),
+        prose_curate=lambda _question, _contract, packets: packets,
+        resolve_conflicts=lambda _contract, _packets, evaluation: ConflictStageResult(
+            sufficiency=evaluation
+        ),
+        pack=lambda *_: SimpleNamespace(packets=(_packet(),), is_packable=True),
+        generate_final=lambda *_: FinalAnswerResult(
+            response_status="complete",
+            used_evidence_ids=["evidence-1"],
+            final_generation_count=1,
+        ),
+        deterministic_partial=lambda _contract, evaluation: FinalAnswerResult(
+            response_status=evaluation.report.response_status
+        ),
+    )
+
+    await V9ExecutionCore(stages=stages).execute(
+        _request(), runtime_context=_runtime_context()
+    )
+
+    assert repair_decisions == []
+
+
+@pytest.mark.asyncio
+async def test_core_records_terminal_reserve_reason_after_executed_repair() -> None:
+    now = [0.0]
+    deadline = ExecutionDeadline(64.0, monotonic=lambda: now[0])
+    contract = _contract().model_copy(update={"max_repair_rounds": 2})
+    repair_decisions: list[int] = []
+    terminal_reasons: list[str] = []
+    evaluations = 0
+
+    def evaluate(*_: object) -> SufficiencyEvaluation:
+        nonlocal evaluations
+        evaluations += 1
+        if evaluations == 1:
+            return SufficiencyEvaluation(
+                slot_resolutions=(SlotResolution(slot_id="score", status="not_found"),),
+                report=SufficiencyReport(
+                    evidence_complete=False,
+                    answerable=False,
+                    response_status="insufficient",
+                    not_found_slot_ids=["score"],
+                ),
+                repairable_slot_ids=("score",),
+            )
+        return SufficiencyEvaluation(
+            slot_resolutions=(SlotResolution(slot_id="score", status="not_found"),),
+            report=SufficiencyReport(
+                evidence_complete=False,
+                answerable=False,
+                response_status="insufficient",
+                not_found_slot_ids=["score"],
+            ),
+            repairable_slot_ids=("score",),
+        )
+
+    async def retrieve(
+        tasks: tuple[RetrievalTask, ...],
+    ) -> tuple[TaskRetrievalResult, ...]:
+        if tasks[0].round_id == "repair-1":
+            now[0] = 60.0
+        return tuple(
+            TaskRetrievalResult(
+                task_id=task.task_id,
+                retrieval=RagRetrievalResult(retrieval_id=task.task_id),
+            )
+            for task in tasks
+        )
+
+    def repair(
+        _: QueryContract,
+        __: SufficiencyEvaluation,
+        query_id: str,
+        round_index: int,
+    ) -> tuple[RetrievalTask, ...]:
+        repair_decisions.append(round_index)
+        return (
+            RetrievalTask(
+                task_id=f"{query_id}:repair-{round_index}",
+                round_id=f"repair-{round_index}",
+                query_id=query_id,
+                query="score",
+                target_slot_ids=["score"],
+                source_scope=ResolvedSourceScope(authorized_doc_ids=["doc-1"]),
+            ),
+        )
+
+    stages = V9ExecutionStages(
+        resolve_scope=lambda _: ResolvedSourceScope(authorized_doc_ids=["doc-1"]),
+        plan_contract=lambda *_: contract,
+        retrieve=retrieve,
+        deterministic_candidates=lambda *_: (),
+        evaluate_sufficiency=evaluate,
+        plan_repair=repair,
+        prose_curate=lambda _question, _contract, packets: packets,
+        resolve_conflicts=lambda _contract, _packets, evaluation: ConflictStageResult(
+            sufficiency=evaluation
+        ),
+        pack=lambda *_: SimpleNamespace(packets=(), is_packable=False),
+        generate_final=lambda *_: FinalAnswerResult(response_status="insufficient"),
+        deterministic_partial=lambda _contract, evaluation: FinalAnswerResult(
+            response_status=evaluation.report.response_status
+        ),
+        record_repair_terminal=terminal_reasons.append,
+    )
+
+    await V9ExecutionCore(stages=stages).execute(
+        _request(), runtime_context=_runtime_context(deadline=deadline)
+    )
+
+    assert repair_decisions == [1]
+    assert terminal_reasons == ["final_budget_protected"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("repair_rounds", "expected_reason"),
+    [
+        pytest.param(1, "evidence_complete", id="one-round-final-success"),
+        pytest.param(2, "evidence_complete", id="two-round-final-success"),
+        pytest.param(1, "no_repairable_slots", id="final-no-repairable-slots"),
+    ],
+)
+async def test_core_records_final_round_terminal_state_before_repair_cap(
+    repair_rounds: int,
+    expected_reason: str,
+) -> None:
+    contract = _contract().model_copy(update={"max_repair_rounds": repair_rounds})
+    repair_decisions: list[int] = []
+    terminal_reasons: list[str] = []
+    evaluations = 0
+
+    def evaluate(*_: object) -> SufficiencyEvaluation:
+        nonlocal evaluations
+        evaluations += 1
+        if evaluations >= repair_rounds + 1:
+            if expected_reason == "evidence_complete":
+                return _complete_sufficiency()
+            return SufficiencyEvaluation(
+                slot_resolutions=(SlotResolution(slot_id="score", status="not_found"),),
+                report=SufficiencyReport(
+                    evidence_complete=False,
+                    answerable=False,
+                    response_status="insufficient",
+                    not_found_slot_ids=["score"],
+                ),
+            )
+        return SufficiencyEvaluation(
+            slot_resolutions=(SlotResolution(slot_id="score", status="not_found"),),
+            report=SufficiencyReport(
+                evidence_complete=False,
+                answerable=False,
+                response_status="insufficient",
+                not_found_slot_ids=["score"],
+            ),
+            repairable_slot_ids=("score",),
+        )
+
+    def repair(
+        _: QueryContract,
+        __: SufficiencyEvaluation,
+        query_id: str,
+        round_index: int,
+    ) -> tuple[RetrievalTask, ...]:
+        repair_decisions.append(round_index)
+        return (
+            RetrievalTask(
+                task_id=f"{query_id}:repair-{round_index}:score",
+                round_id=f"repair-{round_index}",
+                query_id=query_id,
+                query="reported score",
+                target_slot_ids=["score"],
+                source_scope=ResolvedSourceScope(authorized_doc_ids=["doc-1"]),
+            ),
+        )
+
+    stages = V9ExecutionStages(
+        resolve_scope=lambda _: ResolvedSourceScope(authorized_doc_ids=["doc-1"]),
+        plan_contract=lambda *_: contract,
+        retrieve=lambda tasks: tuple(
+            TaskRetrievalResult(
+                task_id=task.task_id,
+                retrieval=RagRetrievalResult(retrieval_id=task.task_id),
+            )
+            for task in tasks
+        ),
+        deterministic_candidates=lambda *_: (),
+        evaluate_sufficiency=evaluate,
+        plan_repair=repair,
+        prose_curate=lambda _question, _contract, packets: packets,
+        resolve_conflicts=lambda _contract, _packets, evaluation: ConflictStageResult(
+            sufficiency=evaluation
+        ),
+        pack=lambda *_: SimpleNamespace(packets=(_packet(),), is_packable=True),
+        generate_final=lambda *_: FinalAnswerResult(
+            response_status="complete",
+            used_evidence_ids=["evidence-1"],
+            final_generation_count=1,
+        ),
+        deterministic_partial=lambda _contract, evaluation: FinalAnswerResult(
+            response_status=evaluation.report.response_status
+        ),
+        record_repair_terminal=terminal_reasons.append,
+    )
+
+    await V9ExecutionCore(stages=stages).execute(
+        _request(), runtime_context=_runtime_context()
+    )
+
+    assert repair_decisions == list(range(1, repair_rounds + 1))
+    assert terminal_reasons == [expected_reason]
+
+
+@pytest.mark.asyncio
+async def test_incomplete_sufficiency_cannot_be_upgraded_by_final_provider() -> None:
+    contract = _contract().model_copy(
+        update={
+            "required_slots": [
+                RequiredSlot(slot_id="score", description="reported score"),
+                RequiredSlot(slot_id="source", description="source requirement"),
+            ]
+        }
+    )
+    degraded = SufficiencyEvaluation(
+        slot_resolutions=(
+            SlotResolution(
+                slot_id="score",
+                status="supported",
+                evidence_ids=["evidence-1"],
+            ),
+            SlotResolution(
+                slot_id="source",
+                status="not_found",
+                reason="Required source evidence was not found.",
+            ),
+        ),
+        report=SufficiencyReport(
+            evidence_complete=False,
+            answerable=True,
+            response_status="qualified_partial",
+            supported_slot_ids=["score"],
+            not_found_slot_ids=["source"],
+        ),
+    )
+    received: dict[str, object] = {}
+
+    async def final(
+        _question: str,
+        _contract: QueryContract,
+        _packed: object,
+        resolutions: tuple[SlotResolution, ...],
+        _arbitration: object,
+        report: SufficiencyReport,
+    ) -> FinalAnswerResult:
+        received["resolutions"] = resolutions
+        received["report"] = report
+        return FinalAnswerResult(
+            response_status="complete",
+            answer="Provider attempted an upgrade.",
+            final_generation_count=1,
+        )
+
+    result = await V9ExecutionCore(
+        stages=V9ExecutionStages(
+            resolve_scope=lambda _: ResolvedSourceScope(authorized_doc_ids=["doc-1"]),
+            plan_contract=lambda *_: contract,
+            retrieve=lambda tasks: (
+                TaskRetrievalResult(
+                    task_id=tasks[0].task_id,
+                    retrieval=RagRetrievalResult(retrieval_id="retrieval-1"),
+                ),
+            ),
+            deterministic_candidates=lambda *_: (_packet(),),
+            evaluate_sufficiency=lambda *_: degraded,
+            plan_repair=lambda *_: (),
+            prose_curate=lambda _, __, packets: packets,
+            resolve_conflicts=lambda *args: ConflictStageResult(sufficiency=args[-1]),
+            pack=lambda _, __, packets, ___: SimpleNamespace(
+                packets=packets, is_packable=True
+            ),
+            generate_final=final,
+            deterministic_partial=lambda _, evaluation: FinalAnswerResult(
+                response_status=evaluation.report.response_status
+            ),
+        )
+    ).execute(_request(), runtime_context=_runtime_context())
+
+    assert received["resolutions"] == degraded.slot_resolutions
+    assert received["report"] == degraded.report
+    assert result.final_answer.response_status == "qualified_partial"
+    assert result.sufficiency.response_status == "qualified_partial"
 
 
 @pytest.mark.asyncio

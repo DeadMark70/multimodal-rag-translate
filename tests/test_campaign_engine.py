@@ -18,6 +18,8 @@ import pytest
 
 from core.auth import get_current_user_id
 from core.llm_usage_context import emit_direct_usage
+from data_base.agentic_v9.budget_controller import RunBudgetController
+from data_base.agentic_v9.budgeted_llm import invoke_budgeted_llm
 from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.agentic_evaluation_service import AGENTIC_EVAL_PROFILE
 from evaluation.campaign_engine import CampaignEngine
@@ -37,6 +39,7 @@ from evaluation.db import (
 )
 from evaluation.job_store import EvaluationJobStore
 from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.observability import current_llm_call_observer
 from evaluation.rag_modes import (
     BenchmarkExecutionResult,
     CONTEXT_POLICY_VERSION,
@@ -930,6 +933,95 @@ async def test_completed_run_persists_snapshots_and_root_observability_span() ->
 
 
 @pytest.mark.asyncio
+async def test_llm_observer_write_failure_preserves_answer_and_marks_run_partial() -> None:
+    class Provider:
+        async def ainvoke(self, messages: object) -> object:
+            return {
+                "content": "observed answer",
+                "usage_metadata": {
+                    "input_tokens": 2,
+                    "output_tokens": 1,
+                    "total_tokens": 3,
+                },
+            }
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        observer = current_llm_call_observer()
+        assert observer is not None
+        response = await invoke_budgeted_llm(
+            controller=RunBudgetController(
+                max_llm_calls=1,
+                runtime_token_budget=200,
+                setup_snapshot={"max_output_tokens": 100, "thinking_mode": False},
+                final_input_tokens=100,
+            ),
+            provider=Provider(),
+            observer=observer,
+            model_name="gemini-2.5-flash",
+            phase="final_answer",
+            purpose="synthesizer",
+            messages=[{"role": "user", "content": "answer"}],
+            estimated_input_tokens=100,
+        )
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer=response["content"],
+            token_usage={"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
+        )
+
+    db_path = _make_db_path()
+    test_case = TestCase(
+        id="Q-OBSERVER-PARTIAL",
+        question="Answer?",
+        ground_truth="observed answer",
+    )
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        campaign = await campaign_repo.create(
+            user_id="user-a",
+            name="Observer partial",
+            config=_campaign_config_for_test_case_ids(
+                [test_case.id], modes=["naive"]
+            ),
+        )
+        engine = CampaignEngine(
+            runner=runner,
+            ragas_evaluator=FakeRagasEvaluator(progress_total=1),
+        )
+        with patch.object(
+            EvaluationObservabilityRepository,
+            "record_llm_call",
+            new=AsyncMock(side_effect=OSError("storage unavailable")),
+        ) as record_llm_call:
+            await engine._run_campaign(
+                user_id="user-a",
+                campaign_id=campaign.id,
+                config=campaign.config,
+                test_cases=[test_case],
+            )
+
+        result = (
+            await result_repo.list_for_campaign(
+                user_id="user-a", campaign_id=campaign.id
+            )
+        )[0]
+        assert result.answer == "observed answer"
+        assert result.status == CampaignResultStatus.COMPLETED
+        assert result.derived_metrics["observability_status"] == "partial"
+        assert set(result.derived_metrics["observability_partial_reasons"]) == {
+            "observability_write_failed",
+            "llm_call_observer_failed",
+        }
+        attempted_call = record_llm_call.await_args_list[0].args[0]
+        assert attempted_call.provider == "google"
+
+
+@pytest.mark.asyncio
 async def test_agentic_trace_persists_routing_and_tool_observability() -> None:
     async def runner(**kwargs) -> BenchmarkExecutionResult:
         test_case = kwargs["test_case"]
@@ -1039,6 +1131,106 @@ async def test_agentic_trace_persists_routing_and_tool_observability() -> None:
         assert tool_calls[0].payload["tool_type"] == "visual"
         assert tool_calls[0].payload["subtask_id"] == "1"
         assert tool_calls[0].payload["input_summary"] == {"image": "figure-1"}
+
+
+@pytest.mark.asyncio
+async def test_v9_actual_route_is_persisted_separately_from_retrospective_route() -> None:
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="bounded answer",
+            contexts=["ctx"],
+            source_doc_ids=["doc-a"],
+            expected_sources=["doc-a"],
+            latency_ms=9,
+            token_usage={"total_tokens": 12},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+            execution_profile="agentic-v9-eval",
+            agent_trace={
+                "classifier_decision": {
+                    "routing_reason": "retrospective policy view",
+                    "confidence": 0.4,
+                },
+                "agentic_v9": {
+                    "query_contract": {
+                        "contract_version": "2",
+                        "route": "multi_document_exact",
+                        "intent": "Resolve exact facts.",
+                        "slot_plan_status": "complete",
+                        "route_decision": {
+                            "selected_route": "multi_document_exact",
+                            "decision_source": "deterministic",
+                            "matched_rules": ["multiple_named_sources"],
+                            "candidate_routes": [
+                                "multi_document_exact",
+                                "exact_structured",
+                            ],
+                            "route_reason": "Multiple named sources.",
+                            "planner_call_used": False,
+                            "fallback_reason": None,
+                            "confidence": 1.0,
+                        },
+                    }
+                },
+            },
+        )
+
+    db_path = _make_db_path()
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        observability_repo = EvaluationObservabilityRepository()
+        campaign = await campaign_repo.create(
+            user_id="user-a",
+            name="Actual routing observability",
+            config=_campaign_config_for_test_case_ids(
+                ["Q-ACTUAL"], modes=["agentic"]
+            ),
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+        await engine._run_campaign(
+            user_id="user-a",
+            campaign_id=campaign.id,
+            config=campaign.config,
+            test_cases=[
+                TestCase(
+                    id="Q-ACTUAL",
+                    question="Compare the sources.",
+                    ground_truth="Evidence",
+                    category="routing",
+                    difficulty="hard",
+                )
+            ],
+        )
+
+        result = (
+            await result_repo.list_for_campaign(
+                user_id="user-a", campaign_id=campaign.id
+            )
+        )[0]
+        decisions = await observability_repo.list_routing_decisions_for_run(
+            result.id
+        )
+
+    assert [decision.analysis_type for decision in decisions] == [
+        "retrospective",
+        "actual",
+    ]
+    actual = decisions[1]
+    assert actual.decision_source == "deterministic"
+    assert actual.candidate_routes == [
+        "multi_document_exact",
+        "exact_structured",
+    ]
+    assert actual.matched_rules == ["multiple_named_sources"]
+    assert actual.reason == "Multiple named sources."
+    assert actual.confidence == 1.0
+    assert actual.fallback_reason is None
 
 
 @pytest.mark.asyncio

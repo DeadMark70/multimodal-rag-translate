@@ -80,14 +80,21 @@ _OBSERVABILITY_TABLE_COLUMNS = {
         "span_id": "TEXT",
         "provider": "TEXT",
         "model_name": "TEXT",
+        "phase": "TEXT NOT NULL DEFAULT 'unknown'",
         "purpose": "TEXT NOT NULL DEFAULT 'unknown'",
+        "reservation_id": "TEXT",
+        "provider_attempt": "INTEGER",
         "prompt_tokens": "INTEGER NOT NULL DEFAULT 0",
         "completion_tokens": "INTEGER NOT NULL DEFAULT 0",
         "total_tokens": "INTEGER NOT NULL DEFAULT 0",
+        "reasoning_tokens": "INTEGER",
+        "other_tokens": "INTEGER",
         "estimated_cost_usd": "REAL",
         "estimated_cost_twd": "REAL",
         "prompt_hash": "TEXT",
         "prompt_preview": "TEXT",
+        "prompt_capture_status": "TEXT NOT NULL DEFAULT 'unknown'",
+        "full_prompt_capture_status": "TEXT NOT NULL DEFAULT 'unknown'",
         "response_hash": "TEXT",
         "latency_ms": "REAL",
         "status": "TEXT NOT NULL DEFAULT 'success'",
@@ -504,14 +511,21 @@ CREATE TABLE IF NOT EXISTS evaluation_llm_calls (
     span_id TEXT,
     provider TEXT,
     model_name TEXT,
+    phase TEXT NOT NULL DEFAULT 'unknown',
     purpose TEXT NOT NULL DEFAULT 'unknown',
+    reservation_id TEXT,
+    provider_attempt INTEGER,
     prompt_tokens INTEGER NOT NULL DEFAULT 0,
     completion_tokens INTEGER NOT NULL DEFAULT 0,
     total_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER,
+    other_tokens INTEGER,
     estimated_cost_usd REAL,
     estimated_cost_twd REAL,
     prompt_hash TEXT,
     prompt_preview TEXT,
+    prompt_capture_status TEXT NOT NULL DEFAULT 'unknown',
+    full_prompt_capture_status TEXT NOT NULL DEFAULT 'unknown',
     response_hash TEXT,
     latency_ms REAL,
     status TEXT NOT NULL DEFAULT 'success',
@@ -1015,6 +1029,13 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
     )
     await connection.execute(
         """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_llm_calls_attempt_identity
+        ON evaluation_llm_calls(run_id, reservation_id, provider_attempt)
+        WHERE reservation_id IS NOT NULL AND provider_attempt IS NOT NULL
+        """
+    )
+    await connection.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_eval_retrieval_events_run_span
         ON evaluation_retrieval_events(run_id, span_id)
         """
@@ -1454,6 +1475,7 @@ class CampaignResearchResult:
     category: Optional[str]
     difficulty: Optional[str]
     required_modalities: list[Any] | None
+    system_version_snapshot: dict[str, Any]
     derived_metrics: dict[str, Any]
     source_attempt_id: Optional[str]
     status: CampaignResultStatus
@@ -1463,6 +1485,11 @@ class CampaignResearchResult:
     def repeat_number(self) -> int:
         value = self.derived_metrics.get("repeat_number")
         return value if isinstance(value, int) else self.run_number
+
+    @property
+    def agentic_execution_version(self) -> str:
+        version = self.system_version_snapshot.get("agentic_execution_version", "v8")
+        return version if version in {"v8", "v9"} else "v8"
 
 
 @dataclass(frozen=True, slots=True)
@@ -2143,6 +2170,7 @@ class CampaignResultRepository:
                     difficulty,
                     json_extract(question_snapshot_json, '$.required_modalities')
                         AS required_modalities_json,
+                    system_version_snapshot_json,
                     derived_metrics_json,
                     source_attempt_id,
                     status,
@@ -2168,6 +2196,9 @@ class CampaignResultRepository:
                 difficulty=row["difficulty"],
                 required_modalities=_json_loads(
                     row["required_modalities_json"], None
+                ),
+                system_version_snapshot=_json_loads(
+                    row["system_version_snapshot_json"], {}
                 ),
                 derived_metrics=_json_loads(row["derived_metrics_json"], {}),
                 source_attempt_id=row["source_attempt_id"] or None,

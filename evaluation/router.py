@@ -640,7 +640,7 @@ async def post_campaign_export(
     user_id: str = Depends(get_current_user_id),
     analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
 ) -> ExportCampaignResponse:
-    """Export one campaign with explicit redaction controls."""
+    """Export without escalating the campaign's execution-time capture policy."""
     return await analytics.export_campaign(
         user_id=user_id, campaign_id=campaign_id, request=payload
     )
@@ -806,7 +806,14 @@ async def get_campaign_run_observability(
         user_id=user_id, campaign_id=campaign_id, result_id=run_id
     )
     token_breakdown = await analytics.get_run_token_breakdown(
-        campaign_id=campaign_id, run_id=run_id
+        campaign_id=campaign_id,
+        run_id=run_id,
+        agentic_execution_version=result.agentic_execution_version,
+        observability_partial_reasons=(
+            result.derived_metrics.get("observability_partial_reasons", [])
+            if isinstance(result.derived_metrics, dict)
+            else []
+        ),
     )
 
     repository = EvaluationObservabilityRepository()

@@ -14,6 +14,11 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from core.sensitive_data import (
+    is_sensitive_credential_key,
+    sanitize_credential_assignments_text,
+    sanitize_json_object_text,
+)
 from evaluation.db import connect_db, init_db
 from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
 from evaluation.trace_schemas import (
@@ -36,10 +41,12 @@ MAX_V9_OBSERVABILITY_PAYLOAD_BYTES = 256 * 1024
 DEFAULT_EVIDENCE_EXCERPT_CHARS = 500
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]+"),
-    re.compile(r"(?:api[_-]?key|authorization|bearer)\s*[:=]?\s*\S+", re.IGNORECASE),
+    re.compile(
+        r"(?:api[_-]?key|authorization|password|secret|token|bearer)"
+        r"\s*[:=]?\s*(?:\"[^\"]*\"|'[^']*'|\S+)",
+        re.IGNORECASE,
+    ),
 )
-
-
 def _json_default(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
@@ -97,6 +104,10 @@ def safe_plain_text_excerpt(value: Any, *, limit: int = DEFAULT_EVIDENCE_EXCERPT
 def redact_sensitive_text(value: Any) -> str:
     """Redact credentials without altering otherwise authorized export content."""
     text = str(value or "")
+    sanitized_json, _ = sanitize_json_object_text(text)
+    if sanitized_json is not None:
+        return sanitized_json
+    text, _ = sanitize_credential_assignments_text(text)
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub("[redacted]", text)
     return text
@@ -105,7 +116,15 @@ def redact_sensitive_text(value: Any) -> str:
 def redact_sensitive_value(value: Any) -> Any:
     """Apply credential redaction recursively to JSON-shaped export payloads."""
     if isinstance(value, dict):
-        return {str(key): redact_sensitive_value(item) for key, item in value.items()}
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            redacted[key_text] = (
+                "[redacted]"
+                if is_sensitive_credential_key(key_text)
+                else redact_sensitive_value(item)
+            )
+        return redacted
     if isinstance(value, list):
         return [redact_sensitive_value(item) for item in value]
     if isinstance(value, tuple):
@@ -1059,12 +1078,18 @@ class EvaluationObservabilityRepository(
         async with connect_db() as connection:
             await connection.execute(
                 """
-                INSERT OR REPLACE INTO evaluation_llm_calls (
+                INSERT INTO evaluation_llm_calls (
                     llm_call_id, run_id, campaign_id, span_id, provider, model_name,
-                    purpose, prompt_tokens, completion_tokens, total_tokens,
+                    phase, purpose, reservation_id, provider_attempt,
+                    prompt_tokens, completion_tokens, total_tokens, reasoning_tokens,
+                    other_tokens,
                     estimated_cost_usd, estimated_cost_twd, prompt_hash, prompt_preview,
+                    prompt_capture_status, full_prompt_capture_status,
                     response_hash, latency_ms, status, error_json, payload_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?
+                )
                 """,
                 (
                     call.llm_call_id,
@@ -1073,14 +1098,21 @@ class EvaluationObservabilityRepository(
                     call.span_id,
                     call.provider,
                     call.model_name,
+                    call.phase,
                     call.purpose,
+                    call.reservation_id,
+                    call.provider_attempt,
                     call.prompt_tokens,
                     call.completion_tokens,
                     call.total_tokens,
+                    call.reasoning_tokens,
+                    call.other_tokens,
                     call.estimated_cost_usd,
                     call.estimated_cost_twd,
                     call.prompt_hash,
                     call.prompt_preview,
+                    call.prompt_capture_status,
+                    call.full_prompt_capture_status,
                     call.response_hash,
                     call.latency_ms,
                     call.status,
@@ -1107,14 +1139,21 @@ class EvaluationObservabilityRepository(
                 span_id=row["span_id"],
                 provider=row["provider"],
                 model_name=row["model_name"],
+                phase=row["phase"],
                 purpose=row["purpose"],
+                reservation_id=row["reservation_id"],
+                provider_attempt=row["provider_attempt"],
                 prompt_tokens=row["prompt_tokens"],
                 completion_tokens=row["completion_tokens"],
                 total_tokens=row["total_tokens"],
+                reasoning_tokens=row["reasoning_tokens"],
+                other_tokens=row["other_tokens"],
                 estimated_cost_usd=row["estimated_cost_usd"],
                 estimated_cost_twd=row["estimated_cost_twd"],
                 prompt_hash=row["prompt_hash"],
                 prompt_preview=row["prompt_preview"],
+                prompt_capture_status=row["prompt_capture_status"],
+                full_prompt_capture_status=row["full_prompt_capture_status"],
                 response_hash=row["response_hash"],
                 latency_ms=row["latency_ms"],
                 status=row["status"],
@@ -1147,14 +1186,21 @@ class EvaluationObservabilityRepository(
                     span_id=row["span_id"],
                     provider=row["provider"],
                     model_name=row["model_name"],
+                    phase=row["phase"],
                     purpose=row["purpose"],
+                    reservation_id=row["reservation_id"],
+                    provider_attempt=row["provider_attempt"],
                     prompt_tokens=row["prompt_tokens"],
                     completion_tokens=row["completion_tokens"],
                     total_tokens=row["total_tokens"],
+                    reasoning_tokens=row["reasoning_tokens"],
+                    other_tokens=row["other_tokens"],
                     estimated_cost_usd=row["estimated_cost_usd"],
                     estimated_cost_twd=row["estimated_cost_twd"],
                     prompt_hash=row["prompt_hash"],
                     prompt_preview=row["prompt_preview"],
+                    prompt_capture_status=row["prompt_capture_status"],
+                    full_prompt_capture_status=row["full_prompt_capture_status"],
                     response_hash=row["response_hash"],
                     latency_ms=row["latency_ms"],
                     status=row["status"],

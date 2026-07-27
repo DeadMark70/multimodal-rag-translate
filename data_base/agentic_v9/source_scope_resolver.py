@@ -73,6 +73,11 @@ class SourceScopeResolver:
             requested_source_names=names,
             resolved_doc_ids=resolved_ids,
             authorized_doc_ids=sorted(candidates.intersection(authorized_ids)),
+            source_name_to_doc_ids={
+                name: [doc_id]
+                for name, doc_id in resolved_by_name.items()
+                if doc_id in candidates and doc_id in authorized_ids
+            },
         )
 
 

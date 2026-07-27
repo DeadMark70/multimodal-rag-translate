@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable, Literal, Optional
 from uuid import uuid4
 
 from core.errors import AppError, ErrorCode
+from core.providers import get_llm_provider_name
 from evaluation.campaign_schemas import (
     AblationCondition,
     CampaignMetricsResponse,
@@ -46,7 +47,7 @@ from evaluation.evidence import (
     expected_evidence_matches_doc,
     text_mentions_fact,
 )
-from evaluation.observability import EvaluationRunRecorder
+from evaluation.observability import EvaluationRunRecorder, llm_call_observer_scope
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.agentic_campaign_adapter import effective_agentic_execution_version
 from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
@@ -106,6 +107,9 @@ class ExecutedCampaignUnit:
     completed_at: datetime
     total_latency_ms: float
     model_config: dict[str, Any]
+    observability_partial: bool = False
+    observability_partial_reasons: tuple[str, ...] = ()
+    provider_name: str = "unknown"
 
 
 def _unit_key(unit: CampaignUnit) -> tuple[str, str, int, str | None]:
@@ -476,13 +480,7 @@ async def _record_unit_llm_usage(
         return
 
     model_name = execution.model_config.get("model_name")
-    provider = execution.model_config.get("provider")
-    if (
-        provider is None
-        and isinstance(model_name, str)
-        and model_name.startswith("gemini")
-    ):
-        provider = "google"
+    provider = execution.provider_name
 
     recorder = EvaluationRunRecorder(
         run_id=run_id,
@@ -582,6 +580,61 @@ async def _record_unit_research_observability(
             )
 
     v9_payload = trace_payload.get("agentic_v9")
+    query_contract = (
+        v9_payload.get("query_contract") if isinstance(v9_payload, dict) else None
+    )
+    actual_route = (
+        query_contract.get("route_decision")
+        if isinstance(query_contract, dict)
+        else None
+    )
+    if isinstance(actual_route, dict):
+        async with recorder.start_span(
+            stage_type="routing",
+            stage_name="agentic_v9_actual_routing",
+            event_type="routing_decision",
+            payload={
+                "request_id": request_id,
+                "question_id": execution.unit.test_case.id,
+                "selected_route": actual_route.get("selected_route"),
+                "decision_source": actual_route.get("decision_source"),
+            },
+        ) as routing_span:
+            await recorder.record_routing_decision(
+                EvaluationRoutingDecision(
+                    routing_decision_id=str(uuid4()),
+                    run_id=run_id,
+                    campaign_id=campaign_id,
+                    span_id=routing_span.span_id,
+                    selected_mode=execution.unit.mode,
+                    analysis_type="actual",
+                    decision_source=actual_route.get("decision_source"),
+                    candidate_routes=list(
+                        actual_route.get("candidate_routes") or []
+                    ),
+                    matched_rules=list(actual_route.get("matched_rules") or []),
+                    fallback_reason=actual_route.get("fallback_reason"),
+                    confidence=actual_route.get("confidence"),
+                    reason=actual_route.get("route_reason"),
+                    payload={
+                        "selected_route": actual_route.get("selected_route"),
+                        "decision_source": actual_route.get("decision_source"),
+                        "candidate_routes": list(
+                            actual_route.get("candidate_routes") or []
+                        ),
+                        "matched_rules": list(
+                            actual_route.get("matched_rules") or []
+                        ),
+                        "planner_call_used": bool(
+                            actual_route.get("planner_call_used")
+                        ),
+                        "fallback_reason": actual_route.get(
+                            "fallback_reason"
+                        ),
+                    },
+                    created_at=created_at,
+                )
+            )
     graph_execution = (
         v9_payload.get("graph_execution") if isinstance(v9_payload, dict) else None
     )
@@ -1710,6 +1763,10 @@ class CampaignEngine:
                         self._execute_unit(
                             unit=unit,
                             user_id=user_id,
+                            campaign_id=campaign_id,
+                            prompt_capture_policy=config.prompt_capture_policy.model_dump(
+                                mode="json"
+                            ),
                             model_config=config.model_preset.model_dump(mode="json"),
                             rate_budget=rate_budget,
                             run_number=unit.run_number,
@@ -1909,6 +1966,8 @@ class CampaignEngine:
         *,
         unit: CampaignUnit,
         user_id: str,
+        campaign_id: str,
+        prompt_capture_policy: dict[str, Any],
         model_config: dict,
         rate_budget: RateBudget,
         run_number: int,
@@ -1921,18 +1980,38 @@ class CampaignEngine:
         request_id = str(uuid4())
         started_at = _utc_now()
         runner_started_perf = time.perf_counter()
+        effective_model_config = {
+            **model_config,
+            "provider": str(
+                model_config.get("provider") or get_llm_provider_name()
+            ),
+        }
+        recorder = EvaluationRunRecorder(
+            run_id=run_id,
+            campaign_id=campaign_id,
+            user_id=user_id,
+            request_id=request_id,
+            provider_name=str(effective_model_config["provider"]),
+            model_name=str(
+                model_config.get("model_name")
+                or model_config.get("model")
+                or "unknown"
+            ),
+            prompt_capture_policy=prompt_capture_policy,
+        )
         try:
-            payload = await self._runner(
-                test_case=unit.test_case,
-                user_id=user_id,
-                mode=unit.mode,
-                model_config=model_config,
-                run_number=repeat_number,
-                ablation_flags=ablation_flags,
-                budget=budget,
-                agentic_execution_version=unit.agentic_execution_version,
-                shadow_evaluation_policy=unit.shadow_evaluation_policy,
-            )
+            with llm_call_observer_scope(recorder):
+                payload = await self._runner(
+                    test_case=unit.test_case,
+                    user_id=user_id,
+                    mode=unit.mode,
+                    model_config=effective_model_config,
+                    run_number=repeat_number,
+                    ablation_flags=ablation_flags,
+                    budget=budget,
+                    agentic_execution_version=unit.agentic_execution_version,
+                    shadow_evaluation_policy=unit.shadow_evaluation_policy,
+                )
         except Exception as exc:  # noqa: BLE001
             payload = exc
         completed_at = _utc_now()
@@ -1948,6 +2027,11 @@ class CampaignEngine:
             completed_at=completed_at,
             total_latency_ms=total_latency_ms,
             model_config=dict(model_config),
+            observability_partial=recorder.observability_partial,
+            observability_partial_reasons=tuple(
+                recorder.observability_partial_reasons
+            ),
+            provider_name=str(effective_model_config["provider"]),
         )
 
     async def _persist_unit_result(
@@ -1979,6 +2063,12 @@ class CampaignEngine:
             payload.answer = ""
             payload.error_message = failure_diagnostics["safe_error_message"]
         derived_metrics = _build_derived_metrics(unit=unit, payload=payload)
+        derived_metrics["observability_status"] = (
+            "partial" if execution.observability_partial else "complete"
+        )
+        derived_metrics["observability_partial_reasons"] = list(
+            execution.observability_partial_reasons
+        )
 
         if isinstance(payload, Exception):
             created = await self._result_repository.create(

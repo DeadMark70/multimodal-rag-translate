@@ -1,9 +1,11 @@
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from core.errors import AppError, ErrorCode
 from data_base.indexing_service import DEFAULT_PRODUCTION_INDEXING_PROFILE
@@ -262,9 +264,71 @@ async def test_process_document_images_records_only_successfully_indexed_assets(
         )
 
     assert indexed_count == 1
-    build_links.assert_called_once_with(doc_id="doc-1", elements=[successful_summary])
+    build_links.assert_called_once_with(
+        doc_id="doc-1",
+        elements=[successful_summary],
+        upload_root=Path("uploads/test-user-123/doc-1").resolve().parents[1],
+    )
     graph_store.record_asset_link.assert_called_once_with(asset_link)
     graph_store.save_sidecars.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_process_document_images_persists_upload_relative_visual_reference(
+    tmp_path,
+) -> None:
+    upload_root = tmp_path / "uploads"
+    user_folder = upload_root / TEST_USER_ID / "doc-1"
+    user_folder.mkdir(parents=True)
+    image_path = user_folder / "page-3.png"
+    Image.new("RGB", (11, 7), "white").save(image_path)
+    figure_element = SimpleNamespace(
+        id="visual-1",
+        type="figure",
+        summary=None,
+        page_number=3,
+        image_path=str(image_path),
+        bbox=[0, 0, 11, 7],
+        context_text="Figure 2 shows the architecture.",
+        figure_reference="Figure 2",
+    )
+    successful_summary = SimpleNamespace(**figure_element.__dict__)
+    successful_summary.summary = "A source image summary."
+    graph_store = Mock()
+
+    with (
+        patch(
+            "pdfserviceMD.indexing_tasks.extract_images_from_markdown",
+            return_value=[(str(image_path), 3, "Figure 2")],
+        ),
+        patch(
+            "pdfserviceMD.indexing_tasks.create_visual_elements",
+            return_value=[figure_element],
+        ),
+        patch(
+            "pdfserviceMD.indexing_tasks.image_summarizer.summarize_elements",
+            new=AsyncMock(return_value=[successful_summary]),
+        ),
+        patch(
+            "pdfserviceMD.indexing_tasks.index_visual_summaries",
+            new=AsyncMock(return_value=1),
+        ),
+        patch("pdfserviceMD.indexing_tasks.GraphStore", return_value=graph_store),
+    ):
+        indexed_count = await process_document_images(
+            user_id=TEST_USER_ID,
+            doc_id="doc-1",
+            markdown_text="markdown",
+            user_folder=str(user_folder),
+            book_title="Demo",
+        )
+
+    assert indexed_count == 1
+    recorded = graph_store.record_asset_link.call_args.args[0]
+    assert recorded.storage_reference == f"{TEST_USER_ID}/doc-1/page-3.png"
+    assert recorded.width == 11
+    assert recorded.height == 7
+    assert not recorded.storage_reference.startswith("/")
 
 
 @pytest.mark.asyncio

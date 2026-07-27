@@ -140,6 +140,94 @@ def test_q16_partitions_authorized_sources_into_deterministic_source_groups() ->
     assert plan.tasks[3].target_slot_ids == ["slot-qualification"]
 
 
+def test_q16_compiles_atomic_source_and_locator_groups_without_answer_text() -> None:
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["gepar", "odes", "ukan"],
+        requested_source_names=["GEPAR3D.pdf", "ODES.pdf", "Implicit-U-KAN2.0.pdf"],
+        resolved_doc_ids=["gepar", "odes", "ukan"],
+        authorized_doc_ids=["gepar", "odes", "ukan"],
+        source_name_to_doc_ids={
+            "GEPAR3D.pdf": ["gepar"],
+            "ODES.pdf": ["odes"],
+            "Implicit-U-KAN2.0.pdf": ["ukan"],
+        },
+    )
+    contract = QueryContract(
+        contract_version="2",
+        route="multi_document_exact",
+        intent="Retrieve seven atomic facts.",
+        entities=["GEPAR3D", "ODES", "Implicit-U-KAN2.0"],
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Identify the GEPAR3D penalty.",
+                entity_ids=["GEPAR3D"],
+                source_name_hints=["GEPAR3D.pdf"],
+                authorized_source_doc_ids=["gepar"],
+                locator_hints=["penalty definition"],
+            ),
+            RequiredSlot(
+                slot_id="S3",
+                description="Transcribe the ODES equation.",
+                entity_ids=["ODES"],
+                source_name_hints=["ODES.pdf"],
+                authorized_source_doc_ids=["odes"],
+                locator_hints=["Equation 2"],
+                expected_answer_type="equation",
+            ),
+            RequiredSlot(
+                slot_id="S5",
+                description="Report the U-KAN metric.",
+                entity_ids=["Implicit-U-KAN2.0"],
+                source_name_hints=["Implicit-U-KAN2.0.pdf"],
+                authorized_source_doc_ids=["ukan"],
+                locator_hints=["Table 3"],
+                expected_answer_type="number",
+            ),
+            RequiredSlot(
+                slot_id="S6",
+                description="Report the proposed method metric.",
+                entity_ids=["Implicit-U-KAN2.0"],
+                source_name_hints=["Implicit-U-KAN2.0.pdf"],
+                authorized_source_doc_ids=["ukan"],
+                locator_hints=["Table 3"],
+                expected_answer_type="number",
+            ),
+            RequiredSlot(
+                slot_id="S7",
+                description="State the theorem boundary.",
+                entity_ids=["Implicit-U-KAN2.0"],
+                source_name_hints=["Implicit-U-KAN2.0.pdf"],
+                authorized_source_doc_ids=["ukan"],
+                locator_hints=["Theorem 1"],
+            ),
+        ],
+        max_retrieval_rounds=2,
+        max_llm_calls=1,
+        runtime_token_budget=1,
+        resolved_source_scope=scope,
+        slot_plan_status="complete",
+    )
+
+    plan = RetrievalTaskCompiler().compile(
+        question="Expected ODES answer is SECRET-GOLD and U-KAN is 0.9079.",
+        query_id="Q16",
+        contract=contract,
+    )
+
+    groups = {tuple(task.target_slot_ids): task for task in plan.tasks}
+    assert groups[("S3",)].source_scope.authorized_doc_ids == ["odes"]
+    assert groups[("S3",)].locator_hints == ["Equation 2"]
+    assert groups[("S5", "S6")].source_scope.authorized_doc_ids == ["ukan"]
+    assert groups[("S5", "S6")].locator_hints == ["Table 3"]
+    assert groups[("S7",)].source_scope.authorized_doc_ids == ["ukan"]
+    assert groups[("S7",)].locator_hints == ["Theorem 1"]
+    assert all("SECRET-GOLD" not in task.query for task in plan.tasks)
+    assert all("0.9079" not in task.query for task in plan.tasks)
+    assert "ODES.pdf" in groups[("S3",)].query
+    assert "Transcribe the ODES equation." in groups[("S3",)].query
+
+
 @pytest.mark.parametrize(
     ("query_id", "entities"),
     [

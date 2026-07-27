@@ -22,12 +22,30 @@ from data_base.agentic_v9.schemas import (
 from evaluation.schemas import ModelConfig
 
 CampaignMode = Literal[
-    "naive", "naive-baseline", "advanced", "graph", "agentic", "agentic-v8", "v8",
-    "agentic-v9", "v9", "agentic-v9-shadow", "router",
-    "graph_raw_current", "graph_provenance_gated", "graph_locator_to_chunk",
-    "graph_locator_claim_gate", "always_no_graph", "always_graph_locator",
-    "router_auto_graph", "oracle_graph_router", "graph_local_first", "graph_global_first", "graph_blended",
-    "graph_path_pruned", "graph_planning_only",
+    "naive",
+    "naive-baseline",
+    "advanced",
+    "graph",
+    "agentic",
+    "agentic-v8",
+    "v8",
+    "agentic-v9",
+    "v9",
+    "agentic-v9-shadow",
+    "router",
+    "graph_raw_current",
+    "graph_provenance_gated",
+    "graph_locator_to_chunk",
+    "graph_locator_claim_gate",
+    "always_no_graph",
+    "always_graph_locator",
+    "router_auto_graph",
+    "oracle_graph_router",
+    "graph_local_first",
+    "graph_global_first",
+    "graph_blended",
+    "graph_path_pruned",
+    "graph_planning_only",
 ]
 CampaignEvaluationPhase = Literal["execution", "evaluation"]
 AgenticExecutionVersion = Literal["v8", "v9"]
@@ -63,6 +81,15 @@ class AblationCondition(BaseModel):
     budget: dict[str, Any] | None = None
 
 
+class PromptCapturePolicy(BaseModel):
+    """Execution-time-authoritative prompt evidence policy."""
+
+    hash: bool = True
+    preview: bool = True
+    full_prompt: bool = False
+    preview_max_chars: int = Field(default=512, ge=32, le=4096)
+
+
 class CampaignConfig(BaseModel):
     """User-supplied campaign configuration."""
 
@@ -87,6 +114,9 @@ class CampaignConfig(BaseModel):
     # A benchmark run can span separate immutable campaigns because v8/v9 and
     # shadow configuration are intentionally incompatible in one campaign.
     benchmark_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    prompt_capture_policy: PromptCapturePolicy = Field(
+        default_factory=PromptCapturePolicy
+    )
 
     @model_validator(mode="after")
     def dedupe_modes(self) -> "CampaignConfig":
@@ -105,7 +135,9 @@ class CampaignConfig(BaseModel):
                 ordered_unique_modes.append(mode)
         self.modes = ordered_unique_modes
         if not self.modes:
-            raise ValueError("at least one mode is required when ablation_conditions is empty")
+            raise ValueError(
+                "at least one mode is required when ablation_conditions is empty"
+            )
         self._validate_agentic_identity()
         return self
 
@@ -115,7 +147,9 @@ class CampaignConfig(BaseModel):
             if len(self.modes) != 1:
                 raise ValueError("agentic-v9-shadow must be configured alone")
             if self.agentic_execution_version != "v9":
-                raise ValueError("agentic-v9-shadow requires agentic_execution_version='v9'")
+                raise ValueError(
+                    "agentic-v9-shadow requires agentic_execution_version='v9'"
+                )
             if self.shadow_evaluation_policy is None:
                 raise ValueError("agentic-v9-shadow requires shadow_evaluation_policy")
         elif self.shadow_evaluation_policy is not None:
@@ -123,9 +157,15 @@ class CampaignConfig(BaseModel):
 
         v9_modes = {"agentic-v9", "v9"}
         v8_modes = {"agentic-v8", "v8"}
-        if any(mode in v9_modes for mode in self.modes) and self.agentic_execution_version != "v9":
+        if (
+            any(mode in v9_modes for mode in self.modes)
+            and self.agentic_execution_version != "v9"
+        ):
             raise ValueError("v9 identity requires agentic_execution_version='v9'")
-        if any(mode in v8_modes for mode in self.modes) and self.agentic_execution_version != "v8":
+        if (
+            any(mode in v8_modes for mode in self.modes)
+            and self.agentic_execution_version != "v8"
+        ):
             raise ValueError("v8 identity requires agentic_execution_version='v8'")
 
 
@@ -150,6 +190,9 @@ class CampaignCreateRequest(BaseModel):
     agentic_execution_version: AgenticExecutionVersion = "v8"
     shadow_evaluation_policy: ShadowEvaluationPolicy | None = None
     benchmark_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    prompt_capture_policy: PromptCapturePolicy = Field(
+        default_factory=PromptCapturePolicy
+    )
 
     def to_config(self) -> CampaignConfig:
         return CampaignConfig(
@@ -168,6 +211,7 @@ class CampaignCreateRequest(BaseModel):
             agentic_execution_version=self.agentic_execution_version,
             shadow_evaluation_policy=self.shadow_evaluation_policy,
             benchmark_id=self.benchmark_id,
+            prompt_capture_policy=self.prompt_capture_policy,
         )
 
 
@@ -352,6 +396,7 @@ BehaviorExecutionState = Literal[
     "executed",
     "failed",
     "required_but_not_satisfied",
+    "attempted_without_evidence",
     "not_instrumented",
 ]
 
@@ -370,7 +415,13 @@ class V9AgentBehaviorMetrics(BaseModel):
     """Durable evidence-first execution observations for one v9 run."""
 
     route: str | None = None
+    contract_version: str | None = None
+    slot_plan_status: str | None = None
+    slot_semantics: str | None = None
+    atomic_completeness: bool | None = None
+    atomic_completeness_reason: str | None = None
     graph_policy: str | None = None
+    visual_requested: bool | None = None
     visual_required: bool | None = None
     evidence_extraction_required: bool | None = None
     retrieval_query_count: int | None = Field(default=None, ge=0)
@@ -563,7 +614,7 @@ class RunMetricsResponse(BaseModel):
     campaign_id: str
     derived_metrics: dict[str, Any] = Field(default_factory=dict)
     token_usage: dict[str, Any] = Field(default_factory=dict)
-    total_tokens: int = Field(default=0, ge=0)
+    total_tokens: Optional[int] = Field(default=None, ge=0)
     latency_ms: float = Field(default=0, ge=0)
     total_latency_ms: Optional[float] = Field(default=None, ge=0)
 
@@ -576,7 +627,9 @@ class RunDiffResponse(BaseModel):
     token_delta: int
     latency_delta_ms: float
     comparable: bool = True
-    comparison_scope: Literal["same_run", "same_campaign_question", "cross_campaign"] = "same_campaign_question"
+    comparison_scope: Literal[
+        "same_run", "same_campaign_question", "cross_campaign"
+    ] = "same_campaign_question"
     answer_changed: bool
     answer_change_status: Literal["changed", "unchanged", "unknown"] = "unknown"
     derived_metric_delta: dict[str, float] = Field(default_factory=dict)
@@ -772,6 +825,8 @@ class ExportCampaignResponse(BaseModel):
     llm_calls: list[dict[str, Any]] = Field(default_factory=list)
     retrieval_summary: list[dict[str, Any]] = Field(default_factory=list)
     claim_summary: list[dict[str, Any]] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    availability_warnings: list[str] = Field(default_factory=list)
 
 
 class CampaignProgressEvent(BaseModel):
@@ -897,7 +952,9 @@ class CampaignMetricsResponse(BaseModel):
     campaign: CampaignStatus
     evaluator_model: str
     available_metrics: list[str] = Field(default_factory=list)
-    summary_by_mode: dict[CampaignMode, ModeMetricsSummary] = Field(default_factory=dict)
+    summary_by_mode: dict[CampaignMode, ModeMetricsSummary] = Field(
+        default_factory=dict
+    )
     summary_by_category: dict[str, GroupMetricsSummary] = Field(default_factory=dict)
     summary_by_focus: dict[str, GroupMetricsSummary] = Field(default_factory=dict)
     delta_by_category: dict[str, DeltaGroupSummary] = Field(default_factory=dict)

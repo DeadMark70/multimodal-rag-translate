@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from evaluation.analytics import EvaluationAnalyticsService
+from evaluation.analytics import EvaluationAnalyticsService, reconcile_official_tokens
 from evaluation.campaign_schemas import ExportCampaignRequest
 from evaluation.campaign_schemas import CampaignLifecycleStatus
 from evaluation.trace_schemas import (
@@ -144,6 +144,176 @@ class FakeResult:
             "created_at": self.created_at.isoformat(),
             "derived_metrics": self.derived_metrics,
         }
+
+
+def test_official_token_reconciliation_counts_retries_and_token_components() -> None:
+    calls = [
+        SimpleNamespace(
+            llm_call_id="call-1",
+            phase="contract_planning",
+            reservation_id="reservation-1",
+            provider_attempt=1,
+            total_tokens=7,
+            prompt_tokens=3,
+            completion_tokens=2,
+            reasoning_tokens=1,
+            other_tokens=1,
+            payload={"usage_status": "measured", "official_total_tokens": 7},
+        ),
+        SimpleNamespace(
+            llm_call_id="call-2",
+            phase="contract_planning",
+            reservation_id="reservation-1",
+            provider_attempt=2,
+            total_tokens=8,
+            prompt_tokens=4,
+            completion_tokens=2,
+            reasoning_tokens=1,
+            other_tokens=1,
+            payload={"usage_status": "measured", "official_total_tokens": 8},
+        ),
+    ]
+
+    result = reconcile_official_tokens(runtime_total_tokens=15, calls=calls)
+
+    assert result.status == "complete"
+    assert result.provider_total_tokens == 15
+    assert result.by_phase == {"contract_planning": 15}
+    assert result.reasoning_tokens == 2
+    assert result.other_tokens == 2
+    assert result.retry_count == 1
+    assert result.reasons == ()
+
+
+@pytest.mark.parametrize(
+    ("runtime_total", "calls", "partial_reasons", "expected_reason"),
+    [
+        (None, [], (), "official_runtime_tokens_unknown"),
+        (10, [], (), "provider_attempts_missing"),
+        (
+            10,
+            [
+                SimpleNamespace(
+                    llm_call_id="call-1",
+                    phase="final_answer",
+                    reservation_id="reservation-1",
+                    provider_attempt=1,
+                    total_tokens=9,
+                    prompt_tokens=4,
+                    completion_tokens=5,
+                    reasoning_tokens=0,
+                    other_tokens=0,
+                    payload={"usage_status": "measured", "official_total_tokens": 9},
+                )
+            ],
+            (),
+            "provider_runtime_total_mismatch",
+        ),
+        (
+            10,
+            [
+                SimpleNamespace(
+                    llm_call_id="call-1",
+                    phase="final_answer",
+                    reservation_id="reservation-1",
+                    provider_attempt=1,
+                    total_tokens=10,
+                    prompt_tokens=5,
+                    completion_tokens=5,
+                    reasoning_tokens=0,
+                    other_tokens=0,
+                    payload={"usage_status": "missing"},
+                )
+            ],
+            (),
+            "provider_usage_missing",
+        ),
+        (10, [], ("llm_call_observer_failed",), "llm_call_observer_failed"),
+        (
+            10,
+            [
+                SimpleNamespace(
+                    llm_call_id="call-balanced-but-observer-partial",
+                    phase="final_answer",
+                    reservation_id="reservation-balanced",
+                    provider_attempt=1,
+                    total_tokens=10,
+                    prompt_tokens=5,
+                    completion_tokens=5,
+                    reasoning_tokens=0,
+                    other_tokens=0,
+                    payload={
+                        "usage_status": "measured",
+                        "official_total_tokens": 10,
+                    },
+                )
+            ],
+            ("llm_call_observer_failed",),
+            "llm_call_observer_failed",
+        ),
+        (
+            200,
+            [
+                SimpleNamespace(
+                    llm_call_id="call-estimated",
+                    phase="final_answer",
+                    reservation_id="reservation-estimated",
+                    provider_attempt=1,
+                    total_tokens=200,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    reasoning_tokens=0,
+                    other_tokens=200,
+                    payload={
+                        "usage_status": "estimated",
+                        "official_total_tokens": None,
+                    },
+                )
+            ],
+            (),
+            "provider_usage_not_official",
+        ),
+    ],
+)
+def test_official_token_reconciliation_fails_closed(
+    runtime_total, calls, partial_reasons, expected_reason
+) -> None:
+    result = reconcile_official_tokens(
+        runtime_total_tokens=runtime_total,
+        calls=calls,
+        observability_partial_reasons=partial_reasons,
+    )
+
+    assert result.status != "complete"
+    assert expected_reason in result.reasons
+    if runtime_total is None:
+        assert result.runtime_total_tokens is None
+    if expected_reason == "provider_usage_not_official":
+        assert result.provider_total_tokens is None
+
+
+def test_v9_component_total_without_official_provenance_is_not_reconciled() -> None:
+    result = reconcile_official_tokens(
+        runtime_total_tokens=10,
+        calls=[
+            SimpleNamespace(
+                llm_call_id="legacy-v9-component-total",
+                phase="final_answer",
+                reservation_id="reservation-v9",
+                provider_attempt=1,
+                total_tokens=10,
+                prompt_tokens=5,
+                completion_tokens=5,
+                reasoning_tokens=0,
+                other_tokens=0,
+                payload={"usage_status": "measured"},
+            )
+        ],
+    )
+
+    assert result.status == "partial"
+    assert result.provider_total_tokens is None
+    assert "provider_official_total_missing" in result.reasons
 
 
 class SingleRunCampaignRepository:

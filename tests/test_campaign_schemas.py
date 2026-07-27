@@ -136,6 +136,7 @@ def test_agent_behavior_v9_contract_preserves_evidence_metrics_without_legacy_ze
                 v9={
                     "route": "multi_hop",
                     "graph_policy": "required_locator",
+                    "visual_requested": True,
                     "visual_required": False,
                     "evidence_extraction_required": True,
                     "retrieval_query_count": 2,
@@ -151,7 +152,7 @@ def test_agent_behavior_v9_contract_preserves_evidence_metrics_without_legacy_ze
                     "reserved_tokens": 64,
                     "reconciled_tokens": 42,
                     "graph_execution": "required_but_not_satisfied",
-                    "visual_execution": "not_requested",
+                    "visual_execution": "attempted_without_evidence",
                 },
             )
         ],
@@ -163,4 +164,6 @@ def test_agent_behavior_v9_contract_preserves_evidence_metrics_without_legacy_ze
     assert row.legacy is None
     assert row.v9 is not None
     assert row.v9.evidence_packet_count == 13
+    assert row.v9.visual_requested is True
+    assert row.v9.visual_execution == "attempted_without_evidence"
     assert row.v9.graph_execution == "required_but_not_satisfied"
