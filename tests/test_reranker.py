@@ -146,6 +146,16 @@ class TestDocumentRerankerWithMock:
         assert result[1][0].page_content == "First"
         assert result[1][1] == 0.3
 
+    def test_strict_scores_raise_when_the_model_is_unavailable(self):
+        """Strict scoring must surface unavailable inference instead of inventing scores."""
+        from data_base.reranker import DocumentReranker
+
+        reranker = object.__new__(DocumentReranker)
+        documents = [Document(page_content="First", metadata={"doc_id": "one"})]
+
+        with pytest.raises(RuntimeError, match="not initialized"):
+            reranker.rerank_with_scores_strict("query", documents, top_k=1)
+
     def test_rerank_error_handling(self):
         """Model errors should degrade to original order."""
         from data_base.reranker import DocumentReranker

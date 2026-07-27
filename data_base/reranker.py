@@ -383,6 +383,8 @@ class DocumentReranker:
         query: str,
         documents: List[Document],
         top_k: int,
+        *,
+        strict: bool = False,
     ) -> List[Tuple[Document, float]]:
         """Run the underlying model and normalize its results."""
         if not documents:
@@ -390,6 +392,8 @@ class DocumentReranker:
 
         model = type(self)._model
         if model is None:
+            if strict:
+                raise RuntimeError("Reranker model is not initialized")
             logger.warning(
                 "Reranker model not initialized: %s",
                 type(self).runtime_metadata(reason="not_initialized"),
@@ -399,6 +403,8 @@ class DocumentReranker:
         type(self)._maybe_promote_to_cuda()
         model = type(self)._model
         if model is None:
+            if strict:
+                raise RuntimeError("Reranker model is not initialized")
             return [(doc, 0.0) for doc in documents[:top_k]]
         logger.info(
             "Running rerank (reranker_device=%s, reranker_reason=%s, candidate_count=%s, top_k=%s)",
@@ -420,17 +426,25 @@ class DocumentReranker:
         except RuntimeError as exc:
             if type(self)._device == "cuda" and _is_cuda_oom_error(exc):
                 logger.warning("CUDA OOM during reranking; retrying on CPU: %s", exc)
-                model = type(self)._swap_to_cpu_model(
-                    model_name=type(self)._model_name or _DEFAULT_RERANKER_MODEL,
-                    reason="cuda_oom_fallback",
-                )
-                with torch.inference_mode():
-                    results = model.rerank(
-                        query=query,
-                        documents=doc_texts,
-                        top_n=min(top_k, len(documents)),
+                try:
+                    model = type(self)._swap_to_cpu_model(
+                        model_name=type(self)._model_name or _DEFAULT_RERANKER_MODEL,
+                        reason="cuda_oom_fallback",
                     )
+                    with torch.inference_mode():
+                        results = model.rerank(
+                            query=query,
+                            documents=doc_texts,
+                            top_n=min(top_k, len(documents)),
+                        )
+                except RuntimeError as cpu_error:
+                    if strict:
+                        raise
+                    logger.error("CPU reranking retry failed: %s", cpu_error)
+                    return [(doc, 0.0) for doc in documents[:top_k]]
             else:
+                if strict:
+                    raise
                 logger.error("Reranking failed: %s", exc)
                 return [(doc, 0.0) for doc in documents[:top_k]]
 
@@ -460,6 +474,15 @@ class DocumentReranker:
     ) -> List[Tuple[Document, float]]:
         """Rerank documents and return paired relevance scores."""
         return self._run_rerank(query, documents, top_k)
+
+    def rerank_with_scores_strict(
+        self,
+        query: str,
+        documents: List[Document],
+        top_k: int = 6,
+    ) -> List[Tuple[Document, float]]:
+        """Return measured scores or raise when inference is unavailable or fails."""
+        return self._run_rerank(query, documents, top_k, strict=True)
 
 
 async def initialize_reranker(

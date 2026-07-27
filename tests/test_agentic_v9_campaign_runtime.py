@@ -14,6 +14,7 @@ from evaluation.agentic_v9_campaign_runtime import (
     AgenticV9CampaignRuntime,
     _evidence_packets_for_results,
     _initial_visual_execution,
+    _retrieve_documents,
 )
 from evaluation.agentic_v9_admission import V9AdmissionContract
 from data_base.agentic_v9.schemas import (
@@ -215,6 +216,227 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     assert observed.provider == "gemini"
     assert observed.model_name == "gemini-2.5-flash"
     assert observed.status == "success"
+
+
+@pytest.mark.asyncio
+async def test_default_retrieval_reranks_only_authorized_documents_and_records_diagnostics(
+    monkeypatch,
+) -> None:
+    """An unauthorized hybrid hit must never reach the injected reranker."""
+    hybrid_documents = [
+        Document(
+            page_content="Authorized first",
+            metadata={"doc_id": "allowed-a", "text": "secret chunk text"},
+        ),
+        Document(page_content="Unauthorized", metadata={"doc_id": "blocked"}),
+        Document(page_content="Authorized second", metadata={"doc_id": "allowed-b"}),
+    ]
+    received_doc_ids: list[str] = []
+
+    async def retrieve_hybrid(*_args, **_kwargs):
+        return SimpleNamespace(
+            documents=hybrid_documents,
+            metadata={},
+            context=None,
+            images=[],
+        )
+
+    def reverse_reranker(_query, documents, _top_k):
+        received_doc_ids.extend(document.metadata["doc_id"] for document in documents)
+        return [(document, float(index)) for index, document in enumerate(reversed(documents))]
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.get_user_retriever_async",
+        AsyncMock(return_value=object()),
+    )
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.retrieve_hybrid_documents",
+        retrieve_hybrid,
+    )
+
+    selection = await _retrieve_documents(
+        "user-a",
+        "question",
+        ["allowed-a", "allowed-b"],
+        rerank_with_scores=reverse_reranker,
+        reranker_available=True,
+    )
+
+    assert received_doc_ids == ["allowed-a", "allowed-b"]
+    assert [document.metadata["doc_id"] for document in selection.documents] == [
+        "allowed-b",
+        "allowed-a",
+    ]
+    assert selection.diagnostics == {
+        "source_filter": {
+            "authorized_doc_ids": ["allowed-a", "allowed-b"],
+            "pre_filter_count": 3,
+            "post_filter_count": 2,
+        },
+        "reranking": {
+            "enabled": True,
+            "available": True,
+            "fallback_reason": None,
+            "pre_rerank_ranks": [
+                {"rank": 1, "metadata": {"doc_id": "allowed-a"}, "score": None},
+                {"rank": 2, "metadata": {"doc_id": "allowed-b"}, "score": None},
+            ],
+            "post_rerank_ranks": [
+                {
+                    "rank": 1,
+                    "pre_rerank_rank": 2,
+                    "metadata": {"doc_id": "allowed-b"},
+                    "score": 0.0,
+                },
+                {
+                    "rank": 2,
+                    "pre_rerank_rank": 1,
+                    "metadata": {"doc_id": "allowed-a"},
+                    "score": 1.0,
+                },
+            ],
+            "selected_count": 2,
+        },
+    }
+    assert "secret chunk text" not in str(selection.diagnostics)
+
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(return_value=selection),
+        provider_factory=lambda _purpose: _Provider(),
+        document_reference_resolver=_identity_reference_resolver,
+    )
+    result = await runtime.execute(
+        question="What is the authorized evidence?",
+        user_id="user-a",
+        authorized_doc_ids=["allowed-a", "allowed-b"],
+        setup_snapshot=_setup(),
+        trace_id="reranked-retrieval",
+    )
+
+    persisted = result.agent_trace["agentic_v9"]["retrieval_diagnostics"][0]
+    assert persisted["reranking"]["post_rerank_ranks"] == selection.diagnostics[
+        "reranking"
+    ]["post_rerank_ranks"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_normalizes_list_adapter_and_persists_retrieval_diagnostics() -> None:
+    """Legacy list adapters remain source-authorized and get bounded diagnostics."""
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="Authorized evidence.",
+                    metadata={"doc_id": "allowed", "chunk_id": "chunk-a"},
+                ),
+                Document(
+                    page_content="Blocked evidence.",
+                    metadata={"doc_id": "blocked", "chunk_id": "chunk-b"},
+                ),
+            ]
+        ),
+        provider_factory=lambda _purpose: _Provider(),
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What is the authorized evidence?",
+        user_id="user-a",
+        authorized_doc_ids=["allowed"],
+        setup_snapshot=_setup(),
+        trace_id="legacy-list-retrieval",
+    )
+
+    diagnostics = result.agent_trace["agentic_v9"]["retrieval_diagnostics"]
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["source_filter"] == {
+        "authorized_doc_ids": ["allowed"],
+        "pre_filter_count": 2,
+        "post_filter_count": 1,
+    }
+    assert diagnostics[0]["reranking"]["fallback_reason"] == "not_initialized"
+    assert "Blocked evidence." not in str(diagnostics)
+
+
+@pytest.mark.asyncio
+async def test_default_retrieval_exception_preserves_authorized_hybrid_order(
+    monkeypatch,
+) -> None:
+    """Scoring errors retain all authorized candidates with unknown scores."""
+    documents = [
+        Document(page_content="First", metadata={"doc_id": "allowed-a"}),
+        Document(page_content="Blocked", metadata={"doc_id": "blocked"}),
+        Document(page_content="Second", metadata={"doc_id": "allowed-b"}),
+    ]
+
+    async def retrieve_hybrid(*_args, **_kwargs):
+        return SimpleNamespace(documents=documents, metadata={}, context=None, images=[])
+
+    def failing_reranker(_query, _documents, _top_k):
+        raise RuntimeError("reranker failure")
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.get_user_retriever_async",
+        AsyncMock(return_value=object()),
+    )
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.retrieve_hybrid_documents",
+        retrieve_hybrid,
+    )
+
+    selection = await _retrieve_documents(
+        "user-a",
+        "question",
+        ["allowed-a", "allowed-b"],
+        rerank_with_scores=failing_reranker,
+        reranker_available=True,
+    )
+
+    assert [document.metadata["doc_id"] for document in selection.documents] == [
+        "allowed-a",
+        "allowed-b",
+    ]
+    assert selection.diagnostics["reranking"]["fallback_reason"] == "exception"
+    assert all(
+        row["score"] is None
+        for row in selection.diagnostics["reranking"]["post_rerank_ranks"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_default_retrieval_uninitialized_reranker_preserves_all_authorized_candidates(
+    monkeypatch,
+) -> None:
+    """Unavailable inference must not apply the twelve-candidate cap."""
+    documents = [
+        Document(page_content=f"Document {index}", metadata={"doc_id": str(index)})
+        for index in range(13)
+    ]
+
+    async def retrieve_hybrid(*_args, **_kwargs):
+        return SimpleNamespace(documents=documents, metadata={}, context=None, images=[])
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.get_user_retriever_async",
+        AsyncMock(return_value=object()),
+    )
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.retrieve_hybrid_documents",
+        retrieve_hybrid,
+    )
+
+    selection = await _retrieve_documents(
+        "user-a",
+        "question",
+        [str(index) for index in range(13)],
+        reranker_available=False,
+    )
+
+    assert [document.metadata["doc_id"] for document in selection.documents] == [
+        str(index) for index in range(13)
+    ]
+    assert selection.diagnostics["reranking"]["fallback_reason"] == "not_initialized"
+    assert selection.diagnostics["reranking"]["selected_count"] == 13
 
 
 @pytest.mark.asyncio

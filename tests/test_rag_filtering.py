@@ -1,6 +1,7 @@
 """Contracts for retrieval-boundary filtering and reranking."""
 
 from langchain_core.documents import Document
+import pytest
 
 from data_base.rag_filtering import filter_and_rerank_retrieval
 from data_base.rag_pipeline_schemas import RagRetrievalResult
@@ -147,3 +148,24 @@ def test_unavailable_reranker_preserves_all_thirteen_filtered_documents() -> Non
         str(index) for index in range(13)
     ]
     assert result.metadata["reranking"]["rejected_candidates"] == []
+
+
+def test_strict_reranking_propagates_an_injected_scoring_failure() -> None:
+    """A caller that needs fail-soft recovery can distinguish a scoring failure."""
+    documents = [
+        Document(page_content="First", metadata={"doc_id": "one"}),
+        Document(page_content="Second", metadata={"doc_id": "two"}),
+    ]
+
+    def failing_reranker(_query, _documents, _top_k):
+        raise RuntimeError("scoring failed")
+
+    with pytest.raises(RuntimeError, match="scoring failed"):
+        filter_and_rerank_retrieval(
+            "question",
+            RagRetrievalResult(documents=documents),
+            enable_reranking=True,
+            reranker_available=True,
+            rerank_with_scores=failing_reranker,
+            strict_reranking=True,
+        )

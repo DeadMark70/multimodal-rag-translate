@@ -43,6 +43,7 @@ def filter_and_rerank_retrieval(
     target_k: int = RERANK_TARGET_K,
     max_candidates: int = RERANK_CANDIDATE_LIMIT,
     rerank_with_scores: RerankWithScores | None = None,
+    strict_reranking: bool = False,
 ) -> RagRetrievalResult:
     """Filter and select retrieved evidence while preserving legacy ordering.
 
@@ -76,6 +77,7 @@ def filter_and_rerank_retrieval(
         reranker_available=availability,
         target_k=target_k,
         rerank_with_scores=rerank_with_scores,
+        strict_reranking=strict_reranking,
     )
 
     metadata = dict(retrieval_result.metadata)
@@ -156,10 +158,15 @@ def _select_documents(
     reranker_available: bool,
     target_k: int,
     rerank_with_scores: RerankWithScores | None,
+    strict_reranking: bool,
 ) -> tuple[list[Document], list[dict[str, Any]], list[dict[str, Any]]]:
     if enable_reranking and reranker_available and documents:
         selected, scores, rejections = _rerank_documents(
-            question, documents, target_k, rerank_with_scores
+            question,
+            documents,
+            target_k,
+            rerank_with_scores,
+            strict_reranking=strict_reranking,
         )
         return selected, _post_rerank_rows(selected, documents, scores), rejections
 
@@ -182,6 +189,8 @@ def _rerank_documents(
     documents: list[Document],
     target_k: int,
     rerank_with_scores: RerankWithScores | None = None,
+    *,
+    strict_reranking: bool = False,
 ) -> tuple[list[Document], dict[int, float], list[dict[str, Any]]]:
     if not documents or not DocumentReranker.is_initialized() and rerank_with_scores is None:
         selected = documents[:target_k]
@@ -189,7 +198,12 @@ def _rerank_documents(
 
     if rerank_with_scores is None:
         reranker = DocumentReranker.get_instance()
-        scored_documents = reranker.rerank_with_scores(question, documents, len(documents))
+        rerank_method = (
+            reranker.rerank_with_scores_strict
+            if strict_reranking
+            else reranker.rerank_with_scores
+        )
+        scored_documents = rerank_method(question, documents, len(documents))
     else:
         scored_documents = rerank_with_scores(question, documents, len(documents))
     if not scored_documents:

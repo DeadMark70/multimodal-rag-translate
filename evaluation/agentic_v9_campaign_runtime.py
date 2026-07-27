@@ -9,11 +9,14 @@ only the worker knows the promoted run and attempt identities.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from fastapi.concurrency import run_in_threadpool
 from langchain_core.documents import Document
 
 from core.providers import get_llm
@@ -87,6 +90,7 @@ from data_base.agentic_v9.visual_evidence_extractor import (
 )
 from data_base.document_metadata import get_document_id
 from data_base.rag_filtering import filter_and_rerank_retrieval
+from data_base.reranker import DocumentReranker
 from data_base.rag_graph_locator import GraphSourceLocatorResult, locate_graph_sources
 from data_base.rag_retrieval import retrieve_hybrid_documents
 from data_base.vector_store_manager import get_user_retriever_async
@@ -99,7 +103,16 @@ from evaluation.observability import current_llm_call_observer
 from evaluation.retrieval_profiles import AGENTIC_EVAL_PROFILE
 
 
-RetrievalAdapter = Callable[[str, str, list[str]], Awaitable[list[Document]]]
+@dataclass(frozen=True)
+class V9RetrievalSelection:
+    """Authorized retrieval documents with bounded, text-free diagnostics."""
+
+    documents: tuple[Document, ...]
+    diagnostics: dict[str, Any]
+
+
+RetrievalAdapterResult = V9RetrievalSelection | list[Document]
+RetrievalAdapter = Callable[[str, str, list[str]], Awaitable[RetrievalAdapterResult]]
 GraphLocator = Callable[
     [str, str, list[Document], list[str], QueryContract],
     Awaitable[GraphSourceLocatorResult],
@@ -243,6 +256,7 @@ class AgenticV9CampaignRuntime:
             "visual_packets_emitted": False,
             "visual_resolution_diagnostics": None,
             "final_slot_resolutions": (),
+            "retrieval_diagnostics": [],
         }
 
         async def resolve_scope(_: V9ExecutionRequest) -> ResolvedSourceScope:
@@ -289,8 +303,15 @@ class AgenticV9CampaignRuntime:
             results: list[TaskRetrievalResult] = []
             for task in tasks:
                 state["tasks_by_id"][task.task_id] = task
-                docs = await self._retrieve_documents(
+                selection = _normalize_retrieval_selection(
+                    await self._retrieve_documents(
                     user_id, task.query, list(task.source_scope.authorized_doc_ids)
+                    ),
+                    authorized_doc_ids=list(task.source_scope.authorized_doc_ids),
+                )
+                docs = list(selection.documents)
+                state["retrieval_diagnostics"].append(
+                    {"task_id": task.task_id, **selection.diagnostics}
                 )
                 if (
                     state["contract"].graph_policy == "required_locator"
@@ -321,7 +342,9 @@ class AgenticV9CampaignRuntime:
                     TaskRetrievalResult(
                         task_id=task.task_id,
                         retrieval=RagRetrievalResult(
-                            retrieval_id=f"{trace_id}:{task.task_id}", chunks=chunks
+                            retrieval_id=f"{trace_id}:{task.task_id}",
+                            chunks=chunks,
+                            diagnostics=dict(selection.diagnostics),
                         ),
                     )
                 )
@@ -676,6 +699,7 @@ class AgenticV9CampaignRuntime:
                     for packet in state["evidence_packets"]
                 ],
                 "locator_diagnostics": state["locator_diagnostics"],
+                "retrieval_diagnostics": state["retrieval_diagnostics"],
                 "slot_resolutions": [
                     resolution.model_dump(mode="json")
                     for resolution in state["final_slot_resolutions"]
@@ -711,11 +735,23 @@ class AgenticV9CampaignRuntime:
 
 
 async def _retrieve_documents(
-    user_id: str, question: str, authorized_doc_ids: list[str]
-) -> list[Document]:
+    user_id: str,
+    question: str,
+    authorized_doc_ids: list[str],
+    *,
+    rerank_with_scores: Callable[[str, list[Document], int], list[tuple[Document, float]]]
+    | None = None,
+    reranker_available: bool | None = None,
+) -> V9RetrievalSelection:
     """Retrieve only within the source scope, without HyDE or query expansion."""
     if not authorized_doc_ids:
-        return []
+        return _retrieval_selection(
+            authorized_doc_ids=authorized_doc_ids,
+            pre_filter_documents=[],
+            documents=[],
+            reranking_available=False,
+            fallback_reason="not_initialized",
+        )
     retriever = await get_user_retriever_async(user_id, k=8, plain_mode=False)
     raw = await retrieve_hybrid_documents(
         question,
@@ -723,13 +759,186 @@ async def _retrieve_documents(
         enable_hyde=False,
         enable_multi_query=False,
     )
-    filtered = filter_and_rerank_retrieval(
-        question,
-        raw,
-        doc_ids=authorized_doc_ids,
-        enable_reranking=False,
+    available = (
+        DocumentReranker.is_initialized()
+        if reranker_available is None
+        else reranker_available
     )
-    return list(filtered.documents)
+    try:
+        filtered = await asyncio.wait_for(
+            run_in_threadpool(
+                filter_and_rerank_retrieval,
+                question,
+                raw,
+                doc_ids=authorized_doc_ids,
+                enable_reranking=True,
+                reranker_available=available,
+                rerank_with_scores=rerank_with_scores,
+                strict_reranking=True,
+            ),
+            timeout=8.0,
+        )
+    except asyncio.TimeoutError:
+        return _retrieval_selection(
+            authorized_doc_ids=authorized_doc_ids,
+            pre_filter_documents=list(raw.documents),
+            documents=_authorized_documents(raw.documents, authorized_doc_ids),
+            reranking_available=available,
+            fallback_reason="timeout",
+        )
+    except Exception:
+        return _retrieval_selection(
+            authorized_doc_ids=authorized_doc_ids,
+            pre_filter_documents=list(raw.documents),
+            documents=_authorized_documents(raw.documents, authorized_doc_ids),
+            reranking_available=available,
+            fallback_reason="exception",
+        )
+
+    reranking = filtered.metadata["reranking"]
+    return _retrieval_selection(
+        authorized_doc_ids=authorized_doc_ids,
+        pre_filter_documents=list(raw.documents),
+        documents=list(filtered.documents),
+        reranking_available=bool(reranking["available"]),
+        fallback_reason=("not_initialized" if not reranking["available"] else None),
+        pre_rerank_ranks=reranking["pre_rerank_ranks"],
+        post_rerank_ranks=reranking["post_rerank_ranks"],
+        post_filter_count=len(filtered.metadata["filtering"]["post_filter_ranks"]),
+    )
+
+
+def _normalize_retrieval_selection(
+    result: RetrievalAdapterResult,
+    *,
+    authorized_doc_ids: list[str],
+) -> V9RetrievalSelection:
+    """Keep legacy document-list adapters source-safe at one compatibility boundary."""
+    if isinstance(result, V9RetrievalSelection):
+        source_filter = result.diagnostics.get("source_filter", {})
+        reranking = result.diagnostics.get("reranking", {})
+        documents = _authorized_documents(result.documents, authorized_doc_ids)
+        return _retrieval_selection(
+            authorized_doc_ids=authorized_doc_ids,
+            pre_filter_documents=result.documents,
+            documents=documents,
+            reranking_available=bool(reranking.get("available")),
+            fallback_reason=reranking.get("fallback_reason"),
+            pre_rerank_ranks=reranking.get("pre_rerank_ranks"),
+            post_rerank_ranks=reranking.get("post_rerank_ranks"),
+            pre_filter_count=source_filter.get("pre_filter_count"),
+            post_filter_count=(
+                source_filter.get("post_filter_count")
+                if len(documents) == len(result.documents)
+                else len(documents)
+            ),
+        )
+    return _retrieval_selection(
+        authorized_doc_ids=authorized_doc_ids,
+        pre_filter_documents=result,
+        documents=_authorized_documents(result, authorized_doc_ids),
+        reranking_available=False,
+        fallback_reason="not_initialized",
+    )
+
+
+def _authorized_documents(
+    documents: Sequence[Document], authorized_doc_ids: list[str]
+) -> list[Document]:
+    allowed = set(authorized_doc_ids)
+    return [
+        document
+        for document in documents
+        if get_document_id(document.metadata) in allowed
+    ]
+
+
+def _retrieval_selection(
+    *,
+    authorized_doc_ids: list[str],
+    pre_filter_documents: Sequence[Document],
+    documents: Sequence[Document],
+    reranking_available: bool,
+    fallback_reason: str | None,
+    pre_rerank_ranks: list[dict[str, Any]] | None = None,
+    post_rerank_ranks: list[dict[str, Any]] | None = None,
+    pre_filter_count: int | None = None,
+    post_filter_count: int | None = None,
+) -> V9RetrievalSelection:
+    selected_documents = tuple(documents)
+    return V9RetrievalSelection(
+        documents=selected_documents,
+        diagnostics={
+            "source_filter": {
+                "authorized_doc_ids": list(authorized_doc_ids),
+                "pre_filter_count": (
+                    len(pre_filter_documents)
+                    if pre_filter_count is None
+                    else pre_filter_count
+                ),
+                "post_filter_count": (
+                    len(documents) if post_filter_count is None else post_filter_count
+                ),
+            },
+            "reranking": {
+                "enabled": True,
+                "available": reranking_available,
+                "fallback_reason": fallback_reason,
+                "pre_rerank_ranks": _diagnostic_rank_rows(
+                    pre_rerank_ranks
+                    if pre_rerank_ranks is not None
+                    else _retrieval_rank_rows(documents)
+                ),
+                "post_rerank_ranks": _diagnostic_rank_rows(
+                    post_rerank_ranks
+                    if post_rerank_ranks is not None
+                    else _retrieval_rank_rows(documents)
+                ),
+                "selected_count": len(selected_documents),
+            },
+        },
+    )
+
+
+def _retrieval_rank_rows(documents: Sequence[Document]) -> list[dict[str, Any]]:
+    return [
+        {"rank": rank, "metadata": _diagnostic_metadata(document.metadata), "score": None}
+        for rank, document in enumerate(documents, start=1)
+    ]
+
+
+def _diagnostic_rank_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            **{
+                key: row[key]
+                for key in ("rank", "pre_rerank_rank", "score")
+                if key in row
+            },
+            "metadata": _diagnostic_metadata(dict(row.get("metadata") or {})),
+        }
+        for row in rows
+    ]
+
+
+def _diagnostic_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Keep identifiers and locators while excluding retrieved chunk content."""
+    allowed_keys = (
+        "doc_id",
+        "original_doc_uid",
+        "chunk_id",
+        "parent_id",
+        "page_number",
+        "pdf_page_index",
+        "printed_page_label",
+        "section",
+        "table_id",
+        "figure_id",
+        "formula_id",
+        "document_name",
+        "source",
+    )
+    return {key: metadata[key] for key in allowed_keys if key in metadata}
 
 
 async def _locate_graph_documents(
