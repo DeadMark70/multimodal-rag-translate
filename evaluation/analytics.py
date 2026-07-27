@@ -171,14 +171,28 @@ def reconcile_official_tokens(
     if not unique:
         reasons.add("provider_attempts_missing")
 
-    official_usage_complete = bool(unique) and all(
-        isinstance(getattr(call, "payload", None), dict)
-        and getattr(call, "payload").get("usage_status") == "measured"
-        and getattr(call, "payload").get(
-            "official_total_tokens", getattr(call, "total_tokens", None)
+    def official_total(call: Any) -> int | None:
+        payload = getattr(call, "payload", None)
+        if not isinstance(payload, dict) or payload.get("usage_status") != "measured":
+            return None
+        is_v9_attempt = (
+            getattr(call, "reservation_id", None) is not None
+            or getattr(call, "provider_attempt", None) is not None
         )
-        is not None
-        for call in unique.values()
+        total = payload.get("official_total_tokens")
+        if is_v9_attempt and not isinstance(total, int):
+            reasons.add("provider_official_total_missing")
+            return None
+        if isinstance(total, int):
+            return total
+        legacy_total = getattr(call, "total_tokens", None)
+        return legacy_total if isinstance(legacy_total, int) else None
+
+    official_totals = {
+        call_id: official_total(call) for call_id, call in unique.items()
+    }
+    official_usage_complete = bool(unique) and all(
+        total is not None for total in official_totals.values()
     )
     component_attributes = (
         "prompt_tokens",
@@ -198,12 +212,8 @@ def reconcile_official_tokens(
         )
     provider_total_tokens = (
         sum(
-            int(
-                getattr(call, "payload").get(
-                    "official_total_tokens", getattr(call, "total_tokens")
-                )
-            )
-            for call in unique.values()
+            int(official_totals[call_id])
+            for call_id in unique
         )
         if official_usage_complete
         and all(
@@ -213,10 +223,10 @@ def reconcile_official_tokens(
         else None
     )
     by_phase: defaultdict[str, int] = defaultdict(int)
-    for call in unique.values() if official_usage_complete else ():
-        total = getattr(call, "total_tokens", None)
-        if isinstance(total, int):
-            by_phase[str(getattr(call, "phase", "") or "unknown")] += total
+    for call_id, call in unique.items() if official_usage_complete else ():
+        by_phase[str(getattr(call, "phase", "") or "unknown")] += int(
+            official_totals[call_id] or 0
+        )
     if provider_total_tokens is None and unique:
         reasons.add("provider_total_tokens_unknown")
     if (

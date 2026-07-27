@@ -14,6 +14,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from core.sensitive_data import is_sensitive_credential_key
 from evaluation.db import connect_db, init_db
 from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
 from evaluation.trace_schemas import (
@@ -42,11 +43,6 @@ _SECRET_PATTERNS = (
         re.IGNORECASE,
     ),
 )
-_SENSITIVE_KEYS = frozenset(
-    {"apikey", "authorization", "password", "secret", "token"}
-)
-
-
 def _json_default(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
@@ -125,10 +121,9 @@ def redact_sensitive_value(value: Any) -> Any:
         redacted: dict[str, Any] = {}
         for key, item in value.items():
             key_text = str(key)
-            normalized_key = re.sub(r"[^a-z0-9]", "", key_text.lower())
             redacted[key_text] = (
                 "[redacted]"
-                if normalized_key in _SENSITIVE_KEYS
+                if is_sensitive_credential_key(key_text)
                 else redact_sensitive_value(item)
             )
         return redacted

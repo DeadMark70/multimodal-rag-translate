@@ -430,6 +430,14 @@ async def test_prompt_capture_sanitizes_nested_structured_secret_values_before_h
                         {"api_key": "quoted-api-key"},
                         {"token": "quoted-token"},
                         {"authorization": "Bearer quoted-credential"},
+                        {
+                            "client_id": "public-client-id",
+                            "access_token": "access-token-sentinel",
+                            "client_secret": "client-secret-sentinel",
+                            "refresh_token": "refresh-token-sentinel",
+                            "id_token": "id-token-sentinel",
+                            "private_key": "private-key-sentinel",
+                        },
                     ],
                     "note": "safe",
                 },
@@ -448,6 +456,14 @@ async def test_prompt_capture_sanitizes_nested_structured_secret_values_before_h
                     {"api_key": "[REDACTED]"},
                     {"token": "[REDACTED]"},
                     {"authorization": "[REDACTED]"},
+                    {
+                        "client_id": "public-client-id",
+                        "access_token": "[REDACTED]",
+                        "client_secret": "[REDACTED]",
+                        "refresh_token": "[REDACTED]",
+                        "id_token": "[REDACTED]",
+                        "private_key": "[REDACTED]",
+                    },
                 ],
                 "note": "safe",
             },
@@ -468,6 +484,17 @@ async def test_prompt_capture_sanitizes_nested_structured_secret_values_before_h
     assert call.full_prompt_capture_status == "redacted"
     assert "hunter2" not in call.prompt_preview
     assert "hunter2" not in call.full_prompt
+    assert "public-client-id" in call.prompt_preview
+    assert "public-client-id" in call.full_prompt
+    for sentinel in (
+        "access-token-sentinel",
+        "client-secret-sentinel",
+        "refresh-token-sentinel",
+        "id-token-sentinel",
+        "private-key-sentinel",
+    ):
+        assert sentinel not in call.prompt_preview
+        assert sentinel not in call.full_prompt
 
 
 @pytest.mark.asyncio

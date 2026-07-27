@@ -158,7 +158,7 @@ def test_official_token_reconciliation_counts_retries_and_token_components() -> 
             completion_tokens=2,
             reasoning_tokens=1,
             other_tokens=1,
-            payload={"usage_status": "measured"},
+            payload={"usage_status": "measured", "official_total_tokens": 7},
         ),
         SimpleNamespace(
             llm_call_id="call-2",
@@ -170,7 +170,7 @@ def test_official_token_reconciliation_counts_retries_and_token_components() -> 
             completion_tokens=2,
             reasoning_tokens=1,
             other_tokens=1,
-            payload={"usage_status": "measured"},
+            payload={"usage_status": "measured", "official_total_tokens": 8},
         ),
     ]
 
@@ -203,7 +203,7 @@ def test_official_token_reconciliation_counts_retries_and_token_components() -> 
                     completion_tokens=5,
                     reasoning_tokens=0,
                     other_tokens=0,
-                    payload={"usage_status": "measured"},
+                    payload={"usage_status": "measured", "official_total_tokens": 9},
                 )
             ],
             (),
@@ -290,6 +290,30 @@ def test_official_token_reconciliation_fails_closed(
         assert result.runtime_total_tokens is None
     if expected_reason == "provider_usage_not_official":
         assert result.provider_total_tokens is None
+
+
+def test_v9_component_total_without_official_provenance_is_not_reconciled() -> None:
+    result = reconcile_official_tokens(
+        runtime_total_tokens=10,
+        calls=[
+            SimpleNamespace(
+                llm_call_id="legacy-v9-component-total",
+                phase="final_answer",
+                reservation_id="reservation-v9",
+                provider_attempt=1,
+                total_tokens=10,
+                prompt_tokens=5,
+                completion_tokens=5,
+                reasoning_tokens=0,
+                other_tokens=0,
+                payload={"usage_status": "measured"},
+            )
+        ],
+    )
+
+    assert result.status == "partial"
+    assert result.provider_total_tokens is None
+    assert "provider_official_total_missing" in result.reasons
 
 
 class SingleRunCampaignRepository:

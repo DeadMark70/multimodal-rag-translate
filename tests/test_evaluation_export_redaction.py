@@ -103,12 +103,22 @@ async def _seed_export_rows(*, run_id: str, campaign_id: str) -> None:
             error={"message": "apiKey=sk-secret exploded with stack trace"},
             payload={
                 "full_prompt": (
-                    '{"content":{"password":"hunter2","note":"safe"},'
+                    '{"content":{"password":"hunter2","note":"safe",'
+                    '"access_token":"export-access-token-sentinel",'
+                    '"client_secret":"export-client-secret-sentinel",'
+                    '"refresh_token":"export-refresh-token-sentinel",'
+                    '"id_token":"export-id-token-sentinel",'
+                    '"private_key":"export-private-key-sentinel"},'
                     '"authorization":"Bearer quoted-credential"}'
                 ),
                 "structured": {
+                    "client_id": "export-public-client-id",
                     "api_key": "quoted-api-key",
                     "token": "quoted-token",
+                    "credentials": [
+                        {"access_token": "export-list-access-token-sentinel"},
+                        {"client_secret": "export-list-client-secret-sentinel"},
+                    ],
                 },
                 "other_field": "kept",
             },
@@ -285,6 +295,17 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         assert "quoted-api-key" not in full_export.text
         assert "quoted-token" not in full_export.text
         assert "quoted-credential" not in full_export.text
+        assert "export-public-client-id" in full_export.text
+        for sentinel in (
+            "export-access-token-sentinel",
+            "export-client-secret-sentinel",
+            "export-refresh-token-sentinel",
+            "export-id-token-sentinel",
+            "export-private-key-sentinel",
+            "export-list-access-token-sentinel",
+            "export-list-client-secret-sentinel",
+        ):
+            assert sentinel not in full_export.text
         assert full_llm_call["payload"]["other_field"] == "kept"
         unavailable = next(
             item

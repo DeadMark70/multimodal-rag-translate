@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
 
 from core.llm_factory import get_flat_llm_usage
+from core.sensitive_data import is_sensitive_credential_key
 from core.llm_usage_context import (
     agentic_budget_reservation_scope,
     agentic_budget_scope,
@@ -303,9 +304,6 @@ _SECRET_PATTERNS = (
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{6,}\b"),
 )
-_SENSITIVE_PROMPT_KEYS = frozenset(
-    {"apikey", "authorization", "password", "secret", "token"}
-)
 
 
 def _sanitize_prompt_value(value: Any) -> tuple[Any, bool]:
@@ -314,8 +312,7 @@ def _sanitize_prompt_value(value: Any) -> tuple[Any, bool]:
         redacted = False
         for key, item in value.items():
             key_text = str(key)
-            normalized_key = re.sub(r"[^a-z0-9]", "", key_text.lower())
-            if normalized_key in _SENSITIVE_PROMPT_KEYS:
+            if is_sensitive_credential_key(key_text):
                 sanitized[key_text] = "[REDACTED]"
                 redacted = True
                 continue

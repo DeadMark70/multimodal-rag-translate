@@ -1457,28 +1457,55 @@ def _reconcile_v9_result_tokens(
     ]
     if not v9_results:
         return tokens
-    partial_reasons = sorted(
-        {
-            str(reason)
-            for result in v9_results
-            for reason in (
-                (getattr(result, "derived_metrics", {}) or {}).get(
-                    "observability_partial_reasons", []
-                )
+    reconciled_runs = []
+    for result in v9_results:
+        run_id = str(result.id)
+        run_scopes = [scope for scope in scopes if str(scope.run_id) == run_id]
+        run_scope_ids = {scope.scope_id for scope in run_scopes}
+        run_events = [event for event in events if event.scope_id in run_scope_ids]
+        run_tokens = _tokens(run_scopes, run_events)
+        partial_reasons = (
+            (getattr(result, "derived_metrics", {}) or {}).get(
+                "observability_partial_reasons", []
             )
-            if reason
+        )
+        reconciled_runs.append(
+            _tokens(
+                run_scopes,
+                run_events,
+                provider_attempts=llm_calls_by_run.get(run_id, []),
+                runtime_total_tokens=run_tokens.total_tokens,
+                observability_partial_reasons=partial_reasons,
+            )
+        )
+
+    reasons = sorted(
+        {
+            reason
+            for run_tokens in reconciled_runs
+            for reason in run_tokens.phase_attribution_reasons
         }
     )
-    return _tokens(
-        scopes,
-        events,
-        provider_attempts=[
-            call
-            for result in v9_results
-            for call in llm_calls_by_run.get(str(result.id), [])
-        ],
-        runtime_total_tokens=tokens.total_tokens,
-        observability_partial_reasons=partial_reasons,
+    phase: defaultdict[str, int] = defaultdict(int)
+    for run_tokens in reconciled_runs:
+        for name, count in run_tokens.by_phase.items():
+            phase[name] += count
+    all_complete = all(
+        run_tokens.accounting_status == "complete"
+        and run_tokens.phase_attribution_status == "complete"
+        for run_tokens in reconciled_runs
+    )
+    return tokens.model_copy(
+        update={
+            "accounting_status": "complete"
+            if tokens.accounting_status == "complete" and all_complete
+            else "partial",
+            "by_phase": dict(sorted(phase.items())),
+            "phase_attribution_status": "complete"
+            if tokens.phase_attribution_status == "complete" and all_complete
+            else "partial",
+            "phase_attribution_reasons": reasons,
+        }
     )
 
 
@@ -1593,6 +1620,8 @@ def _tokens(
             "complete" if reconciliation.status == "complete" else "partial"
         )
         values["phase_attribution_reasons"] = list(reconciliation.reasons)
+        if reconciliation.status != "complete":
+            values["accounting_status"] = "partial"
     return TokenBreakdown(**values)
 
 
