@@ -498,6 +498,152 @@ async def test_prompt_capture_sanitizes_nested_structured_secret_values_before_h
 
 
 @pytest.mark.asyncio
+async def test_prompt_capture_sanitizes_quoted_json_secret_values_before_hashing() -> None:
+    observer = _RecordingObserver()
+    quoted_content = json.dumps(
+        {
+            "client_id": "public-client-id",
+            "nested": [
+                {
+                    "access_token": "quoted-access-token-sentinel",
+                    "client_secret": "quoted-client-secret-sentinel",
+                    "refresh_token": "quoted-refresh-token-sentinel",
+                    "id_token": "quoted-id-token-sentinel",
+                    "private_key": "quoted-private-key-sentinel",
+                }
+            ],
+        }
+    )
+    await invoke_budgeted_llm(
+        controller=_controller(),
+        provider=_ResponseProvider(),
+        observer=observer,
+        provider_name="gemini",
+        model_name="gemini-2.5-flash",
+        capture_policy={
+            "hash": True,
+            "preview": True,
+            "full_prompt": True,
+            "preview_max_chars": 4096,
+        },
+        phase="evidence_extract",
+        purpose="extract_evidence",
+        messages=[{"role": "user", "content": quoted_content}],
+        estimated_input_tokens=10,
+    )
+
+    safe_content = json.dumps(
+        {
+            "client_id": "public-client-id",
+            "nested": [
+                {
+                    "access_token": "[REDACTED]",
+                    "client_secret": "[REDACTED]",
+                    "refresh_token": "[REDACTED]",
+                    "id_token": "[REDACTED]",
+                    "private_key": "[REDACTED]",
+                }
+            ],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    safe_canonical = json.dumps(
+        [{"role": "user", "content": safe_content}],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    call = observer.calls[0]
+    assert call.prompt_preview == safe_canonical
+    assert call.full_prompt == safe_canonical
+    assert call.prompt_hash == hashlib.sha256(
+        safe_canonical.encode("utf-8")
+    ).hexdigest()
+    assert call.prompt_capture_status == "redacted"
+    assert call.full_prompt_capture_status == "redacted"
+    assert "public-client-id" in call.prompt_preview
+    for sentinel in (
+        "quoted-access-token-sentinel",
+        "quoted-client-secret-sentinel",
+        "quoted-refresh-token-sentinel",
+        "quoted-id-token-sentinel",
+        "quoted-private-key-sentinel",
+    ):
+        assert sentinel not in call.prompt_preview
+        assert sentinel not in call.full_prompt
+        assert sentinel not in call.prompt_hash
+
+
+@pytest.mark.asyncio
+async def test_prompt_capture_keeps_regex_sanitation_when_json_content_is_invalid() -> None:
+    observer = _RecordingObserver()
+    await invoke_budgeted_llm(
+        controller=_controller(),
+        provider=_ResponseProvider(),
+        observer=observer,
+        provider_name="gemini",
+        model_name="gemini-2.5-flash",
+        capture_policy={
+            "hash": True,
+            "preview": True,
+            "full_prompt": True,
+            "preview_max_chars": 48,
+        },
+        phase="evidence_extract",
+        purpose="extract_evidence",
+        messages=[
+            {"role": "user", "content": '{"broken": api_key=invalid-json-sentinel'},
+            {"role": "user", "content": "Bearer plain-bearer-sentinel"},
+        ],
+        estimated_input_tokens=10,
+    )
+
+    call = observer.calls[0]
+    assert call.prompt_preview is not None
+    assert call.full_prompt is not None
+    assert len(call.prompt_preview) <= 48
+    assert call.prompt_capture_status == "redacted"
+    assert call.full_prompt_capture_status == "redacted"
+    assert call.prompt_hash is not None
+    assert "invalid-json-sentinel" not in call.prompt_preview
+    assert "invalid-json-sentinel" not in call.full_prompt
+    assert "plain-bearer-sentinel" not in call.prompt_preview
+    assert "plain-bearer-sentinel" not in call.full_prompt
+
+
+@pytest.mark.asyncio
+async def test_prompt_capture_redacts_oversized_json_string_without_parsing_it() -> None:
+    observer = _RecordingObserver()
+    oversized_content = (
+        '{"access_token":"oversized-json-sentinel","padding":"'
+        + "x" * 70_000
+        + '"}'
+    )
+    await invoke_budgeted_llm(
+        controller=_controller(),
+        provider=_ResponseProvider(),
+        observer=observer,
+        provider_name="gemini",
+        model_name="gemini-2.5-flash",
+        capture_policy={"hash": True, "preview": True, "full_prompt": True},
+        phase="evidence_extract",
+        purpose="extract_evidence",
+        messages=[{"role": "user", "content": oversized_content}],
+        estimated_input_tokens=10,
+    )
+
+    call = observer.calls[0]
+    assert call.prompt_capture_status == "redacted"
+    assert call.full_prompt_capture_status == "redacted"
+    assert call.prompt_preview is not None
+    assert call.full_prompt is not None
+    assert "oversized-json-sentinel" not in call.prompt_preview
+    assert "oversized-json-sentinel" not in call.full_prompt
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "provider",
     [_ComponentUsageWithoutOfficialTotalProvider(), _ResponseWithoutUsageProvider()],

@@ -11,7 +11,10 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
 
 from core.llm_factory import get_flat_llm_usage
-from core.sensitive_data import is_sensitive_credential_key
+from core.sensitive_data import (
+    is_sensitive_credential_key,
+    sanitize_json_object_text,
+)
 from core.llm_usage_context import (
     agentic_budget_reservation_scope,
     agentic_budget_scope,
@@ -329,10 +332,11 @@ def _sanitize_prompt_value(value: Any) -> tuple[Any, bool]:
             redacted = redacted or item_redacted
         return items, redacted
     if isinstance(value, str):
-        sanitized = value
+        sanitized, structured_redacted = sanitize_json_object_text(value)
+        sanitized = sanitized if sanitized is not None else value
         for pattern in _SECRET_PATTERNS:
             sanitized = pattern.sub("[REDACTED]", sanitized)
-        return sanitized, sanitized != value
+        return sanitized, structured_redacted or sanitized != value
     return value, False
 
 
