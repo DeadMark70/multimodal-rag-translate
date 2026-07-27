@@ -1,0 +1,24 @@
+{
+  "manifest_version": "1",
+  "repository_commits": {
+    "backend": "not_supplied",
+    "frontend": "not_supplied"
+  },
+  "evaluation_setup": null,
+  "evaluation_setup_hash": null,
+  "dataset_identity": "not_supplied",
+  "input_hashes": {},
+  "release_gate_results": {
+    "overall_status": "not_executed",
+    "requirements": {
+      "campaign_export": {
+        "status": "not_executed",
+        "reason": "external campaign artifact was not supplied"
+      }
+    }
+  },
+  "residual_failures": [
+    "runtime smoke and benchmark are not executed by this delivery"
+  ],
+  "runtime_smoke": "not_executed"
+}
