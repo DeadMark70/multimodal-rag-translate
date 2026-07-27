@@ -10,6 +10,7 @@ from core.llm_usage_context import current_llm_accounting_phase
 from data_base.agentic_v9.budget_controller import RunBudgetController
 from data_base.agentic_v9.budgeted_llm import invoke_budgeted_llm
 from data_base.agentic_v9.schemas import BudgetExceededError
+from evaluation.observability_storage import redact_sensitive_text
 
 
 class _NeverCalledProvider:
@@ -611,6 +612,104 @@ async def test_prompt_capture_keeps_regex_sanitation_when_json_content_is_invali
     assert "invalid-json-sentinel" not in call.full_prompt
     assert "plain-bearer-sentinel" not in call.prompt_preview
     assert "plain-bearer-sentinel" not in call.full_prompt
+
+
+@pytest.mark.asyncio
+async def test_prompt_capture_sanitizes_plain_credential_alias_assignments_before_hashing() -> None:
+    observer = _RecordingObserver()
+    content = (
+        "client_id=public-client-id access_token=plain-access-token-sentinel "
+        "plain_note=ordinary-text"
+    )
+    await invoke_budgeted_llm(
+        controller=_controller(),
+        provider=_ResponseProvider(),
+        observer=observer,
+        provider_name="gemini",
+        model_name="gemini-2.5-flash",
+        capture_policy={"hash": True, "preview": True, "full_prompt": True},
+        phase="evidence_extract",
+        purpose="extract_evidence",
+        messages=[{"role": "user", "content": content}],
+        estimated_input_tokens=10,
+    )
+
+    safe_content = (
+        "client_id=public-client-id access_token=[REDACTED] "
+        "plain_note=ordinary-text"
+    )
+    safe_canonical = json.dumps(
+        [{"role": "user", "content": safe_content}],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    raw_canonical = json.dumps(
+        [{"role": "user", "content": content}],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    call = observer.calls[0]
+    assert call.prompt_preview == safe_canonical
+    assert call.full_prompt == safe_canonical
+    assert call.prompt_hash == hashlib.sha256(safe_canonical.encode("utf-8")).hexdigest()
+    assert call.prompt_hash != hashlib.sha256(raw_canonical.encode("utf-8")).hexdigest()
+    assert "plain-access-token-sentinel" not in call.prompt_preview
+    assert "plain-access-token-sentinel" not in call.full_prompt
+    exported = redact_sensitive_text(content)
+    assert "plain-access-token-sentinel" not in exported
+    assert "public-client-id" in exported
+    assert "ordinary-text" in exported
+
+
+@pytest.mark.asyncio
+async def test_prompt_capture_sanitizes_balanced_invalid_json_credential_assignments_before_hashing() -> None:
+    observer = _RecordingObserver()
+    content = (
+        '{"broken":"ordinary-text","client_id":"public-client-id",'
+        '"access_token"="invalid-json-access-token-sentinel"}'
+    )
+    await invoke_budgeted_llm(
+        controller=_controller(),
+        provider=_ResponseProvider(),
+        observer=observer,
+        provider_name="gemini",
+        model_name="gemini-2.5-flash",
+        capture_policy={"hash": True, "preview": True, "full_prompt": True},
+        phase="evidence_extract",
+        purpose="extract_evidence",
+        messages=[{"role": "user", "content": content}],
+        estimated_input_tokens=10,
+    )
+
+    safe_content = (
+        '{"broken":"ordinary-text","client_id":"public-client-id",'
+        '"access_token"=[REDACTED]}'
+    )
+    safe_canonical = json.dumps(
+        [{"role": "user", "content": safe_content}],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    raw_canonical = json.dumps(
+        [{"role": "user", "content": content}],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    call = observer.calls[0]
+    assert call.prompt_preview == safe_canonical
+    assert call.full_prompt == safe_canonical
+    assert call.prompt_hash == hashlib.sha256(safe_canonical.encode("utf-8")).hexdigest()
+    assert call.prompt_hash != hashlib.sha256(raw_canonical.encode("utf-8")).hexdigest()
+    assert "invalid-json-access-token-sentinel" not in call.prompt_preview
+    assert "invalid-json-access-token-sentinel" not in call.full_prompt
+    exported = redact_sensitive_text(content)
+    assert "invalid-json-access-token-sentinel" not in exported
+    assert "public-client-id" in exported
+    assert "ordinary-text" in exported
 
 
 @pytest.mark.asyncio

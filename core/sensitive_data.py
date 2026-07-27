@@ -32,6 +32,9 @@ _CREDENTIAL_SUFFIXES = (
 )
 _MAX_JSON_STRING_CHARS = 64 * 1024
 _MAX_JSON_STRING_DEPTH = 64
+_ASSIGNMENT_KEY_PATTERN = re.compile(
+    r"""(?P<key>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_][A-Za-z0-9_-]*)\s*[:=]\s*"""
+)
 
 
 def is_sensitive_credential_key(value: Any) -> bool:
@@ -40,6 +43,51 @@ def is_sensitive_credential_key(value: Any) -> bool:
     return normalized in _EXACT_CREDENTIAL_KEYS or normalized.endswith(
         _CREDENTIAL_SUFFIXES
     )
+
+
+def sanitize_credential_assignments_text(value: str) -> tuple[str, bool]:
+    """Redact bounded credential assignments in otherwise unstructured text."""
+    if len(value) > _MAX_JSON_STRING_CHARS:
+        return "[REDACTED]", True
+
+    parts: list[str] = []
+    previous_end = 0
+    redacted = False
+    for match in _ASSIGNMENT_KEY_PATTERN.finditer(value):
+        key = match.group("key")
+        if not is_sensitive_credential_key(key[1:-1] if key[0] in "\"'" else key):
+            continue
+        value_end = _assignment_value_end(value, match.end())
+        if value_end == match.end():
+            continue
+        parts.extend((value[previous_end : match.end()], "[REDACTED]"))
+        previous_end = value_end
+        redacted = True
+    if not redacted:
+        return value, False
+    parts.append(value[previous_end:])
+    return "".join(parts), True
+
+
+def _assignment_value_end(value: str, start: int) -> int:
+    if start >= len(value):
+        return start
+    quote = value[start]
+    if quote in "\"'":
+        escaped = False
+        for index in range(start + 1, len(value)):
+            character = value[index]
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                return index + 1
+        return len(value)
+    end = start
+    while end < len(value) and value[end] not in "\t\r\n ,;} ]":
+        end += 1
+    return end
 
 
 def sanitize_json_object_text(value: str) -> tuple[str | None, bool]:

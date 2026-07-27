@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping, Protocol
 from core.llm_factory import get_flat_llm_usage
 from core.sensitive_data import (
     is_sensitive_credential_key,
+    sanitize_credential_assignments_text,
     sanitize_json_object_text,
 )
 from core.llm_usage_context import (
@@ -333,10 +334,13 @@ def _sanitize_prompt_value(value: Any) -> tuple[Any, bool]:
         return items, redacted
     if isinstance(value, str):
         sanitized, structured_redacted = sanitize_json_object_text(value)
-        sanitized = sanitized if sanitized is not None else value
+        if sanitized is None:
+            sanitized, assignment_redacted = sanitize_credential_assignments_text(value)
+        else:
+            assignment_redacted = False
         for pattern in _SECRET_PATTERNS:
             sanitized = pattern.sub("[REDACTED]", sanitized)
-        return sanitized, structured_redacted or sanitized != value
+        return sanitized, structured_redacted or assignment_redacted or sanitized != value
     return value, False
 
 

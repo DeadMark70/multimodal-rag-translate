@@ -14,7 +14,11 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from core.sensitive_data import is_sensitive_credential_key, sanitize_json_object_text
+from core.sensitive_data import (
+    is_sensitive_credential_key,
+    sanitize_credential_assignments_text,
+    sanitize_json_object_text,
+)
 from evaluation.db import connect_db, init_db
 from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
 from evaluation.trace_schemas import (
@@ -103,6 +107,7 @@ def redact_sensitive_text(value: Any) -> str:
     sanitized_json, _ = sanitize_json_object_text(text)
     if sanitized_json is not None:
         return sanitized_json
+    text, _ = sanitize_credential_assignments_text(text)
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub("[redacted]", text)
     return text
