@@ -599,6 +599,11 @@
 
 ## Wave 6 — Evaluation Center Contracts and UI
 
+**Execution:** Use one frontend implementer in an isolated frontend worktree.
+Commit Tasks 17-19 separately. Run only the task-focused Vitest modules while
+implementing, then run the full frontend test, `lint:ci`, and build gates once.
+Dispatch one fresh Wave reviewer after all three commits.
+
 ### Task 17: Extend frontend contracts and N/A-safe mappers
 
 **Files:**
@@ -694,13 +699,25 @@
 
 ## Wave 7 — Integration, Smoke, and Release Verification
 
-### Task 20: Add end-to-end contract fixtures
+**Execution amendment (approved 2026-07-27):**
+
+- Start only after the Wave 6 review gate passes.
+- Dispatch two implementers in parallel because they use distinct repositories
+  and worktrees:
+  - Backend lane: backend integration fixtures, provider-attempt persistence,
+    smoke runner, offline verifier, release manifest, and backend verification.
+  - Frontend lane: Evaluation Center integration fixtures, v1/v2 compatibility,
+    and release-verification UI contract assertions.
+- After both lanes finish, dispatch one fresh reviewer for the combined Wave.
+- Do not execute a live five-question smoke, a sixteen-question evaluation, or
+  a formal benchmark. No provider/model calls are authorized in this Wave.
+
+### Task 20A: Add backend end-to-end contract fixtures
 
 **Files:**
 - Add: `tests/fixtures/agentic_v9_contract_cases.json`
 - Add: `tests/test_agentic_v9_evidence_completeness_integration.py`
 - Modify: `tests/test_evaluation_v9_attempt_persistence.py`
-- Modify: `Multimodal_RAG_System/src/pages/EvaluationCenter.integration.test.tsx`
 
 - [ ] Add fixed, answer-free question fixtures for Q5, Q7, Q11, Q14, and Q16.
 - [ ] Test planner → retrieval task → repair → sufficiency → final → persistence → analytics projection.
@@ -711,8 +728,27 @@
   - repair is source/locator-specific;
   - actual route and phase calls are present;
   - legacy data remains N/A-safe.
-- [ ] Run backend and frontend integration tests.
-- [ ] Commit backend and frontend fixture/test changes in their respective repositories with message:
+- [ ] Run the backend integration tests.
+- [ ] Commit backend fixture/test changes:
+
+  ```text
+  test(agentic-v9): cover evidence completeness flow
+  ```
+
+### Task 20B: Add frontend end-to-end contract fixtures
+
+**Files:**
+- Modify: `Multimodal_RAG_System/src/pages/EvaluationCenter.integration.test.tsx`
+- Modify: `Multimodal_RAG_System/src/types/evaluation.contract.test.ts`
+
+- [ ] Add v2 fixtures containing actual route, experimental atomic slots,
+  repair traces, visual outcomes, provider-attempt availability, and capture
+  availability.
+- [ ] Add a v1 fixture asserting `legacy_generic` and N/A atomic completeness.
+- [ ] Assert missing release/observability fields remain N/A or partial and
+  never become zero, empty success, or complete.
+- [ ] Run the two frontend integration/contract modules.
+- [ ] Commit frontend fixture/test changes:
 
   ```text
   test(agentic-v9): cover evidence completeness flow
@@ -751,11 +787,24 @@
 
 - [ ] Review `git status --short` in both repositories and ensure no user-owned data/cache files are staged.
 
-### Task 22: Run bounded smoke and evaluate release gates
+### Task 22: Build the smoke runner and offline release verifier
 
-- [ ] Execute Agentic v9 smoke for Q5, Q7, Q11, Q14, and Q16 with one repeat under a named Evaluation Setup preset.
-- [ ] Execute paired Naive/v9 smoke for the same five questions only where comparison semantics are required.
-- [ ] Verify each v9 run has:
+**Files:**
+- Add: `scripts/run_agentic_v9_smoke.py`
+- Add: `evaluation/smoke_verification.py`
+- Add: `tests/test_agentic_v9_smoke_runner.py`
+- Add: `docs/agentic-v9-smoke-verification.md`
+- Add: `docs/verification/agentic-v9-release-template.json`
+
+- [ ] Add failing tests proving the runner defaults to a non-mutating dry run
+  for Q5, Q7, Q11, Q14, and Q16, Agentic v9, and one repeat.
+- [ ] Assert paired Naive planning is opt-in and no HTTP request occurs without
+  the explicit `--execute` flag.
+- [ ] Assert `--execute` requires a base URL, named Evaluation Setup preset,
+  authentication input, and explicit user confirmation; test it only with a
+  fake transport.
+- [ ] Add offline verifier tests for existing campaign/export JSON. Verify each
+  v9 run has:
   - contract v2 and non-empty actual route rationale;
   - atomic slots and final slot resolutions;
   - repair traces when slots remain missing;
@@ -763,13 +812,22 @@
   - exact or explicitly partial token reconciliation;
   - capture availability matching setup;
   - no unsupported finding emitted as supported.
-- [ ] Run the 16-question, single-repeat Agentic v9 evaluation only after the five-question smoke passes.
-- [ ] Do not run the multi-repeat formal benchmark until all release gates pass.
-- [ ] Record a release-verification manifest containing commit IDs for both repositories, Evaluation Setup snapshot/hash, dataset identity, campaign IDs, release-gate results, and residual failures.
-- [ ] Commit only the verification manifest/documentation:
+- [ ] Missing campaign/export input must produce `not_executed`; missing
+  required fields must produce `partial` or `fail`, never pass.
+- [ ] Generate a release-verification manifest containing both repository
+  commit IDs, Evaluation Setup snapshot/hash and dataset identity when supplied,
+  input artifact hashes, release-gate results, and residual failures.
+- [ ] Add an operator checklist showing how to:
+  1. inspect the dry-run plan;
+  2. execute externally when authorized;
+  3. export the campaign;
+  4. run offline verification;
+  5. interpret `pass`, `fail`, `partial`, and `not_executed`.
+- [ ] Run only the runner/verifier tests; do not invoke `--execute`.
+- [ ] Commit smoke tooling and verification documentation:
 
   ```text
-  docs(agentic-v9): record evidence completeness verification
+  feat(evaluation): add agentic v9 smoke verification tooling
   ```
 
 ## Final Acceptance Checklist
@@ -787,3 +845,6 @@
 - [ ] Official release metrics fail closed for degraded contract, partial accounting, or missing required observability.
 - [ ] Backend focused tests, frontend tests, frontend lint, and frontend build pass.
 - [ ] Full backend test result is recorded honestly, including any pre-existing golden SHA mismatch.
+- [ ] Smoke tooling is dry-run by default and no live provider call was made.
+- [ ] Without an externally supplied campaign artifact, runtime smoke and
+  benchmark outcomes are recorded as `not_executed`.

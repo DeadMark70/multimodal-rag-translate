@@ -592,10 +592,39 @@ Old version 1 runs remain N/A-safe.
 ### Wave 7: Verification
 
 1. Unit and contract tests.
-2. Q5, Q7, Q11, Q14, and Q16 Agentic v9 smoke.
-3. Paired Naive/v9 smoke where comparison behavior is affected.
-4. Sixteen-question single-repeat evaluation.
-5. Multi-repeat formal benchmark only after all release gates pass.
+2. A dry-run-by-default smoke runner for Q5, Q7, Q11, Q14, and Q16.
+3. Offline verification of existing Agentic v9 campaign/export artifacts.
+4. A release-verification manifest and operator checklist.
+5. No live five-question smoke, sixteen-question evaluation, or formal
+   benchmark is executed by this implementation wave.
+
+### 11.1 Wave 6-7 Execution Amendment (approved 2026-07-27)
+
+- Wave 6 runs in an isolated frontend worktree. One implementer completes the
+  contract/mapping, behavior UI, and capture/export UI commits. Focused tests
+  run per commit; the full Vitest, `lint:ci`, and production build gates run
+  once at the end of the Wave.
+- Wave 7 begins only after the Wave 6 review gate passes.
+- Wave 7 uses two repository-isolated implementers in parallel:
+  - the backend implementer owns end-to-end backend fixtures, persistence
+    integration, smoke tooling, offline verification, and the release manifest;
+  - the frontend implementer owns Evaluation Center integration fixtures and
+    compatibility/release-verification UI assertions.
+- A single Wave 7 reviewer evaluates both repository diffs after both
+  implementers finish.
+- The smoke runner is non-mutating by default. It may construct and print the
+  exact five-question execution plan, but network submission requires an
+  explicit `--execute` flag.
+- Tests and this delivery do not use `--execute`. No provider/model calls are
+  authorized by this amendment.
+- Offline verification consumes an existing campaign export and reports
+  `pass`, `fail`, `partial`, or `not_executed` for each release requirement.
+  Missing artifacts remain `not_executed` or `partial`; they are never reported
+  as passing.
+- The generated release manifest records both repository commits, setup and
+  dataset identities when available, verification inputs, release-gate
+  results, and residual failures. With no supplied campaign artifact, runtime
+  smoke fields are explicitly `not_executed`.
 
 ## 12. Acceptance Criteria
 
