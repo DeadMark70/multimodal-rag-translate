@@ -104,6 +104,10 @@ def main(argv: list[str] | None = None) -> int:
         report = verify_campaign_export(artifact)
         output["offline_verification"] = report.to_dict()
         if args.manifest:
+            if args.manifest.exists() or args.manifest.is_symlink():
+                raise ValueError(
+                    f"manifest path already exists and will not be overwritten: {args.manifest}"
+                )
             manifest = build_release_manifest(
                 report,
                 backend_commit=args.backend_commit,

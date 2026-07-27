@@ -75,3 +75,7 @@ hash, dataset identity, SHA-256 input artifact hashes, requirement statuses, and
 residual failures. Use
 [`verification/agentic-v9-release-template.json`](verification/agentic-v9-release-template.json)
 as a schema-shaped placeholder when no artifact exists.
+
+For filesystem safety, `--manifest` refuses both an existing file and a symlink.
+Choose a new output path for every verification run; this CLI intentionally has no
+overwrite flag.

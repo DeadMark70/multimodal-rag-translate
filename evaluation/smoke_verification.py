@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
 
+from core.sensitive_data import sanitize_credential_value
+
 
 DEFAULT_SMOKE_QUESTION_IDS = ("Q5", "Q7", "Q11", "Q14", "Q16")
 EXECUTION_CONFIRMATION = "I_UNDERSTAND_EXECUTE"
@@ -104,7 +106,7 @@ def execute_smoke_plan(
     )
     if not isinstance(response, dict):
         raise ValueError("campaign creation response must be a JSON object")
-    return response
+    return _as_mapping(_sanitize_public_value(response))
 
 
 def verify_campaign_export(artifact: Mapping[str, Any] | None) -> VerificationReport:
@@ -122,13 +124,21 @@ def verify_campaign_export(artifact: Mapping[str, Any] | None) -> VerificationRe
 
     v9_runs = [run for run in runs if _is_v9_candidate(run)]
     if not v9_runs:
-        return _partial_report("no Agentic v9 runs found in campaign export")
+        return _report_from_requirements(
+            {
+                "campaign_export": RequirementResult("pass"),
+                "plan_coverage": RequirementResult(
+                    "partial", "no explicit Agentic v9 runs found in campaign export"
+                ),
+            }
+        )
 
     llm_calls = _as_list(artifact.get("llm_calls"))
     campaign = _as_mapping(artifact.get("campaign"))
     setup = _as_mapping(campaign.get("config")) or campaign
     requirements: dict[str, RequirementResult] = {
         "campaign_export": RequirementResult("pass"),
+        "plan_coverage": _verify_plan_coverage(v9_runs),
         "contract_and_route": _verify_contracts(v9_runs),
         "slots_and_resolutions": _verify_slots(v9_runs),
         "repair_for_missing_slots": _verify_repairs(v9_runs),
@@ -150,7 +160,7 @@ def build_release_manifest(
     input_paths: Mapping[str, str | Path] | None = None,
 ) -> dict[str, Any]:
     """Build a portable, JSON-safe release-verification manifest."""
-    snapshot = dict(setup_snapshot or {})
+    snapshot = _as_mapping(_sanitize_public_value(dict(setup_snapshot or {})))
     input_hashes = {
         str(name): _hash_path(Path(path)) for name, path in (input_paths or {}).items()
     }
@@ -242,14 +252,36 @@ def _find_named_preset(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _is_v9_candidate(run: dict[str, Any]) -> bool:
     trace = _as_mapping(run.get("agent_trace"))
-    if _as_mapping(trace.get("agentic_v9")):
-        return True
-    return str(run.get("mode") or "") in {"agentic", "agentic-v9", "v9"}
+    v9 = _as_mapping(trace.get("agentic_v9")) or _as_mapping(run.get("agentic_v9"))
+    version = str(
+        trace.get("agentic_execution_version")
+        or run.get("agentic_execution_version")
+        or ""
+    )
+    return bool(v9) and version == "v9"
 
 
 def _v9_payload(run: dict[str, Any]) -> dict[str, Any]:
     trace = _as_mapping(run.get("agent_trace"))
     return _as_mapping(trace.get("agentic_v9")) or _as_mapping(run.get("agentic_v9"))
+
+
+def _verify_plan_coverage(runs: list[dict[str, Any]]) -> RequirementResult:
+    question_ids: list[str] = []
+    for run in runs:
+        run_id = str(run.get("id") or run.get("run_id") or "").strip()
+        question_id = str(run.get("question_id") or "").strip()
+        status = run.get("status")
+        repeat = run.get("repeat_number", run.get("repeat"))
+        if not run_id or not question_id or status is None or repeat is None:
+            return RequirementResult("partial", "v9 run identity, completion status, or repeat is missing")
+        if str(status) != "completed" or repeat != 1:
+            return RequirementResult("fail", "v9 smoke runs must be completed with repeat 1")
+        question_ids.append(question_id)
+    expected = list(DEFAULT_SMOKE_QUESTION_IDS)
+    if sorted(question_ids) != sorted(expected):
+        return RequirementResult("fail", "v9 smoke question coverage is not exactly Q5/Q7/Q11/Q14/Q16")
+    return RequirementResult("pass")
 
 
 def _verify_contracts(runs: list[dict[str, Any]]) -> RequirementResult:
@@ -261,8 +293,8 @@ def _verify_contracts(runs: list[dict[str, Any]]) -> RequirementResult:
             return RequirementResult("partial", "v9 contract observability missing")
         if str(contract.get("contract_version") or "") != "2":
             return RequirementResult("fail", "v9 contract version is not 2")
-        route_reason = str(decision.get("route_reason") or contract.get("route_reason") or "").strip()
-        route = str(decision.get("selected_route") or contract.get("route") or "").strip()
+        route_reason = str(decision.get("route_reason") or "").strip()
+        route = str(decision.get("selected_route") or "").strip()
         if not route or not route_reason:
             return RequirementResult("fail", "actual route rationale missing")
     return RequirementResult("pass")
@@ -284,34 +316,54 @@ def _verify_slots(runs: list[dict[str, Any]]) -> RequirementResult:
         contract = _as_mapping(v9.get("query_contract")) or _as_mapping(v9.get("contract"))
         slots = _as_list(contract.get("required_slots"))
         resolutions = _resolution_rows(v9)
-        if not slots or not resolutions:
+        if not slots or not resolutions or "final_claims" not in v9:
             return RequirementResult("fail", "atomic slots or final slot resolutions missing")
-        expected_ids = {str(slot.get("slot_id") or "") for slot in slots if slot.get("slot_id")}
+        expected_ids = {str(slot.get("slot_id") or "").strip() for slot in slots}
+        valid_statuses = {"supported", "conflicted", "explicitly_unavailable", "not_found"}
+        if not all(expected_ids) or len(expected_ids) != len(slots):
+            return RequirementResult("fail", "required atomic slots must have unique non-empty IDs")
+        if any(str(row.get("status") or "") not in valid_statuses for row in resolutions):
+            return RequirementResult("fail", "final slot resolution status is missing or invalid")
         resolved_ids = {str(row.get("slot_id") or "") for row in resolutions if row.get("slot_id")}
-        if not expected_ids or not expected_ids.issubset(resolved_ids):
+        if not expected_ids.issubset(resolved_ids):
             return RequirementResult("fail", "not every required atomic slot has a final resolution")
     return RequirementResult("pass")
 
 
 def _verify_repairs(runs: list[dict[str, Any]]) -> RequirementResult:
-    unresolved = {"not_found", "explicitly_unavailable", "conflicted"}
     for run in runs:
         v9 = _v9_payload(run)
-        missing = {
+        not_found = {
             str(row.get("slot_id"))
             for row in _resolution_rows(v9)
-            if str(row.get("status") or "") in unresolved and row.get("slot_id")
+            if str(row.get("status") or "") == "not_found" and row.get("slot_id")
         }
-        if not missing:
-            continue
         repair_slots = {
             str(slot_id)
             for repair in _as_list(v9.get("repairs"))
-            for slot_id in _as_strings(_as_mapping(repair).get("target_slot_ids"))
+            for task in _as_list(_as_mapping(repair).get("tasks"))
+            for slot_id in _as_strings(task.get("target_slot_ids"))
         }
-        if not missing.issubset(repair_slots):
+        if not_found and not_found.difference(repair_slots):
             return RequirementResult("fail", "missing slots lack slot-targeted repair traces")
+        for row in _resolution_rows(v9):
+            status = str(row.get("status") or "")
+            if status in {"conflicted", "explicitly_unavailable"} and not _has_terminal_resolution_state(v9, row):
+                return RequirementResult("partial", "terminal slot state lacks stop or arbitration evidence")
     return RequirementResult("pass")
+
+
+def _has_terminal_resolution_state(v9: Mapping[str, Any], resolution: Mapping[str, Any]) -> bool:
+    if str(resolution.get("reason") or "").strip() or str(resolution.get("resolution_stage") or "").strip():
+        return True
+    sufficiency = _as_mapping(v9.get("sufficiency"))
+    if str(sufficiency.get("stop_reason") or "").strip():
+        return True
+    slot_id = str(resolution.get("slot_id") or "")
+    return any(
+        str(item.get("slot_id") or "") == slot_id and str(item.get("reason") or "").strip()
+        for item in _as_list(v9.get("conflicts"))
+    )
 
 
 def _calls_for_run(llm_calls: list[dict[str, Any]], run: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -321,12 +373,42 @@ def _calls_for_run(llm_calls: list[dict[str, Any]], run: Mapping[str, Any]) -> l
 
 def _verify_provider_attempts(runs: list[dict[str, Any]], llm_calls: list[dict[str, Any]]) -> RequirementResult:
     for run in runs:
+        v9 = _v9_payload(run)
+        reservations = _as_list(v9.get("budget_reservations"))
+        if not reservations:
+            return RequirementResult("partial", "budget reservation observability missing")
+        reservation_by_id: dict[str, dict[str, Any]] = {}
+        for reservation in reservations:
+            reservation_id = str(reservation.get("reservation_id") or "").strip()
+            if not reservation_id or not str(reservation.get("phase") or "").strip() or not isinstance(reservation.get("provider_attempt"), int):
+                return RequirementResult("partial", "budget reservation identity is incomplete")
+            if reservation_id in reservation_by_id:
+                return RequirementResult("fail", "duplicate budget reservation ID")
+            reservation_by_id[reservation_id] = reservation
         calls = _calls_for_run(llm_calls, run)
         if not calls:
             return RequirementResult("partial", "phase-linked provider attempts missing")
+        seen_identities: set[tuple[str, int]] = set()
+        terminal_by_reservation: set[str] = set()
         for call in calls:
             if not str(call.get("phase") or "") or not str(call.get("reservation_id") or "") or not isinstance(call.get("provider_attempt"), int):
                 return RequirementResult("partial", "provider attempt identity is incomplete")
+            reservation_id = str(call["reservation_id"])
+            attempt = int(call["provider_attempt"])
+            identity = (reservation_id, attempt)
+            if identity in seen_identities:
+                return RequirementResult("fail", "duplicate terminal provider attempt identity")
+            seen_identities.add(identity)
+            reservation = reservation_by_id.get(reservation_id)
+            if reservation is None:
+                return RequirementResult("fail", "provider attempt references an unknown reservation")
+            if str(reservation.get("phase")) != str(call.get("phase")) or reservation.get("provider_attempt") != attempt:
+                return RequirementResult("fail", "provider attempt does not match its reservation identity")
+            if str(call.get("status") or "") not in {"success", "error", "cancelled"}:
+                return RequirementResult("partial", "provider attempt lacks a terminal status")
+            terminal_by_reservation.add(reservation_id)
+        if set(reservation_by_id) != terminal_by_reservation:
+            return RequirementResult("fail", "a budget reservation has no terminal provider attempt")
     return RequirementResult("pass")
 
 
@@ -459,3 +541,23 @@ def _hash_path(path: Path) -> str | None:
     if not path.is_file():
         return None
     return f"sha256:{sha256(path.read_bytes()).hexdigest()}"
+
+
+def _sanitize_public_value(value: Any) -> Any:
+    sanitized, _ = sanitize_credential_value(value)
+    return _redact_cookie_values(sanitized)
+
+
+def _redact_cookie_values(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): "[REDACTED]"
+            if str(key).replace("-", "").replace("_", "").lower() in {"cookie", "setcookie"}
+            else _redact_cookie_values(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_cookie_values(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_cookie_values(item) for item in value]
+    return value
