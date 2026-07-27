@@ -21,6 +21,7 @@ from data_base.agentic_v9.evidence_validator import (
     validate_deterministic_packet,
     validate_prose_packet,
 )
+from data_base.agentic_v9.slot_constraints import structured_locator_state
 
 
 _NUMBER = re.compile(r"(?<![\w.])([+-]?(?:\d+(?:\.\d+)?|\.\d+))(?:\s*([A-Za-z%µ]+))?(?![\w.])")
@@ -28,9 +29,6 @@ _THEOREM_RANGE = re.compile(r"(?:Theorem\s+\d+\s*:\s*)?\b([A-Za-z])\s+(?:in|∈)
 _FORMULA = re.compile(r"\b[A-Za-z][A-Za-z_]*\s*=\s*[^.\n]+")
 _TABLE_ROW = re.compile(r"\bTable\s+\d+\s*\|[^.\n]+", re.IGNORECASE)
 _ENUMERATION = re.compile(r"\(a\)[^.\n]*(?:;\s*\(b\)[^.\n]*)+", re.IGNORECASE)
-_COMPARATIVE = re.compile(r"\b(compare|comparison|versus|\bvs\.?|better|outperform|which performs)\b", re.IGNORECASE)
-
-
 class EvidenceExtractor:
     """Extract typed packets before one optional, budgeted prose-curation call."""
 
@@ -52,7 +50,7 @@ class EvidenceExtractor:
         items = _as_items(pool)
         packets: list[EvidencePacket] = []
         for slot in contract.required_slots:
-            matching = _items_for_slot(slot, items)
+            matching = _matched_items_for_slot(slot, items)
             packets.extend(extract_numeric_packets(slot=slot, items=matching))
             packets.extend(_extract_structured_packets(slot, matching))
         return _deduplicate_packets(packets)
@@ -73,16 +71,36 @@ class EvidenceExtractor:
             slot
             for slot in contract.required_slots
             if slot.slot_id not in _covered_slots(packets)
-            and not _COMPARATIVE.search(slot.description)
         ]
-        if not repairs_complete or not unresolved or self._invoker is None:
+        eligible_ids_by_slot = {
+            slot.slot_id: {
+                item.packet.evidence_id
+                for item in _eligible_items_for_slot(slot, items)
+            }
+            for slot in unresolved
+        }
+        curated_items = _items_for_evidence_ids(
+            items,
+            {
+                evidence_id
+                for evidence_ids in eligible_ids_by_slot.values()
+                for evidence_id in evidence_ids
+            },
+        )
+        if (
+            not repairs_complete
+            or not unresolved
+            or not curated_items
+            or self._invoker is None
+        ):
             return packets
 
         # A malformed batch is terminal: this stage never spends a second repair call.
         curated = await self._curate_once(
             question=question or contract.intent,
             slots=unresolved,
-            items=items,
+            items=curated_items,
+            eligible_ids_by_slot=eligible_ids_by_slot,
         )
         return _deduplicate_packets([*packets, *curated])
 
@@ -92,8 +110,9 @@ class EvidenceExtractor:
         question: str,
         slots: Sequence[RequiredSlot],
         items: Sequence[EvidencePoolItem],
+        eligible_ids_by_slot: Mapping[str, set[str]],
     ) -> list[EvidencePacket]:
-        source_evidence = _render_source_evidence(items)
+        source_evidence = _render_source_evidence(items, eligible_ids_by_slot)
         messages = [
             {
                 "role": "system",
@@ -119,6 +138,7 @@ class EvidenceExtractor:
             response,
             slots=slots,
             items=items,
+            eligible_ids_by_slot=eligible_ids_by_slot,
             final_claims=self._final_claims,
         )
 
@@ -230,6 +250,51 @@ def _items_for_slot(slot: RequiredSlot, items: Sequence[EvidencePoolItem]) -> li
     return [item for item in items if slot.slot_id in item.packet.slot_ids]
 
 
+def _matched_items_for_slot(
+    slot: RequiredSlot, items: Sequence[EvidencePoolItem]
+) -> list[EvidencePoolItem]:
+    """Permit deterministic extraction only from a verified structured locator."""
+    matching = _items_for_slot(slot, items)
+    if not any(_locator_state(slot, item) == "matched" for item in matching):
+        return []
+    return [item for item in matching if _locator_state(slot, item) == "matched"]
+
+
+def _eligible_items_for_slot(
+    slot: RequiredSlot, items: Sequence[EvidencePoolItem]
+) -> list[EvidencePoolItem]:
+    """Keep ordinary and unavailable candidates, never contradicting locators."""
+    return [
+        item
+        for item in _items_for_slot(slot, items)
+        if _locator_state(slot, item) != "mismatched"
+    ]
+
+
+def _locator_state(slot: RequiredSlot, item: EvidencePoolItem) -> str:
+    return structured_locator_state(slot.locator_hints, _locator_metadata(item))
+
+
+def _locator_metadata(item: EvidencePoolItem) -> dict[str, Any]:
+    """Merge retrieved locator metadata with the packet's persisted locator."""
+    metadata = dict(item.packet.locator.model_dump(mode="python"))
+    metadata.update(
+        {
+            key: value
+            for key, value in item.metadata.items()
+            if key in {"section", "table_id", "figure_id", "formula_id"}
+            and value is not None
+        }
+    )
+    return metadata
+
+
+def _items_for_evidence_ids(
+    items: Sequence[EvidencePoolItem], evidence_ids: set[str]
+) -> list[EvidencePoolItem]:
+    return [item for item in items if item.packet.evidence_id in evidence_ids]
+
+
 def _source_text(item: EvidencePoolItem) -> str:
     for key in ("text", "content", "raw_text"):
         candidate = item.metadata.get(key)
@@ -279,9 +344,24 @@ def _covered_slots(packets: Iterable[EvidencePacket]) -> set[str]:
     return {slot_id for packet in packets for slot_id in packet.slot_ids}
 
 
-def _render_source_evidence(items: Sequence[EvidencePoolItem]) -> str:
+def _render_source_evidence(
+    items: Sequence[EvidencePoolItem],
+    eligible_ids_by_slot: Mapping[str, set[str]],
+) -> str:
+    """Render source spans with their slot-specific authorization boundary."""
     return "\n".join(
-        f"{item.packet.evidence_id}: {_source_text(item)}" for item in items
+        (
+            f"{item.packet.evidence_id} [eligible slots: {','.join(slot_ids)}]: "
+            f"{_source_text(item)}"
+        )
+        for item in items
+        if (
+            slot_ids := [
+                slot_id
+                for slot_id, evidence_ids in eligible_ids_by_slot.items()
+                if item.packet.evidence_id in evidence_ids
+            ]
+        )
     )
 
 
@@ -290,6 +370,7 @@ def _parse_curated_packets(
     *,
     slots: Sequence[RequiredSlot],
     items: Sequence[EvidencePoolItem],
+    eligible_ids_by_slot: Mapping[str, set[str]],
     final_claims: list[FinalClaim] | None = None,
 ) -> list[EvidencePacket]:
     content = getattr(response, "content", response)
@@ -323,6 +404,10 @@ def _parse_curated_packets(
             or not slot_ids
             or not set(slot_ids).issubset(valid_slots)
             or source_id not in by_id
+            or any(
+                source_id not in eligible_ids_by_slot.get(slot_id, set())
+                for slot_id in slot_ids
+            )
         ):
             continue
         item = by_id[source_id]

@@ -12,6 +12,7 @@ from langchain_core.documents import Document
 
 from evaluation.agentic_v9_campaign_runtime import (
     AgenticV9CampaignRuntime,
+    V9RetrievalSelection,
     _evidence_packets_for_results,
     _initial_visual_execution,
     _retrieve_documents,
@@ -41,7 +42,28 @@ class _Provider:
         self.ainvoke = AsyncMock(side_effect=self._respond)
 
     async def _respond(self, messages):
-        payload = json.loads(messages[-1]["content"])
+        content = messages[-1]["content"]
+        if isinstance(content, str) and "Source evidence:" in content:
+            packets = []
+            for line in content.split("Source evidence:\n", maxsplit=1)[1].splitlines():
+                source_id, separator, remainder = line.partition(" [eligible slots: ")
+                slot_text, statement_separator, statement = remainder.partition("]: ")
+                if not separator or not statement_separator:
+                    continue
+                packets.extend(
+                    {
+                        "source_evidence_id": source_id,
+                        "slot_ids": [slot_id],
+                        "statement": statement,
+                    }
+                    for slot_id in slot_text.split(",")
+                    if slot_id
+                )
+            return SimpleNamespace(
+                content={"packets": packets},
+                usage_metadata={"input_tokens": 12, "output_tokens": 7},
+            )
+        payload = json.loads(content)
         packet = payload["packed_evidence_packets"][0]
         return SimpleNamespace(
             content={
@@ -83,7 +105,29 @@ class _InvalidProvider:
 
 class _FailingProvider:
     def __init__(self) -> None:
-        self.ainvoke = AsyncMock(side_effect=RuntimeError("provider unavailable"))
+        self.ainvoke = AsyncMock(side_effect=self._respond)
+
+    async def _respond(self, messages):
+        content = messages[-1]["content"]
+        if isinstance(content, str) and "Source evidence:" in content:
+            source_id, separator, remainder = content.split(
+                "Source evidence:\n", maxsplit=1
+            )[1].partition(" [eligible slots: ")
+            slot_text, statement_separator, statement = remainder.partition("]: ")
+            if separator and statement_separator:
+                return SimpleNamespace(
+                    content={
+                        "packets": [
+                            {
+                                "source_evidence_id": source_id,
+                                "slot_ids": [slot_text.split(",")[0]],
+                                "statement": statement.strip(),
+                            }
+                        ]
+                    },
+                    usage_metadata={"input_tokens": 12, "output_tokens": 7},
+                )
+        raise RuntimeError("provider unavailable")
 
 
 class _ContractProvider:
@@ -110,6 +154,61 @@ class _ContractProvider:
                 ),
                 usage_metadata={"input_tokens": 8, "output_tokens": 4},
             )
+        )
+
+
+class _EvidenceThenFinalProvider:
+    """Return quote-bound curation first and verified findings at final generation."""
+
+    def __init__(self) -> None:
+        self.ainvoke = AsyncMock(side_effect=self._respond)
+        self.extraction_calls = 0
+
+    async def _respond(self, messages):
+        content = messages[-1]["content"]
+        if isinstance(content, str) and "Source evidence:" in content:
+            self.extraction_calls += 1
+            source_lines = content.split("Source evidence:\n", maxsplit=1)[1].splitlines()
+            source_pairs = []
+            for line in source_lines:
+                source_id, separator, remainder = line.partition(" [eligible slots: ")
+                _slot_text, statement_separator, statement = remainder.partition("]: ")
+                if separator and statement_separator:
+                    source_pairs.append((source_id, statement))
+            selected = [
+                (source_id, statement)
+                for source_id, statement in source_pairs
+                if source_id and statement
+            ]
+            return SimpleNamespace(
+                content={
+                    "packets": [
+                        {
+                            "source_evidence_id": source_id,
+                            "slot_ids": [f"S{index}"],
+                            "statement": statement,
+                        }
+                        for index, (source_id, statement) in enumerate(selected[:2], start=1)
+                    ]
+                },
+                usage_metadata={"input_tokens": 12, "output_tokens": 7},
+            )
+
+        payload = json.loads(content)
+        packets = payload["packed_evidence_packets"]
+        return SimpleNamespace(
+            content={
+                "supported_findings": [
+                    {
+                        "slot_id": packet["slot_ids"][0],
+                        "statement": packet["statement"],
+                        "evidence_ids": [packet["evidence_id"]],
+                    }
+                    for packet in packets
+                ],
+                "unresolved_requirements": [],
+            },
+            usage_metadata={"input_tokens": 12, "output_tokens": 7},
         )
 
 
@@ -209,13 +308,83 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     assert v9["sufficiency"]["response_status"] == "complete"
     assert result.documents
     retrieve_documents.assert_awaited()
-    provider.ainvoke.assert_awaited_once()
-    assert len(observer.calls) == 1
-    observed = observer.calls[0]
+    assert provider.ainvoke.await_count == 2
+    assert len(observer.calls) == 2
+    observed = observer.calls[-1]
     assert observed.phase == "final_answer"
     assert observed.provider == "gemini"
     assert observed.model_name == "gemini-2.5-flash"
     assert observed.status == "success"
+    assert observer.calls[0].phase == "evidence_extract"
+
+
+@pytest.mark.asyncio
+async def test_runtime_curates_two_atomic_slots_once_from_authorized_reranked_candidates(
+    monkeypatch,
+) -> None:
+    provider = _EvidenceThenFinalProvider()
+    scope = ResolvedSourceScope(authorized_doc_ids=["doc-authorized"])
+    contract = QueryContract(
+        contract_version="2",
+        route="exact_structured",
+        intent="bind two ordinary source facts",
+        required_slots=[
+            RequiredSlot(slot_id="S1", description="State the alpha ordinary fact."),
+            RequiredSlot(slot_id="S2", description="State the beta ordinary fact."),
+        ],
+        evidence_extraction_required=True,
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=2,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+        slot_plan_status="complete",
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract",
+        admission,
+    )
+    selection = V9RetrievalSelection(
+        documents=(
+            Document(
+                page_content="Beta authorized fact is present in ordinary prose.",
+                metadata={"doc_id": "doc-authorized", "chunk_id": "chunk-2"},
+            ),
+            Document(
+                page_content="Unauthorized fact must never be curated.",
+                metadata={"doc_id": "doc-blocked", "chunk_id": "chunk-blocked"},
+            ),
+            Document(
+                page_content="Alpha authorized fact is present in ordinary prose.",
+                metadata={"doc_id": "doc-authorized", "chunk_id": "chunk-1"},
+            ),
+        ),
+        diagnostics={"reranking": {"post_rerank_ranks": [{"rank": 1}]}},
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(return_value=selection),
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What are the two authorized facts?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-authorized"],
+        setup_snapshot=_setup(),
+        trace_id="batch-evidence-production",
+    )
+
+    packets = result.agent_trace["agentic_v9"]["evidence_packets"]
+    assert result.agent_trace["response_status"] != "insufficient"
+    assert len(packets) >= 2
+    assert {packet["source"]["doc_id"] for packet in packets} == {"doc-authorized"}
+    assert provider.extraction_calls == 1
+    assert result.documents
 
 
 @pytest.mark.asyncio

@@ -90,7 +90,11 @@ def test_structured_extraction_preserves_formula_theorem_range_table_row_and_enu
     extractor = EvidenceExtractor()
     packets = extractor.extract_deterministic(
         _contract(
-            _slot("structure", "Extract the formula, Theorem 1 m range, table row, and enumeration.")
+            RequiredSlot(
+                slot_id="structure",
+                description="Extract the formula, Theorem 1 m range, table row, and enumeration.",
+                locator_hints=["Table 2"],
+            )
         ),
         [
             _item(
@@ -191,6 +195,117 @@ async def test_prose_curator_runs_once_only_after_repair_and_derives_source_boun
     assert result[0].source.doc_id == "doc-polyp"
     assert result[0].statement == item.packet.statement
     assert result[0].slot_ids == ["method"]
+
+
+@pytest.mark.asyncio
+async def test_prose_curator_batches_two_generic_slots_in_one_evidence_extract_call() -> None:
+    first = _item(
+        "E1",
+        "The alpha source fact is stated verbatim.",
+        slot_ids=["S1"],
+    )
+    second = _item(
+        "E2",
+        "The beta source fact is stated verbatim.",
+        slot_ids=["S2"],
+    )
+    invoker = _RecordingInvoker(
+        {
+            "packets": [
+                {
+                    "source_evidence_id": "E1",
+                    "slot_ids": ["S1"],
+                    "statement": first.packet.statement,
+                },
+                {
+                    "source_evidence_id": "E2",
+                    "slot_ids": ["S2"],
+                    "statement": second.packet.statement,
+                },
+            ]
+        }
+    )
+
+    result = await EvidenceExtractor(invoker).extract(
+        _contract(
+            _slot("S1", "Describe the alpha source fact."),
+            _slot("S2", "Describe the beta source fact."),
+        ),
+        [first, second],
+        repairs_complete=True,
+    )
+
+    assert [(packet.source.doc_id, packet.slot_ids) for packet in result] == [
+        ("doc-polyp", ["S1"]),
+        ("doc-polyp", ["S2"]),
+    ]
+    assert len(invoker.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_structured_locator_unavailable_falls_back_to_batch_without_mismatched_candidate() -> None:
+    unavailable = _item(
+        "E-unavailable",
+        "The requested result is stated in ordinary retrieved prose.",
+        slot_ids=["S1"],
+        table_id=None,
+    )
+    mismatched = _item(
+        "E-mismatched",
+        "The wrong table contains a different result.",
+        slot_ids=["S1"],
+        table_id="Table 4",
+    )
+    invoker = _RecordingInvoker(
+        {
+            "packets": [
+                {
+                    "source_evidence_id": "E-unavailable",
+                    "slot_ids": ["S1"],
+                    "statement": unavailable.packet.statement,
+                }
+            ]
+        }
+    )
+
+    result = await EvidenceExtractor(invoker).extract(
+        _contract(
+            RequiredSlot(
+                slot_id="S1",
+                description="State the requested Table 3 result.",
+                locator_hints=["Table 3"],
+            )
+        ),
+        [unavailable, mismatched],
+        repairs_complete=True,
+    )
+
+    assert [packet.evidence_id for packet in result] == ["curated:E-unavailable:S1"]
+    assert "E-unavailable" in invoker.calls[0]["messages"][0]["content"]
+    assert "E-mismatched" not in invoker.calls[0]["messages"][0]["content"]
+
+
+class _FailingInvoker:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def invoke(self, **_kwargs: Any) -> Any:
+        self.calls += 1
+        raise TimeoutError("evidence extraction timed out")
+
+
+@pytest.mark.asyncio
+async def test_curator_failure_fails_closed_without_supporting_generic_slot() -> None:
+    invoker = _FailingInvoker()
+
+    result = await EvidenceExtractor(invoker).extract(
+        _contract(_slot("S1", "Describe the generic source fact.")),
+        [_item("E1", "The generic source fact is present.", slot_ids=["S1"])],
+        repairs_complete=True,
+    )
+
+    assert result == []
+    assert invoker.calls == 1
 
 
 @pytest.mark.asyncio

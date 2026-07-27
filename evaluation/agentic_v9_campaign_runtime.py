@@ -44,6 +44,7 @@ from data_base.agentic_v9.execution_policy import (
     ExecutionCancellation,
     V9ExecutionPolicyRuntime,
 )
+from data_base.agentic_v9.evidence_extractor import EvidenceExtractor
 from data_base.agentic_v9.final_answer import generate_final_answer
 from data_base.agentic_v9.repair import (
     MAX_REPAIR_ROUNDS,
@@ -446,7 +447,6 @@ class AgenticV9CampaignRuntime:
                 results=results,
                 packets=packets,
             )
-            state["evidence_packets"].extend(packets)
             return tuple(packets)
 
         def sufficiency(
@@ -517,11 +517,41 @@ class AgenticV9CampaignRuntime:
             )
 
         async def prose_curate(
-            _: str, __: QueryContract, packets: tuple[EvidencePacket, ...]
+            _: str, contract: QueryContract, packets: tuple[EvidencePacket, ...]
         ) -> tuple[EvidencePacket, ...]:
-            # Candidate extraction is deterministic and provenance-bound.  No
-            # prose model is permitted to invent or promote evidence here.
-            return packets
+            visual_packets = [
+                packet for packet in packets if packet.source.asset_id is not None
+            ]
+            text_candidates = [
+                packet for packet in packets if packet.source.asset_id is None
+            ]
+            if contract.evidence_extraction_required:
+                controller = state["budget_controller"]
+                assert isinstance(controller, RunBudgetController)
+                extractor = EvidenceExtractor(
+                    BudgetedLlmInvoker(
+                        controller=controller,
+                        provider_factory=self._provider_factory,
+                        observer=llm_call_observer,
+                        provider_name=provider_name,
+                        model_name=model_name,
+                        capture_policy=setup_snapshot.get("prompt_capture_policy"),
+                    )
+                )
+                curated_text = await extractor.extract(
+                    contract,
+                    text_candidates,
+                    repairs_complete=True,
+                    question=question,
+                )
+            else:
+                # Legacy/manual contracts that did not reserve the extraction
+                # phase retain their pre-v9 candidate projection. Production
+                # contracts admit this phase explicitly above.
+                curated_text = text_candidates
+            curated = [*curated_text, *visual_packets]
+            state["evidence_packets"] = curated
+            return tuple(curated)
 
         async def resolve_conflicts(
             _: QueryContract,
