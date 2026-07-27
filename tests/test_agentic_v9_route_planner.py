@@ -49,27 +49,6 @@ def _scope() -> ResolvedSourceScope:
 
 
 @pytest.mark.asyncio
-async def test_legacy_multisource_scope_without_mapping_fails_closed() -> None:
-    contract = await RoutePlanner().plan(
-        question="From nnMamba.pdf, report the value in Table 2.",
-        resolved_source_scope=ResolvedSourceScope(
-            requested_source_names=["nnMamba.pdf", "Other.pdf"],
-            authorized_doc_ids=["doc-a", "doc-z"],
-        ),
-    )
-
-    assert contract.slot_plan_status == "degraded"
-    assert (
-        contract.route_decision.fallback_reason
-        == "authoritative_source_mapping_missing"
-    )
-    assert all(
-        slot.source_name_hints == ["nnMamba.pdf", "Other.pdf"]
-        for slot in contract.required_slots
-    )
-
-
-@pytest.mark.asyncio
 async def test_deterministic_regressions_emit_complete_retrieval_contracts() -> None:
     cases = json.loads(ROUTES_PATH.read_text(encoding="utf-8"))["cases"]
     invoker = _NeverInvoker()
@@ -103,7 +82,7 @@ async def test_deterministic_regressions_emit_complete_retrieval_contracts() -> 
 
 
 @pytest.mark.asyncio
-async def test_generic_comparison_does_not_invent_a_qualification_round() -> None:
+async def test_r2_planner_contract_compiles_its_required_qualification_round() -> None:
     contract = await RoutePlanner(llm_invoker=_NeverInvoker()).plan(
         question="SwinUNETR and nnU-Net: which performs better?",
         resolved_source_scope=_scope(),
@@ -116,7 +95,7 @@ async def test_generic_comparison_does_not_invent_a_qualification_round() -> Non
     )
 
     assert contract.max_retrieval_rounds == 2
-    assert [task.round_id for task in plan.tasks] == ["round-1"]
+    assert [task.round_id for task in plan.tasks] == ["round-1", "round-1", "round-2"]
 
 
 @pytest.mark.asyncio
@@ -133,18 +112,20 @@ async def test_generic_comparison_does_not_invent_a_qualification_round() -> Non
         ),
     ],
 )
-async def test_named_model_questions_use_generic_fallback_without_benchmark_routes(
+async def test_q1_q2_shape_as_multi_hop_slot_contracts(
     question: str, expected_entities: set[str]
 ) -> None:
-    planner = RoutePlanner()
+    planner = RoutePlanner(llm_invoker=_NeverInvoker())
 
     contract = await planner.plan(question=question, resolved_source_scope=_scope())
 
+    assert contract.route == "multi_hop"
     assert expected_entities.issubset(contract.entities)
-    assert contract.slot_semantics == "heuristic_experimental"
-    assert contract.route_decision is not None
-    assert "technical_entity_bundle" not in contract.route_decision.matched_rules
-    assert 1 <= len(contract.required_slots) <= 8
+    assert len(contract.required_slots) >= 2
+    assert contract.graph_policy == "locator_fallback"
+    assert contract.max_retrieval_rounds == 2
+    assert contract.max_repair_rounds == 1
+    assert contract.max_llm_calls == 3
 
 
 @pytest.mark.asyncio
@@ -161,12 +142,10 @@ async def test_visual_and_graph_routes_reserve_their_required_provider_phases() 
     )
 
     assert visual_contract.route == "exact_structured"
-    assert visual_contract.visual_requested is True
-    assert visual_contract.visual_required is False
+    assert visual_contract.visual_required is True
     assert visual_contract.max_llm_calls == 3
     assert graph_visual_contract.route == "graph_relational"
-    assert graph_visual_contract.visual_requested is True
-    assert graph_visual_contract.visual_required is False
+    assert graph_visual_contract.visual_required is True
     assert graph_visual_contract.max_llm_calls == 4
 
 
@@ -215,11 +194,9 @@ async def test_only_ambiguous_question_uses_one_budgeted_route_plan_call() -> No
 
     assert contract.route == "single_lookup"
     assert len(invoker.calls) == 1
-    assert invoker.calls[0]["phase"] == "contract_planning"
-    assert invoker.calls[0]["purpose"] == "atomic_contract_planning"
-    assert (
-        contract.max_llm_calls == 4
-    )  # route-plan + evidence extraction + visual reserve + final
+    assert invoker.calls[0]["phase"] == "route_plan"
+    assert invoker.calls[0]["purpose"] == "resolve_ambiguous_query_contract"
+    assert contract.max_llm_calls == 4  # route-plan + evidence extraction + visual reserve + final
     assert "answer" not in contract.model_dump()
 
 
@@ -231,29 +208,7 @@ async def test_ambiguous_planner_output_with_an_answer_or_scope_is_rejected() ->
             '"authorized_doc_ids":["outside"]}'
         }
     )
-    contract = await RoutePlanner(llm_invoker=invoker).plan(
-        question="Can you check this?", resolved_source_scope=_scope()
-    )
-
-    assert contract.slot_plan_status == "degraded"
-    assert contract.route_decision.decision_source == "safe_fallback"
-    assert contract.route_decision.fallback_reason == "invalid_planner_output"
-
-
-@pytest.mark.asyncio
-async def test_route_planner_delegates_to_v2_atomic_contract_planner() -> None:
-    contract = await RoutePlanner().plan(
-        question=(
-            "Using Alpha.pdf and Beta.pdf, report the values in Table 2 "
-            "and explain Equation 3."
-        ),
-        resolved_source_scope=ResolvedSourceScope(
-            requested_source_names=["Alpha.pdf", "Beta.pdf"],
-            resolved_doc_ids=["alpha", "beta"],
-            authorized_doc_ids=["alpha", "beta"],
-        ),
-    )
-
-    assert contract.contract_version == "2"
-    assert [slot.slot_id for slot in contract.required_slots] == ["S1", "S2"]
-    assert contract.route_decision is not None
+    with pytest.raises(ValueError, match="valid route decision"):
+        await RoutePlanner(llm_invoker=invoker).plan(
+            question="Can you check this?", resolved_source_scope=_scope()
+        )

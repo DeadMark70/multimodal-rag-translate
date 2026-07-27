@@ -70,9 +70,9 @@ async def test_preflight_admission_never_invokes_a_provider() -> None:
         setup_policy={"max_llm_calls": 5, "max_output_tokens": 512},
     )
 
-    assert admission.contract.route_decision.decision_source == "safe_fallback"
-    assert admission.contract.route_decision.planner_call_used is False
-    assert admission.contract.slot_plan_status == "degraded"
+    assert admission.contract.route_decision is None
+    assert admission.contract.strategy_tier == "budgeted_ambiguity"
+    assert admission.contract.contract_version == "1"
 
 
 @pytest.mark.asyncio
@@ -92,7 +92,11 @@ async def test_admission_preserves_authoritative_name_to_id_mapping() -> None:
         "nnMamba.pdf": ["doc-z"],
         "Other.pdf": ["doc-a"],
     }
-    assert admission.contract.required_slots[0].authorized_source_doc_ids == ["doc-z"]
+    assert admission.contract.resolved_source_scope == admission.source_scope
+    assert set(admission.contract.resolved_source_scope.authorized_doc_ids) == {
+        "doc-z",
+        "doc-a",
+    }
 
 
 @pytest.mark.asyncio
