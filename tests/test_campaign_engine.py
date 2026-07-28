@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
@@ -20,8 +22,11 @@ from core.auth import get_current_user_id
 from core.llm_usage_context import emit_direct_usage
 from data_base.agentic_v9.budget_controller import RunBudgetController
 from data_base.agentic_v9.budgeted_llm import invoke_budgeted_llm
+from data_base.agentic_v9.schemas import QueryContract, RequiredSlot, ResolvedSourceScope
 from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.agentic_evaluation_service import AGENTIC_EVAL_PROFILE
+from evaluation.agentic_v9_admission import V9AdmissionContract
+from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
 from evaluation.analytics import reconcile_official_tokens
 from evaluation.campaign_engine import CampaignEngine
 from evaluation.campaign_schemas import (
@@ -1131,6 +1136,168 @@ async def test_v9_campaign_persists_measured_provider_phase_without_legacy_fallb
 
 
 @pytest.mark.asyncio
+async def test_v9_campaign_persists_default_visual_and_final_provider_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Provider:
+        async def ainvoke(self, messages: object) -> object:
+            user_message = messages[1]
+            content = user_message["content"]
+            if isinstance(content, list):
+                binding = json.loads(content[0]["text"])
+                return SimpleNamespace(
+                    content={
+                        "schema_version": "1",
+                        "evidence_id": "visual-evidence-1",
+                        "task_id": binding["task_id"],
+                        "round_id": binding["round_id"],
+                        "query_id": binding["query_id"],
+                        "slot_ids": binding["target_slot_ids"],
+                        "statement": "The table reports 0.91.",
+                        "support_type": "direct",
+                        "source": binding["source"],
+                        "scope": {},
+                        "locator": binding["locator"],
+                        "validation_status": "deterministic_valid",
+                    },
+                    usage_metadata={
+                        "input_tokens": 2,
+                        "output_tokens": 1,
+                        "total_tokens": 3,
+                    },
+                )
+            return SimpleNamespace(
+                content="The table reports 0.91.",
+                usage_metadata={
+                    "input_tokens": 4,
+                    "output_tokens": 2,
+                    "total_tokens": 6,
+                },
+            )
+
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        route="exact_structured",
+        intent="table value",
+        required_slots=[RequiredSlot(slot_id="S1", description="table value")],
+        visual_required=True,
+        evidence_extraction_required=True,
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=3,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+
+    async def admission(**_kwargs) -> V9AdmissionContract:
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(
+        "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract", admission
+    )
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        runtime_result = await AgenticV9CampaignRuntime(
+            retrieve_documents=AsyncMock(
+                return_value=[
+                    Document(
+                        page_content="The table reports 0.91.",
+                        metadata={
+                            "doc_id": "doc-1",
+                            "chunk_id": "chunk-1",
+                            "page_number": 0,
+                            "page_image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mNk+M/wHwAF/gL+f4eP0QAAAABJRU5ErkJggg==",
+                            "page_encoded_bytes": 70,
+                            "page_width": 1,
+                            "page_height": 1,
+                            "table_id": "table-1",
+                        },
+                    )
+                ]
+            ),
+            provider_factory=lambda _purpose: Provider(),
+            document_reference_resolver=lambda _user_id, references: asyncio.sleep(
+                0, result={reference: reference for reference in references}
+            ),
+        ).execute(
+            question=kwargs["test_case"].question,
+            user_id=kwargs["user_id"],
+            authorized_doc_ids=["doc-1"],
+            setup_snapshot={
+                "max_input_tokens": 4096,
+                "max_output_tokens": 256,
+                "thinking_mode": False,
+                "provider": "gemini",
+                "model_name": "gemini-2.5-flash",
+            },
+            trace_id="visual-phase-trace",
+        )
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer=runtime_result.answer,
+            contexts=[document.page_content for document in runtime_result.documents],
+            source_doc_ids=list(runtime_result.source_doc_ids),
+            token_usage=dict(runtime_result.usage),
+            execution_profile="agentic-v9-eval",
+            agentic_execution_version="v9",
+            agent_trace=runtime_result.agent_trace,
+        )
+
+    db_path = _make_db_path()
+    test_case = TestCase(
+        id="Q-V9-VISUAL-PHASES",
+        question="What does the table report?",
+        ground_truth="The table reports 0.91.",
+    )
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        observability_repo = EvaluationObservabilityRepository()
+        config = _campaign_config_for_test_case_ids([test_case.id], modes=["agentic"])
+        config.agentic_execution_version = "v9"
+        campaign = await campaign_repo.create(
+            user_id="user-a", name="V9 visual provider phases", config=config
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+        await engine._run_campaign(
+            user_id="user-a",
+            campaign_id=campaign.id,
+            config=campaign.config,
+            test_cases=[test_case],
+        )
+        result = (
+            await result_repo.list_for_campaign(
+                user_id="user-a", campaign_id=campaign.id
+            )
+        )[0]
+        calls = await observability_repo.list_llm_calls_for_run(result.id)
+
+    assert [(call.phase, call.provider, call.model_name) for call in calls] == [
+        ("visual_extract", "gemini", "gemini-2.5-flash"),
+        ("final_answer", "gemini", "gemini-2.5-flash"),
+    ]
+    reconciliation = reconcile_official_tokens(
+        runtime_total_tokens=result.total_tokens,
+        calls=calls,
+        observability_partial_reasons=result.derived_metrics[
+            "observability_partial_reasons"
+        ],
+    )
+    assert result.total_tokens == 9
+    assert reconciliation.status == "complete"
+    assert reconciliation.provider_total_tokens == 9
+    assert reconciliation.by_phase == {"visual_extract": 3, "final_answer": 6}
+
+
+@pytest.mark.asyncio
 async def test_v9_campaign_keeps_runtime_total_when_provider_phase_total_mismatches() -> None:
     class Provider:
         async def ainvoke(self, messages: object) -> object:
@@ -1559,6 +1726,12 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks()
                 "This context was not instrumented.",
             ],
             source_doc_ids=["doc-a", "doc-a", "doc-b", "doc-missing"],
+            source_chunk_ids=[
+                "runtime-a-second",
+                "runtime-a-first",
+                "runtime-b",
+                None,
+            ],
             expected_sources=["doc-a"],
             latency_ms=11,
             token_usage={"total_tokens": 20},
@@ -1665,20 +1838,20 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks()
         ("doc-missing", "This context was not instrumented."),
     ]
     assert [chunk.rank_before_rerank for chunk in chunks_by_context_order] == [
-        8,
         3,
+        8,
         5,
         None,
     ]
     assert [chunk.rank_after_rerank for chunk in chunks_by_context_order] == [
-        4,
         1,
+        4,
         2,
         None,
     ]
     assert [chunk.rerank_score for chunk in chunks_by_context_order] == [
-        0.31,
         0.91,
+        0.31,
         0.82,
         None,
     ]

@@ -576,7 +576,7 @@ def _consume_v9_rerank_diagnostic(
     *,
     doc_id: str | None,
     selected_content_hash: str,
-    chunk_id: str | None,
+    source_chunk_id: str | None,
 ) -> dict[str, Any] | None:
     if doc_id is None:
         return None
@@ -584,12 +584,18 @@ def _consume_v9_rerank_diagnostic(
     if not matches:
         return None
 
-    if chunk_id is not None:
+    if source_chunk_id is not None:
         for index, diagnostic in enumerate(matches):
             diagnostic_chunk_id = diagnostic.get("chunk_id")
-            if diagnostic_chunk_id not in (None, "") and diagnostic_chunk_id == chunk_id:
+            if (
+                diagnostic_chunk_id not in (None, "")
+                and diagnostic_chunk_id == source_chunk_id
+            ):
                 return matches.pop(index)
-    return matches.pop(0)
+        return None
+    if len(matches) == 1:
+        return matches.pop()
+    return None
 
 
 async def _resolve_expected_source_document_ids(
@@ -966,13 +972,18 @@ async def _record_unit_research_observability(
             if index - 1 < len(execution.payload.source_doc_ids)
             else None
         )
-        chunk_id = f"{run_id}:chunk:{index}"
+        durable_chunk_id = f"{run_id}:chunk:{index}"
+        source_chunk_id = (
+            execution.payload.source_chunk_ids[index - 1]
+            if index - 1 < len(execution.payload.source_chunk_ids)
+            else None
+        )
         selected_content_hash = content_hash(context)
         rerank_diagnostic = _consume_v9_rerank_diagnostic(
             rerank_diagnostics_by_context,
             doc_id=doc_id,
             selected_content_hash=selected_content_hash,
-            chunk_id=chunk_id,
+            source_chunk_id=source_chunk_id,
         )
         expected_match = (
             expected_evidence_matches_doc(
@@ -997,7 +1008,7 @@ async def _record_unit_research_observability(
                 campaign_id=campaign_id,
                 span_id=root_span_id,
                 retrieval_event_id=retrieval_event_id,
-                chunk_id=chunk_id,
+                chunk_id=durable_chunk_id,
                 doc_id=doc_id,
                 rank_before_rerank=(
                     rerank_diagnostic.get("rank_before_rerank")

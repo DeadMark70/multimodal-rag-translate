@@ -126,7 +126,7 @@ class AgenticV9CampaignRuntime:
     ) -> None:
         self._retrieve_documents = retrieve_documents or _retrieve_documents
         self._graph_locator = graph_locator or _locate_graph_documents
-        self._visual_extractor = visual_extractor or _extract_visual_evidence
+        self._visual_extractor = visual_extractor
         self._provider_factory = provider_factory or _provider_for_purpose
         self._policy_runtime = policy_runtime or V9ExecutionPolicyRuntime()
         self._document_reference_resolver = (
@@ -279,9 +279,25 @@ class AgenticV9CampaignRuntime:
                     controller = state["budget_controller"]
                     assert isinstance(controller, RunBudgetController)
                     try:
-                        visual_result = await self._visual_extractor(
-                            task, docs, question, controller
-                        )
+                        if self._visual_extractor is not None:
+                            visual_result = await self._visual_extractor(
+                                task, docs, question, controller
+                            )
+                        else:
+                            visual_result = await _extract_visual_evidence(
+                                task,
+                                docs,
+                                question,
+                                controller,
+                                observer=llm_call_observer,
+                                provider_factory=self._provider_factory,
+                                provider_name=str(
+                                    setup_snapshot.get("provider") or "unknown"
+                                ),
+                                model_name=str(
+                                    setup_snapshot.get("model_name") or "unknown"
+                                ),
+                            )
                     except (
                         Exception
                     ) as error:  # Stage admitted; preserve partial answer.
@@ -839,12 +855,20 @@ async def _extract_visual_evidence(
     documents: list[Document],
     question: str,
     controller: RunBudgetController,
+    *,
+    observer: LlmCallObserver | None = None,
+    provider_factory: ProviderFactory | None = None,
+    provider_name: str = "unknown",
+    model_name: str = "unknown",
 ) -> VisualEvidenceExtractionResult:
     """Extract only selected, source-bound visual evidence from retrieved docs."""
     extractor = VisualEvidenceExtractor(
         BudgetedLlmInvoker(
             controller=controller,
-            provider_factory=_provider_for_purpose,
+            provider_factory=provider_factory or _provider_for_purpose,
+            observer=observer,
+            provider_name=provider_name,
+            model_name=model_name,
         )
     )
     return await extractor.extract(
