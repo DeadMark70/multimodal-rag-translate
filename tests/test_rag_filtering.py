@@ -87,7 +87,7 @@ def test_filtering_and_reranking_preserve_ranks_thresholds_and_rejections() -> N
     }
 
 
-def test_unavailable_reranker_keeps_legacy_candidates_and_uses_none_scores() -> None:
+def test_unavailable_reranker_preserves_original_top_k_with_none_scores() -> None:
     first = Document(page_content="First", metadata={"doc_id": "one"})
     second = Document(page_content="Second", metadata={"doc_id": "two"})
     retrieval = RagRetrievalResult(documents=[first, second])
@@ -100,7 +100,7 @@ def test_unavailable_reranker_keeps_legacy_candidates_and_uses_none_scores() -> 
         target_k=1,
     )
 
-    assert result.documents == [first, second]
+    assert result.documents == [first]
     assert result.metadata["filtering"]["thresholds"]["relevance_score"] is None
     assert result.metadata["reranking"] == {
         "enabled": True,
@@ -117,21 +117,22 @@ def test_unavailable_reranker_keeps_legacy_candidates_and_uses_none_scores() -> 
                 "metadata": {"doc_id": "one"},
                 "score": None,
             },
+        ],
+        "rejected_candidates": [
             {
                 "rank": 2,
-                "pre_rerank_rank": 2,
                 "metadata": {"doc_id": "two"},
                 "score": None,
-            },
+                "reason": "selection_limit",
+            }
         ],
-        "rejected_candidates": [],
     }
 
 
-def test_unavailable_reranker_preserves_all_thirteen_filtered_documents() -> None:
+def test_unavailable_reranker_caps_candidates_to_requested_target() -> None:
     documents = [
         Document(page_content=f"Document {index}", metadata={"doc_id": str(index)})
-        for index in range(13)
+        for index in range(8)
     ]
 
     result = filter_and_rerank_retrieval(
@@ -139,15 +140,22 @@ def test_unavailable_reranker_preserves_all_thirteen_filtered_documents() -> Non
         RagRetrievalResult(documents=documents),
         enable_reranking=True,
         reranker_available=False,
-        max_candidates=12,
+        target_k=4,
+        max_candidates=8,
     )
 
-    assert result.documents == documents
-    assert result.metadata["reranking"]["candidate_count"] == 13
-    assert [row["metadata"]["doc_id"] for row in result.metadata["reranking"]["pre_rerank_ranks"]] == [
-        str(index) for index in range(13)
+    assert result.documents == documents[:4]
+    assert result.metadata["reranking"]["candidate_count"] == 8
+    assert [
+        row["metadata"]["doc_id"]
+        for row in result.metadata["reranking"]["pre_rerank_ranks"]
+    ] == [
+        str(index) for index in range(8)
     ]
-    assert result.metadata["reranking"]["rejected_candidates"] == []
+    assert all(
+        row["score"] is None
+        for row in result.metadata["reranking"]["post_rerank_ranks"]
+    )
 
 
 def test_strict_reranking_propagates_an_injected_scoring_failure() -> None:

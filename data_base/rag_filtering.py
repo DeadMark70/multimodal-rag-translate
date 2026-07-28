@@ -171,7 +171,12 @@ def _select_documents(
         return selected, _post_rerank_rows(selected, documents, scores), rejections
 
     if enable_reranking:
-        return list(documents), _post_rerank_rows(documents, documents, {}), []
+        selected = documents[:target_k]
+        return (
+            selected,
+            _post_rerank_rows(selected, documents, {}),
+            _selection_rejections(documents, selected),
+        )
 
     if requested_doc_ids and len(requested_doc_ids) > 1:
         selected = _fair_multi_document_selection(
