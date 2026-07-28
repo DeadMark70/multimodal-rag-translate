@@ -34,6 +34,51 @@ class _DocumentsQuery:
         return SimpleNamespace(data=self._rows_by_field[self._field])
 
 
+class _OwnedDocumentsQuery:
+    def __init__(self) -> None:
+        self.user_ids: list[str] = []
+
+    def select(self, columns: str) -> _OwnedDocumentsQuery:
+        assert columns == "id"
+        return self
+
+    def eq(self, field: str, value: str) -> _OwnedDocumentsQuery:
+        assert field == "user_id"
+        self.user_ids.append(value)
+        return self
+
+    def execute(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            data=[
+                {"id": "doc-2"},
+                {"id": "doc-1"},
+                {"id": "doc-1"},
+                {"id": None},
+            ]
+        )
+
+
+@pytest.mark.asyncio
+async def test_list_owned_document_ids_returns_only_the_users_unique_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query = _OwnedDocumentsQuery()
+
+    async def fake_execute(*, handler, **_kwargs):
+        return handler(SimpleNamespace(table=lambda name: _table(name, query)))
+
+    def _table(name: str, result: _OwnedDocumentsQuery) -> _OwnedDocumentsQuery:
+        assert name == "documents"
+        return result
+
+    monkeypatch.setattr(repository, "execute_supabase_operation", fake_execute)
+
+    document_ids = await repository.list_owned_document_ids(user_id="user-a")
+
+    assert document_ids == ["doc-1", "doc-2"]
+    assert query.user_ids == ["user-a"]
+
+
 @pytest.mark.asyncio
 async def test_resolve_document_references_maps_filename_and_uuid_without_hiding_ambiguity(
     monkeypatch: pytest.MonkeyPatch,

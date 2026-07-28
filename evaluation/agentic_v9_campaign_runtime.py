@@ -67,10 +67,14 @@ from data_base.vector_store_manager import get_user_retriever_async
 from evaluation.agentic_campaign_adapter import used_evidence_documents
 from evaluation.agentic_v9_admission import (
     DocumentReferenceResolver,
+    OwnedDocumentIdsResolver,
     build_v9_admission_contract,
 )
 from evaluation.observability import current_llm_call_observer
-from evaluation.retrieval_profiles import AGENTIC_EVAL_PROFILE
+from evaluation.retrieval_profiles import (
+    AGENTIC_EVAL_PROFILE,
+    AGENTIC_V9_OPEN_CORPUS_PROFILE,
+)
 
 
 RetrievalAdapter = Callable[[str, str, list[str]], Awaitable[list[Document]]]
@@ -104,6 +108,7 @@ class AgenticV9CampaignRuntime:
         provider_factory: ProviderFactory | None = None,
         policy_runtime: V9ExecutionPolicyRuntime | None = None,
         document_reference_resolver: DocumentReferenceResolver | None = None,
+        owned_document_ids_resolver: OwnedDocumentIdsResolver | None = None,
         llm_call_observer: LlmCallObserver | None = None,
     ) -> None:
         self._retrieve_documents = retrieve_documents or _retrieve_documents
@@ -114,6 +119,9 @@ class AgenticV9CampaignRuntime:
         self._document_reference_resolver = (
             document_reference_resolver or _resolve_document_references
         )
+        self._owned_document_ids_resolver = (
+            owned_document_ids_resolver or _list_owned_document_ids
+        )
         self._llm_call_observer = llm_call_observer
 
     async def execute(
@@ -121,7 +129,7 @@ class AgenticV9CampaignRuntime:
         *,
         question: str,
         user_id: str,
-        authorized_doc_ids: list[str],
+        authorized_doc_ids: list[str] | None,
         setup_snapshot: dict[str, Any],
         trace_id: str,
     ) -> RAGResult:
@@ -131,6 +139,12 @@ class AgenticV9CampaignRuntime:
         or provider work).  The contract adapter repeats admission immediately
         after planning, before the core can start retrieval.
         """
+        open_user_corpus = authorized_doc_ids is None
+        execution_profile = (
+            AGENTIC_V9_OPEN_CORPUS_PROFILE
+            if open_user_corpus
+            else AGENTIC_EVAL_PROFILE
+        )
         pre_route = validate_pre_route_feasibility(
             setup_snapshot=setup_snapshot,
             remaining_token_budget=_pre_route_token_budget(setup_snapshot),
@@ -142,6 +156,7 @@ class AgenticV9CampaignRuntime:
                 trace_id=trace_id,
                 stage="pre_route",
                 feasibility=pre_route,
+                execution_profile=execution_profile,
             )
 
         admission = await build_v9_admission_contract(
@@ -149,6 +164,7 @@ class AgenticV9CampaignRuntime:
             user_id=user_id,
             source_references=authorized_doc_ids,
             document_reference_resolver=self._document_reference_resolver,
+            owned_document_ids_resolver=self._owned_document_ids_resolver,
             setup_policy=setup_snapshot,
         )
         source_scope = admission.source_scope
@@ -440,6 +456,7 @@ class AgenticV9CampaignRuntime:
                 stage=error.stage,
                 feasibility=error.feasibility,
                 contract=state["contract"],
+                execution_profile=execution_profile,
             )
 
         controller = state["budget_controller"]
@@ -484,10 +501,18 @@ class AgenticV9CampaignRuntime:
             "trace_id": trace_id,
             "mode": "agentic",
             "agentic_execution_version": "v9",
-            "execution_profile": AGENTIC_EVAL_PROFILE,
+            "execution_profile": execution_profile,
             "response_status": final.response_status,
             "agentic_v9": {
                 "schema_version": "1",
+                "retrieval_scope": {
+                    "policy": (
+                        "open_user_corpus"
+                        if open_user_corpus
+                        else "explicit_source_scope"
+                    ),
+                    "expected_sources_used_at_runtime": False,
+                },
                 "query_contract": state["contract"].model_dump(mode="json"),
                 "evidence_packets": [packet.model_dump(mode="json") for packet in state["evidence_packets"]],
                 "slot_resolutions": [
@@ -750,6 +775,12 @@ async def _resolve_document_references(
     return await resolve_document_references(user_id=user_id, references=references)
 
 
+async def _list_owned_document_ids(user_id: str) -> list[str]:
+    from data_base.repository import list_owned_document_ids
+
+    return await list_owned_document_ids(user_id=user_id)
+
+
 def _provider_for_purpose(_: str) -> Any:
     return get_llm("synthesizer")
 
@@ -824,6 +855,7 @@ def _configuration_incompatible_result(
     stage: str,
     feasibility: FeasibilityResult,
     contract: QueryContract | None = None,
+    execution_profile: str = AGENTIC_EVAL_PROFILE,
 ) -> RAGResult:
     reason = feasibility.reason or "configuration_incompatible"
     return RAGResult(
@@ -835,7 +867,7 @@ def _configuration_incompatible_result(
             "trace_id": trace_id,
             "mode": "agentic",
             "agentic_execution_version": "v9",
-            "execution_profile": AGENTIC_EVAL_PROFILE,
+            "execution_profile": execution_profile,
             "response_status": "configuration_incompatible",
             "agentic_v9": {
                 "schema_version": "1",

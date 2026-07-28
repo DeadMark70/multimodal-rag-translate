@@ -10,6 +10,7 @@ from langchain_core.documents import Document
 
 from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
 from evaluation.agentic_v9_admission import V9AdmissionContract
+from evaluation.retrieval_profiles import AGENTIC_V9_OPEN_CORPUS_PROFILE
 from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
@@ -82,6 +83,49 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     assert result.documents
     retrieve_documents.assert_awaited()
     provider.ainvoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_v9_campaign_runtime_resolves_open_corpus_from_user_acl() -> None:
+    provider = _Provider()
+    retrieve_documents = AsyncMock(
+        return_value=[
+            Document(
+                page_content="The source reports a score of 0.91.",
+                metadata={"doc_id": "doc-2", "page_number": 2, "chunk_id": "chunk-1"},
+            )
+        ]
+    )
+    reference_resolver = AsyncMock()
+    owned_document_ids_resolver = AsyncMock(return_value=["doc-2", "doc-1"])
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve_documents,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=reference_resolver,
+        owned_document_ids_resolver=owned_document_ids_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What is the reported score?",
+        user_id="user-a",
+        authorized_doc_ids=None,
+        setup_snapshot=_setup(),
+        trace_id="attempt-trace-open-corpus",
+    )
+
+    owned_document_ids_resolver.assert_awaited_once_with("user-a")
+    reference_resolver.assert_not_awaited()
+    retrieved_scope = retrieve_documents.await_args.args[2]
+    assert retrieved_scope == ["doc-1", "doc-2"]
+    assert result.agent_trace["execution_profile"] == AGENTIC_V9_OPEN_CORPUS_PROFILE
+    assert result.agent_trace["agentic_v9"]["retrieval_scope"] == {
+        "policy": "open_user_corpus",
+        "expected_sources_used_at_runtime": False,
+    }
+    assert result.agent_trace["agentic_v9"]["query_contract"][
+        "resolved_source_scope"
+    ]["authorized_doc_ids"] == ["doc-1", "doc-2"]
+    assert result.documents
 
 
 @pytest.mark.asyncio

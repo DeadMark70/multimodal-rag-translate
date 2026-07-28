@@ -263,8 +263,13 @@ async def test_v9_campaign_case_uses_the_typed_v9_runtime_not_the_v8_service() -
         )
 
     runtime_cls.return_value.execute.assert_awaited_once()
+    assert (
+        runtime_cls.return_value.execute.await_args.kwargs["authorized_doc_ids"]
+        is None
+    )
     v8_service_cls.assert_not_called()
     assert result.agentic_execution_version == "v9"
+    assert result.expected_sources == ["doc-1"]
 
 
 @pytest.mark.asyncio

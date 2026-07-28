@@ -75,6 +75,25 @@ async def fetch_document_filenames(doc_ids: list[str]) -> dict[str, str]:
     return name_map
 
 
+async def list_owned_document_ids(user_id: str) -> list[str]:
+    """Return the canonical IDs in one user's authorized document corpus."""
+    response = await execute_supabase_operation(
+        operation="list_owned_document_ids",
+        failure_message="Failed to load the authorized document corpus",
+        handler=lambda client: client.table("documents")
+            .select("id")
+            .eq("user_id", user_id)
+            .execute(),
+    )
+    return sorted(
+        {
+            document_id
+            for row in response.data or []
+            if isinstance((document_id := row.get("id")), str) and document_id
+        }
+    )
+
+
 async def resolve_document_references(
     user_id: str, references: list[str]
 ) -> dict[str, list[str]]:

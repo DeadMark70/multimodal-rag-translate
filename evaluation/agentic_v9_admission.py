@@ -8,12 +8,13 @@ from dataclasses import dataclass
 from data_base.agentic_v9.route_planner import plan_query_contract
 from data_base.agentic_v9.schemas import QueryContract, ResolvedSourceScope
 from data_base.agentic_v9.source_scope_resolver import SourceScopeResolver
-from data_base.repository import resolve_document_references
+from data_base.repository import list_owned_document_ids, resolve_document_references
 
 
 DocumentReferenceResolver = Callable[
     [str, list[str]], Awaitable[Mapping[str, str | Iterable[str]]]
 ]
+OwnedDocumentIdsResolver = Callable[[str], Awaitable[Iterable[str]]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,11 +29,31 @@ async def build_v9_admission_contract(
     *,
     question: str,
     user_id: str,
-    source_references: list[str],
+    source_references: list[str] | None,
     document_reference_resolver: DocumentReferenceResolver = resolve_document_references,
+    owned_document_ids_resolver: OwnedDocumentIdsResolver = list_owned_document_ids,
     setup_policy: Mapping[str, object] | None = None,
 ) -> V9AdmissionContract:
-    """Resolve test-case references before creating the real runtime contract."""
+    """Build a contract from either the user's corpus or an explicit scope."""
+    if source_references is None:
+        authorized_doc_ids = sorted(
+            {
+                document_id
+                for document_id in await owned_document_ids_resolver(user_id)
+                if isinstance(document_id, str) and document_id
+            }
+        )
+        source_scope = ResolvedSourceScope(
+            resolved_doc_ids=authorized_doc_ids,
+            authorized_doc_ids=authorized_doc_ids,
+        )
+        contract = await plan_query_contract(
+            question=question,
+            resolved_source_scope=source_scope,
+            setup_policy=dict(setup_policy or {}),
+        )
+        return V9AdmissionContract(source_scope=source_scope, contract=contract)
+
     references = list(dict.fromkeys(value for value in source_references if value))
     name_to_doc_ids = await document_reference_resolver(user_id, references)
     authorized_doc_ids = sorted(
@@ -60,6 +81,7 @@ async def build_v9_admission_contract(
 
 __all__ = [
     "DocumentReferenceResolver",
+    "OwnedDocumentIdsResolver",
     "V9AdmissionContract",
     "build_v9_admission_contract",
 ]

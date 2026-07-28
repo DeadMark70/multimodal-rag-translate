@@ -18,6 +18,9 @@ GRAPH_EVAL_PROFILE = (
 AGENTIC_EVAL_PROFILE = (
     f"agentic_eval_v8_multiquery_locator_{DEFAULT_PRODUCTION_INDEXING_PROFILE}"
 )
+AGENTIC_V9_OPEN_CORPUS_PROFILE = (
+    f"agentic_eval_v9_open_corpus_rerank_off_{DEFAULT_PRODUCTION_INDEXING_PROFILE}"
+)
 AGENTIC_LEGACY_CHAT_PROFILE = (
     f"agentic_eval_v7_semantic_router_{DEFAULT_PRODUCTION_INDEXING_PROFILE}"
 )

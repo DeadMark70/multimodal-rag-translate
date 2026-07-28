@@ -388,7 +388,7 @@ async def run_campaign_case(
                 user_id=user_id,
                 run_number=run_number,
                 agentic_execution_version=agentic_execution_version,
-                authorized_doc_ids=list(test_case.source_docs),
+                authorized_doc_ids=None,
                 setup_snapshot=dict(model_config),
             )
         else:
@@ -470,7 +470,11 @@ async def _run_agentic_case(
         return await AgenticV9CampaignRuntime().execute(
             question=question,
             user_id=user_id,
-            authorized_doc_ids=list(authorized_doc_ids or []),
+            authorized_doc_ids=(
+                list(authorized_doc_ids)
+                if authorized_doc_ids is not None
+                else None
+            ),
             setup_snapshot=dict(setup_snapshot or {}),
             trace_id=f"campaign:{question_id}:{run_number}:{uuid4()}",
         )
