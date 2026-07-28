@@ -441,36 +441,109 @@ class EvaluationJobStore:
             try:
                 cursor = await connection.execute(
                     """
-                    SELECT ji.id AS job_item_id, ji.job_id, ji.work_item_id,
-                           wi.input_snapshot_json, wi.work_type, wi.logical_key, ji.created_at
-                    FROM evaluation_job_items AS ji
-                    JOIN evaluation_work_items AS wi ON wi.id = ji.work_item_id
-                    WHERE (
-                        ji.status = 'pending'
-                        OR (ji.status = 'retry_wait' AND ji.next_retry_at <= ?)
-                    )
-                    AND (? IS NULL OR wi.work_type = ?)
-                    AND NOT EXISTS (
-                        SELECT 1
-                        FROM evaluation_job_items AS active
-                        WHERE active.work_item_id = ji.work_item_id
-                          AND active.status IN ('pending', 'running', 'retry_wait')
-                          AND (
-                              active.status = 'running'
-                              OR active.created_at < ji.created_at
-                              OR (
-                                  active.created_at = ji.created_at
-                                  AND active.id < ji.id
+                    WITH ready_items AS (
+                        SELECT
+                            ji.id AS job_item_id,
+                            ji.job_id,
+                            ji.work_item_id,
+                            wi.input_snapshot_json,
+                            wi.work_type,
+                            wi.logical_key,
+                            ji.created_at,
+                            job.campaign_id,
+                            CASE
+                                WHEN json_type(
+                                    job.config_snapshot_json,
+                                    '$.batch_size'
+                                ) IS NULL THEN 4
+                                ELSE MIN(
+                                    4,
+                                    MAX(
+                                        1,
+                                        COALESCE(
+                                            CAST(
+                                                json_extract(
+                                                    job.config_snapshot_json,
+                                                    '$.batch_size'
+                                                ) AS INTEGER
+                                            ),
+                                            1
+                                        )
+                                    )
+                                )
+                            END AS campaign_batch_size,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY job.campaign_id, wi.work_type
+                                ORDER BY ji.created_at ASC, ji.id ASC
+                            ) AS campaign_ready_rank
+                        FROM evaluation_job_items AS ji
+                        JOIN evaluation_work_items AS wi ON wi.id = ji.work_item_id
+                        JOIN evaluation_jobs AS job ON job.id = ji.job_id
+                        WHERE (
+                            ji.status = 'pending'
+                            OR (
+                                ji.status = 'retry_wait'
+                                AND ji.next_retry_at <= ?
+                            )
+                        )
+                        AND (? IS NULL OR wi.work_type = ?)
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM evaluation_job_items AS active
+                            WHERE active.work_item_id = ji.work_item_id
+                              AND active.status IN (
+                                  'pending',
+                                  'running',
+                                  'retry_wait'
                               )
-                          )
+                              AND (
+                                  active.status = 'running'
+                                  OR active.created_at < ji.created_at
+                                  OR (
+                                      active.created_at = ji.created_at
+                                      AND active.id < ji.id
+                                  )
+                              )
+                        )
+                    ),
+                    admitted_items AS (
+                        SELECT
+                            ready.*,
+                            (
+                                SELECT COUNT(*)
+                                FROM evaluation_job_items AS active
+                                JOIN evaluation_jobs AS active_job
+                                  ON active_job.id = active.job_id
+                                JOIN evaluation_work_items AS active_work
+                                  ON active_work.id = active.work_item_id
+                                WHERE active_job.campaign_id = ready.campaign_id
+                                  AND active.status = 'running'
+                                  AND active_work.work_type = ?
+                            ) AS campaign_running_count
+                        FROM ready_items AS ready
                     )
-                    ORDER BY ji.created_at ASC, ji.id ASC
+                    SELECT
+                        job_item_id,
+                        job_id,
+                        work_item_id,
+                        input_snapshot_json,
+                        work_type,
+                        logical_key,
+                        created_at
+                    FROM admitted_items
+                    WHERE work_type != ?
+                       OR campaign_ready_rank <= (
+                           campaign_batch_size - campaign_running_count
+                       )
+                    ORDER BY created_at ASC, job_item_id ASC
                     LIMIT ?
                     """,
                     (
                         now_iso,
                         _enum_value(work_type) if work_type is not None else None,
                         _enum_value(work_type) if work_type is not None else None,
+                        _enum_value(EvaluationWorkType.DATASET_EXECUTION),
+                        _enum_value(EvaluationWorkType.DATASET_EXECUTION),
                         limit,
                     ),
                 )

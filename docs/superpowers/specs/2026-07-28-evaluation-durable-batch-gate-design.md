@@ -19,8 +19,9 @@ Enforce `batch_size` when durable dataset work is claimed:
   ceiling and permits independent campaigns to make progress concurrently.
 - Apply a per-campaign admission limit to `dataset_execution` work only.
 - Read the limit from each job's immutable `config_snapshot_json`.
-- Default missing or invalid values to one and clamp values to the supported
-  range of one through four.
+- Preserve the historical limit of four for legacy snapshots where the field
+  is absent. Treat malformed explicit values conservatively and clamp explicit
+  values to the supported range of one through four.
 - Count all currently running dataset items for the same campaign, including
   items belonging to another job for that campaign.
 - Admit only the remaining capacity for each campaign.
@@ -47,4 +48,3 @@ remaining capacity before the global ordering and limit are applied.
 - Two campaigns with `batch_size=1` may each run one item concurrently.
 - Completing, failing, or cancelling a running item releases its campaign slot.
 - RAGAS claim behavior and same-work-item exclusion remain unchanged.
-

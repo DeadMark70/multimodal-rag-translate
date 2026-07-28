@@ -1217,6 +1217,182 @@ async def test_retryable_failure_without_schedule_uses_a_claimable_default_backo
 
 
 @pytest.mark.asyncio
+async def test_dataset_claim_respects_campaign_batch_size_one(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    await store.create_job_with_items(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="initial",
+        selection={},
+        config_snapshot={"batch_size": 1},
+        items=[
+            _spec(logical_key="execution:Q1:agentic:1:batch-one"),
+            _spec(logical_key="execution:Q2:agentic:1:batch-one"),
+        ],
+    )
+
+    first_claims = await store.claim_ready_items(
+        limit=4, now=fixed_now, work_type="dataset_execution"
+    )
+
+    assert len(first_claims) == 1
+    assert (
+        await store.claim_ready_items(
+            limit=4, now=fixed_now, work_type="dataset_execution"
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_dataset_claim_respects_campaign_batch_size_two(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    await store.create_job_with_items(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="initial",
+        selection={},
+        config_snapshot={"batch_size": 2},
+        items=[
+            _spec(logical_key="execution:Q1:agentic:1:batch-two"),
+            _spec(logical_key="execution:Q2:agentic:1:batch-two"),
+            _spec(logical_key="execution:Q3:agentic:1:batch-two"),
+        ],
+    )
+
+    first_claims = await store.claim_ready_items(
+        limit=4, now=fixed_now, work_type="dataset_execution"
+    )
+
+    assert len(first_claims) == 2
+    assert (
+        await store.claim_ready_items(
+            limit=4, now=fixed_now, work_type="dataset_execution"
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_dataset_claim_allows_capacity_for_independent_campaigns(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            """
+            INSERT INTO campaigns (
+                id, user_id, name, status, config_json, created_at, updated_at
+            ) VALUES (?, ?, NULL, ?, '{}', ?, ?)
+            """,
+            (
+                "cmp-2",
+                "user-a",
+                "pending",
+                "2026-07-14T00:00:00+00:00",
+                "2026-07-14T00:00:00+00:00",
+            ),
+        )
+        await connection.commit()
+    first_job = await store.create_job_with_items(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="initial",
+        selection={},
+        config_snapshot={"batch_size": 1},
+        items=[
+            _spec(logical_key="execution:Q1:agentic:1:first-campaign"),
+            _spec(logical_key="execution:Q2:agentic:1:first-campaign"),
+        ],
+    )
+    second_job = await store.create_job_with_items(
+        user_id="user-a",
+        campaign_id="cmp-2",
+        job_type="initial",
+        selection={},
+        config_snapshot={"batch_size": 1},
+        items=[
+            _spec(logical_key="execution:Q1:agentic:1:second-campaign"),
+            _spec(logical_key="execution:Q2:agentic:1:second-campaign"),
+        ],
+    )
+
+    claims = await store.claim_ready_items(
+        limit=4, now=fixed_now, work_type="dataset_execution"
+    )
+
+    assert len(claims) == 2
+    assert {claim.job_id for claim in claims} == {first_job.job_id, second_job.job_id}
+
+
+@pytest.mark.asyncio
+async def test_terminal_dataset_attempt_releases_campaign_batch_slot(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    await store.create_job_with_items(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="initial",
+        selection={},
+        config_snapshot={"batch_size": 1},
+        items=[
+            _spec(logical_key="execution:Q1:agentic:1:release-slot"),
+            _spec(logical_key="execution:Q2:agentic:1:release-slot"),
+        ],
+    )
+    first_claim = (
+        await store.claim_ready_items(
+            limit=4, now=fixed_now, work_type="dataset_execution"
+        )
+    )[0]
+
+    await store.cancel_attempt(first_claim, safe_message="Cancelled by test.")
+    second_claims = await store.claim_ready_items(
+        limit=4, now=fixed_now, work_type="dataset_execution"
+    )
+
+    assert len(second_claims) == 1
+    assert second_claims[0].work_item_id != first_claim.work_item_id
+
+
+@pytest.mark.asyncio
+async def test_dataset_batch_gate_does_not_limit_ragas_claims(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    await store.create_job_with_items(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="initial",
+        selection={},
+        config_snapshot={"batch_size": 1},
+        items=[
+            _spec(logical_key="execution:Q1:agentic:1:ragas-independent"),
+            WorkItemSpec(
+                work_type="ragas_metric",
+                logical_key="ragas:Q1:faithfulness:batch-independent",
+                input_snapshot={"metric_name": "faithfulness"},
+            ),
+            WorkItemSpec(
+                work_type="ragas_metric",
+                logical_key="ragas:Q1:correctness:batch-independent",
+                input_snapshot={"metric_name": "answer_correctness"},
+            ),
+        ],
+    )
+    dataset_claim = await store.claim_ready_items(
+        limit=1, now=fixed_now, work_type="dataset_execution"
+    )
+
+    ragas_claims = await store.claim_ready_items(
+        limit=4, now=fixed_now, work_type="ragas_metric"
+    )
+
+    assert len(dataset_claim) == 1
+    assert len(ragas_claims) == 2
+
+
+@pytest.mark.asyncio
 async def test_claim_excludes_second_non_terminal_job_item_for_same_work_item(
     store, fixed_now
 ) -> None:  # noqa: ANN001
