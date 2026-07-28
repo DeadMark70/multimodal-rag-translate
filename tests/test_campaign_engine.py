@@ -22,6 +22,7 @@ from data_base.agentic_v9.budget_controller import RunBudgetController
 from data_base.agentic_v9.budgeted_llm import invoke_budgeted_llm
 from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.agentic_evaluation_service import AGENTIC_EVAL_PROFILE
+from evaluation.analytics import reconcile_official_tokens
 from evaluation.campaign_engine import CampaignEngine
 from evaluation.campaign_schemas import (
     CampaignConfig,
@@ -1020,6 +1021,214 @@ async def test_llm_observer_write_failure_preserves_answer_and_marks_run_partial
         }
         attempted_call = record_llm_call.await_args_list[0].args[0]
         assert attempted_call.provider == "google"
+
+
+@pytest.mark.asyncio
+async def test_v9_campaign_persists_measured_provider_phase_without_legacy_fallback() -> None:
+    class Provider:
+        async def ainvoke(self, messages: object) -> object:
+            return {
+                "content": "observed answer",
+                "usage_metadata": {
+                    "input_tokens": 2,
+                    "output_tokens": 1,
+                    "total_tokens": 3,
+                },
+            }
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        assert kwargs["agentic_execution_version"] == "v9"
+        observer = current_llm_call_observer()
+        assert observer is not None
+        response = await invoke_budgeted_llm(
+            controller=RunBudgetController(
+                max_llm_calls=1,
+                runtime_token_budget=200,
+                setup_snapshot={"max_output_tokens": 100, "thinking_mode": False},
+                final_input_tokens=100,
+            ),
+            provider=Provider(),
+            observer=observer,
+            provider_name="gemini",
+            model_name="gemini-2.5-flash",
+            phase="final_answer",
+            purpose="agentic_v9_final_answer",
+            messages=[{"role": "user", "content": "answer"}],
+            estimated_input_tokens=100,
+        )
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer=response["content"],
+            token_usage={"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
+            agent_trace={
+                "agentic_v9": {
+                    "budget_reservations": [
+                        {
+                            "reservation_id": "final-answer-reservation",
+                            "phase": "final_answer",
+                            "provider_attempt": 1,
+                            "estimated_input_tokens": 100,
+                            "reserved_output_tokens": 100,
+                        }
+                    ]
+                }
+            },
+        )
+
+    db_path = _make_db_path()
+    test_case = TestCase(
+        id="Q-V9-PHASES",
+        question="Answer?",
+        ground_truth="observed answer",
+    )
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        observability_repo = EvaluationObservabilityRepository()
+        config = _campaign_config_for_test_case_ids([test_case.id], modes=["agentic"])
+        config.agentic_execution_version = "v9"
+        campaign = await campaign_repo.create(
+            user_id="user-a", name="V9 provider phases", config=config
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+
+        await engine._run_campaign(
+            user_id="user-a",
+            campaign_id=campaign.id,
+            config=campaign.config,
+            test_cases=[test_case],
+        )
+
+        result = (
+            await result_repo.list_for_campaign(
+                user_id="user-a", campaign_id=campaign.id
+            )
+        )[0]
+        calls = await observability_repo.list_llm_calls_for_run(result.id)
+
+    assert len(calls) == 1
+    call = calls[0]
+    assert call.phase == "final_answer"
+    assert call.reservation_id
+    assert call.provider_attempt == 1
+    assert call.payload["official_total_tokens"] == 3
+    reconciliation = reconcile_official_tokens(
+        runtime_total_tokens=result.total_tokens,
+        calls=calls,
+        observability_partial_reasons=result.derived_metrics[
+            "observability_partial_reasons"
+        ],
+    )
+    assert result.total_tokens == 3
+    assert reconciliation.provider_total_tokens == 3
+    assert reconciliation.status == "complete"
+    assert reconciliation.by_phase == {"final_answer": 3}
+    assert "unknown" not in reconciliation.by_phase
+
+
+@pytest.mark.asyncio
+async def test_v9_campaign_keeps_runtime_total_when_provider_phase_total_mismatches() -> None:
+    class Provider:
+        async def ainvoke(self, messages: object) -> object:
+            return {
+                "content": "observed answer",
+                "usage_metadata": {
+                    "input_tokens": 2,
+                    "output_tokens": 1,
+                    "total_tokens": 3,
+                },
+            }
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        observer = current_llm_call_observer()
+        assert observer is not None
+        response = await invoke_budgeted_llm(
+            controller=RunBudgetController(
+                max_llm_calls=1,
+                runtime_token_budget=200,
+                setup_snapshot={"max_output_tokens": 100, "thinking_mode": False},
+                final_input_tokens=100,
+            ),
+            provider=Provider(),
+            observer=observer,
+            provider_name="gemini",
+            model_name="gemini-2.5-flash",
+            phase="final_answer",
+            purpose="agentic_v9_final_answer",
+            messages=[{"role": "user", "content": "answer"}],
+            estimated_input_tokens=100,
+        )
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer=response["content"],
+            token_usage={"input_tokens": 2, "output_tokens": 2, "total_tokens": 4},
+            agent_trace={
+                "agentic_v9": {
+                    "budget_reservations": [
+                        {
+                            "reservation_id": "final-answer-reservation",
+                            "phase": "final_answer",
+                            "provider_attempt": 1,
+                            "estimated_input_tokens": 100,
+                            "reserved_output_tokens": 100,
+                        }
+                    ]
+                }
+            },
+        )
+
+    db_path = _make_db_path()
+    test_case = TestCase(
+        id="Q-V9-MISMATCH",
+        question="Answer?",
+        ground_truth="observed answer",
+    )
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        observability_repo = EvaluationObservabilityRepository()
+        config = _campaign_config_for_test_case_ids([test_case.id], modes=["agentic"])
+        config.agentic_execution_version = "v9"
+        campaign = await campaign_repo.create(
+            user_id="user-a", name="V9 provider mismatch", config=config
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+
+        await engine._run_campaign(
+            user_id="user-a",
+            campaign_id=campaign.id,
+            config=campaign.config,
+            test_cases=[test_case],
+        )
+
+        result = (
+            await result_repo.list_for_campaign(
+                user_id="user-a", campaign_id=campaign.id
+            )
+        )[0]
+        calls = await observability_repo.list_llm_calls_for_run(result.id)
+
+    assert result.total_tokens == 4
+    assert len(calls) == 1
+    reconciliation = reconcile_official_tokens(
+        runtime_total_tokens=result.total_tokens,
+        calls=calls,
+        observability_partial_reasons=result.derived_metrics[
+            "observability_partial_reasons"
+        ],
+    )
+    assert reconciliation.status == "partial"
+    assert reconciliation.runtime_total_tokens == 4
+    assert reconciliation.by_phase == {"final_answer": 3}
+    assert "provider_runtime_total_mismatch" in reconciliation.reasons
 
 
 @pytest.mark.asyncio

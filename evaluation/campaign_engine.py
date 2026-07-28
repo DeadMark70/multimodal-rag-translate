@@ -477,6 +477,12 @@ async def _record_unit_llm_usage(
 ) -> None:
     if not isinstance(execution.payload, BenchmarkExecutionResult):
         return
+    trace_payload = execution.payload.agent_trace
+    v9_payload = (
+        trace_payload.get("agentic_v9") if isinstance(trace_payload, dict) else None
+    )
+    if isinstance(v9_payload, dict) and "budget_reservations" in v9_payload:
+        return
     if not execution.payload.token_usage:
         return
 
