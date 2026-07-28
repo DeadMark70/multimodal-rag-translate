@@ -1,6 +1,7 @@
 from evaluation.retrieval_profiles import (
     ADVANCED_EVAL_PROFILE,
     AGENTIC_EVAL_PROFILE,
+    AGENTIC_V9_OPEN_CORPUS_PROFILE,
     GRAPH_EVAL_PROFILE,
     apply_no_hyde_policy,
     evaluation_execution_profile,
@@ -62,4 +63,10 @@ def test_execution_profiles_version_changed_modes() -> None:
     assert evaluation_execution_profile("agentic") == AGENTIC_EVAL_PROFILE
     assert evaluation_execution_profile("graph_raw_current").startswith(
         "graph_raw_current_eval_v2_multiquery_"
+    )
+
+
+def test_agentic_v9_open_corpus_profile_describes_hybrid_rerank_failsoft() -> None:
+    assert AGENTIC_V9_OPEN_CORPUS_PROFILE == (
+        "agentic_eval_v9_open_corpus_hybrid8_rerank8_top4_failsoft"
     )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -261,7 +262,11 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
             "selected_count": 1,
             "selected": [
                 {
+                    "doc_id": "doc-1",
                     "chunk_id": "chunk-1",
+                    "content_hash": hashlib.sha256(
+                        "The source reports a score of 0.91.".encode("utf-8")
+                    ).hexdigest(),
                     "pre_rerank_rank": 2,
                     "post_rerank_rank": 1,
                     "rerank_score": 0.93,
@@ -272,6 +277,50 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     assert result.documents
     retrieve_documents.assert_awaited()
     provider.ainvoke.assert_awaited_once()
+
+
+def test_retrieval_diagnostic_projection_retains_fallback_details() -> None:
+    diagnostics = runtime_module._retrieval_diagnostic_projection(
+        "task:source-group-1",
+        [
+            Document(
+                page_content="  exact selected content  ",
+                metadata={
+                    "original_doc_uid": "legacy-doc-1",
+                    "chunk_id": "chunk-1",
+                    "agentic_v9_reranking": {
+                        "status": "fallback",
+                        "fallback_reason": "reranker_unavailable",
+                        "candidate_count": 8,
+                        "selected_count": 4,
+                        "pre_rerank_rank": 1,
+                        "post_rerank_rank": 1,
+                        "rerank_score": None,
+                    },
+                },
+            )
+        ],
+    )
+
+    assert diagnostics == {
+        "task_id": "task:source-group-1",
+        "status": "fallback",
+        "fallback_reason": "reranker_unavailable",
+        "candidate_count": 8,
+        "selected_count": 1,
+        "selected": [
+            {
+                "doc_id": "legacy-doc-1",
+                "chunk_id": "chunk-1",
+                "content_hash": hashlib.sha256(
+                    "  exact selected content  ".encode("utf-8")
+                ).hexdigest(),
+                "pre_rerank_rank": 1,
+                "post_rerank_rank": 1,
+                "rerank_score": None,
+            }
+        ],
+    }
 
 
 @pytest.mark.asyncio

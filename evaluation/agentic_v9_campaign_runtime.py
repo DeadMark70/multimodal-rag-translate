@@ -713,7 +713,11 @@ def _retrieval_diagnostic_projection(
         candidate_count = int(reranking.get("candidate_count") or candidate_count)
         rows.append(
             {
+                "doc_id": get_document_id(metadata),
                 "chunk_id": metadata.get("chunk_id"),
+                "content_hash": hashlib.sha256(
+                    document.page_content.encode("utf-8")
+                ).hexdigest(),
                 "pre_rerank_rank": reranking.get("pre_rerank_rank"),
                 "post_rerank_rank": reranking.get("post_rerank_rank"),
                 "rerank_score": reranking.get("rerank_score"),
