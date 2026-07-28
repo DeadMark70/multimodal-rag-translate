@@ -9,7 +9,9 @@ only the worker knows the promoted run and attempt identities.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime, timezone
 from typing import Any
@@ -26,7 +28,10 @@ from data_base.agentic_v9.budget_feasibility import (
     validate_pre_route_feasibility,
 )
 from data_base.agentic_v9.budgeted_llm import BudgetedLlmInvoker, LlmCallObserver
-from data_base.agentic_v9.context_packer import EvidenceContextPacker, PackedEvidenceContext
+from data_base.agentic_v9.context_packer import (
+    EvidenceContextPacker,
+    PackedEvidenceContext,
+)
 from data_base.agentic_v9.execution_core import (
     ConflictStageResult,
     V9ExecutionCore,
@@ -53,7 +58,10 @@ from data_base.agentic_v9.schemas import (
     V9ExecutionRequest,
     V9RuntimeContext,
 )
-from data_base.agentic_v9.sufficiency_gate import SufficiencyEvaluation, evaluate_sufficiency
+from data_base.agentic_v9.sufficiency_gate import (
+    SufficiencyEvaluation,
+    evaluate_sufficiency,
+)
 from data_base.agentic_v9.asset_locator import VisualAssetCandidate
 from data_base.agentic_v9.visual_evidence_extractor import (
     VisualEvidenceExtractionResult,
@@ -62,7 +70,11 @@ from data_base.agentic_v9.visual_evidence_extractor import (
 from data_base.document_metadata import get_document_id
 from data_base.rag_filtering import filter_and_rerank_retrieval
 from data_base.rag_graph_locator import GraphSourceLocatorResult, locate_graph_sources
+from data_base.rag_pipeline_schemas import (
+    RagRetrievalResult as PipelineRetrievalResult,
+)
 from data_base.rag_retrieval import retrieve_hybrid_documents
+from data_base.reranker import DocumentReranker
 from data_base.vector_store_manager import get_user_retriever_async
 from evaluation.agentic_campaign_adapter import used_evidence_documents
 from evaluation.agentic_v9_admission import (
@@ -76,6 +88,7 @@ from evaluation.retrieval_profiles import (
     AGENTIC_V9_OPEN_CORPUS_PROFILE,
 )
 
+logger = logging.getLogger(__name__)
 
 RetrievalAdapter = Callable[[str, str, list[str]], Awaitable[list[Document]]]
 GraphLocator = Callable[
@@ -141,9 +154,7 @@ class AgenticV9CampaignRuntime:
         """
         open_user_corpus = authorized_doc_ids is None
         execution_profile = (
-            AGENTIC_V9_OPEN_CORPUS_PROFILE
-            if open_user_corpus
-            else AGENTIC_EVAL_PROFILE
+            AGENTIC_V9_OPEN_CORPUS_PROFILE if open_user_corpus else AGENTIC_EVAL_PROFILE
         )
         pre_route = validate_pre_route_feasibility(
             setup_snapshot=setup_snapshot,
@@ -190,6 +201,7 @@ class AgenticV9CampaignRuntime:
             "visual_execution": None,
             "visual_packets": [],
             "visual_packets_emitted": False,
+            "retrieval_diagnostics": [],
         }
 
         async def resolve_scope(_: V9ExecutionRequest) -> ResolvedSourceScope:
@@ -236,6 +248,9 @@ class AgenticV9CampaignRuntime:
                 docs = await self._retrieve_documents(
                     user_id, task.query, list(task.source_scope.authorized_doc_ids)
                 )
+                state["retrieval_diagnostics"].append(
+                    _retrieval_diagnostic_projection(task.task_id, docs)
+                )
                 if (
                     state["contract"].graph_policy == "required_locator"
                     and not state["graph_execution"]["attempted"]
@@ -248,7 +263,9 @@ class AgenticV9CampaignRuntime:
                             list(task.source_scope.authorized_doc_ids),
                             state["contract"],
                         )
-                    except Exception as error:  # Stage admitted; preserve partial answer.
+                    except (
+                        Exception
+                    ) as error:  # Stage admitted; preserve partial answer.
                         state["graph_execution"] = _failed_required_stage(
                             policy="required_locator", error=error
                         )
@@ -265,7 +282,9 @@ class AgenticV9CampaignRuntime:
                         visual_result = await self._visual_extractor(
                             task, docs, question, controller
                         )
-                    except Exception as error:  # Stage admitted; preserve partial answer.
+                    except (
+                        Exception
+                    ) as error:  # Stage admitted; preserve partial answer.
                         state["visual_execution"] = _failed_required_stage(
                             policy="visual_required", error=error
                         )
@@ -274,7 +293,10 @@ class AgenticV9CampaignRuntime:
                             visual_result
                         )
                         state["visual_packets"].extend(visual_result.packets)
-                chunks = [_chunk_projection(document, index) for index, document in enumerate(docs)]
+                chunks = [
+                    _chunk_projection(document, index)
+                    for index, document in enumerate(docs)
+                ]
                 results.append(
                     TaskRetrievalResult(
                         task_id=task.task_id,
@@ -342,7 +364,10 @@ class AgenticV9CampaignRuntime:
             __: SufficiencyEvaluation,
         ) -> PackedEvidenceContext:
             setup_input = _setup_positive_int(
-                setup_snapshot, "setup_max_input_tokens", "max_input_tokens", default=8192
+                setup_snapshot,
+                "setup_max_input_tokens",
+                "max_input_tokens",
+                default=8192,
             )
             packer = EvidenceContextPacker(
                 setup_input_ceiling=min(setup_input, contract.runtime_token_budget),
@@ -469,7 +494,9 @@ class AgenticV9CampaignRuntime:
                 "reconciled_tokens": budget_snapshot.reconciled_tokens,
             }
         )
-        final = executed.final_answer or FinalAnswerResult(response_status="insufficient")
+        final = executed.final_answer or FinalAnswerResult(
+            response_status="insufficient"
+        )
         graph_execution = state["graph_execution"] or _initial_graph_execution(
             state["contract"]
         )
@@ -514,21 +541,38 @@ class AgenticV9CampaignRuntime:
                     "expected_sources_used_at_runtime": False,
                 },
                 "query_contract": state["contract"].model_dump(mode="json"),
-                "evidence_packets": [packet.model_dump(mode="json") for packet in state["evidence_packets"]],
+                "retrieval_diagnostics": state["retrieval_diagnostics"],
+                "evidence_packets": [
+                    packet.model_dump(mode="json")
+                    for packet in state["evidence_packets"]
+                ],
                 "slot_resolutions": [
                     resolution.model_dump(mode="json")
-                    for resolution in (executed.sufficiency and evaluate_sufficiency(state["contract"], state["evidence_packets"]).slot_resolutions or ())
+                    for resolution in (
+                        executed.sufficiency
+                        and evaluate_sufficiency(
+                            state["contract"], state["evidence_packets"]
+                        ).slot_resolutions
+                        or ()
+                    )
                 ],
-                "sufficiency": executed.sufficiency.model_dump(mode="json") if executed.sufficiency else None,
+                "sufficiency": executed.sufficiency.model_dump(mode="json")
+                if executed.sufficiency
+                else None,
                 "context_pack": _context_pack_projection(packed),
                 "graph_execution": graph_execution,
                 "visual_execution": visual_execution,
                 "budget_reservations": [
-                    item.model_dump(mode="json") for item in await controller.reservations()
+                    item.model_dump(mode="json")
+                    for item in await controller.reservations()
                 ],
-                "repairs": [repair.model_dump(mode="json") for repair in state["repairs"]],
+                "repairs": [
+                    repair.model_dump(mode="json") for repair in state["repairs"]
+                ],
                 "conflicts": [],
-                "final_claims": [claim.model_dump(mode="json") for claim in final.claims],
+                "final_claims": [
+                    claim.model_dump(mode="json") for claim in final.claims
+                ],
                 "metrics": metrics.model_dump(mode="json"),
                 "completion": {"status": final.response_status},
             },
@@ -555,13 +599,134 @@ async def _retrieve_documents(
         enable_hyde=False,
         enable_multi_query=False,
     )
-    filtered = filter_and_rerank_retrieval(
-        question,
-        raw,
-        doc_ids=authorized_doc_ids,
-        enable_reranking=False,
+    if not DocumentReranker.is_initialized():
+        fallback = filter_and_rerank_retrieval(
+            question,
+            raw,
+            doc_ids=authorized_doc_ids,
+            enable_reranking=True,
+            reranker_available=False,
+            target_k=4,
+            max_candidates=8,
+        )
+        return _annotate_rerank_selection(
+            fallback,
+            status="fallback",
+            fallback_reason="reranker_unavailable",
+        )
+
+    try:
+        selection = await asyncio.to_thread(
+            filter_and_rerank_retrieval,
+            question,
+            raw,
+            doc_ids=authorized_doc_ids,
+            enable_reranking=True,
+            target_k=4,
+            max_candidates=8,
+            strict_reranking=True,
+        )
+    except Exception as error:  # noqa: BLE001 -- bounded fail-soft stage boundary
+        logger.warning(
+            "Agentic v9 reranking failed; using Hybrid top 4 (%s)",
+            type(error).__name__,
+        )
+        fallback = filter_and_rerank_retrieval(
+            question,
+            raw,
+            doc_ids=authorized_doc_ids,
+            enable_reranking=True,
+            reranker_available=False,
+            target_k=4,
+            max_candidates=8,
+        )
+        return _annotate_rerank_selection(
+            fallback,
+            status="fallback",
+            fallback_reason="reranker_error",
+        )
+
+    scored = any(
+        row.get("score") is not None
+        for row in selection.metadata["reranking"]["post_rerank_ranks"]
     )
-    return list(filtered.documents)
+    return _annotate_rerank_selection(
+        selection,
+        status="executed" if scored else "fallback",
+        fallback_reason=None if scored else "reranker_empty_result",
+    )
+
+
+def _annotate_rerank_selection(
+    selection: PipelineRetrievalResult,
+    *,
+    status: str,
+    fallback_reason: str | None,
+) -> list[Document]:
+    reranking = dict(selection.metadata.get("reranking") or {})
+    rows = list(reranking.get("post_rerank_ranks") or [])
+    candidate_count = int(reranking.get("candidate_count") or 0)
+    selected_count = len(selection.documents)
+    annotated: list[Document] = []
+    for post_rank, document in enumerate(selection.documents, start=1):
+        row = rows[post_rank - 1] if post_rank <= len(rows) else {}
+        annotated.append(
+            Document(
+                page_content=document.page_content,
+                metadata={
+                    **dict(document.metadata),
+                    "agentic_v9_reranking": {
+                        "status": status,
+                        "fallback_reason": fallback_reason,
+                        "candidate_count": candidate_count,
+                        "selected_count": selected_count,
+                        "pre_rerank_rank": int(row.get("pre_rerank_rank") or post_rank),
+                        "post_rerank_rank": post_rank,
+                        "rerank_score": (
+                            row.get("score") if status == "executed" else None
+                        ),
+                    },
+                },
+            )
+        )
+    return annotated
+
+
+def _retrieval_diagnostic_projection(
+    task_id: str, documents: Sequence[Document]
+) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    status = "not_instrumented"
+    fallback_reason: str | None = None
+    candidate_count = len(documents)
+    for document in documents:
+        metadata = dict(document.metadata)
+        reranking = metadata.get("agentic_v9_reranking")
+        if not isinstance(reranking, dict):
+            continue
+        status = str(reranking.get("status") or status)
+        fallback_reason = (
+            str(reranking["fallback_reason"])
+            if reranking.get("fallback_reason")
+            else None
+        )
+        candidate_count = int(reranking.get("candidate_count") or candidate_count)
+        rows.append(
+            {
+                "chunk_id": metadata.get("chunk_id"),
+                "pre_rerank_rank": reranking.get("pre_rerank_rank"),
+                "post_rerank_rank": reranking.get("post_rerank_rank"),
+                "rerank_score": reranking.get("rerank_score"),
+            }
+        )
+    return {
+        "task_id": task_id,
+        "status": status,
+        "fallback_reason": fallback_reason,
+        "candidate_count": candidate_count,
+        "selected_count": len(documents),
+        "selected": rows,
+    }
 
 
 async def _locate_graph_documents(
@@ -712,7 +877,9 @@ def _visual_assets_from_documents(
             continue
         assets.append(
             VisualAssetCandidate(
-                asset_id=str(metadata.get("asset_id") or f"{doc_id}:page:{page}:{index}"),
+                asset_id=str(
+                    metadata.get("asset_id") or f"{doc_id}:page:{page}:{index}"
+                ),
                 source=EvidenceSource(
                     doc_id=doc_id,
                     chunk_id=str(metadata.get("chunk_id") or index + 1),
@@ -825,7 +992,9 @@ def _evidence_packets_for_results(
             locator = (
                 SourceLocator(pdf_page_index=page)
                 if isinstance(page, int) and page >= 0
-                else SourceLocator(section=str(chunk.get("section") or "retrieved_context"))
+                else SourceLocator(
+                    section=str(chunk.get("section") or "retrieved_context")
+                )
             )
             packets.append(
                 EvidencePacket(
@@ -871,7 +1040,9 @@ def _configuration_incompatible_result(
             "response_status": "configuration_incompatible",
             "agentic_v9": {
                 "schema_version": "1",
-                "query_contract": contract.model_dump(mode="json") if contract else None,
+                "query_contract": contract.model_dump(mode="json")
+                if contract
+                else None,
                 "evidence_packets": [],
                 "slot_resolutions": [],
                 "sufficiency": None,
@@ -893,9 +1064,7 @@ def _configuration_incompatible_result(
     )
 
 
-def _setup_positive_int(
-    snapshot: dict[str, Any], *keys: str, default: int
-) -> int:
+def _setup_positive_int(snapshot: dict[str, Any], *keys: str, default: int) -> int:
     for key in keys:
         value = snapshot.get(key)
         if isinstance(value, int) and not isinstance(value, bool) and value > 0:
@@ -929,13 +1098,22 @@ def _final_input_reserve(snapshot: dict[str, Any], runtime_token_budget: int) ->
 
 
 def _response_text(response: Any) -> str:
-    content = response.get("content") if isinstance(response, dict) else getattr(response, "content", response)
+    content = (
+        response.get("content")
+        if isinstance(response, dict)
+        else getattr(response, "content", response)
+    )
     if isinstance(content, list):
-        return "".join(str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in content).strip()
+        return "".join(
+            str(item.get("text", "")) if isinstance(item, dict) else str(item)
+            for item in content
+        ).strip()
     return str(content or "").strip()
 
 
-def _context_pack_projection(packed: PackedEvidenceContext | None) -> dict[str, Any] | None:
+def _context_pack_projection(
+    packed: PackedEvidenceContext | None,
+) -> dict[str, Any] | None:
     if packed is None:
         return None
     return {

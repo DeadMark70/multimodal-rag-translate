@@ -8,6 +8,9 @@ from unittest.mock import AsyncMock
 import pytest
 from langchain_core.documents import Document
 
+import evaluation.agentic_v9_campaign_runtime as runtime_module
+from data_base.rag_pipeline_schemas import RagRetrievalResult as PipelineRetrievalResult
+from data_base.reranker import DocumentReranker
 from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
 from evaluation.agentic_v9_admission import V9AdmissionContract
 from evaluation.retrieval_profiles import AGENTIC_V9_OPEN_CORPUS_PROFILE
@@ -20,7 +23,9 @@ from data_base.agentic_v9.schemas import (
     ResolvedSourceScope,
     SourceLocator,
 )
-from data_base.agentic_v9.visual_evidence_extractor import VisualEvidenceExtractionResult
+from data_base.agentic_v9.visual_evidence_extractor import (
+    VisualEvidenceExtractionResult,
+)
 
 
 class _Provider:
@@ -48,6 +53,160 @@ async def _identity_reference_resolver(
     return {reference: reference for reference in references}
 
 
+def _retrieved_documents() -> list[Document]:
+    return [
+        Document(
+            page_content=f"chunk-{index}",
+            metadata={"doc_id": "doc-1", "chunk_id": f"chunk-{index}"},
+        )
+        for index in range(8)
+    ]
+
+
+def _patch_v9_retrieval(
+    monkeypatch: pytest.MonkeyPatch,
+    documents: list[Document],
+) -> None:
+    monkeypatch.setattr(
+        runtime_module,
+        "get_user_retriever_async",
+        AsyncMock(return_value=object()),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "retrieve_hybrid_documents",
+        AsyncMock(return_value=PipelineRetrievalResult(documents=documents)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_v9_retrieval_reranks_eight_to_four(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    documents = _retrieved_documents()
+    _patch_v9_retrieval(monkeypatch, documents)
+    reranker = SimpleNamespace(
+        rerank_with_scores_strict=lambda _query, docs, _top_k: [
+            (docs[index], float(index + 1)) for index in reversed(range(8))
+        ]
+    )
+    monkeypatch.setattr(
+        DocumentReranker, "is_initialized", classmethod(lambda _cls: True)
+    )
+    monkeypatch.setattr(
+        DocumentReranker, "get_instance", classmethod(lambda _cls: reranker)
+    )
+
+    selected = await runtime_module._retrieve_documents("user-a", "question", ["doc-1"])
+
+    assert [document.page_content for document in selected] == [
+        document.page_content for document in documents[7:3:-1]
+    ]
+    assert all(
+        document.metadata["agentic_v9_reranking"]["status"] == "executed"
+        for document in selected
+    )
+    assert all(
+        document.metadata["agentic_v9_reranking"]["rerank_score"] is not None
+        for document in selected
+    )
+
+
+@pytest.mark.asyncio
+async def test_v9_retrieval_falls_back_to_hybrid_top_four_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    documents = _retrieved_documents()
+    _patch_v9_retrieval(monkeypatch, documents)
+    monkeypatch.setattr(
+        DocumentReranker, "is_initialized", classmethod(lambda _cls: False)
+    )
+
+    selected = await runtime_module._retrieve_documents("user-a", "question", ["doc-1"])
+
+    assert [document.page_content for document in selected] == [
+        document.page_content for document in documents[:4]
+    ]
+    assert all(
+        document.metadata["agentic_v9_reranking"]
+        == {
+            "status": "fallback",
+            "fallback_reason": "reranker_unavailable",
+            "candidate_count": 8,
+            "selected_count": 4,
+            "pre_rerank_rank": index,
+            "post_rerank_rank": index,
+            "rerank_score": None,
+        }
+        for index, document in enumerate(selected, start=1)
+    )
+
+
+@pytest.mark.asyncio
+async def test_v9_retrieval_falls_back_to_hybrid_top_four_on_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    documents = _retrieved_documents()
+    _patch_v9_retrieval(monkeypatch, documents)
+
+    def fail_reranking(*_args):
+        raise RuntimeError("private provider detail")
+
+    reranker = SimpleNamespace(rerank_with_scores_strict=fail_reranking)
+    monkeypatch.setattr(
+        DocumentReranker, "is_initialized", classmethod(lambda _cls: True)
+    )
+    monkeypatch.setattr(
+        DocumentReranker, "get_instance", classmethod(lambda _cls: reranker)
+    )
+
+    selected = await runtime_module._retrieve_documents("user-a", "question", ["doc-1"])
+
+    assert [document.page_content for document in selected] == [
+        document.page_content for document in documents[:4]
+    ]
+    assert all(
+        document.metadata["agentic_v9_reranking"]["fallback_reason"] == "reranker_error"
+        for document in selected
+    )
+    assert all(
+        document.metadata["agentic_v9_reranking"]["rerank_score"] is None
+        for document in selected
+    )
+
+
+@pytest.mark.asyncio
+async def test_v9_retrieval_falls_back_to_hybrid_top_four_on_empty_scores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    documents = _retrieved_documents()
+    _patch_v9_retrieval(monkeypatch, documents)
+    reranker = SimpleNamespace(
+        rerank_with_scores_strict=lambda _query, _docs, _top_k: []
+    )
+    monkeypatch.setattr(
+        DocumentReranker, "is_initialized", classmethod(lambda _cls: True)
+    )
+    monkeypatch.setattr(
+        DocumentReranker, "get_instance", classmethod(lambda _cls: reranker)
+    )
+
+    selected = await runtime_module._retrieve_documents("user-a", "question", ["doc-1"])
+
+    assert [document.page_content for document in selected] == [
+        document.page_content for document in documents[:4]
+    ]
+    assert all(
+        document.metadata["agentic_v9_reranking"]["fallback_reason"]
+        == "reranker_empty_result"
+        for document in selected
+    )
+    assert all(
+        document.metadata["agentic_v9_reranking"]["rerank_score"] is None
+        for document in selected
+    )
+
+
 @pytest.mark.asyncio
 async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> None:
     provider = _Provider()
@@ -55,7 +214,20 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
         return_value=[
             Document(
                 page_content="The source reports a score of 0.91.",
-                metadata={"doc_id": "doc-1", "page_number": 2, "chunk_id": "chunk-1"},
+                metadata={
+                    "doc_id": "doc-1",
+                    "page_number": 2,
+                    "chunk_id": "chunk-1",
+                    "agentic_v9_reranking": {
+                        "status": "executed",
+                        "fallback_reason": None,
+                        "candidate_count": 8,
+                        "selected_count": 4,
+                        "pre_rerank_rank": 2,
+                        "post_rerank_rank": 1,
+                        "rerank_score": 0.93,
+                    },
+                },
             )
         ]
     )
@@ -80,6 +252,23 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     assert v9["evidence_packets"]
     assert v9["slot_resolutions"]
     assert v9["sufficiency"]["response_status"] == "complete"
+    assert v9["retrieval_diagnostics"] == [
+        {
+            "task_id": "attempt-trace-1:round-1:source-group-1",
+            "status": "executed",
+            "fallback_reason": None,
+            "candidate_count": 8,
+            "selected_count": 1,
+            "selected": [
+                {
+                    "chunk_id": "chunk-1",
+                    "pre_rerank_rank": 2,
+                    "post_rerank_rank": 1,
+                    "rerank_score": 0.93,
+                }
+            ],
+        }
+    ]
     assert result.documents
     retrieve_documents.assert_awaited()
     provider.ainvoke.assert_awaited_once()
@@ -122,14 +311,16 @@ async def test_v9_campaign_runtime_resolves_open_corpus_from_user_acl() -> None:
         "policy": "open_user_corpus",
         "expected_sources_used_at_runtime": False,
     }
-    assert result.agent_trace["agentic_v9"]["query_contract"][
-        "resolved_source_scope"
-    ]["authorized_doc_ids"] == ["doc-1", "doc-2"]
+    assert result.agent_trace["agentic_v9"]["query_contract"]["resolved_source_scope"][
+        "authorized_doc_ids"
+    ] == ["doc-1", "doc-2"]
     assert result.documents
 
 
 @pytest.mark.asyncio
-async def test_v9_campaign_runtime_resolves_filename_scope_to_canonical_document_id() -> None:
+async def test_v9_campaign_runtime_resolves_filename_scope_to_canonical_document_id() -> (
+    None
+):
     provider = _Provider()
     retrieve_documents = AsyncMock(
         return_value=[
@@ -140,7 +331,9 @@ async def test_v9_campaign_runtime_resolves_filename_scope_to_canonical_document
         ]
     )
 
-    async def resolve_references(_user_id: str, references: list[str]) -> dict[str, str]:
+    async def resolve_references(
+        _user_id: str, references: list[str]
+    ) -> dict[str, str]:
         assert references == ["paper.pdf"]
         return {"paper.pdf": "doc-1"}
 
@@ -158,14 +351,20 @@ async def test_v9_campaign_runtime_resolves_filename_scope_to_canonical_document
         trace_id="attempt-trace-filename-scope",
     )
 
-    assert result.agent_trace["agentic_v9"]["query_contract"]["resolved_source_scope"]["authorized_doc_ids"] == ["doc-1"]
-    assert result.agent_trace["agentic_v9"]["query_contract"]["resolved_source_scope"]["requested_doc_ids"] == ["doc-1"]
+    assert result.agent_trace["agentic_v9"]["query_contract"]["resolved_source_scope"][
+        "authorized_doc_ids"
+    ] == ["doc-1"]
+    assert result.agent_trace["agentic_v9"]["query_contract"]["resolved_source_scope"][
+        "requested_doc_ids"
+    ] == ["doc-1"]
     assert result.agent_trace["response_status"] == "complete"
     retrieve_documents.assert_awaited()
 
 
 @pytest.mark.asyncio
-async def test_v9_runtime_rejects_incompatible_setup_before_provider_or_retrieval() -> None:
+async def test_v9_runtime_rejects_incompatible_setup_before_provider_or_retrieval() -> (
+    None
+):
     provider = _Provider()
     retrieve_documents = AsyncMock()
     runtime = AgenticV9CampaignRuntime(
@@ -183,7 +382,10 @@ async def test_v9_runtime_rejects_incompatible_setup_before_provider_or_retrieva
     )
 
     assert result.agent_trace["response_status"] == "configuration_incompatible"
-    assert result.agent_trace["agentic_v9"]["configuration_incompatible"]["stage"] == "pre_route"
+    assert (
+        result.agent_trace["agentic_v9"]["configuration_incompatible"]["stage"]
+        == "pre_route"
+    )
     assert result.documents == []
     retrieve_documents.assert_not_awaited()
     provider.ainvoke.assert_not_awaited()
@@ -268,7 +470,9 @@ async def test_required_graph_locator_is_executed_and_recorded_before_complete_a
         )
     )
     scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"], resolved_doc_ids=["doc-1"], authorized_doc_ids=["doc-1"]
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
     )
     contract = QueryContract(
         route="graph_relational",
@@ -335,7 +539,9 @@ async def test_required_graph_locator_without_source_evidence_is_qualified_parti
         )
     )
     scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"], resolved_doc_ids=["doc-1"], authorized_doc_ids=["doc-1"]
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
     )
     contract = QueryContract(
         route="graph_relational",
@@ -377,14 +583,18 @@ async def test_required_graph_locator_without_source_evidence_is_qualified_parti
 
 
 @pytest.mark.asyncio
-async def test_required_visual_evidence_is_recorded_before_complete_answer(monkeypatch) -> None:
+async def test_required_visual_evidence_is_recorded_before_complete_answer(
+    monkeypatch,
+) -> None:
     provider = _Provider()
     document = Document(
         page_content="Table 1 reports the result.",
         metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
     )
     scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"], resolved_doc_ids=["doc-1"], authorized_doc_ids=["doc-1"]
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
     )
     contract = QueryContract(
         route="exact_structured",
@@ -447,14 +657,18 @@ async def test_required_visual_evidence_is_recorded_before_complete_answer(monke
 
 
 @pytest.mark.asyncio
-async def test_missing_required_visual_evidence_is_qualified_partial(monkeypatch) -> None:
+async def test_missing_required_visual_evidence_is_qualified_partial(
+    monkeypatch,
+) -> None:
     provider = _Provider()
     document = Document(
         page_content="Table 1 reports the result.",
         metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
     )
     scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"], resolved_doc_ids=["doc-1"], authorized_doc_ids=["doc-1"]
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
     )
     contract = QueryContract(
         route="exact_structured",

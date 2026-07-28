@@ -264,8 +264,7 @@ async def test_v9_campaign_case_uses_the_typed_v9_runtime_not_the_v8_service() -
 
     runtime_cls.return_value.execute.assert_awaited_once()
     assert (
-        runtime_cls.return_value.execute.await_args.kwargs["authorized_doc_ids"]
-        is None
+        runtime_cls.return_value.execute.await_args.kwargs["authorized_doc_ids"] is None
     )
     v8_service_cls.assert_not_called()
     assert result.agentic_execution_version == "v9"
@@ -321,9 +320,11 @@ def test_mixed_v9_campaign_builds_v8_baselines_and_v9_agentic_unit() -> None:
         agentic_execution_version="v9",
     )
 
-    assert {
-        unit.mode: unit.agentic_execution_version for unit in units
-    } == {"agentic-v9": "v9", "naive": "v8", "graph": "v8"}
+    assert {unit.mode: unit.agentic_execution_version for unit in units} == {
+        "agentic-v9": "v9",
+        "naive": "v8",
+        "graph": "v8",
+    }
 
 
 def test_extract_contexts_uses_answer_aware_policy_and_preserves_task_coverage() -> (
@@ -369,6 +370,13 @@ def test_all_changed_evaluation_modes_disable_hyde() -> None:
     changed_modes = {"advanced", "graph", "agentic", *GRAPH_ABLATION_MODES}
     assert changed_modes.issubset(RAG_MODES)
     assert all(RAG_MODES[mode]["enable_hyde"] is False for mode in changed_modes)
+
+
+def test_naive_remains_plain_without_reranking() -> None:
+    assert RAG_MODES["naive"]["plain_mode"] is True
+    assert RAG_MODES["naive"]["enable_reranking"] is False
+    assert RAG_MODES["naive"]["enable_hyde"] is False
+    assert RAG_MODES["naive"]["enable_multi_query"] is False
 
 
 def test_advanced_and_main_graph_use_multi_query() -> None:
