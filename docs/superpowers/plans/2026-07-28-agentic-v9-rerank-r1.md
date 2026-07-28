@@ -501,8 +501,10 @@ assert policy.phase_timeouts_s == {
 }
 ```
 
-Keep the deadline-clamping test's explicit `ExecutionDeadline(64.0)` fixture;
-it verifies clamping independently of the new default.
+Keep the deadline-clamping test's explicit `ExecutionDeadline(64.0)` fixture
+and update its initial `evidence_extract` expectation to `64.0`. This proves
+that the 64-second phase limit is still clamped by a separately constructed
+64-second whole-run deadline without depending on the new 128-second default.
 
 - [ ] **Step 2: Run the policy tests and verify RED**
 

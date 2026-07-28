@@ -23,11 +23,11 @@ def test_execution_policy_has_the_initial_runtime_bounds() -> None:
     assert policy.max_retrieval_concurrency == 3
     assert policy.max_llm_concurrency == 2
     assert policy.max_visual_concurrency == 1
-    assert policy.total_deadline_s == 64.0
+    assert policy.total_deadline_s == 128.0
     assert policy.phase_timeouts_s == {
         "route_plan": 32.0,
         "retrieval_judge": 32.0,
-        "evidence_extract": 32.0,
+        "evidence_extract": 64.0,
         "visual_extract": 16.0,
         "final_answer": 32.0,
     }
@@ -38,7 +38,7 @@ def test_deadline_clamps_every_phase_timeout_without_resetting() -> None:
     deadline = ExecutionDeadline(64.0, monotonic=lambda: now[0])
     runtime = V9ExecutionPolicyRuntime(ExecutionPolicy())
 
-    assert runtime.timeout_for("evidence_extract", deadline=deadline) == 32.0
+    assert runtime.timeout_for("evidence_extract", deadline=deadline) == 64.0
     assert runtime.timeout_for("final_answer", deadline=deadline) == 32.0
     assert runtime.timeout_for("visual_extract", deadline=deadline) == 16.0
     now[0] = 162.5
