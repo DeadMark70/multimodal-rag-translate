@@ -314,6 +314,7 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         assert exported_chunk["rerank_score"] == 0.73
         assert exported_chunk["payload"] == {
             "instrumentation_depth": "result_level",
+            "expected_evidence_match_status": "not_matched",
             "reranker_status": "executed",
             "reranker_fallback_reason": None,
             "retrieval_task_id": "export-retrieval-task",
@@ -374,6 +375,10 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         assert redacted_chunk["rank_before_rerank"] == 7
         assert redacted_chunk["rank_after_rerank"] == 2
         assert redacted_chunk["rerank_score"] == 0.73
+        assert (
+            redacted_chunk["payload"]["expected_evidence_match_status"]
+            == "not_matched"
+        )
         assert redacted_chunk["payload"]["reranker_status"] == "executed"
 
 

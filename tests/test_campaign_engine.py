@@ -1264,29 +1264,33 @@ async def test_campaign_result_records_retrieval_context_and_evidence_flow() -> 
             config=_campaign_config_for_test_case_ids(["Q-EVIDENCE"], modes=["naive"]),
         )
         engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
-        await engine._run_campaign(
-            user_id="user-a",
-            campaign_id=campaign.id,
-            config=campaign.config,
-            test_cases=[
-                TestCase(
-                    id="Q-EVIDENCE",
-                    question="Where is Fact A?",
-                    ground_truth="paper A",
-                    category="evidence",
-                    difficulty="medium",
-                    atomic_facts=[{"atomic_fact_id": "F1", "text": "Fact A"}],
-                    expected_evidence=[
-                        {
-                            "evidence_id": "E1",
-                            "doc_id": "paper-a.pdf",
-                            "atomic_fact_id": "F1",
-                        }
-                    ],
-                    source_docs=["paper-a.pdf"],
-                )
-            ],
-        )
+        with patch(
+            "data_base.repository.resolve_document_references",
+            new=AsyncMock(return_value={"paper-a.pdf": ["paper-a.pdf"]}),
+        ):
+            await engine._run_campaign(
+                user_id="user-a",
+                campaign_id=campaign.id,
+                config=campaign.config,
+                test_cases=[
+                    TestCase(
+                        id="Q-EVIDENCE",
+                        question="Where is Fact A?",
+                        ground_truth="paper A",
+                        category="evidence",
+                        difficulty="medium",
+                        atomic_facts=[{"atomic_fact_id": "F1", "text": "Fact A"}],
+                        expected_evidence=[
+                            {
+                                "evidence_id": "E1",
+                                "doc_id": "paper-a.pdf",
+                                "atomic_fact_id": "F1",
+                            }
+                        ],
+                        source_docs=["paper-a.pdf"],
+                    )
+                ],
+            )
 
         result = (
             await result_repo.list_for_campaign(
@@ -1308,6 +1312,7 @@ async def test_campaign_result_records_retrieval_context_and_evidence_flow() -> 
         assert chunks[0].rank_before_rerank is None
         assert chunks[0].rank_after_rerank is None
         assert chunks[0].payload["reranker_status"] == "not_instrumented"
+        assert chunks[0].payload["expected_evidence_match_status"] == "matched"
         assert chunks[0].used_in_context is True
         assert chunks[0].used_in_answer is True
         assert chunks[0].expected_evidence_match is True
@@ -1414,21 +1419,25 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks()
             config=config,
         )
         engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
-        await engine._run_campaign(
-            user_id="user-a",
-            campaign_id=campaign.id,
-            config=campaign.config,
-            test_cases=[
-                TestCase(
-                    id="Q-V9-RERANK",
-                    question="What do the selected excerpts show?",
-                    ground_truth="They support the answer.",
-                    category="evidence",
-                    difficulty="medium",
-                    source_docs=["doc-a"],
-                )
-            ],
-        )
+        with patch(
+            "data_base.repository.resolve_document_references",
+            new=AsyncMock(return_value={"doc-a": ["doc-a"]}),
+        ):
+            await engine._run_campaign(
+                user_id="user-a",
+                campaign_id=campaign.id,
+                config=campaign.config,
+                test_cases=[
+                    TestCase(
+                        id="Q-V9-RERANK",
+                        question="What do the selected excerpts show?",
+                        ground_truth="They support the answer.",
+                        category="evidence",
+                        difficulty="medium",
+                        source_docs=["doc-a"],
+                    )
+                ],
+            )
 
         result = (
             await result_repo.list_for_campaign(
@@ -1467,6 +1476,7 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks()
     assert [chunk.payload for chunk in chunks_by_context_order] == [
         {
             "instrumentation_depth": "result_level",
+            "expected_evidence_match_status": "matched",
             "reranker_status": "executed",
             "reranker_fallback_reason": None,
             "retrieval_task_id": "task-source-a",
@@ -1475,6 +1485,7 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks()
         },
         {
             "instrumentation_depth": "result_level",
+            "expected_evidence_match_status": "matched",
             "reranker_status": "executed",
             "reranker_fallback_reason": None,
             "retrieval_task_id": "task-source-a",
@@ -1483,6 +1494,7 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks()
         },
         {
             "instrumentation_depth": "result_level",
+            "expected_evidence_match_status": "not_matched",
             "reranker_status": "executed",
             "reranker_fallback_reason": None,
             "retrieval_task_id": "task-source-b",
@@ -1491,6 +1503,7 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks()
         },
         {
             "instrumentation_depth": "result_level",
+            "expected_evidence_match_status": "not_matched",
             "reranker_status": "not_instrumented",
             "reranker_fallback_reason": None,
             "retrieval_task_id": None,
@@ -1517,6 +1530,223 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks()
         duplicate_excerpt,
         "This context was not instrumented.",
     ]
+
+
+@pytest.mark.asyncio
+async def test_campaign_result_resolves_expected_source_filenames_for_chunk_statuses() -> None:
+    """Catch source-name/UUID comparison regressions in result observability."""
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="The answer remains unchanged.",
+            contexts=["Expected source context", "Other source context"],
+            source_doc_ids=["document-uuid-a", "document-uuid-b"],
+            expected_sources=[],
+            latency_ms=11,
+            token_usage={"total_tokens": 20},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+        )
+
+    db_path = _make_db_path()
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        observability_repo = EvaluationObservabilityRepository()
+        campaign = await campaign_repo.create(
+            user_id="user-a",
+            name="Expected source identity",
+            config=_campaign_config_for_test_case_ids(["Q-SOURCE-ID"], modes=["naive"]),
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+        with patch(
+            "data_base.repository.resolve_document_references",
+            new=AsyncMock(
+                return_value={"expected-paper.pdf": ["document-uuid-a"]}
+            ),
+        ) as resolve_document_references:
+            await engine._run_campaign(
+                user_id="user-a",
+                campaign_id=campaign.id,
+                config=campaign.config,
+                test_cases=[
+                    TestCase(
+                        id="Q-SOURCE-ID",
+                        question="Which source supports the answer?",
+                        ground_truth="The expected paper.",
+                        category="evidence",
+                        difficulty="medium",
+                        source_docs=["expected-paper.pdf"],
+                    )
+                ],
+            )
+
+        resolve_document_references.assert_awaited_once_with(
+            "user-a", ["expected-paper.pdf"]
+        )
+        result = (
+            await result_repo.list_for_campaign(
+                user_id="user-a", campaign_id=campaign.id
+            )
+        )[0]
+        chunks = await observability_repo.list_retrieval_chunks_for_run(result.id)
+
+    assert result.answer == "The answer remains unchanged."
+    assert result.contexts == ["Expected source context", "Other source context"]
+    assert [chunk.expected_evidence_match for chunk in chunks] == [True, False]
+    assert [chunk.payload["expected_evidence_match_status"] for chunk in chunks] == [
+        "matched",
+        "not_matched",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resolver_result",
+    [
+        {},
+        {"ambiguous-paper.pdf": ["document-uuid-a", "document-uuid-b"]},
+    ],
+)
+async def test_campaign_result_marks_unresolved_expected_source_identity_without_mutating_result(
+    resolver_result: dict[str, list[str]],
+) -> None:
+    """Catch resolver failures that would silently fabricate expected evidence."""
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="Answer is preserved.",
+            contexts=["Retrieved context is preserved."],
+            source_doc_ids=["document-uuid-a"],
+            expected_sources=["ambiguous-paper.pdf"],
+            latency_ms=11,
+            token_usage={"total_tokens": 20},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+        )
+
+    db_path = _make_db_path()
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        observability_repo = EvaluationObservabilityRepository()
+        campaign = await campaign_repo.create(
+            user_id="user-a",
+            name="Unresolved expected source identity",
+            config=_campaign_config_for_test_case_ids(["Q-UNRESOLVED"], modes=["naive"]),
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+        with patch(
+            "data_base.repository.resolve_document_references",
+            new=AsyncMock(return_value=resolver_result),
+        ):
+            await engine._run_campaign(
+                user_id="user-a",
+                campaign_id=campaign.id,
+                config=campaign.config,
+                test_cases=[
+                    TestCase(
+                        id="Q-UNRESOLVED",
+                        question="Which source supports the answer?",
+                        ground_truth="The expected paper.",
+                        category="evidence",
+                        difficulty="medium",
+                        source_docs=["fallback-paper.pdf"],
+                    )
+                ],
+            )
+
+        result = (
+            await result_repo.list_for_campaign(
+                user_id="user-a", campaign_id=campaign.id
+            )
+        )[0]
+        chunks = await observability_repo.list_retrieval_chunks_for_run(result.id)
+
+    assert result.answer == "Answer is preserved."
+    assert result.contexts == ["Retrieved context is preserved."]
+    assert chunks[0].expected_evidence_match is False
+    assert (
+        chunks[0].payload["expected_evidence_match_status"]
+        == "identity_unresolved"
+    )
+
+
+@pytest.mark.asyncio
+async def test_campaign_result_marks_resolver_exception_as_unresolved_expected_source_identity() -> None:
+    """Catch resolver outages that would otherwise fail a campaign run."""
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="Answer is preserved after resolver failure.",
+            contexts=["Retrieved context is preserved."],
+            source_doc_ids=["document-uuid-a"],
+            expected_sources=["expected-paper.pdf"],
+            latency_ms=11,
+            token_usage={"total_tokens": 20},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+        )
+
+    db_path = _make_db_path()
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        observability_repo = EvaluationObservabilityRepository()
+        campaign = await campaign_repo.create(
+            user_id="user-a",
+            name="Resolver exception",
+            config=_campaign_config_for_test_case_ids(["Q-RESOLVER-ERROR"], modes=["naive"]),
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+        with patch(
+            "data_base.repository.resolve_document_references",
+            new=AsyncMock(side_effect=RuntimeError("resolver unavailable")),
+        ):
+            await engine._run_campaign(
+                user_id="user-a",
+                campaign_id=campaign.id,
+                config=campaign.config,
+                test_cases=[
+                    TestCase(
+                        id="Q-RESOLVER-ERROR",
+                        question="Which source supports the answer?",
+                        ground_truth="The expected paper.",
+                        category="evidence",
+                        difficulty="medium",
+                    )
+                ],
+            )
+
+        result = (
+            await result_repo.list_for_campaign(
+                user_id="user-a", campaign_id=campaign.id
+            )
+        )[0]
+        chunks = await observability_repo.list_retrieval_chunks_for_run(result.id)
+
+    assert result.answer == "Answer is preserved after resolver failure."
+    assert result.contexts == ["Retrieved context is preserved."]
+    assert chunks[0].expected_evidence_match is False
+    assert (
+        chunks[0].payload["expected_evidence_match_status"]
+        == "identity_unresolved"
+    )
 
 
 @pytest.mark.asyncio

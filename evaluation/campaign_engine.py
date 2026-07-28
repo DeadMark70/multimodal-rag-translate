@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from core.errors import AppError, ErrorCode
 from core.providers import get_llm_provider_name
+from data_base import repository as document_repository
 from evaluation.campaign_schemas import (
     AblationCondition,
     CampaignMetricsResponse,
@@ -585,6 +586,42 @@ def _consume_v9_rerank_diagnostic(
     return matches.pop(0)
 
 
+async def _resolve_expected_source_document_ids(
+    *,
+    user_id: str,
+    expected_sources: list[str],
+) -> tuple[set[str], Literal["resolved", "identity_unresolved"]]:
+    """Resolve expected-source metadata for evaluation observability only."""
+    unique_references = list(
+        dict.fromkeys(
+            reference
+            for reference in expected_sources
+            if isinstance(reference, str) and reference
+        )
+    )
+    if not unique_references:
+        return set(), "resolved"
+
+    try:
+        resolved_references = await document_repository.resolve_document_references(
+            user_id, unique_references
+        )
+    except Exception:
+        logger.warning(
+            "Unable to resolve expected-source identities for evaluation observability",
+            exc_info=True,
+        )
+        return set(), "identity_unresolved"
+
+    resolved_document_ids: set[str] = set()
+    for reference in unique_references:
+        candidates = resolved_references.get(reference, [])
+        if len(candidates) != 1:
+            return set(), "identity_unresolved"
+        resolved_document_ids.add(candidates[0])
+    return resolved_document_ids, "resolved"
+
+
 async def _record_unit_research_observability(
     *,
     run_id: str,
@@ -899,6 +936,13 @@ async def _record_unit_research_observability(
     expected_sources = list(
         execution.payload.expected_sources or execution.unit.test_case.source_docs
     )
+    (
+        resolved_expected_source_ids,
+        expected_source_identity_state,
+    ) = await _resolve_expected_source_document_ids(
+        user_id=user_id,
+        expected_sources=expected_sources,
+    )
     matched_expected = [
         item
         for item in expected_evidence
@@ -924,10 +968,21 @@ async def _record_unit_research_observability(
             selected_content_hash=selected_content_hash,
             chunk_id=chunk_id,
         )
-        expected_match = expected_evidence_matches_doc(
-            doc_id=doc_id,
-            expected_evidence=expected_evidence,
-            expected_sources=expected_sources,
+        expected_match = (
+            expected_evidence_matches_doc(
+                doc_id=doc_id,
+                expected_evidence=expected_evidence,
+                expected_sources=list(resolved_expected_source_ids),
+            )
+            if expected_source_identity_state == "resolved"
+            else False
+        )
+        expected_evidence_match_status = (
+            "identity_unresolved"
+            if expected_source_identity_state == "identity_unresolved"
+            else "matched"
+            if expected_match
+            else "not_matched"
         )
         chunks.append(
             EvaluationRetrievalChunk(
@@ -962,6 +1017,7 @@ async def _record_unit_research_observability(
                 content_hash=selected_content_hash,
                 payload={
                     "instrumentation_depth": "result_level",
+                    "expected_evidence_match_status": expected_evidence_match_status,
                     "reranker_status": (
                         rerank_diagnostic["reranker_status"]
                         if rerank_diagnostic is not None
