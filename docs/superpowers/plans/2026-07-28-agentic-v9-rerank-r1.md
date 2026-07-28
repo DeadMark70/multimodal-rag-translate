@@ -471,3 +471,98 @@ Phase attribution = complete
 
 Do not run the full 16-question evaluation locally because it requires the
 user's deployed corpus and provider credentials.
+
+---
+
+### Task 4: Extend v9 evidence and whole-run deadlines for 12 GB deployment
+
+**Files:**
+- Modify: `data_base/agentic_v9/schemas.py:436-443`
+- Modify: `tests/test_agentic_v9_execution_policy.py:22-44`
+
+**Interfaces:**
+- Consumes: `ExecutionPolicy()` default construction used by
+  `V9ExecutionPolicyRuntime`
+- Produces: `total_deadline_s=128.0` and
+  `phase_timeouts_s["evidence_extract"]=64.0`
+
+- [ ] **Step 1: Write the failing policy-default test**
+
+Change the existing default-policy assertions to:
+
+```python
+assert policy.total_deadline_s == 128.0
+assert policy.phase_timeouts_s == {
+    "route_plan": 32.0,
+    "retrieval_judge": 32.0,
+    "evidence_extract": 64.0,
+    "visual_extract": 16.0,
+    "final_answer": 32.0,
+}
+```
+
+Keep the deadline-clamping test's explicit `ExecutionDeadline(64.0)` fixture;
+it verifies clamping independently of the new default.
+
+- [ ] **Step 2: Run the policy tests and verify RED**
+
+Run:
+
+```powershell
+.venv\Scripts\python.exe -m pytest -p no:cacheprovider `
+  tests/test_agentic_v9_execution_policy.py -q --tb=short
+```
+
+Expected: the default-policy test fails with actual whole-run `64.0` and
+`evidence_extract` `32.0`.
+
+- [ ] **Step 3: Implement the two default changes**
+
+In `ExecutionPolicy`, change only:
+
+```python
+total_deadline_s: float = Field(default=128.0, gt=0)
+```
+
+and:
+
+```python
+"evidence_extract": 64.0,
+```
+
+Do not change `route_plan`, `retrieval_judge`, `visual_extract`, or
+`final_answer`.
+
+- [ ] **Step 4: Verify policy and v9 regressions**
+
+Run:
+
+```powershell
+.venv\Scripts\python.exe -m pytest -p no:cacheprovider `
+  tests/test_agentic_v9_execution_policy.py `
+  tests/test_agentic_v9_execution_core.py `
+  tests/test_agentic_v9_campaign_runtime.py -q --tb=short
+
+.venv\Scripts\ruff.exe check --no-cache `
+  data_base/agentic_v9/schemas.py `
+  tests/test_agentic_v9_execution_policy.py
+
+git diff --check
+```
+
+Expected: all tests, Ruff, and whitespace checks pass.
+
+- [ ] **Step 5: Commit the timeout policy**
+
+```powershell
+git add -- `
+  data_base/agentic_v9/schemas.py `
+  tests/test_agentic_v9_execution_policy.py
+git commit -m "fix(agentic-v9): extend evidence execution deadline"
+```
+
+- [ ] **Step 6: Deployment smoke**
+
+After the user pushes and rebuilds, run Q15 and Q16 once. Both must produce a
+terminal v9 trace instead of a zero-latency `ERROR: ` placeholder. Only then run
+the complete 16-question campaign.

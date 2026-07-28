@@ -107,3 +107,24 @@ chunks per task should the 16-question paired evaluation be run.
 - Naive output and retrieval configuration remain unchanged.
 - The following evaluation compares the new results with the completed Wave S
   run for correctness, faithfulness, relevancy, tokens, and latency.
+
+## Timeout policy addendum
+
+The first deployed R1 run completed 14 of 16 questions. Q15 and Q16 produced
+empty-string `TimeoutError` failure projections before retrieval or LLM
+telemetry was materialized. Both questions compile into comparatively expensive
+multi-document retrieval work, and the complete task batch currently shares one
+`evidence_extract` phase timeout.
+
+For the 12 GB RTX 3060 deployment:
+
+- increase the Agentic v9 whole-run deadline from 64 to 128 seconds;
+- increase `evidence_extract` from 32 to 64 seconds;
+- keep `final_answer` at 32 seconds;
+- keep `visual_extract` at 16 seconds;
+- do not change reranking, retrieval breadth, provider configuration, Naive, or
+  any other RAG mode.
+
+The larger whole-run deadline intentionally preserves at least one complete
+32-second final-answer window after a long evidence phase. Deployment
+verification begins with Q15 and Q16 only before another 16-question run.
