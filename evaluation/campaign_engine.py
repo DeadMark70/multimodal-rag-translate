@@ -515,6 +515,76 @@ async def _record_unit_llm_usage(
     )
 
 
+def _v9_rerank_diagnostics_by_context(
+    trace_payload: dict[str, Any],
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """Index selected v9 rerank rows without collapsing duplicate contexts."""
+    v9_payload = trace_payload.get("agentic_v9")
+    diagnostics = (
+        v9_payload.get("retrieval_diagnostics")
+        if isinstance(v9_payload, dict)
+        else None
+    )
+    if not isinstance(diagnostics, list):
+        return {}
+
+    indexed: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for diagnostic in diagnostics:
+        if not isinstance(diagnostic, dict):
+            continue
+        selected_rows = diagnostic.get("selected")
+        if not isinstance(selected_rows, list):
+            continue
+        task_metadata = {
+            "reranker_status": str(
+                diagnostic.get("status") or "not_instrumented"
+            ),
+            "reranker_fallback_reason": diagnostic.get("fallback_reason"),
+            "retrieval_task_id": diagnostic.get("task_id"),
+            "rerank_candidate_count": diagnostic.get("candidate_count"),
+            "rerank_selected_count": diagnostic.get("selected_count"),
+        }
+        for selected_row in selected_rows:
+            if not isinstance(selected_row, dict):
+                continue
+            doc_id = selected_row.get("doc_id")
+            selected_content_hash = selected_row.get("content_hash")
+            if doc_id in (None, "") or selected_content_hash in (None, ""):
+                continue
+            primary_key = (str(doc_id), str(selected_content_hash))
+            indexed.setdefault(primary_key, []).append(
+                {
+                    **task_metadata,
+                    "chunk_id": selected_row.get("chunk_id"),
+                    "rank_before_rerank": selected_row.get("pre_rerank_rank"),
+                    "rank_after_rerank": selected_row.get("post_rerank_rank"),
+                    "rerank_score": selected_row.get("rerank_score"),
+                }
+            )
+    return indexed
+
+
+def _consume_v9_rerank_diagnostic(
+    diagnostics_by_context: dict[tuple[str, str], list[dict[str, Any]]],
+    *,
+    doc_id: str | None,
+    selected_content_hash: str,
+    chunk_id: str | None,
+) -> dict[str, Any] | None:
+    if doc_id is None:
+        return None
+    matches = diagnostics_by_context.get((doc_id, selected_content_hash))
+    if not matches:
+        return None
+
+    if chunk_id is not None:
+        for index, diagnostic in enumerate(matches):
+            diagnostic_chunk_id = diagnostic.get("chunk_id")
+            if diagnostic_chunk_id not in (None, "") and diagnostic_chunk_id == chunk_id:
+                return matches.pop(index)
+    return matches.pop(0)
+
+
 async def _record_unit_research_observability(
     *,
     run_id: str,
@@ -839,6 +909,7 @@ async def _record_unit_research_observability(
         )
     ]
     chunks: list[EvaluationRetrievalChunk] = []
+    rerank_diagnostics_by_context = _v9_rerank_diagnostics_by_context(trace_payload)
     for index, context in enumerate(execution.payload.contexts, start=1):
         doc_id = (
             execution.payload.source_doc_ids[index - 1]
@@ -846,6 +917,13 @@ async def _record_unit_research_observability(
             else None
         )
         chunk_id = f"{run_id}:chunk:{index}"
+        selected_content_hash = content_hash(context)
+        rerank_diagnostic = _consume_v9_rerank_diagnostic(
+            rerank_diagnostics_by_context,
+            doc_id=doc_id,
+            selected_content_hash=selected_content_hash,
+            chunk_id=chunk_id,
+        )
         expected_match = expected_evidence_matches_doc(
             doc_id=doc_id,
             expected_evidence=expected_evidence,
@@ -860,15 +938,56 @@ async def _record_unit_research_observability(
                 retrieval_event_id=retrieval_event_id,
                 chunk_id=chunk_id,
                 doc_id=doc_id,
-                rank_before_rerank=index,
-                rank_after_rerank=index,
+                rank_before_rerank=(
+                    rerank_diagnostic.get("rank_before_rerank")
+                    if rerank_diagnostic is not None
+                    else None
+                ),
+                rank_after_rerank=(
+                    rerank_diagnostic.get("rank_after_rerank")
+                    if rerank_diagnostic is not None
+                    else None
+                ),
+                rerank_score=(
+                    rerank_diagnostic.get("rerank_score")
+                    if rerank_diagnostic is not None
+                    and rerank_diagnostic["reranker_status"] == "executed"
+                    else None
+                ),
                 used_in_context=True,
                 used_in_answer=expected_match
                 or text_mentions_fact(execution.payload.answer, context),
                 expected_evidence_match=expected_match,
                 excerpt=context[:500],
-                content_hash=content_hash(context),
-                payload={"instrumentation_depth": "result_level"},
+                content_hash=selected_content_hash,
+                payload={
+                    "instrumentation_depth": "result_level",
+                    "reranker_status": (
+                        rerank_diagnostic["reranker_status"]
+                        if rerank_diagnostic is not None
+                        else "not_instrumented"
+                    ),
+                    "reranker_fallback_reason": (
+                        rerank_diagnostic["reranker_fallback_reason"]
+                        if rerank_diagnostic is not None
+                        else None
+                    ),
+                    "retrieval_task_id": (
+                        rerank_diagnostic["retrieval_task_id"]
+                        if rerank_diagnostic is not None
+                        else None
+                    ),
+                    "rerank_candidate_count": (
+                        rerank_diagnostic["rerank_candidate_count"]
+                        if rerank_diagnostic is not None
+                        else None
+                    ),
+                    "rerank_selected_count": (
+                        rerank_diagnostic["rerank_selected_count"]
+                        if rerank_diagnostic is not None
+                        else None
+                    ),
+                },
                 created_at=created_at,
             )
         )

@@ -37,6 +37,7 @@ from evaluation.db import (
     CampaignRepository,
     CampaignResultRepository,
 )
+from evaluation.evidence import content_hash
 from evaluation.job_store import EvaluationJobStore
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.observability import current_llm_call_observer
@@ -1304,8 +1305,9 @@ async def test_campaign_result_records_retrieval_context_and_evidence_flow() -> 
         chunks = await observability_repo.list_retrieval_chunks_for_run(result.id)
         assert len(chunks) == 2
         assert chunks[0].doc_id == "paper-a.pdf"
-        assert chunks[0].rank_before_rerank == 1
-        assert chunks[0].rank_after_rerank == 1
+        assert chunks[0].rank_before_rerank is None
+        assert chunks[0].rank_after_rerank is None
+        assert chunks[0].payload["reranker_status"] == "not_instrumented"
         assert chunks[0].used_in_context is True
         assert chunks[0].used_in_answer is True
         assert chunks[0].expected_evidence_match is True
@@ -1322,6 +1324,199 @@ async def test_campaign_result_records_retrieval_context_and_evidence_flow() -> 
         assert context_packs[0].retrieved_but_not_packed_evidence == []
         assert result.derived_metrics["gold_fact_attrition"][0]["retrieved"] is True
         assert result.derived_metrics["gold_fact_attrition"][0]["packed"] is True
+
+
+@pytest.mark.asyncio
+async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks() -> None:
+    duplicate_excerpt = "The same selected excerpt appears in two documents."
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="The selected excerpts support the answer.",
+            contexts=[
+                duplicate_excerpt,
+                duplicate_excerpt,
+                duplicate_excerpt,
+                "This context was not instrumented.",
+            ],
+            source_doc_ids=["doc-a", "doc-a", "doc-b", "doc-missing"],
+            expected_sources=["doc-a"],
+            latency_ms=11,
+            token_usage={"total_tokens": 20},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+            execution_profile="agentic-v9-eval",
+            agent_trace={
+                "agentic_v9": {
+                    "retrieval_diagnostics": [
+                        {
+                            "task_id": "task-source-a",
+                            "status": "executed",
+                            "fallback_reason": None,
+                            "candidate_count": 8,
+                            "selected_count": 4,
+                            "selected": [
+                                {
+                                    "doc_id": "doc-a",
+                                    "chunk_id": "runtime-a-first",
+                                    "content_hash": content_hash(duplicate_excerpt),
+                                    "pre_rerank_rank": 8,
+                                    "post_rerank_rank": 4,
+                                    "rerank_score": 0.31,
+                                },
+                                {
+                                    "doc_id": "doc-a",
+                                    "chunk_id": "runtime-a-second",
+                                    "content_hash": content_hash(duplicate_excerpt),
+                                    "pre_rerank_rank": 3,
+                                    "post_rerank_rank": 1,
+                                    "rerank_score": 0.91,
+                                },
+                            ],
+                        },
+                        {
+                            "task_id": "task-source-b",
+                            "status": "executed",
+                            "fallback_reason": None,
+                            "candidate_count": 8,
+                            "selected_count": 4,
+                            "selected": [
+                                {
+                                    "doc_id": "doc-b",
+                                    "chunk_id": "runtime-b",
+                                    "content_hash": content_hash(duplicate_excerpt),
+                                    "pre_rerank_rank": 5,
+                                    "post_rerank_rank": 2,
+                                    "rerank_score": 0.82,
+                                }
+                            ],
+                        },
+                    ]
+                }
+            },
+        )
+
+    db_path = _make_db_path()
+    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
+        campaign_repo = CampaignRepository()
+        result_repo = CampaignResultRepository()
+        observability_repo = EvaluationObservabilityRepository()
+        config = _campaign_config_for_test_case_ids(["Q-V9-RERANK"], modes=["agentic"])
+        config.agentic_execution_version = "v9"
+        campaign = await campaign_repo.create(
+            user_id="user-a",
+            name="V9 rerank diagnostics",
+            config=config,
+        )
+        engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+        await engine._run_campaign(
+            user_id="user-a",
+            campaign_id=campaign.id,
+            config=campaign.config,
+            test_cases=[
+                TestCase(
+                    id="Q-V9-RERANK",
+                    question="What do the selected excerpts show?",
+                    ground_truth="They support the answer.",
+                    category="evidence",
+                    difficulty="medium",
+                    source_docs=["doc-a"],
+                )
+            ],
+        )
+
+        result = (
+            await result_repo.list_for_campaign(
+                user_id="user-a", campaign_id=campaign.id
+            )
+        )[0]
+        chunks = await observability_repo.list_retrieval_chunks_for_run(result.id)
+
+    chunks_by_context_order = sorted(
+        chunks, key=lambda chunk: int(chunk.chunk_id.rsplit(":", 1)[1])
+    )
+    assert [(chunk.doc_id, chunk.excerpt) for chunk in chunks_by_context_order] == [
+        ("doc-a", duplicate_excerpt),
+        ("doc-a", duplicate_excerpt),
+        ("doc-b", duplicate_excerpt),
+        ("doc-missing", "This context was not instrumented."),
+    ]
+    assert [chunk.rank_before_rerank for chunk in chunks_by_context_order] == [
+        8,
+        3,
+        5,
+        None,
+    ]
+    assert [chunk.rank_after_rerank for chunk in chunks_by_context_order] == [
+        4,
+        1,
+        2,
+        None,
+    ]
+    assert [chunk.rerank_score for chunk in chunks_by_context_order] == [
+        0.31,
+        0.91,
+        0.82,
+        None,
+    ]
+    assert [chunk.payload for chunk in chunks_by_context_order] == [
+        {
+            "instrumentation_depth": "result_level",
+            "reranker_status": "executed",
+            "reranker_fallback_reason": None,
+            "retrieval_task_id": "task-source-a",
+            "rerank_candidate_count": 8,
+            "rerank_selected_count": 4,
+        },
+        {
+            "instrumentation_depth": "result_level",
+            "reranker_status": "executed",
+            "reranker_fallback_reason": None,
+            "retrieval_task_id": "task-source-a",
+            "rerank_candidate_count": 8,
+            "rerank_selected_count": 4,
+        },
+        {
+            "instrumentation_depth": "result_level",
+            "reranker_status": "executed",
+            "reranker_fallback_reason": None,
+            "retrieval_task_id": "task-source-b",
+            "rerank_candidate_count": 8,
+            "rerank_selected_count": 4,
+        },
+        {
+            "instrumentation_depth": "result_level",
+            "reranker_status": "not_instrumented",
+            "reranker_fallback_reason": None,
+            "retrieval_task_id": None,
+            "rerank_candidate_count": None,
+            "rerank_selected_count": None,
+        },
+    ]
+    assert [chunk.used_in_context for chunk in chunks_by_context_order] == [
+        True,
+        True,
+        True,
+        True,
+    ]
+    assert [chunk.used_in_answer for chunk in chunks_by_context_order] == [
+        True,
+        True,
+        False,
+        False,
+    ]
+    assert result.answer == "The selected excerpts support the answer."
+    assert result.contexts == [
+        duplicate_excerpt,
+        duplicate_excerpt,
+        duplicate_excerpt,
+        "This context was not instrumented.",
+    ]
 
 
 @pytest.mark.asyncio

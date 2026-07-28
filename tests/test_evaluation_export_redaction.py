@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from core.auth import get_current_user_id
 from evaluation.campaign_engine import CampaignEngine
+from evaluation.evidence import content_hash
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.rag_modes import BenchmarkExecutionResult
 from evaluation.trace_schemas import EvaluationLlmCall, EvaluationTraceEvent
@@ -216,6 +217,31 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
             token_usage={"total_tokens": 16},
             category=test_case.category,
             difficulty=test_case.difficulty,
+            agent_trace={
+                "agentic_v9": {
+                    "retrieval_diagnostics": [
+                        {
+                            "task_id": "export-retrieval-task",
+                            "status": "executed",
+                            "fallback_reason": None,
+                            "candidate_count": 8,
+                            "selected_count": 4,
+                            "selected": [
+                                {
+                                    "doc_id": "doc-1",
+                                    "chunk_id": "runtime-export-chunk",
+                                    "content_hash": content_hash(
+                                        "SECRET RETRIEVED CONTEXT"
+                                    ),
+                                    "pre_rerank_rank": 7,
+                                    "post_rerank_rank": 2,
+                                    "rerank_score": 0.73,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
         )
 
     engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
@@ -282,6 +308,18 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         assert export_body["summary"]["per_phase_counts"]["evidence_extract"] == 1
         assert export_body["summary"]["prompt_hash_availability"]["captured"] >= 2
         assert export_body["summary"]["full_prompt_availability"]["redacted"] == 1
+        exported_chunk = export_body["retrieval_summary"][0]["chunks"][0]
+        assert exported_chunk["rank_before_rerank"] == 7
+        assert exported_chunk["rank_after_rerank"] == 2
+        assert exported_chunk["rerank_score"] == 0.73
+        assert exported_chunk["payload"] == {
+            "instrumentation_depth": "result_level",
+            "reranker_status": "executed",
+            "reranker_fallback_reason": None,
+            "retrieval_task_id": "export-retrieval-task",
+            "rerank_candidate_count": 8,
+            "rerank_selected_count": 4,
+        }
 
         full_export = client.post(
             f"/api/evaluation/campaigns/{campaign_id}/export",
@@ -331,6 +369,12 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         assert "Grounded answer" not in redacted_text
         assert "A safe answer" not in redacted_text
         assert "SECRET RETRIEVED CONTEXT" not in redacted_text
+        redacted_chunk = redacted_export.json()["retrieval_summary"][0]["chunks"][0]
+        assert redacted_chunk["excerpt"] is None
+        assert redacted_chunk["rank_before_rerank"] == 7
+        assert redacted_chunk["rank_after_rerank"] == 2
+        assert redacted_chunk["rerank_score"] == 0.73
+        assert redacted_chunk["payload"]["reranker_status"] == "executed"
 
 
 def test_user_cannot_export_another_users_campaign() -> None:
