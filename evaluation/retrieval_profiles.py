@@ -21,6 +21,9 @@ AGENTIC_EVAL_PROFILE = (
 AGENTIC_V9_OPEN_CORPUS_PROFILE = (
     "agentic_eval_v9_open_corpus_hybrid8_rerank8_top4_finalpack_r1"
 )
+AGENTIC_V9_EXPLICIT_SCOPE_PROFILE = (
+    "agentic_eval_v9_explicit_scope_hybrid8_rerank8_top4_finalpack_r1"
+)
 AGENTIC_V9_CONTEXT_POLICY_VERSION = "v5_final_context_soft_pack_r1"
 AGENTIC_LEGACY_CHAT_PROFILE = (
     f"agentic_eval_v7_semantic_router_{DEFAULT_PRODUCTION_INDEXING_PROFILE}"
@@ -51,6 +54,15 @@ def multi_query_settings() -> dict[str, bool]:
 
 def no_query_expansion_settings() -> dict[str, bool]:
     return {"enable_hyde": False, "enable_multi_query": False}
+
+
+def agentic_v9_execution_profile(*, open_user_corpus: bool) -> str:
+    """Keep v9 profiles comparable across open and explicitly scoped runs."""
+    return (
+        AGENTIC_V9_OPEN_CORPUS_PROFILE
+        if open_user_corpus
+        else AGENTIC_V9_EXPLICIT_SCOPE_PROFILE
+    )
 
 
 def locator_to_chunk_graph_hints(

@@ -89,7 +89,7 @@ from evaluation.observability import current_llm_call_observer
 from evaluation.retrieval_profiles import (
     AGENTIC_EVAL_PROFILE,
     AGENTIC_V9_CONTEXT_POLICY_VERSION,
-    AGENTIC_V9_OPEN_CORPUS_PROFILE,
+    agentic_v9_execution_profile,
 )
 
 logger = logging.getLogger(__name__)
@@ -157,8 +157,8 @@ class AgenticV9CampaignRuntime:
         after planning, before the core can start retrieval.
         """
         open_user_corpus = authorized_doc_ids is None
-        execution_profile = (
-            AGENTIC_V9_OPEN_CORPUS_PROFILE if open_user_corpus else AGENTIC_EVAL_PROFILE
+        execution_profile = agentic_v9_execution_profile(
+            open_user_corpus=open_user_corpus
         )
         pre_route = validate_pre_route_feasibility(
             setup_snapshot=setup_snapshot,
