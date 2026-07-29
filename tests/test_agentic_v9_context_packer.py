@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from data_base.agentic_v9.context_packer import EvidenceContextPacker
+from data_base.agentic_v9.context_packer import (
+    EvidenceContextPacker,
+    FinalContextSelectionPolicy,
+)
 from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
@@ -23,6 +26,11 @@ def _packet(
     doc_id: str = "doc-1",
     chunk_id: str | None = None,
     source_span_hash: str | None = None,
+    asset_id: str | None = None,
+    raw_value: Decimal | None = Decimal("0.91"),
+    table_id: str | None = None,
+    figure_id: str | None = None,
+    section: str | None = None,
 ) -> EvidencePacket:
     return EvidencePacket(
         schema_version="1",
@@ -37,10 +45,16 @@ def _packet(
             doc_id=doc_id,
             chunk_id=chunk_id,
             source_span_hash=source_span_hash,
+            asset_id=asset_id,
         ),
         scope=EvidenceScope(metric="Dice"),
-        locator=SourceLocator(pdf_page_index=0),
-        raw_value=Decimal("0.91"),
+        locator=SourceLocator(
+            pdf_page_index=0,
+            table_id=table_id,
+            figure_id=figure_id,
+            section=section,
+        ),
+        raw_value=raw_value,
     )
 
 
@@ -50,6 +64,16 @@ class _FixedEstimator:
 
     def estimate_packet(self, packet: EvidencePacket) -> int:
         return self._values[packet.evidence_id]
+
+
+def _soft_policy(*, preferred_max_packets: int = 8) -> FinalContextSelectionPolicy:
+    return FinalContextSelectionPolicy(
+        version="soft_final_pack_r1",
+        preferred_max_packets=preferred_max_packets,
+        new_source_bonus=0.05,
+        near_duplicate_penalty=0.08,
+        visual_without_visual_intent_penalty=0.03,
+    )
 
 
 def test_token_estimator_is_positive_and_conservative_for_text() -> None:
@@ -294,3 +318,162 @@ def test_estimator_is_conservative_for_structured_and_image_prompt_content() -> 
     assert estimator.estimate_json({"中文": ["value", 0.91]}) >= 10
     assert estimator.estimate_table("| 指標 | Dice |\n| --- | --- |\n| A | 0.91 |") >= 20
     assert estimator.estimate_image(width=512, height=512) > 0
+
+
+def test_soft_policy_uses_rerank_quality_before_source_diversity() -> None:
+    """A diversity bonus cannot turn into a source quota."""
+    required = _packet("required", doc_id="doc-a", chunk_id="required")
+    high_quality = _packet(
+        "high-quality", doc_id="doc-a", chunk_id="high", slot_ids=["optional"]
+    )
+    unseen_source = _packet(
+        "unseen-source", doc_id="doc-b", chunk_id="unseen", slot_ids=["optional"]
+    )
+    packer = EvidenceContextPacker(
+        setup_input_ceiling=100,
+        remaining_runtime_tokens=100,
+        final_output_reserve=0,
+        estimator=_FixedEstimator(
+            {"required": 1, "high-quality": 1, "unseen-source": 1}
+        ),  # type: ignore[arg-type]
+    )
+
+    result = packer.pack(
+        [required, high_quality, unseen_source],
+        required_slots=[RequiredSlot(slot_id="slot-1", description="required")],
+        quality_by_evidence_id={
+            "required": 0.2,
+            "high-quality": 1.0,
+            "unseen-source": 0.10,
+        },
+        selection_policy=_soft_policy(preferred_max_packets=2),
+    )
+
+    high_quality_decision = next(
+        decision
+        for decision in result.selection_decisions
+        if decision.evidence_id == "high-quality"
+    )
+    assert [packet.evidence_id for packet in result.packets] == ["required", "high-quality"]
+    assert result.selection_policy_version == "soft_final_pack_r1"
+    assert high_quality_decision.source_bonus == 0.0
+    assert high_quality_decision.utility == 0.92
+
+
+def test_soft_policy_only_removes_exact_source_duplicates() -> None:
+    """Near duplicates remain eligible and are only omitted for the soft limit."""
+    first = _packet("first", statement="Dice is 0.91 for the held-out split.", chunk_id="a")
+    second = _packet("second", statement="Dice is 0.91 for the held-out split.", chunk_id="b")
+    packer = EvidenceContextPacker(
+        setup_input_ceiling=100,
+        remaining_runtime_tokens=100,
+        final_output_reserve=0,
+        estimator=_FixedEstimator({"first": 1, "second": 1}),  # type: ignore[arg-type]
+    )
+
+    result = packer.pack(
+        [first, second],
+        quality_by_evidence_id={"first": 1.0, "second": 0.9},
+        selection_policy=_soft_policy(preferred_max_packets=1),
+    )
+
+    second_decision = next(
+        decision for decision in result.selection_decisions if decision.evidence_id == "second"
+    )
+    assert [packet.evidence_id for packet in result.packets] == ["first"]
+    assert second_decision.selected is False
+    assert second_decision.redundancy_penalty == 0.08
+    assert second_decision.reason == "preferred_packet_limit"
+
+
+def test_soft_policy_keeps_unique_numeric_or_structured_evidence() -> None:
+    """Different numeric/table provenance is not treated as a near duplicate."""
+    first = _packet(
+        "first",
+        statement="Dice score for the experiment.",
+        chunk_id="a",
+        raw_value=Decimal("0.91"),
+        table_id="Table 1",
+    )
+    second = _packet(
+        "second",
+        statement="Dice score for the experiment.",
+        chunk_id="b",
+        raw_value=Decimal("0.92"),
+        table_id="Table 2",
+    )
+    packer = EvidenceContextPacker(
+        setup_input_ceiling=100,
+        remaining_runtime_tokens=100,
+        final_output_reserve=0,
+        estimator=_FixedEstimator({"first": 1, "second": 1}),  # type: ignore[arg-type]
+    )
+
+    result = packer.pack(
+        [first, second],
+        quality_by_evidence_id={"first": 1.0, "second": 0.9},
+        selection_policy=_soft_policy(preferred_max_packets=2),
+    )
+
+    second_decision = next(
+        decision for decision in result.selection_decisions if decision.evidence_id == "second"
+    )
+    assert [packet.evidence_id for packet in result.packets] == ["first", "second"]
+    assert second_decision.redundancy_penalty == 0.0
+
+
+def test_soft_policy_downweights_typed_visual_packet_without_excluding_it() -> None:
+    """Text-only questions may downweight visual evidence but cannot exclude it."""
+    visual = _packet("visual", chunk_id="visual", asset_id="asset-1")
+    text = _packet("text", chunk_id="text")
+    packer = EvidenceContextPacker(
+        setup_input_ceiling=100,
+        remaining_runtime_tokens=100,
+        final_output_reserve=0,
+    )
+
+    result = packer.pack(
+        [visual, text],
+        quality_by_evidence_id={"visual": 1.0, "text": 0.9},
+        selection_policy=_soft_policy(preferred_max_packets=1),
+    )
+
+    visual_decision = next(
+        decision for decision in result.selection_decisions if decision.evidence_id == "visual"
+    )
+    assert [packet.evidence_id for packet in result.packets] == ["visual"]
+    assert visual_decision.visual_penalty == 0.03
+    assert visual_decision.utility == 1.02
+
+
+def test_required_packet_closure_overrides_preferred_packet_limit() -> None:
+    """A required packet's transitive premises remain answerable above the soft cap."""
+    packets = [
+        _packet(f"premise-{index}", slot_ids=["premise"], chunk_id=f"premise-{index}")
+        for index in range(8)
+    ]
+    required = _packet("required", chunk_id="required")
+    required.premise_evidence_ids = [packets[-1].evidence_id]
+    for index in range(7, 0, -1):
+        packets[index].premise_evidence_ids = [packets[index - 1].evidence_id]
+    packets.append(required)
+    packer = EvidenceContextPacker(
+        setup_input_ceiling=100,
+        remaining_runtime_tokens=100,
+        final_output_reserve=0,
+        estimator=_FixedEstimator({packet.evidence_id: 1 for packet in packets}),  # type: ignore[arg-type]
+    )
+
+    result = packer.pack(
+        packets,
+        required_slots=[RequiredSlot(slot_id="slot-1", description="required")],
+        quality_by_evidence_id={"required": 1.0},
+        selection_policy=_soft_policy(),
+    )
+
+    assert result.failure_reason is None
+    assert len(result.packets) == 9
+    assert any(
+        decision.reason == "required_evidence_over_preferred_limit"
+        for decision in result.selection_decisions
+    )

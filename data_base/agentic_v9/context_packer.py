@@ -14,6 +14,31 @@ from data_base.agentic_v9.token_estimator import (
 
 
 @dataclass(frozen=True, slots=True)
+class FinalContextSelectionPolicy:
+    """Versioned soft preference for optional final-context evidence."""
+
+    version: str
+    preferred_max_packets: int = 8
+    new_source_bonus: float = 0.05
+    near_duplicate_penalty: float = 0.08
+    visual_without_visual_intent_penalty: float = 0.03
+
+
+@dataclass(frozen=True, slots=True)
+class ContextSelectionDecision:
+    """Auditable soft-selection outcome for one supplied evidence packet."""
+
+    evidence_id: str
+    selected: bool
+    base_quality: float
+    source_bonus: float
+    redundancy_penalty: float
+    visual_penalty: float
+    utility: float
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class PackedEvidenceContext:
     """The complete bounded evidence projection consumed by a final v9 phase."""
 
@@ -26,6 +51,8 @@ class PackedEvidenceContext:
     input_token_budget: int
     failure_reason: str | None = None
     prompt_estimate: PromptTokenEstimate | None = None
+    selection_policy_version: str | None = None
+    selection_decisions: tuple[ContextSelectionDecision, ...] = ()
 
     @property
     def is_packable(self) -> bool:
@@ -111,6 +138,7 @@ class EvidenceContextPacker:
         required_slots: Sequence[RequiredSlot] | QueryContract | None = None,
         quality_by_evidence_id: Mapping[str, float] | None = None,
         derived_claim_premise_evidence_ids: Sequence[str] | None = None,
+        selection_policy: FinalContextSelectionPolicy | None = None,
     ) -> PackedEvidenceContext:
         """Pack whole packets, failing closed when answerable mandatory slots lose.
 
@@ -193,35 +221,50 @@ class EvidenceContextPacker:
             selected_ids.update(item.packet.evidence_id for item in closure)
             used_tokens += sum(item.estimate for item in closure)
 
-        source_counts = self._source_counts(selected)
-        remaining = [
-            candidate
-            for candidate in candidates
-            if candidate.packet.evidence_id not in selected_ids
-        ]
-        while remaining:
-            candidate = min(
-                remaining,
-                key=lambda item: (
-                    source_counts.get(item.packet.source.doc_id, 0),
-                    *self._quality_order(item),
-                ),
-            )
-            remaining.remove(candidate)
-            closure = self._premise_closure(candidate, candidates_by_id, selected_ids)
-            if (
-                closure is None
-                or used_tokens + sum(item.estimate for item in closure)
-                > self._input_token_budget
-            ):
-                continue
-            selected.extend(closure)
-            selected_ids.update(item.packet.evidence_id for item in closure)
-            used_tokens += sum(item.estimate for item in closure)
-            for item in closure:
-                source_counts[item.packet.source.doc_id] = (
-                    source_counts.get(item.packet.source.doc_id, 0) + 1
+        selection_decisions: tuple[ContextSelectionDecision, ...] = ()
+        if selection_policy is None:
+            source_counts = self._source_counts(selected)
+            remaining = [
+                candidate
+                for candidate in candidates
+                if candidate.packet.evidence_id not in selected_ids
+            ]
+            while remaining:
+                candidate = min(
+                    remaining,
+                    key=lambda item: (
+                        source_counts.get(item.packet.source.doc_id, 0),
+                        *self._quality_order(item),
+                    ),
                 )
+                remaining.remove(candidate)
+                closure = self._premise_closure(candidate, candidates_by_id, selected_ids)
+                if (
+                    closure is None
+                    or used_tokens + sum(item.estimate for item in closure)
+                    > self._input_token_budget
+                ):
+                    continue
+                selected.extend(closure)
+                selected_ids.update(item.packet.evidence_id for item in closure)
+                used_tokens += sum(item.estimate for item in closure)
+                for item in closure:
+                    source_counts[item.packet.source.doc_id] = (
+                        source_counts.get(item.packet.source.doc_id, 0) + 1
+                    )
+        else:
+            selected, used_tokens, selection_decisions = self._select_with_policy(
+                source_packets=source_packets,
+                candidates=candidates,
+                candidates_by_id=candidates_by_id,
+                selected=selected,
+                selected_ids=selected_ids,
+                used_tokens=used_tokens,
+                required_slots=required,
+                policy=selection_policy,
+                quality_by_evidence_id=quality_by_evidence_id or {},
+                deduplicated_drops=deduplicated_drops,
+            )
 
         selected_packets = tuple(candidate.packet for candidate in selected)
         selected_token_counts = {
@@ -233,7 +276,7 @@ class EvidenceContextPacker:
             if packet.evidence_id not in selected_ids
         )
         prompt_estimate = self._fixed_prompt_estimate.with_evidence(used_tokens)
-        return PackedEvidenceContext(
+        context = PackedEvidenceContext(
             packets=selected_packets,
             rendered_text="\n\n".join(render_evidence_packet(packet) for packet in selected_packets),
             # This legacy field is the packed evidence metric.  The complete
@@ -245,6 +288,21 @@ class EvidenceContextPacker:
             tokens_by_source=self._tokens_by_source(selected, selected_token_counts),
             input_token_budget=self._input_token_budget,
             prompt_estimate=prompt_estimate,
+        )
+        if selection_policy is None:
+            return context
+        return PackedEvidenceContext(
+            packets=context.packets,
+            rendered_text=context.rendered_text,
+            estimated_input_tokens=context.estimated_input_tokens,
+            dropped_packet_ids=context.dropped_packet_ids,
+            tokens_by_slot=context.tokens_by_slot,
+            tokens_by_source=context.tokens_by_source,
+            input_token_budget=context.input_token_budget,
+            failure_reason=context.failure_reason,
+            prompt_estimate=context.prompt_estimate,
+            selection_policy_version=selection_policy.version,
+            selection_decisions=selection_decisions,
         )
 
     def _deduplicate(
@@ -271,6 +329,229 @@ class EvidenceContextPacker:
             else:
                 dropped.add(packet.evidence_id)
         return sorted(winners.values(), key=lambda item: item.index), dropped
+
+    def _select_with_policy(
+        self,
+        *,
+        source_packets: Sequence[EvidencePacket],
+        candidates: Sequence[_Candidate],
+        candidates_by_id: Mapping[str, _Candidate],
+        selected: list[_Candidate],
+        selected_ids: set[str],
+        used_tokens: int,
+        required_slots: Sequence[RequiredSlot],
+        policy: FinalContextSelectionPolicy,
+        quality_by_evidence_id: Mapping[str, float],
+        deduplicated_drops: set[str],
+    ) -> tuple[list[_Candidate], int, tuple[ContextSelectionDecision, ...]]:
+        """Apply soft preferences only to optional additions after closure."""
+        decisions: dict[str, ContextSelectionDecision] = {}
+        visual_intent = any(
+            slot.visual_policy in {"preferred", "required"} for slot in required_slots
+        )
+
+        for index, candidate in enumerate(selected):
+            reason = "required_evidence"
+            if index >= policy.preferred_max_packets:
+                reason = "required_evidence_over_preferred_limit"
+            decisions[candidate.packet.evidence_id] = self._decision(
+                candidate,
+                selected=True,
+                source_bonus=0.0,
+                redundancy_penalty=0.0,
+                visual_penalty=0.0,
+                reason=reason,
+            )
+
+        remaining = [
+            candidate
+            for candidate in candidates
+            if candidate.packet.evidence_id not in selected_ids
+        ]
+        while remaining:
+            scored = [
+                (
+                    candidate,
+                    self._policy_components(
+                        candidate, selected, policy, visual_intent
+                    ),
+                )
+                for candidate in remaining
+            ]
+            candidate, components = min(
+                scored,
+                key=lambda item: (
+                    -item[1][3],
+                    *self._quality_order(item[0]),
+                ),
+            )
+            remaining.remove(candidate)
+            source_bonus, redundancy_penalty, visual_penalty, _ = components
+            closure = self._premise_closure(candidate, candidates_by_id, selected_ids)
+            if len(selected) >= policy.preferred_max_packets or (
+                closure is not None
+                and len(selected) + len(closure) > policy.preferred_max_packets
+            ):
+                decisions[candidate.packet.evidence_id] = self._decision(
+                    candidate,
+                    selected=False,
+                    source_bonus=source_bonus,
+                    redundancy_penalty=redundancy_penalty,
+                    visual_penalty=visual_penalty,
+                    reason="preferred_packet_limit",
+                )
+                continue
+            if closure is None:
+                decisions[candidate.packet.evidence_id] = self._decision(
+                    candidate,
+                    selected=False,
+                    source_bonus=source_bonus,
+                    redundancy_penalty=redundancy_penalty,
+                    visual_penalty=visual_penalty,
+                    reason="unpackable_premise_closure",
+                )
+                continue
+            if used_tokens + sum(item.estimate for item in closure) > self._input_token_budget:
+                decisions[candidate.packet.evidence_id] = self._decision(
+                    candidate,
+                    selected=False,
+                    source_bonus=source_bonus,
+                    redundancy_penalty=redundancy_penalty,
+                    visual_penalty=visual_penalty,
+                    reason="input_token_budget",
+                )
+                continue
+            for item in closure:
+                item_components = self._policy_components(
+                    item, selected, policy, visual_intent
+                )
+                decisions[item.packet.evidence_id] = self._decision(
+                    item,
+                    selected=True,
+                    source_bonus=item_components[0],
+                    redundancy_penalty=item_components[1],
+                    visual_penalty=item_components[2],
+                    reason="selected_by_soft_utility",
+                )
+                selected.append(item)
+                selected_ids.add(item.packet.evidence_id)
+                used_tokens += item.estimate
+
+        for packet in source_packets:
+            if packet.evidence_id in decisions:
+                continue
+            if packet.evidence_id in deduplicated_drops:
+                quality = self._quality(quality_by_evidence_id.get(packet.evidence_id))
+                decisions[packet.evidence_id] = ContextSelectionDecision(
+                    evidence_id=packet.evidence_id,
+                    selected=False,
+                    base_quality=quality,
+                    source_bonus=0.0,
+                    redundancy_penalty=0.0,
+                    visual_penalty=0.0,
+                    utility=quality,
+                    reason="exact_source_duplicate",
+                )
+
+        return (
+            selected,
+            used_tokens,
+            tuple(
+                decisions[packet.evidence_id]
+                for packet in source_packets
+                if packet.evidence_id in decisions
+            ),
+        )
+
+    @staticmethod
+    def _decision(
+        candidate: _Candidate,
+        *,
+        selected: bool,
+        source_bonus: float,
+        redundancy_penalty: float,
+        visual_penalty: float,
+        reason: str,
+    ) -> ContextSelectionDecision:
+        utility = (
+            candidate.quality
+            + source_bonus
+            - redundancy_penalty
+            - visual_penalty
+        )
+        return ContextSelectionDecision(
+            evidence_id=candidate.packet.evidence_id,
+            selected=selected,
+            base_quality=candidate.quality,
+            source_bonus=source_bonus,
+            redundancy_penalty=redundancy_penalty,
+            visual_penalty=visual_penalty,
+            utility=utility,
+            reason=reason,
+        )
+
+    @classmethod
+    def _policy_components(
+        cls,
+        candidate: _Candidate,
+        selected: Sequence[_Candidate],
+        policy: FinalContextSelectionPolicy,
+        visual_intent: bool,
+    ) -> tuple[float, float, float, float]:
+        source_bonus = (
+            policy.new_source_bonus
+            if all(
+                item.packet.source.doc_id != candidate.packet.source.doc_id
+                for item in selected
+            )
+            else 0.0
+        )
+        redundancy_penalty = (
+            policy.near_duplicate_penalty
+            if any(
+                cls._near_duplicate(candidate.packet, item.packet)
+                for item in selected
+            )
+            else 0.0
+        )
+        visual_penalty = (
+            policy.visual_without_visual_intent_penalty
+            if candidate.packet.source.asset_id and not visual_intent
+            else 0.0
+        )
+        utility = (
+            candidate.quality
+            + source_bonus
+            - redundancy_penalty
+            - visual_penalty
+        )
+        return source_bonus, redundancy_penalty, visual_penalty, utility
+
+    @classmethod
+    def _near_duplicate(cls, left: EvidencePacket, right: EvidencePacket) -> bool:
+        if cls._structured_identity_differs(left, right):
+            return False
+        return cls._character_five_gram_jaccard(left.statement, right.statement) >= 0.96
+
+    @staticmethod
+    def _structured_identity_differs(left: EvidencePacket, right: EvidencePacket) -> bool:
+        return any(
+            (
+                left.raw_value != right.raw_value,
+                left.locator.table_id != right.locator.table_id,
+                left.locator.figure_id != right.locator.figure_id,
+                left.locator.section != right.locator.section,
+            )
+        )
+
+    @staticmethod
+    def _character_five_gram_jaccard(left: str, right: str) -> float:
+        left_grams = {left[index : index + 5] for index in range(len(left) - 4)}
+        right_grams = {right[index : index + 5] for index in range(len(right) - 4)}
+        union = left_grams | right_grams
+        if not union:
+            return 0.0
+        return len(left_grams & right_grams) / len(union)
 
     @staticmethod
     def _premise_closure(
@@ -409,6 +690,7 @@ def pack_evidence_context(
     required_slots: Sequence[RequiredSlot] | QueryContract | None = None,
     quality_by_evidence_id: Mapping[str, float] | None = None,
     derived_claim_premise_evidence_ids: Sequence[str] | None = None,
+    selection_policy: FinalContextSelectionPolicy | None = None,
     estimator: TokenEstimator | None = None,
 ) -> PackedEvidenceContext:
     """Pack evidence through the stable functional v9 boundary."""
@@ -430,4 +712,5 @@ def pack_evidence_context(
         required_slots=required_slots,
         quality_by_evidence_id=quality_by_evidence_id,
         derived_claim_premise_evidence_ids=derived_claim_premise_evidence_ids,
+        selection_policy=selection_policy,
     )
