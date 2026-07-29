@@ -66,6 +66,44 @@ async def test_run_campaign_case_naive_uses_plain_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_campaign_case_naive_k4_ablation_overrides_only_retrieval_policy() -> None:
+    """A k=4 ablation must keep the native path plain and make its cap explicit."""
+    test_case = EvaluationCase(
+        id="Q0-k4",
+        question="Explain the four-chunk baseline",
+        ground_truth="The native retrieval limit is four.",
+        source_docs=[],
+        requires_multi_doc_reasoning=False,
+    )
+    mock_result = RAGResult(
+        answer="naive answer",
+        source_doc_ids=["doc-1"],
+        documents=[Document(page_content="ctx-naive")],
+        usage={"total_tokens": 12},
+    )
+
+    with patch(
+        "evaluation.rag_modes.run_with_retry", new=AsyncMock(return_value=mock_result)
+    ) as mock_retry:
+        await run_campaign_case(
+            test_case=test_case,
+            user_id="user-1",
+            mode="naive",
+            model_config={"model_name": "gemini-2.5-flash"},
+            ablation_flags={"retrieval_policy": {"retrieval_k": 4, "target_k": 4}},
+        )
+
+    _, kwargs = mock_retry.await_args
+    assert kwargs["mode_hints"] == {
+        "retrieval_policy": {"retrieval_k": 4, "target_k": 4}
+    }
+    assert kwargs["plain_mode"] is True
+    assert kwargs["enable_reranking"] is False
+    assert kwargs["enable_hyde"] is False
+    assert kwargs["enable_multi_query"] is False
+
+
+@pytest.mark.asyncio
 async def test_run_campaign_case_graph_uses_generic_graph_mode() -> None:
     test_case = EvaluationCase(
         id="Q1",

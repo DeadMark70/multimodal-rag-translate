@@ -402,6 +402,11 @@ async def run_campaign_case(
             }
             hints = dict(runtime_mode.get("graph_execution_hints") or {})
             if ablation_flags:
+                retrieval_policy = ablation_flags.get("retrieval_policy")
+                if isinstance(retrieval_policy, dict):
+                    runtime_mode["mode_hints"] = {
+                        "retrieval_policy": dict(retrieval_policy)
+                    }
                 supplied_hints = ablation_flags.get("graph_execution_hints")
                 if isinstance(supplied_hints, dict):
                     hints.update(supplied_hints)
