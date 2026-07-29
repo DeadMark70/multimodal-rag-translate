@@ -66,7 +66,8 @@ def test_execution_profiles_version_changed_modes() -> None:
     )
 
 
-def test_agentic_v9_open_corpus_profile_describes_soft_final_context_packing() -> None:
+def test_agentic_v9_open_corpus_profile_versions_context_packing_and_synthesis() -> None:
     assert AGENTIC_V9_OPEN_CORPUS_PROFILE == (
-        "agentic_eval_v9_open_corpus_hybrid8_rerank8_top4_finalpack_r1"
+        "agentic_eval_v9_open_corpus_hybrid8_rerank8_top4_finalpack_r1_"
+        "evidenceaware_synthesis_r1"
     )

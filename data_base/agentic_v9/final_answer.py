@@ -30,6 +30,16 @@ _FINAL_GENERATION_UNAVAILABLE_ANSWER = (
     "Final generation was unavailable; evidence is returned as a qualified partial."
 )
 
+_EVIDENCE_AWARE_SYNTHESIS_GUIDANCE = (
+    "Answer every explicit sub-question; if supplied evidence does not answer one, "
+    "say so instead of omitting it. Preserve entity identity and scope: never transfer "
+    "a claim or value between different documents, models, methods, datasets, or "
+    "strategies, and never widen a qualified scope into a universal one. Do not substitute "
+    "similar metric, dataset, or condition values for the requested value. State uncertainty "
+    "or insufficient evidence plainly. These are soft synthesis rules; do not invent exact "
+    "quotes, values, or evidence IDs to satisfy them."
+)
+
 
 class FinalAnswerDraft(BaseModel):
     """Strict, typed provider output before deterministic claim verification."""
@@ -77,7 +87,8 @@ class FinalAnswerRenderer:
                         "content": (
                             "Answer only from supplied evidence. Return JSON with exactly "
                             "answer and claims. Every claim must list its evidence_ids or "
-                            "premise_evidence_ids; do not cite any other ID."
+                            "premise_evidence_ids; do not cite any other ID. "
+                            f"{_EVIDENCE_AWARE_SYNTHESIS_GUIDANCE}"
                         ),
                     },
                     {

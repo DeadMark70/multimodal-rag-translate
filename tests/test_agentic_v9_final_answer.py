@@ -99,6 +99,42 @@ async def test_final_answer_uses_only_packed_evidence_and_renders_versioned_cita
 
 
 @pytest.mark.asyncio
+async def test_final_answer_prompt_includes_soft_evidence_aware_synthesis_guidance() -> None:
+    invoker = _RecordingInvoker(
+        {
+            "answer": "The score is 0.91.",
+            "claims": [
+                {
+                    "claim_id": "claim-1",
+                    "statement": "The score is 0.91.",
+                    "support_type": "direct",
+                    "evidence_ids": ["E1"],
+                }
+            ],
+        }
+    )
+
+    await generate_final_answer(
+        question="What is the reported score and what remains unknown?",
+        contract=_contract(),
+        packed_packets=[_packet()],
+        slot_resolutions=[
+            SlotResolution(slot_id="score", status="supported", evidence_ids=["E1"])
+        ],
+        llm_invoker=invoker,
+    )
+
+    system_prompt = invoker.calls[0]["messages"][0]["content"]
+    assert "Answer every explicit sub-question" in system_prompt
+    assert "Preserve entity identity and scope" in system_prompt
+    assert "Do not substitute similar metric, dataset, or condition values" in system_prompt
+    assert "State uncertainty or insufficient evidence plainly" in system_prompt
+    assert [(call["phase"], call["purpose"]) for call in invoker.calls] == [
+        ("final_answer", "final_answer")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_invalid_claim_is_qualified_without_a_second_final_generation() -> None:
     invoker = _RecordingInvoker(
         {

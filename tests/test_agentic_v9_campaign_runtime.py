@@ -250,7 +250,8 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
 
     v9 = result.agent_trace["agentic_v9"]
     assert result.agent_trace["execution_profile"] == (
-        "agentic_eval_v9_explicit_scope_hybrid8_rerank8_top4_finalpack_r1"
+        "agentic_eval_v9_explicit_scope_hybrid8_rerank8_top4_finalpack_r1_"
+        "evidenceaware_synthesis_r1"
     )
     assert v9["query_contract"]["resolved_source_scope"]["authorized_doc_ids"] == [
         "doc-1"
@@ -565,7 +566,8 @@ async def test_v9_campaign_runtime_resolves_open_corpus_from_user_acl() -> None:
     assert retrieved_scope == ["doc-1", "doc-2"]
     assert result.agent_trace["execution_profile"] == AGENTIC_V9_OPEN_CORPUS_PROFILE
     assert result.agent_trace["execution_profile"] == (
-        "agentic_eval_v9_open_corpus_hybrid8_rerank8_top4_finalpack_r1"
+        "agentic_eval_v9_open_corpus_hybrid8_rerank8_top4_finalpack_r1_"
+        "evidenceaware_synthesis_r1"
     )
     assert result.agent_trace["agentic_v9"]["retrieval_scope"] == {
         "policy": "open_user_corpus",
@@ -643,7 +645,8 @@ async def test_v9_runtime_rejects_incompatible_setup_before_provider_or_retrieva
 
     assert result.agent_trace["response_status"] == "configuration_incompatible"
     assert result.agent_trace["execution_profile"] == (
-        "agentic_eval_v9_explicit_scope_hybrid8_rerank8_top4_finalpack_r1"
+        "agentic_eval_v9_explicit_scope_hybrid8_rerank8_top4_finalpack_r1_"
+        "evidenceaware_synthesis_r1"
     )
     assert (
         result.agent_trace["agentic_v9"]["configuration_incompatible"]["stage"]
