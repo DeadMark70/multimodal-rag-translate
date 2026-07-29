@@ -310,7 +310,7 @@ class AgenticV9CampaignRuntime:
                         )
                         state["visual_packets"].extend(visual_result.packets)
                 chunks = [
-                    _chunk_projection(document, index)
+                    _chunk_projection(document, index, task_id=task.task_id)
                     for index, document in enumerate(docs)
                 ]
                 results.append(
@@ -730,7 +730,9 @@ def _retrieval_diagnostic_projection(
         rows.append(
             {
                 "doc_id": get_document_id(metadata),
-                "chunk_id": str(metadata.get("chunk_id") or f"chunk-{index + 1}"),
+                "chunk_id": _project_chunk_id(
+                    metadata, index, task_id=task_id
+                ),
                 "content_hash": hashlib.sha256(
                     document.page_content.encode("utf-8")
                 ).hexdigest(),
@@ -991,12 +993,24 @@ def _provider_for_purpose(_: str) -> Any:
     return get_llm("synthesizer")
 
 
-def _chunk_projection(document: Document, index: int) -> dict[str, Any]:
+def _project_chunk_id(
+    metadata: dict[str, Any], index: int, *, task_id: str | None = None
+) -> str:
+    explicit_chunk_id = metadata.get("chunk_id")
+    if explicit_chunk_id not in (None, ""):
+        return str(explicit_chunk_id)
+    fallback = f"chunk-{index + 1}"
+    return f"{task_id}:{fallback}" if task_id else fallback
+
+
+def _chunk_projection(
+    document: Document, index: int, *, task_id: str | None = None
+) -> dict[str, Any]:
     metadata = dict(document.metadata or {})
     doc_id = get_document_id(metadata)
     return {
         "doc_id": doc_id,
-        "chunk_id": str(metadata.get("chunk_id") or f"chunk-{index + 1}"),
+        "chunk_id": _project_chunk_id(metadata, index, task_id=task_id),
         "text": str(document.page_content or ""),
         "page_number": metadata.get("page_number"),
         "section": metadata.get("section"),

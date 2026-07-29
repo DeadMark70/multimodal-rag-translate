@@ -108,6 +108,47 @@ async def test_run_campaign_case_graph_uses_generic_graph_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_campaign_case_aligns_source_identities_to_selected_contexts() -> None:
+    test_case = EvaluationCase(
+        id="Q-source-identity",
+        question="Which passage reports beta?",
+        ground_truth="The beta passage.",
+        source_docs=[],
+        requires_multi_doc_reasoning=False,
+    )
+    mock_result = RAGResult(
+        answer="The beta passage reports beta.",
+        source_doc_ids=["doc-alpha", "doc-beta"],
+        documents=[
+            Document(
+                page_content="alpha passage",
+                metadata={"doc_id": "doc-alpha", "chunk_id": "alpha-chunk"},
+            ),
+            Document(
+                page_content="beta passage reports beta",
+                metadata={"doc_id": "doc-beta", "chunk_id": "beta-chunk"},
+            ),
+        ],
+        usage={"total_tokens": 12},
+    )
+
+    with patch(
+        "evaluation.rag_modes.run_with_retry", new=AsyncMock(return_value=mock_result)
+    ):
+        result = await run_campaign_case(
+            test_case=test_case,
+            user_id="user-1",
+            mode="naive",
+            model_config={"model_name": "gemini-2.5-flash"},
+            run_number=1,
+        )
+
+    assert result.contexts == ["beta passage reports beta", "alpha passage"]
+    assert result.source_doc_ids == ["doc-beta", "doc-alpha"]
+    assert result.source_chunk_ids == ["beta-chunk", "alpha-chunk"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "expected_evidence_mode", "expected_flags"),
     [

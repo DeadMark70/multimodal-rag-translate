@@ -344,8 +344,13 @@ def test_retrieval_diagnostic_projection_uses_chunk_projection_fallback_id() -> 
         "task:source-group-1", [document]
     )
 
-    assert diagnostics["selected"][0]["chunk_id"] == "chunk-1"
-    assert runtime_module._chunk_projection(document, 0)["chunk_id"] == "chunk-1"
+    assert diagnostics["selected"][0]["chunk_id"] == "task:source-group-1:chunk-1"
+    assert (
+        runtime_module._chunk_projection(
+            document, 0, task_id="task:source-group-1"
+        )["chunk_id"]
+        == "task:source-group-1:chunk-1"
+    )
 
 
 @pytest.mark.asyncio

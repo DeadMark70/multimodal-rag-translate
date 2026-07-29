@@ -11,6 +11,7 @@ from uuid import uuid4
 from langchain_core.documents import Document
 
 from core.llm_factory import llm_runtime_override
+from data_base.document_metadata import get_document_id
 from data_base.indexing_service import DEFAULT_PRODUCTION_INDEXING_PROFILE
 from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from evaluation.agentic_evaluation_service import AgenticEvaluationService
@@ -426,7 +427,7 @@ async def run_campaign_case(
         answer=result.answer,
         documents=result.documents,
     )
-    source_chunk_ids = _source_chunk_ids_for_contexts(
+    source_identities = _source_identities_for_contexts(
         contexts=contexts,
         documents=result.documents,
     )
@@ -443,8 +444,8 @@ async def run_campaign_case(
         mode=mode,
         answer=result.answer,
         contexts=contexts,
-        source_doc_ids=list(result.source_doc_ids),
-        source_chunk_ids=source_chunk_ids,
+        source_doc_ids=[doc_id for doc_id, _ in source_identities],
+        source_chunk_ids=[chunk_id for _, chunk_id in source_identities],
         expected_sources=list(test_case.source_docs),
         latency_ms=latency_ms,
         token_usage=dict(result.usage or {}),
@@ -586,11 +587,11 @@ def _extract_contexts(
     return selected
 
 
-def _source_chunk_ids_for_contexts(
+def _source_identities_for_contexts(
     *, contexts: list[str], documents: list[Document]
-) -> list[str | None]:
-    """Project a source chunk ID only when final context identity is unique."""
-    chunk_ids_by_context: dict[str, list[str | None]] = {}
+) -> list[tuple[str | None, str | None]]:
+    """Align each final context with one unique source document and chunk."""
+    identities_by_context: dict[str, list[tuple[str | None, str | None]]] = {}
     for document in documents:
         page_content = getattr(document, "page_content", None)
         if not isinstance(page_content, str):
@@ -599,15 +600,20 @@ def _source_chunk_ids_for_contexts(
         if not normalized:
             continue
         metadata = getattr(document, "metadata", None)
+        metadata = metadata if isinstance(metadata, dict) else {}
+        doc_id = get_document_id(metadata)
         chunk_id = (
             str(metadata.get("chunk_id"))
-            if isinstance(metadata, dict) and metadata.get("chunk_id") not in (None, "")
+            if metadata.get("chunk_id") not in (None, "")
             else None
         )
-        chunk_ids_by_context.setdefault(normalized, []).append(chunk_id)
+        identities_by_context.setdefault(normalized, []).append((doc_id, chunk_id))
 
-    source_chunk_ids: list[str | None] = []
+    source_identities: list[tuple[str | None, str | None]] = []
     for context in contexts:
-        matches = chunk_ids_by_context.get(_normalize_context_text(context), [])
-        source_chunk_ids.append(matches[0] if len(matches) == 1 else None)
-    return source_chunk_ids
+        matches = identities_by_context.get(_normalize_context_text(context), [])
+        unique_matches = list(dict.fromkeys(matches))
+        source_identities.append(
+            unique_matches[0] if len(unique_matches) == 1 else (None, None)
+        )
+    return source_identities
