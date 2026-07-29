@@ -715,7 +715,7 @@ def _retrieval_diagnostic_projection(
     status = "not_instrumented"
     fallback_reason: str | None = None
     candidate_count = len(documents)
-    for document in documents:
+    for index, document in enumerate(documents):
         metadata = dict(document.metadata)
         reranking = metadata.get("agentic_v9_reranking")
         if not isinstance(reranking, dict):
@@ -730,7 +730,7 @@ def _retrieval_diagnostic_projection(
         rows.append(
             {
                 "doc_id": get_document_id(metadata),
-                "chunk_id": metadata.get("chunk_id"),
+                "chunk_id": str(metadata.get("chunk_id") or f"chunk-{index + 1}"),
                 "content_hash": hashlib.sha256(
                     document.page_content.encode("utf-8")
                 ).hexdigest(),

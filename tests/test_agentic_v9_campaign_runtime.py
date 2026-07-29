@@ -323,6 +323,31 @@ def test_retrieval_diagnostic_projection_retains_fallback_details() -> None:
     }
 
 
+def test_retrieval_diagnostic_projection_uses_chunk_projection_fallback_id() -> None:
+    document = Document(
+        page_content="selected content",
+        metadata={
+            "doc_id": "doc-1",
+            "agentic_v9_reranking": {
+                "status": "executed",
+                "fallback_reason": None,
+                "candidate_count": 8,
+                "selected_count": 4,
+                "pre_rerank_rank": 2,
+                "post_rerank_rank": 1,
+                "rerank_score": 0.93,
+            },
+        },
+    )
+
+    diagnostics = runtime_module._retrieval_diagnostic_projection(
+        "task:source-group-1", [document]
+    )
+
+    assert diagnostics["selected"][0]["chunk_id"] == "chunk-1"
+    assert runtime_module._chunk_projection(document, 0)["chunk_id"] == "chunk-1"
+
+
 @pytest.mark.asyncio
 async def test_v9_campaign_runtime_resolves_open_corpus_from_user_acl() -> None:
     provider = _Provider()
