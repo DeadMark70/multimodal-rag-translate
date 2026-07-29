@@ -667,6 +667,22 @@ class V9ContextPack(BaseModel):
     packed_evidence_ids: list[str] = Field(default_factory=list)
     dropped_evidence_ids: list[str] = Field(default_factory=list)
     token_count: int | None = Field(default=None, ge=0)
+    selection_policy_version: str | None = None
+    candidate_count: int | None = Field(default=None, ge=0)
+    selection_decisions: list["V9ContextSelectionDecision"] = Field(
+        default_factory=list
+    )
+
+
+class V9ContextSelectionDecision(BaseModel):
+    evidence_id: str
+    selected: bool
+    base_quality: float
+    source_bonus: float
+    redundancy_penalty: float
+    visual_penalty: float
+    utility: float
+    reason: str
 
 
 class V9ExecutionObservability(BaseModel):

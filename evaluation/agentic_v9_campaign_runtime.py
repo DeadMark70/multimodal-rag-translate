@@ -32,6 +32,7 @@ from data_base.agentic_v9.budget_feasibility import (
 from data_base.agentic_v9.budgeted_llm import BudgetedLlmInvoker, LlmCallObserver
 from data_base.agentic_v9.context_packer import (
     EvidenceContextPacker,
+    FinalContextSelectionPolicy,
     PackedEvidenceContext,
 )
 from data_base.agentic_v9.execution_core import (
@@ -87,6 +88,7 @@ from evaluation.agentic_v9_admission import (
 from evaluation.observability import current_llm_call_observer
 from evaluation.retrieval_profiles import (
     AGENTIC_EVAL_PROFILE,
+    AGENTIC_V9_CONTEXT_POLICY_VERSION,
     AGENTIC_V9_OPEN_CORPUS_PROFILE,
 )
 
@@ -413,6 +415,9 @@ class AgenticV9CampaignRuntime:
                 packets,
                 required_slots=contract,
                 quality_by_evidence_id=state["quality_by_evidence_id"],
+                selection_policy=FinalContextSelectionPolicy(
+                    version="soft_final_pack_r1"
+                ),
             )
             state["pack"] = packed
             return packed
@@ -556,6 +561,7 @@ class AgenticV9CampaignRuntime:
             "mode": "agentic",
             "agentic_execution_version": "v9",
             "execution_profile": execution_profile,
+            "context_policy_version": AGENTIC_V9_CONTEXT_POLICY_VERSION,
             "response_status": final.response_status,
             "agentic_v9": {
                 "schema_version": "1",
@@ -1248,6 +1254,21 @@ def _context_pack_projection(
         "packed_evidence_ids": [packet.evidence_id for packet in packed.packets],
         "dropped_evidence_ids": list(packed.dropped_packet_ids),
         "token_count": packed.estimated_input_tokens,
+        "selection_policy_version": packed.selection_policy_version,
+        "candidate_count": len(packed.selection_decisions),
+        "selection_decisions": [
+            {
+                "evidence_id": decision.evidence_id,
+                "selected": decision.selected,
+                "base_quality": decision.base_quality,
+                "source_bonus": decision.source_bonus,
+                "redundancy_penalty": decision.redundancy_penalty,
+                "visual_penalty": decision.visual_penalty,
+                "utility": decision.utility,
+                "reason": decision.reason,
+            }
+            for decision in packed.selection_decisions
+        ],
     }
 
 

@@ -14,6 +14,7 @@ from data_base.rag_pipeline_schemas import RagRetrievalResult as PipelineRetriev
 from data_base.reranker import DocumentReranker
 from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
 from evaluation.agentic_v9_admission import V9AdmissionContract
+from evaluation.campaign_schemas import V9ContextPack
 from evaluation.retrieval_profiles import AGENTIC_V9_OPEN_CORPUS_PROFILE
 from data_base.agentic_v9.schemas import (
     EvidencePacket,
@@ -278,6 +279,95 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     assert result.documents
     retrieve_documents.assert_awaited()
     provider.ainvoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_v9_campaign_runtime_activates_soft_final_context_policy_with_rerank_quality(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _Provider()
+    observed: dict[str, object] = {}
+    original_pack = runtime_module.EvidenceContextPacker.pack
+
+    def recording_pack(self, packets, **kwargs):
+        observed["quality_by_evidence_id"] = dict(
+            kwargs["quality_by_evidence_id"]
+        )
+        observed["selection_policy"] = kwargs["selection_policy"]
+        return original_pack(self, packets, **kwargs)
+
+    monkeypatch.setattr(
+        runtime_module.EvidenceContextPacker, "pack", recording_pack
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="The primary source reports 0.91.",
+                    metadata={
+                        "doc_id": "doc-1",
+                        "chunk_id": "chunk-1",
+                        "agentic_v9_reranking": {
+                            "status": "executed",
+                            "post_rerank_rank": 1,
+                            "rerank_score": 0.93,
+                        },
+                    },
+                ),
+                Document(
+                    page_content="A secondary source reports 0.89.",
+                    metadata={
+                        "doc_id": "doc-2",
+                        "chunk_id": "chunk-4",
+                        "agentic_v9_reranking": {
+                            "status": "executed",
+                            "post_rerank_rank": 4,
+                            "rerank_score": 0.71,
+                        },
+                    },
+                ),
+            ]
+        ),
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What score is reported?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1", "doc-2"],
+        setup_snapshot=_setup(),
+        trace_id="soft-final-pack-trace",
+    )
+
+    assert observed["quality_by_evidence_id"]
+    assert set(observed["quality_by_evidence_id"].values()) == {0.25, 1.0}
+    assert observed["selection_policy"].version == "soft_final_pack_r1"
+    context_pack = result.agent_trace["agentic_v9"]["context_pack"]
+    assert context_pack["selection_policy_version"] == "soft_final_pack_r1"
+    assert context_pack["candidate_count"] >= len(
+        context_pack["packed_evidence_ids"]
+    )
+    assert any(
+        row["base_quality"] > 0 for row in context_pack["selection_decisions"]
+    )
+
+
+def test_v9_context_pack_schema_accepts_historical_trace_payload() -> None:
+    context_pack = V9ContextPack.model_validate(
+        {
+            "packed_evidence_ids": ["evidence:legacy"],
+            "dropped_evidence_ids": ["evidence:excluded"],
+            "token_count": 123,
+        }
+    )
+
+    assert context_pack.packed_evidence_ids == ["evidence:legacy"]
+    assert context_pack.dropped_evidence_ids == ["evidence:excluded"]
+    assert context_pack.token_count == 123
+    assert context_pack.selection_policy_version is None
+    assert context_pack.candidate_count is None
+    assert context_pack.selection_decisions == []
 
 
 def test_retrieval_diagnostic_projection_retains_fallback_details() -> None:

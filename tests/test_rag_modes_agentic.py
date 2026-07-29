@@ -351,6 +351,7 @@ async def test_v9_campaign_case_uses_the_typed_v9_runtime_not_the_v8_service() -
     v8_service_cls.assert_not_called()
     assert result.agentic_execution_version == "v9"
     assert result.expected_sources == ["doc-1"]
+    assert result.context_policy_version == "v5_final_context_soft_pack_r1"
 
 
 @pytest.mark.asyncio

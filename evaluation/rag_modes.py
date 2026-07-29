@@ -22,6 +22,7 @@ from evaluation.agentic_campaign_adapter import (
 )
 from evaluation.model_capabilities import normalize_model_config_for_runtime
 from evaluation.retrieval_profiles import (
+    AGENTIC_V9_CONTEXT_POLICY_VERSION,
     apply_no_hyde_policy,
     evaluation_execution_profile,
     locator_to_chunk_graph_hints,
@@ -455,9 +456,15 @@ async def run_campaign_case(
         category=test_case.category,
         difficulty=test_case.difficulty,
         execution_profile=execution_profile,
-        context_policy_version=AGENTIC_CONTEXT_POLICY_VERSION
-        if mode == "agentic"
-        else CONTEXT_POLICY_VERSION,
+        context_policy_version=(
+            AGENTIC_V9_CONTEXT_POLICY_VERSION
+            if mode == "agentic" and agentic_execution_version == "v9"
+            else (
+                AGENTIC_CONTEXT_POLICY_VERSION
+                if mode == "agentic"
+                else CONTEXT_POLICY_VERSION
+            )
+        ),
         agent_trace=result.agent_trace,
         agentic_execution_version=agentic_execution_version,
         execution_identity=execution_identity,
