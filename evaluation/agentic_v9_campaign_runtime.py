@@ -12,8 +12,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Any
 
 from langchain_core.documents import Document
@@ -194,6 +196,7 @@ class AgenticV9CampaignRuntime:
             "pack": None,
             "repairs": [],
             "evidence_packets": [],
+            "quality_by_evidence_id": {},
             "post_contract": None,
             "budget_controller": None,
             "task_slot_ids": {},
@@ -326,11 +329,15 @@ class AgenticV9CampaignRuntime:
         async def deterministic_candidates(
             results: tuple[TaskRetrievalResult, ...], contract: QueryContract
         ) -> tuple[EvidencePacket, ...]:
-            packets = _evidence_packets_for_results(
+            projection = _evidence_packets_for_results(
                 results=results,
                 contract=contract,
                 trace_id=trace_id,
                 task_slot_ids=state["task_slot_ids"],
+            )
+            packets = projection.packets
+            state["quality_by_evidence_id"].update(
+                projection.quality_by_evidence_id
             )
             if not state["visual_packets_emitted"]:
                 packets.extend(state["visual_packets"])
@@ -402,7 +409,11 @@ class AgenticV9CampaignRuntime:
                 question=question,
                 contract=contract,
             )
-            packed = packer.pack(packets, required_slots=contract)
+            packed = packer.pack(
+                packets,
+                required_slots=contract,
+                quality_by_evidence_id=state["quality_by_evidence_id"],
+            )
             state["pack"] = packed
             return packed
 
@@ -1003,18 +1014,67 @@ def _project_chunk_id(
     return f"{task_id}:{fallback}" if task_id else fallback
 
 
+def _positive_int_or_none(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def _finite_float_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    return numeric if isfinite(numeric) else None
+
+
+def _chunk_reranking_projection(
+    metadata: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    value = metadata.get("agentic_v9_reranking")
+    if not isinstance(value, Mapping):
+        return None
+    return {
+        "status": str(value.get("status") or "not_instrumented"),
+        "post_rerank_rank": _positive_int_or_none(value.get("post_rerank_rank")),
+        "rerank_score": _finite_float_or_none(value.get("rerank_score")),
+    }
+
+
 def _chunk_projection(
     document: Document, index: int, *, task_id: str | None = None
 ) -> dict[str, Any]:
     metadata = dict(document.metadata or {})
     doc_id = get_document_id(metadata)
-    return {
+    projection = {
         "doc_id": doc_id,
         "chunk_id": _project_chunk_id(metadata, index, task_id=task_id),
         "text": str(document.page_content or ""),
         "page_number": metadata.get("page_number"),
         "section": metadata.get("section"),
     }
+    reranking = _chunk_reranking_projection(metadata)
+    if reranking is not None:
+        projection["reranking"] = reranking
+    for field in ("asset_id", "figure_id", "table_id"):
+        value = metadata.get(field)
+        if isinstance(value, str) and value:
+            projection[field] = value
+    return projection
+
+
+def _packet_quality(chunk: Mapping[str, Any], fallback_index: int) -> float:
+    reranking = chunk.get("reranking")
+    if isinstance(reranking, Mapping):
+        rank = _positive_int_or_none(reranking.get("post_rerank_rank"))
+        if rank is not None:
+            return 1.0 / rank
+    return 1.0 / (fallback_index + 1)
+
+
+@dataclass(frozen=True, slots=True)
+class EvidencePacketProjection:
+    packets: list[EvidencePacket]
+    quality_by_evidence_id: dict[str, float]
 
 
 def _evidence_packets_for_results(
@@ -1023,8 +1083,9 @@ def _evidence_packets_for_results(
     contract: QueryContract,
     trace_id: str,
     task_slot_ids: dict[str, list[str]],
-) -> list[EvidencePacket]:
+) -> EvidencePacketProjection:
     packets: list[EvidencePacket] = []
+    quality_by_evidence_id: dict[str, float] = {}
     for task_result in results:
         task_id = task_result.task_id
         for index, chunk in enumerate(task_result.retrieval.chunks):
@@ -1042,32 +1103,46 @@ def _evidence_packets_for_results(
                 f"{trace_id}:{task_id}:{doc_id}:{chunk.get('chunk_id')}:{index}".encode()
             ).hexdigest()[:24]
             page = chunk.get("page_number")
-            locator = (
-                SourceLocator(pdf_page_index=page)
-                if isinstance(page, int) and page >= 0
-                else SourceLocator(
-                    section=str(chunk.get("section") or "retrieved_context")
+            locator_fields: dict[str, Any] = {}
+            if isinstance(page, int) and page >= 0:
+                locator_fields["pdf_page_index"] = page
+            else:
+                locator_fields["section"] = str(
+                    chunk.get("section") or "retrieved_context"
                 )
-            )
+            for field in ("figure_id", "table_id"):
+                value = chunk.get(field)
+                if isinstance(value, str) and value:
+                    locator_fields[field] = value
+            evidence_id = f"evidence:{digest}"
+            source_fields: dict[str, Any] = {
+                "doc_id": doc_id,
+                "chunk_id": str(chunk.get("chunk_id") or index + 1),
+            }
+            asset_id = chunk.get("asset_id")
+            if isinstance(asset_id, str) and asset_id:
+                source_fields["asset_id"] = asset_id
             packets.append(
                 EvidencePacket(
                     schema_version="1",
-                    evidence_id=f"evidence:{digest}",
+                    evidence_id=evidence_id,
                     task_id=task_id,
                     round_id=task_id.split(":")[-2] if ":" in task_id else "round-1",
                     query_id=trace_id,
                     slot_ids=list(slot_ids),
                     statement=text,
                     support_type="direct",
-                    source=EvidenceSource(
-                        doc_id=doc_id, chunk_id=str(chunk.get("chunk_id") or index + 1)
-                    ),
+                    source=EvidenceSource(**source_fields),
                     scope=EvidenceScope(),
-                    locator=locator,
+                    locator=SourceLocator(**locator_fields),
                     validation_status="deterministic_valid",
                 )
             )
-    return packets
+            quality_by_evidence_id[evidence_id] = _packet_quality(chunk, index)
+    return EvidencePacketProjection(
+        packets=packets,
+        quality_by_evidence_id=quality_by_evidence_id,
+    )
 
 
 def _configuration_incompatible_result(

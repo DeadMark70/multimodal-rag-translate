@@ -23,6 +23,7 @@ from data_base.agentic_v9.schemas import (
     RequiredSlot,
     ResolvedSourceScope,
     SourceLocator,
+    TaskRetrievalResult,
 )
 from data_base.agentic_v9.visual_evidence_extractor import (
     VisualEvidenceExtractionResult,
@@ -351,6 +352,90 @@ def test_retrieval_diagnostic_projection_uses_chunk_projection_fallback_id() -> 
         )["chunk_id"]
         == "task:source-group-1:chunk-1"
     )
+
+
+def test_chunk_projection_preserves_reranking_and_typed_provenance() -> None:
+    projection = runtime_module._chunk_projection(
+        Document(
+            page_content="selected content",
+            metadata={
+                "doc_id": "doc-1",
+                "chunk_id": "chunk-7",
+                "asset_id": "asset-1",
+                "figure_id": "Figure 2",
+                "agentic_v9_reranking": {
+                    "status": "executed",
+                    "post_rerank_rank": 2,
+                    "rerank_score": 0.42,
+                },
+            },
+        ),
+        0,
+    )
+
+    assert projection["reranking"] == {
+        "status": "executed",
+        "post_rerank_rank": 2,
+        "rerank_score": 0.42,
+    }
+    assert projection["asset_id"] == "asset-1"
+    assert projection["figure_id"] == "Figure 2"
+
+
+def test_chunk_projection_without_reranking_does_not_fabricate_a_score() -> None:
+    projection = runtime_module._chunk_projection(
+        Document(
+            page_content="selected content",
+            metadata={"doc_id": "doc-1", "chunk_id": "chunk-7"},
+        ),
+        0,
+    )
+
+    assert "reranking" not in projection
+
+
+def test_rerank_quality_is_keyed_by_emitted_evidence_id() -> None:
+    contract = QueryContract(
+        route="exact_structured",
+        intent="extract a value",
+        required_slots=[RequiredSlot(slot_id="S1", description="value")],
+        resolved_source_scope=ResolvedSourceScope(
+            requested_doc_ids=["doc-1"],
+            resolved_doc_ids=["doc-1"],
+            authorized_doc_ids=["doc-1"],
+        ),
+    )
+    projected = runtime_module._chunk_projection(
+        Document(
+            page_content="The result is 0.42.",
+            metadata={
+                "doc_id": "doc-1",
+                "chunk_id": "chunk-7",
+                "agentic_v9_reranking": {
+                    "status": "executed",
+                    "post_rerank_rank": 2,
+                    "rerank_score": 0.42,
+                },
+            },
+        ),
+        0,
+    )
+    result = runtime_module._evidence_packets_for_results(
+        results=(
+            TaskRetrievalResult(
+                task_id="task:source-group-1",
+                retrieval=runtime_module.RagRetrievalResult(
+                    retrieval_id="trace:task:source-group-1", chunks=[projected]
+                ),
+            ),
+        ),
+        contract=contract,
+        trace_id="trace",
+        task_slot_ids={},
+    )
+
+    assert len(result.packets) == 1
+    assert result.quality_by_evidence_id == {result.packets[0].evidence_id: 0.5}
 
 
 @pytest.mark.asyncio
