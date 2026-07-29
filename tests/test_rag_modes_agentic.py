@@ -149,6 +149,47 @@ async def test_run_campaign_case_aligns_source_identities_to_selected_contexts()
 
 
 @pytest.mark.asyncio
+async def test_run_campaign_case_uses_empty_identity_for_ambiguous_context_source() -> None:
+    test_case = EvaluationCase(
+        id="Q-ambiguous-source",
+        question="What fact is repeated?",
+        ground_truth="Repeated fact.",
+        source_docs=[],
+        requires_multi_doc_reasoning=False,
+    )
+    mock_result = RAGResult(
+        answer="The repeated fact is supported.",
+        source_doc_ids=["doc-alpha", "doc-beta"],
+        documents=[
+            Document(
+                page_content="Repeated fact",
+                metadata={"doc_id": "doc-alpha", "chunk_id": "alpha-chunk"},
+            ),
+            Document(
+                page_content="Repeated fact",
+                metadata={"doc_id": "doc-beta", "chunk_id": "beta-chunk"},
+            ),
+        ],
+        usage={"total_tokens": 12},
+    )
+
+    with patch(
+        "evaluation.rag_modes.run_with_retry", new=AsyncMock(return_value=mock_result)
+    ):
+        result = await run_campaign_case(
+            test_case=test_case,
+            user_id="user-1",
+            mode="naive",
+            model_config={"model_name": "gemini-2.5-flash"},
+            run_number=1,
+        )
+
+    assert result.contexts == ["Repeated fact"]
+    assert result.source_doc_ids == [""]
+    assert result.source_chunk_ids == [None]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "expected_evidence_mode", "expected_flags"),
     [

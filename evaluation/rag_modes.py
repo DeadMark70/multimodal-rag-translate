@@ -444,7 +444,10 @@ async def run_campaign_case(
         mode=mode,
         answer=result.answer,
         contexts=contexts,
-        source_doc_ids=[doc_id for doc_id, _ in source_identities],
+        # CampaignResult persists source_doc_ids as list[str].  Keep an empty
+        # string for an ambiguous identity so the context index remains
+        # aligned without serializing an invalid null document identifier.
+        source_doc_ids=[doc_id or "" for doc_id, _ in source_identities],
         source_chunk_ids=[chunk_id for _, chunk_id in source_identities],
         expected_sources=list(test_case.source_docs),
         latency_ms=latency_ms,
