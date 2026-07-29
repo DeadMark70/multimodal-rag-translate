@@ -252,6 +252,18 @@ class ClaimedEvaluationWork(BaseModel):
             for key, value in snapshot.items()
         }
 
+    def thawed_input_snapshot(self) -> dict[str, JsonValue]:
+        """Return a mutable JSON-only copy for the runtime boundary.
+
+        The persisted snapshot remains deeply immutable while a worker is idle.
+        Runtime integrations, however, may serialize nested configuration values,
+        so they must never receive ``MappingProxyType`` objects.
+        """
+        return {
+            key: _thaw_json_value(value)
+            for key, value in self.input_snapshot.items()
+        }
+
     def model_copy(
         self,
         *,

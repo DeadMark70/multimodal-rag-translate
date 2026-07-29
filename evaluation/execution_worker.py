@@ -97,7 +97,9 @@ class DatasetExecutionWorker:
             run_id = str(uuid4())
             request_id = str(uuid4())
             provider_name = str(model_config.get("provider") or get_llm_provider_name())
-            prompt_capture_policy = claim.input_snapshot.get("prompt_capture_policy")
+            prompt_capture_policy = claim.thawed_input_snapshot().get(
+                "prompt_capture_policy"
+            )
             if not isinstance(prompt_capture_policy, dict):
                 prompt_capture_policy = {}
             recorder = EvaluationRunRecorder(
@@ -413,7 +415,7 @@ class DatasetExecutionWorker:
     def _snapshot_inputs(
         self, claim: ClaimedEvaluationWork
     ) -> tuple[CampaignUnit, str, str, dict[str, Any]]:
-        snapshot = claim.input_snapshot
+        snapshot = claim.thawed_input_snapshot()
         test_case = TestCase.model_validate(snapshot["test_case"])
         user_id = str(snapshot["user_id"])
         campaign_id = str(snapshot["campaign_id"])

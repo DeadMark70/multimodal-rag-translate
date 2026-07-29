@@ -158,6 +158,43 @@ def _successful_payload(
     )
 
 
+def test_snapshot_inputs_deep_thaws_nested_ablation_flags() -> None:
+    """Runtime inputs must not retain frozen snapshot mappings."""
+    claim = ClaimedEvaluationWork(
+        job_id="job-1",
+        job_item_id="job-item-1",
+        work_item_id="work-item-1",
+        attempt_id="attempt-1",
+        input_snapshot={
+            "user_id": "user-a",
+            "campaign_id": "cmp-1",
+            "test_case": {
+                "id": "Q1",
+                "question": "What is the answer?",
+                "ground_truth": "42",
+                "source_docs": [],
+                "requires_multi_doc_reasoning": False,
+            },
+            "mode": "naive",
+            "run_number": 1,
+            "repeat_number": 1,
+            "model_config": {},
+            "ablation_flags": {
+                "retrieval_policy": {"retrieval_k": 4, "target_k": 4},
+            },
+        },
+    )
+    worker = DatasetExecutionWorker(store=Mock())
+
+    unit, _, _, _ = worker._snapshot_inputs(claim)
+
+    assert unit.ablation_flags == {
+        "retrieval_policy": {"retrieval_k": 4, "target_k": 4},
+    }
+    assert isinstance(unit.ablation_flags["retrieval_policy"], dict)
+    json.dumps(unit.ablation_flags)
+
+
 @pytest.mark.asyncio
 async def test_derive_campaign_state_notifies_materialized_ragas_without_late_transition() -> (
     None
@@ -498,7 +535,10 @@ async def test_ablation_conditions_with_a_shared_mode_keep_distinct_official_res
                     "repeat_number": 1,
                     "condition_id": condition_id,
                     "condition_label": condition_id,
-                    "ablation_flags": {"condition": condition_id},
+                    "ablation_flags": {
+                        "condition": condition_id,
+                        "retrieval_policy": {"retrieval_k": 4, "target_k": 4},
+                    },
                     "model_config": {},
                 },
             )
@@ -510,6 +550,8 @@ async def test_ablation_conditions_with_a_shared_mode_keep_distinct_official_res
 
     async def runner(**kwargs):  # noqa: ANN003
         condition_id = kwargs["ablation_flags"]["condition"]
+        assert isinstance(kwargs["ablation_flags"]["retrieval_policy"], dict)
+        json.dumps(kwargs["ablation_flags"])
         return _successful_payload(
             question_id=kwargs["test_case"].id,
             mode=kwargs["mode"],
