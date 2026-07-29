@@ -1710,6 +1710,7 @@ async def test_campaign_result_records_retrieval_context_and_evidence_flow() -> 
 @pytest.mark.asyncio
 async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks() -> None:
     duplicate_excerpt = "The same selected excerpt appears in two documents."
+    raw_duplicate_excerpt = "The same  selected excerpt appears in two documents."
 
     async def runner(**kwargs) -> BenchmarkExecutionResult:
         test_case = kwargs["test_case"]
@@ -1751,7 +1752,7 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks()
                                 {
                                     "doc_id": "doc-a",
                                     "chunk_id": "runtime-a-first",
-                                    "content_hash": content_hash(duplicate_excerpt),
+                                    "content_hash": content_hash(raw_duplicate_excerpt),
                                     "pre_rerank_rank": 8,
                                     "post_rerank_rank": 4,
                                     "rerank_score": 0.31,
@@ -1759,7 +1760,7 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks()
                                 {
                                     "doc_id": "doc-a",
                                     "chunk_id": "runtime-a-second",
-                                    "content_hash": content_hash(duplicate_excerpt),
+                                    "content_hash": content_hash(raw_duplicate_excerpt),
                                     "pre_rerank_rank": 3,
                                     "post_rerank_rank": 1,
                                     "rerank_score": 0.91,
@@ -1776,7 +1777,7 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks()
                                 {
                                     "doc_id": "doc-b",
                                     "chunk_id": "runtime-b",
-                                    "content_hash": content_hash(duplicate_excerpt),
+                                    "content_hash": content_hash(raw_duplicate_excerpt),
                                     "pre_rerank_rank": 5,
                                     "post_rerank_rank": 2,
                                     "rerank_score": 0.82,

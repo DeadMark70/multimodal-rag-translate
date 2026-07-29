@@ -19,6 +19,8 @@ from langchain_core.documents import Document
 import evaluation.db as evaluation_db
 from core.llm_usage_callback import emit_direct_usage
 from core.llm_usage_context import llm_accounting_phase
+from data_base.agentic_v9.budget_controller import RunBudgetController
+from data_base.agentic_v9.budgeted_llm import invoke_budgeted_llm
 from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.execution_worker import DatasetExecutionWorker
 from evaluation.analytics import EvaluationAnalyticsService
@@ -29,6 +31,8 @@ from evaluation.job_schemas import (
     WorkItemSpec,
 )
 from evaluation.job_store import EvaluationJobStore
+from evaluation.observability import current_llm_call_observer
+from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.rag_modes import BenchmarkExecutionResult
 from evaluation.retrieval_profiles import (
     ADVANCED_EVAL_PROFILE,
@@ -646,6 +650,93 @@ async def test_v9_worker_materializes_the_real_core_trace_for_run_detail(
     assert "sk-top-secret" not in statement
     assert "ignore previous instructions" in statement
     assert len(statement) <= 500
+
+
+@pytest.mark.asyncio
+async def test_v9_durable_worker_persists_measured_provider_phase(
+    store: EvaluationJobStore,
+) -> None:
+    class Provider:
+        async def ainvoke(self, messages: object) -> object:
+            return {
+                "content": "The measured evidence supports the answer.",
+                "usage_metadata": {
+                    "input_tokens": 7,
+                    "output_tokens": 3,
+                    "total_tokens": 10,
+                },
+            }
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:  # noqa: ANN003
+        observer = current_llm_call_observer()
+        assert observer is not None
+        response = await invoke_budgeted_llm(
+            controller=RunBudgetController(
+                max_llm_calls=1,
+                runtime_token_budget=200,
+                setup_snapshot={"max_output_tokens": 100, "thinking_mode": False},
+                final_input_tokens=100,
+            ),
+            provider=Provider(),
+            observer=observer,
+            provider_name="gemini",
+            model_name="test-model",
+            phase="final_answer",
+            purpose="agentic_v9_final_answer",
+            messages=[{"role": "user", "content": "answer"}],
+            estimated_input_tokens=100,
+        )
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer=response["content"],
+            token_usage={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
+            agentic_execution_version="v9",
+            agent_trace={
+                "agentic_execution_version": "v9",
+                "agentic_v9": {
+                    "schema_version": "9",
+                    "budget_reservations": [
+                        {
+                            "reservation_id": "final-answer-reservation",
+                            "phase": "final_answer",
+                            "provider_attempt": 1,
+                            "estimated_input_tokens": 100,
+                            "reserved_output_tokens": 100,
+                        }
+                    ],
+                },
+            },
+        )
+
+    worker = DatasetExecutionWorker(store=store, runner=runner)
+    claim = await _claim_seeded_execution(
+        store,
+        mode="agentic",
+        agentic_execution_version="v9",
+        model_config={
+            "provider": "gemini",
+            "model_name": "test-model",
+            "max_output_tokens": 100,
+            "thinking_mode": False,
+        },
+    )
+
+    await worker.execute(claim)
+
+    result = (
+        await evaluation_db.CampaignResultRepository().list_for_campaign(
+            user_id="user-a", campaign_id="cmp-1"
+        )
+    )[0]
+    calls = await EvaluationObservabilityRepository().list_llm_calls_for_run(result.id)
+
+    assert [(call.phase, call.purpose, call.total_tokens) for call in calls] == [
+        ("final_answer", "agentic_v9_final_answer", 10)
+    ]
 
 
 @pytest.mark.asyncio

@@ -524,8 +524,8 @@ async def _record_unit_llm_usage(
 
 def _v9_rerank_diagnostics_by_context(
     trace_payload: dict[str, Any],
-) -> dict[tuple[str, str], list[dict[str, Any]]]:
-    """Index selected v9 rerank rows without collapsing duplicate contexts."""
+) -> dict[str, dict[tuple[str, str], list[dict[str, Any]]]]:
+    """Index selected rows by raw content and durable source-chunk identity."""
     v9_payload = trace_payload.get("agentic_v9")
     diagnostics = (
         v9_payload.get("retrieval_diagnostics")
@@ -533,9 +533,12 @@ def _v9_rerank_diagnostics_by_context(
         else None
     )
     if not isinstance(diagnostics, list):
-        return {}
+        return {"by_content": {}, "by_source_chunk": {}}
 
-    indexed: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    indexed: dict[str, dict[tuple[str, str], list[dict[str, Any]]]] = {
+        "by_content": {},
+        "by_source_chunk": {},
+    }
     for diagnostic in diagnostics:
         if not isinstance(diagnostic, dict):
             continue
@@ -558,44 +561,66 @@ def _v9_rerank_diagnostics_by_context(
             selected_content_hash = selected_row.get("content_hash")
             if doc_id in (None, "") or selected_content_hash in (None, ""):
                 continue
-            primary_key = (str(doc_id), str(selected_content_hash))
-            indexed.setdefault(primary_key, []).append(
-                {
-                    **task_metadata,
-                    "chunk_id": selected_row.get("chunk_id"),
-                    "rank_before_rerank": selected_row.get("pre_rerank_rank"),
-                    "rank_after_rerank": selected_row.get("post_rerank_rank"),
-                    "rerank_score": selected_row.get("rerank_score"),
-                }
-            )
+            diagnostic_row = {
+                **task_metadata,
+                "chunk_id": selected_row.get("chunk_id"),
+                "rank_before_rerank": selected_row.get("pre_rerank_rank"),
+                "rank_after_rerank": selected_row.get("post_rerank_rank"),
+                "rerank_score": selected_row.get("rerank_score"),
+                "_consumed": False,
+            }
+            indexed["by_content"].setdefault(
+                (str(doc_id), str(selected_content_hash)), []
+            ).append(diagnostic_row)
+            chunk_id = selected_row.get("chunk_id")
+            if chunk_id not in (None, ""):
+                indexed["by_source_chunk"].setdefault(
+                    (str(doc_id), str(chunk_id)), []
+                ).append(diagnostic_row)
     return indexed
 
 
 def _consume_v9_rerank_diagnostic(
-    diagnostics_by_context: dict[tuple[str, str], list[dict[str, Any]]],
+    diagnostics_by_context: dict[
+        str, dict[tuple[str, str], list[dict[str, Any]]]
+    ],
     *,
     doc_id: str | None,
     selected_content_hash: str,
     source_chunk_id: str | None,
 ) -> dict[str, Any] | None:
-    if doc_id is None:
-        return None
-    matches = diagnostics_by_context.get((doc_id, selected_content_hash))
-    if not matches:
+    if doc_id in (None, ""):
         return None
 
+    def consume_unique(
+        candidates: list[dict[str, Any]] | None,
+    ) -> dict[str, Any] | None:
+        available = [
+            candidate
+            for candidate in candidates or []
+            if not candidate.get("_consumed")
+        ]
+        if len(available) != 1:
+            return None
+        selected = available[0]
+        selected["_consumed"] = True
+        return {
+            key: value
+            for key, value in selected.items()
+            if key != "_consumed"
+        }
+
     if source_chunk_id is not None:
-        for index, diagnostic in enumerate(matches):
-            diagnostic_chunk_id = diagnostic.get("chunk_id")
-            if (
-                diagnostic_chunk_id not in (None, "")
-                and diagnostic_chunk_id == source_chunk_id
-            ):
-                return matches.pop(index)
-        return None
-    if len(matches) == 1:
-        return matches.pop()
-    return None
+        return consume_unique(
+            diagnostics_by_context.get("by_source_chunk", {}).get(
+                (str(doc_id), str(source_chunk_id))
+            )
+        )
+    return consume_unique(
+        diagnostics_by_context.get("by_content", {}).get(
+            (str(doc_id), selected_content_hash)
+        )
+    )
 
 
 async def _resolve_expected_source_document_ids(
@@ -2519,6 +2544,9 @@ class CampaignEngine:
                 "agentic_execution_version": unit.agentic_execution_version,
                 "shadow_evaluation_policy": unit.shadow_evaluation_policy,
                 "model_config": config.model_preset.model_dump(mode="json"),
+                "prompt_capture_policy": config.prompt_capture_policy.model_dump(
+                    mode="json"
+                ),
             },
         )
 

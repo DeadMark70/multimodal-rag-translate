@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from core.providers import get_llm_provider_name
 from core.llm_usage_context import llm_accounting_scope
 from evaluation.accounting_runtime import (
     EvaluationAccountingSink,
@@ -42,6 +43,7 @@ from evaluation.error_policy import classify_evaluation_error
 from evaluation.job_schemas import ClaimedEvaluationWork, ExecutionAttemptOutput
 from evaluation.job_store import EvaluationJobStore
 from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.observability import EvaluationRunRecorder, llm_call_observer_scope
 from evaluation.agentic_campaign_adapter import effective_agentic_execution_version
 from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
 from evaluation.retrieval_profiles import evaluation_failure_execution_profile
@@ -93,6 +95,24 @@ class DatasetExecutionWorker:
             started_at = datetime.now(timezone.utc)
             started_perf = time.perf_counter()
             run_id = str(uuid4())
+            request_id = str(uuid4())
+            provider_name = str(model_config.get("provider") or get_llm_provider_name())
+            prompt_capture_policy = claim.input_snapshot.get("prompt_capture_policy")
+            if not isinstance(prompt_capture_policy, dict):
+                prompt_capture_policy = {}
+            recorder = EvaluationRunRecorder(
+                run_id=run_id,
+                campaign_id=campaign_id,
+                user_id=user_id,
+                request_id=request_id,
+                provider_name=provider_name,
+                model_name=str(
+                    model_config.get("model_name")
+                    or model_config.get("model")
+                    or "unknown"
+                ),
+                prompt_capture_policy=prompt_capture_policy,
+            )
             scope = await start_execution_scope(
                 store=self._accounting_store,
                 sink=self._accounting_sink,
@@ -105,17 +125,18 @@ class DatasetExecutionWorker:
             )
             try:
                 with llm_accounting_scope(scope.context):
-                    payload = await self._runner(
-                        test_case=unit.test_case,
-                        user_id=user_id,
-                        mode=unit.mode,
-                        model_config=model_config,
-                        run_number=unit.repeat_number,
-                        ablation_flags=unit.ablation_flags,
-                        budget=unit.budget,
-                        agentic_execution_version=unit.agentic_execution_version,
-                        shadow_evaluation_policy=unit.shadow_evaluation_policy,
-                    )
+                    with llm_call_observer_scope(recorder):
+                        payload = await self._runner(
+                            test_case=unit.test_case,
+                            user_id=user_id,
+                            mode=unit.mode,
+                            model_config=model_config,
+                            run_number=unit.repeat_number,
+                            ablation_flags=unit.ablation_flags,
+                            budget=unit.budget,
+                            agentic_execution_version=unit.agentic_execution_version,
+                            shadow_evaluation_policy=unit.shadow_evaluation_policy,
+                        )
                 completed_at = datetime.now(timezone.utc)
                 total_latency_ms = max((time.perf_counter() - started_perf) * 1000, 0)
                 if total_latency_ms <= 0:
@@ -141,11 +162,16 @@ class DatasetExecutionWorker:
                     unit=unit,
                     payload=payload,
                     run_id=run_id,
-                    request_id=str(uuid4()),
+                    request_id=request_id,
                     started_at=started_at,
                     completed_at=completed_at,
                     total_latency_ms=total_latency_ms,
                     model_config=model_config,
+                    observability_partial=recorder.observability_partial,
+                    observability_partial_reasons=tuple(
+                        recorder.observability_partial_reasons
+                    ),
+                    provider_name=provider_name,
                 )
                 result = self._successful_result(
                     campaign_id=campaign_id,
@@ -445,6 +471,13 @@ class DatasetExecutionWorker:
         unit = execution.unit
         payload = execution.payload
         assert isinstance(payload, BenchmarkExecutionResult)
+        derived_metrics = _build_derived_metrics(unit=unit, payload=payload)
+        derived_metrics["observability_status"] = (
+            "partial" if execution.observability_partial else "complete"
+        )
+        derived_metrics["observability_partial_reasons"] = list(
+            execution.observability_partial_reasons
+        )
         return CampaignResult(
             id=execution.run_id,
             campaign_id=campaign_id,
@@ -478,7 +511,7 @@ class DatasetExecutionWorker:
             system_version_snapshot=_build_system_version_snapshot(
                 unit=unit, payload=payload
             ),
-            derived_metrics=_build_derived_metrics(unit=unit, payload=payload),
+            derived_metrics=derived_metrics,
             final_answer_hash=_final_answer_hash(payload.answer),
             status=CampaignResultStatus.COMPLETED,
             created_at=datetime.now(timezone.utc),
