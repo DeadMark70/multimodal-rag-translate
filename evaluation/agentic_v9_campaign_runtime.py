@@ -522,16 +522,16 @@ class AgenticV9CampaignRuntime:
         if (
             (
                 state["contract"].graph_policy == "required_locator"
-                and graph_execution["state"] != "executed"
+                and _required_capability_execution_failed(graph_execution)
             )
             or (
                 state["contract"].visual_required
-                and visual_execution["state"] != "executed"
+                and _required_capability_execution_failed(visual_execution)
             )
         ) and final.response_status == "complete":
-            # A required graph locator is a capability contract, not a hint.  A
-            # vector-only answer may still be useful, but it cannot be marked
-            # complete when no eligible graph-to-source evidence was admitted.
+            # A capability that actually ran and failed remains fail-closed.
+            # No eligible input is a capability gap, not evidence that the
+            # text-backed answer itself is incomplete.
             final = final.model_copy(update={"response_status": "qualified_partial"})
         used_packets = [
             packet
@@ -822,6 +822,17 @@ def _graph_execution_projection(
         "packed_item_ids": list(located.packed_item_ids),
         "resolved_source_doc_ids": list(located.resolved_source_doc_ids),
         "resolved_source_chunk_ids": list(located.resolved_source_chunk_ids),
+    }
+
+
+def _required_capability_execution_failed(execution: dict[str, Any]) -> bool:
+    """Downgrade only an attempted capability failure, never unavailable input."""
+    if execution.get("state") == "executed" or not execution.get("attempted"):
+        return False
+    return execution.get("failure_reason") not in {
+        "no_eligible_graph_source_evidence",
+        "no_source_bound_graph_evidence",
+        "no_eligible_visual_evidence",
     }
 
 
