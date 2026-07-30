@@ -556,6 +556,10 @@ class ExecutionPolicy(BaseModel):
     phase_timeouts_s: dict[str, float] = Field(
         default_factory=lambda: {
             "route_plan": 32.0,
+            # The semantic comparison planner has its own 64-second fail-soft
+            # timeout.  Its outer core boundary must remain slightly wider so
+            # the planner can classify timeout instead of being cancelled.
+            "comparison_plan": 68.0,
             "retrieval_judge": 32.0,
             "evidence_extract": 64.0,
             "visual_extract": 16.0,
@@ -574,6 +578,7 @@ class V9ExecutionRequest(BaseModel):
     requested_source_names: list[str] = Field(default_factory=list)
     history: list[dict[str, Any]] = Field(default_factory=list, max_length=10)
     setup_snapshot: dict[str, Any] = Field(default_factory=dict)
+    comparison_plan_requested: bool = False
     agentic_execution_version: Literal["v8", "v9"] = "v9"
     trace_id: str = Field(min_length=1)
 

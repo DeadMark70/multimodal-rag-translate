@@ -183,6 +183,21 @@ def _sanitize_v9_trace_payload(
 
 def safe_comparison_projection(value: dict[str, Any]) -> dict[str, Any]:
     """Allowlist bounded comparison diagnostics for durable research exports."""
+    planner_statuses = {"not_requested", "planned", "fallback"}
+    planner_fallback_reasons = {
+        "timeout",
+        "provider_error",
+        "invalid_response",
+        "schema_violation",
+        "not_comparison",
+    }
+    task_statuses = {"executed", "fallback", "not_instrumented"}
+    task_fallback_reasons = {
+        "reranker_unavailable",
+        "reranker_error",
+        "reranker_empty_result",
+    }
+    final_statuses = {"complete", "qualified_partial", "insufficient"}
 
     def strings(raw: Any, *, limit: int, width: int = 160) -> list[str]:
         if not isinstance(raw, list):
@@ -240,15 +255,25 @@ def safe_comparison_projection(value: dict[str, Any]) -> dict[str, Any]:
                 selected.append(row)
             if len(selected) >= 6:
                 break
+        task_status = str(raw.get("status") or "not_instrumented")
+        task_fallback_reason = (
+            str(raw["fallback_reason"]) if raw.get("fallback_reason") else None
+        )
         diagnostic = {
             "task_id": str(raw.get("task_id") or "")[:120],
             "subject_id": str(raw.get("subject_id") or "")[:80],
             "query_hash": str(raw.get("query_hash") or "")[:80],
             "query_preview": str(raw.get("query_preview") or "")[:160],
-            "status": str(raw.get("status") or "not_instrumented")[:80],
+            "status": (
+                task_status
+                if task_status in task_statuses
+                else "not_instrumented"
+            ),
             "fallback_reason": (
-                str(raw["fallback_reason"])[:120]
-                if raw.get("fallback_reason")
+                task_fallback_reason
+                if task_fallback_reason in task_fallback_reasons
+                else "unknown"
+                if task_fallback_reason is not None
                 else None
             ),
             "candidate_count": nonnegative_int(raw.get("candidate_count")),
@@ -262,14 +287,51 @@ def safe_comparison_projection(value: dict[str, Any]) -> dict[str, Any]:
         if len(diagnostics) >= 5:
             break
 
+    final_evidence: list[dict[str, Any]] = []
+    for raw in value.get("final_evidence") or []:
+        if not isinstance(raw, dict):
+            continue
+        evidence_id = raw.get("evidence_id")
+        doc_id = raw.get("doc_id")
+        if not isinstance(evidence_id, str) or not isinstance(doc_id, str):
+            continue
+        final_evidence.append(
+            {
+                "evidence_id": evidence_id[:160],
+                "doc_id": doc_id[:160],
+                "chunk_id": (
+                    str(raw["chunk_id"])[:160]
+                    if raw.get("chunk_id") is not None
+                    else None
+                ),
+                "subject_ids": strings(
+                    raw.get("subject_ids"), limit=4, width=80
+                ),
+            }
+        )
+        if len(final_evidence) >= 6:
+            break
+
+    planner_status = str(value.get("planner_status") or "not_requested")
+    planner_fallback_reason = (
+        str(value["planner_fallback_reason"])
+        if value.get("planner_fallback_reason")
+        else None
+    )
+    final_status = str(value.get("final_status") or "unknown")
+
     return {
-        "planner_status": str(value.get("planner_status") or "not_requested")[:80],
+        "planner_status": (
+            planner_status if planner_status in planner_statuses else "unknown"
+        ),
         "planner_latency_ms": nonnegative_float(
             value.get("planner_latency_ms")
         ),
         "planner_fallback_reason": (
-            str(value["planner_fallback_reason"])[:120]
-            if value.get("planner_fallback_reason")
+            planner_fallback_reason
+            if planner_fallback_reason in planner_fallback_reasons
+            else "unknown"
+            if planner_fallback_reason is not None
             else None
         ),
         "is_comparison": bool(value.get("is_comparison")),
@@ -289,13 +351,16 @@ def safe_comparison_projection(value: dict[str, Any]) -> dict[str, Any]:
         "missing_after_repair": strings(
             value.get("missing_after_repair"), limit=4, width=80
         ),
-        "final_status": str(value.get("final_status") or "unknown")[:80],
+        "final_status": (
+            final_status if final_status in final_statuses else "unknown"
+        ),
         "final_evidence_subjects": strings(
             value.get("final_evidence_subjects"), limit=4, width=80
         ),
         "final_evidence_count": nonnegative_int(
             value.get("final_evidence_count")
         ),
+        "final_evidence": final_evidence,
     }
 
 

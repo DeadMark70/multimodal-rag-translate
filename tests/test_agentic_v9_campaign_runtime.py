@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ import pytest
 from langchain_core.documents import Document
 
 import evaluation.agentic_v9_campaign_runtime as runtime_module
+from data_base.agentic_v9.execution_policy import V9ExecutionPolicyRuntime
 from data_base.rag_pipeline_schemas import RagRetrievalResult as PipelineRetrievalResult
 from data_base.reranker import DocumentReranker
 from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
@@ -22,6 +24,7 @@ from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
     EvidenceSource,
+    ExecutionPolicy,
     QueryContract,
     RequiredSlot,
     ResolvedSourceScope,
@@ -128,6 +131,8 @@ async def test_v9_retrieval_reranks_eight_to_four(
         ("graph_relational", True),
     ],
 )
+
+
 def test_v9_candidate_diversification_is_limited_to_multi_source_routes(
     route: str, expected: bool
 ) -> None:
@@ -442,6 +447,28 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
             "efficientmednext_l",
         ],
         "final_evidence_count": 4,
+        "final_evidence": v9["comparison"]["final_evidence"],
+    }
+    assert {
+        (
+            item["doc_id"],
+            item["chunk_id"],
+            tuple(item["subject_ids"]),
+        )
+        for item in v9["comparison"]["final_evidence"]
+    } == {
+        ("doc-1", "nnmamba-chunk-0", ("nnmamba",)),
+        ("doc-1", "nnmamba-chunk-1", ("nnmamba",)),
+        (
+            "doc-1",
+            "efficientmednext_l-chunk-0",
+            ("efficientmednext_l",),
+        ),
+        (
+            "doc-1",
+            "efficientmednext_l-chunk-1",
+            ("efficientmednext_l",),
+        ),
     }
     assert {
         row["subject_id"] for row in v9["comparison"]["task_diagnostics"]
@@ -764,7 +791,11 @@ async def test_v9_comparison_planner_failure_preserves_base_retrieval(
         "final_status": "complete",
         "final_evidence_subjects": [],
         "final_evidence_count": 1,
+        "final_evidence": v9["comparison"]["final_evidence"],
     }
+    assert v9["comparison"]["final_evidence"][0]["doc_id"] == "doc-1"
+    assert v9["comparison"]["final_evidence"][0]["chunk_id"] == "chunk-1"
+    assert v9["comparison"]["final_evidence"][0]["subject_ids"] == []
 
 
 @pytest.mark.asyncio
@@ -844,6 +875,62 @@ async def test_v9_forced_comparison_timeout_never_clears_contexts(
     ] == "timeout"
     assert result.documents
     retrieve_documents.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_v9_comparison_planner_uses_its_own_outer_phase_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def delayed_fallback(*_args, **_kwargs):
+        await asyncio.sleep(0.04)
+        return ComparisonPlannerOutcome(
+            status="fallback",
+            fallback_reason="timeout",
+            latency_ms=40,
+        )
+
+    monkeypatch.setattr(
+        runtime_module.ComparisonPlanner,
+        "plan",
+        delayed_fallback,
+    )
+    policy = ExecutionPolicy(
+        total_deadline_s=1.0,
+        phase_timeouts_s={
+            "route_plan": 0.02,
+            "comparison_plan": 0.10,
+            "retrieval_judge": 0.10,
+            "evidence_extract": 0.10,
+            "visual_extract": 0.10,
+            "final_answer": 0.10,
+        },
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="Fallback evidence remains available.",
+                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+                )
+            ]
+        ),
+        provider_factory=lambda _purpose: _Provider(),
+        document_reference_resolver=_identity_reference_resolver,
+        policy_runtime=V9ExecutionPolicyRuntime(policy),
+    )
+
+    result = await runtime.execute(
+        question="Model A vs. Model B: which performs better?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot=_setup(),
+        trace_id="comparison-outer-timeout",
+    )
+
+    assert result.agent_trace["agentic_v9"]["comparison"][
+        "planner_fallback_reason"
+    ] == "timeout"
+    assert result.documents
 
 
 @pytest.mark.asyncio

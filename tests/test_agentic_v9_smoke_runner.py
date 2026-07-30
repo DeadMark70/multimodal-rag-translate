@@ -436,7 +436,21 @@ def test_comparison_observability_is_bounded_and_fail_closed() -> None:
         "missing_after_repair": [],
         "final_status": "complete",
         "final_evidence_subjects": ["model_a", "model_b"],
-        "final_evidence_count": 4,
+        "final_evidence_count": 2,
+        "final_evidence": [
+            {
+                "evidence_id": "evidence-a",
+                "doc_id": "doc-a",
+                "chunk_id": "chunk-a",
+                "subject_ids": ["model_a"],
+            },
+            {
+                "evidence_id": "evidence-b",
+                "doc_id": "doc-b",
+                "chunk_id": "chunk-b",
+                "subject_ids": ["model_b"],
+            },
+        ],
     }
     v9["budget_reservations"].append(
         {
@@ -487,6 +501,17 @@ def test_comparison_observability_is_bounded_and_fail_closed() -> None:
     too_many_planner_calls["llm_calls"].append(duplicate)
     assert (
         verify_campaign_export(too_many_planner_calls)
+        .requirements["comparison_observability"]
+        .status
+        == "fail"
+    )
+
+    unknown_status = copy.deepcopy(artifact)
+    unknown_status["runs"][0]["agent_trace"]["agentic_v9"]["comparison"][
+        "planner_status"
+    ] = "invented_success"
+    assert (
+        verify_campaign_export(unknown_status)
         .requirements["comparison_observability"]
         .status
         == "fail"

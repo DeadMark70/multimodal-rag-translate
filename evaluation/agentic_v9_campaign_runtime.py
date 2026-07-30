@@ -204,6 +204,7 @@ class AgenticV9CampaignRuntime:
             requested_doc_ids=list(source_scope.authorized_doc_ids),
             setup_snapshot=dict(setup_snapshot),
             trace_id=trace_id,
+            comparison_plan_requested=comparison_plan_requested,
         )
         deadline = self._policy_runtime.start_deadline()
         cancellation = ExecutionCancellation()
@@ -994,6 +995,19 @@ def _comparison_trace_projection(
     before = coverage_before or {"covered": [], "missing": []}
     after = coverage_after or before
     packed_packets = tuple(packed.packets) if packed is not None else ()
+    final_evidence = [
+        {
+            "evidence_id": packet.evidence_id,
+            "doc_id": packet.source.doc_id,
+            "chunk_id": packet.source.chunk_id,
+            "subject_ids": [
+                slot_id.removeprefix("comparison-subject:")
+                for slot_id in packet.slot_ids
+                if slot_id.startswith("comparison-subject:")
+            ],
+        }
+        for packet in packed_packets
+    ]
     final_subject_ids: list[str] = []
     if plan is not None:
         packed_slot_ids = {
@@ -1041,6 +1055,7 @@ def _comparison_trace_projection(
         "final_status": final_status,
         "final_evidence_subjects": final_subject_ids,
         "final_evidence_count": len(packed_packets),
+        "final_evidence": final_evidence,
     }
 
 

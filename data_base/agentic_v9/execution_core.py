@@ -161,9 +161,14 @@ class V9ExecutionCore:
             deadline,
             cancellation,
         )
+        planning_phase = (
+            "comparison_plan"
+            if request.comparison_plan_requested
+            else "route_plan"
+        )
         contract = await self._run_stage(
             "llm",
-            "route_plan",
+            planning_phase,
             self._stages.plan_contract(request, scope),
             deadline,
             cancellation,

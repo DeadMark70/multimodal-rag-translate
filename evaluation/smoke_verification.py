@@ -519,6 +519,21 @@ def _verify_comparison_observability(
     runs: list[dict[str, Any]],
     llm_calls: list[dict[str, Any]],
 ) -> RequirementResult:
+    planner_statuses = {"not_requested", "planned", "fallback"}
+    planner_fallback_reasons = {
+        "timeout",
+        "provider_error",
+        "invalid_response",
+        "schema_violation",
+        "not_comparison",
+    }
+    task_statuses = {"executed", "fallback", "not_instrumented"}
+    task_fallback_reasons = {
+        "reranker_unavailable",
+        "reranker_error",
+        "reranker_empty_result",
+    }
+    final_statuses = {"complete", "qualified_partial", "insufficient"}
     observed = False
     for run in runs:
         v9 = _v9_payload(run)
@@ -526,6 +541,19 @@ def _verify_comparison_observability(
         if not comparison:
             continue
         observed = True
+        planner_status = str(comparison.get("planner_status") or "")
+        if planner_status not in planner_statuses:
+            return RequirementResult(
+                "fail", "comparison planner status is unknown"
+            )
+        planner_fallback_reason = comparison.get("planner_fallback_reason")
+        if (
+            planner_fallback_reason is not None
+            and str(planner_fallback_reason) not in planner_fallback_reasons
+        ):
+            return RequirementResult(
+                "fail", "comparison planner fallback reason is unknown"
+            )
         subjects = _as_list(comparison.get("subjects"))
         subject_ids = [
             str(item.get("subject_id") or "")
@@ -548,6 +576,10 @@ def _verify_comparison_observability(
                 )
             missing = _as_strings(comparison.get("missing_after_repair"))
             final_status = str(comparison.get("final_status") or "")
+            if final_status not in final_statuses:
+                return RequirementResult(
+                    "fail", "comparison final status is unknown"
+                )
             if final_status == "complete" and (
                 missing or set(final_subjects) != set(subject_ids)
             ):
@@ -564,6 +596,35 @@ def _verify_comparison_observability(
                 return RequirementResult(
                     "fail", "comparison final evidence count exceeds its bound"
                 )
+            final_evidence = _as_list(comparison.get("final_evidence"))
+            if len(final_evidence) != final_count:
+                return RequirementResult(
+                    "fail", "comparison final evidence identity count disagrees"
+                )
+            mapped_subjects: set[str] = set()
+            for item in final_evidence:
+                if not isinstance(item, Mapping):
+                    return RequirementResult(
+                        "fail", "comparison final evidence identity is invalid"
+                    )
+                if not str(item.get("evidence_id") or "") or not str(
+                    item.get("doc_id") or ""
+                ):
+                    return RequirementResult(
+                        "fail", "comparison final evidence lacks provenance identity"
+                    )
+                item_subjects = set(_as_strings(item.get("subject_ids")))
+                if not item_subjects.issubset(subject_ids):
+                    return RequirementResult(
+                        "fail",
+                        "comparison final evidence references an undeclared subject",
+                    )
+                mapped_subjects.update(item_subjects)
+            if mapped_subjects != set(final_subjects):
+                return RequirementResult(
+                    "fail",
+                    "comparison final evidence mapping disagrees with subject coverage",
+                )
             task_subjects = {
                 str(item.get("subject_id") or "")
                 for item in _as_list(comparison.get("task_diagnostics"))
@@ -573,8 +634,23 @@ def _verify_comparison_observability(
                 return RequirementResult(
                     "partial", "comparison task diagnostics are incomplete"
                 )
+            for item in _as_list(comparison.get("task_diagnostics")):
+                if not isinstance(item, Mapping):
+                    continue
+                status = str(item.get("status") or "not_instrumented")
+                reason = item.get("fallback_reason")
+                if status not in task_statuses:
+                    return RequirementResult(
+                        "fail", "comparison task status is unknown"
+                    )
+                if (
+                    reason is not None
+                    and str(reason) not in task_fallback_reasons
+                ):
+                    return RequirementResult(
+                        "fail", "comparison task fallback reason is unknown"
+                    )
 
-        planner_status = str(comparison.get("planner_status") or "")
         planner_calls = [
             call
             for call in _calls_for_run(llm_calls, run)
@@ -600,7 +676,7 @@ def _verify_comparison_observability(
                 )
         if planner_status == "fallback":
             reason = str(comparison.get("planner_fallback_reason") or "")
-            if not reason:
+            if reason not in planner_fallback_reasons:
                 return RequirementResult(
                     "fail", "comparison planner fallback reason is missing"
                 )

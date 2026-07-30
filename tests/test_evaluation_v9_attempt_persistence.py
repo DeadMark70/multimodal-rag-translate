@@ -124,7 +124,9 @@ def test_default_evidence_excerpt_is_plain_text_bounded_and_redacted() -> None:
 def test_comparison_projection_is_bounded_and_allowlisted() -> None:
     projected = safe_comparison_projection(
         {
-            "planner_status": "planned",
+            "planner_status": "invented_success",
+            "planner_fallback_reason": "invented_reason",
+            "final_status": "invented_complete",
             "is_comparison": True,
             "subjects": [
                 {
@@ -151,6 +153,15 @@ def test_comparison_projection_is_bounded_and_allowlisted() -> None:
                 }
             ],
             "secret": "drop-me",
+            "final_evidence": [
+                {
+                    "evidence_id": "evidence-a",
+                    "doc_id": "doc-a",
+                    "chunk_id": "chunk-a",
+                    "subject_ids": ["model_a"],
+                    "secret": "drop-me",
+                }
+            ],
         }
     )
 
@@ -164,6 +175,17 @@ def test_comparison_projection_is_bounded_and_allowlisted() -> None:
     assert len(projected["task_diagnostics"][0]["query_preview"]) == 160
     assert projected["task_diagnostics"][0]["selected"] == [
         {"doc_id": "doc-a", "chunk_id": "chunk-a"}
+    ]
+    assert projected["planner_status"] == "unknown"
+    assert projected["planner_fallback_reason"] == "unknown"
+    assert projected["final_status"] == "unknown"
+    assert projected["final_evidence"] == [
+        {
+            "evidence_id": "evidence-a",
+            "doc_id": "doc-a",
+            "chunk_id": "chunk-a",
+            "subject_ids": ["model_a"],
+        }
     ]
     assert "secret" not in str(projected)
     assert "retrieval_query" not in str(projected)
