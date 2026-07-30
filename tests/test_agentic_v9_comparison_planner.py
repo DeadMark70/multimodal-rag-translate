@@ -334,6 +334,35 @@ async def test_unanchored_entity_subject_is_rejected() -> None:
 
 
 @pytest.mark.asyncio
+async def test_any_invalid_candidate_rejects_the_entire_subject_plan() -> None:
+    question = (
+        "Compare nnMamba and EfficientMedNeXt-L for computational efficiency "
+        "under a low-memory condition."
+    )
+    response = _payload(
+        subjects=[
+            _planner_subject("nnmamba", "nnMamba"),
+            _planner_subject("efficientmednext_l", "EfficientMedNeXt-L"),
+            _planner_subject(
+                "low-memory",
+                "low-memory condition",
+                subject_role="condition",
+            ),
+        ]
+    )
+
+    outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
+        question=question,
+        authorized_source_names=[],
+        timeout_seconds=1,
+    )
+
+    assert outcome.status == "fallback"
+    assert outcome.fallback_reason == "invalid_subjects"
+    assert outcome.plan is None
+
+
+@pytest.mark.asyncio
 async def test_valid_three_entity_lineage_comparison_remains_planned() -> None:
     question = "Compare the technical lineage of SAM, SegmentAnyBone, and SegVol."
     response = _payload(

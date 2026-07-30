@@ -151,7 +151,7 @@ class ComparisonPlanner:
         if not payload.is_comparison:
             return _fallback("not_comparison", started_at)
         subjects = _validated_subjects(question, payload.subjects)
-        if len(subjects) < 2:
+        if len(subjects) < 2 or len(subjects) != len(payload.subjects):
             return _fallback("invalid_subjects", started_at)
         try:
             plan = ComparisonPlan(
