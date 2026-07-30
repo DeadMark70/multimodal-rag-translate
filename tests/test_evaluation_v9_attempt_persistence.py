@@ -11,6 +11,7 @@ import pytest
 from evaluation import db as evaluation_db
 from evaluation.observability_storage import (
     EvaluationObservabilityRepository,
+    safe_comparison_projection,
     safe_plain_text_excerpt,
 )
 from evaluation.trace_schemas import (
@@ -120,6 +121,54 @@ def test_default_evidence_excerpt_is_plain_text_bounded_and_redacted() -> None:
     assert len(excerpt) <= 500
 
 
+def test_comparison_projection_is_bounded_and_allowlisted() -> None:
+    projected = safe_comparison_projection(
+        {
+            "planner_status": "planned",
+            "is_comparison": True,
+            "subjects": [
+                {
+                    "subject_id": "model_a",
+                    "display_name": "Model A",
+                    "aliases": ["A"],
+                    "retrieval_query": "must not persist",
+                }
+            ],
+            "task_diagnostics": [
+                {
+                    "task_id": "task-a",
+                    "subject_id": "model_a",
+                    "query_hash": "sha256:abc",
+                    "query_preview": "x" * 500,
+                    "selected": [
+                        {
+                            "doc_id": "doc-a",
+                            "chunk_id": "chunk-a",
+                            "secret": "drop-me",
+                        }
+                    ],
+                    "secret": "drop-me",
+                }
+            ],
+            "secret": "drop-me",
+        }
+    )
+
+    assert projected["subjects"] == [
+        {
+            "subject_id": "model_a",
+            "display_name": "Model A",
+            "aliases": ["A"],
+        }
+    ]
+    assert len(projected["task_diagnostics"][0]["query_preview"]) == 160
+    assert projected["task_diagnostics"][0]["selected"] == [
+        {"doc_id": "doc-a", "chunk_id": "chunk-a"}
+    ]
+    assert "secret" not in str(projected)
+    assert "retrieval_query" not in str(projected)
+
+
 @pytest.mark.asyncio
 async def test_materializing_a_v9_attempt_is_atomic_and_idempotent(
     isolated_db_path, monkeypatch
@@ -153,6 +202,47 @@ async def test_materializing_a_v9_attempt_is_atomic_and_idempotent(
                     "atomic_completeness_reason": ("atomic_slot_matching_experimental"),
                     "resolved_source_scope": {"authorized_doc_ids": ["doc-a"]},
                 },
+                "comparison": {
+                    "planner_status": "planned",
+                    "planner_latency_ms": 12.5,
+                    "planner_fallback_reason": None,
+                    "is_comparison": True,
+                    "subjects": [
+                        {
+                            "subject_id": "model_a",
+                            "display_name": "Model A",
+                            "aliases": ["A"],
+                            "retrieval_query": "must not persist verbatim",
+                        }
+                    ],
+                    "dimensions": ["accuracy"],
+                    "task_diagnostics": [
+                        {
+                            "task_id": "task-a",
+                            "subject_id": "model_a",
+                            "query_hash": "sha256:abc",
+                            "query_preview": "Model A accuracy",
+                            "selected_count": 2,
+                            "selected": [
+                                {
+                                    "doc_id": "doc-a",
+                                    "chunk_id": "chunk-1",
+                                    "unexpected_secret": "drop-me",
+                                }
+                            ],
+                            "unexpected_secret": "drop-me",
+                        }
+                    ],
+                    "coverage_before_repair": ["model_a"],
+                    "missing_before_repair": [],
+                    "repair_executed": False,
+                    "coverage_after_repair": ["model_a"],
+                    "missing_after_repair": [],
+                    "final_status": "complete",
+                    "final_evidence_subjects": ["model_a"],
+                    "final_evidence_count": 1,
+                    "unexpected_secret": "drop-me",
+                },
                 "completion": {"status": "completed"},
             },
             evidence_packets=[
@@ -178,6 +268,19 @@ async def test_materializing_a_v9_attempt_is_atomic_and_idempotent(
         stored.trace_payload["query_contract"]["atomic_completeness_reason"]
         == "atomic_slot_matching_experimental"
     )
+    comparison = stored.trace_payload["comparison"]
+    assert comparison["subjects"] == [
+        {
+            "subject_id": "model_a",
+            "display_name": "Model A",
+            "aliases": ["A"],
+        }
+    ]
+    assert comparison["task_diagnostics"][0]["selected"] == [
+        {"doc_id": "doc-a", "chunk_id": "chunk-1"}
+    ]
+    assert "unexpected_secret" not in str(comparison)
+    assert "retrieval_query" not in str(comparison)
 
 
 @pytest.mark.asyncio

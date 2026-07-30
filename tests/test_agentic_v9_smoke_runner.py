@@ -411,6 +411,88 @@ def test_recovery_diagnostics_fail_closed_on_task_1_to_3_regressions() -> None:
     assert verify_campaign_export(lost_rerank_candidates).status == "fail"
 
 
+def test_comparison_observability_is_bounded_and_fail_closed() -> None:
+    artifact = _recovery_diagnostics_export()
+    run = artifact["runs"][0]
+    v9 = run["agent_trace"]["agentic_v9"]
+    v9["comparison"] = {
+        "planner_status": "planned",
+        "planner_latency_ms": 10.0,
+        "planner_fallback_reason": None,
+        "is_comparison": True,
+        "subjects": [
+            {"subject_id": "model_a", "display_name": "Model A", "aliases": []},
+            {"subject_id": "model_b", "display_name": "Model B", "aliases": []},
+        ],
+        "dimensions": ["accuracy"],
+        "task_diagnostics": [
+            {"task_id": "task-a", "subject_id": "model_a"},
+            {"task_id": "task-b", "subject_id": "model_b"},
+        ],
+        "coverage_before_repair": ["model_a", "model_b"],
+        "missing_before_repair": [],
+        "repair_executed": False,
+        "coverage_after_repair": ["model_a", "model_b"],
+        "missing_after_repair": [],
+        "final_status": "complete",
+        "final_evidence_subjects": ["model_a", "model_b"],
+        "final_evidence_count": 4,
+    }
+    v9["budget_reservations"].append(
+        {
+            "reservation_id": "comparison-reservation",
+            "phase": "comparison_plan",
+            "provider_attempt": 1,
+        }
+    )
+    artifact["llm_calls"].append(
+        {
+            "run_id": run["id"],
+            "phase": "comparison_plan",
+            "reservation_id": "comparison-reservation",
+            "provider_attempt": 1,
+            "status": "success",
+            "prompt_hash": "hash-comparison",
+            "prompt_capture_status": "captured",
+            "full_prompt_capture_status": "not_captured_at_execution",
+            "total_tokens": 5,
+            "payload": {
+                "usage_status": "measured",
+                "official_total_tokens": 5,
+            },
+        }
+    )
+    run["total_tokens"] += 5
+    v9["metrics"]["reconciled_tokens"] += 5
+
+    report = verify_campaign_export(artifact)
+
+    assert report.requirements["comparison_observability"].status == "pass"
+
+    missing_subject = copy.deepcopy(artifact)
+    comparison = missing_subject["runs"][0]["agent_trace"]["agentic_v9"][
+        "comparison"
+    ]
+    comparison["final_evidence_subjects"] = ["model_a"]
+    assert (
+        verify_campaign_export(missing_subject)
+        .requirements["comparison_observability"]
+        .status
+        == "fail"
+    )
+
+    too_many_planner_calls = copy.deepcopy(artifact)
+    duplicate = copy.deepcopy(too_many_planner_calls["llm_calls"][-1])
+    duplicate["reservation_id"] = "comparison-reservation-2"
+    too_many_planner_calls["llm_calls"].append(duplicate)
+    assert (
+        verify_campaign_export(too_many_planner_calls)
+        .requirements["comparison_observability"]
+        .status
+        == "fail"
+    )
+
+
 def test_locator_diagnostics_must_cover_each_structured_slot() -> None:
     artifact = _recovery_diagnostics_export()
     q14 = artifact["runs"][3]["agent_trace"]["agentic_v9"]

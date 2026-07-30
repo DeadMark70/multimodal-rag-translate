@@ -171,9 +171,132 @@ def _sanitize_v9_trace_payload(
             scope["rejected_source_names"] = []
             if not scope.get("authorized_doc_ids"):
                 scope["resolved_doc_ids"] = []
+    comparison = sanitized.get("comparison")
+    if isinstance(comparison, dict):
+        sanitized["comparison"] = safe_comparison_projection(comparison)
+    else:
+        sanitized.pop("comparison", None)
     if cancelled:
         sanitized.pop("completion", None)
     return sanitized
+
+
+def safe_comparison_projection(value: dict[str, Any]) -> dict[str, Any]:
+    """Allowlist bounded comparison diagnostics for durable research exports."""
+
+    def strings(raw: Any, *, limit: int, width: int = 160) -> list[str]:
+        if not isinstance(raw, list):
+            return []
+        return [
+            item[:width]
+            for item in raw[:limit]
+            if isinstance(item, str) and item
+        ]
+
+    def nonnegative_int(raw: Any) -> int:
+        try:
+            return max(0, int(raw or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def nonnegative_float(raw: Any) -> float:
+        try:
+            return max(0.0, float(raw or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    subjects: list[dict[str, Any]] = []
+    for raw in value.get("subjects") or []:
+        if not isinstance(raw, dict):
+            continue
+        subject_id = raw.get("subject_id")
+        display_name = raw.get("display_name")
+        if not isinstance(subject_id, str) or not isinstance(display_name, str):
+            continue
+        subjects.append(
+            {
+                "subject_id": subject_id[:80],
+                "display_name": display_name[:160],
+                "aliases": strings(raw.get("aliases"), limit=8, width=80),
+            }
+        )
+        if len(subjects) >= 4:
+            break
+
+    diagnostics: list[dict[str, Any]] = []
+    for raw in value.get("task_diagnostics") or []:
+        if not isinstance(raw, dict):
+            continue
+        selected: list[dict[str, str]] = []
+        for item in raw.get("selected") or []:
+            if not isinstance(item, dict):
+                continue
+            row = {
+                key: str(item[key])[:160]
+                for key in ("doc_id", "chunk_id")
+                if item.get(key) is not None
+            }
+            if row:
+                selected.append(row)
+            if len(selected) >= 6:
+                break
+        diagnostic = {
+            "task_id": str(raw.get("task_id") or "")[:120],
+            "subject_id": str(raw.get("subject_id") or "")[:80],
+            "query_hash": str(raw.get("query_hash") or "")[:80],
+            "query_preview": str(raw.get("query_preview") or "")[:160],
+            "status": str(raw.get("status") or "not_instrumented")[:80],
+            "fallback_reason": (
+                str(raw["fallback_reason"])[:120]
+                if raw.get("fallback_reason")
+                else None
+            ),
+            "candidate_count": nonnegative_int(raw.get("candidate_count")),
+            "pre_subject_limit_count": nonnegative_int(
+                raw.get("pre_subject_limit_count")
+            ),
+            "selected_count": nonnegative_int(raw.get("selected_count")),
+            "selected": selected,
+        }
+        diagnostics.append(diagnostic)
+        if len(diagnostics) >= 5:
+            break
+
+    return {
+        "planner_status": str(value.get("planner_status") or "not_requested")[:80],
+        "planner_latency_ms": nonnegative_float(
+            value.get("planner_latency_ms")
+        ),
+        "planner_fallback_reason": (
+            str(value["planner_fallback_reason"])[:120]
+            if value.get("planner_fallback_reason")
+            else None
+        ),
+        "is_comparison": bool(value.get("is_comparison")),
+        "subjects": subjects,
+        "dimensions": strings(value.get("dimensions"), limit=8),
+        "task_diagnostics": diagnostics,
+        "coverage_before_repair": strings(
+            value.get("coverage_before_repair"), limit=4, width=80
+        ),
+        "missing_before_repair": strings(
+            value.get("missing_before_repair"), limit=4, width=80
+        ),
+        "repair_executed": bool(value.get("repair_executed")),
+        "coverage_after_repair": strings(
+            value.get("coverage_after_repair"), limit=4, width=80
+        ),
+        "missing_after_repair": strings(
+            value.get("missing_after_repair"), limit=4, width=80
+        ),
+        "final_status": str(value.get("final_status") or "unknown")[:80],
+        "final_evidence_subjects": strings(
+            value.get("final_evidence_subjects"), limit=4, width=80
+        ),
+        "final_evidence_count": nonnegative_int(
+            value.get("final_evidence_count")
+        ),
+    }
 
 
 def _graph_event_from_row(row: Any) -> EvaluationGraphEvent:

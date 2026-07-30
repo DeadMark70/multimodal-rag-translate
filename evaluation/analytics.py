@@ -1091,6 +1091,16 @@ class EvaluationAnalyticsService:
         trace_events_by_run = await self._observability_repository.list_trace_events_for_campaign(campaign_id)
         retrieval_chunks_by_run = await self._observability_repository.list_retrieval_chunks_for_campaign(campaign_id)
         claims_by_run = await self._observability_repository.list_claims_for_campaign(campaign_id)
+        list_v9_materializations = getattr(
+            self._observability_repository,
+            "list_v9_attempt_materializations_for_campaign",
+            None,
+        )
+        v9_materializations_by_run = (
+            await list_v9_materializations(campaign_id)
+            if list_v9_materializations is not None
+            else {}
+        )
         list_graph_events = getattr(
             self._observability_repository,
             "list_graph_events_for_campaign",
@@ -1114,6 +1124,7 @@ class EvaluationAnalyticsService:
         llm_calls: list[dict[str, Any]] = []
         retrieval_summary: list[dict[str, Any]] = []
         claim_summary: list[dict[str, Any]] = []
+        comparison_summary: list[dict[str, Any]] = []
         phase_counts: dict[str, int] = defaultdict(int)
         hash_availability: dict[str, int] = defaultdict(int)
         preview_availability: dict[str, int] = defaultdict(int)
@@ -1202,6 +1213,20 @@ class EvaluationAnalyticsService:
                     ],
                 }
             )
+            materialization = v9_materializations_by_run.get(result.id)
+            comparison = (
+                materialization.trace_payload.get("comparison")
+                if materialization is not None
+                and isinstance(materialization.trace_payload, dict)
+                else None
+            )
+            if isinstance(comparison, dict):
+                comparison_summary.append(
+                    {
+                        "run_id": result.id,
+                        "comparison": redact_sensitive_value(comparison),
+                    }
+                )
         overview = context.overview or self._build_campaign_overview(context)
         errors = self._build_campaign_errors(
             context=context,
@@ -1232,6 +1257,7 @@ class EvaluationAnalyticsService:
             llm_calls=llm_calls,
             retrieval_summary=retrieval_summary,
             claim_summary=claim_summary,
+            comparison_summary=comparison_summary,
             summary={
                 "run_count": len(runs),
                 "llm_call_count": len(llm_calls),
@@ -1430,6 +1456,11 @@ class EvaluationAnalyticsService:
                 conflicts=[ConflictCandidate.model_validate(item) for item in payload.get("conflicts", [])],
                 final_claims=[FinalClaim.model_validate(item) for item in payload.get("final_claims", [])],
                 metrics=V9ExecutionMetrics.model_validate(payload.get("metrics", {})),
+                comparison=(
+                    redact_sensitive_value(payload["comparison"])
+                    if isinstance(payload.get("comparison"), dict)
+                    else None
+                ),
             )
         except (KeyError, TypeError, ValueError):
             # Older/partial materializations are intentionally represented as N/A.

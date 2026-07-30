@@ -150,6 +150,9 @@ def verify_campaign_export(artifact: Mapping[str, Any] | None) -> VerificationRe
         "retrieval_evidence_recovery": _verify_retrieval_evidence_recovery(
             v9_runs, llm_calls
         ),
+        "comparison_observability": _verify_comparison_observability(
+            v9_runs, llm_calls
+        ),
     }
     return _report_from_requirements(requirements)
 
@@ -337,6 +340,7 @@ def _verify_slots(runs: list[dict[str, Any]]) -> RequirementResult:
 def _verify_repairs(runs: list[dict[str, Any]]) -> RequirementResult:
     for run in runs:
         v9 = _v9_payload(run)
+        comparison = _as_mapping(v9.get("comparison"))
         not_found = {
             str(row.get("slot_id"))
             for row in _resolution_rows(v9)
@@ -348,7 +352,17 @@ def _verify_repairs(runs: list[dict[str, Any]]) -> RequirementResult:
             for task in _as_list(_as_mapping(repair).get("tasks"))
             for slot_id in _as_strings(task.get("target_slot_ids"))
         }
-        if not_found and not_found.difference(repair_slots):
+        repair_tasks = [
+            task
+            for repair in _as_list(v9.get("repairs"))
+            for task in _as_list(_as_mapping(repair).get("tasks"))
+        ]
+        if comparison:
+            if len(repair_tasks) > 1:
+                return RequirementResult(
+                    "fail", "comparison recovery exceeded one deterministic repair"
+                )
+        elif not_found and not_found.difference(repair_slots):
             return RequirementResult("fail", "missing slots lack slot-targeted repair traces")
         for row in _resolution_rows(v9):
             status = str(row.get("status") or "")
@@ -498,6 +512,107 @@ def _verify_supported_claims(runs: list[dict[str, Any]]) -> RequirementResult:
                 return RequirementResult("fail", "unsupported slot emitted as a supported final claim")
             if not _as_strings(item.get("evidence_ids")):
                 return RequirementResult("fail", "supported final claim is missing evidence provenance")
+    return RequirementResult("pass")
+
+
+def _verify_comparison_observability(
+    runs: list[dict[str, Any]],
+    llm_calls: list[dict[str, Any]],
+) -> RequirementResult:
+    observed = False
+    for run in runs:
+        v9 = _v9_payload(run)
+        comparison = _as_mapping(v9.get("comparison"))
+        if not comparison:
+            continue
+        observed = True
+        subjects = _as_list(comparison.get("subjects"))
+        subject_ids = [
+            str(item.get("subject_id") or "")
+            for item in subjects
+            if isinstance(item, Mapping)
+        ]
+        if comparison.get("is_comparison") is True:
+            if not 2 <= len(subject_ids) <= 4 or len(set(subject_ids)) != len(
+                subject_ids
+            ):
+                return RequirementResult(
+                    "fail", "comparison subjects must contain 2-4 unique IDs"
+                )
+            final_subjects = _as_strings(
+                comparison.get("final_evidence_subjects")
+            )
+            if not set(final_subjects).issubset(subject_ids):
+                return RequirementResult(
+                    "fail", "final evidence references undeclared comparison subjects"
+                )
+            missing = _as_strings(comparison.get("missing_after_repair"))
+            final_status = str(comparison.get("final_status") or "")
+            if final_status == "complete" and (
+                missing or set(final_subjects) != set(subject_ids)
+            ):
+                return RequirementResult(
+                    "fail", "complete comparison does not cover every subject"
+                )
+            if final_status in {"qualified_partial", "insufficient"} and not missing:
+                return RequirementResult(
+                    "fail", "partial comparison does not declare a missing subject"
+                )
+            final_count = comparison.get("final_evidence_count")
+            limit = 4 if len(subject_ids) == 2 else 6
+            if not isinstance(final_count, int) or not 0 <= final_count <= limit:
+                return RequirementResult(
+                    "fail", "comparison final evidence count exceeds its bound"
+                )
+            task_subjects = {
+                str(item.get("subject_id") or "")
+                for item in _as_list(comparison.get("task_diagnostics"))
+                if isinstance(item, Mapping)
+            }
+            if not set(subject_ids).issubset(task_subjects):
+                return RequirementResult(
+                    "partial", "comparison task diagnostics are incomplete"
+                )
+
+        planner_status = str(comparison.get("planner_status") or "")
+        planner_calls = [
+            call
+            for call in _calls_for_run(llm_calls, run)
+            if str(call.get("phase") or "") == "comparison_plan"
+        ]
+        if len(planner_calls) > 1:
+            return RequirementResult(
+                "fail", "comparison planner used more than one provider call"
+            )
+        if planner_status == "planned":
+            if len(planner_calls) != 1:
+                return RequirementResult(
+                    "partial", "planned comparison lacks one provider call"
+                )
+            if not isinstance(
+                _as_mapping(planner_calls[0].get("payload")).get(
+                    "official_total_tokens"
+                ),
+                int,
+            ):
+                return RequirementResult(
+                    "partial", "comparison planner token accounting is incomplete"
+                )
+        if planner_status == "fallback":
+            reason = str(comparison.get("planner_fallback_reason") or "")
+            if not reason:
+                return RequirementResult(
+                    "fail", "comparison planner fallback reason is missing"
+                )
+            packed = _as_list(
+                _as_mapping(v9.get("context_pack")).get("packed_evidence_ids")
+            )
+            if not packed:
+                return RequirementResult(
+                    "fail", "comparison planner fallback cleared packed evidence"
+                )
+    if not observed:
+        return RequirementResult("pass")
     return RequirementResult("pass")
 
 

@@ -699,6 +699,7 @@ class V9ExecutionObservability(BaseModel):
     conflicts: list[ConflictCandidate] = Field(default_factory=list)
     final_claims: list[FinalClaim] = Field(default_factory=list)
     metrics: V9ExecutionMetrics = Field(default_factory=V9ExecutionMetrics)
+    comparison: dict[str, Any] | None = None
 
 
 class RunVisualResponse(RunToolsResponse):
@@ -841,6 +842,7 @@ class ExportCampaignResponse(BaseModel):
     llm_calls: list[dict[str, Any]] = Field(default_factory=list)
     retrieval_summary: list[dict[str, Any]] = Field(default_factory=list)
     claim_summary: list[dict[str, Any]] = Field(default_factory=list)
+    comparison_summary: list[dict[str, Any]] = Field(default_factory=list)
     summary: dict[str, Any] = Field(default_factory=dict)
     availability_warnings: list[str] = Field(default_factory=list)
 

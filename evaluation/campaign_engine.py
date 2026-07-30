@@ -49,7 +49,10 @@ from evaluation.evidence import (
     text_mentions_fact,
 )
 from evaluation.observability import EvaluationRunRecorder, llm_call_observer_scope
-from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.observability_storage import (
+    EvaluationObservabilityRepository,
+    safe_comparison_projection,
+)
 from evaluation.agentic_campaign_adapter import effective_agentic_execution_version
 from evaluation.rag_modes import BenchmarkExecutionResult, run_campaign_case
 from evaluation.ragas_evaluator import RagasEvaluator
@@ -361,6 +364,17 @@ def _enrich_agent_trace_payload(
     payload: BenchmarkExecutionResult,
 ) -> dict[str, Any]:
     enriched = dict(trace_payload)
+    v9_payload = enriched.get("agentic_v9")
+    if isinstance(v9_payload, dict):
+        safe_v9_payload = dict(v9_payload)
+        comparison = safe_v9_payload.get("comparison")
+        if isinstance(comparison, dict):
+            safe_v9_payload["comparison"] = safe_comparison_projection(
+                comparison
+            )
+        else:
+            safe_v9_payload.pop("comparison", None)
+        enriched["agentic_v9"] = safe_v9_payload
     enriched.setdefault("campaign_result_id", created_id)
     enriched.setdefault("question_id", payload.question_id or unit.test_case.id)
     enriched.setdefault("question", payload.question or unit.test_case.question)

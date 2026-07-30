@@ -410,6 +410,47 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
     assert retrieve_documents.await_count == 2
     assert [row["selected_count"] for row in v9["retrieval_diagnostics"]] == [2, 2]
     assert v9["comparison_planner"]["status"] == "planned"
+    assert v9["comparison"] == {
+        "planner_status": "planned",
+        "planner_latency_ms": v9["comparison"]["planner_latency_ms"],
+        "planner_fallback_reason": None,
+        "is_comparison": True,
+        "subjects": [
+            {
+                "subject_id": "nnmamba",
+                "display_name": "nnMamba",
+                "aliases": [],
+                "retrieval_query": "nnMamba parameters FLOPs",
+            },
+            {
+                "subject_id": "efficientmednext_l",
+                "display_name": "EfficientMedNeXt-L",
+                "aliases": [],
+                "retrieval_query": "EfficientMedNeXt-L parameters FLOPs",
+            },
+        ],
+        "dimensions": ["parameters", "FLOPs"],
+        "task_diagnostics": v9["comparison"]["task_diagnostics"],
+        "coverage_before_repair": ["nnmamba", "efficientmednext_l"],
+        "missing_before_repair": [],
+        "repair_executed": False,
+        "coverage_after_repair": ["nnmamba", "efficientmednext_l"],
+        "missing_after_repair": [],
+        "final_status": "complete",
+        "final_evidence_subjects": [
+            "nnmamba",
+            "efficientmednext_l",
+        ],
+        "final_evidence_count": 4,
+    }
+    assert {
+        row["subject_id"] for row in v9["comparison"]["task_diagnostics"]
+    } == {"nnmamba", "efficientmednext_l"}
+    assert all(
+        row["query_hash"].startswith("sha256:")
+        and len(row["query_preview"]) <= 160
+        for row in v9["comparison"]["task_diagnostics"]
+    )
     assert {
         tuple(packet["slot_ids"]) for packet in v9["evidence_packets"]
     } == {
@@ -543,7 +584,16 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
     assert len(v9["repairs"]) == 1
     assert len(v9["repairs"][0]["tasks"]) == 1
     assert v9["repairs"][0]["tasks"][0]["subject_id"] == "model_b"
+    assert v9["comparison"]["coverage_before_repair"] == ["model_a"]
+    assert v9["comparison"]["missing_before_repair"] == ["model_b"]
+    assert v9["comparison"]["repair_executed"] is True
+    assert v9["comparison"]["final_status"] == expected_status
     if repair_succeeds:
+        assert v9["comparison"]["coverage_after_repair"] == [
+            "model_a",
+            "model_b",
+        ]
+        assert v9["comparison"]["missing_after_repair"] == []
         packed_ids = set(v9["context_pack"]["packed_evidence_ids"])
         packed_packets = [
             packet
@@ -556,6 +606,9 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
             ("comparison-subject:model_a",),
             ("comparison-subject:model_b",),
         }
+    else:
+        assert v9["comparison"]["coverage_after_repair"] == ["model_a"]
+        assert v9["comparison"]["missing_after_repair"] == ["model_b"]
 
 
 @pytest.mark.asyncio
@@ -695,6 +748,23 @@ async def test_v9_comparison_planner_failure_preserves_base_retrieval(
     assert result.documents
     retrieve_documents.assert_awaited()
     assert provider.ainvoke.await_count == 2
+    assert v9["comparison"] == {
+        "planner_status": "fallback",
+        "planner_latency_ms": v9["comparison"]["planner_latency_ms"],
+        "planner_fallback_reason": "provider_error",
+        "is_comparison": False,
+        "subjects": [],
+        "dimensions": [],
+        "task_diagnostics": [],
+        "coverage_before_repair": [],
+        "missing_before_repair": [],
+        "repair_executed": False,
+        "coverage_after_repair": [],
+        "missing_after_repair": [],
+        "final_status": "complete",
+        "final_evidence_subjects": [],
+        "final_evidence_count": 1,
+    }
 
 
 @pytest.mark.asyncio
@@ -726,6 +796,7 @@ async def test_v9_comparison_specialization_flag_restores_existing_path() -> Non
     v9 = result.agent_trace["agentic_v9"]
     assert "comparison_plan" not in v9["query_contract"]
     assert v9["comparison_planner"]["requested"] is False
+    assert "comparison" not in v9
     assert provider.ainvoke.await_count == 1
 
 

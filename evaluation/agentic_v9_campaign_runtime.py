@@ -218,6 +218,9 @@ class AgenticV9CampaignRuntime:
             "budget_controller": None,
             "task_slot_ids": {},
             "task_subject_ids": {},
+            "comparison_coverage_before_repair": None,
+            "comparison_coverage_after_repair": None,
+            "final_evidence_packets": None,
             "comparison_planner": {
                 "requested": comparison_plan_requested,
                 "status": "not_requested",
@@ -324,10 +327,17 @@ class AgenticV9CampaignRuntime:
                     docs = await self._retrieve_documents(
                         user_id, task.query, source_scope
                     )
+                pre_subject_limit_count = len(docs)
                 if task.subject_id is not None:
                     docs = docs[:2]
                 state["retrieval_diagnostics"].append(
-                    _retrieval_diagnostic_projection(task.task_id, docs)
+                    _retrieval_diagnostic_projection(
+                        task.task_id,
+                        docs,
+                        subject_id=task.subject_id,
+                        query=task.query,
+                        pre_subject_limit_count=pre_subject_limit_count,
+                    )
                 )
                 if (
                     state["contract"].graph_policy == "required_locator"
@@ -432,6 +442,13 @@ class AgenticV9CampaignRuntime:
                 if contract.comparison_plan is not None
                 else packets
             )
+            if contract.comparison_plan is not None:
+                coverage = _comparison_subject_coverage(
+                    contract, effective_packets
+                )
+                if state["comparison_coverage_before_repair"] is None:
+                    state["comparison_coverage_before_repair"] = coverage
+                state["comparison_coverage_after_repair"] = coverage
             return evaluate_sufficiency(contract, effective_packets)
 
         def plan_repair(
@@ -458,12 +475,15 @@ class AgenticV9CampaignRuntime:
             # For comparisons, sufficiency must be evaluated on the same
             # deduplicated, subject-balanced packet set used by final packing.
             if contract.comparison_plan is not None:
-                return select_balanced_comparison_packets(
+                selected = select_balanced_comparison_packets(
                     packets,
                     plan=contract.comparison_plan,
                     quality_by_evidence_id=state["quality_by_evidence_id"],
                 )
-            return packets
+            else:
+                selected = packets
+            state["final_evidence_packets"] = selected
+            return selected
 
         async def resolve_conflicts(
             _: QueryContract,
@@ -655,6 +675,68 @@ class AgenticV9CampaignRuntime:
         ]
         documents = used_evidence_documents(used_packets, final)
         packed = state["pack"]
+        final_evidence_packets = state["final_evidence_packets"]
+        if not isinstance(final_evidence_packets, tuple):
+            final_evidence_packets = tuple(state["evidence_packets"])
+        comparison = _comparison_trace_projection(
+            planner=state["comparison_planner"],
+            contract=state["contract"],
+            retrieval_diagnostics=state["retrieval_diagnostics"],
+            coverage_before=state["comparison_coverage_before_repair"],
+            coverage_after=state["comparison_coverage_after_repair"],
+            repairs=state["repairs"],
+            packed=packed,
+            final_status=final.response_status,
+        )
+        v9_trace = {
+            "schema_version": "1",
+            "retrieval_scope": {
+                "policy": (
+                    "open_user_corpus"
+                    if open_user_corpus
+                    else "explicit_source_scope"
+                ),
+                "expected_sources_used_at_runtime": False,
+            },
+            "query_contract": state["contract"].model_dump(mode="json"),
+            "comparison_planner": state["comparison_planner"],
+            "retrieval_diagnostics": state["retrieval_diagnostics"],
+            "evidence_packets": [
+                packet.model_dump(mode="json")
+                for packet in state["evidence_packets"]
+            ],
+            "slot_resolutions": [
+                resolution.model_dump(mode="json")
+                for resolution in (
+                    executed.sufficiency
+                    and evaluate_sufficiency(
+                        state["contract"], final_evidence_packets
+                    ).slot_resolutions
+                    or ()
+                )
+            ],
+            "sufficiency": executed.sufficiency.model_dump(mode="json")
+            if executed.sufficiency
+            else None,
+            "context_pack": _context_pack_projection(packed),
+            "graph_execution": graph_execution,
+            "visual_execution": visual_execution,
+            "budget_reservations": [
+                item.model_dump(mode="json")
+                for item in await controller.reservations()
+            ],
+            "repairs": [
+                repair.model_dump(mode="json") for repair in state["repairs"]
+            ],
+            "conflicts": [],
+            "final_claims": [
+                claim.model_dump(mode="json") for claim in final.claims
+            ],
+            "metrics": metrics.model_dump(mode="json"),
+            "completion": {"status": final.response_status},
+        }
+        if comparison is not None:
+            v9_trace["comparison"] = comparison
         trace = {
             "trace_id": trace_id,
             "mode": "agentic",
@@ -662,53 +744,7 @@ class AgenticV9CampaignRuntime:
             "execution_profile": execution_profile,
             "context_policy_version": AGENTIC_V9_CONTEXT_POLICY_VERSION,
             "response_status": final.response_status,
-            "agentic_v9": {
-                "schema_version": "1",
-                "retrieval_scope": {
-                    "policy": (
-                        "open_user_corpus"
-                        if open_user_corpus
-                        else "explicit_source_scope"
-                    ),
-                    "expected_sources_used_at_runtime": False,
-                },
-                "query_contract": state["contract"].model_dump(mode="json"),
-                "comparison_planner": state["comparison_planner"],
-                "retrieval_diagnostics": state["retrieval_diagnostics"],
-                "evidence_packets": [
-                    packet.model_dump(mode="json")
-                    for packet in state["evidence_packets"]
-                ],
-                "slot_resolutions": [
-                    resolution.model_dump(mode="json")
-                    for resolution in (
-                        executed.sufficiency
-                        and evaluate_sufficiency(
-                            state["contract"], state["evidence_packets"]
-                        ).slot_resolutions
-                        or ()
-                    )
-                ],
-                "sufficiency": executed.sufficiency.model_dump(mode="json")
-                if executed.sufficiency
-                else None,
-                "context_pack": _context_pack_projection(packed),
-                "graph_execution": graph_execution,
-                "visual_execution": visual_execution,
-                "budget_reservations": [
-                    item.model_dump(mode="json")
-                    for item in await controller.reservations()
-                ],
-                "repairs": [
-                    repair.model_dump(mode="json") for repair in state["repairs"]
-                ],
-                "conflicts": [],
-                "final_claims": [
-                    claim.model_dump(mode="json") for claim in final.claims
-                ],
-                "metrics": metrics.model_dump(mode="json"),
-                "completion": {"status": final.response_status},
-            },
+            "agentic_v9": v9_trace,
         }
         return RAGResult(
             answer=final.answer,
@@ -838,7 +874,12 @@ def _annotate_rerank_selection(
 
 
 def _retrieval_diagnostic_projection(
-    task_id: str, documents: Sequence[Document]
+    task_id: str,
+    documents: Sequence[Document],
+    *,
+    subject_id: str | None = None,
+    query: str | None = None,
+    pre_subject_limit_count: int | None = None,
 ) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     status = "not_instrumented"
@@ -883,9 +924,124 @@ def _retrieval_diagnostic_projection(
         "selected_count": len(documents),
         "selected": rows,
     }
+    if subject_id is not None:
+        normalized_query = " ".join((query or "").split())
+        projection.update(
+            {
+                "subject_id": subject_id,
+                "query_hash": (
+                    "sha256:"
+                    + hashlib.sha256(
+                        normalized_query.encode("utf-8")
+                    ).hexdigest()
+                ),
+                "query_preview": normalized_query[:160],
+                "pre_subject_limit_count": (
+                    int(pre_subject_limit_count)
+                    if pre_subject_limit_count is not None
+                    else len(documents)
+                ),
+            }
+        )
     if candidate_diversification is not None:
         projection["candidate_diversification"] = candidate_diversification
     return projection
+
+
+def _comparison_subject_coverage(
+    contract: QueryContract,
+    packets: Sequence[EvidencePacket],
+) -> dict[str, list[str]]:
+    plan = contract.comparison_plan
+    if plan is None:
+        return {"covered": [], "missing": []}
+    covered_slot_ids = {
+        slot_id
+        for packet in packets
+        for slot_id in packet.slot_ids
+    }
+    covered = [
+        subject.subject_id
+        for subject in plan.subjects
+        if f"comparison-subject:{subject.subject_id}" in covered_slot_ids
+    ]
+    return {
+        "covered": covered,
+        "missing": [
+            subject.subject_id
+            for subject in plan.subjects
+            if subject.subject_id not in covered
+        ],
+    }
+
+
+def _comparison_trace_projection(
+    *,
+    planner: Mapping[str, Any],
+    contract: QueryContract,
+    retrieval_diagnostics: Sequence[Mapping[str, Any]],
+    coverage_before: Mapping[str, Any] | None,
+    coverage_after: Mapping[str, Any] | None,
+    repairs: Sequence[Any],
+    packed: PackedEvidenceContext | None,
+    final_status: str,
+) -> dict[str, Any] | None:
+    requested = bool(planner.get("requested"))
+    plan = contract.comparison_plan
+    if not requested and plan is None:
+        return None
+
+    before = coverage_before or {"covered": [], "missing": []}
+    after = coverage_after or before
+    packed_packets = tuple(packed.packets) if packed is not None else ()
+    final_subject_ids: list[str] = []
+    if plan is not None:
+        packed_slot_ids = {
+            slot_id
+            for packet in packed_packets
+            for slot_id in packet.slot_ids
+        }
+        final_subject_ids = [
+            subject.subject_id
+            for subject in plan.subjects
+            if f"comparison-subject:{subject.subject_id}" in packed_slot_ids
+        ]
+
+    task_diagnostics = [
+        dict(row)
+        for row in retrieval_diagnostics
+        if isinstance(row.get("subject_id"), str)
+    ]
+    return {
+        "planner_status": str(planner.get("status") or "not_requested"),
+        "planner_latency_ms": float(planner.get("latency_ms") or 0.0),
+        "planner_fallback_reason": (
+            str(planner["fallback_reason"])
+            if planner.get("fallback_reason")
+            else None
+        ),
+        "is_comparison": plan is not None,
+        "subjects": (
+            [
+                subject.model_dump(mode="json")
+                for subject in plan.subjects
+            ]
+            if plan is not None
+            else []
+        ),
+        "dimensions": list(plan.dimensions) if plan is not None else [],
+        "task_diagnostics": task_diagnostics,
+        "coverage_before_repair": list(before.get("covered") or []),
+        "missing_before_repair": list(before.get("missing") or []),
+        "repair_executed": any(
+            bool(getattr(repair, "tasks", ())) for repair in repairs
+        ),
+        "coverage_after_repair": list(after.get("covered") or []),
+        "missing_after_repair": list(after.get("missing") or []),
+        "final_status": final_status,
+        "final_evidence_subjects": final_subject_ids,
+        "final_evidence_count": len(packed_packets),
+    }
 
 
 def _candidate_diversification_projection(value: Any) -> dict[str, Any] | None:
