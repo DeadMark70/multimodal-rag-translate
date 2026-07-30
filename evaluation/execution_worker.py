@@ -39,7 +39,7 @@ from evaluation.db import (
     EvaluationAnswerTooLargeError,
     is_evaluation_answer_too_large,
 )
-from evaluation.error_policy import classify_evaluation_error
+from evaluation.error_policy import ErrorDecision, classify_evaluation_error
 from evaluation.job_schemas import ClaimedEvaluationWork, ExecutionAttemptOutput
 from evaluation.job_store import EvaluationJobStore
 from evaluation.observability_storage import EvaluationObservabilityRepository
@@ -207,7 +207,12 @@ class DatasetExecutionWorker:
                 payload, BenchmarkExecutionResult
             ):
                 try:
-                    await self._persist_failed_result(claim, exc, payload=payload)
+                    await self._persist_failed_result(
+                        claim,
+                        exc,
+                        decision=decision,
+                        payload=payload,
+                    )
                 except Exception:  # noqa: BLE001
                     logger.warning(
                         "Failed to persist execution failure projection",
@@ -348,6 +353,7 @@ class DatasetExecutionWorker:
         claim: ClaimedEvaluationWork,
         exc: Exception,
         *,
+        decision: ErrorDecision,
         payload: BenchmarkExecutionResult | None = None,
     ) -> None:
         """Keep a visible failed result while leaving the attempt non-successful.
@@ -361,6 +367,16 @@ class DatasetExecutionWorker:
         now = datetime.now(timezone.utc)
         test_case = unit.test_case
         oversized_answer = isinstance(exc, EvaluationAnswerTooLargeError)
+        safe_error_message = (
+            EVALUATION_ANSWER_TOO_LARGE
+            if oversized_answer
+            else decision.safe_message
+        )
+        error_type = (
+            EVALUATION_ANSWER_TOO_LARGE
+            if oversized_answer
+            else decision.error_type
+        )
         await self._result_repository.create(
             result_id=claim.attempt_id,
             user_id=user_id,
@@ -379,7 +395,7 @@ class DatasetExecutionWorker:
             context_policy_version=None,
             run_number=unit.run_number,
             condition_id=unit.condition_id,
-            answer="" if oversized_answer else f"ERROR: {exc}",
+            answer="",
             contexts=[],
             source_doc_ids=[],
             expected_sources=list(test_case.source_docs),
@@ -388,15 +404,13 @@ class DatasetExecutionWorker:
             category=test_case.category,
             difficulty=test_case.difficulty,
             status=CampaignResultStatus.FAILED,
-            error_message=(
-                EVALUATION_ANSWER_TOO_LARGE if oversized_answer else str(exc)
-            ),
+            error_message=safe_error_message,
             question_version=test_case.question_version,
             request_id=None,
             started_at=now.isoformat(),
             completed_at=now.isoformat(),
             total_latency_ms=0,
-            total_tokens=0,
+            total_tokens=None,
             question_snapshot=_build_question_snapshot(test_case),
             model_config_snapshot=model_config,
             system_version_snapshot={
@@ -405,10 +419,9 @@ class DatasetExecutionWorker:
             derived_metrics={
                 "agentic_execution_version": unit.agentic_execution_version,
                 "response_status": "failed",
+                "error_type": error_type,
             },
-            final_answer_hash=(
-                None if oversized_answer else _final_answer_hash(f"ERROR: {exc}")
-            ),
+            final_answer_hash=None,
             source_attempt_id=claim.attempt_id,
         )
 

@@ -1324,6 +1324,10 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
     if (
         token_usage.get("accounting_schema_version") == "2"
         and token_usage.get("total_tokens") is None
+    ) or (
+        row["status"] == CampaignResultStatus.FAILED.value
+        and not token_usage
+        and total_tokens == 0
     ):
         total_tokens = None
     final_answer_hash = (

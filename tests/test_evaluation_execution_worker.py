@@ -23,6 +23,7 @@ from data_base.agentic_v9.budget_controller import RunBudgetController
 from data_base.agentic_v9.budgeted_llm import invoke_budgeted_llm
 from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.execution_worker import DatasetExecutionWorker
+from evaluation.error_policy import classify_evaluation_error
 from evaluation.analytics import EvaluationAnalyticsService
 from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
 from evaluation.job_schemas import (
@@ -421,6 +422,64 @@ async def test_failed_unit_records_attempt_without_failed_official_result(
         )
         == []
     )
+
+
+@pytest.mark.asyncio
+async def test_failed_result_projects_classified_timeout_diagnostics(
+    store: EvaluationJobStore,
+) -> None:
+    worker = DatasetExecutionWorker(store=store)
+    claim = await _claim_seeded_execution(store, mode="agentic")
+    exc = TimeoutError()
+    decision = classify_evaluation_error(exc)
+
+    await worker._persist_failed_result(
+        claim,
+        exc,
+        decision=decision,
+    )
+
+    result = (
+        await evaluation_db.CampaignResultRepository().list_for_campaign(
+            user_id="user-a",
+            campaign_id="cmp-1",
+        )
+    )[0]
+    assert result.status.value == "failed"
+    assert result.answer == ""
+    assert result.error_message == "The evaluation provider request timed out."
+    assert result.derived_metrics["response_status"] == "failed"
+    assert result.derived_metrics["error_type"] == "timeout"
+    assert result.total_tokens is None
+    assert result.token_usage == {}
+    assert result.final_answer_hash is None
+
+
+@pytest.mark.asyncio
+async def test_failed_result_does_not_persist_raw_exception_text(
+    store: EvaluationJobStore,
+) -> None:
+    worker = DatasetExecutionWorker(store=store)
+    claim = await _claim_seeded_execution(store, mode="agentic")
+    exc = RuntimeError("apiKey=secret-provider-detail")
+    decision = classify_evaluation_error(exc)
+
+    await worker._persist_failed_result(
+        claim,
+        exc,
+        decision=decision,
+    )
+
+    result = (
+        await evaluation_db.CampaignResultRepository().list_for_campaign(
+            user_id="user-a",
+            campaign_id="cmp-1",
+        )
+    )[0]
+    serialized = json.dumps(result.model_dump(mode="json"))
+    assert result.error_message == "An unexpected evaluation error occurred."
+    assert result.derived_metrics["error_type"] == "unknown"
+    assert "secret-provider-detail" not in serialized
 
 
 @pytest.mark.parametrize(
