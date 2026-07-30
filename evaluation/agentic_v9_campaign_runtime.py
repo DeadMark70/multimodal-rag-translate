@@ -423,7 +423,16 @@ class AgenticV9CampaignRuntime:
         def sufficiency(
             contract: QueryContract, packets: tuple[EvidencePacket, ...]
         ) -> SufficiencyEvaluation:
-            return evaluate_sufficiency(contract, packets)
+            effective_packets = (
+                select_balanced_comparison_packets(
+                    packets,
+                    plan=contract.comparison_plan,
+                    quality_by_evidence_id=state["quality_by_evidence_id"],
+                )
+                if contract.comparison_plan is not None
+                else packets
+            )
+            return evaluate_sufficiency(contract, effective_packets)
 
         def plan_repair(
             contract: QueryContract,

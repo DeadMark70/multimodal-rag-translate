@@ -619,8 +619,9 @@ async def test_v9_comparison_status_uses_final_balanced_packet_coverage(
         page_content="One shared chunk was returned for both subject queries.",
         metadata={"doc_id": "doc-1", "chunk_id": "shared-chunk"},
     )
+    retrieve_documents = AsyncMock(return_value=[shared_document])
     runtime = AgenticV9CampaignRuntime(
-        retrieve_documents=AsyncMock(return_value=[shared_document]),
+        retrieve_documents=retrieve_documents,
         provider_factory=lambda _purpose: provider,
         document_reference_resolver=_identity_reference_resolver,
     )
@@ -643,6 +644,10 @@ async def test_v9_comparison_status_uses_final_balanced_packet_coverage(
     ]
     assert len(packed_packets) == 1
     assert len(packed_packets[0]["slot_ids"]) == 1
+    assert retrieve_documents.await_count == 3
+    assert len(v9["repairs"]) == 1
+    assert len(v9["repairs"][0]["tasks"]) == 1
+    assert v9["repairs"][0]["tasks"][0]["subject_id"] == "model_b"
 
 
 @pytest.mark.asyncio
