@@ -3200,12 +3200,15 @@ def test_campaign_integration_uses_real_runner_and_real_ragas_persistence() -> N
             _create_test_case(client)
             created = client.post(
                 "/api/evaluation/campaigns",
-                json=_campaign_payload(
-                    name="Real runner integration",
-                    test_case_ids=["Q1"],
-                    modes=["naive", "advanced", "graph", "agentic"],
-                    batch_size=2,
-                ),
+                json={
+                    **_campaign_payload(
+                        name="Real runner integration",
+                        test_case_ids=["Q1"],
+                        modes=["naive", "advanced", "graph", "agentic"],
+                        batch_size=2,
+                    ),
+                    "agentic_execution_version": "v8",
+                },
             )
             assert created.status_code == 200
             campaign_id = created.json()["campaign_id"]
@@ -3354,12 +3357,15 @@ def test_campaign_integration_keeps_running_when_one_mode_fails() -> None:
             _create_test_case(client)
             created = client.post(
                 "/api/evaluation/campaigns",
-                json=_campaign_payload(
-                    name="Partial failure integration",
-                    test_case_ids=["Q1"],
-                    modes=["naive", "graph", "agentic"],
-                    batch_size=2,
-                ),
+                json={
+                    **_campaign_payload(
+                        name="Partial failure integration",
+                        test_case_ids=["Q1"],
+                        modes=["naive", "graph", "agentic"],
+                        batch_size=2,
+                    ),
+                    "agentic_execution_version": "v8",
+                },
             )
             assert created.status_code == 200
             campaign_id = created.json()["campaign_id"]
