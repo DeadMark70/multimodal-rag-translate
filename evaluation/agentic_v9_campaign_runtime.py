@@ -442,10 +442,18 @@ class AgenticV9CampaignRuntime:
             return repair.tasks
 
         async def prose_curate(
-            _: str, __: QueryContract, packets: tuple[EvidencePacket, ...]
+            _: str, contract: QueryContract, packets: tuple[EvidencePacket, ...]
         ) -> tuple[EvidencePacket, ...]:
             # Candidate extraction is deterministic and provenance-bound.  No
             # prose model is permitted to invent or promote evidence here.
+            # For comparisons, sufficiency must be evaluated on the same
+            # deduplicated, subject-balanced packet set used by final packing.
+            if contract.comparison_plan is not None:
+                return select_balanced_comparison_packets(
+                    packets,
+                    plan=contract.comparison_plan,
+                    quality_by_evidence_id=state["quality_by_evidence_id"],
+                )
             return packets
 
         async def resolve_conflicts(

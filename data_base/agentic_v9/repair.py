@@ -228,8 +228,10 @@ def _build_comparison_repair_plan(
                 ),
             )
         )
-        if len(tasks) >= MAX_REPAIR_QUERIES_PER_ROUND:
-            break
+        # Comparison repair is one bounded corrective query for the first
+        # missing subject in planner order. Remaining subjects stay explicit
+        # in sufficiency and cap the final response at qualified_partial.
+        break
 
     if not tasks:
         return RepairPlan(

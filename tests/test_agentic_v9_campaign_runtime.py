@@ -559,6 +559,93 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
 
 
 @pytest.mark.asyncio
+async def test_v9_comparison_status_uses_final_balanced_packet_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _Provider()
+    provider.ainvoke.side_effect = [
+        SimpleNamespace(
+            content=json.dumps(
+                {
+                    "is_comparison": True,
+                    "subjects": [
+                        {
+                            "subject_id": "model_a",
+                            "display_name": "Model A",
+                            "aliases": [],
+                            "retrieval_query": "Model A accuracy",
+                        },
+                        {
+                            "subject_id": "model_b",
+                            "display_name": "Model B",
+                            "aliases": [],
+                            "retrieval_query": "Model B accuracy",
+                        },
+                    ],
+                    "dimensions": ["accuracy"],
+                    "qualification": None,
+                }
+            ),
+            usage_metadata={"input_tokens": 20, "output_tokens": 10},
+        ),
+        SimpleNamespace(
+            content="Only the packed evidence may be used.",
+            usage_metadata={"input_tokens": 12, "output_tokens": 7},
+        ),
+    ]
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        route="bounded_compare",
+        intent="Compare models.",
+        required_slots=[RequiredSlot(slot_id="base", description="comparison")],
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=1,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(
+        runtime_module, "build_v9_admission_contract", admission
+    )
+    shared_document = Document(
+        page_content="One shared chunk was returned for both subject queries.",
+        metadata={"doc_id": "doc-1", "chunk_id": "shared-chunk"},
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(return_value=[shared_document]),
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="Model A vs. Model B: which has better accuracy?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot=_setup(),
+        trace_id="comparison-shared-source",
+    )
+
+    v9 = result.agent_trace["agentic_v9"]
+    assert result.agent_trace["response_status"] == "qualified_partial"
+    packed_ids = set(v9["context_pack"]["packed_evidence_ids"])
+    packed_packets = [
+        packet
+        for packet in v9["evidence_packets"]
+        if packet["evidence_id"] in packed_ids
+    ]
+    assert len(packed_packets) == 1
+    assert len(packed_packets[0]["slot_ids"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_v9_comparison_planner_failure_preserves_base_retrieval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

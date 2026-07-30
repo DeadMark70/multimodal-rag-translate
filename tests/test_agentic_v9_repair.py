@@ -230,6 +230,17 @@ def test_comparison_repair_has_exactly_one_round_and_skips_complete_coverage() -
     )
     missing = evaluate_sufficiency(contract, [])
 
+    first_round = build_repair_plan(
+        contract=contract,
+        sufficiency=missing,
+        query_id="q",
+        repair_round_index=1,
+        final_budget_available=True,
+    )
+
+    assert len(first_round.tasks) == 1
+    assert first_round.tasks[0].subject_id == "a"
+
     capped = build_repair_plan(
         contract=contract,
         sufficiency=missing,
