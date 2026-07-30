@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -17,6 +18,7 @@ from evaluation.agentic_v9_admission import V9AdmissionContract
 from evaluation.campaign_schemas import V9ContextPack
 from evaluation.retrieval_profiles import AGENTIC_V9_OPEN_CORPUS_PROFILE
 from data_base.agentic_v9.schemas import (
+    ComparisonPlannerOutcome,
     EvidencePacket,
     EvidenceScope,
     EvidenceSource,
@@ -308,6 +310,221 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     assert result.documents
     retrieve_documents.assert_awaited()
     provider.ainvoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _Provider()
+    provider.ainvoke.side_effect = [
+        SimpleNamespace(
+            content=json.dumps(
+                {
+                    "is_comparison": True,
+                    "subjects": [
+                        {
+                            "subject_id": "nnmamba",
+                            "display_name": "nnMamba",
+                            "aliases": [],
+                            "retrieval_query": "nnMamba parameters FLOPs",
+                        },
+                        {
+                            "subject_id": "efficientmednext_l",
+                            "display_name": "EfficientMedNeXt-L",
+                            "aliases": [],
+                            "retrieval_query": "EfficientMedNeXt-L parameters FLOPs",
+                        },
+                    ],
+                    "dimensions": ["parameters", "FLOPs"],
+                    "qualification": None,
+                }
+            ),
+            usage_metadata={"input_tokens": 20, "output_tokens": 10},
+        ),
+        SimpleNamespace(
+            content="The evidence supports a bounded comparison.",
+            usage_metadata={"input_tokens": 12, "output_tokens": 7},
+        ),
+    ]
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        route="bounded_compare",
+        intent="Compare two models.",
+        required_slots=[RequiredSlot(slot_id="base", description="comparison")],
+        max_retrieval_rounds=1,
+        max_llm_calls=1,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(
+        runtime_module, "build_v9_admission_contract", admission
+    )
+    retrieve_documents = AsyncMock(
+        return_value=[
+            Document(
+                page_content=f"Evidence chunk {index}.",
+                metadata={"doc_id": "doc-1", "chunk_id": f"chunk-{index}"},
+            )
+            for index in range(4)
+        ]
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve_documents,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="nnMamba vs. EfficientMedNeXt-L: which is more efficient?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot=_setup(),
+        trace_id="comparison-runtime",
+    )
+
+    v9 = result.agent_trace["agentic_v9"]
+    assert [
+        subject["subject_id"]
+        for subject in v9["query_contract"]["comparison_plan"]["subjects"]
+    ] == ["nnmamba", "efficientmednext_l"]
+    assert retrieve_documents.await_count == 2
+    assert [row["selected_count"] for row in v9["retrieval_diagnostics"]] == [2, 2]
+    assert v9["comparison_planner"]["status"] == "planned"
+    assert provider.ainvoke.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_v9_comparison_planner_failure_preserves_base_retrieval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _Provider()
+    provider.ainvoke.side_effect = [
+        RuntimeError("planner unavailable"),
+        SimpleNamespace(
+            content="Fallback answer from retrieved evidence.",
+            usage_metadata={"input_tokens": 12, "output_tokens": 7},
+        ),
+    ]
+    retrieve_documents = AsyncMock(
+        return_value=[
+            Document(
+                page_content="The source contains usable comparison evidence.",
+                metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+            )
+        ]
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve_documents,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="Model A vs. Model B: which performs better?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot=_setup(),
+        trace_id="comparison-fallback",
+    )
+
+    v9 = result.agent_trace["agentic_v9"]
+    assert "comparison_plan" not in v9["query_contract"]
+    assert v9["comparison_planner"] == {
+        "requested": True,
+        "status": "fallback",
+        "fallback_reason": "provider_error",
+        "latency_ms": v9["comparison_planner"]["latency_ms"],
+    }
+    assert result.documents
+    retrieve_documents.assert_awaited()
+    assert provider.ainvoke.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_v9_comparison_specialization_flag_restores_existing_path() -> None:
+    provider = _Provider()
+    retrieve_documents = AsyncMock(
+        return_value=[
+            Document(
+                page_content="The source contains comparison evidence.",
+                metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+            )
+        ]
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve_documents,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+        comparison_specialization_enabled=False,
+    )
+
+    result = await runtime.execute(
+        question="Model A vs. Model B: which performs better?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot=_setup(),
+        trace_id="comparison-disabled",
+    )
+
+    v9 = result.agent_trace["agentic_v9"]
+    assert "comparison_plan" not in v9["query_contract"]
+    assert v9["comparison_planner"]["requested"] is False
+    assert provider.ainvoke.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_v9_forced_comparison_timeout_never_clears_contexts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def timed_out_plan(*_args, **_kwargs):
+        return ComparisonPlannerOutcome(
+            status="fallback",
+            fallback_reason="timeout",
+            latency_ms=64_000,
+        )
+
+    monkeypatch.setattr(
+        runtime_module.ComparisonPlanner,
+        "plan",
+        timed_out_plan,
+    )
+    provider = _Provider()
+    retrieve_documents = AsyncMock(
+        return_value=[
+            Document(
+                page_content="Fallback evidence remains available.",
+                metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+            )
+        ]
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve_documents,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="Model A vs. Model B: which performs better?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot=_setup(),
+        trace_id="comparison-timeout",
+    )
+
+    assert result.agent_trace["agentic_v9"]["comparison_planner"][
+        "fallback_reason"
+    ] == "timeout"
+    assert result.documents
+    retrieve_documents.assert_awaited()
 
 
 @pytest.mark.asyncio

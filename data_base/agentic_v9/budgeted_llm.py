@@ -283,6 +283,7 @@ def _canonical_observation_phase(phase: str) -> str:
     aliases = {
         "route_plan": "contract_planning",
         "contract_planning": "contract_planning",
+        "comparison_plan": "comparison_plan",
         "query_rewrite": "retrieval_judge",
         "retrieval_judge": "retrieval_judge",
         "conflict_arbitration": "retrieval_judge",

@@ -61,7 +61,7 @@ def _result(
     default_max_provider_calls = {
         phase: calls
         for phase, calls in MAX_PROVIDER_CALLS_BY_PHASE.items()
-        if phase != "comparison_plan"
+        if phase != "comparison_plan" or phase in required_provider_calls
     }
     return FeasibilityResult(
         status=status,
@@ -200,6 +200,7 @@ def validate_post_contract_feasibility(
     remaining_token_budget: int,
     remaining_llm_calls: int,
     route_plan_used: bool = False,
+    comparison_plan_requested: bool = False,
 ) -> FeasibilityResult:
     """Validate a resolved route against the current non-mutating ledger view."""
     pending_provider_calls: dict[str, int] = {"final_answer": 1}
@@ -212,6 +213,8 @@ def validate_post_contract_feasibility(
         pending_provider_calls["visual_extract"] = 1
     if contract.evidence_extraction_required:
         pending_provider_calls["evidence_extract"] = 1
+    if comparison_plan_requested:
+        pending_provider_calls["comparison_plan"] = 1
     required = {**charged_provider_calls, **pending_provider_calls}
 
     max_tool_operations = (

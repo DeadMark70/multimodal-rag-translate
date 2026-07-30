@@ -35,6 +35,11 @@ from data_base.agentic_v9.context_packer import (
     FinalContextSelectionPolicy,
     PackedEvidenceContext,
 )
+from data_base.agentic_v9.comparison_planner import (
+    ComparisonPlanner,
+    apply_comparison_overlay,
+    is_suspected_comparison,
+)
 from data_base.agentic_v9.execution_core import (
     ConflictStageResult,
     V9ExecutionCore,
@@ -127,6 +132,7 @@ class AgenticV9CampaignRuntime:
         document_reference_resolver: DocumentReferenceResolver | None = None,
         owned_document_ids_resolver: OwnedDocumentIdsResolver | None = None,
         llm_call_observer: LlmCallObserver | None = None,
+        comparison_specialization_enabled: bool = True,
     ) -> None:
         self._retrieve_documents = retrieve_documents or _retrieve_documents
         self._uses_default_retrieval = retrieve_documents is None
@@ -141,6 +147,7 @@ class AgenticV9CampaignRuntime:
             owned_document_ids_resolver or _list_owned_document_ids
         )
         self._llm_call_observer = llm_call_observer
+        self._comparison_specialization_enabled = comparison_specialization_enabled
 
     async def execute(
         self,
@@ -185,6 +192,10 @@ class AgenticV9CampaignRuntime:
         )
         source_scope = admission.source_scope
         runtime_contract = admission.contract
+        comparison_plan_requested = (
+            self._comparison_specialization_enabled
+            and is_suspected_comparison(question)
+        )
         request = V9ExecutionRequest(
             question=question,
             requested_doc_ids=list(source_scope.authorized_doc_ids),
@@ -203,6 +214,13 @@ class AgenticV9CampaignRuntime:
             "post_contract": None,
             "budget_controller": None,
             "task_slot_ids": {},
+            "task_subject_ids": {},
+            "comparison_planner": {
+                "requested": comparison_plan_requested,
+                "status": "not_requested",
+                "fallback_reason": None,
+                "latency_ms": 0.0,
+            },
             "graph_execution": None,
             "visual_execution": None,
             "visual_packets": [],
@@ -219,19 +237,24 @@ class AgenticV9CampaignRuntime:
             # Route planning remains deterministic unless the planner has an
             # explicitly injected budgeted ambiguity invoker.  This prevents an
             # unreserved provider call while the contract budget is unknown.
-            contract = runtime_contract
+            contract = (
+                runtime_contract.model_copy(
+                    update={"max_llm_calls": runtime_contract.max_llm_calls + 1}
+                )
+                if comparison_plan_requested
+                else runtime_contract
+            )
             post_contract = validate_post_contract_feasibility(
                 contract=contract,
                 setup_snapshot=setup_snapshot,
                 remaining_token_budget=contract.runtime_token_budget,
                 remaining_llm_calls=contract.max_llm_calls,
                 route_plan_used=False,
+                comparison_plan_requested=comparison_plan_requested,
             )
-            state["contract"] = contract
             state["post_contract"] = post_contract
-            state["graph_execution"] = _initial_graph_execution(contract)
-            state["visual_execution"] = _initial_visual_execution(contract)
             if post_contract.status is FeasibilityStatus.CONFIGURATION_INCOMPATIBLE:
+                state["contract"] = contract
                 raise _ConfigurationIncompatible(
                     stage="post_contract", feasibility=post_contract
                 )
@@ -243,6 +266,38 @@ class AgenticV9CampaignRuntime:
                     setup_snapshot, contract.runtime_token_budget
                 ),
             )
+            if comparison_plan_requested:
+                controller = state["budget_controller"]
+                assert isinstance(controller, RunBudgetController)
+                planner = ComparisonPlanner(
+                    llm_invoker=BudgetedLlmInvoker(
+                        controller=controller,
+                        provider_factory=self._provider_factory,
+                        observer=llm_call_observer,
+                        provider_name=str(
+                            setup_snapshot.get("provider") or "unknown"
+                        ),
+                        model_name=str(
+                            setup_snapshot.get("model_name") or "unknown"
+                        ),
+                    )
+                )
+                outcome = await planner.plan(
+                    question=question,
+                    authorized_source_names=scope.requested_source_names,
+                    timeout_seconds=min(64.0, deadline.remaining_seconds()),
+                )
+                state["comparison_planner"] = {
+                    "requested": True,
+                    "status": outcome.status,
+                    "fallback_reason": outcome.fallback_reason,
+                    "latency_ms": outcome.latency_ms,
+                }
+                if outcome.status == "planned" and outcome.plan is not None:
+                    contract = apply_comparison_overlay(contract, outcome.plan)
+            state["contract"] = contract
+            state["graph_execution"] = _initial_graph_execution(contract)
+            state["visual_execution"] = _initial_visual_execution(contract)
             return contract
 
         async def retrieve(
@@ -251,6 +306,7 @@ class AgenticV9CampaignRuntime:
             results: list[TaskRetrievalResult] = []
             for task in tasks:
                 state["task_slot_ids"][task.task_id] = list(task.target_slot_ids)
+                state["task_subject_ids"][task.task_id] = task.subject_id
                 source_scope = list(task.source_scope.authorized_doc_ids)
                 if self._uses_default_retrieval:
                     docs = await self._retrieve_documents(
@@ -265,6 +321,8 @@ class AgenticV9CampaignRuntime:
                     docs = await self._retrieve_documents(
                         user_id, task.query, source_scope
                     )
+                if task.subject_id is not None:
+                    docs = docs[:2]
                 state["retrieval_diagnostics"].append(
                     _retrieval_diagnostic_projection(task.task_id, docs)
                 )
@@ -586,6 +644,7 @@ class AgenticV9CampaignRuntime:
                     "expected_sources_used_at_runtime": False,
                 },
                 "query_contract": state["contract"].model_dump(mode="json"),
+                "comparison_planner": state["comparison_planner"],
                 "retrieval_diagnostics": state["retrieval_diagnostics"],
                 "evidence_packets": [
                     packet.model_dump(mode="json")
