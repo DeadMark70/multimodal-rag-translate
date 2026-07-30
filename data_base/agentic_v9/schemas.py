@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+import re
 from typing import Any, Awaitable, Callable, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -120,10 +121,17 @@ class ComparisonSubject(BaseModel):
     def normalize_and_validate_identity(self) -> ComparisonSubject:
         """Keep planner output bounded and free of source-file authority."""
         normalized_id = self.subject_id.strip().casefold().replace(" ", "_")
-        if not normalized_id:
-            raise ValueError("comparison subject ID must not be empty")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", normalized_id):
+            raise ValueError("comparison subject ID must be a stable safe identifier")
         self.subject_id = normalized_id
         self.display_name = self.display_name.strip()
+        self.retrieval_query = self.retrieval_query.strip()
+        if not self.display_name:
+            raise ValueError("comparison display name must not be empty")
+        if not self.retrieval_query:
+            raise ValueError("comparison retrieval query must not be empty")
+        if any(len(alias.strip()) > 160 for alias in self.aliases):
+            raise ValueError("comparison aliases must not exceed 160 characters")
         self.aliases = list(
             dict.fromkeys(
                 alias.strip()
@@ -163,6 +171,8 @@ class ComparisonPlan(BaseModel):
                 if dimension.strip()
             )
         )
+        if any(len(dimension) > 160 for dimension in self.dimensions):
+            raise ValueError("comparison dimensions must not exceed 160 characters")
         if self.qualification is not None:
             self.qualification = self.qualification.strip() or None
         return self
@@ -209,7 +219,10 @@ class QueryContract(BaseModel):
     resolved_source_scope: ResolvedSourceScope | None = None
     strategy_tier: str | None = None
     route_decision: RouteDecision | None = None
-    comparison_plan: ComparisonPlan | None = None
+    comparison_plan: ComparisonPlan | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     slot_plan_status: SlotPlanStatus | None = None
     slot_semantics: SlotSemantics | None = None
     atomic_completeness: bool | None = None
@@ -247,7 +260,10 @@ class RetrievalTask(BaseModel):
     target_slot_ids: list[str] = Field(min_length=1)
     source_scope: ResolvedSourceScope
     source_group_id: str = Field(default="source-group-1", min_length=1)
-    subject_id: str | None = None
+    subject_id: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     locator_hints: list[str] = Field(default_factory=list)
     graph_policy: GraphPolicy = "never"
     visual_required: bool = False
@@ -255,9 +271,13 @@ class RetrievalTask(BaseModel):
 
 
 def _looks_like_source_reference(value: str) -> bool:
-    normalized = value.strip().casefold()
-    return normalized.endswith((".pdf", ".docx", ".txt")) or normalized.startswith(
-        ("doc:", "document:")
+    return bool(
+        re.search(
+            r"(?:\.(?:pdf|docx?|txt)\b|\b(?:doc|document)\s*:|"
+            r"\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b)",
+            value,
+            re.IGNORECASE,
+        )
     )
 
 

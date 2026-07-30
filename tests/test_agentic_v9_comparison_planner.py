@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
+import data_base.agentic_v9.comparison_planner as comparison_planner_module
 from data_base.agentic_v9.comparison_planner import (
     ComparisonPlanner,
     apply_comparison_overlay,
@@ -103,6 +105,8 @@ def _payload(
         "SwinUNETR 和 MedNeXt 哪個表現更好？",
         "Model A、Model B、Model C 的 latency 應如何比較？",
         "nnMamba versus EfficientMedNeXt-L: which is more efficient?",
+        "Model A vs. Model B",
+        "Model A vs。Model B",
         "這項『最高效率』主張是否成立？",
     ],
 )
@@ -181,6 +185,48 @@ def test_comparison_models_forbid_unknown_and_source_fields() -> None:
             "nnMamba",
             aliases=["2402.03526v2nnMamba.pdf"],
         )
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        {
+            "subject_id": "blank-name",
+            "display_name": "   ",
+            "aliases": [],
+            "retrieval_query": "blank-name evidence",
+        },
+        {
+            "subject_id": "unsafe/id:part",
+            "display_name": "Unsafe",
+            "aliases": [],
+            "retrieval_query": "Unsafe evidence",
+        },
+        {
+            "subject_id": "oversized-alias",
+            "display_name": "Model",
+            "aliases": ["x" * 161],
+            "retrieval_query": "Model evidence",
+        },
+        {
+            "subject_id": "embedded-file",
+            "display_name": "Model",
+            "aliases": [],
+            "retrieval_query": "Model evidence from secret-paper.pdf section",
+        },
+    ],
+)
+def test_comparison_subject_rejects_adversarial_identity_text(
+    subject: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        ComparisonSubject.model_validate(subject)
+
+
+def test_legacy_serialization_omits_absent_comparison_plan() -> None:
+    contract = QueryContract(route="single_lookup", intent="legacy")
+
+    assert "comparison_plan" not in contract.model_dump(mode="json")
 
 
 @pytest.mark.asyncio
@@ -293,6 +339,38 @@ async def test_planner_rejects_numeric_values_not_present_in_question() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("invented_number", ["1e9", "-0.4", ".75", "+12.0"])
+async def test_planner_rejects_invented_numeric_formats(
+    invented_number: str,
+) -> None:
+    payload = _payload(
+        subjects=[
+            {
+                "subject_id": "nnmamba",
+                "display_name": "nnMamba",
+                "aliases": [],
+                "retrieval_query": f"nnMamba parameters {invented_number}",
+            },
+            {
+                "subject_id": "efficientmednext_l",
+                "display_name": "EfficientMedNeXt-L",
+                "aliases": [],
+                "retrieval_query": "EfficientMedNeXt-L FLOPs",
+            },
+        ]
+    )
+
+    outcome = await ComparisonPlanner(llm_invoker=_Invoker(payload)).plan(
+        question=Q4,
+        authorized_source_names=[],
+        timeout_seconds=1,
+    )
+
+    assert outcome.status == "fallback"
+    assert outcome.fallback_reason == "schema_violation"
+
+
+@pytest.mark.asyncio
 async def test_planner_preserves_numeric_tokens_copied_from_question() -> None:
     question = "在 noise 0.4 時比較 Model A 與 Model B"
     payload = _payload(
@@ -341,6 +419,28 @@ async def test_planner_timeout_and_provider_error_are_fail_soft() -> None:
 
     assert timed_out.fallback_reason == "timeout"
     assert failed.fallback_reason == "provider_error"
+
+
+@pytest.mark.asyncio
+async def test_missing_prompt_is_fail_soft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invoker = _Invoker(_payload())
+    monkeypatch.setattr(
+        comparison_planner_module,
+        "_PROMPT_PATH",
+        Path("definitely-missing-comparison-prompt.json"),
+    )
+
+    outcome = await ComparisonPlanner(llm_invoker=invoker).plan(
+        question=Q4,
+        authorized_source_names=[],
+        timeout_seconds=1,
+    )
+
+    assert outcome.status == "fallback"
+    assert outcome.fallback_reason == "provider_error"
+    assert invoker.calls == []
 
 
 def test_comparison_overlay_preserves_authority_and_builds_subject_slots() -> None:

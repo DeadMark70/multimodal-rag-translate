@@ -196,6 +196,39 @@ def test_duplicate_source_identity_keeps_the_better_packet_once() -> None:
     assert "duplicate-low" not in selected_ids
 
 
+def test_duplicate_source_identity_across_subjects_is_selected_only_once() -> None:
+    plan = _plan(_subject("a", "Model A"), _subject("b", "Model B"))
+    packets = [
+        _packet("shared-a", "a", doc_id="shared-doc", chunk_id="shared-chunk"),
+        _packet("shared-b", "b", doc_id="shared-doc", chunk_id="shared-chunk"),
+        _packet("a-only", "a"),
+        _packet("b-only", "b"),
+    ]
+
+    selected = select_balanced_comparison_packets(
+        packets,
+        plan=plan,
+        quality_by_evidence_id={
+            "shared-a": 0.8,
+            "shared-b": 0.9,
+            "a-only": 0.5,
+            "b-only": 0.4,
+        },
+    )
+
+    selected_ids = [packet.evidence_id for packet in selected]
+    assert "shared-b" in selected_ids
+    assert "shared-a" not in selected_ids
+    assert len(
+        [
+            packet
+            for packet in selected
+            if packet.source.doc_id == "shared-doc"
+            and packet.source.chunk_id == "shared-chunk"
+        ]
+    ) == 1
+
+
 def test_undeclared_or_multi_subject_packets_are_not_specialized_evidence() -> None:
     plan = _plan(_subject("a", "Model A"), _subject("b", "Model B"))
     undeclared = _packet("unknown", "unknown")

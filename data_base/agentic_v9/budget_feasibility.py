@@ -58,11 +58,16 @@ def _result(
     max_tool_operations: int,
     reserved_tokens: int,
 ) -> FeasibilityResult:
+    default_max_provider_calls = {
+        phase: calls
+        for phase, calls in MAX_PROVIDER_CALLS_BY_PHASE.items()
+        if phase != "comparison_plan"
+    }
     return FeasibilityResult(
         status=status,
         reason=reason,
         required_provider_calls=required_provider_calls,
-        max_provider_calls_by_phase=dict(MAX_PROVIDER_CALLS_BY_PHASE),
+        max_provider_calls_by_phase=default_max_provider_calls,
         max_tool_operations=max_tool_operations,
         reserved_tokens=reserved_tokens,
     )

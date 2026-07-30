@@ -34,7 +34,7 @@ def select_balanced_comparison_packets(
 ) -> tuple[EvidencePacket, ...]:
     """Retain subject coverage without imposing a fixed score threshold."""
     subject_ids = [subject.subject_id for subject in plan.subjects]
-    grouped: dict[str, list[_Candidate]] = {subject_id: [] for subject_id in subject_ids}
+    candidates: list[_Candidate] = []
     for index, packet in enumerate(packets):
         matches = [
             subject_id
@@ -44,7 +44,7 @@ def select_balanced_comparison_packets(
         if len(matches) != 1:
             continue
         subject_id = matches[0]
-        grouped[subject_id].append(
+        candidates.append(
             _Candidate(
                 packet=packet,
                 subject_id=subject_id,
@@ -53,9 +53,15 @@ def select_balanced_comparison_packets(
             )
         )
 
+    globally_deduplicated = _deduplicated_ranked(candidates)
+    grouped: dict[str, list[_Candidate]] = {
+        subject_id: [] for subject_id in subject_ids
+    }
+    for candidate in globally_deduplicated:
+        grouped[candidate.subject_id].append(candidate)
     ranked = {
-        subject_id: _deduplicated_ranked(candidates)
-        for subject_id, candidates in grouped.items()
+        subject_id: sorted(subject_candidates, key=_quality_order)
+        for subject_id, subject_candidates in grouped.items()
     }
     limit = comparison_final_limit(len(subject_ids))
     if len(subject_ids) == 2:

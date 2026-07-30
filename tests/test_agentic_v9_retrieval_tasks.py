@@ -150,6 +150,54 @@ def test_comparison_overlay_compiles_one_subject_bound_task_per_subject() -> Non
     assert all(task.graph_policy == "locator_fallback" for task in plan.tasks)
 
 
+def test_comparison_tasks_preserve_existing_capability_policy() -> None:
+    scope = _scope("doc-a", "doc-b")
+    comparison = ComparisonPlan(
+        subjects=[
+            ComparisonSubject(
+                subject_id="model_a",
+                display_name="Model A",
+                retrieval_query="Model A Table 2 efficiency",
+            ),
+            ComparisonSubject(
+                subject_id="model_b",
+                display_name="Model B",
+                retrieval_query="Model B Table 2 efficiency",
+            ),
+        ],
+        dimensions=["efficiency"],
+    )
+    contract = QueryContract(
+        route="exact_structured",
+        intent="Compare models.",
+        required_slots=[
+            RequiredSlot(
+                slot_id=f"comparison-subject:{subject.subject_id}",
+                description=f"Find {subject.display_name}.",
+            )
+            for subject in comparison.subjects
+        ],
+        comparison_plan=comparison,
+        locator_hints=["Table 2"],
+        graph_policy="locator_fallback",
+        visual_required=True,
+        max_retrieval_rounds=1,
+        max_llm_calls=1,
+        runtime_token_budget=1,
+        resolved_source_scope=scope,
+    )
+
+    plan = RetrievalTaskCompiler().compile(
+        question="Which model is more efficient?",
+        query_id="q-compare-capabilities",
+        contract=contract,
+    )
+
+    assert all(task.locator_hints == ["Table 2"] for task in plan.tasks)
+    assert all(task.graph_policy == "locator_fallback" for task in plan.tasks)
+    assert all(task.visual_required for task in plan.tasks)
+
+
 def test_q15_preserves_asset_locators_and_visual_policy() -> None:
     contract = _contract(
         route="exact_structured",
@@ -358,3 +406,19 @@ def test_tasks_are_typed_evidence_only_without_an_answer_field() -> None:
     assert all("answer" not in task.model_dump() for task in plan.tasks)
     with pytest.raises(ValidationError):
         type(plan.tasks[0])(**plan.tasks[0].model_dump(), answer="not permitted")
+
+
+def test_legacy_retrieval_task_serialization_omits_absent_subject_id() -> None:
+    contract = _contract(
+        route="single_lookup",
+        entities=["nnU-Net"],
+        locator_hints=[],
+        scope=_scope("nnunet"),
+    )
+    task = RetrievalTaskCompiler().compile(
+        question="What is nnU-Net?",
+        query_id="q-legacy",
+        contract=contract,
+    ).tasks[0]
+
+    assert "subject_id" not in task.model_dump(mode="json")

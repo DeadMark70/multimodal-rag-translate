@@ -31,7 +31,13 @@ _FENCED_JSON = re.compile(
     r"^\s*```(?:json)?\s*(?P<payload>\{.*\})\s*```\s*$",
     re.IGNORECASE | re.DOTALL,
 )
-_NUMBER = re.compile(r"(?<![\w.])\d+(?:\.\d+)?(?![\w.])")
+_NUMBER = re.compile(
+    r"(?<![\w.])[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?(?![\w.])"
+)
+_VS_MARKER = re.compile(
+    r"(?<!\w)vs\.?(?=$|[\s,;:!?。！？、])",
+    re.IGNORECASE,
+)
 _RELATIVE_MARKERS = (
     " compare ",
     " compared ",
@@ -79,7 +85,9 @@ class _PlannerPayload(BaseModel):
 def is_suspected_comparison(question: str) -> bool:
     """Return whether a bounded semantic comparison check is warranted."""
     normalized = f" {question.strip().casefold()} "
-    return any(marker in normalized for marker in _RELATIVE_MARKERS)
+    return bool(_VS_MARKER.search(question)) or any(
+        marker in normalized for marker in _RELATIVE_MARKERS
+    )
 
 
 class ComparisonPlanner:
@@ -99,11 +107,11 @@ class ComparisonPlanner:
         started_at = perf_counter()
         if timeout_seconds <= 0:
             return _fallback("timeout", started_at)
-        messages = _planner_messages(
-            question=question,
-            authorized_source_names=authorized_source_names,
-        )
         try:
+            messages = _planner_messages(
+                question=question,
+                authorized_source_names=authorized_source_names,
+            )
             async with asyncio.timeout(timeout_seconds):
                 response = await self._llm_invoker.invoke(
                     phase="comparison_plan",
