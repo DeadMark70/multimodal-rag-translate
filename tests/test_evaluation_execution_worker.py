@@ -453,6 +453,13 @@ async def test_failed_result_projects_classified_timeout_diagnostics(
     assert result.total_tokens is None
     assert result.token_usage == {}
     assert result.final_answer_hash is None
+    analytics_result = (
+        await evaluation_db.CampaignResultRepository().list_for_campaign_analytics(
+            user_id="user-a",
+            campaign_id="cmp-1",
+        )
+    )[0]
+    assert analytics_result.total_tokens is None
 
 
 @pytest.mark.asyncio

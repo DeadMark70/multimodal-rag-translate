@@ -1276,6 +1276,23 @@ def _row_to_campaign_status(row: aiosqlite.Row) -> CampaignStatus:
     )
 
 
+def _project_campaign_result_total_tokens(
+    row: aiosqlite.Row,
+    token_usage: dict[str, Any],
+) -> int | None:
+    total_tokens = row["total_tokens"] if "total_tokens" in row.keys() else None
+    if (
+        token_usage.get("accounting_schema_version") == "2"
+        and token_usage.get("total_tokens") is None
+    ) or (
+        row["status"] == CampaignResultStatus.FAILED.value
+        and not token_usage
+        and total_tokens == 0
+    ):
+        return None
+    return total_tokens
+
+
 def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
     execution_profile = (
         row["execution_profile"] if "execution_profile" in row.keys() else None
@@ -1319,17 +1336,8 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
     total_latency_ms = (
         row["total_latency_ms"] if "total_latency_ms" in row.keys() else None
     )
-    total_tokens = row["total_tokens"] if "total_tokens" in row.keys() else None
     token_usage = _json_loads(row["token_usage_json"], {})
-    if (
-        token_usage.get("accounting_schema_version") == "2"
-        and token_usage.get("total_tokens") is None
-    ) or (
-        row["status"] == CampaignResultStatus.FAILED.value
-        and not token_usage
-        and total_tokens == 0
-    ):
-        total_tokens = None
+    total_tokens = _project_campaign_result_total_tokens(row, token_usage)
     final_answer_hash = (
         row["final_answer_hash"] if "final_answer_hash" in row.keys() else None
     )
@@ -2105,6 +2113,7 @@ class CampaignResultRepository:
                     latency_ms,
                     total_latency_ms,
                     total_tokens,
+                    token_usage_json,
                     category,
                     difficulty,
                     question_version,
@@ -2134,7 +2143,10 @@ class CampaignResultRepository:
                 condition_id=row["condition_id"] or None,
                 latency_ms=row["latency_ms"],
                 total_latency_ms=row["total_latency_ms"],
-                total_tokens=row["total_tokens"],
+                total_tokens=_project_campaign_result_total_tokens(
+                    row,
+                    _json_loads(row["token_usage_json"], {}),
+                ),
                 category=row["category"],
                 difficulty=row["difficulty"],
                 question_version=row["question_version"],
