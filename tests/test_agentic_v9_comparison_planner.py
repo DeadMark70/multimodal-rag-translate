@@ -24,7 +24,10 @@ from data_base.agentic_v9.schemas import (
 )
 
 
-Q4 = "結合 Params 與 FLOPs，Mamba 是否具當前 3D 醫療分割最高計算效率？"
+Q4 = (
+    "結合 Params 與 FLOPs，比較 nnMamba 與 EfficientMedNeXt-L "
+    "在 3D 醫療分割的計算效率。"
+)
 
 
 class _Invoker:
@@ -68,6 +71,25 @@ def _subject(
     )
 
 
+def _planner_subject(
+    subject_id: str,
+    display_name: str,
+    *,
+    subject_role: str = "entity",
+    question_span: str | None = None,
+    aliases: list[str] | None = None,
+    retrieval_query: str | None = None,
+) -> dict[str, object]:
+    return {
+        "subject_id": subject_id,
+        "display_name": display_name,
+        "aliases": aliases or [],
+        "retrieval_query": retrieval_query or display_name,
+        "subject_role": subject_role,
+        "question_span": question_span or display_name,
+    }
+
+
 def _payload(
     *,
     subjects: list[dict[str, object]] | None = None,
@@ -78,18 +100,18 @@ def _payload(
             "is_comparison": True,
             "subjects": subjects
             or [
-                {
-                    "subject_id": "nnmamba",
-                    "display_name": "nnMamba",
-                    "aliases": ["nnMamba"],
-                    "retrieval_query": "nnMamba parameters FLOPs",
-                },
-                {
-                    "subject_id": "efficientmednext_l",
-                    "display_name": "EfficientMedNeXt-L",
-                    "aliases": ["Efficient MedNeXt L"],
-                    "retrieval_query": "EfficientMedNeXt-L parameters FLOPs",
-                },
+                _planner_subject(
+                    "nnmamba",
+                    "nnMamba",
+                    aliases=["nnMamba"],
+                    retrieval_query="nnMamba parameters FLOPs",
+                ),
+                _planner_subject(
+                    "efficientmednext_l",
+                    "EfficientMedNeXt-L",
+                    aliases=["Efficient MedNeXt L"],
+                    retrieval_query="EfficientMedNeXt-L parameters FLOPs",
+                ),
             ],
             "dimensions": dimensions
             or ["parameters", "FLOPs", "computational efficiency"],
@@ -256,6 +278,89 @@ async def test_valid_planner_response_identifies_subjects_not_dimensions() -> No
 
 
 @pytest.mark.asyncio
+async def test_one_entity_claim_arbitration_is_not_subject_comparison() -> None:
+    question = (
+        "Does MedSAM-2 support single-prompt segmentation, and how does "
+        "initial bounding box prompt quality affect it?"
+    )
+    response = json.dumps(
+        {
+            "is_comparison": True,
+            "subjects": [
+                _planner_subject("medsam-2", "MedSAM-2"),
+                _planner_subject(
+                    "single-prompt",
+                    "single-prompt segmentation",
+                    subject_role="capability",
+                ),
+                _planner_subject(
+                    "prompt-quality",
+                    "initial bounding box prompt quality",
+                    subject_role="condition",
+                ),
+            ],
+            "dimensions": ["segmentation behavior"],
+        }
+    )
+
+    outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
+        question=question,
+        authorized_source_names=[],
+        timeout_seconds=1,
+    )
+
+    assert outcome.status == "fallback"
+    assert outcome.fallback_reason == "invalid_subjects"
+    assert outcome.plan is None
+
+
+@pytest.mark.asyncio
+async def test_unanchored_entity_subject_is_rejected() -> None:
+    response = _payload(
+        subjects=[
+            _planner_subject("nnmamba", "nnMamba"),
+            _planner_subject("invented", "InventedModel"),
+        ]
+    )
+
+    outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
+        question="Compare nnMamba and EfficientMedNeXt-L.",
+        authorized_source_names=[],
+        timeout_seconds=1,
+    )
+
+    assert outcome.status == "fallback"
+    assert outcome.fallback_reason == "invalid_subjects"
+
+
+@pytest.mark.asyncio
+async def test_valid_three_entity_lineage_comparison_remains_planned() -> None:
+    question = "Compare the technical lineage of SAM, SegmentAnyBone, and SegVol."
+    response = _payload(
+        subjects=[
+            _planner_subject("sam", "SAM"),
+            _planner_subject("segmentanybone", "SegmentAnyBone"),
+            _planner_subject("segvol", "SegVol"),
+        ],
+        dimensions=["technical lineage"],
+    )
+
+    outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
+        question=question,
+        authorized_source_names=[],
+        timeout_seconds=1,
+    )
+
+    assert outcome.status == "planned"
+    assert outcome.plan is not None
+    assert [subject.subject_id for subject in outcome.plan.subjects] == [
+        "sam",
+        "segmentanybone",
+        "segvol",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_planner_accepts_one_fenced_json_object() -> None:
     outcome = await ComparisonPlanner(
         llm_invoker=_Invoker(f"```json\n{_payload()}\n```")
@@ -278,17 +383,12 @@ async def test_planner_accepts_one_fenced_json_object() -> None:
                 {
                     "is_comparison": True,
                     "subjects": [
-                        {
-                            "subject_id": "only",
-                            "display_name": "Only",
-                            "aliases": [],
-                            "retrieval_query": "Only result",
-                        }
+                        _planner_subject("only", "Only"),
                     ],
                     "dimensions": [],
                 }
             ),
-            "schema_violation",
+            "invalid_subjects",
         ),
         (json.dumps({"is_comparison": False}), "not_comparison"),
     ],
@@ -313,18 +413,16 @@ async def test_planner_returns_safe_parse_fallback(
 async def test_planner_rejects_numeric_values_not_present_in_question() -> None:
     payload = _payload(
         subjects=[
-            {
-                "subject_id": "nnmamba",
-                "display_name": "nnMamba",
-                "aliases": [],
-                "retrieval_query": "nnMamba parameters 999",
-            },
-            {
-                "subject_id": "efficientmednext_l",
-                "display_name": "EfficientMedNeXt-L",
-                "aliases": [],
-                "retrieval_query": "EfficientMedNeXt-L FLOPs",
-            },
+            _planner_subject(
+                "nnmamba",
+                "nnMamba",
+                retrieval_query="nnMamba parameters 999",
+            ),
+            _planner_subject(
+                "efficientmednext_l",
+                "EfficientMedNeXt-L",
+                retrieval_query="EfficientMedNeXt-L FLOPs",
+            ),
         ]
     )
 
@@ -345,18 +443,16 @@ async def test_planner_rejects_invented_numeric_formats(
 ) -> None:
     payload = _payload(
         subjects=[
-            {
-                "subject_id": "nnmamba",
-                "display_name": "nnMamba",
-                "aliases": [],
-                "retrieval_query": f"nnMamba parameters {invented_number}",
-            },
-            {
-                "subject_id": "efficientmednext_l",
-                "display_name": "EfficientMedNeXt-L",
-                "aliases": [],
-                "retrieval_query": "EfficientMedNeXt-L FLOPs",
-            },
+            _planner_subject(
+                "nnmamba",
+                "nnMamba",
+                retrieval_query=f"nnMamba parameters {invented_number}",
+            ),
+            _planner_subject(
+                "efficientmednext_l",
+                "EfficientMedNeXt-L",
+                retrieval_query="EfficientMedNeXt-L FLOPs",
+            ),
         ]
     )
 
@@ -375,18 +471,16 @@ async def test_planner_preserves_numeric_tokens_copied_from_question() -> None:
     question = "在 noise 0.4 時比較 Model A 與 Model B"
     payload = _payload(
         subjects=[
-            {
-                "subject_id": "model_a",
-                "display_name": "Model A",
-                "aliases": [],
-                "retrieval_query": "Model A noise 0.4",
-            },
-            {
-                "subject_id": "model_b",
-                "display_name": "Model B",
-                "aliases": [],
-                "retrieval_query": "Model B noise 0.4",
-            },
+            _planner_subject(
+                "model_a",
+                "Model A",
+                retrieval_query="Model A noise 0.4",
+            ),
+            _planner_subject(
+                "model_b",
+                "Model B",
+                retrieval_query="Model B noise 0.4",
+            ),
         ],
         dimensions=["noise 0.4"],
     )

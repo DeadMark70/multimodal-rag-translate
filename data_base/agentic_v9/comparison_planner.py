@@ -7,7 +7,8 @@ import json
 from pathlib import Path
 import re
 from time import perf_counter
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
+import unicodedata
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -71,13 +72,27 @@ _RELATIVE_MARKERS = (
 )
 
 
+class _PlannerSubjectPayload(ComparisonSubject):
+    """Provider subject plus answer-free semantic grounding metadata."""
+
+    subject_role: Literal[
+        "entity",
+        "claim",
+        "capability",
+        "condition",
+        "metric",
+        "dimension",
+    ]
+    question_span: str = Field(min_length=1, max_length=160)
+
+
 class _PlannerPayload(BaseModel):
     """Provider JSON before it is promoted into a comparison plan."""
 
     model_config = ConfigDict(extra="forbid")
 
     is_comparison: bool
-    subjects: list[ComparisonSubject] = Field(default_factory=list)
+    subjects: list[_PlannerSubjectPayload] = Field(default_factory=list, max_length=4)
     dimensions: list[str] = Field(default_factory=list, max_length=12)
     qualification: str | None = Field(default=None, max_length=512)
 
@@ -135,9 +150,12 @@ class ComparisonPlanner:
 
         if not payload.is_comparison:
             return _fallback("not_comparison", started_at)
+        subjects = _validated_subjects(question, payload.subjects)
+        if len(subjects) < 2:
+            return _fallback("invalid_subjects", started_at)
         try:
             plan = ComparisonPlan(
-                subjects=payload.subjects,
+                subjects=subjects,
                 dimensions=payload.dimensions,
                 qualification=payload.qualification,
             )
@@ -232,6 +250,67 @@ def _reject_invented_numbers(question: str, plan: ComparisonPlan) -> None:
     )
     if supplied.difference(allowed):
         raise ValueError("comparison planner introduced numeric result values")
+
+
+def _normalized_identity(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return "".join(character for character in normalized if character.isalnum())
+
+
+def _contains_explicit_span(question: str, span: str) -> bool:
+    normalized_question = unicodedata.normalize("NFKC", question).casefold()
+    normalized_span = unicodedata.normalize("NFKC", span).strip().casefold()
+    if not normalized_span:
+        return False
+    for match in re.finditer(re.escape(normalized_span), normalized_question):
+        before = normalized_question[match.start() - 1] if match.start() else ""
+        after = (
+            normalized_question[match.end()]
+            if match.end() < len(normalized_question)
+            else ""
+        )
+        left_boundary_required = (
+            normalized_span[0].isascii() and normalized_span[0].isalnum()
+        )
+        right_boundary_required = (
+            normalized_span[-1].isascii() and normalized_span[-1].isalnum()
+        )
+        left_ok = not left_boundary_required or not (
+            before.isascii() and before.isalnum()
+        )
+        right_ok = not right_boundary_required or not (
+            after.isascii() and after.isalnum()
+        )
+        if left_ok and right_ok:
+            return True
+    return False
+
+
+def _validated_subjects(
+    question: str,
+    candidates: Sequence[_PlannerSubjectPayload],
+) -> list[ComparisonSubject]:
+    accepted: list[ComparisonSubject] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate.subject_role != "entity":
+            continue
+        if not _contains_explicit_span(question, candidate.question_span):
+            continue
+        span_identity = _normalized_identity(candidate.question_span)
+        names = [candidate.display_name, *candidate.aliases]
+        if span_identity not in {_normalized_identity(name) for name in names}:
+            continue
+        identity = _normalized_identity(candidate.display_name)
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        accepted.append(
+            ComparisonSubject.model_validate(
+                candidate.model_dump(exclude={"subject_role", "question_span"})
+            )
+        )
+    return accepted
 
 
 def _fallback(

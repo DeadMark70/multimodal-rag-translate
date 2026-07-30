@@ -333,12 +333,16 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
                             "display_name": "nnMamba",
                             "aliases": [],
                             "retrieval_query": "nnMamba parameters FLOPs",
+                            "subject_role": "entity",
+                            "question_span": "nnMamba",
                         },
                         {
                             "subject_id": "efficientmednext_l",
                             "display_name": "EfficientMedNeXt-L",
                             "aliases": [],
                             "retrieval_query": "EfficientMedNeXt-L parameters FLOPs",
+                            "subject_role": "entity",
+                            "question_span": "EfficientMedNeXt-L",
                         },
                     ],
                     "dimensions": ["parameters", "FLOPs"],
@@ -501,6 +505,106 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
 
 
 @pytest.mark.asyncio
+async def test_invalid_comparison_subjects_preserve_base_contract_and_retrieval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _Provider()
+    provider.ainvoke.side_effect = [
+        SimpleNamespace(
+            content=json.dumps(
+                {
+                    "is_comparison": True,
+                    "subjects": [
+                        {
+                            "subject_id": "medsam-2",
+                            "display_name": "MedSAM-2",
+                            "aliases": [],
+                            "retrieval_query": "MedSAM-2 automation",
+                            "subject_role": "entity",
+                            "question_span": "MedSAM-2",
+                        },
+                        {
+                            "subject_id": "single-prompt",
+                            "display_name": "single-prompt segmentation",
+                            "aliases": [],
+                            "retrieval_query": "single-prompt segmentation",
+                            "subject_role": "capability",
+                            "question_span": "single-prompt segmentation",
+                        },
+                        {
+                            "subject_id": "prompt-quality",
+                            "display_name": "initial bounding box prompt quality",
+                            "aliases": [],
+                            "retrieval_query": "initial bounding box prompt quality",
+                            "subject_role": "condition",
+                            "question_span": "initial bounding box prompt quality",
+                        },
+                    ],
+                    "dimensions": ["segmentation behavior"],
+                    "qualification": None,
+                }
+            ),
+            usage_metadata={"input_tokens": 20, "output_tokens": 10},
+        ),
+        SimpleNamespace(
+            content="The evidence supports a qualified answer.",
+            usage_metadata={"input_tokens": 12, "output_tokens": 7},
+        ),
+    ]
+    retrieve_documents = AsyncMock(
+        return_value=[
+            Document(
+                page_content="MedSAM-2 evidence.",
+                metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+            )
+        ]
+    )
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        route="single_lookup",
+        intent="Check claims about one model.",
+        required_slots=[RequiredSlot(slot_id="base", description="claim evidence")],
+        max_retrieval_rounds=1,
+        max_llm_calls=1,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve_documents,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question=(
+            "Compare these two claims about MedSAM-2: support for single-prompt "
+            "segmentation and sensitivity to initial bounding box prompt quality."
+        ),
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot=_setup(),
+        trace_id="invalid-comparison-subjects",
+    )
+
+    v9 = result.agent_trace["agentic_v9"]
+    assert v9["comparison_planner"]["status"] == "fallback"
+    assert v9["comparison_planner"]["fallback_reason"] == "invalid_subjects"
+    assert "comparison_plan" not in v9["query_contract"]
+    assert retrieve_documents.await_count == 1
+    assert result.documents
+    assert provider.ainvoke.await_count == 2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("repair_succeeds", "expected_status"),
     [(True, "complete"), (False, "qualified_partial")],
@@ -517,18 +621,22 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
                 {
                     "is_comparison": True,
                     "subjects": [
-                        {
-                            "subject_id": "model_a",
-                            "display_name": "Model A",
-                            "aliases": ["A"],
-                            "retrieval_query": "Model A accuracy",
-                        },
-                        {
-                            "subject_id": "model_b",
-                            "display_name": "Model B",
-                            "aliases": ["B"],
-                            "retrieval_query": "Model B accuracy",
-                        },
+                            {
+                                "subject_id": "model_a",
+                                "display_name": "Model A",
+                                "aliases": ["A"],
+                                "retrieval_query": "Model A accuracy",
+                                "subject_role": "entity",
+                                "question_span": "Model A",
+                            },
+                            {
+                                "subject_id": "model_b",
+                                "display_name": "Model B",
+                                "aliases": ["B"],
+                                "retrieval_query": "Model B accuracy",
+                                "subject_role": "entity",
+                                "question_span": "Model B",
+                            },
                     ],
                     "dimensions": ["accuracy"],
                     "qualification": None,
@@ -649,18 +757,22 @@ async def test_v9_comparison_status_uses_final_balanced_packet_coverage(
                 {
                     "is_comparison": True,
                     "subjects": [
-                        {
-                            "subject_id": "model_a",
-                            "display_name": "Model A",
-                            "aliases": [],
-                            "retrieval_query": "Model A accuracy",
-                        },
-                        {
-                            "subject_id": "model_b",
-                            "display_name": "Model B",
-                            "aliases": [],
-                            "retrieval_query": "Model B accuracy",
-                        },
+                            {
+                                "subject_id": "model_a",
+                                "display_name": "Model A",
+                                "aliases": [],
+                                "retrieval_query": "Model A accuracy",
+                                "subject_role": "entity",
+                                "question_span": "Model A",
+                            },
+                            {
+                                "subject_id": "model_b",
+                                "display_name": "Model B",
+                                "aliases": [],
+                                "retrieval_query": "Model B accuracy",
+                                "subject_role": "entity",
+                                "question_span": "Model B",
+                            },
                     ],
                     "dimensions": ["accuracy"],
                     "qualification": None,

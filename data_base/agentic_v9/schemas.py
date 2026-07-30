@@ -51,6 +51,7 @@ ComparisonPlannerFallbackReason = Literal[
     "invalid_response",
     "schema_violation",
     "not_comparison",
+    "invalid_subjects",
 ]
 
 ROUTE_GRAPH_POLICIES: dict[AgenticV9Route, GraphPolicy] = {
