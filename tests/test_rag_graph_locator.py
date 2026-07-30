@@ -8,6 +8,35 @@ from graph_rag.schemas import EvidenceAnchor, GraphEvidenceBundle, GraphEvidence
 
 
 @pytest.mark.asyncio
+async def test_locator_forwards_optional_llm_invoker_to_bundle_locator() -> None:
+    invoker = object()
+    bundle_locator = AsyncMock(
+        return_value=GraphEvidenceBundle(query="q", route="none")
+    )
+
+    result = await locate_graph_sources(
+        question="q",
+        user_id="user-1",
+        vector_documents=[],
+        requested_doc_ids=None,
+        graph_execution_hints=None,
+        required_modalities=[],
+        evidence_mode="locator_to_chunk",
+        bundle_locator=bundle_locator,
+        llm_invoker=invoker,
+    )
+
+    bundle_locator.assert_awaited_once_with(
+        question="q",
+        user_id="user-1",
+        search_mode="generic",
+        graph_execution_hints=None,
+        chunk_lookup=result.chunk_lookup,
+        llm_invoker=invoker,
+    )
+
+
+@pytest.mark.asyncio
 async def test_locator_returns_only_resolved_source_documents_not_raw_graph_content() -> None:
     vector_document = Document(
         page_content="Vector-backed source evidence.",

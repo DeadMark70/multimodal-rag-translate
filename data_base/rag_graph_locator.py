@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from langchain_core.documents import Document
 
+from data_base.agentic_v9.schemas import LlmInvoker
 from data_base.context_packing import (
     GraphLocatedChunk,
     expand_graph_evidence_to_chunks,
@@ -74,6 +75,7 @@ async def locate_graph_sources(
     chunk_lookup: Optional[ChunkLookup] = None,
     claim_scope_approver: Optional[ClaimScopeApprover] = None,
     graph_chunk_ratio: float = 0.35,
+    llm_invoker: LlmInvoker | None = None,
 ) -> GraphSourceLocatorResult:
     """Locate graph anchors in persisted chunks and merge those chunks only.
 
@@ -87,13 +89,16 @@ async def locate_graph_sources(
     bundle: GraphEvidenceBundle | None = None
 
     try:
-        bundle = await bundle_locator(
-            question=question,
-            user_id=user_id,
-            search_mode=search_mode,
-            graph_execution_hints=graph_execution_hints,
-            chunk_lookup=lookup,
-        )
+        bundle_kwargs: dict[str, Any] = {
+            "question": question,
+            "user_id": user_id,
+            "search_mode": search_mode,
+            "graph_execution_hints": graph_execution_hints,
+            "chunk_lookup": lookup,
+        }
+        if llm_invoker is not None:
+            bundle_kwargs["llm_invoker"] = llm_invoker
+        bundle = await bundle_locator(**bundle_kwargs)
         resolved_chunks = expand_graph_evidence_to_chunks(
             user_id,
             bundle,

@@ -286,6 +286,7 @@ def _canonical_observation_phase(phase: str) -> str:
         "comparison_plan": "comparison_plan",
         "query_rewrite": "retrieval_judge",
         "retrieval_judge": "retrieval_judge",
+        "graph_route": "graph_route",
         "conflict_arbitration": "retrieval_judge",
         "claim_verifier": "retrieval_judge",
         "evidence_extract": "evidence_extract",

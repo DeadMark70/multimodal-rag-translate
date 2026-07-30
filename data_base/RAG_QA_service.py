@@ -39,6 +39,7 @@ from langchain_core.documents import Document
 # Local application
 from core.providers import get_llm
 from core.llm_factory import get_llm_usage_metrics  # noqa: F401 - compatibility seam
+from data_base.agentic_v9.schemas import LlmInvoker
 from data_base.document_metadata import get_document_id
 from data_base.rag_generation import (
     generate_legacy_answer_from_evidence,
@@ -487,6 +488,7 @@ async def _resolve_graph_route_decision(
     search_mode: str,
     status: Any,
     graph_execution_hints: Optional[Dict[str, Any]],
+    llm_invoker: LlmInvoker | None = None,
 ) -> Tuple[GraphRouteDecision, bool, bool]:
     """Resolve the common route used by raw and structured graph retrieval."""
     effective_mode = "generic" if search_mode == "auto" else search_mode
@@ -503,7 +505,7 @@ async def _resolve_graph_route_decision(
             effective_mode,
         )
     else:
-        decision = await GenericGraphRouter().route(
+        decision = await GenericGraphRouter(llm_invoker=llm_invoker).route(
             question,
             has_communities=has_communities,
             hints=hints,
@@ -669,6 +671,7 @@ async def _get_graph_evidence_bundle(
     search_mode: str = "generic",
     graph_execution_hints: Optional[Dict[str, Any]] = None,
     chunk_lookup: Optional[ChunkLookup] = None,
+    llm_invoker: LlmInvoker | None = None,
 ) -> GraphEvidenceBundle:
     """Build a structured graph bundle without calling the compatibility wrapper."""
     try:
@@ -686,6 +689,7 @@ async def _get_graph_evidence_bundle(
             search_mode,
             status,
             graph_execution_hints,
+            llm_invoker=llm_invoker,
         )
         evidence_items = []
         hints = []
@@ -729,6 +733,7 @@ async def get_graph_evidence_bundle(
     search_mode: str = "generic",
     graph_execution_hints: Optional[Dict[str, Any]] = None,
     chunk_lookup: Optional[ChunkLookup] = None,
+    llm_invoker: LlmInvoker | None = None,
 ) -> GraphEvidenceBundle:
     """Public adapter for callers that need the normal evidence-locator bundle."""
     return await _get_graph_evidence_bundle(
@@ -737,6 +742,7 @@ async def get_graph_evidence_bundle(
         search_mode=search_mode,
         graph_execution_hints=graph_execution_hints,
         chunk_lookup=chunk_lookup,
+        llm_invoker=llm_invoker,
     )
 
 

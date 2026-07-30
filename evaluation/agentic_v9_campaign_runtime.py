@@ -59,6 +59,7 @@ from data_base.agentic_v9.schemas import (
     EvidenceSource,
     FinalAnswerResult,
     FinalClaim,
+    LlmInvoker,
     QueryContract,
     RagRetrievalResult,
     ResolvedSourceScope,
@@ -139,6 +140,7 @@ class AgenticV9CampaignRuntime:
     ) -> None:
         self._retrieve_documents = retrieve_documents or _retrieve_documents
         self._uses_default_retrieval = retrieve_documents is None
+        self._uses_default_graph_locator = graph_locator is None
         self._graph_locator = graph_locator or _locate_graph_documents
         self._visual_extractor = visual_extractor
         self._provider_factory = provider_factory or _provider_for_purpose
@@ -345,13 +347,35 @@ class AgenticV9CampaignRuntime:
                     and not state["graph_execution"]["attempted"]
                 ):
                     try:
-                        located = await self._graph_locator(
-                            task.query,
-                            user_id,
-                            docs,
-                            list(task.source_scope.authorized_doc_ids),
-                            state["contract"],
-                        )
+                        if self._uses_default_graph_locator:
+                            controller = state["budget_controller"]
+                            assert isinstance(controller, RunBudgetController)
+                            located = await _locate_graph_documents(
+                                task.query,
+                                user_id,
+                                docs,
+                                list(task.source_scope.authorized_doc_ids),
+                                state["contract"],
+                                llm_invoker=BudgetedLlmInvoker(
+                                    controller=controller,
+                                    provider_factory=self._provider_factory,
+                                    observer=llm_call_observer,
+                                    provider_name=str(
+                                        setup_snapshot.get("provider") or "unknown"
+                                    ),
+                                    model_name=str(
+                                        setup_snapshot.get("model_name") or "unknown"
+                                    ),
+                                ),
+                            )
+                        else:
+                            located = await self._graph_locator(
+                                task.query,
+                                user_id,
+                                docs,
+                                list(task.source_scope.authorized_doc_ids),
+                                state["contract"],
+                            )
                     except (
                         Exception
                     ) as error:  # Stage admitted; preserve partial answer.
@@ -1091,6 +1115,8 @@ async def _locate_graph_documents(
     vector_documents: list[Document],
     authorized_doc_ids: list[str],
     contract: QueryContract,
+    *,
+    llm_invoker: LlmInvoker | None = None,
 ) -> GraphSourceLocatorResult:
     """Run the production graph boundary as a source locator, never context."""
     return await locate_graph_sources(
@@ -1109,6 +1135,7 @@ async def _locate_graph_documents(
         evidence_mode="locator_to_chunk",
         bundle_locator=get_graph_evidence_bundle,
         search_mode="generic",
+        llm_invoker=llm_invoker,
     )
 
 

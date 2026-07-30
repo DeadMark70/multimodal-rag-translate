@@ -25,6 +25,7 @@ from data_base.agentic_v9.schemas import (
     EvidenceScope,
     EvidenceSource,
     ExecutionPolicy,
+    LlmInvoker,
     QueryContract,
     RequiredSlot,
     ResolvedSourceScope,
@@ -34,6 +35,7 @@ from data_base.agentic_v9.schemas import (
 from data_base.agentic_v9.visual_evidence_extractor import (
     VisualEvidenceExtractionResult,
 )
+from data_base.rag_graph_locator import GraphSourceLocatorResult
 
 
 class _Provider:
@@ -44,6 +46,19 @@ class _Provider:
                 usage_metadata={"input_tokens": 12, "output_tokens": 7},
             )
         )
+
+
+class _RecordingObserver:
+    def __init__(self) -> None:
+        self.calls: list[object] = []
+        self.partial_reasons: list[str] = []
+
+    async def on_terminal_attempt(self, observation: object) -> bool:
+        self.calls.append(observation)
+        return True
+
+    def mark_partial(self, reason: str) -> None:
+        self.partial_reasons.append(reason)
 
 
 def _setup() -> dict[str, object]:
@@ -84,6 +99,131 @@ def _patch_v9_retrieval(
         runtime_module,
         "retrieve_hybrid_documents",
         AsyncMock(return_value=PipelineRetrievalResult(documents=documents)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_v9_graph_route_usage_is_budgeted_observed_and_reconciled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _Provider()
+    provider.ainvoke.side_effect = [
+        SimpleNamespace(
+            content='{"query_kind":"relation","path":"local-first"}',
+            usage_metadata={
+                "input_tokens": 5,
+                "output_tokens": 2,
+                "total_tokens": 7,
+            },
+        ),
+        SimpleNamespace(
+            content="Graph-aware evidence answer.",
+            usage_metadata={
+                "input_tokens": 12,
+                "output_tokens": 7,
+                "total_tokens": 19,
+            },
+        ),
+    ]
+    observer = _RecordingObserver()
+    source_document = Document(
+        page_content="Source-backed relationship evidence.",
+        metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+    )
+    retrieve_documents = AsyncMock(return_value=[source_document])
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        route="graph_relational",
+        intent="Trace a relationship.",
+        required_slots=[RequiredSlot(slot_id="base", description="relationship")],
+        graph_policy="required_locator",
+        max_retrieval_rounds=1,
+        max_llm_calls=2,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    async def observed_graph_locator(
+        question: str,
+        user_id: str,
+        vector_documents: list[Document],
+        authorized_doc_ids: list[str],
+        runtime_contract: QueryContract,
+        *,
+        llm_invoker: LlmInvoker | None = None,
+    ) -> GraphSourceLocatorResult:
+        assert question
+        assert user_id == "user-a"
+        assert authorized_doc_ids == ["doc-1"]
+        assert runtime_contract.route == "graph_relational"
+        assert llm_invoker is not None
+        await llm_invoker.invoke(
+            phase="graph_route",
+            purpose="graph_extraction",
+            messages=[{"role": "user", "content": question}],
+        )
+        return GraphSourceLocatorResult(
+            documents=vector_documents,
+            resolved_source_documents=vector_documents,
+            resolved_source_doc_ids=["doc-1"],
+            resolved_source_chunk_ids=["chunk-1"],
+            candidate_item_ids=[],
+            resolved_item_ids=[],
+            scope_approved_item_ids=[],
+            scored_item_ids=[],
+            packed_item_ids=[],
+            route="local-first",
+            path="source_expand",
+            fallback=None,
+            graph_latency_ms=1,
+            bundle=None,
+            chunk_lookup=SimpleNamespace(),
+            resolved_chunks=[],
+            scoped_chunks=[],
+            graph_documents=[],
+        )
+
+    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
+    monkeypatch.setattr(
+        runtime_module,
+        "_locate_graph_documents",
+        observed_graph_locator,
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve_documents,
+        provider_factory=lambda _purpose: provider,
+        llm_call_observer=observer,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="Trace the relationship path from ModelA to ModelB.",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot=_setup(),
+        trace_id="observed-graph-route",
+    )
+
+    assert [call.phase for call in observer.calls] == [
+        "graph_route",
+        "final_answer",
+    ]
+    assert sum(call.usage["total_tokens"] for call in observer.calls) == 26
+    assert result.usage["total_tokens"] == 26
+    assert observer.partial_reasons == []
+    assert result.agent_trace["agentic_v9"]["retrieval_diagnostics"]
+    assert result.agent_trace["execution_profile"] == (
+        runtime_module.agentic_v9_execution_profile(open_user_corpus=False)
+    )
+    assert result.agent_trace["context_policy_version"] == (
+        runtime_module.AGENTIC_V9_CONTEXT_POLICY_VERSION
     )
 
 

@@ -40,6 +40,22 @@ class _RecordingInvoker:
         return self.response
 
 
+class _FailingInvoker:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def invoke(
+        self,
+        *,
+        phase: str,
+        purpose: str,
+        messages: list[dict[str, object]],
+    ) -> object:
+        del purpose, messages
+        self.calls.append(phase)
+        raise TimeoutError("graph route unavailable")
+
+
 def test_v9_runtime_has_no_provider_ainvoke_bypass_outside_budget_gateway() -> None:
     runtime_dir = Path(__file__).parents[1] / "data_base" / "agentic_v9"
     bypasses: list[str] = []
@@ -282,3 +298,30 @@ async def test_graph_fallback_router_uses_the_injected_budgeted_invoker() -> Non
     assert decision.router_reason == "model"
     assert invoker.calls[0]["phase"] == "graph_route"
     assert invoker.calls[0]["purpose"] == "graph_extraction"
+
+
+@pytest.mark.asyncio
+async def test_graph_fast_path_does_not_invoke_provider() -> None:
+    invoker = _RecordingInvoker(SimpleNamespace(content="unused"))
+
+    decision = await GenericGraphRouter(llm_invoker=invoker).route(
+        "Summarize the overall themes.",
+        has_communities=True,
+    )
+
+    assert decision.router_reason == "summary_keywords"
+    assert invoker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_graph_provider_failure_returns_safe_route_fallback() -> None:
+    invoker = _FailingInvoker()
+
+    decision = await GenericGraphRouter(llm_invoker=invoker).route(
+        "Explain the implications of this material in depth",
+        has_communities=True,
+    )
+
+    assert invoker.calls == ["graph_route"]
+    assert decision.router_reason == "llm_router_fallback"
+    assert decision.path == "blended"

@@ -1,7 +1,52 @@
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
-from data_base.RAG_QA_service import _get_graph_context
-from graph_rag.generic_mode import GraphEvidence, estimate_token_count
+
+from data_base.RAG_QA_service import (
+    _get_graph_context,
+    _resolve_graph_route_decision,
+)
+from graph_rag.generic_mode import (
+    GenericGraphRouter,
+    GraphEvidence,
+    GraphRouteDecision,
+    estimate_token_count,
+)
+
+
+@pytest.mark.asyncio
+async def test_graph_route_resolver_injects_v9_invoker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invoker = object()
+    router = Mock(spec=GenericGraphRouter)
+    router.route = AsyncMock(
+        return_value=GraphRouteDecision(
+            query_kind="relation",
+            path="local-first",
+        )
+    )
+    router_factory = Mock(return_value=router)
+    monkeypatch.setattr(
+        "data_base.RAG_QA_service.GenericGraphRouter",
+        router_factory,
+    )
+    status = SimpleNamespace(
+        community_level_counts={},
+        community_count=0,
+    )
+
+    decision, _, _ = await _resolve_graph_route_decision(
+        "ambiguous relation question",
+        "generic",
+        status,
+        None,
+        llm_invoker=invoker,
+    )
+
+    router_factory.assert_called_once_with(llm_invoker=invoker)
+    assert decision.path == "local-first"
 
 @pytest.mark.asyncio
 async def test_graph_context_retrieval_auto():
