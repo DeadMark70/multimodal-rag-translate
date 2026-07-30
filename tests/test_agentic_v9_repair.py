@@ -7,10 +7,16 @@ from pydantic import ValidationError
 
 from data_base.agentic_v9.repair import build_repair_plan
 from data_base.agentic_v9.schemas import (
+    ComparisonPlan,
+    ComparisonSubject,
+    EvidencePacket,
+    EvidenceScope,
+    EvidenceSource,
     QueryContract,
     RequiredSlot,
     ResolvedSourceScope,
     SlotResolution,
+    SourceLocator,
     SufficiencyReport,
 )
 from data_base.agentic_v9.sufficiency_gate import (
@@ -49,6 +55,27 @@ def _contract(*, route: str = "exact_structured", repair_rounds: int = 1) -> Que
     )
 
 
+def _packet_for_slot(
+    evidence_id: str,
+    slot_id: str,
+    doc_id: str,
+) -> EvidencePacket:
+    return EvidencePacket(
+        schema_version="1",
+        evidence_id=evidence_id,
+        task_id=f"task:{slot_id}",
+        round_id="round-1",
+        query_id="q",
+        slot_ids=[slot_id],
+        statement=f"Evidence for {slot_id}.",
+        support_type="direct",
+        source=EvidenceSource(doc_id=doc_id, chunk_id=evidence_id),
+        scope=EvidenceScope(),
+        locator=SourceLocator(section="retrieved_context"),
+        validation_status="deterministic_valid",
+    )
+
+
 def test_repair_query_derives_only_from_missing_slot_entity_and_locator() -> None:
     contract = _contract()
     sufficiency = evaluate_sufficiency(contract, [])
@@ -84,6 +111,149 @@ def test_repair_stops_at_route_or_contract_round_cap() -> None:
 
     assert plan.tasks == []
     assert plan.stop_reason == "repair_round_cap_reached"
+
+
+def test_comparison_repair_targets_only_the_missing_subject() -> None:
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-a", "doc-b"],
+        resolved_doc_ids=["doc-a", "doc-b"],
+        authorized_doc_ids=["doc-a", "doc-b"],
+    )
+    comparison = ComparisonPlan(
+        subjects=[
+            ComparisonSubject(
+                subject_id="nnmamba",
+                display_name="nnMamba",
+                aliases=["Mamba model"],
+                retrieval_query="nnMamba efficiency",
+            ),
+            ComparisonSubject(
+                subject_id="efficientmednext_l",
+                display_name="EfficientMedNeXt-L",
+                aliases=["Efficient MedNeXt L"],
+                retrieval_query="EfficientMedNeXt-L efficiency",
+            ),
+        ],
+        dimensions=["parameters", "FLOPs"],
+    )
+    contract = QueryContract(
+        route="bounded_compare",
+        intent="Compare efficiency.",
+        required_slots=[
+            RequiredSlot(
+                slot_id="comparison-subject:nnmamba",
+                description="Find nnMamba efficiency evidence.",
+                entity_ids=["nnMamba"],
+            ),
+            RequiredSlot(
+                slot_id="comparison-subject:efficientmednext_l",
+                description="Find EfficientMedNeXt-L efficiency evidence.",
+                entity_ids=["EfficientMedNeXt-L"],
+            ),
+        ],
+        comparison_plan=comparison,
+        max_repair_rounds=5,
+        resolved_source_scope=scope,
+    )
+    sufficiency = SufficiencyEvaluation(
+        slot_resolutions=(
+            SlotResolution(
+                slot_id="comparison-subject:nnmamba",
+                status="supported",
+                evidence_ids=["evidence-a"],
+            ),
+            SlotResolution(
+                slot_id="comparison-subject:efficientmednext_l",
+                status="not_found",
+            ),
+        ),
+        report=SufficiencyReport(
+            evidence_complete=False,
+            answerable=True,
+            response_status="qualified_partial",
+            supported_slot_ids=["comparison-subject:nnmamba"],
+            not_found_slot_ids=["comparison-subject:efficientmednext_l"],
+        ),
+        repairable_slot_ids=("comparison-subject:efficientmednext_l",),
+    )
+
+    repair = build_repair_plan(
+        contract=contract,
+        sufficiency=sufficiency,
+        query_id="q4",
+        repair_round_index=1,
+        final_budget_available=True,
+    )
+
+    assert len(repair.tasks) == 1
+    assert repair.tasks[0].subject_id == "efficientmednext_l"
+    assert repair.tasks[0].target_slot_ids == [
+        "comparison-subject:efficientmednext_l"
+    ]
+    assert "EfficientMedNeXt-L" in repair.tasks[0].query
+    assert "Efficient MedNeXt L" in repair.tasks[0].query
+    assert "parameters" in repair.tasks[0].query
+    assert "FLOPs" in repair.tasks[0].query
+    assert repair.tasks[0].source_scope == scope
+
+
+def test_comparison_repair_has_exactly_one_round_and_skips_complete_coverage() -> None:
+    scope = ResolvedSourceScope(authorized_doc_ids=["doc-a"])
+    comparison = ComparisonPlan(
+        subjects=[
+            ComparisonSubject(
+                subject_id="a",
+                display_name="Model A",
+                retrieval_query="Model A efficiency",
+            ),
+            ComparisonSubject(
+                subject_id="b",
+                display_name="Model B",
+                retrieval_query="Model B efficiency",
+            ),
+        ],
+        dimensions=["efficiency"],
+    )
+    contract = QueryContract(
+        route="multi_document_exact",
+        intent="Compare models.",
+        required_slots=[
+            RequiredSlot(
+                slot_id=f"comparison-subject:{subject.subject_id}",
+                description=f"Find {subject.display_name}.",
+            )
+            for subject in comparison.subjects
+        ],
+        comparison_plan=comparison,
+        max_repair_rounds=5,
+        resolved_source_scope=scope,
+    )
+    missing = evaluate_sufficiency(contract, [])
+
+    capped = build_repair_plan(
+        contract=contract,
+        sufficiency=missing,
+        query_id="q",
+        repair_round_index=2,
+        final_budget_available=True,
+    )
+
+    assert capped.tasks == []
+    assert capped.stop_reason == "repair_round_cap_reached"
+
+    complete_packets = [
+        _packet_for_slot("e-a", "comparison-subject:a", "doc-a"),
+        _packet_for_slot("e-b", "comparison-subject:b", "doc-a"),
+    ]
+    complete = build_repair_plan(
+        contract=contract,
+        sufficiency=evaluate_sufficiency(contract, complete_packets),
+        query_id="q",
+        repair_round_index=1,
+        final_budget_available=True,
+    )
+    assert complete.tasks == []
+    assert complete.stop_reason == "no_repairable_slots"
 
 
 def test_repair_never_runs_when_the_final_budget_is_not_protected() -> None:

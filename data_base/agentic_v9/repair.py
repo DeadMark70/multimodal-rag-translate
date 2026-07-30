@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from data_base.agentic_v9.schemas import (
     AgenticV9Route,
+    ComparisonSubject,
     QueryContract,
     RequiredSlot,
     ResolvedSourceScope,
@@ -72,6 +73,15 @@ def build_repair_plan(
         return RepairPlan(
             repair_round_index=repair_round_index,
             stop_reason="final_budget_protected",
+        )
+
+    if contract.comparison_plan is not None:
+        return _build_comparison_repair_plan(
+            contract=contract,
+            sufficiency=sufficiency,
+            query_id=normalized_query_id,
+            repair_round_index=repair_round_index,
+            scope=scope,
         )
 
     cap = min(
@@ -152,6 +162,103 @@ def build_repair_plan(
             stop_reason="no_authorized_repair_groups",
         )
     return RepairPlan(repair_round_index=repair_round_index, tasks=tasks)
+
+
+def _build_comparison_repair_plan(
+    *,
+    contract: QueryContract,
+    sufficiency: SufficiencyEvaluation,
+    query_id: str,
+    repair_round_index: int,
+    scope: ResolvedSourceScope,
+) -> RepairPlan:
+    """Target missing comparison subjects in one deterministic repair round."""
+    if repair_round_index > 1 or contract.max_repair_rounds < 1:
+        return RepairPlan(
+            repair_round_index=repair_round_index,
+            stop_reason="repair_round_cap_reached",
+        )
+
+    not_found_slot_ids = {
+        resolution.slot_id
+        for resolution in sufficiency.slot_resolutions
+        if resolution.status == "not_found"
+    }
+    missing_slot_ids = set(sufficiency.repairable_slot_ids).intersection(
+        not_found_slot_ids
+    )
+    slots_by_id = {
+        slot.slot_id: slot
+        for slot in contract.required_slots
+        if slot.required and slot.slot_id in missing_slot_ids
+    }
+    subjects_by_slot_id = {
+        f"comparison-subject:{subject.subject_id}": subject
+        for subject in contract.comparison_plan.subjects
+    }
+
+    tasks: list[RetrievalTask] = []
+    for slot_id, subject in subjects_by_slot_id.items():
+        slot = slots_by_id.get(slot_id)
+        if slot is None:
+            continue
+        source_group_id = (
+            f"repair-{repair_round_index}:comparison:{subject.subject_id}"
+        )
+        tasks.append(
+            RetrievalTask(
+                task_id=f"{query_id}:{source_group_id}",
+                round_id=f"repair-{repair_round_index}",
+                query_id=query_id,
+                query=_comparison_repair_query(
+                    contract=contract,
+                    slot=slot,
+                    subject=subject,
+                ),
+                target_slot_ids=[slot.slot_id],
+                source_scope=scope.model_copy(deep=True),
+                source_group_id=source_group_id,
+                subject_id=subject.subject_id,
+                locator_hints=display_locator_hints(
+                    slot.locator_hints or contract.locator_hints
+                ),
+                graph_policy=contract.graph_policy or "never",
+                visual_required=(
+                    contract.visual_required or slot.visual_policy == "required"
+                ),
+            )
+        )
+        if len(tasks) >= MAX_REPAIR_QUERIES_PER_ROUND:
+            break
+
+    if not tasks:
+        return RepairPlan(
+            repair_round_index=repair_round_index,
+            stop_reason="no_repairable_slots",
+        )
+    return RepairPlan(repair_round_index=repair_round_index, tasks=tasks)
+
+
+def _comparison_repair_query(
+    *,
+    contract: QueryContract,
+    slot: RequiredSlot,
+    subject: ComparisonSubject,
+) -> str:
+    plan = contract.comparison_plan
+    assert plan is not None
+    return " ".join(
+        _unique(
+            [
+                subject.display_name,
+                *subject.aliases,
+                subject.retrieval_query,
+                *plan.dimensions,
+                slot.description,
+                *slot.locator_hints,
+            ]
+        )
+    )
 
 
 def _repair_query(*, contract: QueryContract, slot_id: str) -> str:

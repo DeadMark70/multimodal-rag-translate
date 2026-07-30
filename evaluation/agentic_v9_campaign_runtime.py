@@ -40,6 +40,9 @@ from data_base.agentic_v9.comparison_planner import (
     apply_comparison_overlay,
     is_suspected_comparison,
 )
+from data_base.agentic_v9.comparison_context import (
+    select_balanced_comparison_packets,
+)
 from data_base.agentic_v9.execution_core import (
     ConflictStageResult,
     V9ExecutionCore,
@@ -458,6 +461,15 @@ class AgenticV9CampaignRuntime:
             packets: tuple[EvidencePacket, ...],
             __: SufficiencyEvaluation,
         ) -> PackedEvidenceContext:
+            selected_packets = (
+                select_balanced_comparison_packets(
+                    packets,
+                    plan=contract.comparison_plan,
+                    quality_by_evidence_id=state["quality_by_evidence_id"],
+                )
+                if contract.comparison_plan is not None
+                else packets
+            )
             setup_input = _setup_positive_int(
                 setup_snapshot,
                 "setup_max_input_tokens",
@@ -482,7 +494,7 @@ class AgenticV9CampaignRuntime:
                 contract=contract,
             )
             packed = packer.pack(
-                packets,
+                selected_packets,
                 required_slots=contract,
                 quality_by_evidence_id=state["quality_by_evidence_id"],
                 selection_policy=FinalContextSelectionPolicy(

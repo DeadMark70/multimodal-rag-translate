@@ -368,15 +368,26 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
     monkeypatch.setattr(
         runtime_module, "build_v9_admission_contract", admission
     )
-    retrieve_documents = AsyncMock(
-        return_value=[
+    async def retrieve_subject_documents(
+        _user_id: str, retrieval_query: str, _authorized_doc_ids: list[str]
+    ) -> list[Document]:
+        subject = (
+            "nnmamba"
+            if "nnMamba" in retrieval_query
+            else "efficientmednext_l"
+        )
+        return [
             Document(
-                page_content=f"Evidence chunk {index}.",
-                metadata={"doc_id": "doc-1", "chunk_id": f"chunk-{index}"},
+                page_content=f"{subject} evidence chunk {index}.",
+                metadata={
+                    "doc_id": "doc-1",
+                    "chunk_id": f"{subject}-chunk-{index}",
+                },
             )
             for index in range(4)
         ]
-    )
+
+    retrieve_documents = AsyncMock(side_effect=retrieve_subject_documents)
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=retrieve_documents,
         provider_factory=lambda _purpose: provider,
@@ -399,7 +410,152 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
     assert retrieve_documents.await_count == 2
     assert [row["selected_count"] for row in v9["retrieval_diagnostics"]] == [2, 2]
     assert v9["comparison_planner"]["status"] == "planned"
+    assert {
+        tuple(packet["slot_ids"]) for packet in v9["evidence_packets"]
+    } == {
+        ("comparison-subject:nnmamba",),
+        ("comparison-subject:efficientmednext_l",),
+    }
+    packed_ids = set(v9["context_pack"]["packed_evidence_ids"])
+    packed_packets = [
+        packet
+        for packet in v9["evidence_packets"]
+        if packet["evidence_id"] in packed_ids
+    ]
+    assert len(packed_packets) == 4
+    assert {
+        tuple(packet["slot_ids"]) for packet in packed_packets
+    } == {
+        ("comparison-subject:nnmamba",),
+        ("comparison-subject:efficientmednext_l",),
+    }
     assert provider.ainvoke.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("repair_succeeds", "expected_status"),
+    [(True, "complete"), (False, "qualified_partial")],
+)
+async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
+    monkeypatch: pytest.MonkeyPatch,
+    repair_succeeds: bool,
+    expected_status: str,
+) -> None:
+    provider = _Provider()
+    provider.ainvoke.side_effect = [
+        SimpleNamespace(
+            content=json.dumps(
+                {
+                    "is_comparison": True,
+                    "subjects": [
+                        {
+                            "subject_id": "model_a",
+                            "display_name": "Model A",
+                            "aliases": ["A"],
+                            "retrieval_query": "Model A accuracy",
+                        },
+                        {
+                            "subject_id": "model_b",
+                            "display_name": "Model B",
+                            "aliases": ["B"],
+                            "retrieval_query": "Model B accuracy",
+                        },
+                    ],
+                    "dimensions": ["accuracy"],
+                    "qualification": None,
+                }
+            ),
+            usage_metadata={"input_tokens": 20, "output_tokens": 10},
+        ),
+        SimpleNamespace(
+            content="The evidence supports the available comparison.",
+            usage_metadata={"input_tokens": 12, "output_tokens": 7},
+        ),
+    ]
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-a", "doc-b"],
+        resolved_doc_ids=["doc-a", "doc-b"],
+        authorized_doc_ids=["doc-a", "doc-b"],
+    )
+    contract = QueryContract(
+        route="bounded_compare",
+        intent="Compare two models.",
+        required_slots=[RequiredSlot(slot_id="base", description="comparison")],
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=1,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+
+    async def admission(**_kwargs):
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(
+        runtime_module, "build_v9_admission_contract", admission
+    )
+    model_b_attempts = 0
+
+    async def retrieve_subject_documents(
+        _user_id: str, retrieval_query: str, _authorized_doc_ids: list[str]
+    ) -> list[Document]:
+        nonlocal model_b_attempts
+        if "Model B" in retrieval_query:
+            model_b_attempts += 1
+            if model_b_attempts == 1 or not repair_succeeds:
+                return []
+            subject = "model_b"
+            doc_id = "doc-b"
+        else:
+            subject = "model_a"
+            doc_id = "doc-a"
+        return [
+            Document(
+                page_content=f"{subject} accuracy evidence {index}.",
+                metadata={
+                    "doc_id": doc_id,
+                    "chunk_id": f"{subject}-chunk-{index}",
+                },
+            )
+            for index in range(2)
+        ]
+
+    retrieve_documents = AsyncMock(side_effect=retrieve_subject_documents)
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve_documents,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="Model A vs. Model B: which has better accuracy?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-a", "doc-b"],
+        setup_snapshot=_setup(),
+        trace_id=f"comparison-repair-{repair_succeeds}",
+    )
+
+    v9 = result.agent_trace["agentic_v9"]
+    assert result.agent_trace["response_status"] == expected_status
+    assert model_b_attempts == 2
+    assert retrieve_documents.await_count == 3
+    assert len(v9["repairs"]) == 1
+    assert len(v9["repairs"][0]["tasks"]) == 1
+    assert v9["repairs"][0]["tasks"][0]["subject_id"] == "model_b"
+    if repair_succeeds:
+        packed_ids = set(v9["context_pack"]["packed_evidence_ids"])
+        packed_packets = [
+            packet
+            for packet in v9["evidence_packets"]
+            if packet["evidence_id"] in packed_ids
+        ]
+        assert {
+            tuple(packet["slot_ids"]) for packet in packed_packets
+        } == {
+            ("comparison-subject:model_a",),
+            ("comparison-subject:model_b",),
+        }
 
 
 @pytest.mark.asyncio
