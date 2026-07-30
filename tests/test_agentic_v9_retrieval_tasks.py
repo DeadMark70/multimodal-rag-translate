@@ -7,6 +7,8 @@ from pydantic import ValidationError
 
 from data_base.agentic_v9.retrieval_tasks import RetrievalTaskCompiler
 from data_base.agentic_v9.schemas import (
+    ComparisonPlan,
+    ComparisonSubject,
     QueryContract,
     RequiredSlot,
     ResolvedSourceScope,
@@ -81,6 +83,71 @@ def test_q9_compiles_bounded_a_b_tasks_before_a_dependent_qualification_task() -
     ]
     assert plan.tasks[2].graph_policy == "never"
     assert all(task.source_scope.authorized_doc_ids for task in plan.tasks)
+
+
+def test_comparison_overlay_compiles_one_subject_bound_task_per_subject() -> None:
+    scope = _scope("nnmamba-doc", "mednext-doc")
+    comparison = ComparisonPlan(
+        subjects=[
+            ComparisonSubject(
+                subject_id="nnmamba",
+                display_name="nnMamba",
+                aliases=["Mamba model"],
+                retrieval_query="nnMamba parameters FLOPs efficiency",
+            ),
+            ComparisonSubject(
+                subject_id="efficientmednext_l",
+                display_name="EfficientMedNeXt-L",
+                aliases=["Efficient MedNeXt L"],
+                retrieval_query="EfficientMedNeXt-L parameters FLOPs efficiency",
+            ),
+        ],
+        dimensions=["parameters", "FLOPs", "computational efficiency"],
+    )
+    contract = QueryContract(
+        route="exact_structured",
+        intent="Compare bounded source evidence.",
+        required_slots=[
+            RequiredSlot(
+                slot_id=f"comparison-subject:{subject.subject_id}",
+                description=f"Find evidence for {subject.display_name}.",
+                entity_ids=[subject.display_name, *subject.aliases],
+                expected_answer_type="comparison",
+            )
+            for subject in comparison.subjects
+        ],
+        comparison_plan=comparison,
+        max_retrieval_rounds=1,
+        max_repair_rounds=1,
+        max_llm_calls=4,
+        runtime_token_budget=40_000,
+        resolved_source_scope=scope,
+    )
+
+    plan = RetrievalTaskCompiler().compile(
+        question="Does nnMamba have higher efficiency than EfficientMedNeXt-L?",
+        query_id="Q4",
+        contract=contract,
+    )
+
+    assert [
+        (task.subject_id, task.target_slot_ids, task.query) for task in plan.tasks
+    ] == [
+        (
+            "nnmamba",
+            ["comparison-subject:nnmamba"],
+            "nnMamba parameters FLOPs efficiency",
+        ),
+        (
+            "efficientmednext_l",
+            ["comparison-subject:efficientmednext_l"],
+            "EfficientMedNeXt-L parameters FLOPs efficiency",
+        ),
+    ]
+    assert all(task.round_id == "round-1" for task in plan.tasks)
+    assert all(task.depends_on_task_ids == [] for task in plan.tasks)
+    assert all(task.source_scope == scope for task in plan.tasks)
+    assert all(task.graph_policy == "locator_fallback" for task in plan.tasks)
 
 
 def test_q15_preserves_asset_locators_and_visual_policy() -> None:

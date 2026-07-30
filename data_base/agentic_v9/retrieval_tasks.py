@@ -52,7 +52,13 @@ class RetrievalTaskCompiler:
         if scope is None or not scope.authorized_doc_ids:
             raise ValueError("retrieval tasks require an authorized source scope")
 
-        if contract.contract_version == "2":
+        if contract.comparison_plan is not None:
+            tasks = self._compile_comparison_subjects(
+                query_id=normalized_query_id,
+                contract=contract,
+                scope=scope,
+            )
+        elif contract.contract_version == "2":
             tasks = self._compile_atomic_slots(
                 query_id=normalized_query_id,
                 contract=contract,
@@ -101,6 +107,43 @@ class RetrievalTaskCompiler:
             contract_version=contract.contract_version,
             tasks=tasks,
         )
+
+    def _compile_comparison_subjects(
+        self,
+        *,
+        query_id: str,
+        contract: QueryContract,
+        scope: ResolvedSourceScope,
+    ) -> list[RetrievalTask]:
+        """Create one independent authorized task for every planned subject."""
+        comparison = contract.comparison_plan
+        if comparison is None:
+            raise ValueError("comparison task compilation requires a plan")
+        slot_ids = {slot.slot_id for slot in contract.required_slots}
+        tasks: list[RetrievalTask] = []
+        for subject in comparison.subjects:
+            slot_id = f"comparison-subject:{subject.subject_id}"
+            if slot_id not in slot_ids:
+                raise ValueError(
+                    f"comparison subject has no required slot: {subject.subject_id}"
+                )
+            source_group_id = f"comparison:{subject.subject_id}"
+            tasks.append(
+                RetrievalTask(
+                    task_id=f"{query_id}:round-1:{source_group_id}",
+                    round_id="round-1",
+                    query_id=query_id,
+                    query=subject.retrieval_query,
+                    target_slot_ids=[slot_id],
+                    source_scope=scope,
+                    source_group_id=source_group_id,
+                    subject_id=subject.subject_id,
+                    locator_hints=list(contract.locator_hints),
+                    graph_policy=contract.graph_policy or "never",
+                    visual_required=contract.visual_required,
+                )
+            )
+        return tasks
 
     def _compile_atomic_slots(
         self,
