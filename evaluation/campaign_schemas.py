@@ -109,7 +109,7 @@ class CampaignConfig(BaseModel):
     actual_router_execution_enabled: bool = False
     # The environment may choose a creation default upstream, but a campaign
     # snapshot always records the selected execution version explicitly.
-    agentic_execution_version: AgenticExecutionVersion = "v8"
+    agentic_execution_version: AgenticExecutionVersion = "v9"
     shadow_evaluation_policy: ShadowEvaluationPolicy | None = None
     # A benchmark run can span separate immutable campaigns because v8/v9 and
     # shadow configuration are intentionally incompatible in one campaign.
@@ -187,7 +187,7 @@ class CampaignCreateRequest(BaseModel):
     ragas_parallel_batches: int = Field(default=8, ge=1, le=8)
     ragas_rpm_limit: int = Field(default=1000, ge=1, le=1000)
     actual_router_execution_enabled: bool = False
-    agentic_execution_version: AgenticExecutionVersion = "v8"
+    agentic_execution_version: AgenticExecutionVersion = "v9"
     shadow_evaluation_policy: ShadowEvaluationPolicy | None = None
     benchmark_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     prompt_capture_policy: PromptCapturePolicy = Field(

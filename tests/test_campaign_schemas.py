@@ -8,9 +8,63 @@ from pydantic import ValidationError
 from evaluation.campaign_schemas import (
     AgentBehaviorResponse,
     AgentBehaviorRow,
+    CampaignConfig,
+    CampaignCreateRequest,
     CampaignResult,
     CampaignResultStatus,
 )
+from evaluation.schemas import ModelConfig
+
+
+def _model_config() -> ModelConfig:
+    return ModelConfig(
+        id="cfg-1",
+        name="Balanced",
+        model_name="gemini-2.5-flash",
+        temperature=0.7,
+        top_p=0.95,
+        top_k=40,
+        max_input_tokens=8192,
+        max_output_tokens=2048,
+        thinking_mode=False,
+        thinking_budget=8192,
+    )
+
+
+def test_new_evaluation_campaign_contracts_default_to_agentic_v9() -> None:
+    config = CampaignConfig(
+        test_case_ids=["Q1"],
+        modes=["agentic"],
+        model_config=_model_config(),
+    )
+    request = CampaignCreateRequest(
+        test_case_ids=["Q1"],
+        modes=["agentic"],
+        model_config=_model_config(),
+    )
+
+    assert config.agentic_execution_version == "v9"
+    assert request.agentic_execution_version == "v9"
+    assert request.to_config().agentic_execution_version == "v9"
+
+
+def test_new_evaluation_campaign_contracts_preserve_explicit_agentic_v8() -> None:
+    config = CampaignConfig(
+        test_case_ids=["Q1"],
+        modes=["agentic-v8"],
+        model_config=_model_config(),
+        agentic_execution_version="v8",
+    )
+    request = CampaignCreateRequest(
+        test_case_ids=["Q1"],
+        modes=["agentic-v8"],
+        model_config=_model_config(),
+        agentic_execution_version="v8",
+    )
+
+    assert config.agentic_execution_version == "v8"
+    assert request.agentic_execution_version == "v8"
+    assert request.to_config().agentic_execution_version == "v8"
 
 
 def test_campaign_result_allows_nested_token_usage_payloads() -> None:
