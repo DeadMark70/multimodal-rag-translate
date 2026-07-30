@@ -717,26 +717,32 @@ def _annotate_rerank_selection(
     reranking = dict(selection.metadata.get("reranking") or {})
     rows = list(reranking.get("post_rerank_ranks") or [])
     candidate_count = int(reranking.get("candidate_count") or 0)
+    candidate_diversification = _candidate_diversification_projection(
+        reranking.get("candidate_diversification")
+    )
     selected_count = len(selection.documents)
     annotated: list[Document] = []
     for post_rank, document in enumerate(selection.documents, start=1):
         row = rows[post_rank - 1] if post_rank <= len(rows) else {}
+        annotation: dict[str, Any] = {
+            "status": status,
+            "fallback_reason": fallback_reason,
+            "candidate_count": candidate_count,
+            "selected_count": selected_count,
+            "pre_rerank_rank": int(row.get("pre_rerank_rank") or post_rank),
+            "post_rerank_rank": post_rank,
+            "rerank_score": (
+                row.get("score") if status == "executed" else None
+            ),
+        }
+        if candidate_diversification is not None:
+            annotation["candidate_diversification"] = candidate_diversification
         annotated.append(
             Document(
                 page_content=document.page_content,
                 metadata={
                     **dict(document.metadata),
-                    "agentic_v9_reranking": {
-                        "status": status,
-                        "fallback_reason": fallback_reason,
-                        "candidate_count": candidate_count,
-                        "selected_count": selected_count,
-                        "pre_rerank_rank": int(row.get("pre_rerank_rank") or post_rank),
-                        "post_rerank_rank": post_rank,
-                        "rerank_score": (
-                            row.get("score") if status == "executed" else None
-                        ),
-                    },
+                    "agentic_v9_reranking": annotation,
                 },
             )
         )
@@ -750,6 +756,7 @@ def _retrieval_diagnostic_projection(
     status = "not_instrumented"
     fallback_reason: str | None = None
     candidate_count = len(documents)
+    candidate_diversification: dict[str, Any] | None = None
     for index, document in enumerate(documents):
         metadata = dict(document.metadata)
         reranking = metadata.get("agentic_v9_reranking")
@@ -762,6 +769,10 @@ def _retrieval_diagnostic_projection(
             else None
         )
         candidate_count = int(reranking.get("candidate_count") or candidate_count)
+        if candidate_diversification is None:
+            candidate_diversification = _candidate_diversification_projection(
+                reranking.get("candidate_diversification")
+            )
         rows.append(
             {
                 "doc_id": get_document_id(metadata),
@@ -776,13 +787,41 @@ def _retrieval_diagnostic_projection(
                 "rerank_score": reranking.get("rerank_score"),
             }
         )
-    return {
+    projection = {
         "task_id": task_id,
         "status": status,
         "fallback_reason": fallback_reason,
         "candidate_count": candidate_count,
         "selected_count": len(documents),
         "selected": rows,
+    }
+    if candidate_diversification is not None:
+        projection["candidate_diversification"] = candidate_diversification
+    return projection
+
+
+def _candidate_diversification_projection(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+
+    def ordered_ids(field: str) -> list[str]:
+        raw_ids = value.get(field)
+        if not isinstance(raw_ids, list):
+            return []
+        return list(dict.fromkeys(item for item in raw_ids if isinstance(item, str) and item))
+
+    policy = value.get("policy")
+    if not isinstance(policy, str) or not policy:
+        return None
+    return {
+        "policy": policy,
+        "applied": bool(value.get("applied")),
+        "retrieved_doc_ids": ordered_ids("retrieved_doc_ids"),
+        "candidate_doc_ids": ordered_ids("candidate_doc_ids"),
+        "represented_doc_ids_before_tail": ordered_ids(
+            "represented_doc_ids_before_tail"
+        ),
+        "admitted_doc_ids": ordered_ids("admitted_doc_ids"),
     }
 
 

@@ -173,7 +173,7 @@ def test_candidate_diversification_reserves_tail_candidates_for_other_documents(
         observed_candidates[:] = candidates
         return [(document, 1.0) for document in candidates]
 
-    filter_and_rerank_retrieval(
+    result = filter_and_rerank_retrieval(
         "Compare the primary, secondary, and tertiary models.",
         RagRetrievalResult(documents=documents),
         enable_reranking=True,
@@ -194,6 +194,14 @@ def test_candidate_diversification_reserves_tail_candidates_for_other_documents(
         "secondary",
         "tertiary",
     ]
+    assert result.metadata["reranking"]["candidate_diversification"] == {
+        "policy": "tail_source_diversity_r1",
+        "applied": True,
+        "retrieved_doc_ids": ["primary", "secondary", "tertiary"],
+        "candidate_doc_ids": ["primary", "secondary", "tertiary"],
+        "represented_doc_ids_before_tail": ["primary"],
+        "admitted_doc_ids": ["secondary", "tertiary"],
+    }
 
 
 def test_strict_reranking_propagates_an_injected_scoring_failure() -> None:

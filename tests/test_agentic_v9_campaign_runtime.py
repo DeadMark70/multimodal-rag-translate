@@ -434,6 +434,91 @@ def test_retrieval_diagnostic_projection_retains_fallback_details() -> None:
     }
 
 
+def test_retrieval_diagnostic_projection_retains_candidate_diversification() -> None:
+    diagnostics = runtime_module._retrieval_diagnostic_projection(
+        "task:source-group-1",
+        [
+            Document(
+                page_content="selected content",
+                metadata={
+                    "doc_id": "primary",
+                    "agentic_v9_reranking": {
+                        "status": "executed",
+                        "fallback_reason": None,
+                        "candidate_count": 8,
+                        "selected_count": 4,
+                        "pre_rerank_rank": 1,
+                        "post_rerank_rank": 1,
+                        "rerank_score": 0.93,
+                        "candidate_diversification": {
+                            "policy": "tail_source_diversity_r1",
+                            "applied": True,
+                            "retrieved_doc_ids": [
+                                "primary",
+                                "secondary",
+                                "tertiary",
+                            ],
+                            "candidate_doc_ids": [
+                                "primary",
+                                "secondary",
+                                "tertiary",
+                            ],
+                            "represented_doc_ids_before_tail": ["primary"],
+                            "admitted_doc_ids": ["secondary", "tertiary"],
+                        },
+                    },
+                },
+            )
+        ],
+    )
+
+    assert diagnostics["candidate_diversification"] == {
+        "policy": "tail_source_diversity_r1",
+        "applied": True,
+        "retrieved_doc_ids": ["primary", "secondary", "tertiary"],
+        "candidate_doc_ids": ["primary", "secondary", "tertiary"],
+        "represented_doc_ids_before_tail": ["primary"],
+        "admitted_doc_ids": ["secondary", "tertiary"],
+    }
+
+
+def test_annotate_rerank_selection_copies_candidate_diversification() -> None:
+    selection = PipelineRetrievalResult(
+        documents=[Document(page_content="selected content", metadata={"doc_id": "primary"})],
+        metadata={
+            "reranking": {
+                "candidate_count": 8,
+                "post_rerank_ranks": [
+                    {"pre_rerank_rank": 1, "score": 0.93},
+                ],
+                "candidate_diversification": {
+                    "policy": "tail_source_diversity_r1",
+                    "applied": True,
+                    "retrieved_doc_ids": ["primary", "secondary"],
+                    "candidate_doc_ids": ["primary", "secondary"],
+                    "represented_doc_ids_before_tail": ["primary"],
+                    "admitted_doc_ids": ["secondary"],
+                },
+            }
+        },
+    )
+
+    annotated = runtime_module._annotate_rerank_selection(
+        selection, status="executed", fallback_reason=None
+    )
+
+    assert annotated[0].metadata["agentic_v9_reranking"][
+        "candidate_diversification"
+    ] == {
+        "policy": "tail_source_diversity_r1",
+        "applied": True,
+        "retrieved_doc_ids": ["primary", "secondary"],
+        "candidate_doc_ids": ["primary", "secondary"],
+        "represented_doc_ids_before_tail": ["primary"],
+        "admitted_doc_ids": ["secondary"],
+    }
+
+
 def test_retrieval_diagnostic_projection_uses_chunk_projection_fallback_id() -> None:
     document = Document(
         page_content="selected content",

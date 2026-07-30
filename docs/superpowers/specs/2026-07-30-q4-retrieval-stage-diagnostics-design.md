@@ -21,8 +21,10 @@ changing retrieval, ranking, context packing, prompts, token use, or answers.
 The generic retrieval boundary already knows the capped hybrid candidates and
 whether `tail_source_diversity_r1` replaced part of the candidate tail. It
 will emit a compact `candidate_diversification` record containing the policy,
-whether it applied, the document IDs represented before the tail, and document
-IDs admitted by the tail. This record is copied into the existing
+whether it applied, the document IDs represented before the tail, document
+IDs admitted by the tail, and the ordered document IDs sent to the reranker.
+It also records the ordered IDs returned by hybrid retrieval before candidate
+capping. This record is copied into the existing
 `agentic_v9_reranking` annotation for selected documents.
 
 The v9 runtime's retrieval diagnostic projection will persist that same record

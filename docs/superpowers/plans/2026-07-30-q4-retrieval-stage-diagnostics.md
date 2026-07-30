@@ -28,7 +28,7 @@
 
 **Interfaces:**
 - Consumes: `filter_and_rerank_retrieval(..., diversify_rerank_candidates=True)` and its existing `metadata["reranking"]` mapping.
-- Produces: `metadata["reranking"]["candidate_diversification"]` with `policy`, `applied`, `represented_doc_ids_before_tail`, and `admitted_doc_ids`.
+- Produces: `metadata["reranking"]["candidate_diversification"]` with `policy`, `applied`, `retrieved_doc_ids`, `candidate_doc_ids`, `represented_doc_ids_before_tail`, and `admitted_doc_ids`.
 - Produces: `_retrieval_diagnostic_projection(task_id, documents)["candidate_diversification"]` as the same sanitized mapping.
 
 - [ ] **Step 1: Write the failing retrieval-boundary test**
@@ -37,6 +37,8 @@
 assert result.metadata["reranking"]["candidate_diversification"] == {
     "policy": "tail_source_diversity_r1",
     "applied": True,
+    "retrieved_doc_ids": ["doc-primary", "doc-alternate"],
+    "candidate_doc_ids": ["doc-primary", "doc-alternate"],
     "represented_doc_ids_before_tail": ["doc-primary"],
     "admitted_doc_ids": ["doc-alternate"],
 }
@@ -57,6 +59,8 @@ Expected: FAIL because the metadata currently contains only `policy` and `applie
 assert diagnostics["candidate_diversification"] == {
     "policy": "tail_source_diversity_r1",
     "applied": True,
+    "retrieved_doc_ids": ["doc-primary", "doc-alternate"],
+    "candidate_doc_ids": ["doc-primary", "doc-alternate"],
     "represented_doc_ids_before_tail": ["doc-primary"],
     "admitted_doc_ids": ["doc-alternate"],
 }

@@ -106,10 +106,13 @@ def filter_and_rerank_retrieval(
         "rejected_candidates": candidate_rejections + selection_rejections,
     }
     if diversify_rerank_candidates and enable_reranking and availability:
-        metadata["reranking"]["candidate_diversification"] = {
-            "policy": "tail_source_diversity_r1",
-            "applied": rerank_candidates != filtered_documents[:max_candidates],
-        }
+        metadata["reranking"]["candidate_diversification"] = (
+            _candidate_diversification_diagnostics(
+                filtered_documents,
+                rerank_candidates,
+                max_candidates=max_candidates,
+            )
+        )
     return RagRetrievalResult(
         documents=selected_documents,
         source_doc_ids=_source_doc_ids(selected_documents),
@@ -308,6 +311,29 @@ def _limit_rerank_candidates(
         if id(document) not in selected_ids
     ]
     return (retained_prefix + alternates + backfill)[:max_candidates]
+
+
+def _candidate_diversification_diagnostics(
+    retrieved_documents: list[Document],
+    rerank_candidates: list[Document],
+    *,
+    max_candidates: int,
+) -> dict[str, Any]:
+    """Describe an existing soft candidate-tail decision without affecting it."""
+    baseline_candidates = retrieved_documents[:max_candidates]
+    retained_prefix = retrieved_documents[: max(max_candidates - 2, 0)]
+    baseline_ids = {id(document) for document in baseline_candidates}
+    admitted_documents = [
+        document for document in rerank_candidates if id(document) not in baseline_ids
+    ]
+    return {
+        "policy": "tail_source_diversity_r1",
+        "applied": rerank_candidates != baseline_candidates,
+        "retrieved_doc_ids": _source_doc_ids(retrieved_documents),
+        "candidate_doc_ids": _source_doc_ids(rerank_candidates),
+        "represented_doc_ids_before_tail": _source_doc_ids(retained_prefix),
+        "admitted_doc_ids": _source_doc_ids(admitted_documents),
+    }
 
 
 def _candidate_limit_rejections(
