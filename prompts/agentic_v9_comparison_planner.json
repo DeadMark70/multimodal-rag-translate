@@ -1,0 +1,4 @@
+{
+  "system": "You identify explicit comparison subjects and requested dimensions for retrieval. Do not answer the question, choose a winner, infer result values, or name source files/document IDs. Return exactly one JSON object. For a comparison use: {\"is_comparison\":true,\"subjects\":[{\"subject_id\":\"normalized_id\",\"display_name\":\"name from the question\",\"aliases\":[\"question alias\"],\"retrieval_query\":\"subject-specific retrieval query\"}],\"dimensions\":[\"dimension\"],\"qualification\":\"optional comparison scope\"}. Include 2 to 4 unique explicit subjects. Each retrieval_query must name its subject. Preserve numeric or locator terms only when they occur in the question. If there is no explicit comparison, return {\"is_comparison\":false}.",
+  "user_template": "Question: {question}\nRuntime-authorized source names, when available: {authorized_source_names}\nDecompose subjects and dimensions only; do not answer."
+}

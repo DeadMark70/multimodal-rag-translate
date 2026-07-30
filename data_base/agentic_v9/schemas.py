@@ -44,6 +44,13 @@ ScopeMatch = Literal["same", "different", "unknown"]
 SlotResolutionStatus = Literal[
     "supported", "conflicted", "explicitly_unavailable", "not_found"
 ]
+ComparisonPlannerFallbackReason = Literal[
+    "timeout",
+    "provider_error",
+    "invalid_response",
+    "schema_violation",
+    "not_comparison",
+]
 
 ROUTE_GRAPH_POLICIES: dict[AgenticV9Route, GraphPolicy] = {
     "single_lookup": "never",
@@ -99,6 +106,89 @@ class ResolvedSourceScope(BaseModel):
     rejected_source_names: list[str] = Field(default_factory=list)
 
 
+class ComparisonSubject(BaseModel):
+    """One explicit semantic subject in a bounded comparison."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject_id: str = Field(min_length=1, max_length=80)
+    display_name: str = Field(min_length=1, max_length=160)
+    aliases: list[str] = Field(default_factory=list, max_length=8)
+    retrieval_query: str = Field(min_length=1, max_length=512)
+
+    @model_validator(mode="after")
+    def normalize_and_validate_identity(self) -> ComparisonSubject:
+        """Keep planner output bounded and free of source-file authority."""
+        normalized_id = self.subject_id.strip().casefold().replace(" ", "_")
+        if not normalized_id:
+            raise ValueError("comparison subject ID must not be empty")
+        self.subject_id = normalized_id
+        self.display_name = self.display_name.strip()
+        self.aliases = list(
+            dict.fromkeys(
+                alias.strip()
+                for alias in self.aliases
+                if alias.strip() and alias.strip() != self.display_name
+            )
+        )
+        values = [self.display_name, *self.aliases, self.retrieval_query]
+        if any(_looks_like_source_reference(value) for value in values):
+            raise ValueError("comparison subjects must not contain source references")
+        query = self.retrieval_query.casefold()
+        names = [self.display_name, *self.aliases]
+        if not any(name.casefold() in query for name in names):
+            raise ValueError("comparison retrieval query must name its subject")
+        return self
+
+
+class ComparisonPlan(BaseModel):
+    """Answer-free semantic comparison decomposition."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subjects: list[ComparisonSubject] = Field(min_length=2, max_length=4)
+    dimensions: list[str] = Field(default_factory=list, max_length=12)
+    qualification: str | None = Field(default=None, max_length=512)
+
+    @model_validator(mode="after")
+    def require_unique_subjects(self) -> ComparisonPlan:
+        """Reject plans that would retrieve the same subject more than once."""
+        subject_ids = [subject.subject_id for subject in self.subjects]
+        if len(subject_ids) != len(set(subject_ids)):
+            raise ValueError("comparison subject IDs must be unique")
+        self.dimensions = list(
+            dict.fromkeys(
+                dimension.strip()
+                for dimension in self.dimensions
+                if dimension.strip()
+            )
+        )
+        if self.qualification is not None:
+            self.qualification = self.qualification.strip() or None
+        return self
+
+
+class ComparisonPlannerOutcome(BaseModel):
+    """Typed terminal result for one fail-soft comparison-planner attempt."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["planned", "fallback"]
+    plan: ComparisonPlan | None = None
+    fallback_reason: ComparisonPlannerFallbackReason | None = None
+    latency_ms: float = Field(ge=0)
+
+    @model_validator(mode="after")
+    def require_status_consistency(self) -> ComparisonPlannerOutcome:
+        """Keep successful plans and safe fallback reasons mutually exclusive."""
+        if self.status == "planned":
+            if self.plan is None or self.fallback_reason is not None:
+                raise ValueError("planned outcome requires only a comparison plan")
+        elif self.plan is not None or self.fallback_reason is None:
+            raise ValueError("fallback outcome requires only a fallback reason")
+        return self
+
+
 class QueryContract(BaseModel):
     """Routing authority for a bounded evidence-first execution."""
 
@@ -119,6 +209,7 @@ class QueryContract(BaseModel):
     resolved_source_scope: ResolvedSourceScope | None = None
     strategy_tier: str | None = None
     route_decision: RouteDecision | None = None
+    comparison_plan: ComparisonPlan | None = None
     slot_plan_status: SlotPlanStatus | None = None
     slot_semantics: SlotSemantics | None = None
     atomic_completeness: bool | None = None
@@ -156,10 +247,18 @@ class RetrievalTask(BaseModel):
     target_slot_ids: list[str] = Field(min_length=1)
     source_scope: ResolvedSourceScope
     source_group_id: str = Field(default="source-group-1", min_length=1)
+    subject_id: str | None = None
     locator_hints: list[str] = Field(default_factory=list)
     graph_policy: GraphPolicy = "never"
     visual_required: bool = False
     depends_on_task_ids: list[str] = Field(default_factory=list)
+
+
+def _looks_like_source_reference(value: str) -> bool:
+    normalized = value.strip().casefold()
+    return normalized.endswith((".pdf", ".docx", ".txt")) or normalized.startswith(
+        ("doc:", "document:")
+    )
 
 
 class VisualAssetBackfillResult(BaseModel):

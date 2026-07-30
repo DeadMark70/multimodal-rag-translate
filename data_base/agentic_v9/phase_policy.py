@@ -34,6 +34,7 @@ class EffectivePhasePolicy:
 PHASE_POLICIES: dict[str, PhasePolicy] = {
     "contract_planning": PhasePolicy(0.10, 0.80, 20, 768),
     "route_plan": PhasePolicy(0.10, 0.80, 20, 384),
+    "comparison_plan": PhasePolicy(0.10, 0.80, 20, 768),
     "query_rewrite": PhasePolicy(0.10, 0.80, 20, 192),
     "retrieval_judge": PhasePolicy(0.10, 0.70, 10, 96),
     "graph_route": PhasePolicy(0.10, 0.70, 10, 128),
