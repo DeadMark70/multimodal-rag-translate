@@ -185,6 +185,42 @@ def test_official_token_reconciliation_counts_retries_and_token_components() -> 
     assert result.reasons == ()
 
 
+def test_official_token_reconciliation_attributes_comparison_plan() -> None:
+    calls = [
+        SimpleNamespace(
+            llm_call_id="comparison-plan",
+            phase="comparison_plan",
+            reservation_id="reservation-plan",
+            provider_attempt=1,
+            total_tokens=11,
+            prompt_tokens=8,
+            completion_tokens=3,
+            reasoning_tokens=0,
+            other_tokens=0,
+            payload={"usage_status": "measured", "official_total_tokens": 11},
+        ),
+        SimpleNamespace(
+            llm_call_id="final-answer",
+            phase="final_answer",
+            reservation_id="reservation-final",
+            provider_attempt=1,
+            total_tokens=19,
+            prompt_tokens=14,
+            completion_tokens=5,
+            reasoning_tokens=0,
+            other_tokens=0,
+            payload={"usage_status": "measured", "official_total_tokens": 19},
+        ),
+    ]
+
+    result = reconcile_official_tokens(runtime_total_tokens=30, calls=calls)
+
+    assert result.status == "complete"
+    assert result.provider_total_tokens == 30
+    assert result.by_phase == {"comparison_plan": 11, "final_answer": 19}
+    assert result.reasons == ()
+
+
 @pytest.mark.parametrize(
     ("runtime_total", "calls", "partial_reasons", "expected_reason"),
     [

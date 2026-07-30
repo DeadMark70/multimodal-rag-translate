@@ -3,6 +3,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from data_base.agentic_v9.budgeted_llm import LlmAttemptObservation
 from evaluation.observability import EvaluationRunRecorder
 from evaluation.token_cost import (
     load_price_snapshot,
@@ -19,6 +20,7 @@ class FakeLlmCallRepository:
 
     async def record_llm_call(self, call):
         self.calls.append(call)
+        return True
 
 
 def test_normalize_llm_usage_accepts_multiple_provider_shapes() -> None:
@@ -315,3 +317,57 @@ async def test_recorder_records_llm_usage_as_normalized_llm_call() -> None:
     assert call.total_tokens == 15
     assert call.estimated_cost_usd == pytest.approx(0.000003)
     assert call.payload["price_snapshot_id"] == "local-test"
+
+
+@pytest.mark.asyncio
+async def test_recorder_persists_comparison_plan_terminal_attempt() -> None:
+    repository = FakeLlmCallRepository()
+    recorder = EvaluationRunRecorder(
+        run_id="run-1",
+        campaign_id="campaign-1",
+        user_id="user-a",
+        llm_call_repository=repository,
+    )
+    observation = LlmAttemptObservation(
+        phase="comparison_plan",
+        purpose="agentic_v9_comparison_plan",
+        reservation_id="reservation-plan",
+        provider_attempt=1,
+        provider="google",
+        model_name="gemini-test",
+        prompt_hash="prompt-hash",
+        prompt_preview="plan the comparison",
+        full_prompt=None,
+        prompt_capture_status="captured",
+        full_prompt_capture_status="not_captured_at_execution",
+        response_hash="response-hash",
+        latency_ms=25.0,
+        status="success",
+        error={},
+        usage={
+            "input_tokens": 8,
+            "output_tokens": 3,
+            "reasoning_tokens": 0,
+            "other_tokens": 0,
+            "total_tokens": 11,
+            "usage_status": "measured",
+            "official_total_tokens": 11,
+        },
+    )
+
+    recorded = await recorder.on_terminal_attempt(observation)
+
+    assert recorded is True
+    assert recorder.observability_partial_reasons == []
+    assert len(repository.calls) == 1
+    call = repository.calls[0]
+    assert call.phase == "comparison_plan"
+    assert call.reservation_id == "reservation-plan"
+    assert call.provider_attempt == 1
+    assert (call.prompt_tokens, call.completion_tokens, call.total_tokens) == (
+        8,
+        3,
+        11,
+    )
+    assert call.payload["usage_status"] == "measured"
+    assert call.payload["official_total_tokens"] == 11

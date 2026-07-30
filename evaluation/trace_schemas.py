@@ -20,6 +20,7 @@ TraceEventStatus = Literal["running", "success", "failed", "skipped", "timeout",
 LlmCallPhase = Literal[
     "unknown",
     "contract_planning",
+    "comparison_plan",
     "evidence_extract",
     "retrieval_judge",
     "visual_extract",

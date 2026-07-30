@@ -294,6 +294,23 @@ def test_llm_call_schema_exposes_attempt_and_capture_provenance() -> None:
     assert call.other_tokens == 3
 
 
+def test_llm_call_schema_accepts_comparison_plan_phase() -> None:
+    call = EvaluationLlmCall(
+        llm_call_id="llm-comparison-plan",
+        run_id="run-1",
+        campaign_id="campaign-1",
+        phase="comparison_plan",
+        purpose="agentic_v9_comparison_plan",
+        prompt_tokens=8,
+        completion_tokens=3,
+        total_tokens=11,
+        created_at=datetime.now(timezone.utc),
+    )
+
+    assert call.phase == "comparison_plan"
+    assert call.total_tokens == 11
+
+
 @pytest.mark.asyncio
 async def test_v9_evidence_tables_have_identity_schema_and_idempotency_indexes(
     tmp_path, monkeypatch
