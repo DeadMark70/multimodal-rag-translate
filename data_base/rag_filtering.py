@@ -42,6 +42,7 @@ def filter_and_rerank_retrieval(
     reranker_available: bool | None = None,
     target_k: int = RERANK_TARGET_K,
     max_candidates: int = RERANK_CANDIDATE_LIMIT,
+    diversify_rerank_candidates: bool = False,
     rerank_with_scores: RerankWithScores | None = None,
     strict_reranking: bool = False,
 ) -> RagRetrievalResult:
@@ -61,7 +62,11 @@ def filter_and_rerank_retrieval(
         else reranker_available
     )
     rerank_candidates = (
-        _limit_rerank_candidates(filtered_documents, max_candidates)
+        _limit_rerank_candidates(
+            filtered_documents,
+            max_candidates,
+            diversify_tail=diversify_rerank_candidates,
+        )
         if enable_reranking and availability
         else list(filtered_documents)
     )
@@ -100,6 +105,11 @@ def filter_and_rerank_retrieval(
         "post_rerank_ranks": rerank_rows,
         "rejected_candidates": candidate_rejections + selection_rejections,
     }
+    if diversify_rerank_candidates and enable_reranking and availability:
+        metadata["reranking"]["candidate_diversification"] = {
+            "policy": "tail_source_diversity_r1",
+            "applied": rerank_candidates != filtered_documents[:max_candidates],
+        }
     return RagRetrievalResult(
         documents=selected_documents,
         source_doc_ids=_source_doc_ids(selected_documents),
@@ -256,7 +266,7 @@ def _fair_multi_document_selection(
 
 
 def _limit_rerank_candidates(
-    documents: list[Document], max_candidates: int
+    documents: list[Document], max_candidates: int, *, diversify_tail: bool = False
 ) -> list[Document]:
     if len(documents) <= max_candidates:
         return list(documents)
@@ -265,7 +275,39 @@ def _limit_rerank_candidates(
         len(documents),
         max_candidates,
     )
-    return documents[:max_candidates]
+    candidates = documents[:max_candidates]
+    if not diversify_tail or max_candidates < 3:
+        return candidates
+
+    # Keep most of the original rank order.  Only the final two candidate
+    # positions may be replaced by the best document from a source absent in
+    # that prefix.  This is an opt-in recall aid, not a source-coverage gate.
+    retained_prefix_size = max_candidates - 2
+    retained_prefix = documents[:retained_prefix_size]
+    represented_doc_ids = {
+        document_id
+        for document in retained_prefix
+        if (document_id := get_document_id(document.metadata))
+    }
+    alternates: list[Document] = []
+    for document in documents[retained_prefix_size:]:
+        document_id = get_document_id(document.metadata)
+        if not document_id or document_id in represented_doc_ids:
+            continue
+        alternates.append(document)
+        represented_doc_ids.add(document_id)
+        if len(alternates) == 2:
+            break
+    if not alternates:
+        return candidates
+
+    selected_ids = {id(document) for document in retained_prefix + alternates}
+    backfill = [
+        document
+        for document in documents[retained_prefix_size:]
+        if id(document) not in selected_ids
+    ]
+    return (retained_prefix + alternates + backfill)[:max_candidates]
 
 
 def _candidate_limit_rejections(

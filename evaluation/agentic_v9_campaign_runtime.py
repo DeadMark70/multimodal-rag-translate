@@ -129,6 +129,7 @@ class AgenticV9CampaignRuntime:
         llm_call_observer: LlmCallObserver | None = None,
     ) -> None:
         self._retrieve_documents = retrieve_documents or _retrieve_documents
+        self._uses_default_retrieval = retrieve_documents is None
         self._graph_locator = graph_locator or _locate_graph_documents
         self._visual_extractor = visual_extractor
         self._provider_factory = provider_factory or _provider_for_purpose
@@ -250,9 +251,20 @@ class AgenticV9CampaignRuntime:
             results: list[TaskRetrievalResult] = []
             for task in tasks:
                 state["task_slot_ids"][task.task_id] = list(task.target_slot_ids)
-                docs = await self._retrieve_documents(
-                    user_id, task.query, list(task.source_scope.authorized_doc_ids)
-                )
+                source_scope = list(task.source_scope.authorized_doc_ids)
+                if self._uses_default_retrieval:
+                    docs = await self._retrieve_documents(
+                        user_id,
+                        task.query,
+                        source_scope,
+                        diversify_rerank_candidates=_requires_diverse_rerank_candidates(
+                            state["contract"].route
+                        ),
+                    )
+                else:
+                    docs = await self._retrieve_documents(
+                        user_id, task.query, source_scope
+                    )
                 state["retrieval_diagnostics"].append(
                     _retrieval_diagnostic_projection(task.task_id, docs)
                 )
@@ -620,7 +632,11 @@ class AgenticV9CampaignRuntime:
 
 
 async def _retrieve_documents(
-    user_id: str, question: str, authorized_doc_ids: list[str]
+    user_id: str,
+    question: str,
+    authorized_doc_ids: list[str],
+    *,
+    diversify_rerank_candidates: bool = False,
 ) -> list[Document]:
     """Retrieve only within the source scope, without HyDE or query expansion."""
     if not authorized_doc_ids:
@@ -641,6 +657,7 @@ async def _retrieve_documents(
             reranker_available=False,
             target_k=4,
             max_candidates=8,
+            diversify_rerank_candidates=diversify_rerank_candidates,
         )
         return _annotate_rerank_selection(
             fallback,
@@ -657,6 +674,7 @@ async def _retrieve_documents(
             enable_reranking=True,
             target_k=4,
             max_candidates=8,
+            diversify_rerank_candidates=diversify_rerank_candidates,
             strict_reranking=True,
         )
     except Exception as error:  # noqa: BLE001 -- bounded fail-soft stage boundary
@@ -1149,6 +1167,16 @@ def _evidence_packets_for_results(
         packets=packets,
         quality_by_evidence_id=quality_by_evidence_id,
     )
+
+
+def _requires_diverse_rerank_candidates(route: str) -> bool:
+    """Enable the recall-only treatment for routes that span source claims."""
+    return route in {
+        "bounded_compare",
+        "multi_hop",
+        "multi_document_exact",
+        "graph_relational",
+    }
 
 
 def _configuration_incompatible_result(

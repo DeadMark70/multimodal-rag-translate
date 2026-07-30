@@ -115,6 +115,23 @@ async def test_v9_retrieval_reranks_eight_to_four(
     )
 
 
+@pytest.mark.parametrize(
+    ("route", "expected"),
+    [
+        ("single_lookup", False),
+        ("exact_structured", False),
+        ("bounded_compare", True),
+        ("multi_hop", True),
+        ("multi_document_exact", True),
+        ("graph_relational", True),
+    ],
+)
+def test_v9_candidate_diversification_is_limited_to_multi_source_routes(
+    route: str, expected: bool
+) -> None:
+    assert runtime_module._requires_diverse_rerank_candidates(route) is expected
+
+
 @pytest.mark.asyncio
 async def test_v9_retrieval_falls_back_to_hybrid_top_four_when_unavailable(
     monkeypatch: pytest.MonkeyPatch,
@@ -250,7 +267,7 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
 
     v9 = result.agent_trace["agentic_v9"]
     assert result.agent_trace["execution_profile"] == (
-        "agentic_eval_v9_explicit_scope_hybrid8_rerank8_top4_finalpack_r1"
+        "agentic_eval_v9_explicit_scope_hybrid8_rerank8_diverse_tail2_top4_finalpack_r1"
     )
     assert v9["query_contract"]["resolved_source_scope"]["authorized_doc_ids"] == [
         "doc-1"
@@ -565,7 +582,7 @@ async def test_v9_campaign_runtime_resolves_open_corpus_from_user_acl() -> None:
     assert retrieved_scope == ["doc-1", "doc-2"]
     assert result.agent_trace["execution_profile"] == AGENTIC_V9_OPEN_CORPUS_PROFILE
     assert result.agent_trace["execution_profile"] == (
-        "agentic_eval_v9_open_corpus_hybrid8_rerank8_top4_finalpack_r1"
+        "agentic_eval_v9_open_corpus_hybrid8_rerank8_diverse_tail2_top4_finalpack_r1"
     )
     assert result.agent_trace["agentic_v9"]["retrieval_scope"] == {
         "policy": "open_user_corpus",
@@ -643,7 +660,7 @@ async def test_v9_runtime_rejects_incompatible_setup_before_provider_or_retrieva
 
     assert result.agent_trace["response_status"] == "configuration_incompatible"
     assert result.agent_trace["execution_profile"] == (
-        "agentic_eval_v9_explicit_scope_hybrid8_rerank8_top4_finalpack_r1"
+        "agentic_eval_v9_explicit_scope_hybrid8_rerank8_diverse_tail2_top4_finalpack_r1"
     )
     assert (
         result.agent_trace["agentic_v9"]["configuration_incompatible"]["stage"]

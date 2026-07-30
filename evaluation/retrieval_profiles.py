@@ -19,10 +19,10 @@ AGENTIC_EVAL_PROFILE = (
     f"agentic_eval_v8_multiquery_locator_{DEFAULT_PRODUCTION_INDEXING_PROFILE}"
 )
 AGENTIC_V9_OPEN_CORPUS_PROFILE = (
-    "agentic_eval_v9_open_corpus_hybrid8_rerank8_top4_finalpack_r1"
+    "agentic_eval_v9_open_corpus_hybrid8_rerank8_diverse_tail2_top4_finalpack_r1"
 )
 AGENTIC_V9_EXPLICIT_SCOPE_PROFILE = (
-    "agentic_eval_v9_explicit_scope_hybrid8_rerank8_top4_finalpack_r1"
+    "agentic_eval_v9_explicit_scope_hybrid8_rerank8_diverse_tail2_top4_finalpack_r1"
 )
 AGENTIC_V9_CONTEXT_POLICY_VERSION = "v5_final_context_soft_pack_r1"
 AGENTIC_LEGACY_CHAT_PROFILE = (

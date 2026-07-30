@@ -158,6 +158,44 @@ def test_unavailable_reranker_caps_candidates_to_requested_target() -> None:
     )
 
 
+def test_candidate_diversification_reserves_tail_candidates_for_other_documents() -> None:
+    """A multi-source treatment keeps the high-ranked prefix before diversifying."""
+    documents = [
+        Document(page_content=f"primary-{index}", metadata={"doc_id": "primary"})
+        for index in range(8)
+    ] + [
+        Document(page_content="secondary", metadata={"doc_id": "secondary"}),
+        Document(page_content="tertiary", metadata={"doc_id": "tertiary"}),
+    ]
+    observed_candidates: list[Document] = []
+
+    def preserve_candidate_order(_query, candidates, _top_k):
+        observed_candidates[:] = candidates
+        return [(document, 1.0) for document in candidates]
+
+    filter_and_rerank_retrieval(
+        "Compare the primary, secondary, and tertiary models.",
+        RagRetrievalResult(documents=documents),
+        enable_reranking=True,
+        reranker_available=True,
+        target_k=4,
+        max_candidates=8,
+        diversify_rerank_candidates=True,
+        rerank_with_scores=preserve_candidate_order,
+    )
+
+    assert [document.page_content for document in observed_candidates] == [
+        "primary-0",
+        "primary-1",
+        "primary-2",
+        "primary-3",
+        "primary-4",
+        "primary-5",
+        "secondary",
+        "tertiary",
+    ]
+
+
 def test_strict_reranking_propagates_an_injected_scoring_failure() -> None:
     """A caller that needs fail-soft recovery can distinguish a scoring failure."""
     documents = [
