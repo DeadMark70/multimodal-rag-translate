@@ -815,6 +815,7 @@ def _candidate_diversification_projection(value: Any) -> dict[str, Any] | None:
         return None
     return {
         "policy": policy,
+        "enabled": bool(value.get("enabled")),
         "applied": bool(value.get("applied")),
         "retrieved_doc_ids": ordered_ids("retrieved_doc_ids"),
         "candidate_doc_ids": ordered_ids("candidate_doc_ids"),

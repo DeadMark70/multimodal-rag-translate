@@ -157,6 +157,15 @@ async def test_v9_retrieval_falls_back_to_hybrid_top_four_when_unavailable(
             "pre_rerank_rank": index,
             "post_rerank_rank": index,
             "rerank_score": None,
+            "candidate_diversification": {
+                "policy": "tail_source_diversity_r1",
+                "enabled": False,
+                "applied": False,
+                "retrieved_doc_ids": ["doc-1"],
+                "candidate_doc_ids": ["doc-1"],
+                "represented_doc_ids_before_tail": [],
+                "admitted_doc_ids": [],
+            },
         }
         for index, document in enumerate(selected, start=1)
     )
@@ -452,6 +461,7 @@ def test_retrieval_diagnostic_projection_retains_candidate_diversification() -> 
                         "rerank_score": 0.93,
                         "candidate_diversification": {
                             "policy": "tail_source_diversity_r1",
+                            "enabled": True,
                             "applied": True,
                             "retrieved_doc_ids": [
                                 "primary",
@@ -474,6 +484,7 @@ def test_retrieval_diagnostic_projection_retains_candidate_diversification() -> 
 
     assert diagnostics["candidate_diversification"] == {
         "policy": "tail_source_diversity_r1",
+        "enabled": True,
         "applied": True,
         "retrieved_doc_ids": ["primary", "secondary", "tertiary"],
         "candidate_doc_ids": ["primary", "secondary", "tertiary"],
@@ -493,6 +504,7 @@ def test_annotate_rerank_selection_copies_candidate_diversification() -> None:
                 ],
                 "candidate_diversification": {
                     "policy": "tail_source_diversity_r1",
+                    "enabled": True,
                     "applied": True,
                     "retrieved_doc_ids": ["primary", "secondary"],
                     "candidate_doc_ids": ["primary", "secondary"],
@@ -511,6 +523,7 @@ def test_annotate_rerank_selection_copies_candidate_diversification() -> None:
         "candidate_diversification"
     ] == {
         "policy": "tail_source_diversity_r1",
+        "enabled": True,
         "applied": True,
         "retrieved_doc_ids": ["primary", "secondary"],
         "candidate_doc_ids": ["primary", "secondary"],

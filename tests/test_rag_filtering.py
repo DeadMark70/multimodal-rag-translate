@@ -84,6 +84,15 @@ def test_filtering_and_reranking_preserve_ranks_thresholds_and_rejections() -> N
             },
         ],
         "rejected_candidates": [],
+        "candidate_diversification": {
+            "policy": "tail_source_diversity_r1",
+            "enabled": False,
+            "applied": False,
+            "retrieved_doc_ids": ["kept"],
+            "candidate_doc_ids": ["kept"],
+            "represented_doc_ids_before_tail": [],
+            "admitted_doc_ids": [],
+        },
     }
 
 
@@ -126,6 +135,15 @@ def test_unavailable_reranker_preserves_original_top_k_with_none_scores() -> Non
                 "reason": "selection_limit",
             }
         ],
+        "candidate_diversification": {
+            "policy": "tail_source_diversity_r1",
+            "enabled": False,
+            "applied": False,
+            "retrieved_doc_ids": ["one", "two"],
+            "candidate_doc_ids": ["one", "two"],
+            "represented_doc_ids_before_tail": [],
+            "admitted_doc_ids": [],
+        },
     }
 
 
@@ -196,11 +214,43 @@ def test_candidate_diversification_reserves_tail_candidates_for_other_documents(
     ]
     assert result.metadata["reranking"]["candidate_diversification"] == {
         "policy": "tail_source_diversity_r1",
+        "enabled": True,
         "applied": True,
         "retrieved_doc_ids": ["primary", "secondary", "tertiary"],
         "candidate_doc_ids": ["primary", "secondary", "tertiary"],
         "represented_doc_ids_before_tail": ["primary"],
         "admitted_doc_ids": ["secondary", "tertiary"],
+    }
+
+
+def test_reranking_records_candidate_stage_when_diversification_is_disabled() -> None:
+    """Exact-structured routes must expose document loss at the candidate cap."""
+    documents = [
+        Document(page_content=f"primary-{index}", metadata={"doc_id": "primary"})
+        for index in range(8)
+    ] + [Document(page_content="secondary", metadata={"doc_id": "secondary"})]
+
+    result = filter_and_rerank_retrieval(
+        "What does the requested table report?",
+        RagRetrievalResult(documents=documents),
+        enable_reranking=True,
+        reranker_available=True,
+        target_k=4,
+        max_candidates=8,
+        diversify_rerank_candidates=False,
+        rerank_with_scores=lambda _query, candidates, _top_k: [
+            (document, 1.0) for document in candidates
+        ],
+    )
+
+    assert result.metadata["reranking"]["candidate_diversification"] == {
+        "policy": "tail_source_diversity_r1",
+        "enabled": False,
+        "applied": False,
+        "retrieved_doc_ids": ["primary", "secondary"],
+        "candidate_doc_ids": ["primary"],
+        "represented_doc_ids_before_tail": [],
+        "admitted_doc_ids": [],
     }
 
 

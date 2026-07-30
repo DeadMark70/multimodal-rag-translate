@@ -105,12 +105,13 @@ def filter_and_rerank_retrieval(
         "post_rerank_ranks": rerank_rows,
         "rejected_candidates": candidate_rejections + selection_rejections,
     }
-    if diversify_rerank_candidates and enable_reranking and availability:
+    if enable_reranking:
         metadata["reranking"]["candidate_diversification"] = (
             _candidate_diversification_diagnostics(
                 filtered_documents,
                 rerank_candidates,
                 max_candidates=max_candidates,
+                enabled=diversify_rerank_candidates and availability,
             )
         )
     return RagRetrievalResult(
@@ -318,17 +319,26 @@ def _candidate_diversification_diagnostics(
     rerank_candidates: list[Document],
     *,
     max_candidates: int,
+    enabled: bool,
 ) -> dict[str, Any]:
-    """Describe an existing soft candidate-tail decision without affecting it."""
+    """Describe candidate-stage document coverage without affecting selection."""
     baseline_candidates = retrieved_documents[:max_candidates]
-    retained_prefix = retrieved_documents[: max(max_candidates - 2, 0)]
-    baseline_ids = {id(document) for document in baseline_candidates}
-    admitted_documents = [
-        document for document in rerank_candidates if id(document) not in baseline_ids
-    ]
+    retained_prefix = (
+        retrieved_documents[: max(max_candidates - 2, 0)] if enabled else []
+    )
+    if enabled:
+        baseline_ids = {id(document) for document in baseline_candidates}
+        admitted_documents = [
+            document
+            for document in rerank_candidates
+            if id(document) not in baseline_ids
+        ]
+    else:
+        admitted_documents = []
     return {
         "policy": "tail_source_diversity_r1",
-        "applied": rerank_candidates != baseline_candidates,
+        "enabled": enabled,
+        "applied": enabled and rerank_candidates != baseline_candidates,
         "retrieved_doc_ids": _source_doc_ids(retrieved_documents),
         "candidate_doc_ids": _source_doc_ids(rerank_candidates),
         "represented_doc_ids_before_tail": _source_doc_ids(retained_prefix),

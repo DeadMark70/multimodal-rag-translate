@@ -553,6 +553,9 @@ def _v9_rerank_diagnostics_by_context(
             "retrieval_task_id": diagnostic.get("task_id"),
             "rerank_candidate_count": diagnostic.get("candidate_count"),
             "rerank_selected_count": diagnostic.get("selected_count"),
+            "candidate_stage": _safe_candidate_stage_projection(
+                diagnostic.get("candidate_diversification")
+            ),
         }
         for selected_row in selected_rows:
             if not isinstance(selected_row, dict):
@@ -578,6 +581,37 @@ def _v9_rerank_diagnostics_by_context(
                     (str(doc_id), str(chunk_id)), []
                 ).append(diagnostic_row)
     return indexed
+
+
+def _safe_candidate_stage_projection(value: Any) -> dict[str, Any] | None:
+    """Allowlist non-content candidate diagnostics for persistence and export."""
+    if not isinstance(value, dict):
+        return None
+    policy = value.get("policy")
+    if not isinstance(policy, str) or not policy:
+        return None
+
+    def ordered_ids(field: str) -> list[str]:
+        raw_ids = value.get(field)
+        if not isinstance(raw_ids, list):
+            return []
+        return list(
+            dict.fromkeys(
+                item for item in raw_ids if isinstance(item, str) and item
+            )
+        )
+
+    return {
+        "policy": policy,
+        "enabled": bool(value.get("enabled")),
+        "applied": bool(value.get("applied")),
+        "retrieved_doc_ids": ordered_ids("retrieved_doc_ids"),
+        "candidate_doc_ids": ordered_ids("candidate_doc_ids"),
+        "represented_doc_ids_before_tail": ordered_ids(
+            "represented_doc_ids_before_tail"
+        ),
+        "admitted_doc_ids": ordered_ids("admitted_doc_ids"),
+    }
 
 
 def _consume_v9_rerank_diagnostic(
@@ -1084,6 +1118,12 @@ async def _record_unit_research_observability(
                         rerank_diagnostic["rerank_selected_count"]
                         if rerank_diagnostic is not None
                         else None
+                    ),
+                    **(
+                        {"candidate_stage": rerank_diagnostic["candidate_stage"]}
+                        if rerank_diagnostic is not None
+                        and rerank_diagnostic["candidate_stage"] is not None
+                        else {}
                     ),
                 },
                 created_at=created_at,

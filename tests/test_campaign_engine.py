@@ -1748,6 +1748,15 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks()
                             "fallback_reason": None,
                             "candidate_count": 8,
                             "selected_count": 4,
+                            "candidate_diversification": {
+                                "policy": "tail_source_diversity_r1",
+                                "enabled": False,
+                                "applied": False,
+                                "retrieved_doc_ids": ["doc-a", "doc-b"],
+                                "candidate_doc_ids": ["doc-a"],
+                                "represented_doc_ids_before_tail": [],
+                                "admitted_doc_ids": [],
+                            },
                             "selected": [
                                 {
                                     "doc_id": "doc-a",
@@ -1865,6 +1874,15 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks()
             "retrieval_task_id": "task-source-a",
             "rerank_candidate_count": 8,
             "rerank_selected_count": 4,
+            "candidate_stage": {
+                "policy": "tail_source_diversity_r1",
+                "enabled": False,
+                "applied": False,
+                "retrieved_doc_ids": ["doc-a", "doc-b"],
+                "candidate_doc_ids": ["doc-a"],
+                "represented_doc_ids_before_tail": [],
+                "admitted_doc_ids": [],
+            },
         },
         {
             "instrumentation_depth": "result_level",
@@ -1874,6 +1892,15 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks()
             "retrieval_task_id": "task-source-a",
             "rerank_candidate_count": 8,
             "rerank_selected_count": 4,
+            "candidate_stage": {
+                "policy": "tail_source_diversity_r1",
+                "enabled": False,
+                "applied": False,
+                "retrieved_doc_ids": ["doc-a", "doc-b"],
+                "candidate_doc_ids": ["doc-a"],
+                "represented_doc_ids_before_tail": [],
+                "admitted_doc_ids": [],
+            },
         },
         {
             "instrumentation_depth": "result_level",
