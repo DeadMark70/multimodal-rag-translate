@@ -326,6 +326,26 @@ async def test_transport_variation_promotes_question_anchored_model_subjects() -
 
 
 @pytest.mark.asyncio
+async def test_invalid_source_like_subject_id_rejects_entire_plan() -> None:
+    response = _payload(
+        subjects=[
+            _planner_subject("secret-paper.pdf", "nnMamba"),
+            _planner_subject("efficientmednext-l", "EfficientMedNeXt-L"),
+        ]
+    )
+
+    outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
+        question=Q4,
+        authorized_source_names=[],
+        timeout_seconds=1,
+    )
+
+    assert outcome.status == "fallback"
+    assert outcome.fallback_reason == "invalid_subjects"
+    assert outcome.plan is None
+
+
+@pytest.mark.asyncio
 async def test_one_entity_claim_arbitration_is_not_subject_comparison() -> None:
     question = (
         "Does MedSAM-2 support single-prompt segmentation, and how does "

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 from pathlib import Path
 import re
@@ -275,17 +274,11 @@ def _canonical_role(value: str) -> str:
     return re.sub(r"[^a-z]+", "_", value.strip().casefold()).strip("_")
 
 
-def _safe_subject_id(candidate_id: str, display_name: str) -> str:
+def _safe_subject_id(candidate_id: str) -> str:
     normalized = unicodedata.normalize("NFKC", candidate_id).casefold()
-    safe = re.sub(r"[^a-z0-9_-]+", "_", normalized).strip("_")
-    if safe and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", safe):
-        return safe
-    name = unicodedata.normalize("NFKC", display_name).casefold()
-    name_safe = re.sub(r"[^a-z0-9_-]+", "_", name).strip("_")[:80]
-    if name_safe and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", name_safe):
-        return name_safe
-    digest = hashlib.sha256(display_name.encode("utf-8")).hexdigest()[:16]
-    return f"subject-{digest}"
+    if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", normalized):
+        return normalized
+    raise ValueError("planner subject_id is not a safe opaque identifier")
 
 
 def _contains_explicit_span(question: str, span: str) -> bool:
@@ -345,15 +338,13 @@ def _validated_subjects(
         try:
             accepted.append(
                 ComparisonSubject(
-                    subject_id=_safe_subject_id(
-                        candidate.subject_id, candidate.display_name
-                    ),
+                    subject_id=_safe_subject_id(candidate.subject_id),
                     display_name=candidate.display_name,
                     aliases=candidate.aliases,
                     retrieval_query=candidate.retrieval_query,
                 )
             )
-        except ValidationError:
+        except (ValidationError, ValueError):
             continue
     return accepted
 
