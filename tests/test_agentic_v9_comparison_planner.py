@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
+from core.prompt_loader import PromptConfigError
 import data_base.agentic_v9.comparison_planner as comparison_planner_module
 from data_base.agentic_v9.comparison_planner import (
     ComparisonPlanner,
@@ -133,7 +133,6 @@ async def test_planner_rejects_dimension_objects_at_transport_boundary() -> None
 
     outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
         question=Q4,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -159,7 +158,6 @@ async def test_planner_rejects_ambiguous_or_unsupported_dimension_objects(
         llm_invoker=_Invoker(_payload(dimensions=[dimension]))
     ).plan(
         question=Q4,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -322,7 +320,6 @@ async def test_valid_planner_response_identifies_subjects_not_dimensions() -> No
     invoker = _Invoker(_payload())
     outcome = await ComparisonPlanner(llm_invoker=invoker).plan(
         question=Q4,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -368,7 +365,6 @@ async def test_transport_variation_promotes_question_anchored_model_subjects() -
 
     outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
         question=Q4,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -403,7 +399,6 @@ async def test_transport_schema_failure_exposes_only_safe_validation_issues() ->
 
     outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
         question=Q4,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -448,7 +443,6 @@ async def test_planner_fallback_identifies_the_failing_boundary(
 ) -> None:
     outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
         question=Q4,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -467,7 +461,6 @@ async def test_provider_subject_id_cannot_control_trusted_subject_id() -> None:
 
     outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
         question=Q4,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -495,7 +488,6 @@ async def test_one_entity_claim_arbitration_is_not_subject_comparison() -> None:
 
     outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
         question=question,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -515,7 +507,6 @@ async def test_unanchored_entity_subject_is_rejected() -> None:
 
     outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
         question="Compare nnMamba and EfficientMedNeXt-L.",
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -539,7 +530,6 @@ async def test_any_invalid_candidate_rejects_the_entire_subject_plan() -> None:
 
     outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
         question=question,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -562,7 +552,6 @@ async def test_valid_three_entity_lineage_comparison_remains_planned() -> None:
 
     outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
         question=question,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -581,7 +570,6 @@ async def test_planner_accepts_one_fenced_json_object() -> None:
         llm_invoker=_Invoker(f"```json\n{_payload()}\n```")
     ).plan(
         question=Q4,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -614,7 +602,6 @@ async def test_planner_returns_safe_parse_fallback(
     invoker = _Invoker(response)
     outcome = await ComparisonPlanner(llm_invoker=invoker).plan(
         question=Q4,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -641,7 +628,6 @@ async def test_planner_rejects_numeric_values_not_present_in_question() -> None:
 
     outcome = await ComparisonPlanner(llm_invoker=_Invoker(payload)).plan(
         question=Q4,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -669,7 +655,6 @@ async def test_planner_rejects_invented_numeric_formats(
 
     outcome = await ComparisonPlanner(llm_invoker=_Invoker(payload)).plan(
         question=Q4,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -696,7 +681,6 @@ async def test_planner_preserves_numeric_tokens_copied_from_question() -> None:
 
     outcome = await ComparisonPlanner(llm_invoker=_Invoker(payload)).plan(
         question=question,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -709,14 +693,12 @@ async def test_planner_timeout_and_provider_error_are_fail_soft() -> None:
         llm_invoker=_Invoker(_payload(), delay_s=0.05)
     ).plan(
         question=Q4,
-        authorized_source_names=[],
         timeout_seconds=0.001,
     )
     failed = await ComparisonPlanner(
         llm_invoker=_Invoker(error=RuntimeError("provider exploded"))
     ).plan(
         question=Q4,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 
@@ -729,15 +711,18 @@ async def test_missing_prompt_is_fail_soft(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     invoker = _Invoker(_payload())
+
+    def _missing_prompt(*_: object, **__: object) -> str:
+        raise PromptConfigError("missing comparison prompt")
+
     monkeypatch.setattr(
         comparison_planner_module,
-        "_PROMPT_PATH",
-        Path("definitely-missing-comparison-prompt.json"),
+        "format_agentic_rag_prompt",
+        _missing_prompt,
     )
 
     outcome = await ComparisonPlanner(llm_invoker=invoker).plan(
         question=Q4,
-        authorized_source_names=[],
         timeout_seconds=1,
     )
 

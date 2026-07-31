@@ -295,7 +295,6 @@ class AgenticV9CampaignRuntime:
                 )
                 outcome = await planner.plan(
                     question=question,
-                    authorized_source_names=scope.requested_source_names,
                     timeout_seconds=min(64.0, deadline.remaining_seconds()),
                 )
                 state["comparison_planner"] = {

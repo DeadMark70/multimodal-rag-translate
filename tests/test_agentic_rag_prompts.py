@@ -17,6 +17,8 @@ EXPECTED_KEYS = {
     "pure_llm_eval",
     "fact_state",
     "evidence_extract",
+    "comparison_planner_system",
+    "comparison_planner_user",
 }
 
 EXPECTED_REQUIRED_VARIABLES = {
@@ -34,6 +36,8 @@ EXPECTED_REQUIRED_VARIABLES = {
     "pure_llm_eval": ["question", "answer", "ground_truth"],
     "fact_state": ["question", "source_doc_ids", "answer"],
     "evidence_extract": ["question", "unresolved_slots", "source_evidence"],
+    "comparison_planner_system": [],
+    "comparison_planner_user": ["question"],
 }
 
 SOURCE_FILES = [
@@ -101,6 +105,10 @@ def test_agentic_prompt_format_smoke():
         unresolved_slots="slot-1",
         source_evidence="E1: source text",
     )
+    comparison_system = format_agentic_rag_prompt("comparison_planner_system")
+    comparison_user = format_agentic_rag_prompt(
+        "comparison_planner_user", question="Compare Model A and Model B."
+    )
 
     assert "What is X?" in planner
     assert "What is X?" in followup
@@ -108,3 +116,6 @@ def test_agentic_prompt_format_smoke():
     assert "[1] doc text" in retrieval
     assert "doc-1, doc-2" in fact_state
     assert "E1: source text" in evidence_extract
+    assert "independent comparison subjects" in comparison_system
+    assert "Compare Model A and Model B." in comparison_user
+    assert "source" not in comparison_user.casefold()

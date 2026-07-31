@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from pathlib import Path
 import re
 from time import perf_counter
 from typing import Any, Sequence
@@ -13,6 +12,7 @@ import unicodedata
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from core.prompt_loader import format_agentic_rag_prompt
 from data_base.agentic_v9.schemas import (
     ComparisonPlan,
     ComparisonPlannerDiagnosticStage,
@@ -26,11 +26,6 @@ from data_base.agentic_v9.schemas import (
 )
 
 
-_PROMPT_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "prompts"
-    / "agentic_v9_comparison_planner.json"
-)
 _FENCED_JSON = re.compile(
     r"^\s*```(?:json)?\s*(?P<payload>\{.*\})\s*```\s*$",
     re.IGNORECASE | re.DOTALL,
@@ -136,7 +131,6 @@ class ComparisonPlanner:
         self,
         *,
         question: str,
-        authorized_source_names: Sequence[str],
         timeout_seconds: float,
     ) -> ComparisonPlannerOutcome:
         """Return a validated plan or a non-throwing fallback result."""
@@ -144,10 +138,7 @@ class ComparisonPlanner:
         if timeout_seconds <= 0:
             return _fallback("timeout", started_at)
         try:
-            messages = _planner_messages(
-                question=question,
-                authorized_source_names=authorized_source_names,
-            )
+            messages = _planner_messages(question=question)
             async with asyncio.timeout(timeout_seconds):
                 response = await self._llm_invoker.invoke(
                     phase="comparison_plan",
@@ -249,19 +240,17 @@ def _subject_slot_description(
 def _planner_messages(
     *,
     question: str,
-    authorized_source_names: Sequence[str],
 ) -> list[dict[str, Any]]:
-    prompt = json.loads(_PROMPT_PATH.read_text(encoding="utf-8"))
-    safe_scope = ", ".join(
-        name.strip() for name in authorized_source_names if name.strip()
-    )
     return [
-        {"role": "system", "content": prompt["system"]},
+        {
+            "role": "system",
+            "content": format_agentic_rag_prompt("comparison_planner_system"),
+        },
         {
             "role": "user",
-            "content": prompt["user_template"].format(
+            "content": format_agentic_rag_prompt(
+                "comparison_planner_user",
                 question=question,
-                authorized_source_names=safe_scope or "not provided",
             ),
         },
     ]
