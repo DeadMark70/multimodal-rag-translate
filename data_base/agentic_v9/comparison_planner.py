@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -10,7 +11,7 @@ from time import perf_counter
 from typing import Any, Sequence
 import unicodedata
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from data_base.agentic_v9.schemas import (
     ComparisonPlan,
@@ -79,12 +80,16 @@ class _PlannerSubjectPayload(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    subject_id: str = Field(min_length=1, max_length=160)
-    display_name: str = Field(min_length=1, max_length=160)
-    aliases: list[str] = Field(default_factory=list, max_length=8)
-    retrieval_query: str = Field(min_length=1, max_length=512)
-    subject_role: str = Field(min_length=1, max_length=80)
-    question_span: str | None = Field(default=None, max_length=160)
+    name: str = Field(
+        min_length=1,
+        max_length=160,
+        description="Exact independent entity name copied from the question.",
+    )
+    query: str = Field(
+        min_length=1,
+        max_length=512,
+        description="Retrieval query that explicitly names this entity.",
+    )
 
 
 class _PlannerPayload(BaseModel):
@@ -92,40 +97,25 @@ class _PlannerPayload(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    is_comparison: bool
+    is_comparison: bool = Field(
+        description="Whether the question compares two or more independent entities."
+    )
     subjects: list[_PlannerSubjectPayload] = Field(default_factory=list, max_length=4)
-    dimensions: list[str] = Field(default_factory=list, max_length=12)
-    qualification: str | None = Field(default=None, max_length=512)
-
-    @field_validator("dimensions", mode="before")
-    @classmethod
-    def normalize_dimension_objects(cls, value: Any) -> Any:
-        """Project bounded provider dimension objects onto trusted strings."""
-        if not isinstance(value, list):
-            return value
-        return [_normalize_planner_dimension(item) for item in value]
-
-
-_DIMENSION_LABEL_KEYS = ("dimension", "name", "label", "value")
+    dimensions: list[str] = Field(
+        default_factory=list,
+        max_length=12,
+        description="Comparison dimensions stated by the question, as short strings.",
+    )
+    qualification: str | None = Field(
+        default=None,
+        max_length=512,
+        description="Optional scope or qualification stated by the question.",
+    )
 
 
-def _normalize_planner_dimension(value: Any) -> Any:
-    if isinstance(value, str) or not isinstance(value, dict):
-        return value
-
-    candidates: list[str] = []
-    for key in _DIMENSION_LABEL_KEYS:
-        if key not in value:
-            continue
-        candidate = value[key]
-        if not isinstance(candidate, str) or not candidate.strip():
-            raise ValueError("comparison dimension label must be non-empty text")
-        candidates.append(candidate.strip())
-
-    unique_candidates = list(dict.fromkeys(candidate.casefold() for candidate in candidates))
-    if len(unique_candidates) != 1:
-        raise ValueError("comparison dimension object must contain one unambiguous label")
-    return candidates[0]
+def comparison_planner_response_schema() -> dict[str, Any]:
+    """Return the compact provider transport schema for native JSON binding."""
+    return _PlannerPayload.model_json_schema()
 
 
 def is_suspected_comparison(question: str) -> bool:
@@ -313,29 +303,13 @@ def _normalized_identity(value: str) -> str:
     return "".join(character for character in normalized if character.isalnum())
 
 
-_ENTITY_ROLES = {
-    "architecture",
-    "dataset",
-    "document",
-    "entity",
-    "framework",
-    "method",
-    "model",
-    "paper",
-    "system",
-    "technique",
-}
-
-
-def _canonical_role(value: str) -> str:
-    return re.sub(r"[^a-z]+", "_", value.strip().casefold()).strip("_")
-
-
-def _safe_subject_id(candidate_id: str) -> str:
-    normalized = unicodedata.normalize("NFKC", candidate_id).casefold()
-    if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", normalized):
-        return normalized
-    raise ValueError("planner subject_id is not a safe opaque identifier")
+def _stable_subject_id(name: str) -> str:
+    normalized = unicodedata.normalize("NFKC", name).strip().casefold()
+    ascii_slug = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
+    if ascii_slug:
+        return ascii_slug[:80]
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return f"subject-{digest}"
 
 
 def _contains_explicit_span(question: str, span: str) -> bool:
@@ -374,31 +348,19 @@ def _validated_subjects(
     accepted: list[ComparisonSubject] = []
     seen: set[str] = set()
     for candidate in candidates:
-        if _canonical_role(candidate.subject_role) not in _ENTITY_ROLES:
+        if not _contains_explicit_span(question, candidate.name):
             continue
-        names = [candidate.display_name, *candidate.aliases]
-        span = candidate.question_span
-        if span is None:
-            span = next(
-                (name for name in names if _contains_explicit_span(question, name)),
-                None,
-            )
-        if span is None or not _contains_explicit_span(question, span):
-            continue
-        span_identity = _normalized_identity(span)
-        if span_identity not in {_normalized_identity(name) for name in names}:
-            continue
-        identity = _normalized_identity(candidate.display_name)
+        identity = _normalized_identity(candidate.name)
         if not identity or identity in seen:
             continue
         seen.add(identity)
         try:
             accepted.append(
                 ComparisonSubject(
-                    subject_id=_safe_subject_id(candidate.subject_id),
-                    display_name=candidate.display_name,
-                    aliases=candidate.aliases,
-                    retrieval_query=candidate.retrieval_query,
+                    subject_id=_stable_subject_id(candidate.name),
+                    display_name=candidate.name,
+                    aliases=[],
+                    retrieval_query=candidate.query,
                 )
             )
         except (ValidationError, ValueError):
@@ -451,5 +413,6 @@ def _elapsed_ms(started_at: float) -> float:
 __all__ = [
     "ComparisonPlanner",
     "apply_comparison_overlay",
+    "comparison_planner_response_schema",
     "is_suspected_comparison",
 ]

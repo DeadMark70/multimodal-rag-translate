@@ -32,6 +32,17 @@ Q4 = (
 )
 
 
+def test_comparison_planner_response_schema_requires_string_dimensions() -> None:
+    assert hasattr(comparison_planner_module, "comparison_planner_response_schema")
+    schema = comparison_planner_module.comparison_planner_response_schema()
+
+    assert schema["properties"]["dimensions"]["items"]["type"] == "string"
+    subject_ref = schema["properties"]["subjects"]["items"]["$ref"]
+    subject_key = subject_ref.rsplit("/", 1)[-1]
+    subject_schema = schema["$defs"][subject_key]
+    assert set(subject_schema["properties"]) == {"name", "query"}
+
+
 class _Invoker:
     def __init__(
         self,
@@ -74,21 +85,13 @@ def _subject(
 
 
 def _planner_subject(
-    subject_id: str,
-    display_name: str,
+    name: str,
     *,
-    subject_role: str = "entity",
-    question_span: str | None = None,
-    aliases: list[str] | None = None,
     retrieval_query: str | None = None,
 ) -> dict[str, object]:
     return {
-        "subject_id": subject_id,
-        "display_name": display_name,
-        "aliases": aliases or [],
-        "retrieval_query": retrieval_query or display_name,
-        "subject_role": subject_role,
-        "question_span": question_span or display_name,
+        "name": name,
+        "query": retrieval_query or name,
     }
 
 
@@ -103,15 +106,11 @@ def _payload(
             "subjects": subjects
             or [
                 _planner_subject(
-                    "nnmamba",
                     "nnMamba",
-                    aliases=["nnMamba"],
                     retrieval_query="nnMamba parameters FLOPs",
                 ),
                 _planner_subject(
-                    "efficientmednext_l",
                     "EfficientMedNeXt-L",
-                    aliases=["Efficient MedNeXt L"],
                     retrieval_query="EfficientMedNeXt-L parameters FLOPs",
                 ),
             ],
@@ -123,7 +122,7 @@ def _payload(
 
 
 @pytest.mark.asyncio
-async def test_planner_normalizes_safe_dimension_objects_at_transport_boundary() -> None:
+async def test_planner_rejects_dimension_objects_at_transport_boundary() -> None:
     response = _payload(
         dimensions=[
             {"name": "parameters"},
@@ -138,13 +137,9 @@ async def test_planner_normalizes_safe_dimension_objects_at_transport_boundary()
         timeout_seconds=1,
     )
 
-    assert outcome.status == "planned"
-    assert outcome.plan is not None
-    assert outcome.plan.dimensions == [
-        "parameters",
-        "FLOPs",
-        "computational efficiency",
-    ]
+    assert outcome.status == "fallback"
+    assert outcome.fallback_reason == "schema_violation"
+    assert outcome.fallback_stage == "transport_schema"
 
 
 @pytest.mark.asyncio
@@ -355,19 +350,13 @@ async def test_transport_variation_promotes_question_anchored_model_subjects() -
             "is_comparison": True,
             "subjects": [
                 {
-                    "subject_id": "nnMamba",
-                    "display_name": "nnMamba",
-                    "aliases": [],
-                    "retrieval_query": "nnMamba Params FLOPs",
-                    "subject_role": "model",
+                    "name": "nnMamba",
+                    "query": "nnMamba Params FLOPs",
                     "rationale": "named model in the question",
                 },
                 {
-                    "subject_id": "EfficientMedNeXt-L",
-                    "display_name": "EfficientMedNeXt-L",
-                    "aliases": ["Efficient MedNeXt L"],
-                    "retrieval_query": "EfficientMedNeXt-L Params FLOPs",
-                    "subject_role": "architecture",
+                    "name": "EfficientMedNeXt-L",
+                    "query": "EfficientMedNeXt-L Params FLOPs",
                     "rationale": "named architecture in the question",
                 },
             ],
@@ -404,13 +393,9 @@ async def test_transport_schema_failure_exposes_only_safe_validation_issues() ->
             "is_comparison": True,
             "subjects": [
                 {
-                    "subject_id": "nnmamba",
-                    "display_name": secret,
-                    "aliases": [],
-                    "retrieval_query": "nnMamba Params FLOPs",
-                    "question_span": "nnMamba",
+                    "name": secret,
                 },
-                _planner_subject("efficientmednext-l", "EfficientMedNeXt-L"),
+                _planner_subject("EfficientMedNeXt-L"),
             ],
             "dimensions": ["Params", "FLOPs"],
         }
@@ -426,7 +411,7 @@ async def test_transport_schema_failure_exposes_only_safe_validation_issues() ->
     assert outcome.fallback_reason == "schema_violation"
     assert outcome.fallback_stage == "transport_schema"
     assert [issue.model_dump(mode="json") for issue in outcome.validation_issues] == [
-        {"path": "subjects.0.subject_role", "type": "missing"}
+        {"path": "subjects.0.query", "type": "missing"}
     ]
     serialized = outcome.model_dump_json()
     assert secret not in serialized
@@ -439,18 +424,16 @@ async def test_transport_schema_failure_exposes_only_safe_validation_issues() ->
     ("response", "expected_stage"),
     [
         ("not-json", "response_decode"),
-        (_payload(subjects=[_planner_subject("only", "nnMamba")]), "subject_validation"),
+        (_payload(subjects=[_planner_subject("nnMamba")]), "subject_validation"),
         (_payload(dimensions=["x" * 161]), "trusted_plan_validation"),
         (
             _payload(
                 subjects=[
                     _planner_subject(
-                        "nnmamba",
                         "nnMamba",
                         retrieval_query="nnMamba Params 999",
                     ),
                     _planner_subject(
-                        "efficientmednext-l",
                         "EfficientMedNeXt-L",
                     ),
                 ]
@@ -474,11 +457,11 @@ async def test_planner_fallback_identifies_the_failing_boundary(
 
 
 @pytest.mark.asyncio
-async def test_invalid_source_like_subject_id_rejects_entire_plan() -> None:
+async def test_provider_subject_id_cannot_control_trusted_subject_id() -> None:
     response = _payload(
         subjects=[
-            _planner_subject("secret-paper.pdf", "nnMamba"),
-            _planner_subject("efficientmednext-l", "EfficientMedNeXt-L"),
+            {"name": "nnMamba", "query": "nnMamba", "subject_id": "secret-paper.pdf"},
+            _planner_subject("EfficientMedNeXt-L"),
         ]
     )
 
@@ -488,9 +471,12 @@ async def test_invalid_source_like_subject_id_rejects_entire_plan() -> None:
         timeout_seconds=1,
     )
 
-    assert outcome.status == "fallback"
-    assert outcome.fallback_reason == "invalid_subjects"
-    assert outcome.plan is None
+    assert outcome.status == "planned"
+    assert outcome.plan is not None
+    assert [subject.subject_id for subject in outcome.plan.subjects] == [
+        "nnmamba",
+        "efficientmednext-l",
+    ]
 
 
 @pytest.mark.asyncio
@@ -501,21 +487,9 @@ async def test_one_entity_claim_arbitration_is_not_subject_comparison() -> None:
     )
     response = json.dumps(
         {
-            "is_comparison": True,
-            "subjects": [
-                _planner_subject("medsam-2", "MedSAM-2"),
-                _planner_subject(
-                    "single-prompt",
-                    "single-prompt segmentation",
-                    subject_role="capability",
-                ),
-                _planner_subject(
-                    "prompt-quality",
-                    "initial bounding box prompt quality",
-                    subject_role="condition",
-                ),
-            ],
-            "dimensions": ["segmentation behavior"],
+            "is_comparison": False,
+            "subjects": [],
+            "dimensions": [],
         }
     )
 
@@ -526,7 +500,7 @@ async def test_one_entity_claim_arbitration_is_not_subject_comparison() -> None:
     )
 
     assert outcome.status == "fallback"
-    assert outcome.fallback_reason == "invalid_subjects"
+    assert outcome.fallback_reason == "not_comparison"
     assert outcome.plan is None
 
 
@@ -534,8 +508,8 @@ async def test_one_entity_claim_arbitration_is_not_subject_comparison() -> None:
 async def test_unanchored_entity_subject_is_rejected() -> None:
     response = _payload(
         subjects=[
-            _planner_subject("nnmamba", "nnMamba"),
-            _planner_subject("invented", "InventedModel"),
+            _planner_subject("nnMamba"),
+            _planner_subject("InventedModel"),
         ]
     )
 
@@ -557,13 +531,9 @@ async def test_any_invalid_candidate_rejects_the_entire_subject_plan() -> None:
     )
     response = _payload(
         subjects=[
-            _planner_subject("nnmamba", "nnMamba"),
-            _planner_subject("efficientmednext_l", "EfficientMedNeXt-L"),
-            _planner_subject(
-                "low-memory",
-                "low-memory condition",
-                subject_role="condition",
-            ),
+            _planner_subject("nnMamba"),
+            _planner_subject("EfficientMedNeXt-L"),
+            _planner_subject("InventedCondition"),
         ]
     )
 
@@ -583,9 +553,9 @@ async def test_valid_three_entity_lineage_comparison_remains_planned() -> None:
     question = "Compare the technical lineage of SAM, SegmentAnyBone, and SegVol."
     response = _payload(
         subjects=[
-            _planner_subject("sam", "SAM"),
-            _planner_subject("segmentanybone", "SegmentAnyBone"),
-            _planner_subject("segvol", "SegVol"),
+            _planner_subject("SAM"),
+            _planner_subject("SegmentAnyBone"),
+            _planner_subject("SegVol"),
         ],
         dimensions=["technical lineage"],
     )
@@ -628,7 +598,7 @@ async def test_planner_accepts_one_fenced_json_object() -> None:
                 {
                     "is_comparison": True,
                     "subjects": [
-                        _planner_subject("only", "Only"),
+                        _planner_subject("Only"),
                     ],
                     "dimensions": [],
                 }
@@ -659,12 +629,10 @@ async def test_planner_rejects_numeric_values_not_present_in_question() -> None:
     payload = _payload(
         subjects=[
             _planner_subject(
-                "nnmamba",
                 "nnMamba",
                 retrieval_query="nnMamba parameters 999",
             ),
             _planner_subject(
-                "efficientmednext_l",
                 "EfficientMedNeXt-L",
                 retrieval_query="EfficientMedNeXt-L FLOPs",
             ),
@@ -689,12 +657,10 @@ async def test_planner_rejects_invented_numeric_formats(
     payload = _payload(
         subjects=[
             _planner_subject(
-                "nnmamba",
                 "nnMamba",
                 retrieval_query=f"nnMamba parameters {invented_number}",
             ),
             _planner_subject(
-                "efficientmednext_l",
                 "EfficientMedNeXt-L",
                 retrieval_query="EfficientMedNeXt-L FLOPs",
             ),
@@ -717,12 +683,10 @@ async def test_planner_preserves_numeric_tokens_copied_from_question() -> None:
     payload = _payload(
         subjects=[
             _planner_subject(
-                "model_a",
                 "Model A",
                 retrieval_query="Model A noise 0.4",
             ),
             _planner_subject(
-                "model_b",
                 "Model B",
                 retrieval_query="Model B noise 0.4",
             ),
