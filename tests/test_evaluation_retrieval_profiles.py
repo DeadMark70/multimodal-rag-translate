@@ -1,9 +1,11 @@
 from evaluation.retrieval_profiles import (
     ADVANCED_EVAL_PROFILE,
     AGENTIC_EVAL_PROFILE,
+    AGENTIC_V9_EXPLICIT_SCOPE_PROFILE,
     AGENTIC_V9_OPEN_CORPUS_PROFILE,
     GRAPH_EVAL_PROFILE,
     apply_no_hyde_policy,
+    agentic_v9_execution_profile,
     evaluation_execution_profile,
     locator_to_chunk_graph_hints,
     multi_query_settings,
@@ -68,5 +70,17 @@ def test_execution_profiles_version_changed_modes() -> None:
 
 def test_agentic_v9_open_corpus_profile_describes_soft_final_context_packing() -> None:
     assert AGENTIC_V9_OPEN_CORPUS_PROFILE == (
-        "agentic_eval_v9_open_corpus_hybrid8_rerank8_diverse_tail2_top4_finalpack_r1"
+        "agentic_eval_v9_open_corpus_hybrid8_rerank8_diverse_tail2_top4_"
+        "finalpack_r1_comparison_structured_v2"
+    )
+
+
+def test_agentic_v9_profiles_identify_structured_comparison_planner() -> None:
+    assert AGENTIC_V9_OPEN_CORPUS_PROFILE.endswith("comparison_structured_v2")
+    assert AGENTIC_V9_EXPLICIT_SCOPE_PROFILE.endswith("comparison_structured_v2")
+    assert agentic_v9_execution_profile(open_user_corpus=True) == (
+        AGENTIC_V9_OPEN_CORPUS_PROFILE
+    )
+    assert agentic_v9_execution_profile(open_user_corpus=False) == (
+        AGENTIC_V9_EXPLICIT_SCOPE_PROFILE
     )
