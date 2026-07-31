@@ -19,6 +19,7 @@ from core.sensitive_data import (
 from core.llm_usage_context import (
     agentic_budget_reservation_scope,
     agentic_budget_scope,
+    emit_direct_usage,
     llm_accounting_phase,
 )
 from data_base.agentic_v9.budget_controller import RunBudgetController
@@ -154,6 +155,20 @@ async def invoke_budgeted_llm(
             response = await active_provider.ainvoke(messages)
     except asyncio.CancelledError:
         usage = await controller.reconcile_usage(reservation.reservation_id, {})
+        await _record_accounting_usage(
+            phase=phase,
+            purpose=purpose,
+            provider_name=provider_name,
+            model_name=model_name,
+            reservation=reservation,
+            usage=usage,
+            started_at=started_at,
+            status="failed",
+            error={
+                "type": "CancelledError",
+                "message": "provider_attempt_cancelled",
+            },
+        )
         await _observe_terminal(
             observer=observer,
             phase=phase,
@@ -174,6 +189,22 @@ async def invoke_budgeted_llm(
         raise
     except Exception as exc:
         usage = await controller.reconcile_usage(reservation.reservation_id, {})
+        terminal_status = "timeout" if isinstance(exc, asyncio.TimeoutError) else "failed"
+        terminal_error = {
+            "type": exc.__class__.__name__,
+            "message": "provider_attempt_failed",
+        }
+        await _record_accounting_usage(
+            phase=phase,
+            purpose=purpose,
+            provider_name=provider_name,
+            model_name=model_name,
+            reservation=reservation,
+            usage=usage,
+            started_at=started_at,
+            status="failed",
+            error=terminal_error,
+        )
         await _observe_terminal(
             observer=observer,
             phase=phase,
@@ -184,11 +215,8 @@ async def invoke_budgeted_llm(
             prompt_capture=prompt_capture,
             response_hash=None,
             started_at=started_at,
-            status="timeout" if isinstance(exc, asyncio.TimeoutError) else "failed",
-            error={
-                "type": exc.__class__.__name__,
-                "message": "provider_attempt_failed",
-            },
+            status=terminal_status,
+            error=terminal_error,
             usage=usage,
         )
         if phase == "final_answer":
@@ -208,6 +236,17 @@ async def invoke_budgeted_llm(
     if not provider_total_reported:
         flat_usage.pop("total_tokens", None)
     usage = await controller.reconcile_usage(reservation.reservation_id, flat_usage)
+    await _record_accounting_usage(
+        phase=phase,
+        purpose=purpose,
+        provider_name=provider_name,
+        model_name=model_name,
+        reservation=reservation,
+        usage=usage,
+        started_at=started_at,
+        status="completed",
+        error={},
+    )
     await _observe_terminal(
         observer=observer,
         phase=phase,
@@ -223,6 +262,43 @@ async def invoke_budgeted_llm(
         usage=usage,
     )
     return response
+
+
+async def _record_accounting_usage(
+    *,
+    phase: str,
+    purpose: str,
+    provider_name: str,
+    model_name: str,
+    reservation: Any,
+    usage: Any,
+    started_at: float,
+    status: str,
+    error: dict[str, str],
+) -> None:
+    """Persist one authoritative usage event for a budgeted v9 attempt."""
+    raw_usage: dict[str, int] = {}
+    if usage.usage_status == "measured":
+        raw_usage = {
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.visible_output_tokens,
+            "reasoning_tokens": usage.reasoning_tokens,
+            "other_tokens": usage.other_tokens,
+            "total_tokens": usage.total_tokens,
+        }
+    await emit_direct_usage(
+        phase=phase,
+        purpose=purpose,
+        provider=provider_name or "unknown",
+        model_name=model_name or "unknown",
+        provider_run_id=(
+            f"{reservation.reservation_id}:attempt-{reservation.provider_attempt}"
+        ),
+        raw_usage=raw_usage,
+        latency_ms=max((time.perf_counter() - started_at) * 1000, 0),
+        status=status,
+        error=error,
+    )
 
 
 async def _observe_terminal(

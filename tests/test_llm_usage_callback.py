@@ -387,7 +387,7 @@ def test_callback_extracts_nested_provider_usage_alias() -> None:
 
 
 @pytest.mark.asyncio
-async def test_v9_budget_callback_reconciles_flat_usage_once() -> None:
+async def test_v9_budget_callback_defers_accounting_to_budgeted_invoker() -> None:
     sink = MemorySink()
     controller = RunBudgetController(
         max_llm_calls=1,
@@ -419,17 +419,12 @@ async def test_v9_budget_callback_reconciles_flat_usage_once() -> None:
         )
 
     snapshot = await controller.snapshot()
-    assert snapshot.reconciled_tokens == 6
-    assert sink.events[0].raw_usage == {
-        "input_tokens": 4,
-        "output_tokens": 2,
-        "reasoning_tokens": 1,
-        "total_tokens": 6,
-    }
+    assert snapshot.reconciled_tokens == 0
+    assert sink.events == []
 
 
 @pytest.mark.asyncio
-async def test_v9_budget_callback_preserves_missing_usage_for_conservative_reconciliation() -> (
+async def test_v9_budget_callback_does_not_persist_missing_parallel_usage() -> (
     None
 ):
     sink = MemorySink()
@@ -461,8 +456,8 @@ async def test_v9_budget_callback_preserves_missing_usage_for_conservative_recon
         )
 
     snapshot = await controller.snapshot()
-    assert snapshot.reconciled_tokens == 200
-    assert sink.events[0].raw_usage == {}
+    assert snapshot.reconciled_tokens == 0
+    assert sink.events == []
 
 
 def test_v9_callback_flat_usage_derives_total_from_input_and_output() -> None:

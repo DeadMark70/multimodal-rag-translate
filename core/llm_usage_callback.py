@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import re
 from dataclasses import dataclass
 from time import monotonic
@@ -14,22 +13,17 @@ from langchain_core.outputs import LLMResult
 
 from core.llm_usage_context import (
     LlmAccountingContext,
-    current_agentic_budget_controller,
     current_agentic_budget_reservation_id,
     current_llm_accounting_context,
     current_llm_accounting_phase,
     emit_direct_usage,
 )
 
-logger = logging.getLogger(__name__)
-
-
 @dataclass(frozen=True)
 class _StartState:
     context: LlmAccountingContext
     phase: str
     started_at: float
-    budget_controller: Any | None
     budget_reservation_id: str | None
 
 
@@ -79,7 +73,6 @@ class EvaluationUsageCallback(AsyncCallbackHandler):
                 context=context,
                 phase=current_llm_accounting_phase(),
                 started_at=monotonic(),
-                budget_controller=current_agentic_budget_controller(),
                 budget_reservation_id=current_agentic_budget_reservation_id(),
             )
 
@@ -132,32 +125,24 @@ class EvaluationUsageCallback(AsyncCallbackHandler):
     ) -> None:
         # The context was snapshotted at start so task context changes between
         # streaming start and terminal chunk cannot misattribute the event.
-        normalized_usage = _flat_usage(usage) if start.budget_reservation_id else usage
+        # Budgeted v9 calls are reconciled and persisted by BudgetedLlmInvoker,
+        # which has the provider response even when a LangChain callback is
+        # missing or reports a different usage envelope. Keeping one authority
+        # prevents duplicate events and callback/invoker accounting drift.
+        if start.budget_reservation_id is not None:
+            return
         await emit_direct_usage(
             context=start.context,
             phase=start.phase,
             purpose=self.purpose,
             provider=self.provider,
-            raw_usage=normalized_usage,
+            raw_usage=usage,
             model_name=model_name or self.model_name,
             provider_run_id=str(run_id),
             latency_ms=(monotonic() - start.started_at) * 1000,
             status=status,
             error=error,
         )
-        if (
-            start.budget_controller is not None
-            and start.budget_reservation_id is not None
-        ):
-            try:
-                await start.budget_controller.reconcile_usage(
-                    start.budget_reservation_id, normalized_usage
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Agentic v9 usage reconciliation failed (error_type=%s)",
-                    type(exc).__name__,
-                )
 
 
 def _extract_usage(response: LLMResult) -> dict[str, Any]:

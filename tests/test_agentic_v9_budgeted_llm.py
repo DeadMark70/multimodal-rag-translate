@@ -6,7 +6,11 @@ import json
 
 import pytest
 
-from core.llm_usage_context import current_llm_accounting_phase
+from core.llm_usage_context import (
+    LlmAccountingContext,
+    current_llm_accounting_phase,
+    llm_accounting_scope,
+)
 from data_base.agentic_v9.budget_controller import RunBudgetController
 from data_base.agentic_v9.budgeted_llm import invoke_budgeted_llm
 from data_base.agentic_v9.schemas import BudgetExceededError
@@ -96,6 +100,14 @@ class _RecordingObserver:
 
     def mark_partial(self, reason: str) -> None:
         self.partial_reasons.append(reason)
+
+
+class _MemoryAccountingSink:
+    def __init__(self) -> None:
+        self.events: list[object] = []
+
+    async def record(self, event: object) -> None:
+        self.events.append(event)
 
 
 def _controller(*, max_llm_calls: int = 2) -> RunBudgetController:
@@ -215,6 +227,44 @@ async def test_successful_admitted_attempt_emits_complete_terminal_observation()
         "total_tokens": 21,
         "usage_status": "measured",
         "official_total_tokens": 21,
+    }
+
+
+@pytest.mark.asyncio
+async def test_budgeted_invoker_is_authoritative_for_scoped_v9_accounting() -> None:
+    sink = _MemoryAccountingSink()
+    context = LlmAccountingContext(
+        scope_id="scope-1",
+        campaign_id="campaign-1",
+        scope_type="execution_run",
+        scope_key="run-1",
+        run_id="run-1",
+        metric_name=None,
+        sink=sink,
+    )
+
+    with llm_accounting_scope(context):
+        await invoke_budgeted_llm(
+            controller=_controller(),
+            provider=_ResponseProvider(),
+            provider_name="gemini",
+            model_name="gemini-2.5-flash",
+            phase="comparison_plan",
+            purpose="agentic_v9_comparison_plan",
+            messages=[{"role": "user", "content": "Plan comparison."}],
+            estimated_input_tokens=10,
+        )
+
+    assert len(sink.events) == 1
+    event = sink.events[0]
+    assert event.phase == "comparison_plan"
+    assert event.purpose == "agentic_v9_comparison_plan"
+    assert event.raw_usage == {
+        "input_tokens": 11,
+        "output_tokens": 5,
+        "reasoning_tokens": 3,
+        "other_tokens": 2,
+        "total_tokens": 21,
     }
 
 
