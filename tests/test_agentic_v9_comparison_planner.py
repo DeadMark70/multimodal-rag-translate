@@ -95,7 +95,7 @@ def _planner_subject(
 def _payload(
     *,
     subjects: list[dict[str, object]] | None = None,
-    dimensions: list[str] | None = None,
+    dimensions: list[object] | None = None,
 ) -> str:
     return json.dumps(
         {
@@ -120,6 +120,57 @@ def _payload(
             "qualification": "cross-paper relative comparison",
         }
     )
+
+
+@pytest.mark.asyncio
+async def test_planner_normalizes_safe_dimension_objects_at_transport_boundary() -> None:
+    response = _payload(
+        dimensions=[
+            {"name": "parameters"},
+            {"dimension": "FLOPs", "description": "reported compute"},
+            {"label": "computational efficiency"},
+        ]
+    )
+
+    outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
+        question=Q4,
+        authorized_source_names=[],
+        timeout_seconds=1,
+    )
+
+    assert outcome.status == "planned"
+    assert outcome.plan is not None
+    assert outcome.plan.dimensions == [
+        "parameters",
+        "FLOPs",
+        "computational efficiency",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "dimension",
+    [
+        {"name": "parameters", "label": "FLOPs"},
+        {"description": "parameters"},
+        123,
+        ["parameters"],
+    ],
+)
+async def test_planner_rejects_ambiguous_or_unsupported_dimension_objects(
+    dimension: object,
+) -> None:
+    outcome = await ComparisonPlanner(
+        llm_invoker=_Invoker(_payload(dimensions=[dimension]))
+    ).plan(
+        question=Q4,
+        authorized_source_names=[],
+        timeout_seconds=1,
+    )
+
+    assert outcome.status == "fallback"
+    assert outcome.fallback_reason == "schema_violation"
+    assert outcome.fallback_stage == "transport_schema"
 
 
 @pytest.mark.parametrize(

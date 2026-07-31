@@ -10,7 +10,7 @@ from time import perf_counter
 from typing import Any, Sequence
 import unicodedata
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from data_base.agentic_v9.schemas import (
     ComparisonPlan,
@@ -96,6 +96,36 @@ class _PlannerPayload(BaseModel):
     subjects: list[_PlannerSubjectPayload] = Field(default_factory=list, max_length=4)
     dimensions: list[str] = Field(default_factory=list, max_length=12)
     qualification: str | None = Field(default=None, max_length=512)
+
+    @field_validator("dimensions", mode="before")
+    @classmethod
+    def normalize_dimension_objects(cls, value: Any) -> Any:
+        """Project bounded provider dimension objects onto trusted strings."""
+        if not isinstance(value, list):
+            return value
+        return [_normalize_planner_dimension(item) for item in value]
+
+
+_DIMENSION_LABEL_KEYS = ("dimension", "name", "label", "value")
+
+
+def _normalize_planner_dimension(value: Any) -> Any:
+    if isinstance(value, str) or not isinstance(value, dict):
+        return value
+
+    candidates: list[str] = []
+    for key in _DIMENSION_LABEL_KEYS:
+        if key not in value:
+            continue
+        candidate = value[key]
+        if not isinstance(candidate, str) or not candidate.strip():
+            raise ValueError("comparison dimension label must be non-empty text")
+        candidates.append(candidate.strip())
+
+    unique_candidates = list(dict.fromkeys(candidate.casefold() for candidate in candidates))
+    if len(unique_candidates) != 1:
+        raise ValueError("comparison dimension object must contain one unambiguous label")
+    return candidates[0]
 
 
 def is_suspected_comparison(question: str) -> bool:
