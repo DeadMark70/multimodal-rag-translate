@@ -228,6 +228,8 @@ class AgenticV9CampaignRuntime:
                 "requested": comparison_plan_requested,
                 "status": "not_requested",
                 "fallback_reason": None,
+                "fallback_stage": None,
+                "validation_issues": [],
                 "latency_ms": 0.0,
             },
             "graph_execution": None,
@@ -300,6 +302,11 @@ class AgenticV9CampaignRuntime:
                     "requested": True,
                     "status": outcome.status,
                     "fallback_reason": outcome.fallback_reason,
+                    "fallback_stage": outcome.fallback_stage,
+                    "validation_issues": [
+                        issue.model_dump(mode="json")
+                        for issue in outcome.validation_issues
+                    ],
                     "latency_ms": outcome.latency_ms,
                 }
                 if outcome.status == "planned" and outcome.plan is not None:
@@ -1058,6 +1065,16 @@ def _comparison_trace_projection(
             if planner.get("fallback_reason")
             else None
         ),
+        "fallback_stage": (
+            str(planner["fallback_stage"])
+            if planner.get("fallback_stage")
+            else None
+        ),
+        "validation_issues": [
+            dict(issue)
+            for issue in planner.get("validation_issues") or []
+            if isinstance(issue, dict)
+        ],
         "is_comparison": plan is not None,
         "subjects": (
             [

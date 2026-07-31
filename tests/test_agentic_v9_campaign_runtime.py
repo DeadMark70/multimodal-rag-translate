@@ -563,6 +563,8 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
         "planner_status": "planned",
         "planner_latency_ms": v9["comparison"]["planner_latency_ms"],
         "planner_fallback_reason": None,
+        "fallback_stage": None,
+        "validation_issues": [],
         "is_comparison": True,
         "subjects": [
             {
@@ -1022,6 +1024,8 @@ async def test_v9_comparison_planner_failure_preserves_base_retrieval(
         "requested": True,
         "status": "fallback",
         "fallback_reason": "provider_error",
+        "fallback_stage": None,
+        "validation_issues": [],
         "latency_ms": v9["comparison_planner"]["latency_ms"],
     }
     assert result.documents
@@ -1031,6 +1035,8 @@ async def test_v9_comparison_planner_failure_preserves_base_retrieval(
         "planner_status": "fallback",
         "planner_latency_ms": v9["comparison"]["planner_latency_ms"],
         "planner_fallback_reason": "provider_error",
+        "fallback_stage": None,
+        "validation_issues": [],
         "is_comparison": False,
         "subjects": [],
         "dimensions": [],
@@ -1048,6 +1054,71 @@ async def test_v9_comparison_planner_failure_preserves_base_retrieval(
     assert v9["comparison"]["final_evidence"][0]["doc_id"] == "doc-1"
     assert v9["comparison"]["final_evidence"][0]["chunk_id"] == "chunk-1"
     assert v9["comparison"]["final_evidence"][0]["subject_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_v9_comparison_transport_diagnostics_reach_agent_trace() -> None:
+    provider = _Provider()
+    provider.ainvoke.side_effect = [
+        SimpleNamespace(
+            content=json.dumps(
+                {
+                    "is_comparison": True,
+                    "subjects": [
+                        {
+                            "subject_id": "model_a",
+                            "display_name": "Model A",
+                            "aliases": [],
+                            "retrieval_query": "Model A accuracy",
+                            "question_span": "Model A",
+                        },
+                        {
+                            "subject_id": "model_b",
+                            "display_name": "Model B",
+                            "aliases": [],
+                            "retrieval_query": "Model B accuracy",
+                            "subject_role": "entity",
+                            "question_span": "Model B",
+                        },
+                    ],
+                    "dimensions": ["accuracy"],
+                }
+            ),
+            usage_metadata={"input_tokens": 10, "output_tokens": 5},
+        ),
+        SimpleNamespace(
+            content="Fallback answer from retrieved evidence.",
+            usage_metadata={"input_tokens": 12, "output_tokens": 7},
+        ),
+    ]
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="The source contains usable comparison evidence.",
+                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+                )
+            ]
+        ),
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="Compare Model A vs. Model B for accuracy.",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot=_setup(),
+        trace_id="comparison-transport-diagnostics",
+    )
+
+    expected_issues = [{"path": "subjects.0.subject_role", "type": "missing"}]
+    v9 = result.agent_trace["agentic_v9"]
+    assert v9["comparison_planner"]["fallback_stage"] == "transport_schema"
+    assert v9["comparison_planner"]["validation_issues"] == expected_issues
+    assert v9["comparison"]["fallback_stage"] == "transport_schema"
+    assert v9["comparison"]["validation_issues"] == expected_issues
+    assert provider.ainvoke.await_count == 2
 
 
 @pytest.mark.asyncio

@@ -191,6 +191,39 @@ def test_comparison_projection_is_bounded_and_allowlisted() -> None:
     assert "retrieval_query" not in str(projected)
 
 
+def test_comparison_projection_allows_only_bounded_safe_planner_diagnostics() -> None:
+    projected = safe_comparison_projection(
+        {
+            "planner_status": "fallback",
+            "planner_fallback_reason": "schema_violation",
+            "fallback_stage": "transport_schema",
+            "validation_issues": [
+                {"path": "subjects.0.<secret-paper.pdf>", "type": "missing"},
+                *[
+                    {
+                        "path": f"subjects.{index}.subject_role" + "x" * 200,
+                        "type": "missing" + "y" * 100,
+                        "input": "secret-paper.pdf",
+                        "message": "must not persist",
+                    }
+                    for index in range(10)
+                ],
+            ],
+            "raw_response": "secret-paper.pdf",
+        }
+    )
+
+    assert projected["fallback_stage"] == "transport_schema"
+    assert len(projected["validation_issues"]) == 8
+    assert set(projected["validation_issues"][0]) == {"path", "type"}
+    assert len(projected["validation_issues"][0]["path"]) == 160
+    assert len(projected["validation_issues"][0]["type"]) == 80
+    serialized = str(projected)
+    assert "secret-paper.pdf" not in serialized
+    assert "must not persist" not in serialized
+    assert "raw_response" not in serialized
+
+
 @pytest.mark.asyncio
 async def test_materializing_a_v9_attempt_is_atomic_and_idempotent(
     isolated_db_path, monkeypatch

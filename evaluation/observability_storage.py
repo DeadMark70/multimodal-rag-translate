@@ -191,6 +191,13 @@ def safe_comparison_projection(value: dict[str, Any]) -> dict[str, Any]:
         "schema_violation",
         "not_comparison",
     }
+    planner_fallback_stages = {
+        "response_decode",
+        "transport_schema",
+        "subject_validation",
+        "trusted_plan_validation",
+        "numeric_guard",
+    }
     task_statuses = {"executed", "fallback", "not_instrumented"}
     task_fallback_reasons = {
         "reranker_unavailable",
@@ -318,6 +325,31 @@ def safe_comparison_projection(value: dict[str, Any]) -> dict[str, Any]:
         if value.get("planner_fallback_reason")
         else None
     )
+    fallback_stage = (
+        str(value["fallback_stage"])
+        if value.get("fallback_stage")
+        else None
+    )
+    validation_issues: list[dict[str, str]] = []
+    for raw in value.get("validation_issues") or []:
+        if not isinstance(raw, dict):
+            continue
+        path = raw.get("path")
+        issue_type = raw.get("type")
+        if not isinstance(path, str) or not isinstance(issue_type, str):
+            continue
+        if not re.fullmatch(r"[a-zA-Z0-9_.-]+", path) or not re.fullmatch(
+            r"[a-zA-Z0-9_-]+", issue_type
+        ):
+            continue
+        validation_issues.append(
+            {
+                "path": path[:160],
+                "type": issue_type[:80],
+            }
+        )
+        if len(validation_issues) >= 8:
+            break
     final_status = str(value.get("final_status") or "unknown")
 
     return {
@@ -334,6 +366,14 @@ def safe_comparison_projection(value: dict[str, Any]) -> dict[str, Any]:
             if planner_fallback_reason is not None
             else None
         ),
+        "fallback_stage": (
+            fallback_stage
+            if fallback_stage in planner_fallback_stages
+            else "unknown"
+            if fallback_stage is not None
+            else None
+        ),
+        "validation_issues": validation_issues,
         "is_comparison": bool(value.get("is_comparison")),
         "subjects": subjects,
         "dimensions": strings(value.get("dimensions"), limit=8),
