@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import os
 from pathlib import Path
 from shutil import rmtree
+import sqlite3
 from uuid import uuid4
 
 import pytest
@@ -32,6 +33,72 @@ TEST_PRICE_SNAPSHOT = {
         }
     },
 }
+
+
+class _TransientLockStore:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.events = []
+
+    async def record_event(self, event) -> None:
+        self.calls += 1
+        if self.calls == 1:
+            raise sqlite3.OperationalError("database is locked")
+        self.events.append(event)
+
+
+class _NonTransientOperationalErrorStore:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def record_event(self, event) -> None:
+        del event
+        self.calls += 1
+        raise sqlite3.OperationalError("no such table: llm_usage_events")
+
+
+def _raw_usage_event(*, usage_event_id: str = "event-retry") -> RawLlmUsageEvent:
+    return RawLlmUsageEvent(
+        usage_event_id=usage_event_id,
+        scope_id="scope-retry",
+        campaign_id="cmp-retry",
+        scope_type="execution_run",
+        scope_key="run-retry",
+        run_id="run-retry",
+        provider_run_id=None,
+        phase="comparison_plan",
+        purpose="comparison_planner",
+        metric_name=None,
+        provider="google",
+        model_name="test-model",
+        raw_usage={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        latency_ms=12.5,
+        status="success",
+        error={},
+        created_at=datetime.now(UTC),
+    )
+
+
+@pytest.mark.asyncio
+async def test_sink_retries_transient_sqlite_lock_with_same_event_id() -> None:
+    store = _TransientLockStore()
+    sink = EvaluationAccountingSink(store=store, price_snapshot=TEST_PRICE_SNAPSHOT)
+
+    await sink.record(_raw_usage_event())
+
+    assert store.calls == 2
+    assert [event.usage_event_id for event in store.events] == ["event-retry"]
+
+
+@pytest.mark.asyncio
+async def test_sink_does_not_retry_non_transient_sqlite_operational_error() -> None:
+    store = _NonTransientOperationalErrorStore()
+    sink = EvaluationAccountingSink(store=store, price_snapshot=TEST_PRICE_SNAPSHOT)
+
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        await sink.record(_raw_usage_event())
+
+    assert store.calls == 1
 
 
 @pytest_asyncio.fixture

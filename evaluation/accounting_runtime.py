@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+import sqlite3
 from typing import Any
 from uuid import uuid4
 
@@ -15,6 +17,14 @@ from evaluation.accounting_schemas import (
 from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.token_cost import load_price_snapshot, price_normalized_usage
 from evaluation.token_normalizers import normalize_provider_usage
+
+
+_TRANSIENT_SQLITE_RETRY_DELAYS_SECONDS = (0.05, 0.2)
+
+
+def _is_transient_sqlite_write_error(error: sqlite3.OperationalError) -> bool:
+    message = str(error).lower()
+    return "locked" in message or "busy" in message
 
 
 class EvaluationAccountingSink:
@@ -37,38 +47,51 @@ class EvaluationAccountingSink:
         """Persist one normalized callback event using its callback ID as the key."""
         usage = normalize_provider_usage(raw.provider, raw.raw_usage)
         pricing = price_normalized_usage(raw.model_name, usage, self._price_snapshot)
-        await self._store.record_event(
-            UsageEventCreate(
-                usage_event_id=raw.usage_event_id,
-                scope_id=raw.scope_id,
-                campaign_id=raw.campaign_id,
-                scope_type=raw.scope_type,
-                scope_key=raw.scope_key,
-                run_id=raw.run_id,
-                provider_run_id=raw.provider_run_id,
-                phase=raw.phase,
-                purpose=raw.purpose,
-                metric_name=raw.metric_name,
-                provider=raw.provider,
-                model_name=raw.model_name,
-                input_tokens=usage.input_tokens,
-                output_text_tokens=usage.output_text_tokens,
-                reasoning_tokens=usage.reasoning_tokens,
-                other_tokens=usage.other_tokens,
-                reported_total_tokens=usage.reported_total_tokens,
-                raw_usage=raw.raw_usage,
-                usage_status=usage.usage_status,
-                reconciliation_status=usage.reconciliation_status,
-                estimated_cost_usd=pricing["estimated_cost_usd"],
-                estimated_cost_twd=pricing["estimated_cost_twd"],
-                pricing_status=pricing["pricing_status"],
-                price_snapshot_id=pricing["price_snapshot_id"],
-                latency_ms=raw.latency_ms,
-                status="failed" if raw.status == "failed" else "success",
-                error=raw.error,
-                created_at=raw.created_at,
-            )
+        event = UsageEventCreate(
+            usage_event_id=raw.usage_event_id,
+            scope_id=raw.scope_id,
+            campaign_id=raw.campaign_id,
+            scope_type=raw.scope_type,
+            scope_key=raw.scope_key,
+            run_id=raw.run_id,
+            provider_run_id=raw.provider_run_id,
+            phase=raw.phase,
+            purpose=raw.purpose,
+            metric_name=raw.metric_name,
+            provider=raw.provider,
+            model_name=raw.model_name,
+            input_tokens=usage.input_tokens,
+            output_text_tokens=usage.output_text_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
+            other_tokens=usage.other_tokens,
+            reported_total_tokens=usage.reported_total_tokens,
+            raw_usage=raw.raw_usage,
+            usage_status=usage.usage_status,
+            reconciliation_status=usage.reconciliation_status,
+            estimated_cost_usd=pricing["estimated_cost_usd"],
+            estimated_cost_twd=pricing["estimated_cost_twd"],
+            pricing_status=pricing["pricing_status"],
+            price_snapshot_id=pricing["price_snapshot_id"],
+            latency_ms=raw.latency_ms,
+            status="failed" if raw.status == "failed" else "success",
+            error=raw.error,
+            created_at=raw.created_at,
         )
+        for retry_index in range(
+            len(_TRANSIENT_SQLITE_RETRY_DELAYS_SECONDS) + 1
+        ):
+            try:
+                await self._store.record_event(event)
+                return
+            except sqlite3.OperationalError as error:
+                if (
+                    not _is_transient_sqlite_write_error(error)
+                    or retry_index >= len(_TRANSIENT_SQLITE_RETRY_DELAYS_SECONDS)
+                ):
+                    raise
+                await asyncio.sleep(
+                    _TRANSIENT_SQLITE_RETRY_DELAYS_SECONDS[retry_index]
+                )
 
 
 @dataclass(frozen=True)

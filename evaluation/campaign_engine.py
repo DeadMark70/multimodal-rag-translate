@@ -707,6 +707,26 @@ async def _resolve_expected_source_document_ids(
     return resolved_document_ids, "resolved"
 
 
+def _graph_trace_outcome(
+    graph_execution: dict[str, Any],
+) -> tuple[str, dict[str, str]]:
+    execution_state = str(graph_execution.get("state") or "not_instrumented")
+    if execution_state == "executed":
+        return "success", {}
+    if (
+        graph_execution.get("policy") == "locator_fallback"
+        and execution_state == "not_triggered"
+        and not bool(graph_execution.get("attempted"))
+    ):
+        return "skipped", {}
+    return "partial", {
+        "reason": str(
+            graph_execution.get("failure_reason")
+            or "required_graph_not_satisfied"
+        )
+    }
+
+
 async def _record_unit_research_observability(
     *,
     run_id: str,
@@ -919,15 +939,11 @@ async def _record_unit_research_observability(
                     for index, doc_id in enumerate(resolved_doc_ids)
                 ]
             )
-            if execution_state != "executed":
+            outcome_status, outcome_error = _graph_trace_outcome(graph_execution)
+            if outcome_status != "success":
                 graph_span.set_outcome(
-                    status="partial",
-                    error={
-                        "reason": str(
-                            graph_execution.get("failure_reason")
-                            or "required_graph_not_satisfied"
-                        )
-                    },
+                    status=outcome_status,
+                    error=outcome_error,
                 )
 
     visual_execution = (

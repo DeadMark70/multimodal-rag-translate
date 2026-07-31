@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from data_base.RAG_QA_service import _build_graph_evidence_items, _filter_graph_query_hints
+from evaluation import campaign_engine
 from evaluation import db as evaluation_db
 from evaluation.observability_storage import (
     EvaluationGraphEventRepository,
@@ -17,6 +18,34 @@ from graph_rag.generic_mode import GraphEvidence
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def test_optional_graph_not_triggered_is_a_skipped_trace_outcome() -> None:
+    status, error = campaign_engine._graph_trace_outcome(
+        {
+            "policy": "locator_fallback",
+            "state": "not_triggered",
+            "attempted": False,
+            "failure_reason": None,
+        }
+    )
+
+    assert status == "skipped"
+    assert error == {}
+
+
+def test_required_graph_not_satisfied_remains_a_partial_trace_outcome() -> None:
+    status, error = campaign_engine._graph_trace_outcome(
+        {
+            "policy": "required_locator",
+            "state": "required_but_not_satisfied",
+            "attempted": True,
+            "failure_reason": "no_graph_evidence",
+        }
+    )
+
+    assert status == "partial"
+    assert error == {"reason": "no_graph_evidence"}
 
 
 async def _seed_campaign(campaign_id: str) -> None:
