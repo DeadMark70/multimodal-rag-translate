@@ -14,8 +14,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from data_base.agentic_v9.schemas import (
     ComparisonPlan,
+    ComparisonPlannerDiagnosticStage,
     ComparisonPlannerFallbackReason,
     ComparisonPlannerOutcome,
+    ComparisonPlannerValidationIssue,
     ComparisonSubject,
     LlmInvoker,
     QueryContract,
@@ -141,26 +143,51 @@ class ComparisonPlanner:
             content = _response_text(response)
             decoded = json.loads(_json_text(content))
         except (json.JSONDecodeError, TypeError):
-            return _fallback("invalid_response", started_at)
+            return _fallback(
+                "invalid_response",
+                started_at,
+                stage="response_decode",
+            )
         try:
             payload = _PlannerPayload.model_validate(decoded)
-        except ValidationError:
-            return _fallback("schema_violation", started_at)
+        except ValidationError as error:
+            return _fallback(
+                "schema_violation",
+                started_at,
+                stage="transport_schema",
+                validation_issues=_validation_issues(error),
+            )
 
         if not payload.is_comparison:
             return _fallback("not_comparison", started_at)
         subjects = _validated_subjects(question, payload.subjects)
         if len(subjects) < 2 or len(subjects) != len(payload.subjects):
-            return _fallback("invalid_subjects", started_at)
+            return _fallback(
+                "invalid_subjects",
+                started_at,
+                stage="subject_validation",
+            )
         try:
             plan = ComparisonPlan(
                 subjects=subjects,
                 dimensions=payload.dimensions,
                 qualification=payload.qualification,
             )
+        except ValidationError as error:
+            return _fallback(
+                "schema_violation",
+                started_at,
+                stage="trusted_plan_validation",
+                validation_issues=_validation_issues(error),
+            )
+        try:
             _reject_invented_numbers(question, plan)
-        except (ValidationError, ValueError):
-            return _fallback("schema_violation", started_at)
+        except ValueError:
+            return _fallback(
+                "schema_violation",
+                started_at,
+                stage="numeric_guard",
+            )
         return ComparisonPlannerOutcome(
             status="planned",
             plan=plan,
@@ -352,12 +379,39 @@ def _validated_subjects(
 def _fallback(
     reason: ComparisonPlannerFallbackReason,
     started_at: float,
+    *,
+    stage: ComparisonPlannerDiagnosticStage | None = None,
+    validation_issues: Sequence[ComparisonPlannerValidationIssue] = (),
 ) -> ComparisonPlannerOutcome:
     return ComparisonPlannerOutcome(
         status="fallback",
         fallback_reason=reason,
+        fallback_stage=stage,
+        validation_issues=list(validation_issues),
         latency_ms=_elapsed_ms(started_at),
     )
+
+
+def _validation_issues(
+    error: ValidationError,
+) -> list[ComparisonPlannerValidationIssue]:
+    issues: set[tuple[str, str]] = set()
+    for row in error.errors(
+        include_url=False,
+        include_context=False,
+        include_input=False,
+    ):
+        path = ".".join(_safe_diagnostic_segment(part) for part in row["loc"])
+        issue_type = _safe_diagnostic_segment(row.get("type") or "unknown")
+        issues.add((path[:160] or "root", issue_type[:80] or "unknown"))
+    return [
+        ComparisonPlannerValidationIssue(path=path, type=issue_type)
+        for path, issue_type in sorted(issues)[:8]
+    ]
+
+
+def _safe_diagnostic_segment(value: object) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]+", "_", str(value)).strip("_") or "unknown"
 
 
 def _elapsed_ms(started_at: float) -> float:

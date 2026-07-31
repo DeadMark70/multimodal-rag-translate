@@ -18,6 +18,8 @@ from data_base.agentic_v9.comparison_planner import (
 )
 from data_base.agentic_v9.schemas import (
     ComparisonPlan,
+    ComparisonPlannerOutcome,
+    ComparisonPlannerValidationIssue,
     ComparisonSubject,
     QueryContract,
     ResolvedSourceScope,
@@ -190,6 +192,24 @@ def test_comparison_plan_requires_two_to_four_unique_subjects() -> None:
         )
 
 
+def test_planned_outcome_rejects_fallback_diagnostics() -> None:
+    with pytest.raises(ValidationError):
+        ComparisonPlannerOutcome(
+            status="planned",
+            plan=ComparisonPlan(
+                subjects=[_subject("a", "Model A"), _subject("b", "Model B")]
+            ),
+            fallback_stage="transport_schema",
+            validation_issues=[
+                ComparisonPlannerValidationIssue(
+                    path="subjects.0.subject_role",
+                    type="missing",
+                )
+            ],
+            latency_ms=1,
+        )
+
+
 def test_comparison_models_forbid_unknown_and_source_fields() -> None:
     with pytest.raises(ValidationError):
         ComparisonSubject.model_validate(
@@ -323,6 +343,83 @@ async def test_transport_variation_promotes_question_anchored_model_subjects() -
         "nnmamba",
         "efficientmednext-l",
     ]
+
+
+@pytest.mark.asyncio
+async def test_transport_schema_failure_exposes_only_safe_validation_issues() -> None:
+    secret = "secret-paper.pdf"
+    response = json.dumps(
+        {
+            "is_comparison": True,
+            "subjects": [
+                {
+                    "subject_id": "nnmamba",
+                    "display_name": secret,
+                    "aliases": [],
+                    "retrieval_query": "nnMamba Params FLOPs",
+                    "question_span": "nnMamba",
+                },
+                _planner_subject("efficientmednext-l", "EfficientMedNeXt-L"),
+            ],
+            "dimensions": ["Params", "FLOPs"],
+        }
+    )
+
+    outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
+        question=Q4,
+        authorized_source_names=[],
+        timeout_seconds=1,
+    )
+
+    assert outcome.status == "fallback"
+    assert outcome.fallback_reason == "schema_violation"
+    assert outcome.fallback_stage == "transport_schema"
+    assert [issue.model_dump(mode="json") for issue in outcome.validation_issues] == [
+        {"path": "subjects.0.subject_role", "type": "missing"}
+    ]
+    serialized = outcome.model_dump_json()
+    assert secret not in serialized
+    assert "Field required" not in serialized
+    assert "errors.pydantic.dev" not in serialized
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "expected_stage"),
+    [
+        ("not-json", "response_decode"),
+        (_payload(subjects=[_planner_subject("only", "nnMamba")]), "subject_validation"),
+        (_payload(dimensions=["x" * 161]), "trusted_plan_validation"),
+        (
+            _payload(
+                subjects=[
+                    _planner_subject(
+                        "nnmamba",
+                        "nnMamba",
+                        retrieval_query="nnMamba Params 999",
+                    ),
+                    _planner_subject(
+                        "efficientmednext-l",
+                        "EfficientMedNeXt-L",
+                    ),
+                ]
+            ),
+            "numeric_guard",
+        ),
+    ],
+)
+async def test_planner_fallback_identifies_the_failing_boundary(
+    response: str,
+    expected_stage: str,
+) -> None:
+    outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
+        question=Q4,
+        authorized_source_names=[],
+        timeout_seconds=1,
+    )
+
+    assert outcome.status == "fallback"
+    assert outcome.fallback_stage == expected_stage
 
 
 @pytest.mark.asyncio

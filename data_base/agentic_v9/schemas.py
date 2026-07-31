@@ -53,6 +53,13 @@ ComparisonPlannerFallbackReason = Literal[
     "not_comparison",
     "invalid_subjects",
 ]
+ComparisonPlannerDiagnosticStage = Literal[
+    "response_decode",
+    "transport_schema",
+    "subject_validation",
+    "trusted_plan_validation",
+    "numeric_guard",
+]
 
 ROUTE_GRAPH_POLICIES: dict[AgenticV9Route, GraphPolicy] = {
     "single_lookup": "never",
@@ -179,6 +186,15 @@ class ComparisonPlan(BaseModel):
         return self
 
 
+class ComparisonPlannerValidationIssue(BaseModel):
+    """One bounded, input-free provider validation diagnostic."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=160)
+    type: str = Field(min_length=1, max_length=80)
+
+
 class ComparisonPlannerOutcome(BaseModel):
     """Typed terminal result for one fail-soft comparison-planner attempt."""
 
@@ -187,13 +203,23 @@ class ComparisonPlannerOutcome(BaseModel):
     status: Literal["planned", "fallback"]
     plan: ComparisonPlan | None = None
     fallback_reason: ComparisonPlannerFallbackReason | None = None
+    fallback_stage: ComparisonPlannerDiagnosticStage | None = None
+    validation_issues: list[ComparisonPlannerValidationIssue] = Field(
+        default_factory=list,
+        max_length=8,
+    )
     latency_ms: float = Field(ge=0)
 
     @model_validator(mode="after")
     def require_status_consistency(self) -> ComparisonPlannerOutcome:
         """Keep successful plans and safe fallback reasons mutually exclusive."""
         if self.status == "planned":
-            if self.plan is None or self.fallback_reason is not None:
+            if (
+                self.plan is None
+                or self.fallback_reason is not None
+                or self.fallback_stage is not None
+                or self.validation_issues
+            ):
                 raise ValueError("planned outcome requires only a comparison plan")
         elif self.plan is not None or self.fallback_reason is None:
             raise ValueError("fallback outcome requires only a fallback reason")
