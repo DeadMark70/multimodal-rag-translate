@@ -278,6 +278,54 @@ async def test_valid_planner_response_identifies_subjects_not_dimensions() -> No
 
 
 @pytest.mark.asyncio
+async def test_transport_variation_promotes_question_anchored_model_subjects() -> None:
+    response = json.dumps(
+        {
+            "is_comparison": True,
+            "subjects": [
+                {
+                    "subject_id": "nnMamba",
+                    "display_name": "nnMamba",
+                    "aliases": [],
+                    "retrieval_query": "nnMamba Params FLOPs",
+                    "subject_role": "model",
+                    "rationale": "named model in the question",
+                },
+                {
+                    "subject_id": "EfficientMedNeXt-L",
+                    "display_name": "EfficientMedNeXt-L",
+                    "aliases": ["Efficient MedNeXt L"],
+                    "retrieval_query": "EfficientMedNeXt-L Params FLOPs",
+                    "subject_role": "architecture",
+                    "rationale": "named architecture in the question",
+                },
+            ],
+            "dimensions": ["Params", "FLOPs"],
+            "qualification": "cross-paper relative comparison",
+            "explanation": "retrieval planning only",
+        }
+    )
+
+    outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
+        question=Q4,
+        authorized_source_names=[],
+        timeout_seconds=1,
+    )
+
+    assert outcome.status == "planned"
+    assert outcome.fallback_reason is None
+    assert outcome.plan is not None
+    assert [subject.display_name for subject in outcome.plan.subjects] == [
+        "nnMamba",
+        "EfficientMedNeXt-L",
+    ]
+    assert [subject.subject_id for subject in outcome.plan.subjects] == [
+        "nnmamba",
+        "efficientmednext-l",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_one_entity_claim_arbitration_is_not_subject_comparison() -> None:
     question = (
         "Does MedSAM-2 support single-prompt segmentation, and how does "

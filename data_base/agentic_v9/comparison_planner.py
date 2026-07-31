@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 import re
 from time import perf_counter
-from typing import Any, Literal, Sequence
+from typing import Any, Sequence
 import unicodedata
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -72,24 +73,23 @@ _RELATIVE_MARKERS = (
 )
 
 
-class _PlannerSubjectPayload(ComparisonSubject):
-    """Provider subject plus answer-free semantic grounding metadata."""
+class _PlannerSubjectPayload(BaseModel):
+    """Untrusted provider transport before deterministic subject promotion."""
 
-    subject_role: Literal[
-        "entity",
-        "claim",
-        "capability",
-        "condition",
-        "metric",
-        "dimension",
-    ]
-    question_span: str = Field(min_length=1, max_length=160)
+    model_config = ConfigDict(extra="ignore")
+
+    subject_id: str = Field(min_length=1, max_length=160)
+    display_name: str = Field(min_length=1, max_length=160)
+    aliases: list[str] = Field(default_factory=list, max_length=8)
+    retrieval_query: str = Field(min_length=1, max_length=512)
+    subject_role: str = Field(min_length=1, max_length=80)
+    question_span: str | None = Field(default=None, max_length=160)
 
 
 class _PlannerPayload(BaseModel):
     """Provider JSON before it is promoted into a comparison plan."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     is_comparison: bool
     subjects: list[_PlannerSubjectPayload] = Field(default_factory=list, max_length=4)
@@ -257,6 +257,37 @@ def _normalized_identity(value: str) -> str:
     return "".join(character for character in normalized if character.isalnum())
 
 
+_ENTITY_ROLES = {
+    "architecture",
+    "dataset",
+    "document",
+    "entity",
+    "framework",
+    "method",
+    "model",
+    "paper",
+    "system",
+    "technique",
+}
+
+
+def _canonical_role(value: str) -> str:
+    return re.sub(r"[^a-z]+", "_", value.strip().casefold()).strip("_")
+
+
+def _safe_subject_id(candidate_id: str, display_name: str) -> str:
+    normalized = unicodedata.normalize("NFKC", candidate_id).casefold()
+    safe = re.sub(r"[^a-z0-9_-]+", "_", normalized).strip("_")
+    if safe and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", safe):
+        return safe
+    name = unicodedata.normalize("NFKC", display_name).casefold()
+    name_safe = re.sub(r"[^a-z0-9_-]+", "_", name).strip("_")[:80]
+    if name_safe and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", name_safe):
+        return name_safe
+    digest = hashlib.sha256(display_name.encode("utf-8")).hexdigest()[:16]
+    return f"subject-{digest}"
+
+
 def _contains_explicit_span(question: str, span: str) -> bool:
     normalized_question = unicodedata.normalize("NFKC", question).casefold()
     normalized_span = unicodedata.normalize("NFKC", span).strip().casefold()
@@ -293,23 +324,37 @@ def _validated_subjects(
     accepted: list[ComparisonSubject] = []
     seen: set[str] = set()
     for candidate in candidates:
-        if candidate.subject_role != "entity":
+        if _canonical_role(candidate.subject_role) not in _ENTITY_ROLES:
             continue
-        if not _contains_explicit_span(question, candidate.question_span):
-            continue
-        span_identity = _normalized_identity(candidate.question_span)
         names = [candidate.display_name, *candidate.aliases]
+        span = candidate.question_span
+        if span is None:
+            span = next(
+                (name for name in names if _contains_explicit_span(question, name)),
+                None,
+            )
+        if span is None or not _contains_explicit_span(question, span):
+            continue
+        span_identity = _normalized_identity(span)
         if span_identity not in {_normalized_identity(name) for name in names}:
             continue
         identity = _normalized_identity(candidate.display_name)
         if not identity or identity in seen:
             continue
         seen.add(identity)
-        accepted.append(
-            ComparisonSubject.model_validate(
-                candidate.model_dump(exclude={"subject_role", "question_span"})
+        try:
+            accepted.append(
+                ComparisonSubject(
+                    subject_id=_safe_subject_id(
+                        candidate.subject_id, candidate.display_name
+                    ),
+                    display_name=candidate.display_name,
+                    aliases=candidate.aliases,
+                    retrieval_query=candidate.retrieval_query,
+                )
             )
-        )
+        except ValidationError:
+            continue
     return accepted
 
 
