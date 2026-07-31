@@ -189,6 +189,7 @@ def safe_comparison_projection(value: dict[str, Any]) -> dict[str, Any]:
         "provider_error",
         "invalid_response",
         "schema_violation",
+        "invalid_subjects",
         "not_comparison",
     }
     planner_fallback_stages = {

@@ -311,6 +311,23 @@ def test_llm_call_schema_accepts_comparison_plan_phase() -> None:
     assert call.total_tokens == 11
 
 
+def test_llm_call_schema_accepts_graph_route_phase() -> None:
+    call = EvaluationLlmCall(
+        llm_call_id="llm-graph-route",
+        run_id="run-1",
+        campaign_id="campaign-1",
+        phase="graph_route",
+        purpose="graph_extraction",
+        prompt_tokens=5,
+        completion_tokens=2,
+        total_tokens=7,
+        created_at=datetime.now(timezone.utc),
+    )
+
+    assert call.phase == "graph_route"
+    assert call.total_tokens == 7
+
+
 @pytest.mark.asyncio
 async def test_v9_evidence_tables_have_identity_schema_and_idempotency_indexes(
     tmp_path, monkeypatch

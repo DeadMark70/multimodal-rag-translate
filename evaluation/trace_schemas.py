@@ -21,6 +21,7 @@ LlmCallPhase = Literal[
     "unknown",
     "contract_planning",
     "comparison_plan",
+    "graph_route",
     "evidence_extract",
     "retrieval_judge",
     "visual_extract",

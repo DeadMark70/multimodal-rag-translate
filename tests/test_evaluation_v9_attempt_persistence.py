@@ -224,6 +224,19 @@ def test_comparison_projection_allows_only_bounded_safe_planner_diagnostics() ->
     assert "raw_response" not in serialized
 
 
+def test_comparison_projection_preserves_invalid_subjects_fallback() -> None:
+    projected = safe_comparison_projection(
+        {
+            "planner_status": "fallback",
+            "planner_fallback_reason": "invalid_subjects",
+            "fallback_stage": "subject_validation",
+        }
+    )
+
+    assert projected["planner_fallback_reason"] == "invalid_subjects"
+    assert projected["fallback_stage"] == "subject_validation"
+
+
 @pytest.mark.asyncio
 async def test_materializing_a_v9_attempt_is_atomic_and_idempotent(
     isolated_db_path, monkeypatch
