@@ -285,6 +285,17 @@ def get_llm(purpose: LLMPurpose, model_name: Optional[str] = None) -> Any:
     return _get_registry().llm_provider.get_llm(purpose, model_name=model_name)
 
 
+def bind_json_schema(llm: Any, *, schema: dict[str, Any]) -> Any:
+    """Bind native JSON output while preserving the raw provider response."""
+    binder = getattr(llm, "bind", None)
+    if not callable(binder):
+        raise ProviderError("LLM provider does not support native JSON schema binding")
+    return binder(
+        response_mime_type="application/json",
+        response_schema=schema,
+    )
+
+
 def get_llm_provider_name() -> str:
     """Return the authoritative identity of the active runtime LLM provider."""
     return _get_registry().llm_provider.provider_name

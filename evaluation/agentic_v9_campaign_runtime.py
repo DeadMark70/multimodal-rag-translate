@@ -20,7 +20,7 @@ from typing import Any
 
 from langchain_core.documents import Document
 
-from core.providers import get_llm
+from core.providers import bind_json_schema, get_llm
 from data_base.RAG_QA_service import RAGResult, get_graph_evidence_bundle
 from data_base.agentic_v9.budget_controller import RunBudgetController
 from data_base.agentic_v9.budget_feasibility import (
@@ -38,6 +38,7 @@ from data_base.agentic_v9.context_packer import (
 from data_base.agentic_v9.comparison_planner import (
     ComparisonPlanner,
     apply_comparison_overlay,
+    comparison_planner_response_schema,
     is_suspected_comparison,
 )
 from data_base.agentic_v9.comparison_context import (
@@ -1366,8 +1367,14 @@ async def _list_owned_document_ids(user_id: str) -> list[str]:
     return await list_owned_document_ids(user_id=user_id)
 
 
-def _provider_for_purpose(_: str) -> Any:
-    return get_llm("synthesizer")
+def _provider_for_purpose(purpose: str) -> Any:
+    provider = get_llm("synthesizer")
+    if purpose != "agentic_v9_comparison_plan":
+        return provider
+    return bind_json_schema(
+        provider,
+        schema=comparison_planner_response_schema(),
+    )
 
 
 def _project_chunk_id(

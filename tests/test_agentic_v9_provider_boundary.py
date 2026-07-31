@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import core.providers as providers_module
 from core.llm_factory import current_llm_runtime_overrides, llm_runtime_override
 from data_base.agentic_v9.budget_controller import RunBudgetController
 from data_base.agentic_v9.budgeted_llm import BudgetedLlmInvoker
@@ -54,6 +55,36 @@ class _FailingInvoker:
         del purpose, messages
         self.calls.append(phase)
         raise TimeoutError("graph route unavailable")
+
+
+def test_bind_json_schema_uses_native_json_configuration() -> None:
+    captured: dict[str, object] = {}
+
+    class _Bindable:
+        def bind(self, **kwargs: object) -> object:
+            captured.update(kwargs)
+            return "bound-provider"
+
+    assert hasattr(providers_module, "bind_json_schema")
+    result = providers_module.bind_json_schema(
+        _Bindable(),
+        schema={"type": "object", "properties": {"answer": {"type": "string"}}},
+    )
+
+    assert result == "bound-provider"
+    assert captured == {
+        "response_mime_type": "application/json",
+        "response_schema": {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+        },
+    }
+
+
+def test_bind_json_schema_rejects_provider_without_bind() -> None:
+    assert hasattr(providers_module, "bind_json_schema")
+    with pytest.raises(providers_module.ProviderError, match="native JSON schema"):
+        providers_module.bind_json_schema(object(), schema={"type": "object"})
 
 
 def test_v9_runtime_has_no_provider_ainvoke_bypass_outside_budget_gateway() -> None:

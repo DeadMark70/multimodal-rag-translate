@@ -12,6 +12,9 @@ import pytest
 from langchain_core.documents import Document
 
 import evaluation.agentic_v9_campaign_runtime as runtime_module
+from data_base.agentic_v9.comparison_planner import (
+    comparison_planner_response_schema,
+)
 from data_base.agentic_v9.execution_policy import V9ExecutionPolicyRuntime
 from data_base.rag_pipeline_schemas import RagRetrievalResult as PipelineRetrievalResult
 from data_base.reranker import DocumentReranker
@@ -46,6 +49,49 @@ class _Provider:
                 usage_metadata={"input_tokens": 12, "output_tokens": 7},
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_comparison_provider_binds_schema_without_replacing_raw_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = SimpleNamespace(
+        content='{"is_comparison":false,"subjects":[],"dimensions":[]}',
+        usage_metadata={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
+    )
+    captured: dict[str, object] = {}
+
+    class _BindableProvider:
+        def bind(self, **kwargs: object) -> "_BindableProvider":
+            captured.update(kwargs)
+            return self
+
+        async def ainvoke(self, messages: object) -> object:
+            del messages
+            return raw
+
+    monkeypatch.setattr(runtime_module, "get_llm", lambda purpose: _BindableProvider())
+
+    provider = runtime_module._provider_for_purpose("agentic_v9_comparison_plan")
+    response = await provider.ainvoke([])
+
+    assert captured["response_mime_type"] == "application/json"
+    assert captured["response_schema"] == comparison_planner_response_schema()
+    assert response is raw
+    assert response.usage_metadata["total_tokens"] == 10
+
+
+def test_noncomparison_provider_is_not_schema_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _UnboundProvider:
+        def bind(self, **kwargs: object) -> object:
+            raise AssertionError(f"unexpected schema binding: {kwargs}")
+
+    provider = _UnboundProvider()
+    monkeypatch.setattr(runtime_module, "get_llm", lambda purpose: provider)
+
+    assert runtime_module._provider_for_purpose("final_answer") is provider
 
 
 class _RecordingObserver:
@@ -467,22 +513,14 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
             content=json.dumps(
                 {
                     "is_comparison": True,
-                    "subjects": [
-                        {
-                            "subject_id": "nnmamba",
-                            "display_name": "nnMamba",
-                            "aliases": [],
-                            "retrieval_query": "nnMamba parameters FLOPs",
-                            "subject_role": "entity",
-                            "question_span": "nnMamba",
-                        },
-                        {
-                            "subject_id": "efficientmednext_l",
-                            "display_name": "EfficientMedNeXt-L",
-                            "aliases": [],
-                            "retrieval_query": "EfficientMedNeXt-L parameters FLOPs",
-                            "subject_role": "entity",
-                            "question_span": "EfficientMedNeXt-L",
+                        "subjects": [
+                            {
+                                "name": "nnMamba",
+                                "query": "nnMamba parameters FLOPs",
+                            },
+                            {
+                                "name": "EfficientMedNeXt-L",
+                                "query": "EfficientMedNeXt-L parameters FLOPs",
                         },
                     ],
                     "dimensions": ["parameters", "FLOPs"],
@@ -523,7 +561,7 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
         subject = (
             "nnmamba"
             if "nnMamba" in retrieval_query
-            else "efficientmednext_l"
+            else "efficientmednext-l"
         )
         return [
             Document(
@@ -555,7 +593,7 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
     assert [
         subject["subject_id"]
         for subject in v9["query_contract"]["comparison_plan"]["subjects"]
-    ] == ["nnmamba", "efficientmednext_l"]
+    ] == ["nnmamba", "efficientmednext-l"]
     assert retrieve_documents.await_count == 2
     assert [row["selected_count"] for row in v9["retrieval_diagnostics"]] == [2, 2]
     assert v9["comparison_planner"]["status"] == "planned"
@@ -574,7 +612,7 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
                 "retrieval_query": "nnMamba parameters FLOPs",
             },
             {
-                "subject_id": "efficientmednext_l",
+                "subject_id": "efficientmednext-l",
                 "display_name": "EfficientMedNeXt-L",
                 "aliases": [],
                 "retrieval_query": "EfficientMedNeXt-L parameters FLOPs",
@@ -582,15 +620,15 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
         ],
         "dimensions": ["parameters", "FLOPs"],
         "task_diagnostics": v9["comparison"]["task_diagnostics"],
-        "coverage_before_repair": ["nnmamba", "efficientmednext_l"],
+        "coverage_before_repair": ["nnmamba", "efficientmednext-l"],
         "missing_before_repair": [],
         "repair_executed": False,
-        "coverage_after_repair": ["nnmamba", "efficientmednext_l"],
+        "coverage_after_repair": ["nnmamba", "efficientmednext-l"],
         "missing_after_repair": [],
         "final_status": "complete",
         "final_evidence_subjects": [
             "nnmamba",
-            "efficientmednext_l",
+        "efficientmednext-l",
         ],
         "final_evidence_count": 4,
         "final_evidence": v9["comparison"]["final_evidence"],
@@ -607,18 +645,18 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
         ("doc-1", "nnmamba-chunk-1", ("nnmamba",)),
         (
             "doc-1",
-            "efficientmednext_l-chunk-0",
-            ("efficientmednext_l",),
+            "efficientmednext-l-chunk-0",
+            ("efficientmednext-l",),
         ),
         (
             "doc-1",
-            "efficientmednext_l-chunk-1",
-            ("efficientmednext_l",),
+            "efficientmednext-l-chunk-1",
+            ("efficientmednext-l",),
         ),
     }
     assert {
         row["subject_id"] for row in v9["comparison"]["task_diagnostics"]
-    } == {"nnmamba", "efficientmednext_l"}
+    } == {"nnmamba", "efficientmednext-l"}
     assert all(
         row["query_hash"].startswith("sha256:")
         and len(row["query_preview"]) <= 160
@@ -628,7 +666,7 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
         tuple(packet["slot_ids"]) for packet in v9["evidence_packets"]
     } == {
         ("comparison-subject:nnmamba",),
-        ("comparison-subject:efficientmednext_l",),
+        ("comparison-subject:efficientmednext-l",),
     }
     packed_ids = set(v9["context_pack"]["packed_evidence_ids"])
     packed_packets = [
@@ -641,7 +679,7 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
         tuple(packet["slot_ids"]) for packet in packed_packets
     } == {
         ("comparison-subject:nnmamba",),
-        ("comparison-subject:efficientmednext_l",),
+        ("comparison-subject:efficientmednext-l",),
     }
     assert provider.ainvoke.await_count == 2
 
@@ -654,35 +692,10 @@ async def test_invalid_comparison_subjects_preserve_base_contract_and_retrieval(
     provider.ainvoke.side_effect = [
         SimpleNamespace(
             content=json.dumps(
-                {
-                    "is_comparison": True,
-                    "subjects": [
-                        {
-                            "subject_id": "medsam-2",
-                            "display_name": "MedSAM-2",
-                            "aliases": [],
-                            "retrieval_query": "MedSAM-2 automation",
-                            "subject_role": "entity",
-                            "question_span": "MedSAM-2",
-                        },
-                        {
-                            "subject_id": "single-prompt",
-                            "display_name": "single-prompt segmentation",
-                            "aliases": [],
-                            "retrieval_query": "single-prompt segmentation",
-                            "subject_role": "capability",
-                            "question_span": "single-prompt segmentation",
-                        },
-                        {
-                            "subject_id": "prompt-quality",
-                            "display_name": "initial bounding box prompt quality",
-                            "aliases": [],
-                            "retrieval_query": "initial bounding box prompt quality",
-                            "subject_role": "condition",
-                            "question_span": "initial bounding box prompt quality",
-                        },
-                    ],
-                    "dimensions": ["segmentation behavior"],
+                    {
+                        "is_comparison": False,
+                        "subjects": [],
+                        "dimensions": [],
                     "qualification": None,
                 }
             ),
@@ -739,7 +752,7 @@ async def test_invalid_comparison_subjects_preserve_base_contract_and_retrieval(
 
     v9 = result.agent_trace["agentic_v9"]
     assert v9["comparison_planner"]["status"] == "fallback"
-    assert v9["comparison_planner"]["fallback_reason"] == "invalid_subjects"
+    assert v9["comparison_planner"]["fallback_reason"] == "not_comparison"
     assert "comparison_plan" not in v9["query_contract"]
     assert retrieve_documents.await_count == 1
     assert result.documents
@@ -762,22 +775,14 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
             content=json.dumps(
                 {
                     "is_comparison": True,
-                    "subjects": [
-                            {
-                                "subject_id": "model_a",
-                                "display_name": "Model A",
-                                "aliases": ["A"],
-                                "retrieval_query": "Model A accuracy",
-                                "subject_role": "entity",
-                                "question_span": "Model A",
-                            },
-                            {
-                                "subject_id": "model_b",
-                                "display_name": "Model B",
-                                "aliases": ["B"],
-                                "retrieval_query": "Model B accuracy",
-                                "subject_role": "entity",
-                                "question_span": "Model B",
+                        "subjects": [
+                                {
+                                    "name": "Model A",
+                                    "query": "Model A accuracy",
+                                },
+                                {
+                                    "name": "Model B",
+                                    "query": "Model B accuracy",
                             },
                     ],
                     "dimensions": ["accuracy"],
@@ -823,10 +828,10 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
             model_b_attempts += 1
             if model_b_attempts == 1 or not repair_succeeds:
                 return []
-            subject = "model_b"
+            subject = "model-b"
             doc_id = "doc-b"
         else:
-            subject = "model_a"
+            subject = "model-a"
             doc_id = "doc-a"
         return [
             Document(
@@ -860,15 +865,15 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
     assert retrieve_documents.await_count == 3
     assert len(v9["repairs"]) == 1
     assert len(v9["repairs"][0]["tasks"]) == 1
-    assert v9["repairs"][0]["tasks"][0]["subject_id"] == "model_b"
-    assert v9["comparison"]["coverage_before_repair"] == ["model_a"]
-    assert v9["comparison"]["missing_before_repair"] == ["model_b"]
+    assert v9["repairs"][0]["tasks"][0]["subject_id"] == "model-b"
+    assert v9["comparison"]["coverage_before_repair"] == ["model-a"]
+    assert v9["comparison"]["missing_before_repair"] == ["model-b"]
     assert v9["comparison"]["repair_executed"] is True
     assert v9["comparison"]["final_status"] == expected_status
     if repair_succeeds:
         assert v9["comparison"]["coverage_after_repair"] == [
-            "model_a",
-            "model_b",
+            "model-a",
+            "model-b",
         ]
         assert v9["comparison"]["missing_after_repair"] == []
         packed_ids = set(v9["context_pack"]["packed_evidence_ids"])
@@ -880,12 +885,12 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
         assert {
             tuple(packet["slot_ids"]) for packet in packed_packets
         } == {
-            ("comparison-subject:model_a",),
-            ("comparison-subject:model_b",),
+            ("comparison-subject:model-a",),
+            ("comparison-subject:model-b",),
         }
     else:
-        assert v9["comparison"]["coverage_after_repair"] == ["model_a"]
-        assert v9["comparison"]["missing_after_repair"] == ["model_b"]
+        assert v9["comparison"]["coverage_after_repair"] == ["model-a"]
+        assert v9["comparison"]["missing_after_repair"] == ["model-b"]
 
 
 @pytest.mark.asyncio
@@ -898,22 +903,14 @@ async def test_v9_comparison_status_uses_final_balanced_packet_coverage(
             content=json.dumps(
                 {
                     "is_comparison": True,
-                    "subjects": [
-                            {
-                                "subject_id": "model_a",
-                                "display_name": "Model A",
-                                "aliases": [],
-                                "retrieval_query": "Model A accuracy",
-                                "subject_role": "entity",
-                                "question_span": "Model A",
-                            },
-                            {
-                                "subject_id": "model_b",
-                                "display_name": "Model B",
-                                "aliases": [],
-                                "retrieval_query": "Model B accuracy",
-                                "subject_role": "entity",
-                                "question_span": "Model B",
+                        "subjects": [
+                                {
+                                    "name": "Model A",
+                                    "query": "Model A accuracy",
+                                },
+                                {
+                                    "name": "Model B",
+                                    "query": "Model B accuracy",
                             },
                     ],
                     "dimensions": ["accuracy"],
@@ -981,7 +978,7 @@ async def test_v9_comparison_status_uses_final_balanced_packet_coverage(
     assert retrieve_documents.await_count == 3
     assert len(v9["repairs"]) == 1
     assert len(v9["repairs"][0]["tasks"]) == 1
-    assert v9["repairs"][0]["tasks"][0]["subject_id"] == "model_b"
+    assert v9["repairs"][0]["tasks"][0]["subject_id"] == "model-b"
 
 
 @pytest.mark.asyncio
@@ -1064,21 +1061,13 @@ async def test_v9_comparison_transport_diagnostics_reach_agent_trace() -> None:
             content=json.dumps(
                 {
                     "is_comparison": True,
-                    "subjects": [
-                        {
-                            "subject_id": "model_a",
-                            "display_name": "Model A",
-                            "aliases": [],
-                            "retrieval_query": "Model A accuracy",
-                            "question_span": "Model A",
-                        },
-                        {
-                            "subject_id": "model_b",
-                            "display_name": "Model B",
-                            "aliases": [],
-                            "retrieval_query": "Model B accuracy",
-                            "subject_role": "entity",
-                            "question_span": "Model B",
+                        "subjects": [
+                            {
+                                "name": "Model A",
+                            },
+                            {
+                                "name": "Model B",
+                                "query": "Model B accuracy",
                         },
                     ],
                     "dimensions": ["accuracy"],
@@ -1112,7 +1101,7 @@ async def test_v9_comparison_transport_diagnostics_reach_agent_trace() -> None:
         trace_id="comparison-transport-diagnostics",
     )
 
-    expected_issues = [{"path": "subjects.0.subject_role", "type": "missing"}]
+    expected_issues = [{"path": "subjects.0.query", "type": "missing"}]
     v9 = result.agent_trace["agentic_v9"]
     assert v9["comparison_planner"]["fallback_stage"] == "transport_schema"
     assert v9["comparison_planner"]["validation_issues"] == expected_issues
