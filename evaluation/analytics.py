@@ -1125,6 +1125,7 @@ class EvaluationAnalyticsService:
         retrieval_summary: list[dict[str, Any]] = []
         claim_summary: list[dict[str, Any]] = []
         comparison_summary: list[dict[str, Any]] = []
+        requirement_summary: list[dict[str, Any]] = []
         phase_counts: dict[str, int] = defaultdict(int)
         hash_availability: dict[str, int] = defaultdict(int)
         preview_availability: dict[str, int] = defaultdict(int)
@@ -1227,6 +1228,21 @@ class EvaluationAnalyticsService:
                         "comparison": redact_sensitive_value(comparison),
                     }
                 )
+            requirement_shadow = (
+                materialization.trace_payload.get("requirement_shadow")
+                if materialization is not None
+                and isinstance(materialization.trace_payload, dict)
+                else None
+            )
+            if isinstance(requirement_shadow, dict):
+                requirement_summary.append(
+                    {
+                        "run_id": result.id,
+                        "requirement_shadow": redact_sensitive_value(
+                            requirement_shadow
+                        ),
+                    }
+                )
         overview = context.overview or self._build_campaign_overview(context)
         errors = self._build_campaign_errors(
             context=context,
@@ -1258,6 +1274,7 @@ class EvaluationAnalyticsService:
             retrieval_summary=retrieval_summary,
             claim_summary=claim_summary,
             comparison_summary=comparison_summary,
+            requirement_summary=requirement_summary,
             summary={
                 "run_count": len(runs),
                 "llm_call_count": len(llm_calls),

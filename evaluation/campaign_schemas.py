@@ -843,6 +843,7 @@ class ExportCampaignResponse(BaseModel):
     retrieval_summary: list[dict[str, Any]] = Field(default_factory=list)
     claim_summary: list[dict[str, Any]] = Field(default_factory=list)
     comparison_summary: list[dict[str, Any]] = Field(default_factory=list)
+    requirement_summary: list[dict[str, Any]] = Field(default_factory=list)
     summary: dict[str, Any] = Field(default_factory=dict)
     availability_warnings: list[str] = Field(default_factory=list)
 

@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from langchain_core.documents import Document
@@ -1580,6 +1580,83 @@ def test_rerank_quality_is_keyed_by_emitted_evidence_id() -> None:
 
     assert len(result.packets) == 1
     assert result.quality_by_evidence_id == {result.packets[0].evidence_id: 0.5}
+
+
+@pytest.mark.asyncio
+async def test_v9_runtime_persists_requirement_shadow_without_influencing_behavior() -> (
+    None
+):
+    provider = _Provider()
+    document = Document(
+        page_content="The source reports a score of 0.91.",
+        metadata={"doc_id": "doc-1", "page_number": 2, "chunk_id": "chunk-1"},
+    )
+    retrieve_documents = AsyncMock(return_value=[document])
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve_documents,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What is the reported score?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot=_setup(),
+        trace_id="attempt-trace-requirement-shadow",
+    )
+
+    v9 = result.agent_trace["agentic_v9"]
+    shadow = v9["requirement_shadow"]
+    assert shadow["schema_version"] == "shadow_requirements_v1"
+    assert shadow["behavior_influence"] is False
+    assert shadow["support_assessment"] == "candidate_only"
+    assert shadow["summary"]["requirement_count"] == 1
+    assert shadow["requirements"][0]["candidate_evidence_refs"] == [
+        "doc-1:chunk-1"
+    ]
+    assert v9["visual_execution"]["state"] == "not_requested"
+    assert result.agent_trace["response_status"] == "complete"
+    assert result.documents
+
+
+@pytest.mark.asyncio
+async def test_requirement_shadow_failure_cannot_fail_or_downgrade_the_run(
+    monkeypatch,
+) -> None:
+    provider = _Provider()
+    document = Document(
+        page_content="The source reports a score of 0.91.",
+        metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(return_value=[document]),
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "build_requirement_shadow",
+        Mock(side_effect=RuntimeError("shadow analyzer failed")),
+        raising=False,
+    )
+
+    result = await runtime.execute(
+        question="What is the reported score?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot=_setup(),
+        trace_id="attempt-trace-requirement-shadow-failure",
+    )
+
+    shadow = result.agent_trace["agentic_v9"]["requirement_shadow"]
+    assert result.agent_trace["response_status"] == "complete"
+    assert shadow == {
+        "schema_version": "shadow_requirements_v1",
+        "behavior_influence": False,
+        "status": "unavailable",
+        "reason": "diagnostic_projection_failed",
+    }
 
 
 @pytest.mark.asyncio

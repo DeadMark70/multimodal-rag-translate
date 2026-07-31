@@ -54,6 +54,7 @@ from data_base.agentic_v9.execution_policy import (
     V9ExecutionPolicyRuntime,
 )
 from data_base.agentic_v9.repair import build_repair_plan
+from data_base.agentic_v9.requirement_shadow import build_requirement_shadow
 from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
@@ -238,6 +239,7 @@ class AgenticV9CampaignRuntime:
             "visual_packets": [],
             "visual_packets_emitted": False,
             "retrieval_diagnostics": [],
+            "requirement_shadow_documents": [],
         }
 
         async def resolve_scope(_: V9ExecutionRequest) -> ResolvedSourceScope:
@@ -429,6 +431,7 @@ class AgenticV9CampaignRuntime:
                             visual_result
                         )
                         state["visual_packets"].extend(visual_result.packets)
+                state["requirement_shadow_documents"].extend(docs)
                 chunks = [
                     _chunk_projection(document, index, task_id=task.task_id)
                     for index, document in enumerate(docs)
@@ -720,6 +723,22 @@ class AgenticV9CampaignRuntime:
             packed=packed,
             final_status=final.response_status,
         )
+        try:
+            requirement_shadow = build_requirement_shadow(
+                question=question,
+                documents=state["requirement_shadow_documents"],
+            ).model_dump(mode="json")
+        except Exception:
+            logger.warning(
+                "Agentic v9 requirement shadow projection failed",
+                exc_info=True,
+            )
+            requirement_shadow = {
+                "schema_version": "shadow_requirements_v1",
+                "behavior_influence": False,
+                "status": "unavailable",
+                "reason": "diagnostic_projection_failed",
+            }
         v9_trace = {
             "schema_version": "1",
             "retrieval_scope": {
@@ -732,6 +751,7 @@ class AgenticV9CampaignRuntime:
             },
             "query_contract": state["contract"].model_dump(mode="json"),
             "comparison_planner": state["comparison_planner"],
+            "requirement_shadow": requirement_shadow,
             "retrieval_diagnostics": state["retrieval_diagnostics"],
             "evidence_packets": [
                 packet.model_dump(mode="json")

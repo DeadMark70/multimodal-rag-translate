@@ -56,7 +56,9 @@ def _wait_for_completed(client: TestClient, campaign_id: str) -> None:
     raise AssertionError(f"campaign {campaign_id} did not complete")
 
 
-async def _seed_export_rows(*, run_id: str, campaign_id: str) -> None:
+async def _seed_export_rows(
+    *, run_id: str, campaign_id: str, attempt_id: str
+) -> None:
     repository = EvaluationObservabilityRepository()
     now = datetime.now(timezone.utc)
     await repository.record_trace_event(
@@ -125,6 +127,47 @@ async def _seed_export_rows(*, run_id: str, campaign_id: str) -> None:
             },
             created_at=now,
         )
+    )
+    await repository.materialize_v9_attempt(
+        attempt_id=attempt_id,
+        run_id=run_id,
+        campaign_id=campaign_id,
+        condition_id="",
+        schema_version="1",
+        trace_payload={
+            "requirement_shadow": {
+                "schema_version": "shadow_requirements_v1",
+                "behavior_influence": False,
+                "support_assessment": "candidate_only",
+                "requirements": [
+                    {
+                        "requirement_id": "R1",
+                        "text": "What failed?",
+                        "answer_kind": "text",
+                        "information_need": "plain_text",
+                        "visual_precision": "none",
+                        "visual_decision": "not_requested",
+                        "visual_reason": "text_representation_expected",
+                        "importance": "core",
+                        "coverage_status": "candidate",
+                        "available_representations": ["plain_text"],
+                        "candidate_evidence_refs": [
+                            "doc-1:runtime-export-chunk"
+                        ],
+                    }
+                ],
+                "summary": {
+                    "requirement_count": 1,
+                    "candidate_count": 1,
+                    "missing_count": 0,
+                    "supported_count": 0,
+                    "visual_required_count": 0,
+                },
+            }
+        },
+        evidence_packets=[],
+        slot_resolutions=[],
+        claims=[],
     )
     await repository.record_llm_call(
         EvaluationLlmCall(
@@ -263,8 +306,17 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         assert created.status_code == 200
         campaign_id = created.json()["campaign_id"]
         _wait_for_completed(client, campaign_id)
-        run_id = client.get(f"/api/evaluation/campaigns/{campaign_id}/results").json()["results"][0]["id"]
-        asyncio.run(_seed_export_rows(run_id=run_id, campaign_id=campaign_id))
+        result_row = client.get(
+            f"/api/evaluation/campaigns/{campaign_id}/results"
+        ).json()["results"][0]
+        run_id = result_row["id"]
+        asyncio.run(
+            _seed_export_rows(
+                run_id=run_id,
+                campaign_id=campaign_id,
+                attempt_id=result_row["source_attempt_id"],
+            )
+        )
         asyncio.run(_seed_stage_warning(run_id=run_id, campaign_id=campaign_id))
 
         errors_response = client.get(f"/api/evaluation/campaigns/{campaign_id}/errors")
@@ -308,6 +360,40 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         assert export_body["summary"]["per_phase_counts"]["evidence_extract"] == 1
         assert export_body["summary"]["prompt_hash_availability"]["captured"] >= 2
         assert export_body["summary"]["full_prompt_availability"]["redacted"] == 1
+        assert export_body["requirement_summary"] == [
+            {
+                "run_id": run_id,
+                "requirement_shadow": {
+                    "schema_version": "shadow_requirements_v1",
+                    "behavior_influence": False,
+                    "support_assessment": "candidate_only",
+                    "requirements": [
+                        {
+                            "requirement_id": "R1",
+                            "text": "What failed?",
+                            "answer_kind": "text",
+                            "information_need": "plain_text",
+                            "visual_precision": "none",
+                            "visual_decision": "not_requested",
+                            "visual_reason": "text_representation_expected",
+                            "importance": "core",
+                            "coverage_status": "candidate",
+                            "available_representations": ["plain_text"],
+                            "candidate_evidence_refs": [
+                                "doc-1:runtime-export-chunk"
+                            ],
+                        }
+                    ],
+                    "summary": {
+                        "requirement_count": 1,
+                        "candidate_count": 1,
+                        "missing_count": 0,
+                        "supported_count": 0,
+                        "visual_required_count": 0,
+                    },
+                },
+            }
+        ]
         exported_chunk = export_body["retrieval_summary"][0]["chunks"][0]
         assert exported_chunk["rank_before_rerank"] == 7
         assert exported_chunk["rank_after_rerank"] == 2
