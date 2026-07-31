@@ -713,6 +713,7 @@ async def _get_graph_evidence_bundle(
                 level=1
                 if (has_hierarchy and decision.query_kind == "summary")
                 else None,
+                generate_answers=False,
             )
         return merge_graph_evidence_bundle(
             hints=hints,

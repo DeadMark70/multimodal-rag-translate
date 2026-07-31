@@ -316,6 +316,8 @@ async def global_search_hints(
     question: str,
     max_communities: int = 3,
     level: Optional[int] = None,
+    *,
+    generate_answers: bool = True,
 ) -> Tuple[str, List[GraphHint], List[int]]:
     """Return global community output as non-final graph hints."""
     communities = store.get_communities(level=level)
@@ -334,6 +336,20 @@ async def global_search_hints(
     relevant = [(community, score) for community, score in scored if score > 0.0]
     if not relevant:
         return "", [], []
+
+    if not generate_answers:
+        hints = [
+            GraphHint(
+                hint_id=f"community-summary:{community.id}",
+                hint_type="community_summary",
+                text=f"{community.title or f'社群 {community.id}'}: {community.summary}",
+                confidence=min(0.55 + score, 1.0),
+                source_ids=[f"community:{community.id}"],
+            )
+            for community, score in relevant
+        ]
+        hints.sort(key=lambda hint: hint.confidence, reverse=True)
+        return "", hints, [community.id for community, _ in relevant]
 
     answers = await asyncio.gather(
         *(query_community(store, community, question) for community, _ in relevant)

@@ -1,3 +1,4 @@
+import importlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -198,6 +199,56 @@ async def test_graph_evidence_bundle_calls_legacy_raw_once_without_recursing(
     assert bundle.hints == []
     local_items.assert_awaited_once()
     legacy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_graph_evidence_bundle_uses_stored_community_hints_without_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    community = SimpleNamespace(
+        id=7,
+        title="Model relationship",
+        summary="Model A is connected to Model B.",
+        ranking_text="model relationship",
+        node_ids=["model-a", "model-b"],
+        level=0,
+    )
+    store = MagicMock()
+    store.get_status.return_value = SimpleNamespace(
+        has_graph=True,
+        node_count=2,
+        community_count=1,
+        community_level_counts={},
+        needs_optimization=False,
+    )
+    store.get_communities.return_value = [community]
+    monkeypatch.setattr("graph_rag.store.GraphStore", MagicMock(return_value=store))
+    local_search_module = importlib.import_module("graph_rag.local_search")
+    global_search_module = importlib.import_module("graph_rag.global_search")
+    monkeypatch.setattr(
+        local_search_module,
+        "local_search_evidence_items",
+        AsyncMock(return_value=([], [])),
+    )
+    query_community = AsyncMock(return_value="Generated community answer.")
+    synthesize_answers = AsyncMock(return_value="Generated synthesis.")
+    monkeypatch.setattr(
+        global_search_module, "query_community", query_community
+    )
+    monkeypatch.setattr(
+        global_search_module, "synthesize_answers", synthesize_answers
+    )
+
+    bundle = await _get_graph_evidence_bundle(
+        "Compare the model relationship",
+        "user-1",
+        search_mode="generic",
+    )
+
+    assert [hint.hint_type for hint in bundle.hints] == ["community_summary"]
+    assert bundle.hints[0].text == "Model relationship: Model A is connected to Model B."
+    query_community.assert_not_awaited()
+    synthesize_answers.assert_not_awaited()
 
 
 @pytest.mark.asyncio
