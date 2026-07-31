@@ -10,7 +10,7 @@ from time import perf_counter
 from typing import Any, Sequence
 import unicodedata
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 
 from core.prompt_loader import format_agentic_rag_prompt
 from data_base.agentic_v9.schemas import (
@@ -92,7 +92,7 @@ class _PlannerPayload(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    is_comparison: bool = Field(
+    is_comparison: StrictBool = Field(
         description="Whether the question compares two or more independent entities."
     )
     subjects: list[_PlannerSubjectPayload] = Field(default_factory=list, max_length=4)
@@ -295,9 +295,14 @@ def _normalized_identity(value: str) -> str:
 def _stable_subject_id(name: str) -> str:
     normalized = unicodedata.normalize("NFKC", name).strip().casefold()
     ascii_slug = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
-    if ascii_slug:
-        return ascii_slug[:80]
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    has_non_ascii_alnum = any(
+        character.isalnum() and not character.isascii() for character in normalized
+    )
+    if ascii_slug and len(ascii_slug) <= 80 and not has_non_ascii_alnum:
+        return ascii_slug
+    if ascii_slug:
+        return f"{ascii_slug[:63].rstrip('-')}-{digest}"
     return f"subject-{digest}"
 
 

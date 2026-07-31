@@ -117,5 +117,9 @@ def test_agentic_prompt_format_smoke():
     assert "doc-1, doc-2" in fact_state
     assert "E1: source text" in evidence_extract
     assert "independent comparison subjects" in comparison_system
+    assert "only comparison dimensions explicitly requested by the question" in (
+        comparison_system
+    )
     assert "Compare Model A and Model B." in comparison_user
+    assert comparison_user == "Question: Compare Model A and Model B."
     assert "source" not in comparison_user.casefold()

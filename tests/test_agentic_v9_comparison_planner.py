@@ -43,6 +43,41 @@ def test_comparison_planner_response_schema_requires_string_dimensions() -> None
     assert set(subject_schema["properties"]) == {"name", "query"}
 
 
+@pytest.mark.asyncio
+async def test_planner_rejects_coerced_boolean_transport_values() -> None:
+    payload = json.loads(_payload())
+    payload["is_comparison"] = "true"
+
+    outcome = await ComparisonPlanner(
+        llm_invoker=_Invoker(json.dumps(payload))
+    ).plan(question=Q4, timeout_seconds=1)
+
+    assert outcome.status == "fallback"
+    assert outcome.fallback_reason == "schema_violation"
+    assert outcome.fallback_stage == "transport_schema"
+
+
+@pytest.mark.asyncio
+async def test_long_subject_names_receive_distinct_stable_backend_ids() -> None:
+    first_name = f"{'A' * 80}X"
+    second_name = f"{'A' * 80}Y"
+    question = f"Compare {first_name} and {second_name}."
+    response = _payload(
+        subjects=[_planner_subject(first_name), _planner_subject(second_name)]
+    )
+
+    outcome = await ComparisonPlanner(llm_invoker=_Invoker(response)).plan(
+        question=question,
+        timeout_seconds=1,
+    )
+
+    assert outcome.status == "planned"
+    assert outcome.plan is not None
+    subject_ids = [subject.subject_id for subject in outcome.plan.subjects]
+    assert len(set(subject_ids)) == 2
+    assert all(len(subject_id) <= 80 for subject_id in subject_ids)
+
+
 class _Invoker:
     def __init__(
         self,

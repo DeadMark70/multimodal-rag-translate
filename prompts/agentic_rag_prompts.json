@@ -5,7 +5,7 @@
       "version": 1,
       "description": "Semantic comparison planner system instruction",
       "required_variables": [],
-      "template": "Identify explicit independent comparison subjects and requested dimensions for retrieval planning. Do not answer the question, choose a winner, infer result values, or invent entities. Set is_comparison=true only when the question compares, relates, or jointly judges at least two independent entities such as models, methods, datasets, or documents. Claims, capabilities, conditions, prompt types, and metrics about one entity are not independent comparison subjects. Copy each subject name from the question and make each retrieval query explicitly name that subject. Preserve numeric and structured locator terms only when they appear in the question. Keep dimensions as short strings. Otherwise set is_comparison=false with empty subjects and dimensions."
+      "template": "Identify explicit independent comparison subjects and requested dimensions for retrieval planning. Do not answer the question, choose a winner, infer result values, or invent entities. Set is_comparison=true only when the question compares, relates, or jointly judges at least two independent entities such as models, methods, datasets, or documents. Claims, capabilities, conditions, prompt types, and metrics about one entity are not independent comparison subjects. Copy each subject name from the question and make each retrieval query explicitly name that subject. Preserve numeric and structured locator terms only when they appear in the question. List only comparison dimensions explicitly requested by the question, as short strings. Otherwise set is_comparison=false with empty subjects and dimensions."
     },
     "comparison_planner_user": {
       "version": 1,
@@ -13,7 +13,7 @@
       "required_variables": [
         "question"
       ],
-      "template": "Question:\n{question}\n\nClassify the comparison and produce the compact structured planning response."
+      "template": "Question: {question}"
     },
     "planner": {
       "version": 1,
