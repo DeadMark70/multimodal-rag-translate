@@ -9,11 +9,21 @@ present in the already-retrieved documents.
 from __future__ import annotations
 
 import re
+import hashlib
 from collections.abc import Sequence
 from typing import Literal
 
 from langchain_core.documents import Document
 from pydantic import BaseModel, ConfigDict, Field
+
+from data_base.agentic_v9.requirement_decomposition import (
+    ConstraintKind,
+    DecomposedRequirement,
+    DecompositionConfidence,
+    DecompositionMethod,
+    decompose_question,
+)
+from data_base.document_metadata import get_document_id
 
 
 AnswerKind = Literal[
@@ -50,6 +60,12 @@ class ShadowRequirement(BaseModel):
     text: str = Field(min_length=1, max_length=512)
     answer_kind: AnswerKind
     information_need: InformationNeed
+    information_needs: list[InformationNeed] = Field(
+        min_length=1,
+        max_length=4,
+    )
+    decomposition_method: DecompositionMethod
+    decomposition_confidence: DecompositionConfidence
     visual_precision: VisualPrecision = "none"
     visual_decision: VisualDecision = "not_requested"
     visual_reason: str = Field(min_length=1, max_length=96)
@@ -72,6 +88,20 @@ class RequirementShadowSummary(BaseModel):
     missing_count: int = Field(ge=0, le=8)
     supported_count: int = Field(default=0, ge=0, le=8)
     visual_required_count: int = Field(ge=0, le=8)
+    constraint_count: int = Field(ge=0, le=8)
+    low_confidence_count: int = Field(ge=0, le=8)
+    truncated_requirement_count: int = Field(ge=0)
+    truncated_constraint_count: int = Field(ge=0)
+
+
+class ShadowResponseConstraint(BaseModel):
+    """A question-derived synthesis constraint, separate from obligations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    constraint_id: str = Field(pattern=r"^C[1-8]$")
+    kind: ConstraintKind
+    text: str = Field(min_length=1, max_length=512)
 
 
 class RequirementShadowAnalysis(BaseModel):
@@ -79,10 +109,15 @@ class RequirementShadowAnalysis(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["shadow_requirements_v1"] = "shadow_requirements_v1"
+    schema_version: Literal["shadow_requirements_v2"] = "shadow_requirements_v2"
     behavior_influence: Literal[False] = False
     support_assessment: Literal["candidate_only"] = "candidate_only"
     requirements: list[ShadowRequirement] = Field(default_factory=list, max_length=8)
+    response_constraints: list[ShadowResponseConstraint] = Field(
+        default_factory=list,
+        max_length=8,
+    )
+    truncated: bool = False
     summary: RequirementShadowSummary
 
 
@@ -129,18 +164,29 @@ def build_requirement_shadow(
     *, question: str, documents: Sequence[Document]
 ) -> RequirementShadowAnalysis:
     """Build observational requirements without changing execution behavior."""
-    requirement_texts = _decompose_explicit_requirements(question)[:8]
+    decomposition = decompose_question(question)
     document_projections_by_ref: dict[str, _DocumentProjection] = {}
     for index, document in enumerate(documents, start=1):
         projection = _DocumentProjection.from_document(document, index)
         document_projections_by_ref.setdefault(projection.evidence_ref, projection)
     document_projections = list(document_projections_by_ref.values())
     requirements = [
-        _build_requirement(index, text, document_projections)
-        for index, text in enumerate(requirement_texts, start=1)
+        _build_requirement(index, requirement, document_projections)
+        for index, requirement in enumerate(decomposition.requirements, start=1)
+    ]
+    constraints = [
+        ShadowResponseConstraint(
+            constraint_id=f"C{index}", kind=constraint.kind, text=constraint.text
+        )
+        for index, constraint in enumerate(decomposition.response_constraints, start=1)
     ]
     return RequirementShadowAnalysis(
         requirements=requirements,
+        response_constraints=constraints,
+        truncated=bool(
+            decomposition.truncated_requirement_count
+            or decomposition.truncated_constraint_count
+        ),
         summary=RequirementShadowSummary(
             requirement_count=len(requirements),
             candidate_count=sum(
@@ -153,6 +199,12 @@ def build_requirement_shadow(
             visual_required_count=sum(
                 item.visual_decision == "required" for item in requirements
             ),
+            constraint_count=len(constraints),
+            low_confidence_count=sum(
+                item.decomposition_confidence == "low" for item in requirements
+            ),
+            truncated_requirement_count=decomposition.truncated_requirement_count,
+            truncated_constraint_count=decomposition.truncated_constraint_count,
         ),
     )
 
@@ -167,26 +219,38 @@ class _DocumentProjection(BaseModel):
     @classmethod
     def from_document(cls, document: Document, index: int) -> _DocumentProjection:
         metadata = document.metadata or {}
-        doc_id = str(metadata.get("doc_id") or metadata.get("source_id") or "unknown")
-        chunk_id = str(metadata.get("chunk_id") or f"chunk-{index}")
+        content = document.page_content or ""
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        doc_id = get_document_id(metadata)
+        chunk_id = str(
+            metadata.get("chunk_id") or metadata.get("unique_chunk_id") or ""
+        ).strip()
+        if doc_id and chunk_id:
+            evidence_ref = f"{doc_id}:{chunk_id}"
+        elif doc_id:
+            evidence_ref = f"{doc_id}:content-{content_hash[:16]}"
+        else:
+            evidence_ref = f"content:{content_hash}"
         return cls(
-            evidence_ref=f"{doc_id}:{chunk_id}",
-            text=document.page_content or "",
+            evidence_ref=evidence_ref,
+            text=content,
             representations=_document_representations(document),
         )
 
 
 def _build_requirement(
     index: int,
-    text: str,
+    requirement: DecomposedRequirement,
     documents: Sequence[_DocumentProjection],
 ) -> ShadowRequirement:
-    information_need = _information_need(text)
-    visual_precision = _visual_precision(text, information_need)
+    text = requirement.text
+    information_needs = _information_needs(text)
+    information_need = information_needs[0]
+    visual_precision = _visual_precision(text, information_needs)
     candidates = [
         document
         for document in documents
-        if _is_candidate(text, information_need, document)
+        if _is_candidate(text, information_needs, document)
     ][:8]
     representations = [
         representation
@@ -194,7 +258,7 @@ def _build_requirement(
         if any(representation in document.representations for document in candidates)
     ]
     visual_decision, visual_reason = _visual_decision(
-        information_need=information_need,
+        information_needs=information_needs,
         visual_precision=visual_precision,
         representations=representations,
     )
@@ -203,6 +267,9 @@ def _build_requirement(
         text=text,
         answer_kind=_answer_kind(text),
         information_need=information_need,
+        information_needs=information_needs,
+        decomposition_method=requirement.method,
+        decomposition_confidence=requirement.confidence,
         visual_precision=visual_precision,
         visual_decision=visual_decision,
         visual_reason=visual_reason,
@@ -252,29 +319,37 @@ def _answer_kind(text: str) -> AnswerKind:
     return "text"
 
 
-def _information_need(text: str) -> InformationNeed:
-    if _TABLE_TERMS.search(text):
-        return "markdown_table"
-    if _FIGURE_TERMS.search(text):
-        return "visual_pattern"
-    if _FORMULA_TERMS.search(text):
-        return "text_structured"
-    return "plain_text"
+def _information_needs(text: str) -> list[InformationNeed]:
+    matches: list[tuple[int, InformationNeed]] = []
+    for information_need, pattern in (
+        ("markdown_table", _TABLE_TERMS),
+        ("visual_pattern", _FIGURE_TERMS),
+        ("text_structured", _FORMULA_TERMS),
+    ):
+        match = pattern.search(text)
+        if match is not None:
+            matches.append((match.start(), information_need))
+    if not matches:
+        return ["plain_text"]
+    matches.sort(key=lambda item: item[0])
+    return [information_need for _, information_need in matches]
 
 
-def _visual_precision(text: str, information_need: InformationNeed) -> VisualPrecision:
-    if information_need != "visual_pattern":
+def _visual_precision(
+    text: str, information_needs: Sequence[InformationNeed]
+) -> VisualPrecision:
+    if "visual_pattern" not in information_needs:
         return "none"
     return "exact" if _EXACT_VISUAL_TERMS.search(text) else "qualitative"
 
 
 def _visual_decision(
     *,
-    information_need: InformationNeed,
+    information_needs: Sequence[InformationNeed],
     visual_precision: VisualPrecision,
     representations: Sequence[RepresentationKind],
 ) -> tuple[VisualDecision, str]:
-    if information_need != "visual_pattern":
+    if "visual_pattern" not in information_needs:
         return "not_requested", "text_representation_expected"
     if visual_precision == "exact":
         return "required", "exact_visual_information_requested"
@@ -304,15 +379,15 @@ def _document_representations(document: Document) -> list[RepresentationKind]:
 
 def _is_candidate(
     requirement_text: str,
-    information_need: InformationNeed,
+    information_needs: Sequence[InformationNeed],
     document: _DocumentProjection,
 ) -> bool:
     if (
-        information_need == "markdown_table"
+        "markdown_table" in information_needs
         and "markdown_table" in document.representations
     ):
         return True
-    if information_need == "visual_pattern" and any(
+    if "visual_pattern" in information_needs and any(
         item in document.representations for item in ("image_summary", "visual_asset")
     ):
         return True

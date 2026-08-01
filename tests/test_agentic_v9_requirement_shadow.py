@@ -131,3 +131,73 @@ def test_repeated_retrieval_tasks_do_not_duplicate_candidate_evidence_refs() -> 
     )
 
     assert analysis.requirements[0].candidate_evidence_refs == ["doc-1:chunk-1"]
+
+
+def test_v2_never_promotes_candidate_to_supported() -> None:
+    analysis = build_requirement_shadow(
+        question="請回報模型分數。",
+        documents=[Document(page_content="模型分數為 0.91。", metadata={})],
+    )
+
+    assert analysis.schema_version == "shadow_requirements_v2"
+    assert analysis.support_assessment == "candidate_only"
+    assert analysis.summary.supported_count == 0
+    assert all(item.coverage_status != "supported" for item in analysis.requirements)
+
+
+def test_mixed_figure_and_markdown_table_needs_are_preserved() -> None:
+    analysis = build_requirement_shadow(
+        question="根據 Figure 1 辨識策略 (b)，再從 Table 1 回報 mIoU。",
+        documents=[
+            Document(
+                page_content=(
+                    "Figure 1 summary: strategy (b) fine-tunes all components.\n"
+                    "| Strategy | mIoU |\n|---|---:|\n| b | 0.877 |"
+                ),
+                metadata={"source": "image", "type": "figure"},
+            )
+        ],
+    )
+
+    needs = {need for item in analysis.requirements for need in item.information_needs}
+    assert {"visual_pattern", "markdown_table"} <= needs
+    assert analysis.summary.supported_count == 0
+
+
+def test_fallback_evidence_identity_is_content_stable_and_deduplicated() -> None:
+    documents = [
+        Document(page_content="Model-A score is 0.91.", metadata={}),
+        Document(page_content="Model-B score is 0.82.", metadata={}),
+        Document(page_content="Model-A score is 0.91.", metadata={}),
+    ]
+
+    first = build_requirement_shadow(question="請回報模型分數。", documents=documents)
+    second = build_requirement_shadow(
+        question="請回報模型分數。", documents=list(reversed(documents))
+    )
+
+    first_refs = first.requirements[0].candidate_evidence_refs
+    second_refs = second.requirements[0].candidate_evidence_refs
+    assert first_refs == second_refs
+    assert all(ref.startswith("content:") for ref in first_refs)
+    assert len(first_refs) == 2
+
+
+def test_shadow_v2_offline_question_smoke_is_bounded() -> None:
+    import json
+    from pathlib import Path
+
+    payload = json.loads(
+        Path("evaluation/golden/agentic_v9_questions_v2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    questions = payload if isinstance(payload, list) else payload["questions"]
+
+    for item in questions:
+        question = item["question"] if isinstance(item, dict) else str(item)
+        analysis = build_requirement_shadow(question=question, documents=[])
+        assert analysis.schema_version == "shadow_requirements_v2"
+        assert 1 <= len(analysis.requirements) <= 8
+        assert len(analysis.response_constraints) <= 8
+        assert analysis.summary.supported_count == 0
