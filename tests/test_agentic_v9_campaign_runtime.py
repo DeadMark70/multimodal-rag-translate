@@ -115,6 +115,28 @@ def _setup() -> dict[str, object]:
     }
 
 
+def test_requirement_guided_runtime_setup_flag_overrides_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTIC_V9_REQUIREMENT_GUIDED_RUNTIME", "on")
+
+    assert runtime_module._resolve_requirement_guided_runtime(
+        {"requirement_guided_runtime": False}
+    ) == (False, "setup_snapshot", None)
+
+
+def test_requirement_guided_runtime_reads_environment_when_setup_omits_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTIC_V9_REQUIREMENT_GUIDED_RUNTIME", "on")
+
+    assert runtime_module._resolve_requirement_guided_runtime({}) == (
+        True,
+        "environment",
+        None,
+    )
+
+
 async def _identity_reference_resolver(
     _user_id: str, references: list[str]
 ) -> dict[str, str]:
@@ -1618,6 +1640,68 @@ async def test_v9_runtime_persists_requirement_shadow_without_influencing_behavi
     assert v9["visual_execution"]["state"] == "not_requested"
     assert result.agent_trace["response_status"] == "complete"
     assert result.documents
+    assert provider.ainvoke.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_v9_requirement_guided_runtime_defaults_off_and_keeps_baseline_query() -> None:
+    provider = _Provider()
+    document = Document(
+        page_content="The source reports a score of 0.91.",
+        metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+    )
+    retrieve_documents = AsyncMock(return_value=[document])
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve_documents,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What is the reported score?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot=_setup(),
+        trace_id="attempt-trace-requirement-guidance-off",
+    )
+
+    assert retrieve_documents.await_args.args[1] == "What is the reported score?"
+    guidance = result.agent_trace["agentic_v9"]["requirement_guidance"]
+    assert guidance["enabled"] is False
+    assert guidance["mode"] == "off"
+    assert guidance["applied_task_count"] == 0
+    assert provider.ainvoke.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_v9_requirement_guided_runtime_on_adds_advisory_without_extra_llm_call() -> None:
+    provider = _Provider()
+    document = Document(
+        page_content="The source reports a score of 0.91.",
+        metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+    )
+    retrieve_documents = AsyncMock(return_value=[document])
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve_documents,
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="1. What is the reported score? 2. What is the method?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "requirement_guided_runtime": True},
+        trace_id="attempt-trace-requirement-guidance-on",
+    )
+
+    retrieval_query = retrieve_documents.await_args.args[1]
+    assert "Advisory answer obligations" in retrieval_query
+    assert "reported score" in retrieval_query
+    guidance = result.agent_trace["agentic_v9"]["requirement_guidance"]
+    assert guidance["enabled"] is True
+    assert guidance["mode"] == "advisory"
+    assert guidance["applied_task_count"] >= 1
     assert provider.ainvoke.await_count == 1
 
 

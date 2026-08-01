@@ -393,6 +393,41 @@ async def test_v9_campaign_case_uses_the_typed_v9_runtime_not_the_v8_service() -
 
 
 @pytest.mark.asyncio
+async def test_v9_campaign_case_forwards_requirement_guided_runtime_ablation_flag() -> None:
+    test_case = EvaluationCase(
+        id="Q-v9-guidance",
+        question="1. What is the score? 2. What is the method?",
+        ground_truth="score and method",
+        source_docs=[],
+        requires_multi_doc_reasoning=False,
+    )
+    v9_result = RAGResult(
+        answer="answer",
+        source_doc_ids=[],
+        documents=[],
+        usage={"total_tokens": 1},
+        agent_trace={"agentic_execution_version": "v9"},
+    )
+
+    with patch("evaluation.rag_modes.AgenticV9CampaignRuntime") as runtime_cls:
+        runtime_cls.return_value.execute = AsyncMock(return_value=v9_result)
+        await run_campaign_case(
+            test_case=test_case,
+            user_id="user-1",
+            mode="agentic-v9",
+            model_config={"max_input_tokens": 4096, "max_output_tokens": 256},
+            ablation_flags={"requirement_guided_runtime": True},
+            run_number=1,
+            agentic_execution_version="v9",
+        )
+
+    setup_snapshot = runtime_cls.return_value.execute.await_args.kwargs[
+        "setup_snapshot"
+    ]
+    assert setup_snapshot["requirement_guided_runtime"] is True
+
+
+@pytest.mark.asyncio
 async def test_mixed_v9_campaign_keeps_naive_baseline_on_v8_identity() -> None:
     """A campaign-wide v9 setting must not relabel a naive baseline as v9."""
     test_case = EvaluationCase(

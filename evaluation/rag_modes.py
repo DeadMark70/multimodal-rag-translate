@@ -385,6 +385,17 @@ async def run_campaign_case(
     with llm_runtime_override(**_runtime_overrides(model_config)):
         start_time = time.perf_counter()
         if mode == "agentic":
+            agentic_setup_snapshot = dict(model_config)
+            if (
+                agentic_execution_version == "v9"
+                and isinstance(ablation_flags, dict)
+                and isinstance(
+                    ablation_flags.get("requirement_guided_runtime"), bool
+                )
+            ):
+                agentic_setup_snapshot["requirement_guided_runtime"] = ablation_flags[
+                    "requirement_guided_runtime"
+                ]
             result = await _run_agentic_case(
                 question_id=test_case.id,
                 question=test_case.question,
@@ -392,7 +403,7 @@ async def run_campaign_case(
                 run_number=run_number,
                 agentic_execution_version=agentic_execution_version,
                 authorized_doc_ids=None,
-                setup_snapshot=dict(model_config),
+                setup_snapshot=agentic_setup_snapshot,
             )
         else:
             runtime_mode = {

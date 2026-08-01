@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -115,6 +116,150 @@ VisualExtractor = Callable[
     Awaitable[VisualEvidenceExtractionResult],
 ]
 ProviderFactory = Callable[[str], Any]
+
+_REQUIREMENT_GUIDED_RUNTIME_ENV = "AGENTIC_V9_REQUIREMENT_GUIDED_RUNTIME"
+_TRUE_FLAG_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSE_FLAG_VALUES = frozenset({"0", "false", "no", "off"})
+_MAX_REQUIREMENT_GUIDANCE_CHARS = 2048
+
+
+def _optional_bool(value: Any) -> bool | None:
+    """Parse explicit boolean values without treating arbitrary strings as true."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _TRUE_FLAG_VALUES:
+            return True
+        if normalized in _FALSE_FLAG_VALUES:
+            return False
+    return None
+
+
+def _resolve_requirement_guided_runtime(
+    setup_snapshot: Mapping[str, Any],
+) -> tuple[bool, str, str | None]:
+    """Resolve the reversible advisory switch with explicit setup precedence."""
+
+    if "requirement_guided_runtime" in setup_snapshot:
+        value = _optional_bool(setup_snapshot.get("requirement_guided_runtime"))
+        if value is not None:
+            return value, "setup_snapshot", None
+        return False, "setup_snapshot", "invalid_flag_value"
+
+    environment_value = os.getenv(_REQUIREMENT_GUIDED_RUNTIME_ENV)
+    if environment_value is not None:
+        value = _optional_bool(environment_value)
+        if value is not None:
+            return value, "environment", None
+        return False, "environment", "invalid_flag_value"
+
+    return False, "default", None
+
+
+def _initial_requirement_guidance(
+    *, question: str, setup_snapshot: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Build bounded advisory hints without making a provider call.
+
+    The switch is intentionally advisory: it can enrich generic retrieval
+    queries, but it never changes the typed contract, sufficiency result, or
+    visual/graph capability policies.  Subject-specific comparison tasks are
+    kept clean and are handled by the comparison planner's own query.
+    """
+
+    enabled, source, fallback_reason = _resolve_requirement_guided_runtime(
+        setup_snapshot
+    )
+    state: dict[str, Any] = {
+        "enabled": enabled,
+        "mode": "advisory" if enabled else "off",
+        "source": source,
+        "candidate_requirement_ids": [],
+        "applied_requirement_ids": [],
+        "applied_task_ids": [],
+        "applied_task_count": 0,
+        "fallback_reason": fallback_reason,
+        "_advisory_suffix": "",
+    }
+    if not enabled:
+        return state
+
+    try:
+        shadow = build_requirement_shadow(question=question, documents=[])
+    except Exception:  # noqa: BLE001 -- advisory diagnostics must be fail-soft
+        logger.warning(
+            "Agentic v9 requirement guidance projection failed", exc_info=True
+        )
+        state["fallback_reason"] = "guidance_projection_failed"
+        return state
+
+    candidates = [
+        requirement
+        for requirement in shadow.requirements
+        if requirement.decomposition_confidence in {"medium", "high"}
+    ]
+    state["candidate_requirement_ids"] = [
+        requirement.requirement_id for requirement in candidates
+    ]
+    if not candidates:
+        state["fallback_reason"] = "no_medium_or_high_confidence_requirements"
+        return state
+
+    lines: list[str] = [
+        "Advisory answer obligations (retrieval hints only; not evidence):"
+    ]
+    selected_ids: list[str] = []
+    for requirement in candidates:
+        line = f"- {requirement.text.strip()}"
+        candidate_text = "\n".join([*lines, line])
+        if len(candidate_text) > _MAX_REQUIREMENT_GUIDANCE_CHARS:
+            break
+        lines.append(line)
+        selected_ids.append(requirement.requirement_id)
+    if not selected_ids:
+        state["fallback_reason"] = "guidance_budget_exhausted"
+        return state
+
+    state["applied_requirement_ids"] = selected_ids
+    state["_advisory_suffix"] = "\n\n" + "\n".join(lines)
+    return state
+
+
+def _requirement_guided_query(
+    task: Any, guidance: dict[str, Any]
+) -> tuple[str, bool]:
+    """Append advisory hints only to generic retrieval tasks."""
+
+    suffix = str(guidance.get("_advisory_suffix") or "")
+    if not guidance.get("enabled") or not suffix or task.subject_id is not None:
+        return task.query, False
+    task_id = str(task.task_id)
+    applied_task_ids = guidance.setdefault("applied_task_ids", [])
+    if task_id not in applied_task_ids:
+        applied_task_ids.append(task_id)
+    guidance["applied_task_count"] = len(applied_task_ids)
+    return f"{task.query}{suffix}", True
+
+
+def _requirement_guidance_projection(guidance: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the durable trace shape without exposing the private query suffix."""
+
+    return {
+        "enabled": bool(guidance.get("enabled")),
+        "mode": str(guidance.get("mode") or "off"),
+        "source": str(guidance.get("source") or "default"),
+        "candidate_requirement_ids": list(
+            guidance.get("candidate_requirement_ids") or []
+        ),
+        "applied_requirement_ids": list(
+            guidance.get("applied_requirement_ids") or []
+        ),
+        "applied_task_ids": list(guidance.get("applied_task_ids") or []),
+        "applied_task_count": int(guidance.get("applied_task_count") or 0),
+        "fallback_reason": guidance.get("fallback_reason"),
+    }
 
 
 class _ConfigurationIncompatible(RuntimeError):
@@ -240,6 +385,9 @@ class AgenticV9CampaignRuntime:
             "visual_packets_emitted": False,
             "retrieval_diagnostics": [],
             "requirement_shadow_documents": [],
+            "requirement_guidance": _initial_requirement_guidance(
+                question=question, setup_snapshot=setup_snapshot
+            ),
         }
 
         async def resolve_scope(_: V9ExecutionRequest) -> ResolvedSourceScope:
@@ -326,10 +474,13 @@ class AgenticV9CampaignRuntime:
                 state["task_slot_ids"][task.task_id] = list(task.target_slot_ids)
                 state["task_subject_ids"][task.task_id] = task.subject_id
                 source_scope = list(task.source_scope.authorized_doc_ids)
+                retrieval_query, _ = _requirement_guided_query(
+                    task, state["requirement_guidance"]
+                )
                 if self._uses_default_retrieval:
                     docs = await self._retrieve_documents(
                         user_id,
-                        task.query,
+                        retrieval_query,
                         source_scope,
                         diversify_rerank_candidates=_requires_diverse_rerank_candidates(
                             state["contract"].route
@@ -337,7 +488,7 @@ class AgenticV9CampaignRuntime:
                     )
                 else:
                     docs = await self._retrieve_documents(
-                        user_id, task.query, source_scope
+                        user_id, retrieval_query, source_scope
                     )
                 pre_subject_limit_count = len(docs)
                 if task.subject_id is not None:
@@ -347,7 +498,7 @@ class AgenticV9CampaignRuntime:
                         task.task_id,
                         docs,
                         subject_id=task.subject_id,
-                        query=task.query,
+                        query=retrieval_query,
                         pre_subject_limit_count=pre_subject_limit_count,
                     )
                 )
@@ -752,6 +903,9 @@ class AgenticV9CampaignRuntime:
             "query_contract": state["contract"].model_dump(mode="json"),
             "comparison_planner": state["comparison_planner"],
             "requirement_shadow": requirement_shadow,
+            "requirement_guidance": _requirement_guidance_projection(
+                state["requirement_guidance"]
+            ),
             "retrieval_diagnostics": state["retrieval_diagnostics"],
             "evidence_packets": [
                 packet.model_dump(mode="json")
