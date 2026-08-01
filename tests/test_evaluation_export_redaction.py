@@ -136,7 +136,7 @@ async def _seed_export_rows(
         schema_version="1",
         trace_payload={
             "requirement_shadow": {
-                "schema_version": "shadow_requirements_v1",
+                "schema_version": "shadow_requirements_v2",
                 "behavior_influence": False,
                 "support_assessment": "candidate_only",
                 "requirements": [
@@ -145,6 +145,9 @@ async def _seed_export_rows(
                         "text": "What failed?",
                         "answer_kind": "text",
                         "information_need": "plain_text",
+                        "information_needs": ["plain_text"],
+                        "decomposition_method": "fallback",
+                        "decomposition_confidence": "low",
                         "visual_precision": "none",
                         "visual_decision": "not_requested",
                         "visual_reason": "text_representation_expected",
@@ -156,12 +159,24 @@ async def _seed_export_rows(
                         ],
                     }
                 ],
+                "response_constraints": [
+                    {
+                        "constraint_id": "C1",
+                        "kind": "conditional_scope",
+                        "text": "若不能，必須按 claim scope 分開回答。",
+                    }
+                ],
+                "truncated": False,
                 "summary": {
                     "requirement_count": 1,
                     "candidate_count": 1,
                     "missing_count": 0,
                     "supported_count": 0,
                     "visual_required_count": 0,
+                    "constraint_count": 1,
+                    "low_confidence_count": 1,
+                    "truncated_requirement_count": 0,
+                    "truncated_constraint_count": 0,
                 },
             }
         },
@@ -364,7 +379,7 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
             {
                 "run_id": run_id,
                 "requirement_shadow": {
-                    "schema_version": "shadow_requirements_v1",
+                    "schema_version": "shadow_requirements_v2",
                     "behavior_influence": False,
                     "support_assessment": "candidate_only",
                     "requirements": [
@@ -373,6 +388,9 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
                             "text": "What failed?",
                             "answer_kind": "text",
                             "information_need": "plain_text",
+                            "information_needs": ["plain_text"],
+                            "decomposition_method": "fallback",
+                            "decomposition_confidence": "low",
                             "visual_precision": "none",
                             "visual_decision": "not_requested",
                             "visual_reason": "text_representation_expected",
@@ -384,12 +402,24 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
                             ],
                         }
                     ],
+                    "response_constraints": [
+                        {
+                            "constraint_id": "C1",
+                            "kind": "conditional_scope",
+                            "text": "若不能，必須按 claim scope 分開回答。",
+                        }
+                    ],
+                    "truncated": False,
                     "summary": {
                         "requirement_count": 1,
                         "candidate_count": 1,
                         "missing_count": 0,
                         "supported_count": 0,
                         "visual_required_count": 0,
+                        "constraint_count": 1,
+                        "low_confidence_count": 1,
+                        "truncated_requirement_count": 0,
+                        "truncated_constraint_count": 0,
                     },
                 },
             }

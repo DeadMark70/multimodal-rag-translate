@@ -734,7 +734,7 @@ class AgenticV9CampaignRuntime:
                 exc_info=True,
             )
             requirement_shadow = {
-                "schema_version": "shadow_requirements_v1",
+                "schema_version": "shadow_requirements_v2",
                 "behavior_influence": False,
                 "status": "unavailable",
                 "reason": "diagnostic_projection_failed",

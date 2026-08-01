@@ -1608,7 +1608,7 @@ async def test_v9_runtime_persists_requirement_shadow_without_influencing_behavi
 
     v9 = result.agent_trace["agentic_v9"]
     shadow = v9["requirement_shadow"]
-    assert shadow["schema_version"] == "shadow_requirements_v1"
+    assert shadow["schema_version"] == "shadow_requirements_v2"
     assert shadow["behavior_influence"] is False
     assert shadow["support_assessment"] == "candidate_only"
     assert shadow["summary"]["requirement_count"] == 1
@@ -1618,6 +1618,7 @@ async def test_v9_runtime_persists_requirement_shadow_without_influencing_behavi
     assert v9["visual_execution"]["state"] == "not_requested"
     assert result.agent_trace["response_status"] == "complete"
     assert result.documents
+    assert provider.ainvoke.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -1652,7 +1653,7 @@ async def test_requirement_shadow_failure_cannot_fail_or_downgrade_the_run(
     shadow = result.agent_trace["agentic_v9"]["requirement_shadow"]
     assert result.agent_trace["response_status"] == "complete"
     assert shadow == {
-        "schema_version": "shadow_requirements_v1",
+        "schema_version": "shadow_requirements_v2",
         "behavior_influence": False,
         "status": "unavailable",
         "reason": "diagnostic_projection_failed",
