@@ -532,6 +532,57 @@ class RouterAnalysisResponse(AnalyticsAggregateResponse):
     analysis_type: Literal["retrospective", "actual"] = "retrospective"
 
 
+class ConditionMetricSummary(BaseModel):
+    """Finite observations and mean for one condition-level metric."""
+
+    mean: float | None = None
+    valid_count: int = Field(default=0, ge=0)
+    missing_count: int = Field(default=0, ge=0)
+
+
+class ConditionAggregate(BaseModel):
+    """Execution and finite metric summary for one persisted condition."""
+
+    condition_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    ablation_flags: dict[str, Any] = Field(default_factory=dict)
+    execution_count: int = Field(default=0, ge=0)
+    completed_count: int = Field(default=0, ge=0)
+    failed_count: int = Field(default=0, ge=0)
+    quality: dict[str, ConditionMetricSummary] = Field(default_factory=dict)
+    mean_tokens: float | None = Field(default=None, ge=0)
+    mean_latency_ms: float | None = Field(default=None, ge=0)
+
+
+class ConditionPairedComparison(BaseModel):
+    """Finite-only paired comparison between the selected baseline and guided arms."""
+
+    baseline_condition_id: str = Field(min_length=1)
+    guided_condition_id: str = Field(min_length=1)
+    completed_pair_count: int = Field(default=0, ge=0)
+    metric_pair_counts: dict[str, int] = Field(default_factory=dict)
+    delta: dict[str, ConditionMetricSummary] = Field(default_factory=dict)
+    excluded_pairs: dict[str, int] = Field(default_factory=dict)
+
+
+class ConditionMetricAvailability(BaseModel):
+    """Availability signal for persisted RAGAS condition metrics."""
+
+    ragas_rows_found: bool = False
+    valid_metric_row_count: int = Field(default=0, ge=0)
+    warning: str | None = None
+
+
+class ConditionComparisonResponse(BaseModel):
+    """Condition-level aggregate and matched-pair comparison projection."""
+
+    conditions: dict[str, ConditionAggregate] = Field(default_factory=dict)
+    paired: ConditionPairedComparison | None = None
+    availability: ConditionMetricAvailability = Field(
+        default_factory=ConditionMetricAvailability
+    )
+
+
 class AblationResponse(AnalyticsAggregateResponse):
     """Ablation grouping analytics."""
 

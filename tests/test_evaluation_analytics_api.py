@@ -10,14 +10,18 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from core.auth import get_current_user_id
 from evaluation.campaign_engine import CampaignEngine
 from evaluation import db as evaluation_db
+from evaluation.analytics import EvaluationAnalyticsService
+from evaluation.campaign_schemas import CampaignResultStatus
 from evaluation.rag_modes import BenchmarkExecutionResult
 from main import app
 
@@ -504,3 +508,189 @@ def test_v9_campaign_preflight_admits_visual_requirements_when_contract_reserves
             assert question["expected_route"] == "exact_structured"
             assert question["status"] == "feasible"
             assert question["issues"] == []
+
+
+def _condition_result(
+    *,
+    run_id: str,
+    condition_id: str,
+    label: str,
+    question_id: str,
+    status: CampaignResultStatus,
+    tokens: int,
+    latency_ms: float,
+    flags: dict[str, object],
+    repeat_number: int = 1,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=run_id,
+        campaign_id="cmp-condition",
+        question_id=question_id,
+        question=f"Question {question_id}",
+        mode="agentic-v9",
+        execution_profile=None,
+        run_number=repeat_number,
+        repeat_number=repeat_number,
+        condition_id=condition_id,
+        status=status,
+        total_tokens=tokens,
+        total_latency_ms=latency_ms,
+        latency_ms=latency_ms,
+        system_version_snapshot={
+            "condition_id": condition_id,
+            "condition_label": label,
+            "ablation_flags": dict(flags),
+        },
+        derived_metrics={
+            "condition_id": condition_id,
+            "condition_label": label,
+            "ablation_flags": dict(flags),
+            "repeat_number": repeat_number,
+        },
+    )
+
+
+def _condition_context(results: list[SimpleNamespace]) -> SimpleNamespace:
+    conditions = [
+        SimpleNamespace(condition_id="v9-baseline", label="Requirement guidance off"),
+        SimpleNamespace(condition_id="v9-guided", label="Requirement guidance on"),
+    ]
+    return SimpleNamespace(
+        campaign=SimpleNamespace(
+            id="cmp-condition",
+            config=SimpleNamespace(ablation_conditions=conditions),
+        ),
+        campaign_id="cmp-condition",
+        results=results,
+        overview=SimpleNamespace(
+            sample_count=len(results),
+            independent_question_count=len({result.question_id for result in results}),
+            repeat_count=max((result.repeat_number for result in results), default=0),
+            sample_note="condition fixture",
+        ),
+    )
+
+
+def test_condition_comparison_aggregates_quality_and_excludes_failed_pairs() -> None:
+    results = [
+        _condition_result(
+            run_id="baseline-q1",
+            condition_id="v9-baseline",
+            label="Persisted baseline label",
+            question_id="Q1",
+            status=CampaignResultStatus.COMPLETED,
+            tokens=100,
+            latency_ms=10,
+            flags={"requirement_guidance": False},
+        ),
+        _condition_result(
+            run_id="guided-q1",
+            condition_id="v9-guided",
+            label="Persisted guided label",
+            question_id="Q1",
+            status=CampaignResultStatus.COMPLETED,
+            tokens=120,
+            latency_ms=20,
+            flags={"requirement_guidance": True},
+        ),
+        _condition_result(
+            run_id="baseline-q2",
+            condition_id="v9-baseline",
+            label="Persisted baseline label",
+            question_id="Q2",
+            status=CampaignResultStatus.FAILED,
+            tokens=0,
+            latency_ms=30,
+            flags={"requirement_guidance": False},
+        ),
+        _condition_result(
+            run_id="guided-q2",
+            condition_id="v9-guided",
+            label="Persisted guided label",
+            question_id="Q2",
+            status=CampaignResultStatus.COMPLETED,
+            tokens=140,
+            latency_ms=25,
+            flags={"requirement_guidance": True},
+        ),
+    ]
+    ragas_by_run = {
+        "baseline-q1": {
+            "answer_correctness": 0.6,
+            "faithfulness": 0.7,
+            "answer_relevancy": 0.75,
+        },
+        "guided-q1": {
+            "answer_correctness": 0.8,
+            "faithfulness": 0.9,
+            "answer_relevancy": 0.85,
+        },
+        "guided-q2": {
+            "answer_correctness": 0.9,
+            "faithfulness": 0.8,
+            "answer_relevancy": 0.95,
+        },
+    }
+
+    response = EvaluationAnalyticsService()._build_ablation(
+        _condition_context(results), ragas_by_run=ragas_by_run
+    )
+    comparison = response.model_dump(mode="json")["summaries"]["condition_comparison"]
+
+    assert comparison["conditions"]["v9-guided"]["quality"]["answer_correctness"]["mean"] == pytest.approx(0.85)
+    assert comparison["conditions"]["v9-guided"]["mean_tokens"] == pytest.approx(130)
+    assert comparison["conditions"]["v9-guided"]["mean_latency_ms"] == pytest.approx(22.5)
+    assert comparison["paired"]["completed_pair_count"] == 1
+    assert comparison["paired"]["excluded_pairs"]["run_not_completed"] == 1
+    assert comparison["paired"]["delta"]["answer_correctness"]["mean"] == pytest.approx(0.2)
+
+
+def test_condition_comparison_uses_finite_metrics_and_persisted_metadata() -> None:
+    results = [
+        _condition_result(
+            run_id="baseline-q1",
+            condition_id="v9-baseline",
+            label="Persisted baseline label",
+            question_id="Q1",
+            status=CampaignResultStatus.COMPLETED,
+            tokens=100,
+            latency_ms=10,
+            flags={"requirement_guidance": False},
+        ),
+        _condition_result(
+            run_id="guided-q1",
+            condition_id="v9-guided",
+            label="Persisted guided label",
+            question_id="Q1",
+            status=CampaignResultStatus.COMPLETED,
+            tokens=120,
+            latency_ms=20,
+            flags={"requirement_guidance": True},
+        ),
+    ]
+    ragas_by_run = {
+        "baseline-q1": {
+            "answer_correctness": float("nan"),
+            "faithfulness": 0.7,
+        },
+        "guided-q1": {
+            "answer_correctness": 0.8,
+            "faithfulness": 0.9,
+        },
+    }
+
+    with patch.dict("os.environ", {"AGENTIC_V9_REQUIREMENT_GUIDED_RUNTIME": "0"}):
+        response = EvaluationAnalyticsService()._build_ablation(
+            _condition_context(results), ragas_by_run=ragas_by_run
+        )
+    comparison = response.model_dump(mode="json")["summaries"]["condition_comparison"]
+
+    assert comparison["conditions"]["v9-guided"]["label"] == "Persisted guided label"
+    assert comparison["conditions"]["v9-guided"]["ablation_flags"] == {"requirement_guidance": True}
+    assert comparison["conditions"]["v9-baseline"]["quality"]["answer_correctness"] == {
+        "mean": None,
+        "valid_count": 0,
+        "missing_count": 1,
+    }
+    assert comparison["paired"]["metric_pair_counts"]["answer_correctness"] == 0
+    assert comparison["paired"]["excluded_pairs"]["missing_metric"] == 1

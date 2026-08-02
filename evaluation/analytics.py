@@ -28,7 +28,13 @@ from evaluation.campaign_schemas import (
     CampaignPreflightQuestion,
     CampaignPreflightRequest,
     CampaignPreflightResponse,
+    CampaignResultStatus,
     CostLatencyResponse,
+    ConditionAggregate,
+    ConditionComparisonResponse,
+    ConditionMetricAvailability,
+    ConditionMetricSummary,
+    ConditionPairedComparison,
     EvaluationRunListItem,
     EvaluationRunListResponse,
     ExportCampaignRequest,
@@ -105,6 +111,11 @@ _GRAPH_ABLATION_METRICS = (
     "unsupported_graph_claim_rate",
     "router_skip_graph_accuracy",
     "router_use_graph_accuracy",
+)
+_CONDITION_QUALITY_METRICS = (
+    "answer_correctness",
+    "faithfulness",
+    "answer_relevancy",
 )
 _V9_GOLDEN_DATASET = Path(__file__).resolve().parent / "golden" / "agentic_v9_questions_v2.json"
 
@@ -298,8 +309,22 @@ def _cost_rollup(values: list[float | None]) -> tuple[float | None, int, int, st
     return sum(priced), len(priced), 0, "complete"
 
 
+def _finite_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
 def _average(values: list[float | None]) -> float | None:
-    present = [float(value) for value in values if value is not None]
+    present = [
+        numeric
+        for value in values
+        if (numeric := _finite_float(value)) is not None
+    ]
     if not present:
         return None
     return sum(present) / len(present)
@@ -754,9 +779,17 @@ class EvaluationAnalyticsService:
 
     async def ablation(self, *, user_id: str, campaign_id: str) -> AblationResponse:
         context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
-        return self._build_ablation(context)
+        ragas_by_run = await self._ragas_metrics_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
+        return self._build_ablation(context, ragas_by_run=ragas_by_run)
 
-    def _build_ablation(self, context: _CampaignAnalyticsContext) -> AblationResponse:
+    def _build_ablation(
+        self,
+        context: _CampaignAnalyticsContext,
+        *,
+        ragas_by_run: dict[str, dict[str, float]] | None = None,
+    ) -> AblationResponse:
         overview = context.overview or self._build_campaign_overview(context)
         results = context.results
         by_condition: dict[str, int] = Counter(
@@ -796,6 +829,20 @@ class EvaluationAnalyticsService:
             for family, items in family_results.items()
             if family.startswith("graph_")
         }
+        summaries: dict[str, Any] = {
+            "condition_counts": dict(by_condition),
+            "condition_labels": condition_labels,
+            "conditions_by_ablation_family": family_conditions,
+            "graph_metrics_by_ablation_family": family_metrics,
+        }
+        condition_comparison = self._build_condition_comparison(
+            context=context,
+            ragas_by_run=ragas_by_run or {},
+        )
+        if condition_comparison is not None:
+            summaries["condition_comparison"] = condition_comparison.model_dump(
+                mode="json"
+            )
         return AblationResponse(
             campaign_id=context.campaign_id,
             analysis_unit="execution",
@@ -803,13 +850,261 @@ class EvaluationAnalyticsService:
             independent_question_count=overview.independent_question_count,
             repeat_count=overview.repeat_count,
             sample_note=overview.sample_note,
-            summaries={
-                "condition_counts": dict(by_condition),
-                "condition_labels": condition_labels,
-                "conditions_by_ablation_family": family_conditions,
-                "graph_metrics_by_ablation_family": family_metrics,
-            },
+            summaries=summaries,
         )
+
+    def _build_condition_comparison(
+        self,
+        *,
+        context: _CampaignAnalyticsContext,
+        ragas_by_run: dict[str, dict[str, float]],
+    ) -> ConditionComparisonResponse | None:
+        """Build a finite-only, snapshot-backed condition comparison."""
+        results_by_condition: dict[str, list[Any]] = defaultdict(list)
+        metadata_by_condition: dict[str, dict[str, Any]] = {}
+        for result in context.results:
+            derived_metrics = (
+                result.derived_metrics
+                if isinstance(getattr(result, "derived_metrics", None), dict)
+                else {}
+            )
+            system_snapshot = (
+                result.system_version_snapshot
+                if isinstance(getattr(result, "system_version_snapshot", None), dict)
+                else {}
+            )
+            condition_id = next(
+                (
+                    value
+                    for value in (
+                        derived_metrics.get("condition_id"),
+                        getattr(result, "condition_id", None),
+                        system_snapshot.get("condition_id"),
+                    )
+                    if isinstance(value, str) and value
+                ),
+                None,
+            )
+            if condition_id is None:
+                continue
+            results_by_condition[condition_id].append(result)
+            if condition_id in metadata_by_condition:
+                continue
+            label = next(
+                (
+                    value
+                    for value in (
+                        derived_metrics.get("condition_label"),
+                        system_snapshot.get("condition_label"),
+                    )
+                    if isinstance(value, str) and value
+                ),
+                condition_id,
+            )
+            flags = next(
+                (
+                    value
+                    for value in (
+                        derived_metrics.get("ablation_flags"),
+                        system_snapshot.get("ablation_flags"),
+                    )
+                    if isinstance(value, dict)
+                ),
+                {},
+            )
+            metadata_by_condition[condition_id] = {
+                "label": label,
+                "ablation_flags": dict(flags),
+            }
+
+        recorded_condition_ids = set(results_by_condition)
+        if len(recorded_condition_ids) < 2:
+            return None
+
+        ordered_condition_ids = self._condition_ids_in_order(
+            context=context,
+            condition_ids=recorded_condition_ids,
+        )
+        condition_aggregates: dict[str, ConditionAggregate] = {}
+        valid_metric_row_count = 0
+        ragas_rows_found = False
+        for condition_id in ordered_condition_ids:
+            condition_results = results_by_condition[condition_id]
+            completed_results = [
+                result for result in condition_results if self._result_completed(result)
+            ]
+            quality: dict[str, ConditionMetricSummary] = {}
+            for metric_name in _CONDITION_QUALITY_METRICS:
+                values = [
+                    numeric
+                    for result in completed_results
+                    if (
+                        numeric := _finite_float(
+                            ragas_by_run.get(result.id, {}).get(metric_name)
+                        )
+                    )
+                    is not None
+                ]
+                valid_count = len(values)
+                missing_count = len(condition_results) - valid_count
+                valid_metric_row_count += valid_count
+                ragas_rows_found = ragas_rows_found or bool(values)
+                quality[metric_name] = ConditionMetricSummary(
+                    mean=_average(values),
+                    valid_count=valid_count,
+                    missing_count=missing_count,
+                )
+            token_values = [
+                numeric
+                for result in completed_results
+                if (numeric := _finite_float(getattr(result, "total_tokens", None)))
+                is not None
+            ]
+            latency_values = [
+                numeric
+                for result in completed_results
+                if (
+                    numeric := _finite_float(
+                        getattr(result, "total_latency_ms", None)
+                        if getattr(result, "total_latency_ms", None) is not None
+                        else getattr(result, "latency_ms", None)
+                    )
+                )
+                is not None
+            ]
+            metadata = metadata_by_condition[condition_id]
+            condition_aggregates[condition_id] = ConditionAggregate(
+                condition_id=condition_id,
+                label=metadata["label"],
+                ablation_flags=metadata["ablation_flags"],
+                execution_count=len(condition_results),
+                completed_count=len(completed_results),
+                failed_count=len(condition_results) - len(completed_results),
+                quality=quality,
+                mean_tokens=_average(token_values),
+                mean_latency_ms=_average(latency_values),
+            )
+
+        baseline_condition_id, guided_condition_id = self._paired_condition_ids(
+            ordered_condition_ids
+        )
+        baseline_by_key = self._results_by_pair_key(
+            results_by_condition[baseline_condition_id]
+        )
+        guided_by_key = self._results_by_pair_key(
+            results_by_condition[guided_condition_id]
+        )
+        excluded_pairs: Counter[str] = Counter()
+        delta_values: dict[str, list[float]] = {
+            metric_name: [] for metric_name in _CONDITION_QUALITY_METRICS
+        }
+        metric_pair_counts = {metric_name: 0 for metric_name in _CONDITION_QUALITY_METRICS}
+        completed_pair_count = 0
+        for pair_key in sorted(set(baseline_by_key) | set(guided_by_key)):
+            baseline_result = baseline_by_key.get(pair_key)
+            guided_result = guided_by_key.get(pair_key)
+            if baseline_result is None or guided_result is None:
+                excluded_pairs["missing_opposite_condition"] += 1
+                continue
+            if not self._result_completed(baseline_result) or not self._result_completed(
+                guided_result
+            ):
+                excluded_pairs["run_not_completed"] += 1
+                continue
+            completed_pair_count += 1
+            missing_metric = False
+            for metric_name in _CONDITION_QUALITY_METRICS:
+                baseline_value = _finite_float(
+                    ragas_by_run.get(baseline_result.id, {}).get(metric_name)
+                )
+                guided_value = _finite_float(
+                    ragas_by_run.get(guided_result.id, {}).get(metric_name)
+                )
+                if baseline_value is None or guided_value is None:
+                    missing_metric = True
+                    excluded_pairs[f"missing_{metric_name}"] += 1
+                    continue
+                metric_pair_counts[metric_name] += 1
+                delta_values[metric_name].append(guided_value - baseline_value)
+            if missing_metric:
+                excluded_pairs["missing_metric"] += 1
+
+        delta = {
+            metric_name: ConditionMetricSummary(
+                mean=_average(values),
+                valid_count=len(values),
+                missing_count=completed_pair_count - len(values),
+            )
+            for metric_name, values in delta_values.items()
+        }
+        availability = ConditionMetricAvailability(
+            ragas_rows_found=ragas_rows_found,
+            valid_metric_row_count=valid_metric_row_count,
+            warning=(
+                None
+                if ragas_rows_found
+                else "RAGAS scores are unavailable for the selected condition runs."
+            ),
+        )
+        return ConditionComparisonResponse(
+            conditions=condition_aggregates,
+            paired=ConditionPairedComparison(
+                baseline_condition_id=baseline_condition_id,
+                guided_condition_id=guided_condition_id,
+                completed_pair_count=completed_pair_count,
+                metric_pair_counts=metric_pair_counts,
+                delta=delta,
+                excluded_pairs=dict(sorted(excluded_pairs.items())),
+            ),
+            availability=availability,
+        )
+
+    @staticmethod
+    def _result_completed(result: Any) -> bool:
+        status = getattr(result, "status", None)
+        if isinstance(status, CampaignResultStatus):
+            return status is CampaignResultStatus.COMPLETED
+        return str(getattr(status, "value", status)) == CampaignResultStatus.COMPLETED.value
+
+    @staticmethod
+    def _results_by_pair_key(results: list[Any]) -> dict[tuple[str, int], Any]:
+        return {
+            (str(result.question_id), _repeat_number(result)): result
+            for result in results
+        }
+
+    @staticmethod
+    def _paired_condition_ids(ordered_condition_ids: list[str]) -> tuple[str, str]:
+        if "v9-baseline" in ordered_condition_ids:
+            baseline = "v9-baseline"
+            guided_candidates = [
+                condition_id
+                for condition_id in ordered_condition_ids
+                if condition_id != baseline
+            ]
+            guided = (
+                "v9-guided"
+                if "v9-guided" in guided_candidates
+                else guided_candidates[0]
+            )
+        else:
+            baseline, guided = ordered_condition_ids[:2]
+        return baseline, guided
+
+    @staticmethod
+    def _condition_ids_in_order(
+        *,
+        context: _CampaignAnalyticsContext,
+        condition_ids: set[str],
+    ) -> list[str]:
+        configured = getattr(getattr(context.campaign, "config", None), "ablation_conditions", [])
+        configured_ids = [
+            str(condition.condition_id)
+            for condition in configured
+            if isinstance(getattr(condition, "condition_id", None), str)
+            and condition.condition_id in condition_ids
+        ]
+        return configured_ids + sorted(condition_ids - set(configured_ids))
 
     async def human_eval_queue(self, *, user_id: str, campaign_id: str) -> HumanEvalQueueResponse:
         context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
@@ -893,7 +1188,9 @@ class EvaluationAnalyticsService:
 
     async def human_vs_auto(self, *, user_id: str, campaign_id: str) -> HumanVsAutoResponse:
         context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
-        ragas_by_run = await self._ragas_metrics_for_campaign(user_id=user_id, campaign_id=campaign_id)
+        ragas_by_run = await self._ragas_metrics_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
         ratings_by_run = await self._observability_repository.list_human_ratings_for_campaign(campaign_id)
         return self._build_human_vs_auto(context=context, ragas_by_run=ragas_by_run, ratings_by_run=ratings_by_run)
 
@@ -1332,7 +1629,7 @@ class EvaluationAnalyticsService:
             question_comparison=self._build_question_comparison(context),
             cost_latency=self._build_cost_latency(context),
             router_analysis=self._build_router_analysis(context, routing_decisions),
-            ablation=self._build_ablation(context),
+            ablation=self._build_ablation(context, ragas_by_run=ragas_by_run),
             human_vs_auto=self._build_human_vs_auto(
                 context=context,
                 ragas_by_run=ragas_by_run,
@@ -1666,7 +1963,10 @@ class EvaluationAnalyticsService:
             rows = await cursor.fetchall()
         metrics: dict[str, dict[str, float]] = defaultdict(dict)
         for row in rows:
-            metrics[str(row["campaign_result_id"])][str(row["metric_name"])] = float(row["metric_value"])
+            metric_value = _finite_float(row["metric_value"])
+            if metric_value is None:
+                continue
+            metrics[str(row["campaign_result_id"])][str(row["metric_name"])] = metric_value
         return metrics
 
     async def _current_db_time(self):
