@@ -74,6 +74,7 @@ Human-maintained inventory of the current backend surface.
   - campaign aggregates: `/overview`, `/runs`, `/mode-comparison`, `/question-comparison`, `/cost-latency`, `/router-analysis`, `/ablation`, `/human-vs-auto`, `/human-eval-queue`, `/repeat-stability`, `/errors`, `/export`
   - run detail: `/runs/{run_id}/trace`, `/retrieval`, `/context`, `/llm-calls`, `/tools`, `/visual`, `/graph`, `/claims`, `/metrics`, `/diff`
   - campaign-scoped dump: `/campaigns/{campaign_id}/runs/{run_id}/observability`
+- Ablation campaigns with at least two persisted condition IDs expose `summaries.condition_comparison` on `/ablation`. It contains immutable condition labels/flags, completed/failed counts, finite `answer_correctness`/`faithfulness`/`answer_relevancy` aggregates, tokens, latency, and matched `(question_id, repeat_number)` deltas. Failed, unpaired, missing, and non-finite observations are reported as exclusions or `null`, never zero.
 - Human review flows are auth-protected and use hashed rater identity:
   - `GET /api/evaluation/campaigns/{campaign_id}/human-eval-queue`
   - `POST /api/evaluation/runs/{run_id}/human-ratings`
@@ -82,6 +83,7 @@ Human-maintained inventory of the current backend surface.
   - `POST /api/evaluation/campaigns/{campaign_id}/export`
   - supports `include_raw_trace_payloads`, `include_prompt_previews`, `include_full_prompts`, `include_answers`, `include_retrieved_excerpts`
   - `retrieval_summary[]` entries may include additive GraphRAG observability fields: `graph_events`, `graph_event_count`, `graph_evidence_items`, `graph_evidence_item_count`
+  - exported `runs[]` entries include finite-only `ragas_metrics`; `metrics.condition_comparison` reuses the `/ablation` condition projection
 - Campaign SSE remains coarse-grained (`campaign_snapshot`, `campaign_progress`, terminal `campaign_*` events). `event_schema_version="1.0"` and monotonic `sequence` currently apply to persisted trace events, not the SSE envelope.
 - Legacy campaigns remain readable even when research observability tables are empty; research run-detail endpoints return empty collections instead of failing.
 - Campaign analytics reads use a bounded result projection and campaign-scoped routing bulk query; terminal campaign contexts are reused in the process-local analytics service cache while the campaign `updated_at` marker is unchanged.

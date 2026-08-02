@@ -32,6 +32,7 @@
 - `GET /api/evaluation/campaigns/{campaign_id}/router-analysis`
   - current implementation reports `analysis_type="retrospective"`
 - `GET /api/evaluation/campaigns/{campaign_id}/ablation`
+  - legacy condition counts plus `summaries.condition_comparison` when two or more persisted condition IDs exist
 - `GET /api/evaluation/campaigns/{campaign_id}/repeat-stability`
 - `GET /api/evaluation/campaigns/{campaign_id}/human-vs-auto`
 - `GET /api/evaluation/campaigns/{campaign_id}/human-eval-queue`
@@ -72,6 +73,13 @@
 - `repeat_number` is returned separately from stored `run_number` so repeated and ablation-expanded campaigns can render correctly.
 - `derived_metrics` is intentionally sparse and numeric-first; dashboards should not assume every metric exists on every run.
 
+### Condition Comparison Contract
+
+- Condition comparison is a server-side projection keyed by persisted `condition_id`; labels and `ablation_flags` come from the run snapshot, not current environment variables.
+- Condition rows report completed/failed executions, finite RAGAS means and validity counts for `answer_correctness`, `faithfulness`, and `answer_relevancy`, plus mean tokens and latency. Missing/non-finite metrics are `null` with a missing count.
+- The paired projection uses `(question_id, repeat_number)` and the configured baseline/guided ordering. A pair is counted for a metric only when both runs completed and both values are finite; `excluded_pairs` records failed, unpaired, and missing-metric reasons.
+- Campaigns with fewer than two recorded conditions retain the existing generic Ablation summaries without a condition comparison section.
+
 ## SSE Contract
 
 - `GET /api/evaluation/campaigns/{campaign_id}/stream` emits:
@@ -105,6 +113,7 @@
   - prompt previews can be suppressed
   - `payload.full_prompt` is removed unless explicitly requested
   - answers and retrieval excerpts can be independently removed
+  - every exported run includes a finite-only `ragas_metrics` map, and `metrics.condition_comparison` matches the `/ablation` projection
   - question snapshots are still partially redacted even when exporting runs
 
 ## Compatibility And Empty States

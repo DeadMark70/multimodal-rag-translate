@@ -1385,6 +1385,9 @@ class EvaluationAnalyticsService:
             campaign_id=campaign_id,
         )
         context = replace(context, results=full_results)
+        ragas_by_run = await self._ragas_metrics_for_campaign(
+            user_id=user_id, campaign_id=campaign_id
+        )
         trace_events_by_run = await self._observability_repository.list_trace_events_for_campaign(campaign_id)
         retrieval_chunks_by_run = await self._observability_repository.list_retrieval_chunks_for_campaign(campaign_id)
         claims_by_run = await self._observability_repository.list_claims_for_campaign(campaign_id)
@@ -1430,7 +1433,20 @@ class EvaluationAnalyticsService:
         availability_warnings: list[str] = []
         for result in context.results:
             row = result.model_dump(mode="json")
-            runs.append(_redact_export_run(row, request))
+            redacted_run = _redact_export_run(row, request)
+            redacted_run["ragas_metrics"] = dict(
+                sorted(
+                    (
+                        metric_name,
+                        metric_value,
+                    )
+                    for metric_name, raw_metric_value in ragas_by_run.get(
+                        result.id, {}
+                    ).items()
+                    if (metric_value := _finite_float(raw_metric_value)) is not None
+                )
+            )
+            runs.append(redacted_run)
 
             for event in trace_events_by_run.get(result.id, []):
                 if event.campaign_id != campaign_id:
@@ -1558,14 +1574,23 @@ class EvaluationAnalyticsService:
             availability_warnings.append(
                 "One or more full prompt capture attempts failed at execution."
             )
+        metrics = {
+            "overview": overview.model_dump(mode="json"),
+            "errors": errors.model_dump(mode="json"),
+        }
+        condition_comparison = self._build_condition_comparison(
+            context=context,
+            ragas_by_run=ragas_by_run,
+        )
+        if condition_comparison is not None:
+            metrics["condition_comparison"] = condition_comparison.model_dump(
+                mode="json"
+            )
         return ExportCampaignResponse(
             campaign=context.campaign.model_dump(mode="json"),
             redaction=request.model_dump(mode="json"),
             runs=runs,
-            metrics={
-                "overview": overview.model_dump(mode="json"),
-                "errors": errors.model_dump(mode="json"),
-            },
+            metrics=metrics,
             trace_events=trace_events,
             llm_calls=llm_calls,
             retrieval_summary=retrieval_summary,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -13,6 +14,7 @@ from fastapi.testclient import TestClient
 from core.auth import get_current_user_id
 from evaluation.campaign_engine import CampaignEngine
 from evaluation.evidence import content_hash
+from evaluation import db as evaluation_db
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.rag_modes import BenchmarkExecutionResult
 from evaluation.trace_schemas import EvaluationLlmCall, EvaluationTraceEvent
@@ -252,6 +254,50 @@ def _campaign_payload() -> dict:
         "batch_size": 1,
         "rpm_limit": 60,
     }
+
+
+def _condition_campaign_payload() -> dict:
+    payload = _campaign_payload()
+    payload["ablation_conditions"] = [
+        {
+            "condition_id": "v9-baseline",
+            "label": "Requirement guidance off",
+            "mode": "agentic",
+            "ablation_flags": {"requirement_guidance": False},
+        },
+        {
+            "condition_id": "v9-guided",
+            "label": "Requirement guidance on",
+            "mode": "agentic",
+            "ablation_flags": {"requirement_guidance": True},
+        },
+    ]
+    return payload
+
+
+async def _seed_condition_ragas_scores(
+    *, campaign_id: str, user_id: str, result_ids_by_condition: dict[str, str]
+) -> None:
+    await evaluation_db.init_db()
+    async with evaluation_db.connect_db() as connection:
+        for condition_id, result_id in result_ids_by_condition.items():
+            await connection.execute(
+                """
+                INSERT INTO ragas_scores (
+                    id, campaign_id, campaign_result_id, user_id, metric_name,
+                    metric_value, details_json, created_at
+                ) VALUES (?, ?, ?, ?, 'answer_correctness', ?, '{}', ?)
+                """,
+                (
+                    f"{result_id}-correctness",
+                    campaign_id,
+                    result_id,
+                    user_id,
+                    0.7 if condition_id == "v9-baseline" else 0.9,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+        await connection.commit()
 
 
 def _make_workspace_paths(prefix: str) -> tuple[Path, Path]:
@@ -496,6 +542,79 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
             == "not_matched"
         )
         assert redacted_chunk["payload"]["reranker_status"] == "executed"
+
+
+def test_export_includes_condition_comparison_and_finite_per_run_ragas_metrics() -> None:
+    async def runner(**kwargs) -> BenchmarkExecutionResult:
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="Grounded answer",
+            contexts=[],
+            source_doc_ids=[],
+            expected_sources=[],
+            latency_ms=10,
+            token_usage={"total_tokens": 16},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+        )
+
+    engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
+    upload_root, db_path = _make_workspace_paths("export_condition")
+
+    with _build_client("user-a", upload_root, db_path, engine) as client:
+        created_case = client.post(
+            "/api/evaluation/test-cases",
+            json={
+                "id": "Q-EXPORT",
+                "question": "What failed?",
+                "ground_truth": "A safe answer",
+                "source_docs": [],
+                "requires_multi_doc_reasoning": False,
+            },
+        )
+        assert created_case.status_code == 200
+        created = client.post(
+            "/api/evaluation/campaigns", json=_condition_campaign_payload()
+        )
+        assert created.status_code == 200
+        campaign_id = created.json()["campaign_id"]
+        _wait_for_completed(client, campaign_id)
+
+        result_rows = client.get(
+            f"/api/evaluation/campaigns/{campaign_id}/results"
+        ).json()["results"]
+        result_ids_by_condition = {
+            row["condition_id"]: row["id"] for row in result_rows
+        }
+        asyncio.run(
+            _seed_condition_ragas_scores(
+                campaign_id=campaign_id,
+                user_id="user-a",
+                result_ids_by_condition=result_ids_by_condition,
+            )
+        )
+
+        export_response = client.post(
+            f"/api/evaluation/campaigns/{campaign_id}/export", json={}
+        )
+        assert export_response.status_code == 200
+        payload = export_response.json()
+        runs_by_id = {run["id"]: run for run in payload["runs"]}
+
+        assert payload["metrics"]["condition_comparison"]["paired"][
+            "completed_pair_count"
+        ] == 1
+        assert runs_by_id[result_ids_by_condition["v9-baseline"]][
+            "ragas_metrics"
+        ] == {"answer_correctness": 0.7}
+        assert runs_by_id[result_ids_by_condition["v9-guided"]]["ragas_metrics"] == {
+            "answer_correctness": 0.9
+        }
+        assert "full_prompt" not in json.dumps(payload["runs"])
 
 
 def test_user_cannot_export_another_users_campaign() -> None:

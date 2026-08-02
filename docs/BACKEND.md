@@ -322,6 +322,13 @@
   - when gold facts exist: `gold_fact_attrition`
 - Legacy rows remain readable. When an older row has none of the new snapshot fields populated, the loader keeps it valid and normalizes `total_tokens` back to `null` instead of treating `0` as a real snapshot value.
 
+### Condition-Level Ablation Analytics
+
+- `GET /api/evaluation/campaigns/{campaign_id}/ablation` adds `summaries.condition_comparison` only when at least two persisted condition IDs are present. The projection groups completed and failed executions by immutable `condition_id`, label, and `ablation_flags` from each run snapshot; it never reads current environment flags.
+- Each condition row exposes `execution_count`, `completed_count`, `failed_count`, finite RAGAS quality summaries for `answer_correctness`, `faithfulness`, and `answer_relevancy`, `mean_tokens`, and `mean_latency_ms`. Missing or non-finite values remain nullable and are counted as missing.
+- The paired section matches `(question_id, repeat_number)` for the selected baseline/guided condition order. It reports completed-pair and metric-pair counts, guided-minus-baseline deltas, and numeric exclusion reasons such as `run_not_completed`, `missing_opposite_condition`, and `missing_metric`.
+- `availability.ragas_rows_found` and `availability.warning` make an unscored campaign explicit. Failed, unpaired, or non-finite observations are never converted to zero.
+
 ### Observability Tables
 
 - Normalized run observability lives alongside legacy `agent_traces`:
@@ -445,6 +452,8 @@
   - answer, ground truth, and final-answer hash are removed when `include_answers=false`
   - retrieval excerpts and result context/source lists are removed when `include_retrieved_excerpts=false`
   - each `retrieval_summary[]` row now also carries `graph_events`, `graph_event_count`, `graph_evidence_items`, and `graph_evidence_item_count` when GraphRAG observability rows exist for that run
+  - each exported `runs[]` row carries a finite-only `ragas_metrics` map; historical unscored runs carry `{}`
+  - `metrics.condition_comparison` reuses the same condition-level projection as `/ablation`, including finite-only paired deltas and exclusion reasons
   - `question_snapshot` is always partially redacted on export by removing `ground_truth`, `ground_truth_short`, `source_docs`, `atomic_facts`, and `expected_evidence`
 - Sanitized errors are stored and exported instead of raw provider dumps. Multiline stack traces and obvious secrets are redacted.
 
