@@ -389,6 +389,33 @@ def _sanitize_failure_reason(raw: Any) -> str:
     return "capability_gap_reason_redacted"
 
 
+def _safe_requirement_guidance_projection(value: Any) -> dict[str, Any] | None:
+    """Export only non-content runtime-treatment diagnostics."""
+
+    if not isinstance(value, dict):
+        return None
+    source = str(value.get("source") or "unknown")
+    if source not in {"setup_snapshot", "environment", "default"}:
+        source = "unknown"
+    raw_count = value.get("applied_task_count")
+    applied_task_count = (
+        raw_count
+        if isinstance(raw_count, int) and not isinstance(raw_count, bool) and raw_count >= 0
+        else 0
+    )
+    raw_fallback_reason = value.get("fallback_reason")
+    return {
+        "enabled": bool(value.get("enabled")),
+        "source": source,
+        "applied_task_count": applied_task_count,
+        "fallback_reason": (
+            _sanitize_failure_reason(raw_fallback_reason)
+            if raw_fallback_reason not in (None, "")
+            else None
+        ),
+    }
+
+
 def _redact_question_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     redacted = dict(snapshot)
     for key in ("ground_truth", "ground_truth_short", "source_docs", "atomic_facts", "expected_evidence"):
@@ -1541,21 +1568,25 @@ class EvaluationAnalyticsService:
                         "comparison": redact_sensitive_value(comparison),
                     }
                 )
-            requirement_shadow = (
-                materialization.trace_payload.get("requirement_shadow")
+            requirement_trace = (
+                materialization.trace_payload
                 if materialization is not None
                 and isinstance(materialization.trace_payload, dict)
-                else None
+                else {}
             )
+            requirement_shadow = requirement_trace.get("requirement_shadow")
+            requirement_guidance = _safe_requirement_guidance_projection(
+                requirement_trace.get("requirement_guidance")
+            )
+            requirement_row: dict[str, Any] = {"run_id": result.id}
+            if requirement_guidance is not None:
+                requirement_row["requirement_guidance"] = requirement_guidance
             if isinstance(requirement_shadow, dict):
-                requirement_summary.append(
-                    {
-                        "run_id": result.id,
-                        "requirement_shadow": redact_sensitive_value(
-                            requirement_shadow
-                        ),
-                    }
+                requirement_row["requirement_shadow"] = redact_sensitive_value(
+                    requirement_shadow
                 )
+            if len(requirement_row) > 1:
+                requirement_summary.append(requirement_row)
         overview = context.overview or self._build_campaign_overview(context)
         errors = self._build_campaign_errors(
             context=context,

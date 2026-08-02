@@ -137,6 +137,14 @@ async def _seed_export_rows(
         condition_id="",
         schema_version="1",
         trace_payload={
+            "requirement_guidance": {
+                "enabled": True,
+                "source": "setup_snapshot",
+                "applied_task_count": 2,
+                "fallback_reason": None,
+                "_advisory_suffix": "MUST NOT BE EXPORTED",
+                "applied_task_ids": ["task-a", "task-b"],
+            },
             "requirement_shadow": {
                 "schema_version": "shadow_requirements_v2",
                 "behavior_influence": False,
@@ -424,6 +432,12 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         assert export_body["requirement_summary"] == [
             {
                 "run_id": run_id,
+                "requirement_guidance": {
+                    "enabled": True,
+                    "source": "setup_snapshot",
+                    "applied_task_count": 2,
+                    "fallback_reason": None,
+                },
                 "requirement_shadow": {
                     "schema_version": "shadow_requirements_v2",
                     "behavior_influence": False,
