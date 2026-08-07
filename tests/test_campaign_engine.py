@@ -20,6 +20,7 @@ import pytest
 
 from core.auth import get_current_user_id
 from core.llm_usage_context import emit_direct_usage
+from core.providers import configure_providers
 from data_base.agentic_v9.budget_controller import RunBudgetController
 from data_base.agentic_v9.budgeted_llm import invoke_budgeted_llm
 from data_base.agentic_v9.schemas import QueryContract, RequiredSlot, ResolvedSourceScope
@@ -941,6 +942,8 @@ async def test_completed_run_persists_snapshots_and_root_observability_span() ->
 
 @pytest.mark.asyncio
 async def test_llm_observer_write_failure_preserves_answer_and_marks_run_partial() -> None:
+    configure_providers(use_fake=True)
+
     class Provider:
         async def ainvoke(self, messages: object) -> object:
             return {
@@ -1025,7 +1028,7 @@ async def test_llm_observer_write_failure_preserves_answer_and_marks_run_partial
             "llm_call_observer_failed",
         }
         attempted_call = record_llm_call.await_args_list[0].args[0]
-        assert attempted_call.provider == "google"
+        assert attempted_call.provider == "fake"
 
 
 @pytest.mark.asyncio
