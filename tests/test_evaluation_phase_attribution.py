@@ -15,7 +15,7 @@ PHASE_CASES = [
     ("graph_rag/global_search.py", "graph_reasoning"),
     ("graph_rag/generic_mode.py", "graph_reasoning"),
     ("evaluation/agentic_evaluation_service.py", "agent_planning"),
-    ("data_base/RAG_QA_service.py", "answer_generation"),
+    ("data_base/rag_generation.py", "answer_generation"),
     ("multimodal_rag/image_summarizer.py", "visual_verification"),
     ("agents/synthesizer.py", "agent_synthesis"),
 ]

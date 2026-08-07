@@ -397,10 +397,10 @@ async def test_auto_gate_skip_does_not_call_graph_or_change_vector_context() -> 
 
     with (
         patch("data_base.RAG_QA_service.get_llm", get_llm),
-        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
         patch("data_base.RAG_QA_service.get_user_retriever", return_value=retriever),
         patch(
-            "data_base.RAG_QA_service.fetch_document_filenames",
+            "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-allowed": "allowed.pdf"}),
         ),
         patch("data_base.RAG_QA_service._get_graph_context", new=graph_context),
@@ -429,10 +429,10 @@ async def test_auto_gate_locator_only_never_injects_raw_graph_context() -> None:
 
     with (
         patch("data_base.RAG_QA_service.get_llm", get_llm),
-        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
         patch("data_base.RAG_QA_service.get_user_retriever", return_value=retriever),
         patch(
-            "data_base.RAG_QA_service.fetch_document_filenames",
+            "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-allowed": "allowed.pdf"}),
         ),
         patch("data_base.RAG_QA_service._get_graph_context", new=graph_context),
@@ -458,20 +458,20 @@ async def test_auto_gate_planning_records_skip_without_bundling_merging_or_promp
     retriever, get_llm, _ = _rag_patches()
     graph_context = AsyncMock(return_value="raw inferred graph text")
     graph_bundle = AsyncMock()
-    merge = Mock()
+    locator = AsyncMock()
     record = AsyncMock()
 
     with (
         patch("data_base.RAG_QA_service.get_llm", get_llm),
-        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
         patch("data_base.RAG_QA_service.get_user_retriever", return_value=retriever),
         patch(
-            "data_base.RAG_QA_service.fetch_document_filenames",
+            "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-allowed": "allowed.pdf"}),
         ),
         patch("data_base.RAG_QA_service._get_graph_context", new=graph_context),
         patch("data_base.RAG_QA_service._get_graph_evidence_bundle", new=graph_bundle),
-        patch("data_base.RAG_QA_service.merge_vector_and_graph_docs", merge),
+        patch("data_base.RAG_QA_service.locate_graph_sources", new=locator),
         patch("data_base.RAG_QA_service._record_graph_observability", new=record),
     ):
         result = await rag_answer_question(
@@ -491,7 +491,7 @@ async def test_auto_gate_planning_records_skip_without_bundling_merging_or_promp
     assert isinstance(result, RAGResult)
     graph_context.assert_not_awaited()
     graph_bundle.assert_not_awaited()
-    merge.assert_not_called()
+    locator.assert_not_awaited()
     record.assert_awaited_once()
     details = record.await_args.kwargs["graph_context_details"]
     assert details.route_decision.path == "skip"
@@ -511,13 +511,16 @@ async def test_graph_located_chunks_outside_scoped_doc_ids_are_excluded() -> Non
         page_content="Out-of-scope graph source.",
         metadata={"doc_id": "doc-outside", "chunk_id": "graph-outside"},
     )
+    scorer = Mock(
+        side_effect=lambda chunks, **_kwargs: [entry.document for entry in chunks]
+    )
 
     with (
         patch("data_base.RAG_QA_service.get_llm", get_llm),
-        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
         patch("data_base.RAG_QA_service.get_user_retriever", return_value=retriever),
         patch(
-            "data_base.RAG_QA_service.fetch_document_filenames",
+            "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-allowed": "allowed.pdf"}),
         ),
         patch(
@@ -525,12 +528,12 @@ async def test_graph_located_chunks_outside_scoped_doc_ids_are_excluded() -> Non
             new=AsyncMock(return_value=bundle),
         ),
         patch(
-            "data_base.RAG_QA_service.expand_graph_evidence_to_chunks",
+            "data_base.rag_graph_locator.expand_graph_evidence_to_chunks",
             return_value=[GraphLocatedChunk(out_of_scope, item)],
         ),
         patch(
-            "data_base.RAG_QA_service.score_graph_located_chunks",
-            return_value=[out_of_scope],
+            "data_base.rag_graph_locator.score_graph_located_chunks",
+            new=scorer,
         ),
     ):
         result = await rag_answer_question(
@@ -551,3 +554,4 @@ async def test_graph_located_chunks_outside_scoped_doc_ids_are_excluded() -> Non
     assert isinstance(result, RAGResult)
     assert {document.metadata.get("doc_id") for document in result.documents} == {"doc-allowed"}
     assert "Out-of-scope graph source." not in (result.thought_process or "")
+    assert scorer.call_args.args[0] == []

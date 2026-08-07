@@ -245,13 +245,13 @@ async def test_graph_to_chunk_flag_disabled_preserves_legacy_graph_wrapper() -> 
 
     with (
         patch("data_base.RAG_QA_service.get_llm", return_value=llm),
-        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
         patch(
             "data_base.RAG_QA_service.get_user_retriever",
             new=AsyncMock(return_value=retriever),
         ),
         patch(
-            "data_base.RAG_QA_service.fetch_document_filenames",
+            "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-1": "doc.pdf"}),
         ),
         patch("data_base.RAG_QA_service._get_graph_context", new=legacy_context),
@@ -312,17 +312,17 @@ async def test_graph_to_chunk_flag_uses_source_chunks_and_falls_back_on_lookup_f
 
     with (
         patch("data_base.RAG_QA_service.get_llm", return_value=llm),
-        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
         patch(
             "data_base.RAG_QA_service.get_user_retriever",
             new=AsyncMock(return_value=retriever),
         ),
         patch(
-            "data_base.RAG_QA_service.fetch_document_filenames",
+            "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-1": "doc.pdf"}),
         ),
         patch("data_base.RAG_QA_service._get_graph_evidence_bundle", new=bundle_mock),
-        patch("data_base.RAG_QA_service.VectorStoreChunkLookup", return_value=lookup),
+        patch("data_base.rag_graph_locator.VectorStoreChunkLookup", return_value=lookup),
         patch("data_base.RAG_QA_service._get_graph_context", new=AsyncMock()) as legacy,
         patch(
             "data_base.RAG_QA_service._record_graph_observability",
@@ -361,13 +361,13 @@ async def test_graph_source_expand_exception_records_safe_fallback_reason() -> N
 
     with (
         patch("data_base.RAG_QA_service.get_llm", return_value=llm),
-        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
         patch(
             "data_base.RAG_QA_service.get_user_retriever",
             new=AsyncMock(return_value=retriever),
         ),
         patch(
-            "data_base.RAG_QA_service.fetch_document_filenames",
+            "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-1": "doc.pdf"}),
         ),
         patch(
