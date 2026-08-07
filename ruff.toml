@@ -1,0 +1,11 @@
+extend-exclude = [
+  ".agent",
+  ".venv",
+  ".worktrees",
+  "archive",
+  "experiments",
+  "outdate",
+  "tests",
+  "venv",
+  "**/generated/**",
+]
