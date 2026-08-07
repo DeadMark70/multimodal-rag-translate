@@ -3,7 +3,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from core.production_scope import PROJECT_ROOT, iter_production_python_files
+from core.production_scope import (
+    PROJECT_ROOT,
+    is_production_path,
+    iter_production_python_files,
+)
 
 NON_PRODUCTION_IMPORT_PREFIXES = ("bergen", "experiments", "scripts")
 ORPHAN_MODULE_PATHS = (
@@ -14,6 +18,19 @@ ORPHAN_MODULE_PATHS = (
 
 def _parse_file(path: Path) -> ast.AST:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+
+def test_registered_worktree_copies_are_not_production_paths(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    production_file = project_root / "core" / "app_factory.py"
+    worktree_copy = (
+        project_root / ".worktrees" / "feature" / "core" / "app_factory.py"
+    )
+
+    assert is_production_path(production_file, project_root=project_root)
+    assert not is_production_path(worktree_copy, project_root=project_root)
 
 
 def test_production_modules_do_not_import_non_production_trees() -> None:
