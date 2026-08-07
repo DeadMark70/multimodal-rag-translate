@@ -2,6 +2,112 @@
 
 Human-maintained inventory of the current backend surface.
 
+<!-- BEGIN GENERATED OPENAPI ROUTES -->
+| Method | Path | Operation ID |
+|---|---|---|
+| GET | `/` | `read_root__get` |
+| GET | `/api/conversations` | `list_conversations_api_conversations_get` |
+| POST | `/api/conversations` | `create_conversation_api_conversations_post` |
+| GET | `/api/conversations/page` | `list_conversation_page_api_conversations_page_get` |
+| DELETE | `/api/conversations/{conversation_id}` | `delete_conversation_api_conversations__conversation_id__delete` |
+| GET | `/api/conversations/{conversation_id}` | `get_conversation_api_conversations__conversation_id__get` |
+| PATCH | `/api/conversations/{conversation_id}` | `update_conversation_api_conversations__conversation_id__patch` |
+| POST | `/api/conversations/{conversation_id}/messages` | `create_message_api_conversations__conversation_id__messages_post` |
+| GET | `/api/conversations/{conversation_id}/messages/page` | `list_message_page_api_conversations__conversation_id__messages_page_get` |
+| GET | `/api/evaluation/campaigns` | `get_campaigns_api_evaluation_campaigns_get` |
+| POST | `/api/evaluation/campaigns` | `create_campaign_api_evaluation_campaigns_post` |
+| POST | `/api/evaluation/campaigns/preflight` | `preflight_campaign_api_evaluation_campaigns_preflight_post` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/ablation` | `get_campaign_ablation_api_evaluation_campaigns__campaign_id__ablation_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/agent-behavior` | `get_campaign_agent_behavior_api_evaluation_campaigns__campaign_id__agent_behavior_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/analytics-dashboard` | `get_campaign_analytics_dashboard_api_evaluation_campaigns__campaign_id__analytics_dashboard_get` |
+| POST | `/api/evaluation/campaigns/{campaign_id}/cancel` | `cancel_campaign_api_evaluation_campaigns__campaign_id__cancel_post` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/cost-latency` | `get_campaign_cost_latency_api_evaluation_campaigns__campaign_id__cost_latency_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/errors` | `get_campaign_errors_api_evaluation_campaigns__campaign_id__errors_get` |
+| POST | `/api/evaluation/campaigns/{campaign_id}/evaluate` | `evaluate_campaign_api_evaluation_campaigns__campaign_id__evaluate_post` |
+| POST | `/api/evaluation/campaigns/{campaign_id}/export` | `post_campaign_export_api_evaluation_campaigns__campaign_id__export_post` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/human-eval-queue` | `get_campaign_human_eval_queue_api_evaluation_campaigns__campaign_id__human_eval_queue_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/human-vs-auto` | `get_campaign_human_vs_auto_api_evaluation_campaigns__campaign_id__human_vs_auto_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/jobs` | `list_campaign_jobs_api_evaluation_campaigns__campaign_id__jobs_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/metrics` | `get_campaign_metrics_api_evaluation_campaigns__campaign_id__metrics_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/mode-comparison` | `get_campaign_mode_comparison_api_evaluation_campaigns__campaign_id__mode_comparison_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/overview` | `get_campaign_research_overview_api_evaluation_campaigns__campaign_id__overview_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/question-comparison` | `get_campaign_question_comparison_api_evaluation_campaigns__campaign_id__question_comparison_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/release-metrics` | `get_campaign_release_metrics_api_evaluation_campaigns__campaign_id__release_metrics_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/repeat-stability` | `get_campaign_repeat_stability_api_evaluation_campaigns__campaign_id__repeat_stability_get` |
+| POST | `/api/evaluation/campaigns/{campaign_id}/reruns` | `create_campaign_rerun_api_evaluation_campaigns__campaign_id__reruns_post` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/research-question-comparison` | `get_campaign_research_question_comparison_api_evaluation_campaigns__campaign_id__research_question_comparison_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/research-summary` | `get_campaign_research_summary_api_evaluation_campaigns__campaign_id__research_summary_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/results` | `get_campaign_results_api_evaluation_campaigns__campaign_id__results_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/results/{campaign_result_id}/trace` | `get_campaign_result_trace_api_evaluation_campaigns__campaign_id__results__campaign_result_id__trace_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/router-analysis` | `get_campaign_router_analysis_api_evaluation_campaigns__campaign_id__router_analysis_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/runs` | `get_campaign_research_runs_api_evaluation_campaigns__campaign_id__runs_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/runs/{run_id}/observability` | `get_campaign_run_observability_api_evaluation_campaigns__campaign_id__runs__run_id__observability_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/stage-warnings` | `get_campaign_stage_warnings_api_evaluation_campaigns__campaign_id__stage_warnings_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/stream` | `stream_campaign_api_evaluation_campaigns__campaign_id__stream_get` |
+| GET | `/api/evaluation/campaigns/{campaign_id}/traces` | `get_campaign_traces_api_evaluation_campaigns__campaign_id__traces_get` |
+| GET | `/api/evaluation/jobs/{job_id}` | `get_evaluation_job_api_evaluation_jobs__job_id__get` |
+| POST | `/api/evaluation/jobs/{job_id}/cancel` | `cancel_evaluation_job_api_evaluation_jobs__job_id__cancel_post` |
+| GET | `/api/evaluation/jobs/{job_id}/items` | `list_evaluation_job_items_api_evaluation_jobs__job_id__items_get` |
+| GET | `/api/evaluation/model-configs` | `get_model_configs_api_evaluation_model_configs_get` |
+| POST | `/api/evaluation/model-configs` | `post_model_config_api_evaluation_model_configs_post` |
+| DELETE | `/api/evaluation/model-configs/{config_id}` | `remove_model_config_api_evaluation_model_configs__config_id__delete` |
+| PUT | `/api/evaluation/model-configs/{config_id}` | `put_model_config_api_evaluation_model_configs__config_id__put` |
+| GET | `/api/evaluation/models` | `get_available_models_api_evaluation_models_get` |
+| GET | `/api/evaluation/runs/{run_id}/claims` | `get_evaluation_run_claims_api_evaluation_runs__run_id__claims_get` |
+| GET | `/api/evaluation/runs/{run_id}/context` | `get_evaluation_run_context_api_evaluation_runs__run_id__context_get` |
+| GET | `/api/evaluation/runs/{run_id}/detail` | `get_evaluation_run_detail_api_evaluation_runs__run_id__detail_get` |
+| GET | `/api/evaluation/runs/{run_id}/diff` | `get_evaluation_run_diff_api_evaluation_runs__run_id__diff_get` |
+| GET | `/api/evaluation/runs/{run_id}/graph` | `get_evaluation_run_graph_tools_api_evaluation_runs__run_id__graph_get` |
+| POST | `/api/evaluation/runs/{run_id}/human-ratings` | `post_run_human_rating_api_evaluation_runs__run_id__human_ratings_post` |
+| GET | `/api/evaluation/runs/{run_id}/llm-calls` | `get_evaluation_run_llm_calls_api_evaluation_runs__run_id__llm_calls_get` |
+| GET | `/api/evaluation/runs/{run_id}/metrics` | `get_evaluation_run_metrics_api_evaluation_runs__run_id__metrics_get` |
+| GET | `/api/evaluation/runs/{run_id}/retrieval` | `get_evaluation_run_retrieval_api_evaluation_runs__run_id__retrieval_get` |
+| GET | `/api/evaluation/runs/{run_id}/tools` | `get_evaluation_run_tools_api_evaluation_runs__run_id__tools_get` |
+| GET | `/api/evaluation/runs/{run_id}/trace` | `get_evaluation_run_trace_api_evaluation_runs__run_id__trace_get` |
+| GET | `/api/evaluation/runs/{run_id}/visual` | `get_evaluation_run_visual_tools_api_evaluation_runs__run_id__visual_get` |
+| GET | `/api/evaluation/test-cases` | `get_test_cases_api_evaluation_test_cases_get` |
+| POST | `/api/evaluation/test-cases` | `create_or_import_test_case_api_evaluation_test_cases_post` |
+| DELETE | `/api/evaluation/test-cases/{test_case_id}` | `remove_test_case_api_evaluation_test_cases__test_case_id__delete` |
+| PUT | `/api/evaluation/test-cases/{test_case_id}` | `put_test_case_api_evaluation_test_cases__test_case_id__put` |
+| GET | `/api/evaluation/work-items/{work_item_id}/attempts` | `get_work_item_attempts_api_evaluation_work_items__work_item_id__attempts_get` |
+| GET | `/graph/data` | `get_graph_visualization_data_graph_data_get` |
+| POST | `/graph/debug/search` | `debug_graph_search_graph_debug_search_post` |
+| GET | `/graph/documents` | `list_graph_documents_graph_documents_get` |
+| DELETE | `/graph/documents/{doc_id}` | `purge_graph_document_graph_documents__doc_id__delete` |
+| POST | `/graph/documents/{doc_id}/retry` | `retry_graph_document_graph_documents__doc_id__retry_post` |
+| POST | `/graph/node-vector/sync` | `start_node_vector_sync_graph_node_vector_sync_post` |
+| GET | `/graph/node-vector/sync/status` | `get_node_vector_sync_status_graph_node_vector_sync_status_get` |
+| POST | `/graph/optimize` | `optimize_graph_graph_optimize_post` |
+| GET | `/graph/quality` | `get_graph_quality_graph_quality_get` |
+| POST | `/graph/rebuild` | `rebuild_graph_graph_rebuild_post` |
+| POST | `/graph/rebuild-full` | `rebuild_graph_full_graph_rebuild_full_post` |
+| POST | `/graph/rebuild-full/resume` | `resume_rebuild_graph_full_graph_rebuild_full_resume_post` |
+| GET | `/graph/rebuild-full/status` | `get_rebuild_graph_full_status_graph_rebuild_full_status_get` |
+| GET | `/graph/runtime-quality` | `get_graph_runtime_quality_graph_runtime_quality_get` |
+| GET | `/graph/status` | `get_graph_status_graph_status_get` |
+| POST | `/imagemd/translate_image` | `translate_image_inplace_imagemd_translate_image_post` |
+| POST | `/multimodal/extract` | `extract_from_pdf_endpoint_multimodal_extract_post` |
+| DELETE | `/multimodal/file/{doc_id}` | `delete_multimodal_document_multimodal_file__doc_id__delete` |
+| DELETE | `/pdfmd/file/{doc_id}` | `delete_pdf_file_pdfmd_file__doc_id__delete` |
+| GET | `/pdfmd/file/{doc_id}` | `get_pdf_file_pdfmd_file__doc_id__get` |
+| POST | `/pdfmd/file/{doc_id}/retry-index` | `retry_document_index_pdfmd_file__doc_id__retry_index_post` |
+| GET | `/pdfmd/file/{doc_id}/status` | `get_processing_status_pdfmd_file__doc_id__status_get` |
+| GET | `/pdfmd/file/{doc_id}/summary` | `get_document_summary_endpoint_pdfmd_file__doc_id__summary_get` |
+| POST | `/pdfmd/file/{doc_id}/summary/regenerate` | `regenerate_summary_endpoint_pdfmd_file__doc_id__summary_regenerate_post` |
+| POST | `/pdfmd/file/{doc_id}/translate` | `translate_pdf_file_pdfmd_file__doc_id__translate_post` |
+| GET | `/pdfmd/list` | `list_documents_endpoint_pdfmd_list_get` |
+| POST | `/pdfmd/ocr` | `upload_pdf_md_pdfmd_ocr_post` |
+| POST | `/pdfmd/upload_pdf_md` | `upload_pdf_md_pdfmd_upload_pdf_md_post` |
+| POST | `/rag/agentic/stream` | `execute_agentic_benchmark_stream_rag_agentic_stream_post` |
+| POST | `/rag/ask` | `ask_question_with_context_rag_ask_post` |
+| POST | `/rag/ask/stream` | `ask_question_with_context_stream_rag_ask_stream_post` |
+| POST | `/rag/execute` | `execute_research_plan_rag_execute_post` |
+| POST | `/rag/execute/stream` | `execute_research_plan_stream_rag_execute_stream_post` |
+| POST | `/rag/plan` | `generate_research_plan_rag_plan_post` |
+| POST | `/rag/research` | `research_question_rag_research_post` |
+| GET | `/stats/dashboard` | `get_dashboard_stats_stats_dashboard_get` |
+<!-- END GENERATED OPENAPI ROUTES -->
+
 ## Router Prefixes
 
 | Prefix | Area | High-value endpoints |

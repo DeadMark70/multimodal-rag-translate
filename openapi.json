@@ -2960,13 +2960,61 @@
         }
       }
     },
+    "/api/evaluation/campaigns/{campaign_id}/stage-warnings": {
+      "get": {
+        "tags": [
+          "Evaluation"
+        ],
+        "summary": "Get Campaign Stage Warnings",
+        "description": "Fetch non-fatal v9 capability gaps for one campaign.",
+        "operationId": "get_campaign_stage_warnings_api_evaluation_campaigns__campaign_id__stage_warnings_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignStageWarningsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/evaluation/campaigns/{campaign_id}/export": {
       "post": {
         "tags": [
           "Evaluation"
         ],
         "summary": "Post Campaign Export",
-        "description": "Export one campaign with explicit redaction controls.",
+        "description": "Export without escalating the campaign's execution-time capture policy.",
         "operationId": "post_campaign_export_api_evaluation_campaigns__campaign_id__export_post",
         "security": [
           {
@@ -4913,6 +4961,12 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Summaries"
+          },
+          "behavior_schema_version": {
+            "type": "string",
+            "const": "2",
+            "title": "Behavior Schema Version",
+            "default": "2"
           }
         },
         "type": "object",
@@ -4973,9 +5027,37 @@
             "title": "Repeat Number",
             "default": 1
           },
+          "behavior_schema": {
+            "type": "string",
+            "enum": [
+              "v8",
+              "v9",
+              "not_applicable"
+            ],
+            "title": "Behavior Schema",
+            "default": "not_applicable"
+          },
           "trace_status": {
             "type": "string",
+            "enum": [
+              "completed",
+              "partial",
+              "failed",
+              "not_applicable",
+              "not_instrumented"
+            ],
             "title": "Trace Status"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
           },
           "accounting_status": {
             "type": "string",
@@ -5110,6 +5192,26 @@
               }
             ],
             "title": "Total Tokens"
+          },
+          "legacy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegacyAgentBehaviorMetrics"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "v9": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V9AgentBehaviorMetrics"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -5121,7 +5223,7 @@
           "trace_status"
         ],
         "title": "AgentBehaviorRow",
-        "description": "One run's trace-backed behavior metrics."
+        "description": "One run's versioned, trace-backed behavior metrics."
       },
       "AgentTraceDetail": {
         "properties": {
@@ -5546,41 +5648,48 @@
           },
           "question_id": {
             "type": "string",
-            "minLength": 1,
-            "title": "Question Id"
+            "title": "Question Id",
+            "default": ""
           },
           "question": {
             "type": "string",
-            "minLength": 1,
-            "title": "Question"
+            "title": "Question",
+            "default": ""
           },
           "mode": {
-            "type": "string",
-            "enum": [
-              "naive",
-              "naive-baseline",
-              "advanced",
-              "graph",
-              "agentic",
-              "agentic-v8",
-              "v8",
-              "agentic-v9",
-              "v9",
-              "agentic-v9-shadow",
-              "router",
-              "graph_raw_current",
-              "graph_provenance_gated",
-              "graph_locator_to_chunk",
-              "graph_locator_claim_gate",
-              "always_no_graph",
-              "always_graph_locator",
-              "router_auto_graph",
-              "oracle_graph_router",
-              "graph_local_first",
-              "graph_global_first",
-              "graph_blended",
-              "graph_path_pruned",
-              "graph_planning_only"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "naive",
+                  "naive-baseline",
+                  "advanced",
+                  "graph",
+                  "agentic",
+                  "agentic-v8",
+                  "v8",
+                  "agentic-v9",
+                  "v9",
+                  "agentic-v9-shadow",
+                  "router",
+                  "graph_raw_current",
+                  "graph_provenance_gated",
+                  "graph_locator_to_chunk",
+                  "graph_locator_claim_gate",
+                  "always_no_graph",
+                  "always_graph_locator",
+                  "router_auto_graph",
+                  "oracle_graph_router",
+                  "graph_local_first",
+                  "graph_global_first",
+                  "graph_blended",
+                  "graph_path_pruned",
+                  "graph_planning_only"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Mode"
           },
@@ -5640,16 +5749,19 @@
           "run_number": {
             "type": "integer",
             "minimum": 1.0,
-            "title": "Run Number"
+            "title": "Run Number",
+            "default": 1
           },
           "trace_status": {
             "type": "string",
             "enum": [
               "completed",
               "partial",
-              "failed"
+              "failed",
+              "not_instrumented"
             ],
-            "title": "Trace Status"
+            "title": "Trace Status",
+            "default": "not_instrumented"
           },
           "summary": {
             "type": "string",
@@ -5757,11 +5869,6 @@
         "required": [
           "trace_id",
           "campaign_result_id",
-          "question_id",
-          "question",
-          "mode",
-          "run_number",
-          "trace_status",
           "created_at"
         ],
         "title": "AgentTraceSummary",
@@ -6429,7 +6536,7 @@
               "v9"
             ],
             "title": "Agentic Execution Version",
-            "default": "v8"
+            "default": "v9"
           },
           "shadow_evaluation_policy": {
             "anyOf": [
@@ -6458,6 +6565,9 @@
               }
             ],
             "title": "Benchmark Id"
+          },
+          "prompt_capture_policy": {
+            "$ref": "#/components/schemas/PromptCapturePolicy"
           }
         },
         "type": "object",
@@ -6599,7 +6709,7 @@
               "v9"
             ],
             "title": "Agentic Execution Version",
-            "default": "v8"
+            "default": "v9"
           },
           "shadow_evaluation_policy": {
             "anyOf": [
@@ -6628,6 +6738,9 @@
               }
             ],
             "title": "Benchmark Id"
+          },
+          "prompt_capture_policy": {
+            "$ref": "#/components/schemas/PromptCapturePolicy"
           }
         },
         "type": "object",
@@ -7739,6 +7852,27 @@
         "title": "CampaignResultsResponse",
         "description": "Campaign snapshot with all unit results."
       },
+      "CampaignStageWarningsResponse": {
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/StageWarningRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "campaign_id"
+        ],
+        "title": "CampaignStageWarningsResponse",
+        "description": "Capability-gap rows for one campaign, separate from failed runs."
+      },
       "CampaignStatus": {
         "properties": {
           "id": {
@@ -7970,6 +8104,85 @@
         ],
         "title": "ChatMessageResponse",
         "description": "Response model for a single chat message.\n\nAttributes:\n    id: Message ID.\n    role: Message role ('user' or 'assistant' or 'system').\n    content: Message content.\n    metadata: Optional metadata.\n    created_at: Message timestamp."
+      },
+      "ComparisonPlan": {
+        "properties": {
+          "subjects": {
+            "items": {
+              "$ref": "#/components/schemas/ComparisonSubject"
+            },
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 2,
+            "title": "Subjects"
+          },
+          "dimensions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 12,
+            "title": "Dimensions"
+          },
+          "qualification": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualification"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "subjects"
+        ],
+        "title": "ComparisonPlan",
+        "description": "Answer-free semantic comparison decomposition."
+      },
+      "ComparisonSubject": {
+        "properties": {
+          "subject_id": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Subject Id"
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Display Name"
+          },
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "title": "Aliases"
+          },
+          "retrieval_query": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Retrieval Query"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "subject_id",
+          "display_name",
+          "retrieval_query"
+        ],
+        "title": "ComparisonSubject",
+        "description": "One explicit semantic subject in a bounded comparison."
       },
       "ConflictCandidate": {
         "properties": {
@@ -9965,11 +10178,49 @@
             ],
             "title": "Model Name"
           },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "contract_planning",
+              "comparison_plan",
+              "graph_route",
+              "evidence_extract",
+              "retrieval_judge",
+              "visual_extract",
+              "final_answer"
+            ],
+            "title": "Phase",
+            "default": "unknown"
+          },
           "purpose": {
             "type": "string",
             "minLength": 1,
             "title": "Purpose",
             "default": "unknown"
+          },
+          "reservation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservation Id"
+          },
+          "provider_attempt": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Attempt"
           },
           "prompt_tokens": {
             "type": "integer",
@@ -9988,6 +10239,30 @@
             "minimum": 0.0,
             "title": "Total Tokens",
             "default": 0
+          },
+          "reasoning_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Tokens"
+          },
+          "other_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Other Tokens"
           },
           "estimated_cost_usd": {
             "anyOf": [
@@ -10034,6 +10309,30 @@
               }
             ],
             "title": "Prompt Preview"
+          },
+          "prompt_capture_status": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "captured",
+              "redacted",
+              "not_captured_at_execution",
+              "capture_failed"
+            ],
+            "title": "Prompt Capture Status",
+            "default": "unknown"
+          },
+          "full_prompt_capture_status": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "captured",
+              "redacted",
+              "not_captured_at_execution",
+              "capture_failed"
+            ],
+            "title": "Full Prompt Capture Status",
+            "default": "unknown"
           },
           "response_hash": {
             "anyOf": [
@@ -10690,6 +10989,47 @@
             ],
             "title": "Analysis Type",
             "default": "retrospective"
+          },
+          "decision_source": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "deterministic",
+                  "llm_planner",
+                  "safe_fallback"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Source"
+          },
+          "candidate_routes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Candidate Routes"
+          },
+          "matched_rules": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Matched Rules"
+          },
+          "fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Reason"
           },
           "confidence": {
             "anyOf": [
@@ -12061,6 +12401,34 @@
             },
             "type": "array",
             "title": "Claim Summary"
+          },
+          "comparison_summary": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Comparison Summary"
+          },
+          "requirement_summary": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Requirement Summary"
+          },
+          "summary": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Summary"
+          },
+          "availability_warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Availability Warnings"
           }
         },
         "type": "object",
@@ -12128,6 +12496,17 @@
             "type": "string",
             "minLength": 1,
             "title": "Claim Id"
+          },
+          "slot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Id"
           },
           "statement": {
             "type": "string",
@@ -13877,6 +14256,73 @@
         "type": "object",
         "title": "LatencySummary"
       },
+      "LegacyAgentBehaviorMetrics": {
+        "properties": {
+          "subtasks": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtasks"
+          },
+          "tool_calls": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Calls"
+          },
+          "visual_calls": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visual Calls"
+          },
+          "graph_calls": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Calls"
+          },
+          "drilldown_depth": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drilldown Depth"
+          }
+        },
+        "type": "object",
+        "title": "LegacyAgentBehaviorMetrics",
+        "description": "v8 step-based measurements; never inferred for evidence-first v9 runs."
+      },
       "MessageCreate": {
         "properties": {
           "role": {
@@ -14718,6 +15164,35 @@
         "title": "ProcessingStatusResponse",
         "description": "Response model for document processing progress."
       },
+      "PromptCapturePolicy": {
+        "properties": {
+          "hash": {
+            "type": "boolean",
+            "title": "Hash",
+            "default": true
+          },
+          "preview": {
+            "type": "boolean",
+            "title": "Preview",
+            "default": true
+          },
+          "full_prompt": {
+            "type": "boolean",
+            "title": "Full Prompt",
+            "default": false
+          },
+          "preview_max_chars": {
+            "type": "integer",
+            "maximum": 4096.0,
+            "minimum": 32.0,
+            "title": "Preview Max Chars",
+            "default": 512
+          }
+        },
+        "type": "object",
+        "title": "PromptCapturePolicy",
+        "description": "Execution-time-authoritative prompt evidence policy."
+      },
       "QueryContract": {
         "properties": {
           "contract_version": {
@@ -14780,6 +15255,11 @@
             ],
             "title": "Graph Policy"
           },
+          "visual_requested": {
+            "type": "boolean",
+            "title": "Visual Requested",
+            "default": false
+          },
           "visual_required": {
             "type": "boolean",
             "title": "Visual Required",
@@ -14834,6 +15314,79 @@
               }
             ],
             "title": "Strategy Tier"
+          },
+          "route_decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RouteDecision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "comparison_plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ComparisonPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slot_plan_status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "complete",
+                  "degraded"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Plan Status"
+          },
+          "slot_semantics": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "heuristic_experimental",
+                  "atomic",
+                  "legacy_generic"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Semantics"
+          },
+          "atomic_completeness": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Atomic Completeness"
+          },
+          "atomic_completeness_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Atomic Completeness Reason"
           }
         },
         "type": "object",
@@ -15352,6 +15905,26 @@
             "type": "boolean",
             "title": "Comparable"
           },
+          "availability": {
+            "type": "string",
+            "enum": [
+              "available",
+              "not_applicable"
+            ],
+            "title": "Availability",
+            "default": "available"
+          },
+          "not_applicable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Not Applicable Reason"
+          },
           "gate_reasons": {
             "items": {
               "type": "string"
@@ -15449,6 +16022,13 @@
             "type": "array",
             "maxItems": 2,
             "title": "Tasks"
+          },
+          "resulting_evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Resulting Evidence Ids"
           },
           "stop_reason": {
             "anyOf": [
@@ -15567,6 +16147,50 @@
             },
             "type": "array",
             "title": "Locator Hints"
+          },
+          "source_name_hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Source Name Hints"
+          },
+          "authorized_source_doc_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Authorized Source Doc Ids"
+          },
+          "expected_answer_type": {
+            "type": "string",
+            "enum": [
+              "number",
+              "equation",
+              "definition",
+              "comparison",
+              "explanation",
+              "text"
+            ],
+            "title": "Expected Answer Type",
+            "default": "text"
+          },
+          "depends_on_slot_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Depends On Slot Ids"
+          },
+          "visual_policy": {
+            "type": "string",
+            "enum": [
+              "never",
+              "preferred",
+              "required"
+            ],
+            "title": "Visual Policy",
+            "default": "never"
           }
         },
         "type": "object",
@@ -15863,6 +16487,16 @@
             "type": "array",
             "title": "Authorized Doc Ids"
           },
+          "source_name_to_doc_ids": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Source Name To Doc Ids"
+          },
           "rejected_source_names": {
             "items": {
               "type": "string"
@@ -15913,6 +16547,17 @@
             "minLength": 1,
             "title": "Source Group Id",
             "default": "source-group-1"
+          },
+          "subject_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Id"
           },
           "locator_hints": {
             "items": {
@@ -15975,6 +16620,89 @@
         ],
         "title": "RetryIndexResponse",
         "description": "Response model for retrying OCR-post indexing work."
+      },
+      "RouteDecision": {
+        "properties": {
+          "selected_route": {
+            "type": "string",
+            "enum": [
+              "single_lookup",
+              "bounded_compare",
+              "exact_structured",
+              "multi_document_exact",
+              "multi_hop",
+              "graph_relational"
+            ],
+            "title": "Selected Route"
+          },
+          "decision_source": {
+            "type": "string",
+            "enum": [
+              "deterministic",
+              "llm_planner",
+              "safe_fallback"
+            ],
+            "title": "Decision Source"
+          },
+          "matched_rules": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Matched Rules"
+          },
+          "candidate_routes": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "single_lookup",
+                "bounded_compare",
+                "exact_structured",
+                "multi_document_exact",
+                "multi_hop",
+                "graph_relational"
+              ]
+            },
+            "type": "array",
+            "title": "Candidate Routes"
+          },
+          "route_reason": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Route Reason"
+          },
+          "planner_call_used": {
+            "type": "boolean",
+            "title": "Planner Call Used",
+            "default": false
+          },
+          "fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Reason"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence"
+          }
+        },
+        "type": "object",
+        "required": [
+          "selected_route",
+          "decision_source",
+          "route_reason",
+          "confidence"
+        ],
+        "title": "RouteDecision",
+        "description": "Auditable provenance for the route selected by contract planning."
       },
       "RouterAnalysisResponse": {
         "properties": {
@@ -16327,10 +17055,16 @@
             "title": "Token Usage"
           },
           "total_tokens": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Total Tokens",
-            "default": 0
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Tokens"
           },
           "latency_ms": {
             "type": "number",
@@ -16708,6 +17442,86 @@
         "type": "object",
         "title": "SourceLocator",
         "description": "Versioned source location with distinct PDF and printed-page coordinates."
+      },
+      "StageWarningRow": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "question_id": {
+            "type": "string",
+            "title": "Question Id"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "naive",
+              "naive-baseline",
+              "advanced",
+              "graph",
+              "agentic",
+              "agentic-v8",
+              "v8",
+              "agentic-v9",
+              "v9",
+              "agentic-v9-shadow",
+              "router",
+              "graph_raw_current",
+              "graph_provenance_gated",
+              "graph_locator_to_chunk",
+              "graph_locator_claim_gate",
+              "always_no_graph",
+              "always_graph_locator",
+              "router_auto_graph",
+              "oracle_graph_router",
+              "graph_local_first",
+              "graph_global_first",
+              "graph_blended",
+              "graph_path_pruned",
+              "graph_planning_only"
+            ],
+            "title": "Mode"
+          },
+          "stage_name": {
+            "type": "string",
+            "title": "Stage Name"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "partial",
+              "required_but_not_satisfied"
+            ],
+            "title": "Status"
+          },
+          "failure_reason": {
+            "type": "string",
+            "title": "Failure Reason"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "campaign_id",
+          "question_id",
+          "mode",
+          "stage_name",
+          "status",
+          "failure_reason",
+          "created_at"
+        ],
+        "title": "StageWarningRow",
+        "description": "One non-fatal v9 capability gap surfaced for research analysis."
       },
       "SubTaskExecutionResult": {
         "properties": {
@@ -17488,6 +18302,13 @@
               "not_available"
             ],
             "title": "Phase Attribution Status"
+          },
+          "phase_attribution_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Phase Attribution Reasons"
           }
         },
         "type": "object",
@@ -17617,6 +18438,295 @@
         "title": "UploadPdfResponse",
         "description": "Response model for PDF upload and processing kickoff."
       },
+      "V9AgentBehaviorMetrics": {
+        "properties": {
+          "route": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route"
+          },
+          "contract_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract Version"
+          },
+          "slot_plan_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Plan Status"
+          },
+          "slot_semantics": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Semantics"
+          },
+          "atomic_completeness": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Atomic Completeness"
+          },
+          "atomic_completeness_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Atomic Completeness Reason"
+          },
+          "graph_policy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Policy"
+          },
+          "visual_requested": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visual Requested"
+          },
+          "visual_required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visual Required"
+          },
+          "evidence_extraction_required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Extraction Required"
+          },
+          "retrieval_query_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retrieval Query Count"
+          },
+          "provider_attempt_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Attempt Count"
+          },
+          "final_generation_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Generation Count"
+          },
+          "evidence_packet_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Packet Count"
+          },
+          "packed_evidence_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Packed Evidence Count"
+          },
+          "slot_resolution_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Resolution Count"
+          },
+          "required_slot_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Slot Count"
+          },
+          "supported_slot_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supported Slot Count"
+          },
+          "repair_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repair Count"
+          },
+          "final_claim_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Claim Count"
+          },
+          "reserved_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserved Tokens"
+          },
+          "reconciled_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reconciled Tokens"
+          },
+          "graph_execution": {
+            "type": "string",
+            "enum": [
+              "not_requested",
+              "not_triggered",
+              "executed",
+              "failed",
+              "required_but_not_satisfied",
+              "attempted_without_evidence",
+              "not_instrumented"
+            ],
+            "title": "Graph Execution",
+            "default": "not_instrumented"
+          },
+          "visual_execution": {
+            "type": "string",
+            "enum": [
+              "not_requested",
+              "not_triggered",
+              "executed",
+              "failed",
+              "required_but_not_satisfied",
+              "attempted_without_evidence",
+              "not_instrumented"
+            ],
+            "title": "Visual Execution",
+            "default": "not_instrumented"
+          }
+        },
+        "type": "object",
+        "title": "V9AgentBehaviorMetrics",
+        "description": "Durable evidence-first execution observations for one v9 run."
+      },
       "V9ContextPack": {
         "properties": {
           "packed_evidence_ids": {
@@ -17644,10 +18754,88 @@
               }
             ],
             "title": "Token Count"
+          },
+          "selection_policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selection Policy Version"
+          },
+          "candidate_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Count"
+          },
+          "selection_decisions": {
+            "items": {
+              "$ref": "#/components/schemas/V9ContextSelectionDecision"
+            },
+            "type": "array",
+            "title": "Selection Decisions"
           }
         },
         "type": "object",
         "title": "V9ContextPack"
+      },
+      "V9ContextSelectionDecision": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id"
+          },
+          "selected": {
+            "type": "boolean",
+            "title": "Selected"
+          },
+          "base_quality": {
+            "type": "number",
+            "title": "Base Quality"
+          },
+          "source_bonus": {
+            "type": "number",
+            "title": "Source Bonus"
+          },
+          "redundancy_penalty": {
+            "type": "number",
+            "title": "Redundancy Penalty"
+          },
+          "visual_penalty": {
+            "type": "number",
+            "title": "Visual Penalty"
+          },
+          "utility": {
+            "type": "number",
+            "title": "Utility"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "selected",
+          "base_quality",
+          "source_bonus",
+          "redundancy_penalty",
+          "visual_penalty",
+          "utility",
+          "reason"
+        ],
+        "title": "V9ContextSelectionDecision"
       },
       "V9EvidencePacket": {
         "properties": {
@@ -17812,6 +19000,18 @@
           },
           "metrics": {
             "$ref": "#/components/schemas/V9ExecutionMetrics"
+          },
+          "comparison": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comparison"
           }
         },
         "type": "object",
