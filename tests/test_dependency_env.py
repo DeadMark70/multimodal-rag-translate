@@ -1,44 +1,85 @@
 import ast
-import pytest
+import os
 from pathlib import Path
+
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
-def test_env_file_exists():
+
+def _require_local_env_validation() -> None:
+    if os.getenv("VALIDATE_LOCAL_ENV") != "1":
+        pytest.skip("Set VALIDATE_LOCAL_ENV=1 to validate local env files")
+
+
+def _parse_env_keys(path: Path) -> set[str]:
+    keys: set[str] = set()
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            keys.add(line.split("=", 1)[0].strip())
+    return keys
+
+
+def test_env_file_exists() -> None:
     """Verify that .env file exists."""
+    _require_local_env_validation()
     env_path = PROJECT_ROOT / ".env"
     config_env_path = PROJECT_ROOT / "config.env"
-    
-    print(f"\nDEBUG: Checking paths:\n{env_path} (Exists: {env_path.exists()})\n{config_env_path} (Exists: {config_env_path.exists()})")
-    
-    exists = env_path.exists() or config_env_path.exists()
-    assert exists, "Neither .env nor config.env found. Please copy config.env.example to .env or config.env"
 
-def test_env_keys_match_example():
+    exists = env_path.exists() or config_env_path.exists()
+    assert exists, (
+        "Neither .env nor config.env found. "
+        "Please copy config.env.example to .env or config.env"
+    )
+
+
+def test_env_keys_match_example() -> None:
     """Verify that .env has all keys from config.env.example."""
+    _require_local_env_validation()
     example_path = PROJECT_ROOT / "config.env.example"
     env_path = PROJECT_ROOT / ".env"
     if not env_path.exists():
         env_path = PROJECT_ROOT / "config.env"
-    
+
     if not env_path.exists():
         pytest.skip("Skipping key check because env file does not exist")
 
-    def parse_keys(path):
-        keys = set()
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key = line.split("=", 1)[0].strip()
-                    keys.add(key)
-        return keys
-
-    example_keys = parse_keys(example_path)
-    real_keys = parse_keys(env_path)
+    example_keys = _parse_env_keys(example_path)
+    real_keys = _parse_env_keys(env_path)
 
     missing_keys = example_keys - real_keys
     assert not missing_keys, f"Missing keys in .env/config.env: {missing_keys}"
+
+
+def test_local_env_validation_is_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VALIDATE_LOCAL_ENV", raising=False)
+
+    with pytest.raises(pytest.skip.Exception):
+        _require_local_env_validation()
+
+
+def test_local_env_validation_can_be_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VALIDATE_LOCAL_ENV", "1")
+
+    _require_local_env_validation()
+
+
+def test_env_key_comparison_reports_only_missing_names(tmp_path: Path) -> None:
+    example = tmp_path / "example.env"
+    actual = tmp_path / "actual.env"
+    example.write_text("FIRST=example\nSECOND=example\n", encoding="utf-8")
+    actual.write_text("FIRST=local-value\n", encoding="utf-8")
+
+    missing = _parse_env_keys(example) - _parse_env_keys(actual)
+
+    assert missing == {"SECOND"}
+
 
 def get_imports_from_file(filepath):
     """Extract imported module paths from a python file."""

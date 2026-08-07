@@ -95,7 +95,8 @@ def _load(path: Path) -> dict:
 
 
 def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    canonical_bytes = path.read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(canonical_bytes).hexdigest()
 
 
 def test_agentic_v9_golden_paths_and_hashes_are_frozen() -> None:

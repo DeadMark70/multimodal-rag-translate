@@ -26,6 +26,7 @@ def test_execution_policy_has_the_initial_runtime_bounds() -> None:
     assert policy.total_deadline_s == 128.0
     assert policy.phase_timeouts_s == {
         "route_plan": 32.0,
+        "comparison_plan": 68.0,
         "retrieval_judge": 32.0,
         "evidence_extract": 64.0,
         "visual_extract": 16.0,
