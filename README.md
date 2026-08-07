@@ -242,13 +242,35 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 - `testpaths = tests`
 - `python_files = test_*.py`
 
-常用命令：
+CI 與本機驗證都必須使用 fake provider，並封鎖外部網路：
 
-```bash
-pytest
-pytest -q
-ruff check .
+```powershell
+$env:TEST_MODE="true"
+$env:USE_FAKE_PROVIDERS="true"
+$env:CI_BLOCK_EXTERNAL_NETWORK="true"
+
+python -m ruff check . --select E9,F63,F7,F82
+python scripts/check_complexity_ratchet.py --check
+python scripts/run_pytest_with_warning_budget.py --max-warnings 56 -- -q
+python scripts/sync_openapi_artifacts.py --check
+python scripts/check_markdown_links.py
 ```
+
+Warning budget 的基準為 56：警告數降低或維持不變會通過，超過 56 才失敗；
+pytest 本身的非零結束碼永遠優先保留。C901 complexity baseline 以
+`production/path.py::function_name` 與分數記錄；既有函式降低或移除會通過，
+既有分數增加或新函式超過 10 會失敗。
+
+更新 API 契約時，先在 fake-provider 環境執行：
+
+```powershell
+python scripts/sync_openapi_artifacts.py --write
+python scripts/sync_openapi_artifacts.py --check
+```
+
+`--check` 只讀且不修改檔案；`--write` 只同步 `openapi.json`、
+`contracts/openapi-contract.json` 與 API surface 的 generated marker 區段。
+Markdown checker 只檢查 Git 已追蹤文件，不會存取網路。
 
 測試範圍涵蓋：
 

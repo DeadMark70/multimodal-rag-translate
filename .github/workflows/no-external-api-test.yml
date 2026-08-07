@@ -1,13 +1,17 @@
-name: Backend No-External-API Test
+name: Backend Quality and No-External-API Tests
 
 on:
   push:
     branches: [main, master]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  python-311-syntax:
+  deployment-compile:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -16,12 +20,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: Compile deployment source
-        run: python -m compileall -q core data_base evaluation
+        run: >-
+          python -m compileall -q
+          core data_base evaluation graph_rag pdfserviceMD multimodal_rag
+          conversations stats image_service
 
-  backend-test:
+  quality-and-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       TEST_MODE: "true"
       USE_FAKE_PROVIDERS: "true"
@@ -30,16 +40,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Setup quality Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
 
-      - name: Install dependencies
+      - name: Install dependencies including Ruff
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
 
-      - name: Run no-external-api test suite
-        run: |
-          python -m pytest -q tests/test_provider_registry.py tests/test_datalab_provider_injection.py tests/test_conversations_api.py tests/test_graph_router_copy.py
+      - name: Ruff correctness
+        run: python -m ruff check . --select E9,F63,F7,F82
+
+      - name: Complexity ratchet
+        run: python scripts/check_complexity_ratchet.py --check
+
+      - name: Full pytest suite with warning budget
+        run: python scripts/run_pytest_with_warning_budget.py --max-warnings 56 -- -q
+
+      - name: OpenAPI drift check
+        run: python scripts/sync_openapi_artifacts.py --check
+
+      - name: Markdown link check
+        run: python scripts/check_markdown_links.py
