@@ -554,4 +554,5 @@ async def test_graph_located_chunks_outside_scoped_doc_ids_are_excluded() -> Non
     assert isinstance(result, RAGResult)
     assert {document.metadata.get("doc_id") for document in result.documents} == {"doc-allowed"}
     assert "Out-of-scope graph source." not in (result.thought_process or "")
+    scorer.assert_called_once()
     assert scorer.call_args.args[0] == []
