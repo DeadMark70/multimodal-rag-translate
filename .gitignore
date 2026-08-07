@@ -72,6 +72,7 @@ Thumbs.db
 
 # Test artifacts
 .pytest_cache/
+.pytest-tmp/
 .coverage
 htmlcov/
 .tox/
@@ -91,6 +92,7 @@ data/evaluation.db-wal
 data/evaluation_snapshot_*.db
 data/evaluation_snapshot_*.db-shm
 data/evaluation_snapshot_*.db-wal
+data/evaluation.remote.db*
 
 #experiments
 experiments/
