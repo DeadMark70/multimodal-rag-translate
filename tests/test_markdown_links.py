@@ -84,3 +84,28 @@ def test_find_broken_links_reports_repository_escape(tmp_path: Path):
     )
 
     assert find_broken_links(tmp_path) == ["source.md: ../outside.md"]
+
+
+def test_execution_plan_lifecycle_locations_and_indexes_are_consistent():
+    root = Path(__file__).resolve().parent.parent
+    active = root / "docs" / "exec-plans" / "active"
+    completed = root / "docs" / "exec-plans" / "completed"
+    references = root / "docs" / "exec-plans" / "references"
+
+    performance_name = "2026-07-evaluation-chat-loading-performance.md"
+    memo_name = "google-genai-stage2-langchain-paths.md"
+    layering_name = "genai-langchain-layering-plan.md"
+
+    assert not (active / performance_name).exists()
+    assert (completed / performance_name).is_file()
+    assert not (active / memo_name).exists()
+    assert (references / memo_name).is_file()
+    assert (active / layering_name).is_file()
+
+    expected_entries = {
+        active / "index.md": f"docs/exec-plans/active/{layering_name}",
+        completed / "index.md": f"docs/exec-plans/completed/{performance_name}",
+        references / "index.md": f"docs/exec-plans/references/{memo_name}",
+    }
+    for index_path, entry in expected_entries.items():
+        assert index_path.read_text(encoding="utf-8").count(f"`{entry}`") == 1
