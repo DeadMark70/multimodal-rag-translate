@@ -3386,7 +3386,9 @@ def test_campaign_integration_keeps_running_when_one_mode_fails() -> None:
             failed_row = next(row for row in result_rows if row["mode"] == "graph")
             assert failed_row["status"] == "failed"
             assert failed_row["execution_profile"] == GRAPH_EVAL_PROFILE
-            assert "graph retrieval blew up" in failed_row["error_message"]
+            assert failed_row["error_message"] == "An unexpected evaluation error occurred."
+            assert failed_row["derived_metrics"]["error_type"] == "unknown"
+            assert "graph retrieval blew up" not in json.dumps(failed_row)
 
             metrics = client.get(f"/api/evaluation/campaigns/{campaign_id}/metrics")
             assert metrics.status_code == 200

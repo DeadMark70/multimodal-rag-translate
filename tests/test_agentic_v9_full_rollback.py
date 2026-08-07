@@ -96,7 +96,7 @@ async def test_missing_visual_capability_preserves_authorized_text_answer(
         trace_id="legacy-v9-visual-fail-soft",
     )
 
-    assert result.agent_trace["response_status"] == "qualified_partial"
+    assert result.agent_trace["response_status"] == "complete"
     assert result.answer == "The authorized source reports a score of 0.91."
     assert result.documents
     assert result.source_doc_ids == ["doc-1"]

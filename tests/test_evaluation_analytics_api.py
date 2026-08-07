@@ -282,10 +282,10 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
         assert runs.status_code == 200
         run_list_item = runs.json()["runs"][0]
         assert run_list_item["run_id"] == run_id
-        # Ordinary pre-v9 campaigns retain the v8 default when read through
-        # the analytics projection rather than the full result payload.
+        # The seeded campaign explicitly records the v9 execution version, and
+        # the analytics projection preserves that durable identity.
         assert run_list_item["condition_id"] is None
-        assert run_list_item["agentic_execution_version"] == "v8"
+        assert run_list_item["agentic_execution_version"] == "v9"
 
         aggregate_endpoint_expectations = {
             "mode-comparison": ("execution", 1),
@@ -439,7 +439,7 @@ def test_v9_campaign_preflight_uses_golden_routes_and_reports_incompatible_setup
                     "max_input_tokens": 8192, "max_output_tokens": 2048,
                     "thinking_mode": False, "thinking_budget": 8192,
                 },
-                "runtime_token_budget": 10000, "max_llm_calls": 4,
+                "runtime_token_budget": 10000, "max_llm_calls": 5,
             },
         )
         assert compatible.status_code == 200
@@ -460,7 +460,7 @@ def test_v9_campaign_preflight_uses_golden_routes_and_reports_incompatible_setup
                     "max_input_tokens": 8192, "max_output_tokens": 2048,
                     "thinking_mode": True, "thinking_budget": -1,
                 },
-                "runtime_token_budget": 10000, "max_llm_calls": 4,
+                "runtime_token_budget": 10000, "max_llm_calls": 5,
             },
         )
         assert incompatible.status_code == 200
@@ -469,7 +469,7 @@ def test_v9_campaign_preflight_uses_golden_routes_and_reports_incompatible_setup
         assert issue["reason"] == "thinking_reserve_unknown"
 
 
-def test_v9_campaign_preflight_admits_visual_requirements_when_contract_reserves_three_calls() -> None:
+def test_v9_campaign_preflight_admits_visual_route_with_five_call_setup_reserve() -> None:
     engine = CampaignEngine(runner=Mock(), ragas_evaluator=FakeRagasEvaluator())
     with tempfile.TemporaryDirectory(
         prefix="analytics_v9_preflight_runtime_contract_", dir=Path.cwd()
@@ -499,7 +499,7 @@ def test_v9_campaign_preflight_admits_visual_requirements_when_contract_reserves
                         "max_input_tokens": 8192, "max_output_tokens": 2048,
                         "thinking_mode": False, "thinking_budget": 8192,
                     },
-                    "runtime_token_budget": 10000, "max_llm_calls": 3,
+                    "runtime_token_budget": 10000, "max_llm_calls": 5,
                 },
             )
 

@@ -24,6 +24,7 @@ def _result(result_id: str, mode: str, score: float, *, tokens: int | None = 100
         total_tokens=tokens,
         total_latency_ms=100.0 if mode == "naive" else 150.0,
         latency_ms=100.0 if mode == "naive" else 150.0,
+        required_modalities=["text"],
         question_snapshot={"required_modalities": ["text"]},
     )
 
