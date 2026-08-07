@@ -5,6 +5,12 @@ __pycache__
 .pytest_cache
 .ruff_cache
 
+# Runtime secrets are injected by Docker Compose env_file, never copied into images.
+config.env
+.env
+.env.*
+*.env
+
 uploads
 data
 output
