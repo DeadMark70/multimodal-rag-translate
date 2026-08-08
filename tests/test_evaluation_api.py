@@ -73,8 +73,25 @@ def _build_client(user_id: str, upload_root: Path, with_auth: bool = True):
 
 
 def _load_golden_dataset() -> dict:
-    dataset_path = Path(__file__).resolve().parents[1] / "bergen" / "golden_dataset.json"
-    return json.loads(dataset_path.read_text(encoding="utf-8"))
+    return {
+        "metadata": {
+            "version": "test",
+            "purpose": "Hermetic evaluation API import fixture",
+            "total_questions": 8,
+        },
+        "questions": [
+            {
+                "id": f"Q{index}",
+                "category": "basic",
+                "question": f"Test question {index}",
+                "ground_truth": f"Ground truth {index}",
+                "source_docs": [],
+                "difficulty": "easy",
+                "requires_multi_doc_reasoning": False,
+            }
+            for index in range(1, 9)
+        ],
+    }
 
 
 def _make_upload_root() -> Path:

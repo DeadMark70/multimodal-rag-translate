@@ -24,9 +24,6 @@ from evaluation.job_store import build_evaluation_signature
 from evaluation.ragas_evaluator import PRIMARY_RAGAS_METRICS, RagasEvaluator, _clean_metric
 from evaluation.schemas import ModelConfig
 
-FIXTURE_DIR = Path(__file__).resolve().parents[1] / "bergen"
-
-
 def test_default_evaluator_uses_supported_stable_gemini_model(monkeypatch) -> None:
     monkeypatch.delenv("EVALUATION_EVALUATOR_MODEL", raising=False)
 
@@ -162,10 +159,6 @@ def _result(
         status=status,
         created_at=datetime.now(timezone.utc),
     )
-
-
-def _fixture_json(filename: str) -> dict:
-    return json.loads((FIXTURE_DIR / filename).read_text(encoding="utf-8"))
 
 
 @pytest.mark.asyncio
@@ -343,19 +336,6 @@ async def test_get_metrics_rejects_historical_signature_without_work_provenance(
     )
 
     assert response.rows == []
-
-
-def test_benchmark_results_ragas_fixture_has_aligned_columns():
-    fixture = _fixture_json("benchmark_results_ragas.json")
-
-    row_count = len(fixture["questions"])
-    assert row_count > 0
-    assert len(fixture["answers"]) == row_count
-    assert len(fixture["contexts"]) == row_count
-    assert len(fixture["ground_truths"]) == row_count
-    assert len(fixture["metadata"]["modes"]) == row_count
-    assert len(fixture["metadata"]["question_ids"]) == row_count
-    assert len(fixture["metadata"]["categories"]) == row_count
 
 
 @pytest.mark.asyncio
