@@ -50,7 +50,7 @@ def _step(job: dict, name: str) -> dict:
     return next(step for step in job["steps"] if step.get("name") == name)
 
 
-def test_workflow_has_read_only_timed_python_jobs_with_dependency_caching():
+def test_workflow_has_read_only_timed_python_jobs_with_scoped_dependency_caching():
     workflow = _workflow()
     assert workflow["permissions"] == {"contents": "read"}
     assert set(workflow["jobs"]) == {"deployment-compile", "quality-and-tests"}
@@ -62,16 +62,35 @@ def test_workflow_has_read_only_timed_python_jobs_with_dependency_caching():
 
     deployment_setup = _step(deployment, "Setup deployment Python")["with"]
     quality_setup = _step(quality, "Setup quality Python")["with"]
-    assert deployment_setup == {
-        "python-version": "3.11",
-        "cache": "pip",
-        "cache-dependency-path": "requirements.txt",
-    }
+    assert deployment_setup == {"python-version": "3.11"}
     assert quality_setup == {
         "python-version": "3.13",
         "cache": "pip",
         "cache-dependency-path": "requirements.txt",
     }
+
+
+def test_workflow_uses_pinned_node24_github_actions():
+    workflow = _workflow()
+    expected = {
+        "Checkout": (
+            "actions/checkout@"
+            "3d3c42e5aac5ba805825da76410c181273ba90b1"  # v7.0.1
+        ),
+        "Setup deployment Python": (
+            "actions/setup-python@"
+            "5fda3b95a4ea91299a34e894583c3862153e4b97"  # v7.0.0
+        ),
+        "Setup quality Python": (
+            "actions/setup-python@"
+            "5fda3b95a4ea91299a34e894583c3862153e4b97"  # v7.0.0
+        ),
+    }
+
+    for job in workflow["jobs"].values():
+        for step in job["steps"]:
+            if step.get("name") in expected:
+                assert step["uses"] == expected[step["name"]]
 
 
 def test_deployment_compile_covers_all_production_python_entrypoints():
