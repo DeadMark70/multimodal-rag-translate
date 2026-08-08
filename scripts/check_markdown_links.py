@@ -102,6 +102,8 @@ def resolve_local_link(source: Path, target: str, repo_root: Path) -> Path:
     path_text = re.sub(r"\\([ ()])", r"\1", path_text)
 
     windows_absolute = bool(re.match(r"^[A-Za-z]:[\\/]", path_text))
+    if windows_absolute and not is_file_uri:
+        raise ValueError(f"link is machine-specific, not repository-relative: {target}")
     if (
         is_file_uri
         or windows_absolute

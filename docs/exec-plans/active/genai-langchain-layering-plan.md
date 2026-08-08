@@ -13,39 +13,39 @@ This is a handoff plan for a follow-up implementation/refactor agent. It is deci
 
 ### Direct `google-genai` today
 
-- [evaluation/model_discovery.py](D:/flutterserver/pdftopng/evaluation/model_discovery.py)
+- [evaluation/model_discovery.py](../../../evaluation/model_discovery.py)
   - Uses `genai.Client`
   - Performs model listing / capability filtering
   - Is control-plane code, not response-generation runtime
 
 ### `langchain-google-genai` today
 
-- [core/llm_factory.py](D:/flutterserver/pdftopng/core/llm_factory.py)
+- [core/llm_factory.py](../../../core/llm_factory.py)
   - Central `ChatGoogleGenerativeAI` factory
   - Purpose-specific config, runtime override, model-family-aware thinking controls
-- [data_base/vector_store_manager.py](D:/flutterserver/pdftopng/data_base/vector_store_manager.py)
+- [data_base/vector_store_manager.py](../../../data_base/vector_store_manager.py)
   - Central `GoogleGenerativeAIEmbeddings` initialization and usage
 - Runtime call sites that already depend on LangChain message/document abstractions:
-  - [data_base/RAG_QA_service.py](D:/flutterserver/pdftopng/data_base/RAG_QA_service.py)
-  - [data_base/query_transformer.py](D:/flutterserver/pdftopng/data_base/query_transformer.py)
-  - [data_base/context_enricher.py](D:/flutterserver/pdftopng/data_base/context_enricher.py)
-  - [data_base/proposition_chunker.py](D:/flutterserver/pdftopng/data_base/proposition_chunker.py)
-  - [pdfserviceMD/translation_chunker.py](D:/flutterserver/pdftopng/pdfserviceMD/translation_chunker.py)
-  - [image_service/translation_service.py](D:/flutterserver/pdftopng/image_service/translation_service.py)
-  - [multimodal_rag/image_summarizer.py](D:/flutterserver/pdftopng/multimodal_rag/image_summarizer.py)
-  - [graph_rag/extractor.py](D:/flutterserver/pdftopng/graph_rag/extractor.py)
-  - [graph_rag/community_builder.py](D:/flutterserver/pdftopng/graph_rag/community_builder.py)
-  - [graph_rag/local_search.py](D:/flutterserver/pdftopng/graph_rag/local_search.py)
-  - [graph_rag/global_search.py](D:/flutterserver/pdftopng/graph_rag/global_search.py)
-  - [graph_rag/generic_mode.py](D:/flutterserver/pdftopng/graph_rag/generic_mode.py)
-  - [agents/planner.py](D:/flutterserver/pdftopng/agents/planner.py)
-  - [agents/evaluator.py](D:/flutterserver/pdftopng/agents/evaluator.py)
-  - [agents/synthesizer.py](D:/flutterserver/pdftopng/agents/synthesizer.py)
-  - [core/summary_service.py](D:/flutterserver/pdftopng/core/summary_service.py)
+  - [data_base/RAG_QA_service.py](../../../data_base/RAG_QA_service.py)
+  - [data_base/query_transformer.py](../../../data_base/query_transformer.py)
+  - [data_base/context_enricher.py](../../../data_base/context_enricher.py)
+  - [data_base/proposition_chunker.py](../../../data_base/proposition_chunker.py)
+  - [pdfserviceMD/translation_chunker.py](../../../pdfserviceMD/translation_chunker.py)
+  - [image_service/translation_service.py](../../../image_service/translation_service.py)
+  - [multimodal_rag/image_summarizer.py](../../../multimodal_rag/image_summarizer.py)
+  - [graph_rag/extractor.py](../../../graph_rag/extractor.py)
+  - [graph_rag/community_builder.py](../../../graph_rag/community_builder.py)
+  - [graph_rag/local_search.py](../../../graph_rag/local_search.py)
+  - [graph_rag/global_search.py](../../../graph_rag/global_search.py)
+  - [graph_rag/generic_mode.py](../../../graph_rag/generic_mode.py)
+  - [agents/planner.py](../../../agents/planner.py)
+  - [agents/evaluator.py](../../../agents/evaluator.py)
+  - [agents/synthesizer.py](../../../agents/synthesizer.py)
+  - [core/summary_service.py](../../../core/summary_service.py)
 
 ### Provider boundary today
 
-- [core/providers.py](D:/flutterserver/pdftopng/core/providers.py) is the runtime abstraction boundary
+- [core/providers.py](../../../core/providers.py) is the runtime abstraction boundary
   - fake-vs-real provider switching
   - test safety
   - current "real" provider delegates to `core.llm_factory.get_llm(...)`
@@ -69,7 +69,7 @@ Characteristics:
 
 Modules that should be direct `google-genai`:
 
-- [evaluation/model_discovery.py](D:/flutterserver/pdftopng/evaluation/model_discovery.py)
+- [evaluation/model_discovery.py](../../../evaluation/model_discovery.py)
 - any future feature such as:
   - model capability registry
   - account quota / model-availability probing
@@ -88,7 +88,7 @@ Characteristics:
 
 Modules that should stay on `langchain-google-genai`:
 
-- [core/llm_factory.py](D:/flutterserver/pdftopng/core/llm_factory.py)
+- [core/llm_factory.py](../../../core/llm_factory.py)
 - all `core.providers.get_llm(...)` consumers
 - all GraphRAG LLM execution modules
 - all agent/planner/evaluator/synthesizer flows
@@ -106,24 +106,24 @@ Characteristics:
 
 Modules that should stay on `langchain-google-genai`:
 
-- [data_base/vector_store_manager.py](D:/flutterserver/pdftopng/data_base/vector_store_manager.py)
-- [graph_rag/entity_resolver.py](D:/flutterserver/pdftopng/graph_rag/entity_resolver.py) via `get_embeddings()`
+- [data_base/vector_store_manager.py](../../../data_base/vector_store_manager.py)
+- [graph_rag/entity_resolver.py](../../../graph_rag/entity_resolver.py) via `get_embeddings()`
 
 ## Concrete Module Decisions
 
 ### Keep direct `google-genai`
 
-- [evaluation/model_discovery.py](D:/flutterserver/pdftopng/evaluation/model_discovery.py)
+- [evaluation/model_discovery.py](../../../evaluation/model_discovery.py)
   - Keep as the canonical direct SDK integration
   - Allowed to use `genai.Client`, raw pager objects, and `google.genai.types`
 
 ### Keep `langchain-google-genai`
 
-- [core/llm_factory.py](D:/flutterserver/pdftopng/core/llm_factory.py)
+- [core/llm_factory.py](../../../core/llm_factory.py)
   - Remains the only place that instantiates `ChatGoogleGenerativeAI`
-- [core/providers.py](D:/flutterserver/pdftopng/core/providers.py)
+- [core/providers.py](../../../core/providers.py)
   - Remains the only runtime provider entrypoint used by business logic
-- [data_base/vector_store_manager.py](D:/flutterserver/pdftopng/data_base/vector_store_manager.py)
+- [data_base/vector_store_manager.py](../../../data_base/vector_store_manager.py)
   - Remains the only place that instantiates `GoogleGenerativeAIEmbeddings`
 - All current `get_llm(...)` call sites
   - Do not bypass provider registry
@@ -149,7 +149,7 @@ No follow-up agent should replace downstream imports of `get_llm(...)` with dire
 
 Required rule:
 
-- application/runtime code imports `get_llm` from [core/providers.py](D:/flutterserver/pdftopng/core/providers.py)
+- application/runtime code imports `get_llm` from [core/providers.py](../../../core/providers.py)
 - only provider/factory internals know whether the real implementation is LangChain-backed
 
 ### 2. Introduce a small direct-SDK service layer if control-plane work grows
@@ -166,7 +166,7 @@ If more direct `google-genai` features are added, create:
   - capability normalization
   - future feature probing
 
-Then move [evaluation/model_discovery.py](D:/flutterserver/pdftopng/evaluation/model_discovery.py) to depend on that helper instead of owning client lifecycle itself.
+Then move [evaluation/model_discovery.py](../../../evaluation/model_discovery.py) to depend on that helper instead of owning client lifecycle itself.
 
 ### 3. Keep embedding ownership centralized
 
@@ -174,7 +174,7 @@ Do not let multiple modules instantiate embeddings independently.
 
 Required rule:
 
-- [data_base/vector_store_manager.py](D:/flutterserver/pdftopng/data_base/vector_store_manager.py) remains the canonical embedding owner
+- [data_base/vector_store_manager.py](../../../data_base/vector_store_manager.py) remains the canonical embedding owner
 - other modules obtain embeddings through `get_embeddings()`
 
 ## Implementation Plan for Another Agent
@@ -182,10 +182,10 @@ Required rule:
 ### Phase 1: Normalize boundaries without behavior change
 
 1. Add a short architecture note to:
-   - [core/providers.py](D:/flutterserver/pdftopng/core/providers.py)
-   - [core/llm_factory.py](D:/flutterserver/pdftopng/core/llm_factory.py)
-   - [data_base/vector_store_manager.py](D:/flutterserver/pdftopng/data_base/vector_store_manager.py)
-   - [evaluation/model_discovery.py](D:/flutterserver/pdftopng/evaluation/model_discovery.py)
+   - [core/providers.py](../../../core/providers.py)
+   - [core/llm_factory.py](../../../core/llm_factory.py)
+   - [data_base/vector_store_manager.py](../../../data_base/vector_store_manager.py)
+   - [evaluation/model_discovery.py](../../../evaluation/model_discovery.py)
 2. Document the boundary:
    - direct `google-genai` = control plane
    - `langchain-google-genai` = runtime generation + embeddings
@@ -198,7 +198,7 @@ Required rule:
    - API key resolution
    - client caching
    - timeout / `HttpOptions`
-   out of [evaluation/model_discovery.py](D:/flutterserver/pdftopng/evaluation/model_discovery.py)
+   out of [evaluation/model_discovery.py](../../../evaluation/model_discovery.py)
 3. Keep `evaluation/model_discovery.py` focused on model normalization only
 
 ### Phase 3: Add enforcement tests
@@ -213,8 +213,8 @@ Add tests that assert:
 
 Another agent should **not** do these in this task:
 
-- replace [core/llm_factory.py](D:/flutterserver/pdftopng/core/llm_factory.py) with raw `google-genai`
-- replace [data_base/vector_store_manager.py](D:/flutterserver/pdftopng/data_base/vector_store_manager.py) embeddings with direct SDK embeddings
+- replace [core/llm_factory.py](../../../core/llm_factory.py) with raw `google-genai`
+- replace [data_base/vector_store_manager.py](../../../data_base/vector_store_manager.py) embeddings with direct SDK embeddings
 - rewrite GraphRAG extraction/search flows away from LangChain
 - rewrite prompt/message code from `HumanMessage` / LangChain message abstractions to raw SDK request payloads
 
@@ -223,8 +223,8 @@ Those are separate architecture migrations.
 ## Acceptance Criteria
 
 - Direct `google-genai` usage exists only in approved control-plane modules.
-- All runtime LLM consumers still enter through [core/providers.py](D:/flutterserver/pdftopng/core/providers.py).
-- All embedding creation still enters through [data_base/vector_store_manager.py](D:/flutterserver/pdftopng/data_base/vector_store_manager.py).
+- All runtime LLM consumers still enter through [core/providers.py](../../../core/providers.py).
+- All embedding creation still enters through [data_base/vector_store_manager.py](../../../data_base/vector_store_manager.py).
 - No module mixes direct `genai.Client` creation with runtime `get_llm(...)` usage.
 - Existing backend tests remain green, especially:
   - provider-registry tests
