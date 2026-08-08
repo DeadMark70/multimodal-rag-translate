@@ -29,6 +29,22 @@ def test_extract_local_links_skips_fences_images_external_and_bare_anchors():
     assert extract_local_links(markdown) == ["../guide.md", "/README.md#usage"]
 
 
+def test_four_backtick_fence_is_not_closed_by_three_backticks():
+    markdown = "\n".join(
+        [
+            "",
+            "````markdown",
+            "[inside fence](missing.md)",
+            "```",
+            "[still inside fence](also-missing.md)",
+            "````   ",
+            "[visible](guide.md)",
+        ]
+    )
+
+    assert extract_local_links(markdown) == ["guide.md"]
+
+
 def test_resolve_local_link_supports_relative_root_anchor_and_escaped_spaces(
     tmp_path: Path,
 ):
@@ -109,3 +125,8 @@ def test_execution_plan_lifecycle_locations_and_indexes_are_consistent():
     }
     for index_path, entry in expected_entries.items():
         assert index_path.read_text(encoding="utf-8").count(f"`{entry}`") == 1
+
+    root_index_links = extract_local_links(
+        (root / "docs" / "exec-plans" / "index.md").read_text(encoding="utf-8")
+    )
+    assert "references/index.md" in root_index_links

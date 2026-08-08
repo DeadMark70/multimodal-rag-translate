@@ -24,7 +24,9 @@ _SKIPPED_DIRECTORIES = {
 _LINK_PATTERN = re.compile(
     r"(?<!!)\[[^\]]*\]\(\s*(?:<(?P<angle>[^>]+)>|(?P<plain>(?:\\.|[^)\s])+))"
 )
-_FENCE_PATTERN = re.compile(r"^\s*(`{3,}|~{3,})")
+_FENCE_PATTERN = re.compile(
+    r"^[ \t]*(?P<fence>`{3,}|~{3,})(?P<trailing>[^\r\n]*)"
+)
 _EXTERNAL_PREFIXES = ("http://", "https://", "mailto:")
 
 
@@ -49,17 +51,25 @@ def iter_markdown_files(root: Path) -> Iterator[Path]:
 
 def _without_fenced_code(markdown: str) -> str:
     visible: list[str] = []
-    fence_character: str | None = None
+    active_fence: tuple[str, int] | None = None
     for line in markdown.splitlines(keepends=True):
         match = _FENCE_PATTERN.match(line)
-        if match:
-            marker = match.group(1)[0]
-            if fence_character is None:
-                fence_character = marker
-            elif marker == fence_character:
-                fence_character = None
+        if active_fence is None and match:
+            marker = match.group("fence")
+            active_fence = (marker[0], len(marker))
             continue
-        if fence_character is None:
+        if active_fence is not None:
+            if match:
+                marker = match.group("fence")
+                fence_character, minimum_length = active_fence
+                if (
+                    marker[0] == fence_character
+                    and len(marker) >= minimum_length
+                    and not match.group("trailing").strip()
+                ):
+                    active_fence = None
+            continue
+        if active_fence is None:
             visible.append(line)
     return "".join(visible)
 
