@@ -13,6 +13,7 @@ from typing import Any
 
 
 PRODUCTION_ROOTS = (
+    "agents",
     "core",
     "data_base",
     "evaluation",

@@ -26,8 +26,8 @@ jobs:
       - name: Compile deployment source
         run: >-
           python -m compileall -q
-          core data_base evaluation graph_rag pdfserviceMD multimodal_rag
-          conversations stats image_service
+          agents core data_base evaluation graph_rag pdfserviceMD multimodal_rag
+          conversations stats image_service main.py supabase_client.py
 
   quality-and-tests:
     runs-on: ubuntu-latest

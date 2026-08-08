@@ -74,6 +74,27 @@ def test_workflow_has_read_only_timed_python_jobs_with_dependency_caching():
     }
 
 
+def test_deployment_compile_covers_all_production_python_entrypoints():
+    deployment = _workflow()["jobs"]["deployment-compile"]
+    command = str(_step(deployment, "Compile deployment source")["run"]).split()
+
+    assert command[:4] == ["python", "-m", "compileall", "-q"]
+    assert set(command[4:]) == {
+        "agents",
+        "conversations",
+        "core",
+        "data_base",
+        "evaluation",
+        "graph_rag",
+        "image_service",
+        "main.py",
+        "multimodal_rag",
+        "pdfserviceMD",
+        "stats",
+        "supabase_client.py",
+    }
+
+
 def test_quality_workflow_runs_complete_fake_provider_gate_contract():
     workflow = _workflow()
     job = workflow["jobs"]["quality-and-tests"]

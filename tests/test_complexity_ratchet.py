@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from scripts.check_complexity_ratchet import (
+    PRODUCTION_ROOTS,
     compare_complexity,
     parse_ruff_findings,
 )
@@ -14,6 +15,10 @@ def _finding(filename: str, function: str, score: int) -> dict:
         "location": {"row": 10, "column": 1},
         "message": f"`{function}` is too complex ({score} > 10)",
     }
+
+
+def test_production_roots_include_agent_runtime():
+    assert "agents" in PRODUCTION_ROOTS
 
 
 def test_parse_ruff_findings_normalizes_paths_and_function_names(tmp_path: Path):
