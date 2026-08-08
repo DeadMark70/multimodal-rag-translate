@@ -90,7 +90,8 @@ def resolve_local_link(source: Path, target: str, repo_root: Path) -> Path:
     """Resolve a link target and reject any path outside the repository."""
     root = repo_root.resolve()
     path_text = target.split("#", 1)[0]
-    if path_text.lower().startswith("file:"):
+    is_file_uri = path_text.lower().startswith("file:")
+    if is_file_uri:
         parsed = urlsplit(path_text)
         if parsed.netloc not in {"", "localhost"}:
             raise ValueError(f"link escapes repository: {target}")
@@ -101,7 +102,12 @@ def resolve_local_link(source: Path, target: str, repo_root: Path) -> Path:
     path_text = re.sub(r"\\([ ()])", r"\1", path_text)
 
     windows_absolute = bool(re.match(r"^[A-Za-z]:[\\/]", path_text))
-    if windows_absolute or path_text.startswith("//") or path_text.startswith("\\\\"):
+    if (
+        is_file_uri
+        or windows_absolute
+        or path_text.startswith("//")
+        or path_text.startswith("\\\\")
+    ):
         candidate = Path(path_text).resolve()
     elif path_text.startswith("/"):
         candidate = (root / path_text.lstrip("/\\")).resolve()

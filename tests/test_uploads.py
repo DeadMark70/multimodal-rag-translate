@@ -51,4 +51,4 @@ def test_resolve_document_user_folder_uses_fallback_layout() -> None:
         original_path=None,
     )
 
-    assert str(resolved).endswith("uploads\\user-1\\doc-1")
+    assert resolved.parts[-3:] == ("uploads", "user-1", "doc-1")

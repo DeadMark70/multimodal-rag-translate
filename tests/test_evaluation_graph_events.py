@@ -1,7 +1,5 @@
-import os
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
 
@@ -133,8 +131,9 @@ def test_graph_evidence_item_schema_tracks_context_lifecycle() -> None:
 @pytest.mark.asyncio
 async def test_graph_observability_repositories_round_trip_graph_rows(
     monkeypatch,
+    tmp_path: Path,
 ) -> None:
-    db_path = Path(os.environ["TEMP"]) / f"graph-events-{uuid4().hex}.sqlite3"
+    db_path = tmp_path / "graph-events.sqlite3"
     try:
         monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", db_path)
         await _seed_campaign("campaign-graph")
@@ -210,8 +209,9 @@ async def test_graph_observability_repositories_round_trip_graph_rows(
 @pytest.mark.asyncio
 async def test_graph_evidence_items_keep_history_across_events_with_shared_source_ids(
     monkeypatch,
+    tmp_path: Path,
 ) -> None:
-    db_path = Path(os.environ["TEMP"]) / f"graph-evidence-history-{uuid4().hex}.sqlite3"
+    db_path = tmp_path / "graph-evidence-history.sqlite3"
     try:
         monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", db_path)
         await _seed_campaign("campaign-graph-history")

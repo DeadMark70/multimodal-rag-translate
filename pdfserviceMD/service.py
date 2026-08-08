@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import ntpath
 import os
 import shutil
 import time
@@ -422,7 +423,7 @@ async def get_document_file_info(
         and translated_path
         and normalized_path == os.path.normpath(translated_path)
     ):
-        download_name = os.path.basename(normalized_path)
+        download_name = ntpath.basename(normalized_path)
     else:
         download_name = row.get("file_name", "document.pdf")
 
