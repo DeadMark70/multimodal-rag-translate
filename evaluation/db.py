@@ -1750,6 +1750,8 @@ class CampaignRepository:
         campaign_id: str,
         phase: Optional[str] = None,
         completed_units: Optional[int] = None,
+        evaluation_completed_units: Optional[int] = None,
+        evaluation_total_units: Optional[int] = None,
     ) -> CampaignStatus:
         now = _utc_now_iso()
         return await self._update_campaign(
@@ -1761,6 +1763,8 @@ class CampaignRepository:
             current_question_id=None,
             current_mode=None,
             completed_units=completed_units,
+            evaluation_completed_units=evaluation_completed_units,
+            evaluation_total_units=evaluation_total_units,
         )
 
     async def derive_execution_state(
@@ -1953,7 +1957,11 @@ class CampaignRepository:
                 phase="evaluation",
             )
         return await self.mark_completed(
-            user_id=user_id, campaign_id=campaign_id, phase="evaluation"
+            user_id=user_id,
+            campaign_id=campaign_id,
+            phase="evaluation",
+            evaluation_completed_units=result_succeeded,
+            evaluation_total_units=result_total,
         )
 
     async def mark_failed(

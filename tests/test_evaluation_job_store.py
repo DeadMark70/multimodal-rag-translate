@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import json
@@ -573,6 +574,87 @@ async def test_derive_ragas_state_preserves_terminal_campaign_cancellation(
     )
 
     assert derived.status is CampaignLifecycleStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_terminal_ragas_derivation_repairs_a_stale_progress_write(
+    store, fixed_now
+) -> None:  # noqa: ANN001
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            "UPDATE campaigns SET config_json = ? WHERE id = ?",
+            (
+                json.dumps(
+                    {
+                        "test_case_ids": ["Q1"],
+                        "modes": ["naive"],
+                        "model_config": {
+                            "id": "cfg-1",
+                            "name": "test",
+                            "model_name": "test-model",
+                        },
+                    }
+                ),
+                "cmp-1",
+            ),
+        )
+        await connection.commit()
+    await store.create_job_with_items(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        job_type="initial",
+        selection={},
+        config_snapshot={},
+        items=[
+            WorkItemSpec(
+                work_type="ragas_metric",
+                logical_key="ragas:result-1:faithfulness:signature-v1",
+                input_snapshot={
+                    "campaign_result_id": "result-1",
+                    "metric_name": "faithfulness",
+                },
+            )
+        ],
+        ragas_evaluation_total_units=1,
+    )
+    claim = (
+        await store.claim_ready_items(
+            limit=1, now=fixed_now, work_type="ragas_metric"
+        )
+    )[0]
+    repository = CampaignRepository()
+    stale_update_ready = asyncio.Event()
+    allow_stale_update = asyncio.Event()
+    original_update = repository._update_campaign
+
+    async def delay_stale_progress(**kwargs):  # noqa: ANN003, ANN202
+        if (
+            kwargs.get("status") is CampaignLifecycleStatus.EVALUATING
+            and kwargs.get("evaluation_completed_units") == 0
+        ):
+            stale_update_ready.set()
+            await allow_stale_update.wait()
+        return await original_update(**kwargs)
+
+    repository._update_campaign = delay_stale_progress
+    stale_derivation = asyncio.create_task(
+        repository.derive_ragas_state(user_id="user-a", campaign_id="cmp-1")
+    )
+    await asyncio.wait_for(stale_update_ready.wait(), timeout=1)
+    await asyncio.wait_for(
+        store.complete_ragas_attempt(claim, RagasAttemptOutput(scores=[])), timeout=1
+    )
+    allow_stale_update.set()
+    await stale_derivation
+
+    terminal = await repository.derive_ragas_state(
+        user_id="user-a", campaign_id="cmp-1"
+    )
+
+    assert terminal.status is CampaignLifecycleStatus.COMPLETED
+    assert terminal.phase == "evaluation"
+    assert terminal.evaluation_completed_units == 1
+    assert terminal.evaluation_total_units == 1
 
 
 @pytest.mark.asyncio
