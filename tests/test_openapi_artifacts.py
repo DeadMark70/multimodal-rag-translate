@@ -147,3 +147,49 @@ def test_script_entrypoint_can_import_repository_main():
     assert "No module named 'main'" not in result.stderr
     assert "GOOGLE_API_KEY: Loaded" not in result.stderr
     assert "HF_TOKEN: Loaded" not in result.stderr
+
+
+def test_runtime_schema_loader_overrides_unsafe_parent_environment():
+    env = {
+        **os.environ,
+        "TEST_MODE": "false",
+        "USE_FAKE_PROVIDERS": "false",
+        "CI_BLOCK_EXTERNAL_NETWORK": "false",
+    }
+    env.pop("GOOGLE_API_KEY", None)
+    env.pop("HF_TOKEN", None)
+    code = """
+import json
+import os
+from scripts.sync_openapi_artifacts import _load_runtime_schema
+
+_load_runtime_schema()
+from core.providers import get_llm_provider_name
+
+print("SAFE_ENV=" + json.dumps({
+    "test_mode": os.environ["TEST_MODE"],
+    "fake_providers": os.environ["USE_FAKE_PROVIDERS"],
+    "network_block": os.environ["CI_BLOCK_EXTERNAL_NETWORK"],
+    "provider": get_llm_provider_name(),
+}, sort_keys=True))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    safe_line = next(
+        line for line in result.stdout.splitlines() if line.startswith("SAFE_ENV=")
+    )
+    assert json.loads(safe_line.removeprefix("SAFE_ENV=")) == {
+        "fake_providers": "true",
+        "network_block": "true",
+        "provider": "fake",
+        "test_mode": "true",
+    }

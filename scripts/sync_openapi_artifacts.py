@@ -99,9 +99,9 @@ def build_outputs(schema: dict[str, Any]) -> dict[str, bytes]:
 
 
 def _load_runtime_schema() -> dict[str, Any]:
-    os.environ.setdefault("TEST_MODE", "true")
-    os.environ.setdefault("USE_FAKE_PROVIDERS", "true")
-    os.environ.setdefault("CI_BLOCK_EXTERNAL_NETWORK", "true")
+    os.environ["TEST_MODE"] = "true"
+    os.environ["USE_FAKE_PROVIDERS"] = "true"
+    os.environ["CI_BLOCK_EXTERNAL_NETWORK"] = "true"
     os.environ["PYTHON_DOTENV_DISABLED"] = "1"
     repo_root = str(REPO_ROOT)
     if repo_root not in sys.path:
