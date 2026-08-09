@@ -29,7 +29,7 @@
     "evaluation/analytics.py::export_campaign": 19,
     "evaluation/analytics.py::reconcile_official_tokens": 23,
     "evaluation/benchmark_release.py::validate_benchmark_runs": 19,
-    "evaluation/campaign_engine.py::_record_unit_research_observability": 19,
+    "evaluation/campaign_execution.py::_record_unit_research_observability": 19,
     "evaluation/campaign_engine.py::create_rerun": 17,
     "evaluation/db.py::_apply_migrations": 21,
     "evaluation/db.py::_update_campaign": 15,

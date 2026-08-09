@@ -17,6 +17,7 @@ import pytest_asyncio
 from langchain_core.documents import Document
 
 import evaluation.db as evaluation_db
+import evaluation.execution_worker as execution_worker
 from core.llm_usage_callback import emit_direct_usage
 from core.llm_usage_context import llm_accounting_phase
 from data_base.agentic_v9.budget_controller import RunBudgetController
@@ -53,6 +54,14 @@ TEST_PRICE_SNAPSHOT = {
         }
     },
 }
+
+
+def test_execution_worker_uses_campaign_execution_contract_owner() -> None:
+    assert execution_worker.CampaignUnit.__module__ == "evaluation.campaign_execution"
+    assert (
+        execution_worker.ExecutedCampaignUnit.__module__
+        == "evaluation.campaign_execution"
+    )
 
 
 @pytest_asyncio.fixture
