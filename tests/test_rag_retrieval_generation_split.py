@@ -14,6 +14,15 @@ from data_base.RAG_QA_service import RAGResult
 from data_base.rag_pipeline_schemas import GeneratedRagAnswer, RagRetrievalResult
 
 
+def test_pipeline_schemas_own_public_result_contract_and_facade_reexports_it() -> None:
+    schemas = import_module("data_base.rag_pipeline_schemas")
+    facade = import_module("data_base.RAG_QA_service")
+
+    assert facade.RAGResult is schemas.RAGResult
+    assert facade.ProgressCallback is schemas.ProgressCallback
+    assert schemas.RAGResult.__module__ == "data_base.rag_pipeline_schemas"
+
+
 def test_graph_runtime_owns_graph_contract_and_facade_reexports_it() -> None:
     assert find_spec("data_base.rag_graph_runtime") is not None
 

@@ -5,12 +5,26 @@ artifacts.  ``RAGResult`` remains the public legacy projection until the wrapper
 is extracted in a later refactor step.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional
 
 from langchain_core.documents import Document
+
+
+class RAGResult(NamedTuple):
+    """Result from RAG question answering with optional documents."""
+
+    answer: str
+    source_doc_ids: List[str]
+    documents: List[Document]
+    usage: Dict[str, int] = {}
+    thought_process: Optional[str] = None
+    tool_calls: List[dict] = []
+    agent_trace: Optional[dict] = None
+    visual_verification_meta: Optional[Dict[str, Any]] = None
+
+
+ProgressCallback = Callable[[str, Optional[Dict[str, Any]]], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -41,4 +55,9 @@ class GeneratedRagAnswer:
     visual_verification_meta: dict[str, Any] | None = None
 
 
-__all__ = ["GeneratedRagAnswer", "RagRetrievalResult"]
+__all__ = [
+    "GeneratedRagAnswer",
+    "ProgressCallback",
+    "RAGResult",
+    "RagRetrievalResult",
+]

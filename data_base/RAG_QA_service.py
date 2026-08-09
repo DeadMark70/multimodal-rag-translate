@@ -14,12 +14,9 @@ from typing import (
     Any,
     Optional,
     Tuple,
-    NamedTuple,
     Union,
     Dict,
     TYPE_CHECKING,
-    Callable,
-    Awaitable,
 )
 
 # Type checking imports (avoid circular imports)
@@ -82,6 +79,10 @@ from data_base.rag_crag import (
     run_corrective_retrieval,
 )
 from data_base.rag_retrieval import retrieve_hybrid_documents
+from data_base.rag_pipeline_schemas import (
+    ProgressCallback as ProgressCallback,
+    RAGResult as RAGResult,
+)
 from data_base.query_transformer import (
     transform_query_with_hyde,
     transform_query_multi,
@@ -99,23 +100,6 @@ logger = logging.getLogger(__name__)
 
 # Flag to track initialization
 _llm_initialized = False
-
-# Visual verification Re-Act loop settings
-class RAGResult(NamedTuple):
-    """Result from RAG question answering with optional documents."""
-
-    answer: str
-    source_doc_ids: List[str]
-    documents: List[Document]
-    usage: Dict[str, int] = {}
-    thought_process: Optional[str] = None
-    tool_calls: List[dict] = []
-    agent_trace: Optional[dict] = None
-    visual_verification_meta: Optional[Dict[str, Any]] = None
-
-
-ProgressCallback = Callable[[str, Optional[Dict[str, Any]]], Awaitable[None]]
-
 
 async def _build_crag_queries(
     question: str,
