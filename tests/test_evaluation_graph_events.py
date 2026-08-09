@@ -7,7 +7,7 @@ from data_base.rag_graph_runtime import (
     _build_graph_evidence_items,
     _filter_graph_query_hints,
 )
-from evaluation import campaign_engine
+from evaluation import campaign_execution
 from evaluation import db as evaluation_db
 from evaluation.observability_storage import (
     EvaluationGraphEventRepository,
@@ -22,7 +22,7 @@ def _now() -> datetime:
 
 
 def test_optional_graph_not_triggered_is_a_skipped_trace_outcome() -> None:
-    status, error = campaign_engine._graph_trace_outcome(
+    status, error = campaign_execution._graph_trace_outcome(
         {
             "policy": "locator_fallback",
             "state": "not_triggered",
@@ -36,7 +36,7 @@ def test_optional_graph_not_triggered_is_a_skipped_trace_outcome() -> None:
 
 
 def test_required_graph_not_satisfied_remains_a_partial_trace_outcome() -> None:
-    status, error = campaign_engine._graph_trace_outcome(
+    status, error = campaign_execution._graph_trace_outcome(
         {
             "policy": "required_locator",
             "state": "required_but_not_satisfied",
