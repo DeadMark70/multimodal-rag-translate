@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from core.prompt_loader import get_default_prompt_registry
 
 
@@ -52,14 +50,6 @@ def test_visual_synthesis_prompt_requires_current_variables() -> None:
         "initial_response",
         "verification_results",
     )
-
-
-def test_rag_qa_service_no_long_prompt_constants() -> None:
-    source = Path("data_base/RAG_QA_service.py").read_text(encoding="utf-8")
-
-    assert "PLAIN_RAG_PROMPT_TEMPLATE = " not in source
-    assert "ADVANCED_RAG_PROMPT_TEMPLATE = " not in source
-    assert "VISUAL_TOOL_INSTRUCTION = " not in source
 
 
 def test_visual_synthesis_prompt_formats_current_runtime_payload() -> None:

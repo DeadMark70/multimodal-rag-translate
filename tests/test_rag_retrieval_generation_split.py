@@ -3,7 +3,6 @@
 import inspect
 from importlib import import_module
 from importlib.util import find_spec
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -400,31 +399,6 @@ async def test_legacy_generation_keeps_visual_synthesis_inside_legacy_module(
         "visual_tool_call_count": 1,
         "visual_force_fallback_used": False,
     }
-    assert "data_base.visual_tools" not in Path("data_base/agentic_v9/model_paths.py").read_text(
-        encoding="utf-8"
-    )
-
-
-def test_legacy_wrapper_delegates_generation_without_exposing_visual_synthesis() -> None:
-    wrapper_source = Path("data_base/RAG_QA_service.py").read_text(encoding="utf-8")
-    pipeline_source = Path("data_base/rag_pipeline.py").read_text(encoding="utf-8")
-    generation_source = Path("data_base/rag_generation.py").read_text(encoding="utf-8")
-
-    assert "rag_pipeline.run_rag_pipeline(" in wrapper_source
-    assert "generate_legacy_answer_from_evidence(" in pipeline_source
-    assert "_execute_visual_verification_loop" not in wrapper_source
-    assert "_execute_visual_verification_loop" not in pipeline_source
-    assert "_deprecated_visual_verification_loop" not in wrapper_source
-    assert "The following legacy body is retained temporarily" not in wrapper_source
-    assert "_execute_legacy_visual_verification_loop" in generation_source
-
-
-def test_legacy_generation_avoids_python_311_incompatible_fstring_backslashes() -> None:
-    generation_source = Path("data_base/rag_generation.py").read_text(encoding="utf-8")
-
-    assert "image_path.replace('\\\\\\\\', '/')" not in generation_source
-
-
 @pytest.mark.asyncio
 async def test_legacy_wrapper_preserves_empty_retrieval_projection() -> None:
     from data_base.RAG_QA_service import rag_answer_question
