@@ -193,6 +193,19 @@ async def test_completed_run_persists_snapshots_and_root_observability_span(
         mode="naive",
         source_docs=["doc-a", "doc-b"],
         model_config=model_config,
+        test_case_overrides={
+            "question": "What changed in the system?",
+            "ground_truth": "The system persisted snapshots.",
+            "ground_truth_short": "Snapshots persisted",
+            "key_points": ["point-1", "point-2"],
+            "ragas_focus": ["answer_correctness", "faithfulness"],
+            "category": "regression",
+            "difficulty": "medium",
+            "question_version": "v2.1.0",
+            "required_modalities": ["text", "table"],
+            "atomic_facts": [{"atomic_fact_id": "Q1-F1", "text": "fact"}],
+            "expected_evidence": [{"evidence_id": "Q1-E1", "doc_id": "doc-a"}],
+        },
     )
     worker = DatasetExecutionWorker(store=store, runner=runner)
     await worker.execute(claim)
@@ -210,7 +223,7 @@ async def test_completed_run_persists_snapshots_and_root_observability_span(
     assert len(results) == 1
     result = results[0]
     assert result.status == CampaignResultStatus.COMPLETED
-    assert result.question_version is None
+    assert result.question_version == "v2.1.0"
     assert result.request_id
     assert result.started_at is not None
     assert result.completed_at is not None
@@ -220,17 +233,17 @@ async def test_completed_run_persists_snapshots_and_root_observability_span(
     assert result.total_tokens == 77
     assert result.question_snapshot == {
         "id": "Q1",
-        "question": "What is the answer?",
-        "ground_truth": "42",
-        "ground_truth_short": None,
-        "key_points": [],
-        "ragas_focus": [],
-        "category": None,
-        "difficulty": None,
-        "question_version": None,
-        "required_modalities": [],
-        "atomic_facts": [],
-        "expected_evidence": [],
+        "question": "What changed in the system?",
+        "ground_truth": "The system persisted snapshots.",
+        "ground_truth_short": "Snapshots persisted",
+        "key_points": ["point-1", "point-2"],
+        "ragas_focus": ["answer_correctness", "faithfulness"],
+        "category": "regression",
+        "difficulty": "medium",
+        "question_version": "v2.1.0",
+        "required_modalities": ["text", "table"],
+        "atomic_facts": [{"atomic_fact_id": "Q1-F1", "text": "fact"}],
+        "expected_evidence": [{"evidence_id": "Q1-E1", "doc_id": "doc-a"}],
         "source_docs": ["doc-a", "doc-b"],
     }
     assert result.model_config_snapshot == model_config

@@ -25,7 +25,7 @@ from data_base.agentic_v9.budgeted_llm import invoke_budgeted_llm
 from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.execution_worker import DatasetExecutionWorker
 from evaluation.error_policy import classify_evaluation_error
-from evaluation.analytics import EvaluationAnalyticsService
+from evaluation.analytics import EvaluationAnalyticsService, reconcile_official_tokens
 from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
 from evaluation.job_schemas import (
     ClaimedEvaluationWork,
@@ -854,6 +854,22 @@ async def test_v9_durable_worker_persists_measured_provider_phase(
     assert [(call.phase, call.purpose, call.total_tokens) for call in calls] == [
         ("final_answer", "agentic_v9_final_answer", 10)
     ]
+    call = calls[0]
+    assert call.reservation_id
+    assert call.provider_attempt == 1
+    assert call.payload["official_total_tokens"] == 10
+    reconciliation = reconcile_official_tokens(
+        runtime_total_tokens=result.total_tokens,
+        calls=calls,
+        observability_partial_reasons=result.derived_metrics[
+            "observability_partial_reasons"
+        ],
+    )
+    assert result.total_tokens == 10
+    assert reconciliation.provider_total_tokens == 10
+    assert reconciliation.status == "complete"
+    assert reconciliation.by_phase == {"final_answer": 10}
+    assert "unknown" not in reconciliation.by_phase
 
 
 @pytest.mark.asyncio
