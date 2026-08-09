@@ -216,7 +216,6 @@ These are configured in `core/llm_factory.py` and are not currently exposed as e
 - **評估維度**: Accuracy (50%), Completeness (30%), Clarity (20%)
 - **Smart Retry**: 使用 `suggestion` 欄位驅動查詢精煉
 - **Pure LLM 模式**: `evaluate_pure_llm()` 支援無文檔評估
-- **Arena 腳本**: `tests/run_arena.py` RAG vs Pure LLM A/B 測試
 - **閾值**: Accuracy < 6 觸發重試
 
 ## Phase 15: Agentic RAG Precision & Conciseness
