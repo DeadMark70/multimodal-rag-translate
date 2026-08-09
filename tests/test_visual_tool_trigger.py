@@ -1,19 +1,23 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
-from data_base.RAG_QA_service import rag_answer_question, _parse_visual_tool_request
+
+from data_base.rag_generation import parse_legacy_visual_tool_request
+from data_base.RAG_QA_service import rag_answer_question
+
 
 def test_visual_tool_parsing():
     """Verify that the JSON instruction for VERIFY_IMAGE is correctly parsed."""
     # Test standard format
     response = 'Need more details. {"action": "VERIFY_IMAGE", "path": "uploads/img1.png", "question": "What is the x-axis?"}'
-    parsed = _parse_visual_tool_request(response)
+    parsed = parse_legacy_visual_tool_request(response)
     assert parsed is not None
     assert parsed["action"] == "VERIFY_IMAGE"
     assert parsed["path"] == "uploads/img1.png"
     
     # Test markdown code block format
     response_md = '```json\n{"action": "VERIFY_IMAGE", "path": "uploads/img2.png", "question": "Value in 2024?"}\n```'
-    parsed_md = _parse_visual_tool_request(response_md)
+    parsed_md = parse_legacy_visual_tool_request(response_md)
     assert parsed_md is not None
     assert parsed_md["path"] == "uploads/img2.png"
 
@@ -24,7 +28,7 @@ async def test_visual_verification_trigger_logic():
     question = "圖表中的具體數據是多少？"
     
     # Mock LLM to return a VERIFY_IMAGE request initially
-    with patch("data_base.RAG_QA_service.get_llm") as mock_get_llm:
+    with patch("data_base.rag_pipeline.get_llm") as mock_get_llm:
         mock_llm = AsyncMock()
         mock_get_llm.return_value = mock_llm
         
@@ -36,7 +40,7 @@ async def test_visual_verification_trigger_logic():
         ]
         
         # Mock retriever to return some docs with images
-        with patch("data_base.RAG_QA_service.get_user_retriever") as mock_get_retriever:
+        with patch("data_base.rag_pipeline.get_user_retriever_async") as mock_get_retriever:
             from langchain_core.documents import Document
             mock_retriever = MagicMock()
             mock_retriever.invoke.return_value = [
@@ -51,7 +55,7 @@ async def test_visual_verification_trigger_logic():
                 # We need to mock os.path.exists for the image
                 with patch("os.path.exists", return_value=True):
                     # Mock _encode_image to avoid reading real files
-                    with patch("data_base.RAG_QA_service._encode_image", return_value="fake_base64"):
+                    with patch("data_base.rag_generation._encode_image", return_value="fake_base64"):
                         
                         answer, _ = await rag_answer_question(
                             question=question,
@@ -70,7 +74,7 @@ async def test_visual_verification_forced_once_when_model_skips_tool_call():
     user_id = "c1bae279-c099-4c45-ba19-2bb393ca4e4b"
     question = "請確認圖中精確數值"
 
-    with patch("data_base.RAG_QA_service.get_llm") as mock_get_llm:
+    with patch("data_base.rag_pipeline.get_llm") as mock_get_llm:
         mock_llm = AsyncMock()
         mock_get_llm.return_value = mock_llm
         mock_llm.ainvoke.side_effect = [
@@ -78,7 +82,7 @@ async def test_visual_verification_forced_once_when_model_skips_tool_call():
             MagicMock(content="已補做視覺查證，關鍵數值為 73。"),
         ]
 
-        with patch("data_base.RAG_QA_service.get_user_retriever") as mock_get_retriever:
+        with patch("data_base.rag_pipeline.get_user_retriever_async") as mock_get_retriever:
             from langchain_core.documents import Document
 
             mock_retriever = MagicMock()
@@ -97,7 +101,7 @@ async def test_visual_verification_forced_once_when_model_skips_tool_call():
             with patch("data_base.visual_tools.verify_image_details", new_callable=AsyncMock) as mock_tool:
                 mock_tool.return_value = {"success": True, "result": "value=73"}
                 with patch("os.path.exists", return_value=True):
-                    with patch("data_base.RAG_QA_service._encode_image", return_value="fake_base64"):
+                    with patch("data_base.rag_generation._encode_image", return_value="fake_base64"):
                         result = await rag_answer_question(
                             question=question,
                             user_id=user_id,

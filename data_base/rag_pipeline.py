@@ -2,22 +2,29 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+
+if TYPE_CHECKING:
+    from data_base.schemas import ChatMessage
 
 from fastapi.concurrency import run_in_threadpool
 from langchain_core.documents import Document
 
+from core.providers import get_llm
 from data_base import (
     rag_crag,
     rag_filtering,
+    rag_generation,
     rag_graph_locator,
     rag_graph_runtime,
 )
 from data_base.document_metadata import get_document_id
+from data_base.parent_child_store import ParentDocumentStore
 from data_base.query_transformer import (
     transform_query_multi,
     transform_query_with_hyde,
 )
+from data_base.rag_crag import CragRewriteMode
 from data_base.rag_filtering import (
     RERANK_CANDIDATE_LIMIT,
     RERANK_TARGET_K,
@@ -25,7 +32,6 @@ from data_base.rag_filtering import (
 )
 from data_base.rag_pipeline_schemas import ProgressCallback, RAGResult
 from data_base.rag_retrieval import retrieve_hybrid_documents
-from data_base.rag_crag import CragRewriteMode
 from data_base.reranker import DocumentReranker
 from data_base.vector_store_manager import (
     get_user_retriever_async,
@@ -36,6 +42,10 @@ from graph_rag.feature_flags import get_graph_feature_flags
 logger = logging.getLogger(__name__)
 
 LegacyRagResponse = Union[tuple[str, List[str]], RAGResult]
+
+_MIN_CHUNK_LENGTH = 100
+_MAX_EXPANDED_CHUNKS = 5
+_MAX_TOTAL_CHARS = 15000
 
 
 @dataclass(slots=True)
@@ -135,7 +145,7 @@ async def _run_retrieval_stage(
     )
     retriever = await get_user_retriever_async(
         user_id,
-        retrieval_k,
+        k=retrieval_k,
         plain_mode=plain_mode,
     )
     if retriever is None:
@@ -588,3 +598,309 @@ async def _run_graph_raw_legacy_strategy(
         graph_context=graph_context,
         graph_evidence_documents=evidence_documents,
     )
+
+
+def _format_history_for_prompt(
+    history: Optional[List["ChatMessage"]],
+) -> str:
+    """Format the last ten conversation messages for the legacy prompt."""
+    if not history:
+        return ""
+
+    lines = ["## 對話歷史"]
+    for message in history[-10:]:
+        role_label = "使用者" if message.role.value == "user" else "助手"
+        lines.append(f"**{role_label}**: {message.content}")
+    return "\n".join(lines)
+
+
+def _resolve_intent_hint(
+    question: str,
+    mode_hints: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    hinted = str((mode_hints or {}).get("question_intent") or "").strip()
+    if hinted:
+        return hinted
+    lowered = question.lower()
+    if any(
+        token in lowered
+        for token in (
+            "benchmark",
+            "dice",
+            "score",
+            "metric",
+            "flops",
+            "param",
+            "accuracy",
+            "auc",
+            "f1",
+            "指標",
+            "數值",
+            "參數",
+            "效能",
+        )
+    ):
+        return "benchmark_data"
+    if any(
+        token in lowered
+        for token in (
+            "figure",
+            "flow",
+            "pipeline",
+            "module",
+            "流程",
+            "架構",
+            "順序",
+            "重建",
+        )
+    ):
+        return "figure_flow"
+    return None
+
+
+def _intent_constraints_for_prompt(
+    question: str,
+    mode_hints: Optional[Dict[str, Any]],
+) -> str:
+    intent = _resolve_intent_hint(question, mode_hints)
+    if intent == "benchmark_data":
+        return """
+### 題型附加限制：Benchmark / 數據
+13. 第一段必須先列出「模型-指標-數值-來源」清單；每列都要有來源標記。
+14. 若缺少可驗證數值，必須明確寫「資料不足」，不得以外部常識補齊或猜測。
+15. 禁止只給排名不給數值；若僅有相對描述，也要標記「資料不足」。
+16. 不確定時請收斂回答範圍，只保留有直接證據的結論。
+"""
+    if intent == "figure_flow":
+        return """
+### 題型附加限制：Figure Flow / 架構重建
+13. 第一段必須先輸出有序流程主鏈（格式建議：`A -> B -> C`）。
+14. 第一段禁止重複題目或使用標題式開頭（例如：`### What is ...`）。
+15. 必須保留題幹中的核心元件與機制名稱，且只能使用參考資料出現過的元件詞。
+16. 若流程中某一步缺乏直接證據，請標記「資料不足」，不要擴寫背景敘述。
+"""
+    return ""
+
+
+def _expand_short_chunks(
+    documents: List[Document],
+    user_id: str,
+) -> List[Document]:
+    """Replace short retrieved chunks with larger parent chunks when available."""
+    if not documents:
+        return documents
+
+    short_chunks = [
+        (index, document)
+        for index, document in enumerate(documents)
+        if len(document.page_content) < _MIN_CHUNK_LENGTH
+    ]
+    if not short_chunks:
+        return documents
+
+    try:
+        parent_store = ParentDocumentStore(user_id)
+    except (IOError, OSError, EOFError) as error:
+        logger.warning("Failed to load parent store: %s", error)
+        return documents
+
+    expanded_count = 0
+    total_chars = sum(len(document.page_content) for document in documents)
+    expanded_documents = list(documents)
+
+    for index, document in short_chunks:
+        if expanded_count >= _MAX_EXPANDED_CHUNKS:
+            logger.debug(
+                "Reached max expanded chunks limit (%s)",
+                _MAX_EXPANDED_CHUNKS,
+            )
+            break
+        if total_chars >= _MAX_TOTAL_CHARS:
+            logger.debug("Reached max total chars limit (%s)", _MAX_TOTAL_CHARS)
+            break
+
+        parent_id = document.metadata.get("parent_id")
+        if not parent_id:
+            continue
+        try:
+            parent_document = parent_store.get_parent(parent_id)
+            if parent_document and len(parent_document.page_content) > len(
+                document.page_content
+            ):
+                new_total = (
+                    total_chars
+                    - len(document.page_content)
+                    + len(parent_document.page_content)
+                )
+                if new_total <= _MAX_TOTAL_CHARS:
+                    metadata = document.metadata.copy()
+                    metadata["expanded_from_parent"] = True
+                    metadata["original_length"] = len(document.page_content)
+                    expanded_documents[index] = Document(
+                        page_content=parent_document.page_content,
+                        metadata=metadata,
+                    )
+                    total_chars = new_total
+                    expanded_count += 1
+                    logger.debug(
+                        "Expanded chunk %s: %s -> %s chars",
+                        index,
+                        len(document.page_content),
+                        len(parent_document.page_content),
+                    )
+        except (KeyError, AttributeError) as error:
+            logger.warning("Failed to expand chunk %s: %s", index, error)
+            continue
+
+    if expanded_count > 0:
+        logger.info("Context Enricher: Expanded %s short chunks", expanded_count)
+    return expanded_documents
+
+
+def _resolve_pipeline_llm() -> Any:
+    """Resolve the legacy answer model or return a terminal sentinel."""
+    try:
+        return get_llm("rag_qa")
+    except (RuntimeError, KeyError, ValueError) as error:
+        logger.error("Failed to get LLM: %s", error)
+        return None
+
+
+async def _run_generation_stage(
+    *,
+    question: str,
+    user_id: str,
+    llm: Any,
+    graph_outcome: GraphStageOutcome,
+    history: Optional[List["ChatMessage"]],
+    mode_hints: Optional[Dict[str, Any]],
+    plain_mode: bool,
+    enable_visual_verification: bool,
+    progress_callback: Optional[ProgressCallback],
+    return_docs: bool,
+) -> LegacyRagResponse:
+    """Generate an answer and project it into the legacy public response."""
+    documents = graph_outcome.documents
+    if not plain_mode:
+        documents = await run_in_threadpool(_expand_short_chunks, documents, user_id)
+
+    generated = await rag_generation.generate_legacy_answer_from_evidence(
+        question=question,
+        user_id=user_id,
+        documents=documents,
+        llm=llm,
+        graph_context=graph_outcome.graph_context,
+        history_section=(
+            f"\n{_format_history_for_prompt(history)}\n" if history else ""
+        ),
+        intent_constraints=_intent_constraints_for_prompt(question, mode_hints),
+        plain_mode=plain_mode,
+        enable_visual_verification=enable_visual_verification,
+        progress_callback=progress_callback,
+        image_encoder=rag_generation._encode_image,
+    )
+    source_doc_ids = rag_generation.legacy_source_doc_ids(documents)
+    if return_docs:
+        returned_documents = (
+            documents
+            if generated.thought_process is None
+            else [*documents, *graph_outcome.graph_evidence_documents]
+        )
+        return RAGResult(
+            generated.answer,
+            source_doc_ids,
+            returned_documents,
+            generated.usage,
+            thought_process=generated.thought_process,
+            tool_calls=generated.tool_calls,
+            visual_verification_meta=generated.visual_verification_meta,
+        )
+    return (generated.answer, source_doc_ids)
+
+
+async def run_rag_pipeline(
+    question: str,
+    user_id: str,
+    doc_ids: Optional[List[str]] = None,
+    history: Optional[List["ChatMessage"]] = None,
+    enable_reranking: bool = False,
+    enable_hyde: bool = False,
+    enable_multi_query: bool = False,
+    enable_crag: bool = False,
+    return_docs: bool = False,
+    enable_graph_rag: bool = False,
+    graph_search_mode: str = "generic",
+    graph_execution_hints: Optional[Dict[str, Any]] = None,
+    mode_hints: Optional[Dict[str, Any]] = None,
+    enable_visual_verification: bool = False,
+    plain_mode: bool = True,
+    progress_callback: Optional[ProgressCallback] = None,
+    crag_rewrite_mode: CragRewriteMode = "hyde",
+) -> Union[Tuple[str, List[str]], RAGResult]:
+    """Run the legacy retrieval-to-generation pipeline."""
+    llm = _resolve_pipeline_llm()
+    if llm is None:
+        return _terminal_result(
+            "抱歉，AI 模型尚未初始化 (API Key 可能有誤)。",
+            [],
+            return_docs,
+        )
+
+    retrieval = await _run_retrieval_stage(
+        question=question,
+        user_id=user_id,
+        doc_ids=doc_ids,
+        enable_reranking=enable_reranking,
+        enable_hyde=enable_hyde,
+        enable_multi_query=enable_multi_query,
+        plain_mode=plain_mode,
+        mode_hints=mode_hints,
+        progress_callback=progress_callback,
+        return_docs=return_docs,
+    )
+    if retrieval.terminal_result is not None:
+        return retrieval.terminal_result
+
+    crag = await _run_crag_stage(
+        question=question,
+        documents=retrieval.documents,
+        retriever=retrieval.retriever,
+        enable_crag=enable_crag,
+        crag_rewrite_mode=crag_rewrite_mode,
+        doc_ids=doc_ids,
+        enable_reranking=enable_reranking,
+        reranker_available=retrieval.reranker_available,
+        target_k=retrieval.target_k,
+        progress_callback=progress_callback,
+        return_docs=return_docs,
+    )
+    if crag.terminal_result is not None:
+        return crag.terminal_result
+
+    graph = await _run_graph_stage(
+        question=question,
+        user_id=user_id,
+        documents=crag.documents,
+        doc_ids=doc_ids,
+        enable_graph_rag=enable_graph_rag,
+        graph_search_mode=graph_search_mode,
+        graph_execution_hints=graph_execution_hints,
+        mode_hints=mode_hints,
+        return_docs=return_docs,
+        progress_callback=progress_callback,
+    )
+    return await _run_generation_stage(
+        question=question,
+        user_id=user_id,
+        llm=llm,
+        graph_outcome=graph,
+        history=history,
+        mode_hints=mode_hints,
+        plain_mode=plain_mode,
+        enable_visual_verification=enable_visual_verification,
+        progress_callback=progress_callback,
+        return_docs=return_docs,
+    )
+
+
+__all__ = ["run_rag_pipeline"]

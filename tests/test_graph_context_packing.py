@@ -4,12 +4,12 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from langchain_core.documents import Document
 
-from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from data_base.context_packing import (
     GraphLocatedChunk,
     merge_vector_and_graph_docs,
     score_graph_located_chunks,
 )
+from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from graph_rag.schemas import GraphEvidenceBundle, GraphEvidenceItem
 
 
@@ -244,19 +244,19 @@ async def test_graph_to_chunk_flag_disabled_preserves_legacy_graph_wrapper() -> 
     )
 
     with (
-        patch("data_base.RAG_QA_service.get_llm", return_value=llm),
+        patch("data_base.rag_pipeline.get_llm", return_value=llm),
         patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
         patch(
-            "data_base.RAG_QA_service.get_user_retriever",
+            "data_base.rag_pipeline.get_user_retriever_async",
             new=AsyncMock(return_value=retriever),
         ),
         patch(
             "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-1": "doc.pdf"}),
         ),
-        patch("data_base.RAG_QA_service._get_graph_context", new=legacy_context),
+        patch("data_base.rag_graph_runtime._get_graph_context", new=legacy_context),
         patch(
-            "data_base.RAG_QA_service._get_graph_evidence_bundle",
+            "data_base.rag_graph_runtime._get_graph_evidence_bundle",
             new=AsyncMock(),
         ) as bundle,
     ):
@@ -311,21 +311,21 @@ async def test_graph_to_chunk_flag_uses_source_chunks_and_falls_back_on_lookup_f
     bundle_mock = AsyncMock(return_value=bundle)
 
     with (
-        patch("data_base.RAG_QA_service.get_llm", return_value=llm),
+        patch("data_base.rag_pipeline.get_llm", return_value=llm),
         patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
         patch(
-            "data_base.RAG_QA_service.get_user_retriever",
+            "data_base.rag_pipeline.get_user_retriever_async",
             new=AsyncMock(return_value=retriever),
         ),
         patch(
             "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-1": "doc.pdf"}),
         ),
-        patch("data_base.RAG_QA_service._get_graph_evidence_bundle", new=bundle_mock),
+        patch("data_base.rag_graph_runtime._get_graph_evidence_bundle", new=bundle_mock),
         patch("data_base.rag_graph_locator.VectorStoreChunkLookup", return_value=lookup),
-        patch("data_base.RAG_QA_service._get_graph_context", new=AsyncMock()) as legacy,
+        patch("data_base.rag_graph_runtime._get_graph_context", new=AsyncMock()) as legacy,
         patch(
-            "data_base.RAG_QA_service._record_graph_observability",
+            "data_base.rag_graph_runtime._record_graph_observability",
             new=AsyncMock(),
         ) as record,
     ):
@@ -360,10 +360,10 @@ async def test_graph_source_expand_exception_records_safe_fallback_reason() -> N
     record = AsyncMock()
 
     with (
-        patch("data_base.RAG_QA_service.get_llm", return_value=llm),
+        patch("data_base.rag_pipeline.get_llm", return_value=llm),
         patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
         patch(
-            "data_base.RAG_QA_service.get_user_retriever",
+            "data_base.rag_pipeline.get_user_retriever_async",
             new=AsyncMock(return_value=retriever),
         ),
         patch(
@@ -371,15 +371,15 @@ async def test_graph_source_expand_exception_records_safe_fallback_reason() -> N
             new=AsyncMock(return_value={"doc-1": "doc.pdf"}),
         ),
         patch(
-            "data_base.RAG_QA_service._get_graph_evidence_bundle",
+            "data_base.rag_graph_runtime._get_graph_evidence_bundle",
             new=AsyncMock(side_effect=OSError("index unavailable")),
         ),
         patch(
-            "data_base.RAG_QA_service._get_graph_context",
+            "data_base.rag_graph_runtime._get_graph_context",
             new=AsyncMock(),
         ) as legacy,
         patch(
-            "data_base.RAG_QA_service._record_graph_observability",
+            "data_base.rag_graph_runtime._record_graph_observability",
             new=record,
         ),
     ):

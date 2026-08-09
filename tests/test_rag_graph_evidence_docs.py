@@ -27,13 +27,13 @@ async def test_rag_return_docs_includes_graph_evidence_documents() -> None:
     )
 
     with (
-        patch("data_base.RAG_QA_service.get_llm") as mock_get_llm,
-        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={"total_tokens": 11}),
-        patch("data_base.RAG_QA_service.get_user_retriever", return_value=retriever),
-        patch("data_base.RAG_QA_service.fetch_document_filenames", new=AsyncMock(return_value={"doc-1": "doc1.pdf"})),
-        patch("data_base.RAG_QA_service._expand_short_chunks", side_effect=lambda docs, _uid: docs),
+        patch("data_base.rag_pipeline.get_llm") as mock_get_llm,
+        patch("data_base.rag_generation.get_llm_usage_metrics", return_value={"total_tokens": 11}),
+        patch("data_base.rag_pipeline.get_user_retriever_async", return_value=retriever),
+        patch("data_base.rag_generation.fetch_document_filenames", new=AsyncMock(return_value={"doc-1": "doc1.pdf"})),
+        patch("data_base.rag_pipeline._expand_short_chunks", side_effect=lambda docs, _uid: docs),
         patch(
-            "data_base.RAG_QA_service._get_graph_context",
+            "data_base.rag_graph_runtime._get_graph_context",
             new=graph_context_mock,
         ),
     ):

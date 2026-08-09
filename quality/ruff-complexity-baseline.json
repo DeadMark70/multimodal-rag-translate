@@ -2,10 +2,9 @@
   "schema_version": 1,
   "scores": {
     "core/sensitive_data.py::_json_nesting_is_bounded": 11,
-    "data_base/RAG_QA_service.py::_expand_short_chunks": 12,
+    "data_base/rag_pipeline.py::_expand_short_chunks": 12,
     "data_base/rag_graph_runtime.py::_get_graph_context_legacy_raw": 19,
     "data_base/rag_graph_runtime.py::_graph_execution_strategy": 11,
-    "data_base/RAG_QA_service.py::rag_answer_question": 30,
     "data_base/agentic_v9/budget_feasibility.py::validate_post_contract_feasibility": 12,
     "data_base/agentic_v9/context_packer.py::_select_with_policy": 11,
     "data_base/agentic_v9/context_packer.py::pack": 14,

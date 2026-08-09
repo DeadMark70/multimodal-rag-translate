@@ -1,8 +1,7 @@
 """Focused regression tests for reranker selection behavior."""
 
 # Standard library
-from unittest.mock import AsyncMock
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # Third-party
 import pytest
@@ -83,7 +82,7 @@ def test_reranker_not_initialized() -> None:
 
 def test_generation_rerank_prefers_non_noise_docs() -> None:
     """Known noise docs should only backfill after non-noise candidates."""
-    from data_base.RAG_QA_service import _rerank_documents_for_generation
+    from data_base.rag_filtering import rerank_documents_for_generation
 
     mock_model = MagicMock()
     mock_model.rerank.return_value = [
@@ -105,14 +104,14 @@ def test_generation_rerank_prefers_non_noise_docs() -> None:
         Document(page_content="Another relevant nnU-Net comparison", metadata={"id": "relevant-2"}),
     ]
 
-    selected = _rerank_documents_for_generation("比較 SwinUNETR 與 nnU-Net", docs, target_k=2)
+    selected = rerank_documents_for_generation("比較 SwinUNETR 與 nnU-Net", docs, target_k=2)
 
     assert [doc.metadata["id"] for doc in selected] == ["relevant-1", "relevant-2"]
 
 
 def test_generation_rerank_keeps_noise_when_query_requests_it() -> None:
     """Noise heuristics should not suppress docs when the query explicitly asks for them."""
-    from data_base.RAG_QA_service import _rerank_documents_for_generation
+    from data_base.rag_filtering import rerank_documents_for_generation
 
     mock_model = MagicMock()
     mock_model.rerank.return_value = [
@@ -132,7 +131,7 @@ def test_generation_rerank_keeps_noise_when_query_requests_it() -> None:
         Document(page_content="Relevant SwinUNETR comparison", metadata={"id": "relevant-1"}),
     ]
 
-    selected = _rerank_documents_for_generation("請比較 SAM 與 SegVol", docs, target_k=2)
+    selected = rerank_documents_for_generation("請比較 SAM 與 SegVol", docs, target_k=2)
 
     assert [doc.metadata["id"] for doc in selected] == ["noise-1", "relevant-1"]
 
@@ -173,8 +172,8 @@ def test_rag_answer_question_caps_rerank_candidate_count() -> None:
     mock_retriever = MagicMock()
     mock_retriever.invoke.return_value = [Document(page_content="Doc 1", metadata={})]
 
-    with patch("data_base.RAG_QA_service.get_llm", return_value=mock_llm), patch(
-        "data_base.RAG_QA_service.get_user_retriever",
+    with patch("data_base.rag_pipeline.get_llm", return_value=mock_llm), patch(
+        "data_base.rag_pipeline.get_user_retriever_async",
         return_value=mock_retriever,
     ) as mock_get_retriever:
         import asyncio

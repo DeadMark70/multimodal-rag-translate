@@ -7,7 +7,6 @@ from langchain_core.documents import Document
 
 from core.llm_usage_context import current_llm_accounting_phase
 
-
 PHASE_CASES = [
     ("data_base/query_transformer.py", "query_expansion"),
     ("data_base/query_transformer.py", "retrieval_rewrite"),
@@ -69,14 +68,14 @@ async def test_initial_query_expansion_invocations_use_expansion_phase(
 
     with (
         patch("data_base.query_transformer.get_llm", return_value=query_llm),
-        patch("data_base.RAG_QA_service.get_llm", return_value=answer_llm),
-        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch("data_base.rag_pipeline.get_llm", return_value=answer_llm),
+        patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
         patch(
-            "data_base.RAG_QA_service.get_user_retriever",
+            "data_base.rag_pipeline.get_user_retriever_async",
             new=AsyncMock(return_value=retriever),
         ),
         patch(
-            "data_base.RAG_QA_service.fetch_document_filenames",
+            "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-1": "doc-1.pdf"}),
         ),
     ):
@@ -102,11 +101,20 @@ async def test_crag_rewrite_invocations_use_retrieval_rewrite_phase(
     rewrite_mode: str,
     query_response: str,
 ) -> None:
-    from data_base.RAG_QA_service import _build_crag_queries
+    from data_base.query_transformer import (
+        transform_query_multi,
+        transform_query_with_hyde,
+    )
+    from data_base.rag_crag import build_crag_queries
 
     query_llm = _PhaseRecordingLlm(query_response)
 
     with patch("data_base.query_transformer.get_llm", return_value=query_llm):
-        await _build_crag_queries("question", rewrite_mode)  # type: ignore[arg-type]
+        await build_crag_queries(
+            "question",
+            rewrite_mode,  # type: ignore[arg-type]
+            hyde_transformer=transform_query_with_hyde,
+            multi_query_transformer=transform_query_multi,
+        )
 
     assert query_llm.phases == ["retrieval_rewrite"]

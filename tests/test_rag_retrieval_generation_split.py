@@ -1,5 +1,6 @@
 """Contracts for the generic retrieval-to-generation boundary."""
 
+import inspect
 from importlib import import_module
 from importlib.util import find_spec
 from pathlib import Path
@@ -7,11 +8,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from langchain_core.documents import Document
 
-from data_base.RAG_QA_service import RAGResult
 from data_base.rag_pipeline_schemas import GeneratedRagAnswer, RagRetrievalResult
+from data_base.RAG_QA_service import RAGResult
 
 
 def test_pipeline_schemas_own_public_result_contract_and_facade_reexports_it() -> None:
@@ -21,6 +21,37 @@ def test_pipeline_schemas_own_public_result_contract_and_facade_reexports_it() -
     assert facade.RAGResult is schemas.RAGResult
     assert facade.ProgressCallback is schemas.ProgressCallback
     assert schemas.RAGResult.__module__ == "data_base.rag_pipeline_schemas"
+
+
+def test_facade_and_pipeline_answer_signatures_do_not_drift() -> None:
+    facade = import_module("data_base.RAG_QA_service")
+    pipeline = import_module("data_base.rag_pipeline")
+
+    assert inspect.signature(facade.rag_answer_question) == inspect.signature(
+        pipeline.run_rag_pipeline
+    )
+
+
+@pytest.mark.asyncio
+async def test_facade_delegates_through_pipeline_module_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade = import_module("data_base.RAG_QA_service")
+    expected = facade.RAGResult("answer", ["doc-1"], [])
+    delegate = AsyncMock(return_value=expected)
+    monkeypatch.setattr(facade.rag_pipeline, "run_rag_pipeline", delegate)
+
+    result = await facade.rag_answer_question(
+        "question",
+        "user-1",
+        return_docs=True,
+    )
+
+    assert result is expected
+    delegate.assert_awaited_once()
+    assert delegate.await_args.kwargs["question"] == "question"
+    assert delegate.await_args.kwargs["user_id"] == "user-1"
+    assert delegate.await_args.kwargs["return_docs"] is True
 
 
 @pytest.mark.asyncio
@@ -376,10 +407,13 @@ async def test_legacy_generation_keeps_visual_synthesis_inside_legacy_module(
 
 def test_legacy_wrapper_delegates_generation_without_exposing_visual_synthesis() -> None:
     wrapper_source = Path("data_base/RAG_QA_service.py").read_text(encoding="utf-8")
+    pipeline_source = Path("data_base/rag_pipeline.py").read_text(encoding="utf-8")
     generation_source = Path("data_base/rag_generation.py").read_text(encoding="utf-8")
 
-    assert "generate_legacy_answer_from_evidence(" in wrapper_source
+    assert "rag_pipeline.run_rag_pipeline(" in wrapper_source
+    assert "generate_legacy_answer_from_evidence(" in pipeline_source
     assert "_execute_visual_verification_loop" not in wrapper_source
+    assert "_execute_visual_verification_loop" not in pipeline_source
     assert "_deprecated_visual_verification_loop" not in wrapper_source
     assert "The following legacy body is retained temporarily" not in wrapper_source
     assert "_execute_legacy_visual_verification_loop" in generation_source
@@ -396,9 +430,9 @@ async def test_legacy_wrapper_preserves_empty_retrieval_projection() -> None:
     from data_base.RAG_QA_service import rag_answer_question
 
     with (
-        patch("data_base.RAG_QA_service.get_llm", return_value=SimpleNamespace()),
+        patch("data_base.rag_pipeline.get_llm", return_value=SimpleNamespace()),
         patch(
-            "data_base.RAG_QA_service.get_user_retriever",
+            "data_base.rag_pipeline.get_user_retriever_async",
             new=AsyncMock(return_value=None),
         ),
     ):

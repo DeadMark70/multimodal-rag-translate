@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from langchain_core.documents import Document
 
-from data_base.RAG_QA_service import RAGResult, rag_answer_question
+from data_base.context_packing import GraphLocatedChunk
 from data_base.rag_graph_runtime import (
     GraphContextDetails,
     GraphEvidenceLifecycle,
@@ -16,11 +16,15 @@ from data_base.rag_graph_runtime import (
     _graph_gate_inputs,
     _record_graph_observability,
 )
+from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from graph_rag.feature_flags import get_graph_feature_flags
 from graph_rag.generic_mode import GraphEvidence, GraphRouteDecision
-from data_base.context_packing import GraphLocatedChunk
-from graph_rag.schemas import EvidenceAnchor, GraphEvidenceBundle, GraphEvidenceItem
-from graph_rag.schemas import GraphAssetLink
+from graph_rag.schemas import (
+    EvidenceAnchor,
+    GraphAssetLink,
+    GraphEvidenceBundle,
+    GraphEvidenceItem,
+)
 from graph_rag.store import GraphStore
 
 
@@ -395,14 +399,14 @@ async def test_auto_gate_skip_does_not_call_graph_or_change_vector_context() -> 
     graph_context = AsyncMock(return_value="raw graph context")
 
     with (
-        patch("data_base.RAG_QA_service.get_llm", get_llm),
+        patch("data_base.rag_pipeline.get_llm", get_llm),
         patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
-        patch("data_base.RAG_QA_service.get_user_retriever", return_value=retriever),
+        patch("data_base.rag_pipeline.get_user_retriever_async", return_value=retriever),
         patch(
             "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-allowed": "allowed.pdf"}),
         ),
-        patch("data_base.RAG_QA_service._get_graph_context", new=graph_context),
+        patch("data_base.rag_graph_runtime._get_graph_context", new=graph_context),
     ):
         result = await rag_answer_question(
             question="What is Weak-Mamba-UNet?",
@@ -427,14 +431,14 @@ async def test_auto_gate_locator_only_never_injects_raw_graph_context() -> None:
     graph_context = AsyncMock(return_value="raw inferred graph text")
 
     with (
-        patch("data_base.RAG_QA_service.get_llm", get_llm),
+        patch("data_base.rag_pipeline.get_llm", get_llm),
         patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
-        patch("data_base.RAG_QA_service.get_user_retriever", return_value=retriever),
+        patch("data_base.rag_pipeline.get_user_retriever_async", return_value=retriever),
         patch(
             "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-allowed": "allowed.pdf"}),
         ),
-        patch("data_base.RAG_QA_service._get_graph_context", new=graph_context),
+        patch("data_base.rag_graph_runtime._get_graph_context", new=graph_context),
     ):
         result = await rag_answer_question(
             question="What Params are reported?",
@@ -461,17 +465,17 @@ async def test_auto_gate_planning_records_skip_without_bundling_merging_or_promp
     record = AsyncMock()
 
     with (
-        patch("data_base.RAG_QA_service.get_llm", get_llm),
+        patch("data_base.rag_pipeline.get_llm", get_llm),
         patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
-        patch("data_base.RAG_QA_service.get_user_retriever", return_value=retriever),
+        patch("data_base.rag_pipeline.get_user_retriever_async", return_value=retriever),
         patch(
             "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-allowed": "allowed.pdf"}),
         ),
-        patch("data_base.RAG_QA_service._get_graph_context", new=graph_context),
-        patch("data_base.RAG_QA_service._get_graph_evidence_bundle", new=graph_bundle),
-        patch("data_base.RAG_QA_service.locate_graph_sources", new=locator),
-        patch("data_base.RAG_QA_service._record_graph_observability", new=record),
+        patch("data_base.rag_graph_runtime._get_graph_context", new=graph_context),
+        patch("data_base.rag_graph_runtime._get_graph_evidence_bundle", new=graph_bundle),
+        patch("data_base.rag_graph_locator.locate_graph_sources", new=locator),
+        patch("data_base.rag_graph_runtime._record_graph_observability", new=record),
     ):
         result = await rag_answer_question(
             question="Explain the technical evolution across papers",
@@ -515,15 +519,15 @@ async def test_graph_located_chunks_outside_scoped_doc_ids_are_excluded() -> Non
     )
 
     with (
-        patch("data_base.RAG_QA_service.get_llm", get_llm),
+        patch("data_base.rag_pipeline.get_llm", get_llm),
         patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
-        patch("data_base.RAG_QA_service.get_user_retriever", return_value=retriever),
+        patch("data_base.rag_pipeline.get_user_retriever_async", return_value=retriever),
         patch(
             "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-allowed": "allowed.pdf"}),
         ),
         patch(
-            "data_base.RAG_QA_service._get_graph_evidence_bundle",
+            "data_base.rag_graph_runtime._get_graph_evidence_bundle",
             new=AsyncMock(return_value=bundle),
         ),
         patch(

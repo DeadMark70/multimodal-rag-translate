@@ -4,11 +4,10 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from langchain_core.documents import Document
-from data_base.RAG_QA_service import (
-    _expand_short_chunks,
-    rag_answer_question,
-)
+
 from data_base.rag_graph_runtime import _should_use_graph_search
+from data_base.rag_pipeline import _MAX_TOTAL_CHARS, _expand_short_chunks
+from data_base.RAG_QA_service import rag_answer_question
 
 
 def test_should_use_graph_search():
@@ -41,14 +40,14 @@ async def test_rag_answer_question_uses_plain_retriever_mode() -> None:
     llm.ainvoke = AsyncMock(return_value=SimpleNamespace(content="ok"))
 
     with (
-        patch("data_base.RAG_QA_service.get_llm", return_value=llm),
-        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch("data_base.rag_pipeline.get_llm", return_value=llm),
+        patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
         patch(
-            "data_base.RAG_QA_service.get_user_retriever",
+            "data_base.rag_pipeline.get_user_retriever_async",
             new=AsyncMock(return_value=retriever),
         ) as get_retriever,
         patch(
-            "data_base.RAG_QA_service.fetch_document_filenames",
+            "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-1": "doc-1.pdf"}),
         ),
     ):
@@ -68,14 +67,14 @@ async def test_rag_answer_question_applies_mode_hint_retrieval_policy() -> None:
     llm.ainvoke = AsyncMock(return_value=SimpleNamespace(content="ok"))
 
     with (
-        patch("data_base.RAG_QA_service.get_llm", return_value=llm),
-        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch("data_base.rag_pipeline.get_llm", return_value=llm),
+        patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
         patch(
-            "data_base.RAG_QA_service.get_user_retriever",
+            "data_base.rag_pipeline.get_user_retriever_async",
             new=AsyncMock(return_value=retriever),
         ) as get_retriever,
         patch(
-            "data_base.RAG_QA_service.fetch_document_filenames",
+            "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={}),
         ),
     ):
@@ -109,7 +108,7 @@ def test_expand_short_chunks_logic():
     user_id = "test_user"
 
     # Mock ParentDocumentStore
-    with patch("data_base.RAG_QA_service.ParentDocumentStore") as MockStore:
+    with patch("data_base.rag_pipeline.ParentDocumentStore") as MockStore:
         mock_instance = MockStore.return_value
         # Mock parent content
         mock_parent = Document(
@@ -133,8 +132,6 @@ def test_expand_short_chunks_token_limit():
     """
     Verify that expansion respects _MAX_TOTAL_CHARS limit.
     """
-    from data_base.RAG_QA_service import _MAX_TOTAL_CHARS
-
     # Create a doc that is just below the limit, and another short one
     large_content = "A" * (_MAX_TOTAL_CHARS - 50)
     large_doc = Document(page_content=large_content, metadata={"doc_id": "d1"})
@@ -145,7 +142,7 @@ def test_expand_short_chunks_token_limit():
     docs = [large_doc, short_doc]
     user_id = "test_user"
 
-    with patch("data_base.RAG_QA_service.ParentDocumentStore") as MockStore:
+    with patch("data_base.rag_pipeline.ParentDocumentStore") as MockStore:
         mock_instance = MockStore.return_value
         # Parent is very large, would exceed limit
         mock_parent = Document(page_content="B" * 1000)
@@ -169,14 +166,14 @@ async def test_rag_answer_question_formats_prompt_from_registry() -> None:
     llm.ainvoke = AsyncMock(return_value=SimpleNamespace(content="ok"))
 
     with (
-        patch("data_base.RAG_QA_service.get_llm", return_value=llm),
-        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch("data_base.rag_pipeline.get_llm", return_value=llm),
+        patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
         patch(
-            "data_base.RAG_QA_service.get_user_retriever",
+            "data_base.rag_pipeline.get_user_retriever_async",
             new=AsyncMock(return_value=retriever),
         ),
         patch(
-            "data_base.RAG_QA_service.fetch_document_filenames",
+            "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-1": "demo.pdf"}),
         ),
     ):
@@ -215,26 +212,26 @@ async def test_crag_multi_query_correction_uses_rrf_without_hyde() -> None:
     )
 
     with (
-        patch("data_base.RAG_QA_service.get_llm", return_value=llm),
-        patch("data_base.RAG_QA_service.get_llm_usage_metrics", return_value={}),
+        patch("data_base.rag_pipeline.get_llm", return_value=llm),
+        patch("data_base.rag_generation.get_llm_usage_metrics", return_value={}),
         patch(
-            "data_base.RAG_QA_service.get_user_retriever",
+            "data_base.rag_pipeline.get_user_retriever_async",
             new=AsyncMock(return_value=retriever),
         ),
         patch(
-            "data_base.RAG_QA_service.invoke_retriever_queries_async",
+            "data_base.rag_pipeline.invoke_retriever_queries_async",
             new=retrieve,
         ),
         patch(
-            "data_base.RAG_QA_service.transform_query_multi",
+            "data_base.rag_pipeline.transform_query_multi",
             new=AsyncMock(return_value=["question", "comparison variant"]),
         ) as multi_query,
         patch(
-            "data_base.RAG_QA_service.transform_query_with_hyde",
+            "data_base.rag_pipeline.transform_query_with_hyde",
             new=AsyncMock(return_value="hypothetical answer"),
         ) as hyde,
         patch(
-            "data_base.RAG_QA_service.DocumentReranker.is_initialized",
+            "data_base.rag_pipeline.DocumentReranker.is_initialized",
             return_value=False,
         ),
         patch(
@@ -242,7 +239,7 @@ async def test_crag_multi_query_correction_uses_rrf_without_hyde() -> None:
             new=AsyncMock(return_value=False),
         ),
         patch(
-            "data_base.RAG_QA_service.fetch_document_filenames",
+            "data_base.rag_generation.fetch_document_filenames",
             new=AsyncMock(return_value={"doc-1": "a.pdf", "doc-2": "b.pdf"}),
         ),
     ):
@@ -270,19 +267,16 @@ async def test_crag_multi_query_correction_uses_rrf_without_hyde() -> None:
 
 @pytest.mark.asyncio
 async def test_crag_none_correction_reuses_original_question() -> None:
-    from data_base.RAG_QA_service import _build_crag_queries
+    from data_base.rag_crag import build_crag_queries
 
-    with (
-        patch(
-            "data_base.RAG_QA_service.transform_query_multi",
-            new=AsyncMock(),
-        ) as multi_query,
-        patch(
-            "data_base.RAG_QA_service.transform_query_with_hyde",
-            new=AsyncMock(),
-        ) as hyde,
-    ):
-        queries = await _build_crag_queries("original", "none")
+    multi_query = AsyncMock()
+    hyde = AsyncMock()
+    queries = await build_crag_queries(
+        "original",
+        "none",
+        hyde_transformer=hyde,
+        multi_query_transformer=multi_query,
+    )
 
     assert queries == ["original"]
     multi_query.assert_not_awaited()
