@@ -23,6 +23,52 @@ def test_pipeline_schemas_own_public_result_contract_and_facade_reexports_it() -
     assert schemas.RAGResult.__module__ == "data_base.rag_pipeline_schemas"
 
 
+@pytest.mark.asyncio
+async def test_retrieval_stage_returns_terminal_result_without_a_retriever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = import_module("data_base.rag_pipeline")
+    monkeypatch.setattr(
+        pipeline,
+        "get_user_retriever_async",
+        AsyncMock(return_value=None),
+    )
+
+    outcome = await pipeline._run_retrieval_stage(
+        question="question",
+        user_id="user-1",
+        doc_ids=None,
+        enable_reranking=False,
+        enable_hyde=False,
+        enable_multi_query=False,
+        plain_mode=True,
+        mode_hints=None,
+        progress_callback=None,
+        return_docs=True,
+    )
+
+    assert outcome.documents == []
+    assert outcome.terminal_result == pipeline.RAGResult(
+        "抱歉，您還沒有建立任何知識庫文件，請先上傳 PDF。",
+        [],
+        [],
+    )
+
+
+def test_terminal_result_preserves_legacy_tuple_and_rag_result_shapes() -> None:
+    pipeline = import_module("data_base.rag_pipeline")
+
+    assert pipeline._terminal_result("message", ["doc-1"], False) == (
+        "message",
+        ["doc-1"],
+    )
+    assert pipeline._terminal_result("message", ["doc-1"], True) == pipeline.RAGResult(
+        "message",
+        ["doc-1"],
+        [],
+    )
+
+
 def test_graph_runtime_owns_graph_contract_and_facade_reexports_it() -> None:
     assert find_spec("data_base.rag_graph_runtime") is not None
 
