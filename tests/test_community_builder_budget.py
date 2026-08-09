@@ -1,8 +1,11 @@
+import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import networkx as nx
 import pytest
 
-from graph_rag.community_builder import build_communities
+from graph_rag.community_builder import build_communities, detect_communities_leiden
 from graph_rag.schemas import Community, EntityType, GraphNode
 
 
@@ -23,6 +26,25 @@ class _FakeStore:
 
     def mark_optimized(self) -> None:
         self._optimized = True
+
+
+@pytest.mark.asyncio
+async def test_detect_communities_falls_back_to_connected_components(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = nx.Graph()
+    graph.add_edge("paper-a", "paper-b")
+    graph.add_node("paper-c")
+    store = SimpleNamespace(graph=graph)
+
+    monkeypatch.setitem(sys.modules, "igraph", None)
+
+    communities = await detect_communities_leiden(store)
+
+    assert {frozenset(community.node_ids) for community in communities} == {
+        frozenset({"paper-a", "paper-b"}),
+        frozenset({"paper-c"}),
+    }
 
 
 @pytest.mark.asyncio
