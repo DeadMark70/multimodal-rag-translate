@@ -45,7 +45,7 @@
 - Consumes: existing `RAGResult` field order and defaults from `data_base.RAG_QA_service`.
 - Produces: `data_base.rag_pipeline_schemas.RAGResult` and `ProgressCallback`; facade re-exports with object identity preserved.
 
-- [ ] **Step 1: Write the failing schema-ownership test**
+- [x] **Step 1: Write the failing schema-ownership test**
 
 Add this test to `tests/test_rag_retrieval_generation_split.py`:
 
@@ -59,7 +59,7 @@ def test_pipeline_schemas_own_public_result_contract_and_facade_reexports_it() -
     assert schemas.RAGResult.__module__ == "data_base.rag_pipeline_schemas"
 ```
 
-- [ ] **Step 2: Run the ownership test and confirm the red state**
+- [x] **Step 2: Run the ownership test and confirm the red state**
 
 Run:
 
@@ -69,7 +69,7 @@ Run:
 
 Expected: FAIL because `rag_pipeline_schemas` does not yet export `RAGResult` or `ProgressCallback`.
 
-- [ ] **Step 3: Move the contracts without changing their shape**
+- [x] **Step 3: Move the contracts without changing their shape**
 
 Add the required imports and exact definitions to `rag_pipeline_schemas.py`:
 
@@ -113,7 +113,7 @@ from data_base.rag_pipeline_schemas import (
 )
 ```
 
-- [ ] **Step 4: Run contract and consumer tests**
+- [x] **Step 4: Run contract and consumer tests**
 
 Run:
 
@@ -123,7 +123,7 @@ Run:
 
 Expected: PASS with the existing `RAGResult` construction and `isinstance` behavior unchanged.
 
-- [ ] **Step 5: Run focused Ruff checks**
+- [x] **Step 5: Run focused Ruff checks**
 
 Run:
 
@@ -133,7 +133,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit the schema ownership change**
+- [x] **Step 6: Commit the schema ownership change**
 
 ```powershell
 git add -- data_base/rag_pipeline_schemas.py data_base/RAG_QA_service.py tests/test_rag_retrieval_generation_split.py
@@ -154,7 +154,7 @@ git commit -m "refactor(rag): centralize pipeline result contracts"
 - Consumes: `retrieve_hybrid_documents()`, `filter_and_rerank_retrieval()`, `get_user_retriever_async()`, `RAGResult`, and `ProgressCallback`.
 - Produces: `_run_retrieval_stage -> RetrievalStageOutcome` and `_terminal_result -> LegacyRagResponse`.
 
-- [ ] **Step 1: Write failing retrieval-stage contract tests**
+- [x] **Step 1: Write failing retrieval-stage contract tests**
 
 Add imports and these tests to `tests/test_rag_retrieval_generation_split.py`:
 
@@ -205,7 +205,7 @@ def test_terminal_result_preserves_legacy_tuple_and_rag_result_shapes() -> None:
     )
 ```
 
-- [ ] **Step 2: Run the new tests and confirm the red state**
+- [x] **Step 2: Run the new tests and confirm the red state**
 
 Run:
 
@@ -215,7 +215,7 @@ Run:
 
 Expected: FAIL because `data_base.rag_pipeline` does not exist.
 
-- [ ] **Step 3: Create the pipeline contracts and retrieval stage**
+- [x] **Step 3: Create the pipeline contracts and retrieval stage**
 
 Create `data_base/rag_pipeline.py` with these public/internal contracts:
 
@@ -281,7 +281,7 @@ Move the behavior currently in `RAG_QA_service.py:508-596` into this function. K
 
 Keep `_resolve_retrieval_policy()` and `_emit_progress()` private in `rag_pipeline.py`; copy their current behavior mechanically for now. Do not remove the facade flow until Task 4.
 
-- [ ] **Step 4: Run the retrieval-stage tests**
+- [x] **Step 4: Run the retrieval-stage tests**
 
 Run:
 
@@ -291,7 +291,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 5: Enforce the retrieval-stage complexity target**
+- [x] **Step 5: Enforce the retrieval-stage complexity target**
 
 Run:
 
@@ -301,7 +301,7 @@ Run:
 
 Expected: no C901 report for `_run_retrieval_stage`. If the function exceeds 10, extract only logging/progress formatting into `_record_retrieval_selection()` without moving filtering or ranking algorithms into the pipeline.
 
-- [ ] **Step 6: Commit the independently tested retrieval stage**
+- [x] **Step 6: Commit the independently tested retrieval stage**
 
 ```powershell
 git add -- data_base/rag_pipeline.py tests/test_rag_retrieval_generation_split.py
@@ -324,7 +324,7 @@ git commit -m "refactor(rag): add pipeline retrieval stage"
 - Consumes: `RetrievalStageOutcome`, existing `rag_crag`, `rag_filtering`, `rag_graph_runtime`, and `rag_graph_locator` functions.
 - Produces: `_run_crag_stage -> CragStageOutcome` and `_run_graph_stage -> GraphStageOutcome`.
 
-- [ ] **Step 1: Write failing CRAG and Graph stage tests**
+- [x] **Step 1: Write failing CRAG and Graph stage tests**
 
 Add these outcome-contract tests to `tests/test_rag_retrieval_generation_split.py`:
 
@@ -375,7 +375,7 @@ async def test_disabled_graph_stage_returns_neutral_context() -> None:
     assert outcome.graph_evidence_documents == []
 ```
 
-- [ ] **Step 2: Run the stage tests and confirm the red state**
+- [x] **Step 2: Run the stage tests and confirm the red state**
 
 Run:
 
@@ -385,7 +385,7 @@ Run:
 
 Expected: FAIL because the outcome types and stage functions are absent.
 
-- [ ] **Step 3: Add explicit CRAG and Graph outcomes**
+- [x] **Step 3: Add explicit CRAG and Graph outcomes**
 
 Add these dataclasses to `rag_pipeline.py`:
 
@@ -405,7 +405,7 @@ class GraphStageOutcome:
 
 Import `field` from `dataclasses`.
 
-- [ ] **Step 4: Implement the CRAG stage mechanically**
+- [x] **Step 4: Implement the CRAG stage mechanically**
 
 Add this signature:
 
@@ -428,7 +428,7 @@ async def _run_crag_stage(
 
 Move `RAG_QA_service.py:598-636` into this function. Preserve the disabled pass-through, all `run_corrective_retrieval()` dependency arguments, the insufficient message, rewrite progress, and the broad exception fallback to the original `documents`.
 
-- [ ] **Step 5: Implement Graph strategy dispatch without a large conditional**
+- [x] **Step 5: Implement Graph strategy dispatch without a large conditional**
 
 Add this main signature:
 
@@ -495,7 +495,7 @@ async def _run_graph_raw_legacy_strategy(
 
 The main Graph stage must only resolve flags and strategy, then dispatch `skip`, `source_expand`, or `raw_legacy`. Each helper copies its corresponding current branch without changing progress payloads, lifecycle construction, evidence projection, or observability calls. Use module attribute lookups such as `rag_graph_runtime._get_graph_context` so private Graph tests can patch the implementation owner.
 
-- [ ] **Step 6: Run stage and existing Graph/CRAG behavior tests**
+- [x] **Step 6: Run stage and existing Graph/CRAG behavior tests**
 
 Run:
 
@@ -505,7 +505,7 @@ Run:
 
 Expected: PASS. Production still uses the facade body, while the new stages have direct contract coverage.
 
-- [ ] **Step 7: Enforce stage complexity**
+- [x] **Step 7: Enforce stage complexity**
 
 Run:
 
@@ -515,7 +515,7 @@ Run:
 
 Expected: no C901 report for `_run_crag_stage`, `_run_graph_stage`, or the three strategy helpers.
 
-- [ ] **Step 8: Commit the optional stages**
+- [x] **Step 8: Commit the optional stages**
 
 ```powershell
 git add -- data_base/rag_pipeline.py tests/test_rag_retrieval_generation_split.py
@@ -543,7 +543,7 @@ git commit -m "refactor(rag): add CRAG and Graph pipeline stages"
 - Consumes: all three stage outcomes and `generate_legacy_answer_from_evidence()`.
 - Produces: `run_rag_pipeline()` with the exact legacy signature; facade `rag_answer_question()` with the same signature and delegation only.
 
-- [ ] **Step 1: Write failing facade delegation and signature tests**
+- [x] **Step 1: Write failing facade delegation and signature tests**
 
 Add these tests to `tests/test_rag_retrieval_generation_split.py`:
 
@@ -581,7 +581,7 @@ async def test_facade_delegates_through_pipeline_module_lookup(
 
 Import `inspect` at the top of the test module.
 
-- [ ] **Step 2: Run the delegation tests and confirm the red state**
+- [x] **Step 2: Run the delegation tests and confirm the red state**
 
 Run:
 
@@ -591,7 +591,7 @@ Run:
 
 Expected: FAIL because `run_rag_pipeline()` is absent and the facade still owns the body.
 
-- [ ] **Step 3: Add generation-stage helpers and preserve legacy projection**
+- [x] **Step 3: Add generation-stage helpers and preserve legacy projection**
 
 Move `_format_history_for_prompt()`, `_resolve_intent_hint()`, `_intent_constraints_for_prompt()`, `_expand_short_chunks()`, and its constants from the facade into `rag_pipeline.py` without behavior changes.
 
@@ -631,7 +631,7 @@ generated = await rag_generation.generate_legacy_answer_from_evidence(
 )
 ```
 
-- [ ] **Step 4: Add the low-complexity orchestration function**
+- [x] **Step 4: Add the low-complexity orchestration function**
 
 Import `Any`, `Dict`, `List`, `Optional`, `Tuple`, `TYPE_CHECKING`, and `Union` from `typing`, and use the same type-checking-only `ChatMessage` import as the facade. Define `run_rag_pipeline()` with the exact current `rag_answer_question()` signature and this orchestration body:
 
@@ -722,7 +722,7 @@ async def run_rag_pipeline(
 
 Implement `_resolve_pipeline_llm() -> Any | None` with the existing `get_llm("rag_qa")` call, caught `RuntimeError`, `KeyError`, and `ValueError`, and the current error log. Returning `None` is private stage state; `run_rag_pipeline()` constructs the unchanged public failure projection shown above.
 
-- [ ] **Step 5: Replace the facade body with explicit delegation**
+- [x] **Step 5: Replace the facade body with explicit delegation**
 
 In `RAG_QA_service.py`, retain module documentation, startup imports/state, `initialize_llm_service()`, and required compatibility exports. Import the module:
 
@@ -775,7 +775,7 @@ async def rag_answer_question(
 
 Remove facade-owned orchestration helpers after their tests have been retargeted. Small compatibility aliases may remain only when a non-test runtime consumer still imports them.
 
-- [ ] **Step 6: Retarget private imports and patches to lookup owners**
+- [x] **Step 6: Retarget private imports and patches to lookup owners**
 
 Apply these ownership rules across the listed tests:
 
@@ -820,7 +820,7 @@ When a pipeline function uses a module attribute lookup, patch that owner module
 
 Update `test_legacy_wrapper_delegates_generation_without_exposing_visual_synthesis` so it asserts `generate_legacy_answer_from_evidence(` is owned by `rag_pipeline.py`, while `RAG_QA_service.py` contains `rag_pipeline.run_rag_pipeline(` and still contains neither visual-verification loop implementation. Retarget `test_legacy_wrapper_preserves_empty_retrieval_projection` to patch the pipeline LLM and retriever lookups while continuing to call the facade.
 
-- [ ] **Step 7: Update the complexity baseline**
+- [x] **Step 7: Update the complexity baseline**
 
 In `quality/ruff-complexity-baseline.json`:
 
@@ -828,7 +828,7 @@ In `quality/ruff-complexity-baseline.json`:
 - Move `data_base/RAG_QA_service.py::_expand_short_chunks` with score 12 to `data_base/rag_pipeline.py::_expand_short_chunks` with the same score.
 - Do not add entries for `run_rag_pipeline()` or any main stage.
 
-- [ ] **Step 8: Run focused integration tests**
+- [x] **Step 8: Run focused integration tests**
 
 Run:
 
@@ -838,7 +838,7 @@ Run:
 
 Expected: PASS with facade imports, signatures, return values, progress payloads, Graph evidence, CRAG fallback, and visual verification unchanged.
 
-- [ ] **Step 9: Run complexity and Ruff checks**
+- [x] **Step 9: Run complexity and Ruff checks**
 
 Run:
 
@@ -850,7 +850,7 @@ Run:
 
 Expected: no C901 findings for the facade, `run_rag_pipeline()`, or the four main stages; complexity ratchet passes with no new finding; import/unused checks pass.
 
-- [ ] **Step 10: Commit the facade switch**
+- [x] **Step 10: Commit the facade switch**
 
 ```powershell
 git add -- data_base/RAG_QA_service.py data_base/rag_pipeline.py quality/ruff-complexity-baseline.json tests/test_evaluation_phase_attribution.py tests/test_graph_auto_gate.py tests/test_graph_context_packing.py tests/test_rag_graph_evidence_docs.py tests/test_rag_retrieval_generation_split.py tests/test_rag_retrieval_logic.py tests/test_reranker_logic.py tests/test_visual_tool_trigger.py
@@ -869,7 +869,7 @@ git commit -m "refactor(rag): delegate facade to staged pipeline"
 - Consumes: the completed facade and pipeline boundary.
 - Produces: maintained architecture documentation and a fully verified isolated refactor.
 
-- [ ] **Step 1: Update the architecture documentation**
+- [x] **Step 1: Update the architecture documentation**
 
 Replace the single retrieval/generation path entry in `docs/design-docs/retrieval-and-indexing.md` with:
 
@@ -885,7 +885,7 @@ Add this design rule:
 - `RAG_QA_service.py` preserves public imports and delegates execution; new orchestration logic belongs in `rag_pipeline.py` or the focused stage owner.
 ```
 
-- [ ] **Step 2: Run all focused RAG and Graph tests**
+- [x] **Step 2: Run all focused RAG and Graph tests**
 
 Run:
 
@@ -895,7 +895,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 3: Run the complete backend test gate with warning budget**
+- [x] **Step 3: Run the complete backend test gate with warning budget**
 
 Run:
 
@@ -905,7 +905,7 @@ Run:
 
 Expected: all tests pass, warning count is 56 or lower, and no external API access is required.
 
-- [ ] **Step 4: Run generated artifact and documentation checks**
+- [x] **Step 4: Run generated artifact and documentation checks**
 
 Run:
 
@@ -916,7 +916,7 @@ Run:
 
 Expected: OpenAPI artifacts are current and Markdown links are valid.
 
-- [ ] **Step 5: Run repository-wide quality gates**
+- [x] **Step 5: Run repository-wide quality gates**
 
 Run:
 
@@ -928,7 +928,7 @@ git diff --check
 
 Expected: complexity ratchet passes with the 30-point facade finding removed, Ruff passes, and Git reports no whitespace errors.
 
-- [ ] **Step 6: Review scope and commit the documentation**
+- [x] **Step 6: Review scope and commit the documentation**
 
 Run:
 
@@ -945,7 +945,7 @@ git add -- docs/design-docs/retrieval-and-indexing.md
 git commit -m "docs: document RAG pipeline boundary"
 ```
 
-- [ ] **Step 7: Perform the post-commit check**
+- [x] **Step 7: Perform the post-commit check**
 
 Run:
 
