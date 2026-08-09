@@ -26,6 +26,7 @@ from evaluation.agentic_v9_admission import V9AdmissionContract
 from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
 from evaluation.analytics import reconcile_official_tokens
 from evaluation.campaign_schemas import CampaignLifecycleStatus, CampaignResultStatus
+from evaluation.evidence import content_hash
 from evaluation.execution_worker import DatasetExecutionWorker
 from evaluation.job_schemas import (
     ClaimedEvaluationWork,
@@ -96,7 +97,16 @@ async def _claim_execution(
     agentic_execution_version: str = "v9",
     source_docs: list[str] | None = None,
     model_config: dict[str, object] | None = None,
+    test_case_overrides: dict[str, object] | None = None,
 ) -> ClaimedEvaluationWork:
+    test_case = {
+        "id": "Q1",
+        "question": "What is the answer?",
+        "ground_truth": "42",
+        "source_docs": source_docs or [],
+        "requires_multi_doc_reasoning": False,
+    }
+    test_case.update(test_case_overrides or {})
     await store.create_job_with_items(
         user_id="user-a",
         campaign_id="cmp-1",
@@ -110,13 +120,7 @@ async def _claim_execution(
                 input_snapshot={
                     "user_id": "user-a",
                     "campaign_id": "cmp-1",
-                    "test_case": {
-                        "id": "Q1",
-                        "question": "What is the answer?",
-                        "ground_truth": "42",
-                        "source_docs": source_docs or [],
-                        "requires_multi_doc_reasoning": False,
-                    },
+                    "test_case": test_case,
                     "mode": mode,
                     "run_number": 1,
                     "repeat_number": 1,
@@ -649,3 +653,601 @@ async def test_v9_actual_route_is_persisted_separately_from_retrospective_route(
     assert actual.reason == "Multiple named sources."
     assert actual.confidence == 1.0
     assert actual.fallback_reason is None
+
+
+@pytest.mark.asyncio
+async def test_campaign_result_records_retrieval_context_and_evidence_flow(
+    store: EvaluationJobStore,
+) -> None:
+    async def runner(**kwargs) -> BenchmarkExecutionResult:  # noqa: ANN003
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="Fact A is supported by paper A.",
+            contexts=["Fact A appears in paper A.", "Distractor text"],
+            source_doc_ids=["paper-a.pdf", "paper-b.pdf"],
+            expected_sources=["paper-a.pdf"],
+            latency_ms=11,
+            token_usage={"total_tokens": 20},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+        )
+
+    claim = await _claim_execution(
+        store,
+        mode="naive",
+        source_docs=["paper-a.pdf"],
+        test_case_overrides={
+            "id": "Q-EVIDENCE",
+            "question": "Where is Fact A?",
+            "ground_truth": "paper A",
+            "category": "evidence",
+            "difficulty": "medium",
+            "atomic_facts": [{"atomic_fact_id": "F1", "text": "Fact A"}],
+            "expected_evidence": [
+                {
+                    "evidence_id": "E1",
+                    "doc_id": "paper-a.pdf",
+                    "atomic_fact_id": "F1",
+                }
+            ],
+        },
+    )
+    worker = DatasetExecutionWorker(store=store, runner=runner)
+    with patch(
+        "data_base.repository.resolve_document_references",
+        new=AsyncMock(return_value={"paper-a.pdf": ["paper-a.pdf"]}),
+    ):
+        await worker.execute(claim)
+
+    result = (
+        await evaluation_db.CampaignResultRepository().list_for_campaign(
+            user_id="user-a", campaign_id="cmp-1"
+        )
+    )[0]
+    observability_repo = EvaluationObservabilityRepository()
+    retrieval_events = await observability_repo.list_retrieval_events_for_run(
+        result.id
+    )
+    assert len(retrieval_events) == 1
+    assert retrieval_events[0].query == "Where is Fact A?"
+    assert retrieval_events[0].result_count == 2
+    assert retrieval_events[0].payload["instrumentation_depth"] == "result_level"
+    assert retrieval_events[0].payload["expected_evidence_hit_rate"] == 1.0
+
+    chunks = await observability_repo.list_retrieval_chunks_for_run(result.id)
+    assert len(chunks) == 2
+    assert chunks[0].doc_id == "paper-a.pdf"
+    assert chunks[0].rank_before_rerank is None
+    assert chunks[0].rank_after_rerank is None
+    assert chunks[0].payload["reranker_status"] == "not_instrumented"
+    assert chunks[0].payload["expected_evidence_match_status"] == "matched"
+    assert chunks[0].used_in_context is True
+    assert chunks[0].used_in_answer is True
+    assert chunks[0].expected_evidence_match is True
+    assert chunks[1].expected_evidence_match is False
+
+    context_packs = await observability_repo.list_context_packs_for_run(result.id)
+    assert len(context_packs) == 1
+    assert context_packs[0].input_chunk_count == 2
+    assert context_packs[0].packed_chunk_count == 2
+    assert context_packs[0].payload["selected_chunk_ids"] == [
+        chunk.chunk_id for chunk in chunks
+    ]
+    assert context_packs[0].payload["packing_policy"] == "result_level_contexts"
+    assert context_packs[0].retrieved_but_not_packed_evidence == []
+    assert result.derived_metrics["gold_fact_attrition"][0]["retrieved"] is True
+    assert result.derived_metrics["gold_fact_attrition"][0]["packed"] is True
+
+
+@pytest.mark.asyncio
+async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks(
+    store: EvaluationJobStore,
+) -> None:
+    duplicate_excerpt = "The same selected excerpt appears in two documents."
+    raw_duplicate_excerpt = "The same  selected excerpt appears in two documents."
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:  # noqa: ANN003
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="The selected excerpts support the answer.",
+            contexts=[
+                duplicate_excerpt,
+                duplicate_excerpt,
+                duplicate_excerpt,
+                "This context was not instrumented.",
+            ],
+            source_doc_ids=["doc-a", "doc-a", "doc-b", "doc-missing"],
+            source_chunk_ids=[
+                "runtime-a-second",
+                "runtime-a-first",
+                "runtime-b",
+                None,
+            ],
+            expected_sources=["doc-a"],
+            latency_ms=11,
+            token_usage={"total_tokens": 20},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+            execution_profile="agentic-v9-eval",
+            agent_trace={
+                "agentic_v9": {
+                    "retrieval_diagnostics": [
+                        {
+                            "task_id": "task-source-a",
+                            "status": "executed",
+                            "fallback_reason": None,
+                            "candidate_count": 8,
+                            "selected_count": 4,
+                            "candidate_diversification": {
+                                "policy": "tail_source_diversity_r1",
+                                "enabled": False,
+                                "applied": False,
+                                "retrieved_doc_ids": ["doc-a", "doc-b"],
+                                "candidate_doc_ids": ["doc-a"],
+                                "represented_doc_ids_before_tail": [],
+                                "admitted_doc_ids": [],
+                            },
+                            "selected": [
+                                {
+                                    "doc_id": "doc-a",
+                                    "chunk_id": "runtime-a-first",
+                                    "content_hash": content_hash(
+                                        raw_duplicate_excerpt
+                                    ),
+                                    "pre_rerank_rank": 8,
+                                    "post_rerank_rank": 4,
+                                    "rerank_score": 0.31,
+                                },
+                                {
+                                    "doc_id": "doc-a",
+                                    "chunk_id": "runtime-a-second",
+                                    "content_hash": content_hash(
+                                        raw_duplicate_excerpt
+                                    ),
+                                    "pre_rerank_rank": 3,
+                                    "post_rerank_rank": 1,
+                                    "rerank_score": 0.91,
+                                },
+                            ],
+                        },
+                        {
+                            "task_id": "task-source-b",
+                            "status": "executed",
+                            "fallback_reason": None,
+                            "candidate_count": 8,
+                            "selected_count": 4,
+                            "selected": [
+                                {
+                                    "doc_id": "doc-b",
+                                    "chunk_id": "runtime-b",
+                                    "content_hash": content_hash(
+                                        raw_duplicate_excerpt
+                                    ),
+                                    "pre_rerank_rank": 5,
+                                    "post_rerank_rank": 2,
+                                    "rerank_score": 0.82,
+                                }
+                            ],
+                        },
+                    ]
+                }
+            },
+        )
+
+    claim = await _claim_execution(
+        store,
+        mode="agentic",
+        agentic_execution_version="v9",
+        source_docs=["doc-a"],
+        test_case_overrides={
+            "id": "Q-V9-RERANK",
+            "question": "What do the selected excerpts show?",
+            "ground_truth": "They support the answer.",
+            "category": "evidence",
+            "difficulty": "medium",
+        },
+    )
+    worker = DatasetExecutionWorker(store=store, runner=runner)
+    with patch(
+        "data_base.repository.resolve_document_references",
+        new=AsyncMock(return_value={"doc-a": ["doc-a"]}),
+    ):
+        await worker.execute(claim)
+
+    result = (
+        await evaluation_db.CampaignResultRepository().list_for_campaign(
+            user_id="user-a", campaign_id="cmp-1"
+        )
+    )[0]
+    chunks = await EvaluationObservabilityRepository().list_retrieval_chunks_for_run(
+        result.id
+    )
+
+    chunks_by_context_order = sorted(
+        chunks, key=lambda chunk: int(chunk.chunk_id.rsplit(":", 1)[1])
+    )
+    assert [(chunk.doc_id, chunk.excerpt) for chunk in chunks_by_context_order] == [
+        ("doc-a", duplicate_excerpt),
+        ("doc-a", duplicate_excerpt),
+        ("doc-b", duplicate_excerpt),
+        ("doc-missing", "This context was not instrumented."),
+    ]
+    assert [chunk.rank_before_rerank for chunk in chunks_by_context_order] == [
+        3,
+        8,
+        5,
+        None,
+    ]
+    assert [chunk.rank_after_rerank for chunk in chunks_by_context_order] == [
+        1,
+        4,
+        2,
+        None,
+    ]
+    assert [chunk.rerank_score for chunk in chunks_by_context_order] == [
+        0.91,
+        0.31,
+        0.82,
+        None,
+    ]
+    assert [chunk.payload for chunk in chunks_by_context_order] == [
+        {
+            "instrumentation_depth": "result_level",
+            "expected_evidence_match_status": "matched",
+            "reranker_status": "executed",
+            "reranker_fallback_reason": None,
+            "retrieval_task_id": "task-source-a",
+            "rerank_candidate_count": 8,
+            "rerank_selected_count": 4,
+            "candidate_stage": {
+                "policy": "tail_source_diversity_r1",
+                "enabled": False,
+                "applied": False,
+                "retrieved_doc_ids": ["doc-a", "doc-b"],
+                "candidate_doc_ids": ["doc-a"],
+                "represented_doc_ids_before_tail": [],
+                "admitted_doc_ids": [],
+            },
+        },
+        {
+            "instrumentation_depth": "result_level",
+            "expected_evidence_match_status": "matched",
+            "reranker_status": "executed",
+            "reranker_fallback_reason": None,
+            "retrieval_task_id": "task-source-a",
+            "rerank_candidate_count": 8,
+            "rerank_selected_count": 4,
+            "candidate_stage": {
+                "policy": "tail_source_diversity_r1",
+                "enabled": False,
+                "applied": False,
+                "retrieved_doc_ids": ["doc-a", "doc-b"],
+                "candidate_doc_ids": ["doc-a"],
+                "represented_doc_ids_before_tail": [],
+                "admitted_doc_ids": [],
+            },
+        },
+        {
+            "instrumentation_depth": "result_level",
+            "expected_evidence_match_status": "not_matched",
+            "reranker_status": "executed",
+            "reranker_fallback_reason": None,
+            "retrieval_task_id": "task-source-b",
+            "rerank_candidate_count": 8,
+            "rerank_selected_count": 4,
+        },
+        {
+            "instrumentation_depth": "result_level",
+            "expected_evidence_match_status": "not_matched",
+            "reranker_status": "not_instrumented",
+            "reranker_fallback_reason": None,
+            "retrieval_task_id": None,
+            "rerank_candidate_count": None,
+            "rerank_selected_count": None,
+        },
+    ]
+    assert [chunk.used_in_context for chunk in chunks_by_context_order] == [
+        True,
+        True,
+        True,
+        True,
+    ]
+    assert [chunk.used_in_answer for chunk in chunks_by_context_order] == [
+        True,
+        True,
+        False,
+        False,
+    ]
+    assert all(
+        chunk.chunk_id.startswith(f"{result.id}:chunk:")
+        for chunk in chunks_by_context_order
+    )
+    assert result.answer == "The selected excerpts support the answer."
+    assert result.contexts == [
+        duplicate_excerpt,
+        duplicate_excerpt,
+        duplicate_excerpt,
+        "This context was not instrumented.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_campaign_result_resolves_expected_source_filenames_for_chunk_statuses(
+    store: EvaluationJobStore,
+) -> None:
+    """Catch source-name/UUID comparison regressions in result observability."""
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:  # noqa: ANN003
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="The answer remains unchanged.",
+            contexts=["Expected source context", "Other source context"],
+            source_doc_ids=["document-uuid-a", "document-uuid-b"],
+            expected_sources=[],
+            latency_ms=11,
+            token_usage={"total_tokens": 20},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+        )
+
+    claim = await _claim_execution(
+        store,
+        mode="naive",
+        source_docs=["expected-paper.pdf"],
+        test_case_overrides={
+            "id": "Q-SOURCE-ID",
+            "question": "Which source supports the answer?",
+            "ground_truth": "The expected paper.",
+            "category": "evidence",
+            "difficulty": "medium",
+        },
+    )
+    worker = DatasetExecutionWorker(store=store, runner=runner)
+    with patch(
+        "data_base.repository.resolve_document_references",
+        new=AsyncMock(return_value={"expected-paper.pdf": ["document-uuid-a"]}),
+    ) as resolve_document_references:
+        await worker.execute(claim)
+
+    resolve_document_references.assert_awaited_once_with(
+        "user-a", ["expected-paper.pdf"]
+    )
+    result = (
+        await evaluation_db.CampaignResultRepository().list_for_campaign(
+            user_id="user-a", campaign_id="cmp-1"
+        )
+    )[0]
+    chunks = await EvaluationObservabilityRepository().list_retrieval_chunks_for_run(
+        result.id
+    )
+
+    assert result.answer == "The answer remains unchanged."
+    assert result.contexts == ["Expected source context", "Other source context"]
+    assert [chunk.expected_evidence_match for chunk in chunks] == [True, False]
+    assert [chunk.payload["expected_evidence_match_status"] for chunk in chunks] == [
+        "matched",
+        "not_matched",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resolver_result",
+    [
+        {},
+        {"ambiguous-paper.pdf": ["document-uuid-a", "document-uuid-b"]},
+    ],
+)
+async def test_campaign_result_marks_unresolved_expected_source_identity_without_mutating_result(
+    store: EvaluationJobStore,
+    resolver_result: dict[str, list[str]],
+) -> None:
+    """Catch resolver failures that would silently fabricate expected evidence."""
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:  # noqa: ANN003
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="Answer is preserved.",
+            contexts=["Retrieved context is preserved."],
+            source_doc_ids=["document-uuid-a"],
+            expected_sources=["ambiguous-paper.pdf"],
+            latency_ms=11,
+            token_usage={"total_tokens": 20},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+        )
+
+    claim = await _claim_execution(
+        store,
+        mode="naive",
+        source_docs=["fallback-paper.pdf"],
+        test_case_overrides={
+            "id": "Q-UNRESOLVED",
+            "question": "Which source supports the answer?",
+            "ground_truth": "The expected paper.",
+            "category": "evidence",
+            "difficulty": "medium",
+        },
+    )
+    worker = DatasetExecutionWorker(store=store, runner=runner)
+    with patch(
+        "data_base.repository.resolve_document_references",
+        new=AsyncMock(return_value=resolver_result),
+    ):
+        await worker.execute(claim)
+
+    result = (
+        await evaluation_db.CampaignResultRepository().list_for_campaign(
+            user_id="user-a", campaign_id="cmp-1"
+        )
+    )[0]
+    chunks = await EvaluationObservabilityRepository().list_retrieval_chunks_for_run(
+        result.id
+    )
+
+    assert result.answer == "Answer is preserved."
+    assert result.contexts == ["Retrieved context is preserved."]
+    assert chunks[0].expected_evidence_match is False
+    assert chunks[0].payload["expected_evidence_match_status"] == "identity_unresolved"
+    assert set(chunks[0].payload) <= {
+        "instrumentation_depth",
+        "expected_evidence_match_status",
+        "reranker_status",
+        "reranker_fallback_reason",
+        "retrieval_task_id",
+        "rerank_candidate_count",
+        "rerank_selected_count",
+        "candidate_stage",
+    }
+
+
+@pytest.mark.asyncio
+async def test_campaign_result_marks_resolver_exception_as_unresolved_expected_source_identity(
+    store: EvaluationJobStore,
+) -> None:
+    """Catch resolver outages that would otherwise fail a campaign run."""
+
+    async def runner(**kwargs) -> BenchmarkExecutionResult:  # noqa: ANN003
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="Answer is preserved after resolver failure.",
+            contexts=["Retrieved context is preserved."],
+            source_doc_ids=["document-uuid-a"],
+            expected_sources=["expected-paper.pdf"],
+            latency_ms=11,
+            token_usage={"total_tokens": 20},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+        )
+
+    claim = await _claim_execution(
+        store,
+        mode="naive",
+        test_case_overrides={
+            "id": "Q-RESOLVER-ERROR",
+            "question": "Which source supports the answer?",
+            "ground_truth": "The expected paper.",
+            "category": "evidence",
+            "difficulty": "medium",
+        },
+    )
+    worker = DatasetExecutionWorker(store=store, runner=runner)
+    with patch(
+        "data_base.repository.resolve_document_references",
+        new=AsyncMock(side_effect=RuntimeError("resolver unavailable")),
+    ):
+        await worker.execute(claim)
+
+    result = (
+        await evaluation_db.CampaignResultRepository().list_for_campaign(
+            user_id="user-a", campaign_id="cmp-1"
+        )
+    )[0]
+    chunks = await EvaluationObservabilityRepository().list_retrieval_chunks_for_run(
+        result.id
+    )
+
+    assert result.answer == "Answer is preserved after resolver failure."
+    assert result.contexts == ["Retrieved context is preserved."]
+    assert chunks[0].expected_evidence_match is False
+    assert chunks[0].payload["expected_evidence_match_status"] == "identity_unresolved"
+    assert "resolver unavailable" not in json.dumps(chunks[0].payload)
+
+
+@pytest.mark.asyncio
+async def test_campaign_result_persists_claim_rows_and_derived_claim_metrics(
+    store: EvaluationJobStore,
+) -> None:
+    async def runner(**kwargs) -> BenchmarkExecutionResult:  # noqa: ANN003
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="One supported claim. One weak claim.",
+            contexts=["evidence"],
+            source_doc_ids=["doc-a"],
+            expected_sources=["doc-a"],
+            latency_ms=7,
+            token_usage={"total_tokens": 9},
+            category=test_case.category,
+            difficulty=test_case.difficulty,
+            agent_trace={
+                "claims": [
+                    {
+                        "claim_text": "Supported claim",
+                        "claim_type": "answer",
+                        "support_status": "supported",
+                        "support_score": 0.9,
+                        "evidence": [{"chunk_id": "doc-a:1"}],
+                    },
+                    {
+                        "claim_text": "Weak claim",
+                        "claim_type": "answer",
+                        "support_status": "unsupported",
+                        "unsupported_reason": "No evidence found",
+                    },
+                ]
+            },
+        )
+
+    claim = await _claim_execution(
+        store,
+        mode="agentic",
+        test_case_overrides={
+            "id": "Q-CLAIMS",
+            "question": "Which claims are supported?",
+            "ground_truth": "One supported claim",
+            "category": "claims",
+            "difficulty": "medium",
+        },
+    )
+    worker = DatasetExecutionWorker(store=store, runner=runner)
+    with patch(
+        "data_base.repository.resolve_document_references",
+        new=AsyncMock(return_value={"doc-a": ["doc-a"]}),
+    ):
+        await worker.execute(claim)
+
+    result = (
+        await evaluation_db.CampaignResultRepository().list_for_campaign(
+            user_id="user-a", campaign_id="cmp-1"
+        )
+    )[0]
+    claims = await EvaluationObservabilityRepository().list_claims_for_run(result.id)
+
+    assert [claim.claim_text for claim in claims] == [
+        "Supported claim",
+        "Weak claim",
+    ]
+    assert [claim.support_status for claim in claims] == [
+        "supported",
+        "unsupported",
+    ]
+    assert claims[0].evidence == [{"chunk_id": "doc-a:1"}]
+    assert claims[0].payload["support_score"] == 0.9
+    assert claims[1].unsupported_reason == "No evidence found"
+    assert result.derived_metrics["supported_claim_ratio"] == pytest.approx(0.5)
+    assert result.derived_metrics["unsupported_claim_ratio"] == pytest.approx(0.5)
+    assert result.derived_metrics["repair_count"] == 0
