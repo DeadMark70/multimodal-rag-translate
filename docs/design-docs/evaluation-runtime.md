@@ -8,7 +8,9 @@ Describe evaluation as a persisted runtime subsystem that now serves both legacy
 
 - Router: `evaluation/router.py`
 - Storage: `evaluation/storage.py` and `evaluation/db.py`
-- Engine: `evaluation/campaign_engine.py`
+- Campaign facade and recovery: `evaluation/campaign_engine.py`
+- Campaign execution contracts and projections: `evaluation/campaign_execution.py`
+- Durable dataset execution adapter: `evaluation/execution_worker.py`
 - Read-side analytics: `evaluation/analytics.py`
 - Normalized observability recording: `evaluation/observability.py`
 - Normalized observability repositories: `evaluation/observability_storage.py`
