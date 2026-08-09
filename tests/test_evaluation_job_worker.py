@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -193,6 +194,38 @@ async def test_start_restarts_idle_loop_before_claiming_new_work(
     worker.notify()
     await _wait_until(lambda: executor.await_count == 1)
     await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_retries_transient_sqlite_claim_error(
+    store: EvaluationJobStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient SQLite writer collision must not terminate the worker loop."""
+    await _seed_work(store, logical_key="execution:Q1:naive:1:none")
+    original_claim_ready_items = store.claim_ready_items
+    claim_calls = 0
+
+    async def claim_ready_items(**kwargs):  # noqa: ANN003, ANN202
+        nonlocal claim_calls
+        claim_calls += 1
+        if claim_calls == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return await original_claim_ready_items(**kwargs)
+
+    monkeypatch.setattr(store, "claim_ready_items", claim_ready_items)
+    executor = AsyncMock()
+    worker = EvaluationJobWorker(
+        store=store,
+        execution_handler=executor,
+        stop_when_idle=True,
+    )
+
+    await worker.start()
+    await _wait_until(lambda: executor.await_count == 1)
+    await worker.stop()
+
+    assert claim_calls >= 2
 
 
 @pytest.mark.asyncio
