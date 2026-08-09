@@ -249,7 +249,7 @@ $env:TEST_MODE="true"
 $env:USE_FAKE_PROVIDERS="true"
 $env:CI_BLOCK_EXTERNAL_NETWORK="true"
 
-python -m ruff check . --select E9,F63,F7,F82
+python -m ruff check . --select E9,F63,F7,F82,F401,F841
 python scripts/check_complexity_ratchet.py --check
 python scripts/run_pytest_with_warning_budget.py --max-warnings 56 -- -q
 python scripts/sync_openapi_artifacts.py --check

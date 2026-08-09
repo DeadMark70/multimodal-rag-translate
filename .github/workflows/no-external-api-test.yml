@@ -51,7 +51,7 @@ jobs:
           python -m pip install -r requirements.txt
 
       - name: Ruff correctness
-        run: python -m ruff check . --select E9,F63,F7,F82
+        run: python -m ruff check . --select E9,F63,F7,F82,F401,F841
 
       - name: Complexity ratchet
         run: python scripts/check_complexity_ratchet.py --check

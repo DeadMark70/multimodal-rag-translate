@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Any
-
 from graph_rag.rebuild_jobs import GraphRebuildJobStore
 from graph_rag.retry import is_retryable_graph_error
 from graph_rag.schemas import (
