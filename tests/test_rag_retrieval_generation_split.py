@@ -69,6 +69,99 @@ def test_terminal_result_preserves_legacy_tuple_and_rag_result_shapes() -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_disabled_crag_stage_passes_documents_through() -> None:
+    pipeline = import_module("data_base.rag_pipeline")
+    document = Document(page_content="evidence", metadata={"doc_id": "doc-1"})
+
+    outcome = await pipeline._run_crag_stage(
+        question="question",
+        documents=[document],
+        retriever=SimpleNamespace(),
+        enable_crag=False,
+        crag_rewrite_mode="hyde",
+        doc_ids=None,
+        enable_reranking=False,
+        reranker_available=False,
+        target_k=3,
+        progress_callback=None,
+        return_docs=True,
+    )
+
+    assert outcome.documents == [document]
+    assert outcome.terminal_result is None
+
+
+@pytest.mark.asyncio
+async def test_disabled_graph_stage_returns_neutral_context() -> None:
+    pipeline = import_module("data_base.rag_pipeline")
+    document = Document(page_content="evidence", metadata={"doc_id": "doc-1"})
+
+    outcome = await pipeline._run_graph_stage(
+        question="question",
+        user_id="user-1",
+        documents=[document],
+        doc_ids=None,
+        enable_graph_rag=False,
+        graph_search_mode="generic",
+        graph_execution_hints=None,
+        mode_hints=None,
+        return_docs=True,
+        progress_callback=None,
+    )
+
+    assert outcome.documents == [document]
+    assert outcome.graph_context == ""
+    assert outcome.graph_evidence_documents == []
+
+
+@pytest.mark.asyncio
+async def test_raw_legacy_graph_stage_preserves_gate_role_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = import_module("data_base.rag_pipeline")
+    events: list[tuple[str, dict[str, object] | None]] = []
+
+    async def progress(stage: str, details: dict[str, object] | None) -> None:
+        events.append((stage, details))
+
+    monkeypatch.setattr(
+        pipeline.rag_graph_runtime,
+        "_get_graph_context",
+        AsyncMock(return_value="graph context"),
+    )
+    decision = pipeline.rag_graph_runtime.GraphNeedDecision(
+        use_graph=True,
+        role="planning",
+        locator_only=False,
+        final_graph_context_allowed=True,
+        score=1.0,
+        reason="planning path",
+    )
+    strategy = pipeline.rag_graph_runtime.GraphExecutionStrategy(
+        strategy="raw_legacy",
+        gate_decision=decision,
+        reason="legacy compatibility",
+    )
+
+    outcome = await pipeline._run_graph_raw_legacy_strategy(
+        question="question",
+        user_id="user-1",
+        documents=[],
+        graph_search_mode="generic",
+        graph_execution_hints=None,
+        mode_hints=None,
+        progress_callback=progress,
+        return_docs=False,
+        strategy=strategy,
+    )
+
+    assert outcome.graph_context == "graph context"
+    assert events == [
+        ("graph_context", {"search_mode": "generic", "gate_role": "planning"})
+    ]
+
+
 def test_graph_runtime_owns_graph_contract_and_facade_reexports_it() -> None:
     assert find_spec("data_base.rag_graph_runtime") is not None
 

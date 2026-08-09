@@ -1,12 +1,18 @@
 """Functional orchestration stages for the legacy RAG answer path."""
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi.concurrency import run_in_threadpool
 from langchain_core.documents import Document
 
+from data_base import (
+    rag_crag,
+    rag_filtering,
+    rag_graph_locator,
+    rag_graph_runtime,
+)
 from data_base.document_metadata import get_document_id
 from data_base.query_transformer import (
     transform_query_multi,
@@ -19,11 +25,13 @@ from data_base.rag_filtering import (
 )
 from data_base.rag_pipeline_schemas import ProgressCallback, RAGResult
 from data_base.rag_retrieval import retrieve_hybrid_documents
+from data_base.rag_crag import CragRewriteMode
 from data_base.reranker import DocumentReranker
 from data_base.vector_store_manager import (
     get_user_retriever_async,
     invoke_retriever_queries_async,
 )
+from graph_rag.feature_flags import get_graph_feature_flags
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +47,23 @@ class RetrievalStageOutcome:
     reranker_available: bool = False
     target_k: int = 0
     terminal_result: Optional[LegacyRagResponse] = None
+
+
+@dataclass(slots=True)
+class CragStageOutcome:
+    """Documents produced by optional corrective retrieval."""
+
+    documents: List[Document]
+    terminal_result: Optional[LegacyRagResponse] = None
+
+
+@dataclass(slots=True)
+class GraphStageOutcome:
+    """Documents and legacy prompt evidence produced by Graph routing."""
+
+    documents: List[Document]
+    graph_context: str = ""
+    graph_evidence_documents: List[Document] = field(default_factory=list)
 
 
 def _terminal_result(
@@ -214,4 +239,352 @@ async def _run_retrieval_stage(
         retriever=retriever,
         reranker_available=reranker_available,
         target_k=target_k,
+    )
+
+
+async def _run_crag_stage(
+    *,
+    question: str,
+    documents: List[Document],
+    retriever: Any,
+    enable_crag: bool,
+    crag_rewrite_mode: CragRewriteMode,
+    doc_ids: Optional[List[str]],
+    enable_reranking: bool,
+    reranker_available: bool,
+    target_k: int,
+    progress_callback: Optional[ProgressCallback],
+    return_docs: bool,
+) -> CragStageOutcome:
+    """Apply the optional corrective retrieval guard."""
+    if not enable_crag or not documents:
+        return CragStageOutcome(documents=documents)
+
+    try:
+        crag_result = await rag_crag.run_corrective_retrieval(
+            question=question,
+            documents=documents,
+            retriever=retriever,
+            judge=rag_crag.judge_retrieved_documents,
+            rewrite_mode=crag_rewrite_mode,
+            doc_ids=doc_ids,
+            enable_reranking=enable_reranking,
+            reranker_available=reranker_available,
+            target_k=target_k,
+            progress_callback=progress_callback,
+            hyde_transformer=transform_query_with_hyde,
+            multi_query_transformer=transform_query_multi,
+            query_executor=invoke_retriever_queries_async,
+            rerank_documents=rag_filtering.rerank_documents_for_generation,
+            limit_rerank_candidates=rag_filtering.limit_rerank_candidates,
+        )
+        if crag_result.status == "insufficient":
+            await _emit_progress(
+                progress_callback,
+                "crag_correction",
+                {"status": "insufficient_retrieval"},
+            )
+            return CragStageOutcome(
+                documents=documents,
+                terminal_result=_terminal_result(
+                    "抱歉，檢索守衛判定目前檢索內容關聯性不足，請調整問題或補充文件後再試。",
+                    list(doc_ids or []),
+                    return_docs,
+                ),
+            )
+
+        corrected_documents = crag_result.documents
+        if crag_result.correction_applied:
+            await _emit_progress(
+                progress_callback,
+                "crag_correction",
+                {
+                    "status": "rewrite_applied",
+                    "document_count": len(corrected_documents),
+                },
+            )
+        return CragStageOutcome(documents=corrected_documents)
+    except Exception as crag_error:  # noqa: BLE001
+        logger.warning(
+            "CRAG guard failed; falling back to original retrieval: %s",
+            crag_error,
+        )
+        return CragStageOutcome(documents=documents)
+
+
+async def _run_graph_stage(
+    *,
+    question: str,
+    user_id: str,
+    documents: List[Document],
+    doc_ids: Optional[List[str]],
+    enable_graph_rag: bool,
+    graph_search_mode: str,
+    graph_execution_hints: Optional[Dict[str, Any]],
+    mode_hints: Optional[Dict[str, Any]],
+    return_docs: bool,
+    progress_callback: Optional[ProgressCallback],
+) -> GraphStageOutcome:
+    """Resolve Graph strategy and dispatch to its focused execution helper."""
+    graph_flags = get_graph_feature_flags(
+        rag_graph_runtime._graph_feature_flag_config(graph_execution_hints)
+    )
+    if not enable_graph_rag:
+        return GraphStageOutcome(documents=documents)
+
+    asset_probe_result = (
+        rag_graph_runtime._request_scoped_graph_asset_probe(
+            user_id=user_id,
+            question=question,
+            documents=documents,
+            requested_doc_ids=doc_ids,
+        )
+        if graph_flags.graph_asset_graph_enabled
+        else False
+    )
+    manual_override, asset_registry_available = rag_graph_runtime._graph_gate_inputs(
+        graph_execution_hints,
+        mode_hints,
+        graph_flags,
+        asset_probe_result=asset_probe_result,
+    )
+    evidence_mode = rag_graph_runtime._graph_evidence_mode(
+        mode_hints,
+        graph_execution_hints,
+        rag_graph_runtime._normalize_evaluation_metadata(
+            mode_hints,
+            graph_execution_hints,
+        ),
+    )
+    strategy = rag_graph_runtime._graph_execution_strategy(
+        question=question,
+        flags=graph_flags,
+        graph_evidence_mode=evidence_mode,
+        manual_override=manual_override,
+        asset_registry_available=asset_registry_available,
+        oracle_graph_decision=rag_graph_runtime._oracle_graph_decision(
+            graph_execution_hints,
+            mode_hints,
+        ),
+    )
+
+    if strategy.strategy == "skip":
+        return await _run_graph_skip_strategy(
+            question=question,
+            documents=documents,
+            graph_search_mode=graph_search_mode,
+            graph_execution_hints=graph_execution_hints,
+            mode_hints=mode_hints,
+            progress_callback=progress_callback,
+            strategy=strategy,
+        )
+    if strategy.strategy == "source_expand":
+        return await _run_graph_source_expand_strategy(
+            question=question,
+            user_id=user_id,
+            documents=documents,
+            doc_ids=doc_ids,
+            graph_search_mode=graph_search_mode,
+            graph_execution_hints=graph_execution_hints,
+            mode_hints=mode_hints,
+            progress_callback=progress_callback,
+            strategy=strategy,
+            evidence_mode=evidence_mode,
+        )
+    return await _run_graph_raw_legacy_strategy(
+        question=question,
+        user_id=user_id,
+        documents=documents,
+        graph_search_mode=graph_search_mode,
+        graph_execution_hints=graph_execution_hints,
+        mode_hints=mode_hints,
+        progress_callback=progress_callback,
+        return_docs=return_docs,
+        strategy=strategy,
+    )
+
+
+async def _run_graph_skip_strategy(
+    *,
+    question: str,
+    documents: List[Document],
+    graph_search_mode: str,
+    graph_execution_hints: Optional[Dict[str, Any]],
+    mode_hints: Optional[Dict[str, Any]],
+    progress_callback: Optional[ProgressCallback],
+    strategy: rag_graph_runtime.GraphExecutionStrategy,
+) -> GraphStageOutcome:
+    """Record an explicit Graph skip and return unchanged documents."""
+    lifecycle = rag_graph_runtime.GraphEvidenceLifecycle([], [], [], [], [])
+    details = rag_graph_runtime.GraphContextDetails(
+        route_decision=rag_graph_runtime.GraphRouteDecision(
+            query_kind="relation",
+            path="skip",
+            router_reason="; ".join(
+                filter(
+                    None,
+                    (
+                        (
+                            f"gate={strategy.gate_decision.reason}"
+                            if strategy.gate_decision
+                            else None
+                        ),
+                        f"strategy={strategy.reason}",
+                        lifecycle.to_router_reason(),
+                    ),
+                )
+            ),
+        ),
+        matched_entity_ids=[],
+        community_ids=[],
+        candidate_evidence_count=0,
+        graph_latency_ms=0,
+    )
+    await _emit_progress(
+        progress_callback,
+        "graph_context",
+        {"search_mode": graph_search_mode, "gate_role": "skip"},
+    )
+    await rag_graph_runtime._record_graph_observability(
+        question=question,
+        graph_search_mode=graph_search_mode,
+        graph_execution_hints=graph_execution_hints,
+        mode_hints=mode_hints,
+        graph_context_details=details,
+        graph_evidence_units=[],
+        lifecycle=lifecycle,
+    )
+    return GraphStageOutcome(documents=documents)
+
+
+async def _run_graph_source_expand_strategy(
+    *,
+    question: str,
+    user_id: str,
+    documents: List[Document],
+    doc_ids: Optional[List[str]],
+    graph_search_mode: str,
+    graph_execution_hints: Optional[Dict[str, Any]],
+    mode_hints: Optional[Dict[str, Any]],
+    progress_callback: Optional[ProgressCallback],
+    strategy: rag_graph_runtime.GraphExecutionStrategy,
+    evidence_mode: str,
+) -> GraphStageOutcome:
+    """Locate source chunks from Graph evidence and record observability."""
+    await _emit_progress(
+        progress_callback,
+        "graph_context",
+        {
+            "search_mode": graph_search_mode,
+            "gate_role": (
+                strategy.gate_decision.role
+                if strategy.gate_decision
+                else strategy.strategy
+            ),
+        },
+    )
+    locator_result = await rag_graph_locator.locate_graph_sources(
+        question=question,
+        user_id=user_id,
+        vector_documents=documents,
+        requested_doc_ids=doc_ids,
+        graph_execution_hints=graph_execution_hints,
+        required_modalities=rag_graph_runtime._required_modalities_for_question(
+            question
+        ),
+        evidence_mode=evidence_mode,
+        bundle_locator=rag_graph_runtime._get_graph_evidence_bundle,
+        search_mode=graph_search_mode,
+        claim_scope_approver=rag_graph_runtime._claim_scope_approves_chunk,
+    )
+    lifecycle = rag_graph_runtime.GraphEvidenceLifecycle(
+        candidate_item_ids=locator_result.candidate_item_ids,
+        resolved_item_ids=locator_result.resolved_item_ids,
+        scope_approved_item_ids=locator_result.scope_approved_item_ids,
+        scored_item_ids=locator_result.scored_item_ids,
+        packed_item_ids=locator_result.packed_item_ids,
+        used_as_locator=True,
+        graph_to_chunk_attempted=True,
+    )
+    evidence_units = []
+    if locator_result.bundle is not None:
+        evidence_units = rag_graph_runtime._graph_evidence_units_from_bundle(
+            locator_result.bundle,
+            items=list(locator_result.bundle.evidence_items),
+        )
+    if locator_result.fallback is not None:
+        details = rag_graph_runtime._graph_fallback_context_details(
+            reason=locator_result.fallback,
+            graph_latency_ms=locator_result.graph_latency_ms,
+            lifecycle=lifecycle,
+        )
+    else:
+        details = rag_graph_runtime._graph_context_details_for_bundle(
+            locator_result.bundle,
+            strategy.gate_decision,
+            lifecycle,
+            locator_result.graph_latency_ms,
+        )
+    await rag_graph_runtime._record_graph_observability(
+        question=question,
+        graph_search_mode=graph_search_mode,
+        graph_execution_hints=graph_execution_hints,
+        mode_hints=mode_hints,
+        graph_context_details=details,
+        graph_evidence_units=evidence_units,
+        lifecycle=lifecycle,
+    )
+    return GraphStageOutcome(documents=locator_result.documents)
+
+
+async def _run_graph_raw_legacy_strategy(
+    *,
+    question: str,
+    user_id: str,
+    documents: List[Document],
+    graph_search_mode: str,
+    graph_execution_hints: Optional[Dict[str, Any]],
+    mode_hints: Optional[Dict[str, Any]],
+    progress_callback: Optional[ProgressCallback],
+    return_docs: bool,
+    strategy: rag_graph_runtime.GraphExecutionStrategy,
+) -> GraphStageOutcome:
+    """Load legacy raw Graph context and optional evaluation evidence."""
+    await _emit_progress(
+        progress_callback,
+        "graph_context",
+        {
+            "search_mode": graph_search_mode,
+            "gate_role": (
+                strategy.gate_decision.role
+                if strategy.gate_decision
+                else strategy.strategy
+            ),
+        },
+    )
+    payload = await rag_graph_runtime._get_graph_context(
+        question=question,
+        user_id=user_id,
+        search_mode=graph_search_mode,
+        graph_execution_hints=graph_execution_hints,
+        return_evidence=return_docs,
+        return_details=return_docs,
+    )
+    if not return_docs:
+        return GraphStageOutcome(documents=documents, graph_context=payload)
+
+    graph_context, evidence_units, details = payload
+    evidence_documents = rag_graph_runtime._to_graph_evidence_documents(evidence_units)
+    await rag_graph_runtime._record_graph_observability(
+        question=question,
+        graph_search_mode=graph_search_mode,
+        graph_execution_hints=graph_execution_hints,
+        mode_hints=mode_hints,
+        graph_context_details=details,
+        graph_evidence_units=evidence_units,
+    )
+    return GraphStageOutcome(
+        documents=documents,
+        graph_context=graph_context,
+        graph_evidence_documents=evidence_documents,
     )
