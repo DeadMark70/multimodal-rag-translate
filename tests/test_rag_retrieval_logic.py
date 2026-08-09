@@ -6,9 +6,9 @@ import pytest
 from langchain_core.documents import Document
 from data_base.RAG_QA_service import (
     _expand_short_chunks,
-    _should_use_graph_search,
     rag_answer_question,
 )
+from data_base.rag_graph_runtime import _should_use_graph_search
 
 
 def test_should_use_graph_search():

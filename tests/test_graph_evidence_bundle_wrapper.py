@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from data_base.RAG_QA_service import (
+from data_base.rag_graph_runtime import (
     GraphContextDetails,
     _get_graph_context,
     _get_graph_evidence_bundle,
@@ -65,7 +65,7 @@ async def test_graph_raw_current_returns_legacy_string_by_default(
 ) -> None:
     legacy = AsyncMock(return_value="=== Graph Evidence ===\nlegacy")
     monkeypatch.setattr(
-        "data_base.RAG_QA_service._get_graph_context_legacy_raw", legacy
+        "data_base.rag_graph_runtime._get_graph_context_legacy_raw", legacy
     )
 
     context = await _get_graph_context("q", "user-1", search_mode="generic")
@@ -93,7 +93,7 @@ async def test_graph_context_preserves_return_evidence_two_tuple(
         token_estimate=1,
     )
     monkeypatch.setattr(
-        "data_base.RAG_QA_service._get_graph_context_legacy_raw",
+        "data_base.rag_graph_runtime._get_graph_context_legacy_raw",
         AsyncMock(return_value=("legacy", [evidence])),
     )
 
@@ -121,7 +121,7 @@ async def test_graph_context_preserves_return_details_three_tuple(
         graph_latency_ms=0,
     )
     monkeypatch.setattr(
-        "data_base.RAG_QA_service._get_graph_context_legacy_raw",
+        "data_base.rag_graph_runtime._get_graph_context_legacy_raw",
         AsyncMock(return_value=("legacy", [], details)),
     )
 
@@ -143,7 +143,7 @@ async def test_locator_wrapper_renders_only_resolved_final_context_items(
         final_context_items=[_resolved_item()],
     )
     monkeypatch.setattr(
-        "data_base.RAG_QA_service._get_graph_evidence_bundle",
+        "data_base.rag_graph_runtime._get_graph_evidence_bundle",
         AsyncMock(return_value=bundle),
     )
 
@@ -186,7 +186,7 @@ async def test_graph_evidence_bundle_calls_legacy_raw_once_without_recursing(
     monkeypatch.setattr("graph_rag.store.GraphStore", MagicMock(return_value=store))
     legacy = AsyncMock()
     monkeypatch.setattr(
-        "data_base.RAG_QA_service._get_graph_context_legacy_raw", legacy
+        "data_base.rag_graph_runtime._get_graph_context_legacy_raw", legacy
     )
     local_items = AsyncMock(return_value=([], []))
     monkeypatch.setattr(

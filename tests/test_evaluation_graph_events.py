@@ -3,7 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from data_base.RAG_QA_service import _build_graph_evidence_items, _filter_graph_query_hints
+from data_base.rag_graph_runtime import (
+    _build_graph_evidence_items,
+    _filter_graph_query_hints,
+)
 from evaluation import campaign_engine
 from evaluation import db as evaluation_db
 from evaluation.observability_storage import (

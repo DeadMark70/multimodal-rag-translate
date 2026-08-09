@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
-from data_base.RAG_QA_service import (
+from data_base.rag_graph_runtime import (
     _get_graph_context,
     _resolve_graph_route_decision,
 )
@@ -29,7 +29,7 @@ async def test_graph_route_resolver_injects_v9_invoker(
     )
     router_factory = Mock(return_value=router)
     monkeypatch.setattr(
-        "data_base.RAG_QA_service.GenericGraphRouter",
+        "data_base.rag_graph_runtime.GenericGraphRouter",
         router_factory,
     )
     status = SimpleNamespace(
@@ -163,7 +163,7 @@ async def test_graph_context_skips_automatic_optimization_when_graph_is_stale(
 
 def test_should_use_graph_search_logic():
     """Test the keyword detection for graph search."""
-    from data_base.RAG_QA_service import _should_use_graph_search
+    from data_base.rag_graph_runtime import _should_use_graph_search
     
     assert _should_use_graph_search("這兩篇論文的趨勢") is True
     assert _should_use_graph_search("何謂 SwinUNETR") is False
@@ -227,7 +227,7 @@ async def test_legacy_graph_modes_route_through_generic_core(
                     [1],
                 )
 
-                with patch("data_base.RAG_QA_service.GenericGraphRouter.route", new_callable=AsyncMock) as mock_route:
+                with patch("data_base.rag_graph_runtime.GenericGraphRouter.route", new_callable=AsyncMock) as mock_route:
                     context = await _get_graph_context(question, user_id, search_mode=search_mode)
 
                 assert "Graph Evidence" in context

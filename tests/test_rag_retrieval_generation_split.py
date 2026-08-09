@@ -1,5 +1,7 @@
 """Contracts for the generic retrieval-to-generation boundary."""
 
+from importlib import import_module
+from importlib.util import find_spec
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -10,6 +12,24 @@ from langchain_core.documents import Document
 
 from data_base.RAG_QA_service import RAGResult
 from data_base.rag_pipeline_schemas import GeneratedRagAnswer, RagRetrievalResult
+
+
+def test_graph_runtime_owns_graph_contract_and_facade_reexports_it() -> None:
+    assert find_spec("data_base.rag_graph_runtime") is not None
+
+    runtime = import_module("data_base.rag_graph_runtime")
+    facade = import_module("data_base.RAG_QA_service")
+    exported_names = (
+        "GraphContextDetails",
+        "GraphEvidenceLifecycle",
+        "GraphExecutionStrategy",
+        "GraphNeedDecision",
+        "get_graph_evidence_bundle",
+    )
+
+    for name in exported_names:
+        assert getattr(facade, name) is getattr(runtime, name)
+    assert runtime._classify_graph_need.__module__ == "data_base.rag_graph_runtime"
 
 
 def test_retrieval_result_keeps_evidence_separate_from_generation_data() -> None:

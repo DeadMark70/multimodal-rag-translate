@@ -5,17 +5,16 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from langchain_core.documents import Document
 
-from data_base.RAG_QA_service import (
+from data_base.RAG_QA_service import RAGResult, rag_answer_question
+from data_base.rag_graph_runtime import (
     GraphContextDetails,
     GraphEvidenceLifecycle,
-    RAGResult,
-    _claim_scope_approves_chunk,
     _build_graph_evidence_items,
+    _claim_scope_approves_chunk,
     _classify_graph_need,
     _graph_execution_strategy,
     _graph_gate_inputs,
     _record_graph_observability,
-    rag_answer_question,
 )
 from graph_rag.feature_flags import get_graph_feature_flags
 from graph_rag.generic_mode import GraphEvidence, GraphRouteDecision
@@ -197,7 +196,7 @@ def test_graph_asset_gate_requires_feature_and_real_request_scoped_probe_result(
 
 
 def test_request_scoped_asset_probe_uses_registry_not_caller_hint(tmp_path) -> None:
-    from data_base.RAG_QA_service import _request_scoped_graph_asset_probe
+    from data_base.rag_graph_runtime import _request_scoped_graph_asset_probe
 
     store = GraphStore("user-1", storage_dir=tmp_path)
     store.record_asset_link(
@@ -212,7 +211,7 @@ def test_request_scoped_asset_probe_uses_registry_not_caller_hint(tmp_path) -> N
     )
     docs = [Document(page_content="Table content", metadata={"doc_id": "doc-1"})]
 
-    with patch("data_base.RAG_QA_service.GraphStore", return_value=store):
+    with patch("data_base.rag_graph_runtime.GraphStore", return_value=store):
         assert _request_scoped_graph_asset_probe(
             user_id="user-1",
             question="What exact value is reported in the table?",
