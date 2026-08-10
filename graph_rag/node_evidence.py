@@ -60,7 +60,11 @@ async def build_node_evidence_response(
 
     unique = {}
     for anchor in anchors:
-        if anchor.quote and anchor.verification_status in {"quote_match", "not_checked"}:
+        if (
+            anchor.quote
+            and anchor.verification_status in {"quote_match", "not_checked"}
+            and anchor.provenance_status in {"full", "partial"}
+        ):
             unique.setdefault(_anchor_key(anchor), anchor)
 
     ordered = sorted(

@@ -94,6 +94,89 @@ async def test_build_node_evidence_caps_rows_and_drops_mismatched_quotes(tmp_pat
     assert all(item.quote != "Mismatched quote" for item in response.evidence)
 
 
+@pytest.mark.asyncio
+async def test_build_node_evidence_skips_quote_only_anchors_without_hiding_valid_evidence(tmp_path):
+    store, node_key = _store(tmp_path)
+    edge = store.get_edges_for_node(node_key)[0]
+    edge_id = store.edge_id(edge.source_id, edge.target_id, edge.relation)
+    valid = EvidenceAnchor(
+        doc_id="doc-1", chunk_id="chunk-1", page=3,
+        quote="Valid evidence remains available.", quote_hash="valid-quote",
+        chunk_hash="valid-chunk", confidence=0.9,
+    )
+    quote_only = EvidenceAnchor(
+        doc_id="doc-1", quote="Unresolved legacy quote.", confidence=0.9,
+        verification_status="not_checked",
+    )
+    store.record_edge_provenance(edge_id, [valid, quote_only])
+
+    with (
+        patch("graph_rag.node_evidence.GraphStore", return_value=store),
+        patch("graph_rag.node_evidence.get_document", new=AsyncMock(
+            return_value={"id": "doc-1", "file_name": "doc-1.pdf"}
+        )),
+    ):
+        response = await build_node_evidence_response(user_id="user-1", node_key=node_key)
+
+    assert [item.quote for item in response.evidence] == ["Valid evidence remains available."]
+
+
+@pytest.mark.asyncio
+async def test_build_node_evidence_nulls_unsafe_or_reversed_bounding_boxes(tmp_path):
+    store, node_key = _store(tmp_path)
+    edge = store.get_edges_for_node(node_key)[0]
+    edge_id = store.edge_id(edge.source_id, edge.target_id, edge.relation)
+    anchors = [
+        EvidenceAnchor(
+            doc_id="doc-1", page=1, quote="Normalized box.",
+            bbox=[0.1, 0.2, 0.6, 0.5], confidence=0.9,
+        ),
+        EvidenceAnchor(
+            doc_id="doc-1", page=2, quote="Out of range box.",
+            bbox=[-0.1, 0.2, 0.6, 0.5], confidence=0.9,
+        ),
+        EvidenceAnchor(
+            doc_id="doc-1", page=3, quote="Reversed box.",
+            bbox=[0.6, 0.2, 0.1, 0.5], confidence=0.9,
+        ),
+    ]
+    store.record_edge_provenance(edge_id, anchors)
+
+    with (
+        patch("graph_rag.node_evidence.GraphStore", return_value=store),
+        patch("graph_rag.node_evidence.get_document", new=AsyncMock(
+            return_value={"id": "doc-1", "file_name": "doc-1.pdf"}
+        )),
+    ):
+        response = await build_node_evidence_response(user_id="user-1", node_key=node_key)
+
+    assert [item.bbox for item in response.evidence] == [
+        (0.1, 0.2, 0.6, 0.5),
+        None,
+        None,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_build_node_evidence_returns_only_owned_sources_for_anchorless_node(tmp_path):
+    store = GraphStore("user-1", storage_dir=tmp_path)
+    node_key = store.add_node_from_extraction("Anchorless", EntityType.CONCEPT, "doc-9")
+
+    with (
+        patch("graph_rag.node_evidence.GraphStore", return_value=store),
+        patch("graph_rag.node_evidence.get_document", new=AsyncMock(
+            return_value={"id": "doc-9", "file_name": "source-only.pdf"}
+        )),
+    ):
+        response = await build_node_evidence_response(user_id="user-1", node_key=node_key)
+
+    assert response.evidence == []
+    assert response.source_documents[0].model_dump() == {
+        "doc_id": "doc-9",
+        "filename": "source-only.pdf",
+    }
+
+
 def test_get_graph_node_evidence_returns_authenticated_evidence(tmp_path):
     store, node_key = _store(tmp_path)
     app.dependency_overrides[get_current_user_id] = lambda: "user-1"
@@ -125,6 +208,32 @@ def test_get_graph_node_evidence_returns_authenticated_evidence(tmp_path):
         {"doc_id": "doc-1", "filename": "doc-1.pdf"},
         {"doc_id": "doc-2", "filename": "doc-2.pdf"},
     ]
+
+
+def test_get_graph_node_evidence_hides_another_users_node_without_document_lookup(tmp_path):
+    owner_store, owner_node_key = _store(tmp_path / "owner")
+    other_store = GraphStore("user-2", storage_dir=tmp_path / "other")
+    stores = {"user-1": owner_store, "user-2": other_store}
+    get_document_mock = AsyncMock()
+    app.dependency_overrides[get_current_user_id] = lambda: "user-2"
+    try:
+        with (
+            patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
+            patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
+            patch("graph_rag.node_evidence.GraphStore", side_effect=lambda user_id: stores[user_id]),
+            patch("graph_rag.node_evidence.get_document", new=get_document_mock),
+            TestClient(app) as client,
+        ):
+            foreign_response = client.get(f"/graph/nodes/{quote(owner_node_key, safe='')}/evidence")
+            missing_response = client.get("/graph/nodes/missing-node/evidence")
+    finally:
+        app.dependency_overrides = {}
+
+    assert foreign_response.status_code == missing_response.status_code == 404
+    assert foreign_response.json()["error"].keys() == missing_response.json()["error"].keys()
+    assert foreign_response.json()["error"]["code"] == missing_response.json()["error"]["code"]
+    assert foreign_response.json()["error"]["message"] == missing_response.json()["error"]["message"]
+    get_document_mock.assert_not_awaited()
 
 
 def test_graph_data_keeps_label_id_and_exposes_internal_node_key(tmp_path):
