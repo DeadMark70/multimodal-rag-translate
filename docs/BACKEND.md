@@ -119,6 +119,7 @@
   - `GET /graph/quality` reports deterministic store quality, including provenance coverage, generic relations, duplicate methods, orphan nodes, and unscoped claims.
   - `GET /graph/runtime-quality?campaign_id=...` aggregates only persisted `evaluation_graph_events` and `evaluation_graph_evidence_items`; it does not infer runtime success from `GraphStore`.
   - `POST /graph/debug/search` returns entity links, graph hints, candidate evidence, and only independently eligible final-context items. Graph hints and unresolved evidence are diagnostic output, not answer evidence.
+  - `GET /graph/nodes/{node_key}/evidence` returns the authenticated user's source documents and node quotes. Quotes come only from persisted provenance anchors on edges incident to that node; graph labels, summaries, and inferred relations are never presented as source quotes.
 - Graph asset links persist in `graph.asset_links.json` and are locator metadata, not final answer text:
   - explicit Markdown tables, display formulas, and captions are parsed with their page marker, source text, and hash after Markdown indexing succeeds;
   - visual assets are registered only after their summaries have been successfully indexed, with matching `asset_id` and `chunk_id` metadata for later source resolution;

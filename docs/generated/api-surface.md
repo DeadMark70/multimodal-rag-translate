@@ -77,6 +77,7 @@ Human-maintained inventory of the current backend surface.
 | POST | `/graph/documents/{doc_id}/retry` | `retry_graph_document_graph_documents__doc_id__retry_post` |
 | POST | `/graph/node-vector/sync` | `start_node_vector_sync_graph_node_vector_sync_post` |
 | GET | `/graph/node-vector/sync/status` | `get_node_vector_sync_status_graph_node_vector_sync_status_get` |
+| GET | `/graph/nodes/{node_key}/evidence` | `get_graph_node_evidence_graph_nodes__node_key__evidence_get` |
 | POST | `/graph/optimize` | `optimize_graph_graph_optimize_post` |
 | GET | `/graph/quality` | `get_graph_quality_graph_quality_get` |
 | POST | `/graph/rebuild` | `rebuild_graph_graph_rebuild_post` |

@@ -1209,6 +1209,54 @@
         ]
       }
     },
+    "/graph/nodes/{node_key}/evidence": {
+      "get": {
+        "tags": [
+          "Knowledge Graph"
+        ],
+        "summary": "取得圖譜節點原文證據",
+        "description": "回傳目前使用者節點的來源引文與相關來源文件。",
+        "operationId": "get_graph_node_evidence_graph_nodes__node_key__evidence_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "node_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Node Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphNodeEvidenceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/graph/data": {
       "get": {
         "tags": [
@@ -13044,6 +13092,138 @@
         "title": "GraphHint",
         "description": "Graph-derived guidance that is not source-backed final evidence."
       },
+      "GraphNodeEvidenceResponse": {
+        "properties": {
+          "node_key": {
+            "type": "string",
+            "title": "Node Key"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/GraphNodeSourceEvidence"
+            },
+            "type": "array",
+            "title": "Evidence"
+          },
+          "source_documents": {
+            "items": {
+              "$ref": "#/components/schemas/GraphNodeSourceDocument"
+            },
+            "type": "array",
+            "title": "Source Documents"
+          }
+        },
+        "type": "object",
+        "required": [
+          "node_key",
+          "label"
+        ],
+        "title": "GraphNodeEvidenceResponse"
+      },
+      "GraphNodeSourceDocument": {
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
+          }
+        },
+        "type": "object",
+        "required": [
+          "doc_id"
+        ],
+        "title": "GraphNodeSourceDocument"
+      },
+      "GraphNodeSourceEvidence": {
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "quote": {
+            "type": "string",
+            "title": "Quote"
+          },
+          "bbox": {
+            "anyOf": [
+              {
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array",
+                "maxItems": 4,
+                "minItems": 4
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bbox"
+          },
+          "provenance_status": {
+            "type": "string",
+            "enum": [
+              "full",
+              "partial"
+            ],
+            "title": "Provenance Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "doc_id",
+          "quote",
+          "provenance_status"
+        ],
+        "title": "GraphNodeSourceEvidence"
+      },
       "GraphOperationResponse": {
         "properties": {
           "status": {
@@ -19107,6 +19287,10 @@
             "title": "Id",
             "description": "唯一節點識別碼（標籤）"
           },
+          "node_key": {
+            "type": "string",
+            "title": "Node Key"
+          },
           "group": {
             "type": "integer",
             "title": "Group",
@@ -19121,11 +19305,19 @@
             "type": "string",
             "title": "Desc",
             "description": "節點描述"
+          },
+          "source_docs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Source Docs"
           }
         },
         "type": "object",
         "required": [
           "id",
+          "node_key",
           "group",
           "val",
           "desc"
