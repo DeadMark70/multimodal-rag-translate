@@ -42,6 +42,7 @@ from graph_rag.schemas import (
     GraphDocumentStatus,
     GraphDocumentStatusItem,
     GraphDocumentStatusListResponse,
+    GraphNodeEvidenceResponse,
     NodeVectorSyncStatusResponse,
     GraphStatusResponse,
     GraphQualityResponse,
@@ -50,6 +51,7 @@ from graph_rag.schemas import (
     GraphRebuildStatusResponse,
 )
 from graph_rag.debug import run_debug_search
+from graph_rag.node_evidence import build_node_evidence_response
 from graph_rag.quality import compute_campaign_runtime_quality, compute_graph_quality
 from graph_rag.store import GraphStore
 from pdfserviceMD.repository import get_document
@@ -101,9 +103,11 @@ class VisNode(BaseModel):
     """Node for react-force-graph visualization."""
 
     id: str = Field(..., description="唯一節點識別碼（標籤）")
+    node_key: str
     group: int = Field(..., description="分群 ID（用於著色）")
     val: int = Field(..., description="節點大小（引用次數）")
     desc: str = Field(..., description="節點描述")
+    source_docs: List[str] = Field(default_factory=list)
 
 
 class VisLink(BaseModel):
@@ -360,6 +364,19 @@ async def get_node_vector_sync_status(
 
 
 @router.get(
+    "/nodes/{node_key}/evidence",
+    response_model=GraphNodeEvidenceResponse,
+    summary="取得圖譜節點原文證據",
+    description="回傳目前使用者節點的來源引文與相關來源文件。",
+)
+async def get_graph_node_evidence(
+    node_key: str,
+    user_id: str = Depends(get_current_user_id),
+) -> GraphNodeEvidenceResponse:
+    return await build_node_evidence_response(user_id=user_id, node_key=node_key)
+
+
+@router.get(
     "/data",
     response_model=GraphVisualizationData,
     summary="取得視覺化資料",
@@ -390,9 +407,11 @@ async def get_graph_visualization_data(
             nodes.append(
                 VisNode(
                     id=node.label,
+                    node_key=node.id,
                     group=hash(node.entity_type.value) % 5,
                     val=len(node.doc_ids) * 2,
                     desc=node.description or node.entity_type.value,
+                    source_docs=node.doc_ids,
                 )
             )
 

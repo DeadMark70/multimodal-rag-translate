@@ -710,6 +710,27 @@ class EvidenceAnchor(BaseModel):
         return "missing"
 
 
+class GraphNodeSourceEvidence(BaseModel):
+    doc_id: str
+    filename: Optional[str] = None
+    page: Optional[int] = None
+    quote: str
+    bbox: Optional[tuple[float, float, float, float]] = None
+    provenance_status: Literal["full", "partial"]
+
+
+class GraphNodeSourceDocument(BaseModel):
+    doc_id: str
+    filename: Optional[str] = None
+
+
+class GraphNodeEvidenceResponse(BaseModel):
+    node_key: str
+    label: str
+    evidence: List[GraphNodeSourceEvidence] = Field(default_factory=list)
+    source_documents: List[GraphNodeSourceDocument] = Field(default_factory=list)
+
+
 class GraphAssetLink(BaseModel):
     """A parsed document asset that may locate, but never directly replace, source evidence."""
 
