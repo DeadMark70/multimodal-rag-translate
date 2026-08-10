@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from core.errors import AppError
-from pdfserviceMD.repository import get_document
+from pdfserviceMD.repository import get_document, get_owned_documents_by_ids
 
 
 @pytest.mark.asyncio
@@ -53,3 +53,57 @@ async def test_get_document_returns_503_after_exhausting_transport_retries() -> 
     assert exc_info.value.message == "Database service temporarily unavailable"
     assert init_supabase_mock.call_count == 2
     assert sleep_mock.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_get_owned_documents_by_ids_batches_and_scopes_every_query() -> None:
+    requested_ids = [f"doc-{index:03d}" for index in range(101)]
+    seen_batches: list[list[str]] = []
+    seen_users: list[str] = []
+
+    class Query:
+        def __init__(self) -> None:
+            self.ids: list[str] = []
+
+        def select(self, columns: str):
+            assert columns == "id,file_name"
+            return self
+
+        def eq(self, field: str, value: str):
+            assert field == "user_id"
+            seen_users.append(value)
+            return self
+
+        def in_(self, field: str, values: list[str]):
+            assert field == "id"
+            self.ids = list(values)
+            seen_batches.append(self.ids)
+            return self
+
+        def execute(self):
+            return SimpleNamespace(
+                data=[{"id": doc_id, "file_name": f"{doc_id}.pdf"} for doc_id in self.ids]
+            )
+
+    class Client:
+        def table(self, name: str):
+            assert name == "documents"
+            return Query()
+
+    async def fake_execute(*, handler, **_):
+        return handler(Client())
+
+    with patch(
+        "pdfserviceMD.repository.execute_supabase_operation",
+        new=AsyncMock(side_effect=fake_execute),
+    ):
+        rows = await get_owned_documents_by_ids(
+            doc_ids=requested_ids,
+            user_id="user-1",
+            columns="id,file_name",
+        )
+
+    assert {row["id"] for row in rows} == set(requested_ids)
+    assert len(seen_batches) == 2
+    assert max(map(len, seen_batches)) <= 100
+    assert seen_users == ["user-1", "user-1"]

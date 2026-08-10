@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
 from graph_rag.node_evidence import build_node_evidence_response
+from graph_rag.router import get_graph_visualization_data
 from graph_rag.schemas import EntityType, EvidenceAnchor
 from graph_rag.store import GraphStore
 from main import app
@@ -23,25 +24,70 @@ def _store(tmp_path):
         doc_id="doc-1", chunk_id="chunk-1", page=3,
         quote="Transformer uses self-attention.", quote_hash="quote-1",
         chunk_hash="chunk-1-hash", confidence=0.95,
+        verification_status="quote_match",
     )
     partial = EvidenceAnchor(
         doc_id="doc-1", page=4, quote="A second source passage.", confidence=0.7,
+        verification_status="quote_match",
     )
     store.record_edge_provenance(edge_id, [full, full, partial])
     return store, source
+
+
+async def _all_documents_owned(*, doc_ids, user_id, columns="*"):
+    assert user_id == "user-1"
+    return [
+        {"id": doc_id, "file_name": f"{doc_id}.pdf"}
+        for doc_id in doc_ids
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reused_canonical_entity_exposes_every_source_document(tmp_path):
+    store = GraphStore("user-1", storage_dir=tmp_path)
+    node_key = store.upsert_canonical_entity(
+        canonical_name="Transformer",
+        entity_type=EntityType.METHOD,
+        aliases=[],
+        source_doc_ids=["doc-1"],
+    )
+    reused_key = store.upsert_canonical_entity(
+        canonical_name="Transformer",
+        entity_type=EntityType.METHOD,
+        aliases=[],
+        source_doc_ids=["doc-2"],
+    )
+
+    with (
+        patch("graph_rag.router.GraphStore", return_value=store),
+        patch("graph_rag.node_evidence.GraphStore", return_value=store),
+        patch(
+            "graph_rag.node_evidence.get_owned_documents_by_ids",
+            side_effect=_all_documents_owned,
+        ),
+    ):
+        graph_data = await get_graph_visualization_data(user_id="user-1")
+        evidence = await build_node_evidence_response(
+            user_id="user-1",
+            node_key=node_key,
+        )
+
+    assert reused_key == node_key
+    graph_node = next(item for item in graph_data.nodes if item.node_key == node_key)
+    assert sorted(graph_node.source_docs) == ["doc-1", "doc-2"]
+    assert [item.doc_id for item in evidence.source_documents] == ["doc-1", "doc-2"]
 
 
 @pytest.mark.asyncio
 async def test_build_node_evidence_deduplicates_and_keeps_source_only_documents(tmp_path):
     store, node_key = _store(tmp_path)
 
-    async def fake_get_document(*, doc_id, user_id, columns="*"):
-        assert user_id == "user-1"
-        return {"id": doc_id, "file_name": f"{doc_id}.pdf"}
-
     with (
         patch("graph_rag.node_evidence.GraphStore", return_value=store),
-        patch("graph_rag.node_evidence.get_document", side_effect=fake_get_document),
+        patch(
+            "graph_rag.node_evidence.get_owned_documents_by_ids",
+            side_effect=_all_documents_owned,
+        ),
     ):
         response = await build_node_evidence_response(user_id="user-1", node_key=node_key)
 
@@ -84,9 +130,10 @@ async def test_build_node_evidence_caps_rows_and_drops_mismatched_quotes(tmp_pat
 
     with (
         patch("graph_rag.node_evidence.GraphStore", return_value=store),
-        patch("graph_rag.node_evidence.get_document", new=AsyncMock(
-            return_value={"id": "doc-1", "file_name": "doc-1.pdf"}
-        )),
+        patch(
+            "graph_rag.node_evidence.get_owned_documents_by_ids",
+            side_effect=_all_documents_owned,
+        ),
     ):
         response = await build_node_evidence_response(user_id="user-1", node_key=node_key)
 
@@ -103,6 +150,7 @@ async def test_build_node_evidence_skips_quote_only_anchors_without_hiding_valid
         doc_id="doc-1", chunk_id="chunk-1", page=3,
         quote="Valid evidence remains available.", quote_hash="valid-quote",
         chunk_hash="valid-chunk", confidence=0.9,
+        verification_status="quote_match",
     )
     quote_only = EvidenceAnchor(
         doc_id="doc-1", quote="Unresolved legacy quote.", confidence=0.9,
@@ -112,13 +160,122 @@ async def test_build_node_evidence_skips_quote_only_anchors_without_hiding_valid
 
     with (
         patch("graph_rag.node_evidence.GraphStore", return_value=store),
-        patch("graph_rag.node_evidence.get_document", new=AsyncMock(
-            return_value={"id": "doc-1", "file_name": "doc-1.pdf"}
-        )),
+        patch(
+            "graph_rag.node_evidence.get_owned_documents_by_ids",
+            side_effect=_all_documents_owned,
+        ),
     ):
         response = await build_node_evidence_response(user_id="user-1", node_key=node_key)
 
     assert [item.quote for item in response.evidence] == ["Valid evidence remains available."]
+
+
+@pytest.mark.asyncio
+async def test_build_node_evidence_never_emits_not_checked_quote_text(tmp_path):
+    store, node_key = _store(tmp_path)
+    edge = store.get_edges_for_node(node_key)[0]
+    edge_id = store.edge_id(edge.source_id, edge.target_id, edge.relation)
+    store.record_edge_provenance(edge_id, [
+        EvidenceAnchor(
+            doc_id="doc-1",
+            chunk_id="legacy-chunk",
+            page=8,
+            quote="This persisted text was never checked against the source.",
+            quote_hash="legacy-quote",
+            chunk_hash="legacy-chunk-hash",
+            confidence=0.95,
+            verification_status="not_checked",
+        )
+    ])
+
+    with (
+        patch("graph_rag.node_evidence.GraphStore", return_value=store),
+        patch(
+            "graph_rag.node_evidence.get_owned_documents_by_ids",
+            side_effect=_all_documents_owned,
+        ),
+    ):
+        response = await build_node_evidence_response(user_id="user-1", node_key=node_key)
+
+    assert response.evidence == []
+    assert [item.doc_id for item in response.source_documents] == ["doc-1", "doc-2"]
+
+
+@pytest.mark.asyncio
+async def test_build_node_evidence_discards_anchor_without_owned_document_row(tmp_path):
+    store, node_key = _store(tmp_path)
+    store.graph.nodes[node_key]["doc_ids"] = ["doc-1", "foreign-doc"]
+    edge = store.get_edges_for_node(node_key)[0]
+    edge_id = store.edge_id(edge.source_id, edge.target_id, edge.relation)
+    store.record_edge_provenance(edge_id, [
+        EvidenceAnchor(
+            doc_id="foreign-doc",
+            chunk_id="foreign-chunk",
+            page=2,
+            quote="Foreign source text.",
+            quote_hash="foreign-quote",
+            chunk_hash="foreign-chunk-hash",
+            confidence=0.95,
+            verification_status="quote_match",
+        )
+    ])
+
+    async def fake_get_documents(*, doc_ids, **_):
+        return [
+            {"id": doc_id, "file_name": "owned.pdf"}
+            for doc_id in doc_ids
+            if doc_id == "doc-1"
+        ]
+
+    with (
+        patch("graph_rag.node_evidence.GraphStore", return_value=store),
+        patch(
+            "graph_rag.node_evidence.get_owned_documents_by_ids",
+            side_effect=fake_get_documents,
+        ),
+    ):
+        response = await build_node_evidence_response(user_id="user-1", node_key=node_key)
+
+    assert response.evidence == []
+    assert [item.doc_id for item in response.source_documents] == ["doc-1"]
+
+
+@pytest.mark.asyncio
+async def test_build_node_evidence_discards_deleted_anchor_left_by_skipped_graph_purge(tmp_path):
+    store, node_key = _store(tmp_path)
+    edge = store.get_edges_for_node(node_key)[0]
+    edge_id = store.edge_id(edge.source_id, edge.target_id, edge.relation)
+    store.record_edge_provenance(edge_id, [
+        EvidenceAnchor(
+            doc_id="deleted-doc",
+            chunk_id="stale-chunk",
+            page=4,
+            quote="Deleted source text left in stale graph state.",
+            quote_hash="stale-quote",
+            chunk_hash="stale-chunk-hash",
+            confidence=0.95,
+            verification_status="quote_match",
+        )
+    ])
+
+    async def fake_get_documents(*, doc_ids, **_):
+        return [
+            {"id": doc_id, "file_name": f"{doc_id}.pdf"}
+            for doc_id in doc_ids
+            if doc_id in {"doc-1", "doc-2"}
+        ]
+
+    with (
+        patch("graph_rag.node_evidence.GraphStore", return_value=store),
+        patch(
+            "graph_rag.node_evidence.get_owned_documents_by_ids",
+            side_effect=fake_get_documents,
+        ),
+    ):
+        response = await build_node_evidence_response(user_id="user-1", node_key=node_key)
+
+    assert response.evidence == []
+    assert [item.doc_id for item in response.source_documents] == ["doc-1", "doc-2"]
 
 
 @pytest.mark.asyncio
@@ -130,23 +287,27 @@ async def test_build_node_evidence_nulls_unsafe_or_reversed_bounding_boxes(tmp_p
         EvidenceAnchor(
             doc_id="doc-1", page=1, quote="Normalized box.",
             bbox=[0.1, 0.2, 0.6, 0.5], confidence=0.9,
+            verification_status="quote_match",
         ),
         EvidenceAnchor(
             doc_id="doc-1", page=2, quote="Out of range box.",
             bbox=[-0.1, 0.2, 0.6, 0.5], confidence=0.9,
+            verification_status="quote_match",
         ),
         EvidenceAnchor(
             doc_id="doc-1", page=3, quote="Reversed box.",
             bbox=[0.6, 0.2, 0.1, 0.5], confidence=0.9,
+            verification_status="quote_match",
         ),
     ]
     store.record_edge_provenance(edge_id, anchors)
 
     with (
         patch("graph_rag.node_evidence.GraphStore", return_value=store),
-        patch("graph_rag.node_evidence.get_document", new=AsyncMock(
-            return_value={"id": "doc-1", "file_name": "doc-1.pdf"}
-        )),
+        patch(
+            "graph_rag.node_evidence.get_owned_documents_by_ids",
+            side_effect=_all_documents_owned,
+        ),
     ):
         response = await build_node_evidence_response(user_id="user-1", node_key=node_key)
 
@@ -164,9 +325,12 @@ async def test_build_node_evidence_returns_only_owned_sources_for_anchorless_nod
 
     with (
         patch("graph_rag.node_evidence.GraphStore", return_value=store),
-        patch("graph_rag.node_evidence.get_document", new=AsyncMock(
-            return_value={"id": "doc-9", "file_name": "source-only.pdf"}
-        )),
+        patch(
+            "graph_rag.node_evidence.get_owned_documents_by_ids",
+            new=AsyncMock(
+                return_value=[{"id": "doc-9", "file_name": "source-only.pdf"}]
+            ),
+        ),
     ):
         response = await build_node_evidence_response(user_id="user-1", node_key=node_key)
 
@@ -186,12 +350,9 @@ def test_get_graph_node_evidence_returns_authenticated_evidence(tmp_path):
             patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
             patch("graph_rag.node_evidence.GraphStore", return_value=store),
             patch(
-                "graph_rag.node_evidence.get_document",
+                "graph_rag.node_evidence.get_owned_documents_by_ids",
                 new=AsyncMock(
-                    side_effect=lambda *, doc_id, **_: {
-                        "id": doc_id,
-                        "file_name": f"{doc_id}.pdf",
-                    }
+                    side_effect=_all_documents_owned
                 ),
             ),
             TestClient(app) as client,
@@ -214,14 +375,17 @@ def test_get_graph_node_evidence_hides_another_users_node_without_document_looku
     owner_store, owner_node_key = _store(tmp_path / "owner")
     other_store = GraphStore("user-2", storage_dir=tmp_path / "other")
     stores = {"user-1": owner_store, "user-2": other_store}
-    get_document_mock = AsyncMock()
+    get_documents_mock = AsyncMock()
     app.dependency_overrides[get_current_user_id] = lambda: "user-2"
     try:
         with (
             patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
             patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
             patch("graph_rag.node_evidence.GraphStore", side_effect=lambda user_id: stores[user_id]),
-            patch("graph_rag.node_evidence.get_document", new=get_document_mock),
+            patch(
+                "graph_rag.node_evidence.get_owned_documents_by_ids",
+                new=get_documents_mock,
+            ),
             TestClient(app) as client,
         ):
             foreign_response = client.get(f"/graph/nodes/{quote(owner_node_key, safe='')}/evidence")
@@ -233,7 +397,7 @@ def test_get_graph_node_evidence_hides_another_users_node_without_document_looku
     assert foreign_response.json()["error"].keys() == missing_response.json()["error"].keys()
     assert foreign_response.json()["error"]["code"] == missing_response.json()["error"]["code"]
     assert foreign_response.json()["error"]["message"] == missing_response.json()["error"]["message"]
-    get_document_mock.assert_not_awaited()
+    get_documents_mock.assert_not_awaited()
 
 
 def test_graph_data_keeps_label_id_and_exposes_internal_node_key(tmp_path):

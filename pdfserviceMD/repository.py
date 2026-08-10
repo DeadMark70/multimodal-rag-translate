@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from core.supabase_repository import execute_supabase_operation
 
+_DOCUMENT_LOOKUP_BATCH_SIZE = 100
+
 
 async def create_document_record(
     *,
@@ -104,6 +106,30 @@ async def get_document(
     if not response.data:
         return None
     return response.data[0]
+
+
+async def get_owned_documents_by_ids(
+    *,
+    doc_ids: list[str],
+    user_id: str,
+    columns: str = "id,file_name",
+) -> list[dict]:
+    """Gets owned document rows in bounded user-scoped batches."""
+    unique_ids = list(dict.fromkeys(doc_id for doc_id in doc_ids if doc_id))
+    rows: list[dict] = []
+    for start in range(0, len(unique_ids), _DOCUMENT_LOOKUP_BATCH_SIZE):
+        batch = unique_ids[start : start + _DOCUMENT_LOOKUP_BATCH_SIZE]
+        response = await execute_supabase_operation(
+            operation="get_owned_documents_by_ids",
+            failure_message="Failed to query documents",
+            handler=lambda client, batch=batch: client.table("documents")
+            .select(columns)
+            .eq("user_id", user_id)
+            .in_("id", batch)
+            .execute(),
+        )
+        rows.extend(response.data or [])
+    return rows
 
 
 async def delete_document(*, doc_id: str, user_id: str) -> None:

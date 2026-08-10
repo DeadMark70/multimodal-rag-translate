@@ -8,7 +8,7 @@ from graph_rag.schemas import (
     GraphNodeSourceEvidence,
 )
 from graph_rag.store import GraphStore
-from pdfserviceMD.repository import get_document
+from pdfserviceMD.repository import get_owned_documents_by_ids
 
 _MAX_EVIDENCE = 20
 
@@ -45,25 +45,32 @@ async def build_node_evidence_response(
             status_code=404,
         )
 
-    document_rows = {}
-    for doc_id in sorted(set(node.doc_ids)):
-        row = await get_document(
-            doc_id=doc_id, user_id=user_id, columns="id,file_name"
-        )
-        if row is not None:
-            document_rows[doc_id] = row
-
     anchors = []
     for edge in store.get_edges_for_node(node_key):
         edge_id = store.edge_id(edge.source_id, edge.target_id, edge.relation)
         anchors.extend(store.get_edge_provenance(edge_id))
 
+    candidate_doc_ids = sorted(
+        set(node.doc_ids).union(anchor.doc_id for anchor in anchors)
+    )
+    rows = await get_owned_documents_by_ids(
+        doc_ids=candidate_doc_ids,
+        user_id=user_id,
+        columns="id,file_name",
+    )
+    document_rows = {
+        doc_id: row
+        for row in rows
+        if isinstance((doc_id := row.get("id")), str) and doc_id
+    }
+
     unique = {}
     for anchor in anchors:
         if (
             anchor.quote
-            and anchor.verification_status in {"quote_match", "not_checked"}
+            and anchor.verification_status == "quote_match"
             and anchor.provenance_status in {"full", "partial"}
+            and anchor.doc_id in document_rows
         ):
             unique.setdefault(_anchor_key(anchor), anchor)
 

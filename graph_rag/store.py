@@ -1325,6 +1325,8 @@ class GraphStore:
                 }
             )
 
+            self.graph.nodes[existing_id]["doc_ids"] = list(entity.source_doc_ids)
+
         self.canonical_entities[existing_id] = entity
         self._index_canonical_entity(entity)
         self.mark_dirty()
