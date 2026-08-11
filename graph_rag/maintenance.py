@@ -297,11 +297,26 @@ async def rebuild_full_graph_task(
         for source in sources:
             doc_id = str(source["doc_id"])
             original_path = source.get("original_path")
-            user_folder = (
-                Path(original_path).resolve().parent
-                if original_path
-                else Path(upload_paths.get_document_upload_dir(user_id, doc_id))
-            )
+            try:
+                user_folder = upload_paths.resolve_document_user_folder(
+                    user_id=user_id,
+                    doc_id=doc_id,
+                    original_path=original_path,
+                )
+            except ValueError:
+                temp_store.upsert_document_status(
+                    GraphDocumentStatus(
+                        doc_id=doc_id,
+                        status="failed",
+                        last_error="Document file unavailable",
+                    )
+                )
+                temp_store.save_sidecars()
+                logger.warning(
+                    "Rejected document storage reference for %s during full rebuild",
+                    doc_id,
+                )
+                continue
 
             try:
                 markdown_text, _ = await asyncio.to_thread(
@@ -402,11 +417,23 @@ async def retry_graph_document_task(
             columns="original_path",
         )
         original_path = row.get("original_path") if row else None
-        user_folder = (
-            Path(original_path).resolve().parent
-            if original_path
-            else Path(upload_paths.get_document_upload_dir(user_id, doc_id))
-        )
+        try:
+            user_folder = upload_paths.resolve_document_user_folder(
+                user_id=user_id,
+                doc_id=doc_id,
+                original_path=original_path,
+            )
+        except ValueError:
+            logger.warning("Rejected document storage reference for retry doc %s", doc_id)
+            live_store.upsert_document_status(
+                GraphDocumentStatus(
+                    doc_id=doc_id,
+                    status="failed",
+                    last_error="Document file unavailable",
+                )
+            )
+            live_store.save_sidecars()
+            return
         markdown_text, _ = await asyncio.to_thread(
             load_ocr_artifacts,
             user_folder=str(user_folder),

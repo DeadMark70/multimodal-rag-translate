@@ -112,6 +112,80 @@ def test_graph_documents_endpoint_returns_persisted_and_unattempted_rows() -> No
     assert payload["documents"][2]["is_eligible"] is False
 
 
+def test_graph_retry_endpoint_accepts_legacy_windows_document_path() -> None:
+    upload_root = _workspace_upload_root("graph_router_retry_legacy")
+    artifact_dir = upload_root / TEST_USER_ID / "doc-1"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "extracted.md").write_text("demo", encoding="utf-8")
+    mock_store = Mock()
+
+    with (
+        patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
+        patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
+        patch("core.uploads.ensure_upload_root", return_value=str(upload_root)),
+        patch("graph_rag.router.GraphStore", return_value=mock_store),
+        patch(
+            "graph_rag.router.get_document",
+            new=AsyncMock(
+                return_value={
+                    "id": "doc-1",
+                    "file_name": "demo.pdf",
+                    "original_path": (
+                        rf"uploads\{TEST_USER_ID}\doc-1\demo.pdf"
+                    ),
+                }
+            ),
+        ),
+        patch(
+            "graph_rag.router._retry_graph_document_task", new=AsyncMock()
+        ) as retry_task,
+        _client() as client,
+    ):
+        response = client.post("/graph/documents/doc-1/retry")
+
+    app.dependency_overrides = {}
+    assert response.status_code == 200
+    assert response.json()["status"] == "started"
+    retry_task.assert_awaited_once_with(
+        TEST_USER_ID, "doc-1", "standard", "maintenance-owner"
+    )
+
+
+def test_graph_retry_endpoint_rejects_cross_user_path_without_disclosure(
+    caplog,
+) -> None:
+    sensitive_path = "uploads/private-user/doc-1/private-sentinel.pdf"
+    mock_store = Mock()
+
+    with (
+        patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
+        patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
+        patch("graph_rag.router.GraphStore", return_value=mock_store),
+        patch(
+            "graph_rag.router.get_document",
+            new=AsyncMock(
+                return_value={
+                    "id": "doc-1",
+                    "file_name": "demo.pdf",
+                    "original_path": sensitive_path,
+                }
+            ),
+        ),
+        patch(
+            "graph_rag.router._retry_graph_document_task", new=AsyncMock()
+        ) as retry_task,
+        caplog.at_level("INFO", logger="graph_rag.router"),
+        _client() as client,
+    ):
+        response = client.post("/graph/documents/doc-1/retry")
+
+    app.dependency_overrides = {}
+    assert response.status_code == 404
+    assert sensitive_path not in response.text
+    assert sensitive_path not in caplog.text
+    retry_task.assert_not_awaited()
+
+
 def _rebuild_manifest(*, state: str = "pending") -> GraphRebuildManifest:
     now = datetime.now(timezone.utc)
     return GraphRebuildManifest(
@@ -419,15 +493,17 @@ async def test_full_rebuild_keeps_old_graph_when_any_document_fails() -> None:
     (artifact_dir / "extracted.md").write_text("demo", encoding="utf-8")
 
     with (
-        patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)),
+        patch("core.uploads.ensure_upload_root", return_value=str(upload_root)),
         patch(
-            "graph_rag.maintenance.list_pdf_documents",
+            "graph_rag.maintenance.list_graph_source_documents",
             new=AsyncMock(
                 return_value=[
                     {
-                        "id": "doc-1",
+                        "doc_id": "doc-1",
                         "file_name": "demo.pdf",
-                        "original_path": str(artifact_dir / "demo.pdf"),
+                        "original_path": (
+                            rf"uploads\{TEST_USER_ID}\doc-1\demo.pdf"
+                        ),
                     },
                 ]
             ),
@@ -481,11 +557,15 @@ async def test_retry_graph_document_replaces_only_target_document_contribution()
     (artifact_dir / "extracted.md").write_text("demo", encoding="utf-8")
 
     with (
-        patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)),
+        patch("core.uploads.ensure_upload_root", return_value=str(upload_root)),
         patch(
             "graph_rag.maintenance.get_document",
             new=AsyncMock(
-                return_value={"original_path": str(artifact_dir / "demo.pdf")}
+                return_value={
+                    "original_path": (
+                        rf"uploads\{TEST_USER_ID}\doc-1\demo.pdf"
+                    )
+                }
             ),
         ),
         patch(
@@ -554,6 +634,92 @@ async def test_retry_graph_document_replaces_only_target_document_contribution()
 
 
 @pytest.mark.asyncio
+async def test_full_rebuild_rejects_cross_user_document_path_without_loading() -> None:
+    upload_root = _workspace_upload_root("graph_full_rebuild_cross_user")
+    sensitive_path = "uploads/private-user/doc-1/private-sentinel.pdf"
+    load_artifacts = Mock(return_value=("should not load", []))
+
+    with (
+        patch("core.uploads.ensure_upload_root", return_value=str(upload_root)),
+        patch(
+            "graph_rag.maintenance.list_graph_source_documents",
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "doc_id": "doc-1",
+                        "file_name": "demo.pdf",
+                        "original_path": sensitive_path,
+                    }
+                ]
+            ),
+        ),
+        patch(
+            "graph_rag.maintenance.load_ocr_artifacts", new=load_artifacts
+        ),
+        patch(
+            "graph_rag.maintenance.run_graph_extraction", new=AsyncMock()
+        ) as run_extraction,
+    ):
+        live_store = GraphStore(TEST_USER_ID)
+        live_store.add_node_from_extraction(
+            label="Keep Entity",
+            entity_type=EntityType.CONCEPT,
+            doc_id="doc-legacy",
+            pending_resolution=False,
+        )
+        live_store.save()
+
+        await rebuild_full_graph_task(TEST_USER_ID)
+        reloaded = GraphStore(TEST_USER_ID)
+
+    load_artifacts.assert_not_called()
+    run_extraction.assert_not_awaited()
+    assert reloaded.get_all_nodes()[0].label == "Keep Entity"
+    assert reloaded.get_document_status("doc-1").last_error == (
+        "Document file unavailable"
+    )
+
+
+@pytest.mark.asyncio
+async def test_retry_task_rejects_cross_document_path_without_loading() -> None:
+    upload_root = _workspace_upload_root("graph_retry_cross_document")
+    sensitive_path = f"uploads/{TEST_USER_ID}/other-doc/private-sentinel.pdf"
+    load_artifacts = Mock(return_value=("should not load", []))
+
+    with (
+        patch("core.uploads.ensure_upload_root", return_value=str(upload_root)),
+        patch(
+            "graph_rag.maintenance.get_document",
+            new=AsyncMock(return_value={"original_path": sensitive_path}),
+        ),
+        patch(
+            "graph_rag.maintenance.load_ocr_artifacts", new=load_artifacts
+        ),
+        patch(
+            "graph_rag.maintenance.run_graph_extraction", new=AsyncMock()
+        ) as run_extraction,
+    ):
+        live_store = GraphStore(TEST_USER_ID)
+        live_store.add_node_from_extraction(
+            label="Keep Entity",
+            entity_type=EntityType.CONCEPT,
+            doc_id="doc-1",
+            pending_resolution=False,
+        )
+        live_store.save()
+
+        await retry_graph_document_task(TEST_USER_ID, "doc-1")
+        reloaded = GraphStore(TEST_USER_ID)
+
+    load_artifacts.assert_not_called()
+    run_extraction.assert_not_awaited()
+    assert reloaded.get_all_nodes()[0].label == "Keep Entity"
+    assert reloaded.get_document_status("doc-1").last_error == (
+        "Document file unavailable"
+    )
+
+
+@pytest.mark.asyncio
 async def test_full_rebuild_forwards_standard_extraction_profile() -> None:
     upload_root = _workspace_upload_root("graph_rebuild_standard_profile")
     artifact_dir = upload_root / TEST_USER_ID / "doc-1"
@@ -561,10 +727,19 @@ async def test_full_rebuild_forwards_standard_extraction_profile() -> None:
     (artifact_dir / "extracted.md").write_text("demo", encoding="utf-8")
 
     with (
-        patch("core.uploads.BASE_UPLOAD_FOLDER", str(upload_root)),
+        patch("core.uploads.ensure_upload_root", return_value=str(upload_root)),
         patch(
             "graph_rag.maintenance.list_graph_source_documents",
-            new=AsyncMock(return_value=[{"doc_id": "doc-1", "original_path": str(artifact_dir / "demo.pdf")}]),
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "doc_id": "doc-1",
+                        "original_path": (
+                            rf"uploads\{TEST_USER_ID}\doc-1\demo.pdf"
+                        ),
+                    }
+                ]
+            ),
         ),
         patch("graph_rag.maintenance.load_ocr_artifacts", new=Mock(return_value=("demo", []))),
         patch("graph_rag.maintenance.run_graph_extraction", new=AsyncMock()) as mock_extract,

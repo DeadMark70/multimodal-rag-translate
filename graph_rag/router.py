@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 # Local application
 from core.auth import get_current_user_id
-from core.uploads import get_document_upload_dir
+from core.uploads import get_document_upload_dir, resolve_document_user_folder
 from core.llm_factory import ExtractionProfile
 from core.errors import AppError, ErrorCode
 from evaluation.db import CampaignRepository
@@ -691,7 +691,18 @@ async def retry_graph_document(
                 status_code=409,
             )
 
-        user_folder = Path(original_path).resolve().parent
+        try:
+            user_folder = resolve_document_user_folder(
+                user_id=user_id,
+                doc_id=doc_id,
+                original_path=original_path,
+            )
+        except ValueError as exc:
+            raise AppError(
+                code=ErrorCode.NOT_FOUND,
+                message="Document file unavailable",
+                status_code=404,
+            ) from exc
         if not (user_folder / "extracted.md").exists():
             GraphMaintenanceLock(user_id).release(maintenance_token)
             raise AppError(

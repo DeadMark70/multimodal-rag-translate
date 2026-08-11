@@ -5,9 +5,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from supabase_client import supabase
-
 def verify_docs(user_id: str):
+    from supabase_client import supabase
+
     if not supabase:
         print("Supabase client not initialized.")
         return

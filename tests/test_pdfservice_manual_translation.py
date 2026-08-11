@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -159,6 +160,53 @@ async def test_translate_user_document_persists_portable_path_and_generates_loca
     assert update_status.await_args.kwargs["translated_path"] == (
         f"uploads/{TEST_USER_ID}/doc-1/translated_demo.pdf"
     )
+
+
+@pytest.mark.asyncio
+async def test_pdf_generation_failure_keeps_exception_path_out_of_outputs(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    folder = tmp_path / "uploads" / TEST_USER_ID / "doc-1"
+    folder.mkdir(parents=True)
+    (folder / "demo.pdf").write_bytes(b"%PDF")
+    (folder / "extracted.md").write_text("markdown", encoding="utf-8")
+    (folder / "image_blocks.json").write_text("[]", encoding="utf-8")
+    sentinel = str(tmp_path / "private-sentinel.pdf")
+    row = {
+        "file_name": "demo.pdf",
+        "original_path": f"uploads/{TEST_USER_ID}/doc-1/demo.pdf",
+        "translated_path": None,
+        "status": "ready",
+        "processing_step": "ocr_completed",
+    }
+    update_status = AsyncMock()
+
+    with (
+        patch("pdfserviceMD.service.get_document", new=AsyncMock(return_value=row)),
+        patch("pdfserviceMD.service.update_processing_step", new=AsyncMock()),
+        patch(
+            "pdfserviceMD.service.update_document_status", new=update_status
+        ),
+        patch(
+            "pdfserviceMD.service.translate_text",
+            new=AsyncMock(return_value="translated"),
+        ),
+        patch("pdfserviceMD.service.replace_markdown", return_value="translated"),
+        patch(
+            "pdfserviceMD.service.markdown_to_pdf",
+            side_effect=RuntimeError(f"renderer failed at {sentinel}"),
+        ),
+        caplog.at_level(logging.INFO, logger="pdfserviceMD.service"),
+    ):
+        response = await translate_user_document(
+            doc_id="doc-1", user_id=TEST_USER_ID
+        )
+
+    assert update_status.await_args.kwargs["error_message"] == "PDF generation failed"
+    assert response.pdf_error == "PDF generation failed"
+    assert sentinel not in caplog.text
+    assert sentinel not in response.model_dump_json()
 
 
 def test_translate_endpoint_returns_service_response() -> None:

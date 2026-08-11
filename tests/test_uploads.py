@@ -79,6 +79,9 @@ def test_normalize_accepts_portable_and_legacy_relative(
 @pytest.mark.parametrize(
     "stored",
     [
+        "./uploads/user-1/doc-1/paper.pdf",
+        "uploads//user-1/doc-1/paper.pdf",
+        "uploads/user-1/doc-1/paper.pdf/",
         "/app/uploads/user-1/doc-1/paper.pdf",
         r"D:\uploads\user-1\doc-1\paper.pdf",
         r"\\server\share\paper.pdf",
@@ -106,3 +109,47 @@ def test_resolve_legacy_path_inside_exact_document_root(tmp_path, monkeypatch) -
         storage_path=r"uploads\user-1\doc-1\paper.pdf",
     )
     assert resolved == expected.resolve()
+
+
+def test_resolve_document_rejects_symlinked_document_root_escape(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    upload_root = tmp_path / "uploads"
+    document_link = upload_root / "user-1" / "doc-1"
+    outside = tmp_path / "outside"
+    document_link.parent.mkdir(parents=True)
+    outside.mkdir()
+    try:
+        document_link.symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    with pytest.raises(ValueError):
+        upload_paths.resolve_document_storage_path(
+            user_id="user-1",
+            doc_id="doc-1",
+            storage_path="uploads/user-1/doc-1/paper.pdf",
+        )
+
+
+def test_resolve_manifest_reference_rejects_symlinked_document_root_escape(
+    tmp_path, monkeypatch
+) -> None:
+    upload_root = tmp_path / "uploads"
+    document_link = upload_root / "user-1" / "doc-1"
+    outside = tmp_path / "outside"
+    document_link.parent.mkdir(parents=True)
+    outside.mkdir()
+    try:
+        document_link.symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    monkeypatch.setattr(upload_paths, "BASE_UPLOAD_FOLDER", str(upload_root))
+
+    with pytest.raises(ValueError):
+        upload_paths.resolve_upload_storage_reference(
+            user_id="user-1",
+            doc_id="doc-1",
+            storage_reference="user-1/doc-1/paper.png",
+        )

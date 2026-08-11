@@ -65,8 +65,14 @@ def normalize_document_storage_path(
     """Normalize a portable or legacy storage reference for its exact document."""
     _validate_path_component(user_id, label="user_id")
     _validate_path_component(doc_id, label="doc_id")
-    if not storage_path or ("/" in storage_path and "\\" in storage_path):
+    if not isinstance(storage_path, str) or not storage_path:
+        raise ValueError("storage path must be a nonempty string")
+    if "/" in storage_path and "\\" in storage_path:
         raise ValueError("storage path must use one separator style")
+    separator = "\\" if "\\" in storage_path else "/"
+    raw_parts = storage_path.split(separator)
+    if any(part in {"", ".", ".."} for part in raw_parts):
+        raise ValueError("storage path contains an unsafe component")
     parsed = (
         PureWindowsPath(storage_path)
         if "\\" in storage_path
@@ -92,8 +98,13 @@ def resolve_document_storage_path(
     )
     upload_root = Path(ensure_upload_root()).resolve()
     document_root = (upload_root / user_id / doc_id).resolve()
-    candidate = Path(canonical).resolve()
-    if not candidate.is_relative_to(document_root):
+    if not document_root.is_relative_to(upload_root):
+        raise ValueError("document root escapes the upload root")
+    canonical_parts = PurePosixPath(canonical).parts
+    candidate = upload_root.joinpath(*canonical_parts[1:]).resolve()
+    if not candidate.is_relative_to(upload_root) or not candidate.is_relative_to(
+        document_root
+    ):
         raise ValueError("storage path escapes the authorized document")
     return candidate
 
@@ -114,8 +125,12 @@ def resolve_upload_storage_reference(
         raise ValueError("user and document IDs must be single path components")
     upload_root = Path(ensure_upload_root()).resolve()
     document_root = (upload_root / user_id / doc_id).resolve()
+    if not document_root.is_relative_to(upload_root):
+        raise ValueError("document root escapes the upload root")
     candidate = (upload_root / Path(storage_reference)).resolve()
-    if not candidate.is_relative_to(document_root):
+    if not candidate.is_relative_to(upload_root) or not candidate.is_relative_to(
+        document_root
+    ):
         raise ValueError("storage reference escapes the authorized document")
     return candidate
 

@@ -42,7 +42,7 @@ _DEFAULT_ORIGINS = [
     "http://127.0.0.1",
 ]
 _ALLOWED_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]
-_EXPOSE_HEADERS = ["Content-Disposition"]
+_EXPOSE_HEADERS = ["Content-Disposition", "X-Request-ID"]
 
 
 def _is_true(name: str, default: str = "false") -> bool:

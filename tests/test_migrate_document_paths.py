@@ -85,8 +85,48 @@ async def test_migration_counts_null_portable_and_rejected_paths() -> None:
 
     assert summary.scanned_rows == 2
     assert summary.changed_fields == 0
-    assert summary.unchanged_fields == 1
+    assert summary.unchanged_fields == 2
     assert summary.rejected_fields == 2
+
+
+@pytest.mark.asyncio
+async def test_migration_classifies_null_and_empty_paths_as_unchanged(capsys) -> None:
+    rows = [{
+        "id": "doc-1",
+        "user_id": "private-user",
+        "original_path": None,
+        "translated_path": "",
+    }]
+    with patch(
+        "scripts.migrate_document_paths.list_document_path_rows",
+        new=AsyncMock(side_effect=[rows, []]),
+    ):
+        summary = await migrate_document_paths(apply=False)
+
+    assert summary.unchanged_fields == 2
+    assert summary.rejected_fields == 0
+    output = capsys.readouterr().out
+    assert "doc-1 original_path unchanged" in output
+    assert "doc-1 translated_path unchanged" in output
+    assert "private-user" not in output
+
+
+@pytest.mark.asyncio
+async def test_migration_still_rejects_non_string_path_values() -> None:
+    rows = [{
+        "id": "doc-1",
+        "user_id": "user-1",
+        "original_path": [],
+        "translated_path": None,
+    }]
+    with patch(
+        "scripts.migrate_document_paths.list_document_path_rows",
+        new=AsyncMock(side_effect=[rows, []]),
+    ):
+        summary = await migrate_document_paths(apply=False)
+
+    assert summary.unchanged_fields == 1
+    assert summary.rejected_fields == 1
 
 
 @pytest.mark.asyncio
@@ -126,7 +166,7 @@ async def test_migration_uses_batch_size_and_second_portable_run_is_idempotent()
     assert list_rows.await_args_list[1].kwargs == {"offset": 17, "limit": 17}
     assert summary.changed_fields == 0
     assert summary.applied_fields == 0
-    assert summary.unchanged_fields == 1
+    assert summary.unchanged_fields == 2
 
 
 @pytest.mark.asyncio

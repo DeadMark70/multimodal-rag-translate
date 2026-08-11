@@ -223,9 +223,7 @@ def _can_translate_document(*, row: dict, user_id: str) -> bool:
     doc_id = row.get("id")
     if not isinstance(doc_id, str):
         return False
-    if _resolve_stored_file(
-        user_id=user_id, doc_id=doc_id, storage_path=row.get("translated_path")
-    ):
+    if row.get("translated_path"):
         return False
     original_file = _resolve_stored_file(
         user_id=user_id, doc_id=doc_id, storage_path=row.get("original_path")
@@ -259,7 +257,7 @@ async def run_upload_pipeline(
         file_content = await file.read()
         with open(save_path, "wb") as buffer:
             buffer.write(file_content)
-        logger.info("File saved to: %s", save_path)
+        logger.info("File saved for doc %s", document_id)
 
         await create_document_record(
             doc_id=document_id,
@@ -317,8 +315,12 @@ async def run_upload_pipeline(
         await _mark_failed(document_id, "Document processing failed")
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.error("Processing failed: %s", exc, exc_info=True)
-        await _mark_failed(document_id, str(exc))
+        logger.error(
+            "Document processing failed for doc %s (error_type=%s)",
+            document_id,
+            type(exc).__name__,
+        )
+        await _mark_failed(document_id, "Document processing failed")
         raise AppError(
             code=ErrorCode.PROCESSING_ERROR,
             message="Document processing failed",
@@ -643,11 +645,15 @@ async def translate_user_document(*, doc_id: str, user_id: str) -> TranslatePdfR
             pdf_error=None,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.error("Manual translation failed for %s: %s", doc_id, exc, exc_info=True)
+        logger.error(
+            "PDF generation failed for doc %s (error_type=%s)",
+            doc_id,
+            type(exc).__name__,
+        )
         await update_document_status(
             doc_id=doc_id,
             status="completed_with_pdf_error",
-            error_message=str(exc),
+            error_message="PDF generation failed",
         )
         await update_processing_step(
             doc_id=doc_id,
@@ -659,7 +665,7 @@ async def translate_user_document(*, doc_id: str, user_id: str) -> TranslatePdfR
             message="Translation finished but PDF generation failed.",
             pdf_available=False,
             pdf_download_url=None,
-            pdf_error=str(exc),
+            pdf_error="PDF generation failed",
         )
 
 

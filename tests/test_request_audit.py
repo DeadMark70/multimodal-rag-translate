@@ -6,6 +6,11 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 
 from core.auth import get_current_user_id
+from core.app_factory import (
+    _configure_cors,
+    _register_error_handlers,
+    _register_middlewares,
+)
 from core.errors import AppError, ErrorCode
 from core.request_audit import (
     anonymize_user_id,
@@ -141,3 +146,32 @@ def test_invalid_authentication_does_not_log_raw_token(monkeypatch, caplog) -> N
 
     assert response.status_code == 500
     assert "raw-invalid-token" not in caplog.text
+
+
+def test_cors_error_response_exposes_request_id_to_allowed_origin() -> None:
+    app = FastAPI()
+    _configure_cors(app)
+    _register_middlewares(app)
+    _register_error_handlers(app)
+
+    @app.get("/failure")
+    async def failure() -> None:
+        raise AppError(
+            code=ErrorCode.NOT_FOUND,
+            message="Document unavailable",
+            status_code=404,
+        )
+
+    response = TestClient(app).get(
+        "/failure",
+        headers={"Origin": "http://localhost:5173"},
+    )
+
+    assert response.status_code == 404
+    assert response.headers["X-Request-ID"]
+    exposed = {
+        value.strip().lower()
+        for value in response.headers["Access-Control-Expose-Headers"].split(",")
+    }
+    assert "content-disposition" in exposed
+    assert "x-request-id" in exposed

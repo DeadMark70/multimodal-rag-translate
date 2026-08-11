@@ -60,7 +60,9 @@ async def migrate_document_paths(
 
             for field in _PATH_FIELDS:
                 stored_path = row.get(field)
-                if stored_path is None:
+                if stored_path is None or stored_path == "":
+                    unchanged_fields += 1
+                    print(f"{doc_id} {field} unchanged")
                     continue
                 try:
                     if not isinstance(stored_path, str):
