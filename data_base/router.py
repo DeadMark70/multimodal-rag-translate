@@ -117,8 +117,7 @@ async def _run_contextual_ask(
 
     history_count = len(request.history) if request.history else 0
     logger.info(
-        "Context-aware RAG for user %s: history=%s, hyde=%s, multi_query=%s, evaluation=%s, graph_rag=%s",
-        user_id,
+        "Context-aware RAG: history=%s, hyde=%s, multi_query=%s, evaluation=%s, graph_rag=%s",
         history_count,
         request.enable_hyde,
         request.enable_multi_query,
@@ -151,7 +150,11 @@ async def _run_contextual_ask(
             docs = []
 
         t2 = time.perf_counter()
-        logger.info("Context-aware answer in %.2fs, sources: %s", t2 - t1, sources)
+        logger.info(
+            "Context-aware answer in %.2fs, source_count=%s",
+            t2 - t1,
+            len(sources),
+        )
 
         background_tasks.add_task(
             _log_query_to_supabase,
@@ -161,7 +164,7 @@ async def _run_contextual_ask(
             has_history=history_count > 0,
         )
 
-        source_details = await build_source_details(docs, sources)
+        source_details = await build_source_details(docs, sources, user_id=user_id)
         if not request.enable_evaluation:
             return EnhancedAskResponse(
                 question=request.question,
@@ -208,7 +211,7 @@ async def _run_contextual_ask(
                 eval_result.confidence,
             )
         except (RuntimeError, ValueError) as e:
-            logger.warning("Evaluation failed: %s", e)
+            logger.warning("Evaluation failed: error_type=%s", type(e).__name__)
             metrics = EvaluationMetrics(
                 faithfulness=FaithfulnessLevel.evaluation_failed,
                 confidence_score=0.5,
@@ -222,7 +225,7 @@ async def _run_contextual_ask(
             metrics=metrics,
         )
     except (RuntimeError, ValueError) as e:
-        logger.error("Context-aware RAG failed: %s", e, exc_info=True)
+        logger.error("Context-aware RAG failed: error_type=%s", type(e).__name__)
         raise AppError(
             code=ErrorCode.PROCESSING_ERROR,
             message="Failed to answer question with context",
@@ -264,14 +267,14 @@ async def on_startup_rag_init() -> None:
             await initialize_reranker()
         except (RuntimeError, ImportError, OSError, ValueError) as exc:
             logger.warning(
-                "Reranker warmup failed; continuing without reranking: %s | state=%s",
-                exc,
+                "Reranker warmup failed; continuing without reranking: error_type=%s | state=%s",
+                type(exc).__name__,
                 DocumentReranker.runtime_metadata(reason="startup_warmup_failed"),
             )
 
         logger.info("=== RAG components ready ===")
     except (RuntimeError, ImportError, OSError) as e:
-        logger.error(f"RAG initialization failed: {e}", exc_info=True)
+        logger.error("RAG initialization failed: error_type=%s", type(e).__name__)
         raise
 
 
@@ -331,7 +334,7 @@ async def ask_question_with_context_stream(
     from sse_starlette.sse import EventSourceResponse
 
     _validate_ask_history(request)
-    logger.info("Starting streaming ask for user %s", user_id)
+    logger.info("Starting streaming ask")
 
     async def event_generator():
         queue: asyncio.Queue[dict | None] = asyncio.Queue()
@@ -346,7 +349,10 @@ async def ask_question_with_context_stream(
                 )
                 await queue.put(format_sse_event(SSEEventType.COMPLETE, response))
             except AppError as exc:
-                logger.error("Streaming ask failed: %s", exc, exc_info=True)
+                logger.error(
+                    "Streaming ask failed: error_code=%s",
+                    exc.code.value,
+                )
                 await queue.put(
                     format_sse_event(
                         SSEEventType.ERROR,
@@ -354,7 +360,10 @@ async def ask_question_with_context_stream(
                     )
                 )
             except (RuntimeError, ValueError) as exc:
-                logger.error("Streaming ask failed: %s", exc, exc_info=True)
+                logger.error(
+                    "Streaming ask failed: error_type=%s",
+                    type(exc).__name__,
+                )
                 await queue.put(
                     format_sse_event(
                         SSEEventType.ERROR,
@@ -415,7 +424,7 @@ async def _log_query_to_supabase(
         )
         logger.debug("Chat log saved to Supabase (background)")
     except AppError as e:
-        logger.warning(f"Failed to save chat log: {e}")
+        logger.warning("Failed to save chat log: error_code=%s", e.code.value)
 
     # Log to query_logs (new analytics table)
     try:
@@ -432,7 +441,10 @@ async def _log_query_to_supabase(
         logger.debug("Query log saved to Supabase (background)")
     except AppError as e:
         # Non-fatal: table might not exist yet
-        logger.debug(f"Failed to save to query_logs (may not exist): {e}")
+        logger.debug(
+            "Failed to save to query_logs: error_code=%s",
+            e.code.value,
+        )
 
 
 
@@ -461,7 +473,12 @@ async def research_question(
         HTTPException: 500 if research fails.
     """
     t1 = time.perf_counter()
-    logger.info(f"Research query for user {user_id}: {request.question[:50]}...")
+    logger.info(
+        "Research query received: max_subtasks=%s, reranking=%s, graph_planning=%s",
+        request.max_subtasks,
+        request.enable_reranking,
+        request.enable_graph_planning,
+    )
 
     try:
         # Step 1: Plan - decompose into sub-tasks
@@ -506,7 +523,11 @@ async def research_question(
                     confidence=1.0,
                 ))
             except (RuntimeError, ValueError) as e:
-                logger.warning(f"Sub-task {task.id} failed: {e}")
+                logger.warning(
+                    "Sub-task %s failed: error_type=%s",
+                    task.id,
+                    type(e).__name__,
+                )
                 sub_results.append(SubTaskResult(
                     task_id=task.id,
                     question=task.question,
@@ -546,7 +567,7 @@ async def research_question(
         )
 
     except Exception as e:
-        logger.error(f"Research failed: {e}", exc_info=True)
+        logger.error("Research failed: error_type=%s", type(e).__name__)
         raise AppError(
             code=ErrorCode.PROCESSING_ERROR,
             message="Research request failed",
@@ -579,7 +600,11 @@ async def generate_research_plan(
         HTTPException: 500 if planning fails.
     """
     t1 = time.perf_counter()
-    logger.info(f"Generating research plan for user {user_id}: {request.question[:50]}...")
+    logger.info(
+        "Generating research plan: document_scope_count=%s, graph_planning=%s",
+        len(request.doc_ids or []),
+        request.enable_graph_planning,
+    )
     
     try:
         service = get_deep_research_service()
@@ -596,7 +621,7 @@ async def generate_research_plan(
         return plan
         
     except (RuntimeError, ValueError) as e:
-        logger.error(f"Plan generation failed: {e}", exc_info=True)
+        logger.error("Plan generation failed: error_type=%s", type(e).__name__)
         raise AppError(
             code=ErrorCode.PROCESSING_ERROR,
             message="Failed to generate research plan",
@@ -629,9 +654,10 @@ async def execute_research_plan(
     t1 = time.perf_counter()
     enabled_count = sum(1 for t in request.sub_tasks if t.enabled)
     logger.info(
-        f"Executing research plan for user {user_id}: "
-        f"{enabled_count}/{len(request.sub_tasks)} tasks enabled, "
-        f"max_iter={request.max_iterations}"
+        "Executing research plan: %s/%s tasks enabled, max_iter=%s",
+        enabled_count,
+        len(request.sub_tasks),
+        request.max_iterations,
     )
     
     if not request.sub_tasks:
@@ -658,7 +684,7 @@ async def execute_research_plan(
         return result
         
     except (RuntimeError, ValueError) as e:
-        logger.error(f"Research execution failed: {e}", exc_info=True)
+        logger.error("Research execution failed: error_type=%s", type(e).__name__)
         raise AppError(
             code=ErrorCode.PROCESSING_ERROR,
             message="Failed to execute research plan",
@@ -702,8 +728,8 @@ async def execute_research_plan_stream(
     from sse_starlette.sse import EventSourceResponse
     
     logger.info(
-        f"Starting streaming research for user {user_id}: "
-        f"{len(request.sub_tasks)} tasks"
+        "Starting streaming research: task_count=%s",
+        len(request.sub_tasks),
     )
     
     if not request.sub_tasks:
@@ -723,7 +749,10 @@ async def execute_research_plan_stream(
             ):
                 yield event
         except (RuntimeError, ValueError) as e:
-            logger.error(f"Streaming research failed: {e}", exc_info=True)
+            logger.error(
+                "Streaming research failed: error_type=%s",
+                type(e).__name__,
+            )
             from data_base.sse_events import SSEEventType, ErrorData, format_sse_event
             yield format_sse_event(
                 SSEEventType.ERROR,
@@ -742,9 +771,7 @@ async def execute_agentic_benchmark_stream(
     from sse_starlette.sse import EventSourceResponse
 
     logger.info(
-        "Starting agentic benchmark stream for user %s: %s",
-        user_id,
-        request.question[:80],
+        "Starting agentic benchmark stream",
     )
 
     service = get_agentic_chat_service()

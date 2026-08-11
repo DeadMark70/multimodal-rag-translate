@@ -175,7 +175,10 @@ async def generate_legacy_answer_from_evidence(
     doc_id_to_name: dict[str, str] = {}
     if source_doc_ids:
         try:
-            doc_id_to_name = await fetch_document_filenames(source_doc_ids)
+            doc_id_to_name = await fetch_document_filenames(
+                user_id=user_id,
+                doc_ids=source_doc_ids,
+            )
         except Exception as error:  # noqa: BLE001 - preserve best-effort labels
             logger.warning("Failed to fetch filenames from DB: %s", error)
 

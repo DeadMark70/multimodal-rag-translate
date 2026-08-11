@@ -70,6 +70,7 @@ def test_rag_ask_stream_emits_phase_updates_and_complete_payload() -> None:
                 "enable_reranking": True,
                 "enable_graph_rag": True,
                 "graph_search_mode": "generic",
+                "doc_ids": ["doc-1"],
             },
         ) as stream_response:
             stream_body = "".join(stream_response.iter_text())
@@ -82,9 +83,8 @@ def test_rag_ask_stream_emits_phase_updates_and_complete_payload() -> None:
     assert '"stage": "answer_generation"' in stream_body
     assert "event: complete" in stream_body
     assert '"answer": "streamed answer"' in stream_body
-    assert '"doc_id": "doc-1"' in stream_body
-    assert '"snippet": null' in stream_body
-    assert '"score": null' in stream_body
+    assert '"sources": []' in stream_body
+    assert '"doc_id": "doc-1"' not in stream_body
 
 
 def test_rag_ask_stream_preserves_retrieved_citation_evidence() -> None:

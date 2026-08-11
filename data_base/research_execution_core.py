@@ -330,7 +330,11 @@ class ResearchExecutionCore:
         enable_graph_planning: bool = False,
     ) -> ResearchPlanResponse:
         """Generate a user-editable research plan."""
-        logger.info("Generating research plan for user %s: %s...", user_id, question[:50])
+        logger.info(
+            "Generating research plan: document_scope_count=%s, graph_planning=%s",
+            len(doc_ids or []),
+            enable_graph_planning,
+        )
 
         planner = TaskPlanner(
             max_subtasks=5,
@@ -365,8 +369,7 @@ class ResearchExecutionCore:
     ) -> ExecutePlanResponse:
         """Run a confirmed research plan without persistence concerns."""
         logger.info(
-            "Executing research plan for user %s: %s tasks, max_iter=%s",
-            user_id,
+            "Executing research plan: task_count=%s, max_iter=%s",
             len(request.sub_tasks),
             request.max_iterations,
         )
@@ -519,7 +522,11 @@ class ResearchExecutionCore:
                         visual_verification_meta=visual_verification_meta,
                     )
                 except (RuntimeError, ValueError) as exc:
-                    logger.warning("Task %s failed: %s", task.id, exc)
+                    logger.warning(
+                        "Task %s failed: error_type=%s",
+                        task.id,
+                        type(exc).__name__,
+                    )
                     return SubTaskExecutionResult(
                         id=task.id,
                         question=task.question,
@@ -626,7 +633,11 @@ class ResearchExecutionCore:
                             tool_calls = []
                             visual_verification_meta = {}
                     except (RuntimeError, ValueError) as exc:
-                        logger.warning("Task %s failed: %s", task_id, exc)
+                        logger.warning(
+                            "Task %s failed: error_type=%s",
+                            task_id,
+                            type(exc).__name__,
+                        )
                         answer = f"無法回答此問題: {str(exc)[:100]}"
                         sources = []
                         documents = []
@@ -645,10 +656,9 @@ class ResearchExecutionCore:
 
                         if evaluation.accuracy < min_accuracy_score:
                             logger.info(
-                                "Task %s low accuracy (%.1f/10), reason: %s...",
+                                "Task %s low accuracy (%.1f/10)",
                                 task_id,
                                 evaluation.accuracy,
-                                evaluation.reason[:50],
                             )
                             retry_hint = evaluation.suggestion or evaluation.reason
                             refined_query = await planner.refine_query_from_evaluation(
@@ -841,7 +851,11 @@ class ResearchExecutionCore:
                 visual_verification_meta=visual_verification_meta,
             )
         except (RuntimeError, ValueError) as exc:
-            logger.warning("Task %s failed: %s", task.id, exc)
+            logger.warning(
+                "Task %s failed: error_type=%s",
+                task.id,
+                type(exc).__name__,
+            )
             return SubTaskExecutionResult(
                 id=task.id,
                 question=task.question,

@@ -64,12 +64,15 @@ def _metadata_filename(metadata: Mapping[str, Any]) -> str | None:
 
 
 async def build_source_details(
-    documents: Sequence[Document], source_doc_ids: Sequence[str]
+    documents: Sequence[Document], source_doc_ids: Sequence[str], *, user_id: str
 ) -> list[SourceDetail]:
     """Project retrieved evidence into the public citation wire contract."""
     requested_ids = set(source_doc_ids)
     try:
-        filenames = await fetch_document_filenames(list(source_doc_ids))
+        filenames = await fetch_document_filenames(
+            user_id=user_id,
+            doc_ids=list(source_doc_ids),
+        )
     except AppError as exc:
         logger.warning(
             "Citation filename lookup failed: %s: %s",
@@ -107,7 +110,7 @@ async def build_source_details(
         )
 
     for doc_id in source_doc_ids:
-        if doc_id in represented_doc_ids:
+        if doc_id in represented_doc_ids or doc_id not in filenames:
             continue
         represented_doc_ids.add(doc_id)
         details.append(SourceDetail(doc_id=doc_id, filename=filenames.get(doc_id)))

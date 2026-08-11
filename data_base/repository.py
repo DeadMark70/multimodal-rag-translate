@@ -52,8 +52,10 @@ async def insert_query_log(
     )
 
 
-async def fetch_document_filenames(doc_ids: list[str]) -> dict[str, str]:
-    """Returns a map of document id to file_name."""
+async def fetch_document_filenames(
+    *, user_id: str, doc_ids: list[str]
+) -> dict[str, str]:
+    """Return file names for documents owned by the authenticated user."""
     if not doc_ids:
         return {}
 
@@ -62,6 +64,7 @@ async def fetch_document_filenames(doc_ids: list[str]) -> dict[str, str]:
         failure_message="Failed to fetch document metadata",
         handler=lambda client: client.table("documents")
             .select("id, file_name")
+            .eq("user_id", user_id)
             .in_("id", doc_ids)
             .execute(),
     )

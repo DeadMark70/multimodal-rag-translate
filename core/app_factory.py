@@ -164,7 +164,8 @@ def _initialize_external_clients(app: FastAPI) -> None:
     if client:
         logger.info("Supabase client ready")
     else:
-        logger.warning("Supabase unavailable; database-backed features are limited")
+        logger.error("Critical dependency initialization failed")
+        raise RuntimeError("Critical dependency initialization failed")
 
 
 async def _initialize_rag_components() -> None:

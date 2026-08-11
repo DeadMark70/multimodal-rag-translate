@@ -60,7 +60,7 @@ async def list_conversations(
     Raises:
         HTTPException: 500 if database query fails.
     """
-    logger.info(f"Listing conversations for user {user_id}")
+    logger.info("Listing conversations")
     return await list_user_conversations(user_id=user_id)
 
 
@@ -98,7 +98,7 @@ async def create_conversation(
     Raises:
         HTTPException: 500 if creation fails.
     """
-    logger.info(f"Creating conversation for user {user_id}: {data.title}")
+    logger.info("Creating conversation")
     return await create_user_conversation(user_id=user_id, data=data)
 
 
@@ -124,7 +124,7 @@ async def get_conversation(
     Raises:
         HTTPException: 404 if not found, 500 if query fails.
     """
-    logger.info(f"Getting conversation {conversation_id} for user {user_id}")
+    logger.info("Getting conversation")
     return await get_user_conversation_detail(
         conversation_id=conversation_id,
         user_id=user_id,
@@ -152,7 +152,7 @@ async def update_conversation(
     Raises:
         HTTPException: 404 if not found, 500 if update fails.
     """
-    logger.info(f"Updating conversation {conversation_id}: {data.title}")
+    logger.info("Updating conversation")
     return await update_user_conversation(
         conversation_id=conversation_id,
         user_id=user_id,
@@ -177,7 +177,7 @@ async def delete_conversation(
     Raises:
         HTTPException: 404 if not found, 500 if delete fails.
     """
-    logger.info(f"Deleting conversation {conversation_id}")
+    logger.info("Deleting conversation")
     await delete_user_conversation(conversation_id=conversation_id, user_id=user_id)
 
 
@@ -217,7 +217,7 @@ async def create_message(
     Raises:
         HTTPException: 404 if conversation not found, 500 if insert fails.
     """
-    logger.info(f"Adding message to conversation {conversation_id} for user {user_id}")
+    logger.info("Adding message to conversation")
     return await create_conversation_message(
         conversation_id=conversation_id,
         user_id=user_id,

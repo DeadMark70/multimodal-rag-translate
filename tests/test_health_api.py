@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -79,3 +80,36 @@ def test_ready_stays_200_when_ocr_warmup_handles_its_own_failure() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ready"}
+
+
+@pytest.mark.asyncio
+async def test_lifespan_fails_when_supabase_client_is_unavailable() -> None:
+    """A missing critical database client prevents startup readiness."""
+    from core import app_factory
+
+    worker = type(
+        "FakeWorker",
+        (),
+        {"is_configured": False, "start": AsyncMock(), "stop": AsyncMock()},
+    )()
+    engine = type(
+        "FakeCampaignEngine",
+        (),
+        {"_worker": None, "recover_inflight_campaigns": AsyncMock()},
+    )()
+    app = FastAPI()
+
+    with (
+        patch("supabase_client.init_supabase", return_value=None),
+        patch("evaluation.db.force_init_db", new=AsyncMock()),
+        patch("evaluation.campaign_engine.get_campaign_engine", return_value=engine),
+        patch("evaluation.job_worker.get_evaluation_job_worker", return_value=worker),
+        patch.object(app_factory, "_ensure_base_directories"),
+        patch.object(app_factory, "_initialize_rag_components", new=AsyncMock()),
+        patch.object(app_factory, "_warm_up_pdf_ocr", new=AsyncMock()),
+        pytest.raises(RuntimeError, match="Critical dependency initialization failed"),
+    ):
+        async with app_factory.app_lifespan(app):
+            pass
+
+    assert app.state.ready is False

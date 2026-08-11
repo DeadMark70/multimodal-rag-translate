@@ -58,6 +58,54 @@ class _OwnedDocumentsQuery:
         )
 
 
+class _FilenameDocumentsQuery:
+    def __init__(self) -> None:
+        self.user_ids: list[str] = []
+        self.document_ids: list[list[str]] = []
+
+    def select(self, columns: str) -> _FilenameDocumentsQuery:
+        assert columns == "id, file_name"
+        return self
+
+    def eq(self, field: str, value: str) -> _FilenameDocumentsQuery:
+        assert field == "user_id"
+        self.user_ids.append(value)
+        return self
+
+    def in_(self, field: str, values: list[str]) -> _FilenameDocumentsQuery:
+        assert field == "id"
+        self.document_ids.append(values)
+        return self
+
+    def execute(self) -> SimpleNamespace:
+        return SimpleNamespace(data=[{"id": "doc-1", "file_name": "paper.pdf"}])
+
+
+@pytest.mark.asyncio
+async def test_fetch_document_filenames_scopes_ids_to_the_authenticated_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query = _FilenameDocumentsQuery()
+
+    async def fake_execute(*, handler, **_kwargs):
+        return handler(SimpleNamespace(table=lambda name: _table(name, query)))
+
+    def _table(name: str, result: _FilenameDocumentsQuery) -> _FilenameDocumentsQuery:
+        assert name == "documents"
+        return result
+
+    monkeypatch.setattr(repository, "execute_supabase_operation", fake_execute)
+
+    filenames = await repository.fetch_document_filenames(
+        user_id="user-a",
+        doc_ids=["doc-1"],
+    )
+
+    assert filenames == {"doc-1": "paper.pdf"}
+    assert query.user_ids == ["user-a"]
+    assert query.document_ids == [["doc-1"]]
+
+
 @pytest.mark.asyncio
 async def test_list_owned_document_ids_returns_only_the_users_unique_ids(
     monkeypatch: pytest.MonkeyPatch,

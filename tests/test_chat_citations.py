@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from langchain_core.documents import Document
 
+from core.errors import AppError, ErrorCode
 from data_base.citations import build_source_details
 
 
@@ -26,7 +27,7 @@ async def test_citation_uses_retrieved_text_and_metadata_only() -> None:
         "data_base.citations.fetch_document_filenames",
         new=AsyncMock(return_value={"doc-1": "db-name.pdf"}),
     ):
-        result = await build_source_details(documents, ["doc-1"])
+        result = await build_source_details(documents, ["doc-1"], user_id="user-a")
 
     assert [item.model_dump() for item in result] == [
         {
@@ -55,7 +56,7 @@ async def test_invalid_precision_degrades_without_fabrication() -> None:
         "data_base.citations.fetch_document_filenames",
         new=AsyncMock(return_value={"doc-1": "paper.pdf"}),
     ):
-        result = await build_source_details([document], ["doc-1"])
+        result = await build_source_details([document], ["doc-1"], user_id="user-a")
 
     assert result[0].filename == "paper.pdf"
     assert result[0].page is None
@@ -70,7 +71,7 @@ async def test_missing_document_becomes_source_only_without_answer_fallback() ->
         "data_base.citations.fetch_document_filenames",
         new=AsyncMock(return_value={"doc-2": "missing.pdf"}),
     ):
-        result = await build_source_details([], ["doc-2"])
+        result = await build_source_details([], ["doc-2"], user_id="user-a")
 
     assert result[0].model_dump() == {
         "doc_id": "doc-2",
@@ -80,6 +81,35 @@ async def test_missing_document_becomes_source_only_without_answer_fallback() ->
         "score": None,
         "bbox": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_unowned_source_only_id_is_omitted() -> None:
+    with patch(
+        "data_base.citations.fetch_document_filenames",
+        new=AsyncMock(return_value={}),
+    ):
+        result = await build_source_details(
+            [], ["caller-supplied-doc"], user_id="user-a"
+        )
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_source_only_ids_are_omitted_when_ownership_lookup_fails() -> None:
+    lookup_error = AppError(
+        code=ErrorCode.DATABASE_ERROR,
+        message="metadata lookup unavailable",
+        status_code=503,
+    )
+    with patch(
+        "data_base.citations.fetch_document_filenames",
+        new=AsyncMock(side_effect=lookup_error),
+    ):
+        result = await build_source_details([], ["doc-1"], user_id="user-a")
+
+    assert result == []
 
 
 @pytest.mark.asyncio
@@ -98,7 +128,7 @@ async def test_same_document_chunks_with_different_pages_are_preserved() -> None
         "data_base.citations.fetch_document_filenames",
         new=AsyncMock(return_value={"doc-1": "one.pdf"}),
     ):
-        result = await build_source_details(documents, ["doc-1"])
+        result = await build_source_details(documents, ["doc-1"], user_id="user-a")
 
     assert [(item.doc_id, item.page, item.snippet) for item in result] == [
         ("doc-1", 2, "shared evidence"),
@@ -122,7 +152,7 @@ async def test_same_document_chunks_with_different_snippets_are_preserved() -> N
         "data_base.citations.fetch_document_filenames",
         new=AsyncMock(return_value={"doc-1": "one.pdf"}),
     ):
-        result = await build_source_details(documents, ["doc-1"])
+        result = await build_source_details(documents, ["doc-1"], user_id="user-a")
 
     assert [(item.doc_id, item.page, item.snippet) for item in result] == [
         ("doc-1", 3, "first passage"),
@@ -142,7 +172,9 @@ async def test_exact_duplicate_chunks_keep_first_retrieval_occurrence() -> None:
         "data_base.citations.fetch_document_filenames",
         new=AsyncMock(return_value={"doc-1": "one.pdf", "doc-2": "two.pdf"}),
     ):
-        result = await build_source_details(documents, ["doc-1", "doc-2"])
+        result = await build_source_details(
+            documents, ["doc-1", "doc-2"], user_id="user-a"
+        )
 
     assert [(item.doc_id, item.snippet) for item in result] == [
         ("doc-2", "first doc-2 chunk"),

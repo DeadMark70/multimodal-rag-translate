@@ -139,8 +139,7 @@ async def run_corrective_retrieval(
         return CragRetrievalResult(list(documents), "accepted", classification)
 
     logger.info(
-        "CRAG guard detected low relevance for question '%s'; triggering corrective retrieval",
-        question[:120],
+        "CRAG guard detected low relevance; triggering corrective retrieval",
     )
     await _emit_progress(progress_callback, "crag_correction", {"status": "rewriting_query"})
     corrected_queries = await build_crag_queries(

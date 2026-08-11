@@ -94,7 +94,11 @@ class DeepResearchService(ResearchExecutionCore):
         Returns:
             ResearchPlanResponse with editable sub-tasks.
         """
-        logger.info(f"Generating research plan for user {user_id}: {question[:50]}...")
+        logger.info(
+            "Generating research plan: document_scope_count=%s, graph_planning=%s",
+            len(doc_ids or []),
+            enable_graph_planning,
+        )
         
         # Create planner and generate plan
         planner = TaskPlanner(
@@ -239,7 +243,11 @@ class DeepResearchService(ResearchExecutionCore):
 
 
                 except (RuntimeError, ValueError) as e:
-                    logger.warning(f"Task {task.id} failed: {e}")
+                    logger.warning(
+                        "Task %s failed: error_type=%s",
+                        task.id,
+                        type(e).__name__,
+                    )
                     return SubTaskExecutionResult(
                         id=task.id,
                         question=task.question,
@@ -669,12 +677,12 @@ class DeepResearchService(ResearchExecutionCore):
                 title=request.original_question[:100] if request.original_question else None,
                 metadata=metadata_payload,
             )
-            logger.info(
-                "Persisted research results to conversation %s",
-                request.conversation_id,
-            )
+            logger.info("Persisted research results")
         except AppError as e:
-            logger.error("Failed to persist research results: %s", e, exc_info=True)
+            logger.error(
+                "Failed to persist research results: error_code=%s",
+                e.code.value,
+            )
     
     async def _execute_single_task(
         self,
@@ -753,7 +761,11 @@ class DeepResearchService(ResearchExecutionCore):
 
 
         except (RuntimeError, ValueError) as e:
-            logger.warning(f"Task {task.id} failed: {e}")
+            logger.warning(
+                "Task %s failed: error_type=%s",
+                task.id,
+                type(e).__name__,
+            )
             return SubTaskExecutionResult(
                 id=task.id,
                 question=task.question,
