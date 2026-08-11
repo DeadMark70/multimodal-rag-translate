@@ -6,6 +6,50 @@
     "version": "2.1.0"
   },
   "paths": {
+    "/health/live": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Live",
+        "description": "Report that the process can serve liveness checks.",
+        "operationId": "live_health_live_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Ready",
+        "description": "Report whether application startup has completed.",
+        "operationId": "ready_health_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/pdfmd/list": {
       "get": {
         "tags": [
@@ -14025,6 +14069,25 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "live",
+              "ready",
+              "not_ready"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "HealthResponse",
+        "description": "Response returned by health probes."
+      },
       "HumanEvalQueueItem": {
         "properties": {
           "run_id": {
@@ -17497,7 +17560,8 @@
           "page": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "integer",
+                "minimum": 1.0
               },
               {
                 "type": "null"
@@ -17506,23 +17570,61 @@
             "title": "Page"
           },
           "snippet": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Snippet",
-            "description": "引用段落原文 (前 200 字)"
+            "description": "檢索到的引用段落原文"
           },
           "score": {
-            "type": "number",
-            "maximum": 1.0,
-            "minimum": 0.0,
-            "title": "Score",
-            "description": "相關性分數"
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "bbox": {
+            "anyOf": [
+              {
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array",
+                "maxItems": 4,
+                "minItems": 4
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bbox"
           }
         },
         "type": "object",
         "required": [
-          "doc_id",
-          "snippet",
-          "score"
+          "doc_id"
         ],
         "title": "SourceDetail",
         "description": "Detailed source citation for RAG responses.\n\nAttributes:\n    doc_id: Document UUID.\n    filename: Display-friendly filename.\n    page: Page number (if available).\n    snippet: Relevant text excerpt (first 200 chars).\n    score: Relevance score from reranker."

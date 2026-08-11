@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 # Local application
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
-from data_base.document_metadata import matches_document_id
+from data_base.citations import build_source_details
 from data_base.RAG_QA_service import initialize_llm_service, rag_answer_question, RAGResult
 from data_base.repository import insert_chat_log, insert_query_log
 from data_base.reranker import DocumentReranker, initialize_reranker
@@ -27,7 +27,6 @@ from data_base.vector_store_manager import initialize_embeddings
 from data_base.schemas import (
     AskRequest,
     EnhancedAskResponse,
-    SourceDetail,
     EvaluationMetrics,
     FaithfulnessLevel,
 )
@@ -105,20 +104,6 @@ def _validate_ask_history(request: AskRequest) -> None:
         )
 
 
-def _build_source_details(answer: str, sources: list[str]) -> list[SourceDetail]:
-    """Build fallback source details for unified response shape."""
-    return [
-        SourceDetail(
-            doc_id=doc_id,
-            filename=None,
-            page=None,
-            snippet=answer[:200],
-            score=0.0,
-        )
-        for doc_id in sources
-    ]
-
-
 async def _run_contextual_ask(
     request: AskRequest,
     background_tasks: BackgroundTasks,
@@ -150,20 +135,20 @@ async def _run_contextual_ask(
             enable_reranking=request.enable_reranking,
             enable_hyde=request.enable_hyde,
             enable_multi_query=request.enable_multi_query,
-            return_docs=request.enable_evaluation,
+            return_docs=True,
             enable_graph_rag=request.enable_graph_rag,
             graph_search_mode=request.graph_search_mode,
             plain_mode=True,
             progress_callback=progress_callback,
         )
 
-        docs = []
         if isinstance(rag_result, RAGResult):
             answer = rag_result.answer
             sources = rag_result.source_doc_ids
             docs = rag_result.documents
         else:
             answer, sources = rag_result
+            docs = []
 
         t2 = time.perf_counter()
         logger.info("Context-aware answer in %.2fs, sources: %s", t2 - t1, sources)
@@ -176,7 +161,7 @@ async def _run_contextual_ask(
             has_history=history_count > 0,
         )
 
-        source_details = _build_source_details(answer, sources)
+        source_details = await build_source_details(docs, sources)
         if not request.enable_evaluation:
             return EnhancedAskResponse(
                 question=request.question,
@@ -186,23 +171,6 @@ async def _run_contextual_ask(
             )
 
         logger.info("Running Self-RAG evaluation with reused documents...")
-        source_details = []
-        for doc_id in sources:
-            snippet = ""
-            for doc in docs:
-                if matches_document_id(doc.metadata, doc_id):
-                    snippet = doc.page_content[:200]
-                    break
-            source_details.append(
-                SourceDetail(
-                    doc_id=doc_id,
-                    filename=None,
-                    page=None,
-                    snippet=snippet if snippet else answer[:200],
-                    score=0.7,
-                )
-            )
-
         try:
             evaluator = RAGEvaluator()
             eval_result = await evaluator.evaluate_detailed(

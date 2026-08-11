@@ -114,6 +114,7 @@ def filter_and_rerank_retrieval(
                 enabled=diversify_rerank_candidates and availability,
             )
         )
+    selected_documents = _attach_measured_scores(selected_documents, rerank_rows)
     return RagRetrievalResult(
         documents=selected_documents,
         source_doc_ids=_source_doc_ids(selected_documents),
@@ -344,6 +345,24 @@ def _candidate_diversification_diagnostics(
         "represented_doc_ids_before_tail": _source_doc_ids(retained_prefix),
         "admitted_doc_ids": _source_doc_ids(admitted_documents),
     }
+
+
+def _attach_measured_scores(
+    documents: list[Document], rows: list[dict[str, Any]]
+) -> list[Document]:
+    scored: list[Document] = []
+    for document, row in zip(documents, rows, strict=True):
+        value = row.get("score")
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and 0.0 <= float(value) <= 1.0
+        ):
+            metadata = {**document.metadata, "relevance_score": float(value)}
+            scored.append(document.model_copy(update={"metadata": metadata}))
+        else:
+            scored.append(document)
+    return scored
 
 
 def _candidate_limit_rejections(

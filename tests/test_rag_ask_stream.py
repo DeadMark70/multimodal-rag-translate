@@ -43,6 +43,7 @@ def test_format_sse_event_serializes_phase_update_payload() -> None:
 def test_rag_ask_stream_emits_phase_updates_and_complete_payload() -> None:
     async def fake_rag_answer_question(**kwargs):
         assert kwargs["plain_mode"] is True
+        assert kwargs["return_docs"] is True
         progress_callback = kwargs["progress_callback"]
         await progress_callback("query_expansion", {"mode": "multi_query"})
         await progress_callback("retrieval", {"query_count": 2})
@@ -56,6 +57,9 @@ def test_rag_ask_stream_emits_phase_updates_and_complete_payload() -> None:
         new=AsyncMock(side_effect=fake_rag_answer_question),
     ), patch("data_base.router.insert_chat_log", new=AsyncMock()), patch(
         "data_base.router.insert_query_log", new=AsyncMock()
+    ), patch(
+        "data_base.citations.fetch_document_filenames",
+        new=AsyncMock(return_value={}),
     ):
         with client.stream(
             "POST",
@@ -79,6 +83,48 @@ def test_rag_ask_stream_emits_phase_updates_and_complete_payload() -> None:
     assert "event: complete" in stream_body
     assert '"answer": "streamed answer"' in stream_body
     assert '"doc_id": "doc-1"' in stream_body
+    assert '"snippet": null' in stream_body
+    assert '"score": null' in stream_body
+
+
+def test_rag_ask_stream_preserves_retrieved_citation_evidence() -> None:
+    document = Document(
+        page_content="  retrieved source paragraph  ",
+        metadata={
+            "doc_id": "doc-1",
+            "file_name": "paper.pdf",
+            "page": 7,
+            "relevance_score": 0.91,
+        },
+    )
+
+    with _build_client() as client, patch(
+        "data_base.router.rag_answer_question",
+        new=AsyncMock(
+            return_value=RAGResult(
+                answer="grounded answer",
+                source_doc_ids=["doc-1"],
+                documents=[document],
+            )
+        ),
+    ), patch("data_base.router.insert_chat_log", new=AsyncMock()), patch(
+        "data_base.router.insert_query_log", new=AsyncMock()
+    ), patch(
+        "data_base.citations.fetch_document_filenames",
+        new=AsyncMock(return_value={"doc-1": "db-name.pdf"}),
+    ):
+        with client.stream(
+            "POST",
+            "/rag/ask/stream",
+            json={"question": "Explain the source"},
+        ) as stream_response:
+            stream_body = "".join(stream_response.iter_text())
+
+    assert "event: complete" in stream_body
+    assert '"filename": "paper.pdf"' in stream_body
+    assert '"page": 7' in stream_body
+    assert '"snippet": "retrieved source paragraph"' in stream_body
+    assert '"score": 0.91' in stream_body
 
 
 def test_rag_ask_stream_emits_error_event_on_failure() -> None:
@@ -132,7 +178,10 @@ def test_rag_ask_stream_reuses_single_rag_result_for_evaluation_metrics() -> Non
         new=rag_answer,
     ), patch("data_base.router.RAGEvaluator", return_value=evaluator), patch(
         "data_base.router.insert_chat_log", new=AsyncMock()
-    ), patch("data_base.router.insert_query_log", new=AsyncMock()):
+    ), patch("data_base.router.insert_query_log", new=AsyncMock()), patch(
+        "data_base.citations.fetch_document_filenames",
+        new=AsyncMock(return_value={}),
+    ):
         with client.stream(
             "POST",
             "/rag/ask/stream",

@@ -86,6 +86,8 @@ Human-maintained inventory of the current backend surface.
 | GET | `/graph/rebuild-full/status` | `get_rebuild_graph_full_status_graph_rebuild_full_status_get` |
 | GET | `/graph/runtime-quality` | `get_graph_runtime_quality_graph_runtime_quality_get` |
 | GET | `/graph/status` | `get_graph_status_graph_status_get` |
+| GET | `/health/live` | `live_health_live_get` |
+| GET | `/health/ready` | `ready_health_ready_get` |
 | POST | `/imagemd/translate_image` | `translate_image_inplace_imagemd_translate_image_post` |
 | POST | `/multimodal/extract` | `extract_from_pdf_endpoint_multimodal_extract_post` |
 | DELETE | `/multimodal/file/{doc_id}` | `delete_multimodal_document_multimodal_file__doc_id__delete` |

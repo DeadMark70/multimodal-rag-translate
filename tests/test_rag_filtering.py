@@ -33,7 +33,13 @@ def test_filtering_and_reranking_preserve_ranks_thresholds_and_rejections() -> N
         ],
     )
 
-    assert result.documents == [second, first]
+    assert [document.page_content for document in result.documents] == [
+        "Second",
+        "First",
+    ]
+    assert [
+        document.metadata["relevance_score"] for document in result.documents
+    ] == [0.9, 0.4]
     assert result.source_doc_ids == ["kept"]
     assert result.metadata["query_expansion"] == {"mode": "none", "used": False}
     assert result.metadata["filtering"] == {
@@ -110,6 +116,7 @@ def test_unavailable_reranker_preserves_original_top_k_with_none_scores() -> Non
     )
 
     assert result.documents == [first]
+    assert "relevance_score" not in result.documents[0].metadata
     assert result.metadata["filtering"]["thresholds"]["relevance_score"] is None
     assert result.metadata["reranking"] == {
         "enabled": True,

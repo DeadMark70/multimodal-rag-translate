@@ -72,9 +72,10 @@ class SourceDetail(BaseModel):
     """
     doc_id: str
     filename: Optional[str] = None
-    page: Optional[int] = None
-    snippet: str = Field(..., description="引用段落原文 (前 200 字)")
-    score: float = Field(..., ge=0.0, le=1.0, description="相關性分數")
+    page: Optional[int] = Field(default=None, ge=1)
+    snippet: Optional[str] = Field(default=None, description="檢索到的引用段落原文")
+    score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    bbox: Optional[tuple[float, float, float, float]] = None
 
 
 # --- Evaluation Metrics Schemas ---
