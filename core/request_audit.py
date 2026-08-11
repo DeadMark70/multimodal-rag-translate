@@ -50,7 +50,7 @@ async def request_context_middleware(request: Request, call_next) -> Response:
         status = response.status_code
     finally:
         route = request.scope.get("route")
-        path = getattr(route, "path", request.url.path)
+        path = getattr(route, "path", None) or "<unmatched>"
         audit_payload = {
             "event": "request_complete",
             "request_id": request_id,

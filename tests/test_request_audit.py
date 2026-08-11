@@ -70,6 +70,27 @@ def test_request_audit_logs_safe_route_metadata_without_request_secrets(caplog) 
     assert "user-secret" not in caplog.text
 
 
+def test_request_audit_redacts_unmatched_path_segments(caplog) -> None:
+    app = FastAPI()
+    app.middleware("http")(request_context_middleware)
+    sensitive_path = "/uploads/private-report.pdf/token-sk-live-secret"
+
+    with caplog.at_level(logging.INFO, logger="core.request_audit"):
+        response = TestClient(app).get(sensitive_path)
+
+    records = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.name == "core.request_audit"
+    ]
+
+    assert response.status_code == 404
+    assert len(records) == 1
+    assert records[0]["path"] == "<unmatched>"
+    assert "private-report.pdf" not in caplog.text
+    assert "token-sk-live-secret" not in caplog.text
+
+
 def test_successful_authentication_attaches_user_id_to_request_state(monkeypatch) -> None:
     app = FastAPI()
 

@@ -79,30 +79,37 @@ async def build_source_details(
         filenames = {}
 
     details: list[SourceDetail] = []
-    seen: set[str] = set()
+    seen_evidence: set[tuple[str, int | None, str | None]] = set()
+    represented_doc_ids: set[str] = set()
     for document in documents:
         doc_id = get_document_id(document.metadata)
-        if doc_id is None or doc_id not in requested_ids or doc_id in seen:
+        if doc_id is None or doc_id not in requested_ids:
             continue
-        seen.add(doc_id)
         text = document.page_content.strip()[:200]
+        page = _positive_page(document.metadata)
+        snippet = text or None
+        evidence_key = (doc_id, page, snippet)
+        if evidence_key in seen_evidence:
+            continue
+        seen_evidence.add(evidence_key)
+        represented_doc_ids.add(doc_id)
         details.append(
             SourceDetail(
                 doc_id=doc_id,
                 filename=(
                     _metadata_filename(document.metadata) or filenames.get(doc_id)
                 ),
-                page=_positive_page(document.metadata),
-                snippet=text or None,
+                page=page,
+                snippet=snippet,
                 score=_measured_score(document.metadata),
                 bbox=_normalized_bbox(document.metadata),
             )
         )
 
     for doc_id in source_doc_ids:
-        if doc_id in seen:
+        if doc_id in represented_doc_ids:
             continue
-        seen.add(doc_id)
+        represented_doc_ids.add(doc_id)
         details.append(SourceDetail(doc_id=doc_id, filename=filenames.get(doc_id)))
 
     return details

@@ -83,11 +83,59 @@ async def test_missing_document_becomes_source_only_without_answer_fallback() ->
 
 
 @pytest.mark.asyncio
-async def test_duplicate_chunks_keep_first_occurrence_in_retrieval_order() -> None:
+async def test_same_document_chunks_with_different_pages_are_preserved() -> None:
+    documents = [
+        Document(
+            page_content="shared evidence",
+            metadata={"doc_id": "doc-1", "page": 2},
+        ),
+        Document(
+            page_content="shared evidence",
+            metadata={"doc_id": "doc-1", "page": 7},
+        ),
+    ]
+    with patch(
+        "data_base.citations.fetch_document_filenames",
+        new=AsyncMock(return_value={"doc-1": "one.pdf"}),
+    ):
+        result = await build_source_details(documents, ["doc-1"])
+
+    assert [(item.doc_id, item.page, item.snippet) for item in result] == [
+        ("doc-1", 2, "shared evidence"),
+        ("doc-1", 7, "shared evidence"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_same_document_chunks_with_different_snippets_are_preserved() -> None:
+    documents = [
+        Document(
+            page_content="first passage",
+            metadata={"doc_id": "doc-1", "page": 3},
+        ),
+        Document(
+            page_content="second passage",
+            metadata={"doc_id": "doc-1", "page": 3},
+        ),
+    ]
+    with patch(
+        "data_base.citations.fetch_document_filenames",
+        new=AsyncMock(return_value={"doc-1": "one.pdf"}),
+    ):
+        result = await build_source_details(documents, ["doc-1"])
+
+    assert [(item.doc_id, item.page, item.snippet) for item in result] == [
+        ("doc-1", 3, "first passage"),
+        ("doc-1", 3, "second passage"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_exact_duplicate_chunks_keep_first_retrieval_occurrence() -> None:
     documents = [
         Document(page_content="first doc-2 chunk", metadata={"doc_id": "doc-2"}),
         Document(page_content="first doc-1 chunk", metadata={"doc_id": "doc-1"}),
-        Document(page_content="later doc-2 chunk", metadata={"doc_id": "doc-2"}),
+        Document(page_content="first doc-2 chunk", metadata={"doc_id": "doc-2"}),
         Document(page_content="unrequested", metadata={"doc_id": "doc-3"}),
     ]
     with patch(
