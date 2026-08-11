@@ -34,14 +34,15 @@ def test_validate_pdf_upload_rejects_non_pdf_extension() -> None:
     assert "invalid extension" in exc_info.value.message
 
 
-def test_resolve_document_user_folder_prefers_original_path() -> None:
+def test_resolve_document_user_folder_prefers_original_path(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
     resolved = upload_paths.resolve_document_user_folder(
         user_id="user-1",
         doc_id="doc-1",
-        original_path="uploads/user-1/doc-1/demo.pdf",
+        original_path=r"uploads\user-1\doc-1\demo.pdf",
     )
 
-    assert resolved.name == "doc-1"
+    assert resolved == (tmp_path / "uploads" / "user-1" / "doc-1").resolve()
 
 
 def test_resolve_document_user_folder_uses_fallback_layout() -> None:
@@ -52,3 +53,56 @@ def test_resolve_document_user_folder_uses_fallback_layout() -> None:
     )
 
     assert resolved.parts[-3:] == ("uploads", "user-1", "doc-1")
+
+
+def test_build_document_storage_path_is_posix() -> None:
+    assert upload_paths.build_document_storage_path(
+        user_id="user-1", doc_id="doc-1", filename="paper.pdf"
+    ) == "uploads/user-1/doc-1/paper.pdf"
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        ("uploads/user-1/doc-1/paper.pdf", "uploads/user-1/doc-1/paper.pdf"),
+        (r"uploads\user-1\doc-1\paper.pdf", "uploads/user-1/doc-1/paper.pdf"),
+    ],
+)
+def test_normalize_accepts_portable_and_legacy_relative(
+    stored: str, expected: str
+) -> None:
+    assert upload_paths.normalize_document_storage_path(
+        user_id="user-1", doc_id="doc-1", storage_path=stored
+    ) == expected
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        "/app/uploads/user-1/doc-1/paper.pdf",
+        r"D:\uploads\user-1\doc-1\paper.pdf",
+        r"\\server\share\paper.pdf",
+        "uploads/user-1/doc-1/../doc-2/paper.pdf",
+        "uploads/user-2/doc-1/paper.pdf",
+        "uploads/user-1/doc-2/paper.pdf",
+        r"uploads/user-1\doc-1/paper.pdf",
+    ],
+)
+def test_normalize_rejects_unsafe_values(stored: str) -> None:
+    with pytest.raises(ValueError):
+        upload_paths.normalize_document_storage_path(
+            user_id="user-1", doc_id="doc-1", storage_path=stored
+        )
+
+
+def test_resolve_legacy_path_inside_exact_document_root(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    expected = tmp_path / "uploads" / "user-1" / "doc-1" / "paper.pdf"
+    expected.parent.mkdir(parents=True)
+    expected.write_bytes(b"%PDF")
+    resolved = upload_paths.resolve_document_storage_path(
+        user_id="user-1",
+        doc_id="doc-1",
+        storage_path=r"uploads\user-1\doc-1\paper.pdf",
+    )
+    assert resolved == expected.resolve()

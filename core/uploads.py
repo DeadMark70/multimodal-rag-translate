@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from fastapi import UploadFile
 
@@ -43,6 +43,61 @@ def get_evaluation_dir(user_id: str) -> Path:
     return Path(get_user_upload_dir(user_id)) / "evaluation"
 
 
+def _validate_path_component(value: str, *, label: str) -> None:
+    if not value or value in {".", ".."} or "/" in value or "\\" in value:
+        raise ValueError(f"{label} must be a single path component")
+
+
+def build_document_storage_path(
+    *, user_id: str, doc_id: str, filename: str
+) -> str:
+    """Build the canonical portable storage reference for one document."""
+    for label, value in (
+        ("user_id", user_id), ("doc_id", doc_id), ("filename", filename)
+    ):
+        _validate_path_component(value, label=label)
+    return PurePosixPath(BASE_UPLOAD_FOLDER, user_id, doc_id, filename).as_posix()
+
+
+def normalize_document_storage_path(
+    *, user_id: str, doc_id: str, storage_path: str
+) -> str:
+    """Normalize a portable or legacy storage reference for its exact document."""
+    _validate_path_component(user_id, label="user_id")
+    _validate_path_component(doc_id, label="doc_id")
+    if not storage_path or ("/" in storage_path and "\\" in storage_path):
+        raise ValueError("storage path must use one separator style")
+    parsed = (
+        PureWindowsPath(storage_path)
+        if "\\" in storage_path
+        else PurePosixPath(storage_path)
+    )
+    if parsed.is_absolute() or parsed.drive or parsed.root:
+        raise ValueError("storage path must be relative")
+    parts = parsed.parts
+    if len(parts) != 4 or parts[:3] != (BASE_UPLOAD_FOLDER, user_id, doc_id):
+        raise ValueError("storage path is outside the authorized document")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("storage path contains an unsafe component")
+    _validate_path_component(parts[3], label="filename")
+    return PurePosixPath(*parts).as_posix()
+
+
+def resolve_document_storage_path(
+    *, user_id: str, doc_id: str, storage_path: str
+) -> Path:
+    """Resolve one authorized portable storage reference to the local filesystem."""
+    canonical = normalize_document_storage_path(
+        user_id=user_id, doc_id=doc_id, storage_path=storage_path
+    )
+    upload_root = Path(ensure_upload_root()).resolve()
+    document_root = (upload_root / user_id / doc_id).resolve()
+    candidate = Path(canonical).resolve()
+    if not candidate.is_relative_to(document_root):
+        raise ValueError("storage path escapes the authorized document")
+    return candidate
+
+
 def resolve_upload_storage_reference(
     *,
     user_id: str,
@@ -73,7 +128,11 @@ def resolve_document_user_folder(
 ) -> Path:
     """Resolve the document folder from stored file metadata or fallback upload layout."""
     if original_path:
-        return Path(original_path).resolve().parent
+        return resolve_document_storage_path(
+            user_id=user_id,
+            doc_id=doc_id,
+            storage_path=original_path,
+        ).parent
     return Path(get_document_upload_dir(user_id, doc_id))
 
 
