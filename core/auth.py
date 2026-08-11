@@ -8,7 +8,7 @@ Provides shared authentication dependency for all routers.
 import logging
 
 # Third-party
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 # Local application
@@ -22,6 +22,7 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_current_user_id(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> str:
     """
@@ -48,7 +49,9 @@ async def get_current_user_id(
     token = credentials.credentials
 
     try:
-        return await fetch_user_id_from_token(token)
+        user_id = await fetch_user_id_from_token(token)
+        request.state.audit_user_id = user_id
+        return user_id
 
     except AppError:
         raise

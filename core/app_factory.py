@@ -7,18 +7,16 @@ Keeps app assembly separate from route/business modules for easier maintenance.
 # Standard library
 import logging
 import os
-import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 # Third-party
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.responses import Response
 
 from core.errors import (
     AppError,
@@ -29,6 +27,7 @@ from core.errors import (
 )
 from core.health import health_router, set_readiness
 from core.providers import configure_providers
+from core.request_audit import request_context_middleware
 
 logger = logging.getLogger(__name__)
 
@@ -120,16 +119,7 @@ def _register_error_handlers(app: FastAPI) -> None:
 
 def _register_middlewares(app: FastAPI) -> None:
     """Register middleware components."""
-
-    @app.middleware("http")
-    async def request_id_middleware(
-        request: Request, call_next
-    ) -> Response:
-        request_id = request.headers.get("X-Request-Id", str(uuid.uuid4()))
-        request.state.request_id = request_id
-        response = await call_next(request)
-        response.headers["X-Request-Id"] = request_id
-        return response
+    app.middleware("http")(request_context_middleware)
 
 
 def _register_routers(app: FastAPI) -> None:
