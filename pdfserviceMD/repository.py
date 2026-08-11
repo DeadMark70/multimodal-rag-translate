@@ -132,6 +132,38 @@ async def get_owned_documents_by_ids(
     return rows
 
 
+async def list_document_path_rows(*, offset: int, limit: int) -> list[dict]:
+    """List document path fields in a stable, bounded page."""
+    response = await execute_supabase_operation(
+        operation="list_document_path_rows",
+        failure_message="Failed to retrieve document paths",
+        handler=lambda client: client.table("documents")
+        .select("id,user_id,original_path,translated_path")
+        .order("id")
+        .range(offset, offset + limit - 1)
+        .execute(),
+    )
+    return response.data or []
+
+
+async def update_owned_document_paths(
+    *, doc_id: str, user_id: str, paths: dict[str, str]
+) -> None:
+    """Update only authorized path fields for one owned document."""
+    allowed = {"original_path", "translated_path"}
+    if not paths or not set(paths).issubset(allowed):
+        raise ValueError("paths must contain document path fields")
+    await execute_supabase_operation(
+        operation="update_owned_document_paths",
+        failure_message="Failed to update document paths",
+        handler=lambda client: client.table("documents")
+        .update(paths)
+        .eq("id", doc_id)
+        .eq("user_id", user_id)
+        .execute(),
+    )
+
+
 async def delete_document(*, doc_id: str, user_id: str) -> None:
     """Deletes one document row by id + user."""
     await execute_supabase_operation(

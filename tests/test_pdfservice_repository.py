@@ -5,7 +5,12 @@ import httpx
 import pytest
 
 from core.errors import AppError
-from pdfserviceMD.repository import get_document, get_owned_documents_by_ids
+from pdfserviceMD.repository import (
+    get_document,
+    get_owned_documents_by_ids,
+    list_document_path_rows,
+    update_owned_document_paths,
+)
 
 
 @pytest.mark.asyncio
@@ -107,3 +112,86 @@ async def test_get_owned_documents_by_ids_batches_and_scopes_every_query() -> No
     assert len(seen_batches) == 2
     assert max(map(len, seen_batches)) <= 100
     assert seen_users == ["user-1", "user-1"]
+
+
+@pytest.mark.asyncio
+async def test_update_owned_document_paths_scopes_by_document_and_user() -> None:
+    seen: list[tuple[str, object]] = []
+
+    class Query:
+        def update(self, payload: dict[str, str]):
+            seen.append(("payload", payload))
+            return self
+
+        def eq(self, field: str, value: str):
+            seen.append((field, value))
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[])
+
+    class Client:
+        def table(self, name: str):
+            assert name == "documents"
+            return Query()
+
+    async def fake_execute(*, handler, **_):
+        return handler(Client())
+
+    with patch(
+        "pdfserviceMD.repository.execute_supabase_operation",
+        new=AsyncMock(side_effect=fake_execute),
+    ):
+        await update_owned_document_paths(
+            doc_id="doc-1",
+            user_id="user-1",
+            paths={"original_path": "uploads/user-1/doc-1/paper.pdf"},
+        )
+
+    assert seen == [
+        ("payload", {"original_path": "uploads/user-1/doc-1/paper.pdf"}),
+        ("id", "doc-1"),
+        ("user_id", "user-1"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_document_path_rows_uses_stable_id_pagination() -> None:
+    seen: list[tuple[str, object]] = []
+
+    class Query:
+        def select(self, columns: str):
+            seen.append(("select", columns))
+            return self
+
+        def order(self, field: str):
+            seen.append(("order", field))
+            return self
+
+        def range(self, start: int, end: int):
+            seen.append(("range", (start, end)))
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[])
+
+    class Client:
+        def table(self, name: str):
+            assert name == "documents"
+            return Query()
+
+    async def fake_execute(*, handler, **_):
+        return handler(Client())
+
+    with patch(
+        "pdfserviceMD.repository.execute_supabase_operation",
+        new=AsyncMock(side_effect=fake_execute),
+    ):
+        rows = await list_document_path_rows(offset=100, limit=100)
+
+    assert rows == []
+    assert seen == [
+        ("select", "id,user_id,original_path,translated_path"),
+        ("order", "id"),
+        ("range", (100, 199)),
+    ]
