@@ -33,6 +33,17 @@ os.environ.setdefault(
 # Mock Fixtures
 # ============================================================================
 
+@pytest.fixture(autouse=True)
+def stub_supabase_startup(monkeypatch: pytest.MonkeyPatch) -> object:
+    """Keep app startup credential-free while preserving explicit failure tests."""
+    test_client = object()
+    monkeypatch.setattr(
+        "supabase_client.init_supabase",
+        lambda force=False: test_client,
+    )
+    return test_client
+
+
 @pytest.fixture
 def mock_embeddings():
     """Creates a mock HuggingFaceEmbeddings instance."""
