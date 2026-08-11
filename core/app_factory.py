@@ -27,6 +27,7 @@ from core.errors import (
     unhandled_exception_handler,
     validation_exception_handler,
 )
+from core.health import health_router, set_readiness
 from core.providers import configure_providers
 
 logger = logging.getLogger(__name__)
@@ -142,6 +143,7 @@ def _register_routers(app: FastAPI) -> None:
     from pdfserviceMD.router import router as pdfmd_router
     from stats.router import router as stats_router
 
+    app.include_router(health_router)
     app.include_router(pdfmd_router, prefix="/pdfmd", tags=["PDF OCR & Translation"])
     app.include_router(database_router, prefix="/rag", tags=["RAG Question Answering"])
     app.include_router(image_router, prefix="/imagemd", tags=["Image Translation"])
@@ -203,15 +205,16 @@ async def _warm_up_pdf_ocr() -> None:
 
 
 @asynccontextmanager
-async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def app_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """FastAPI lifespan hook for startup initialization."""
+    set_readiness(app, False)
     from evaluation.campaign_engine import get_campaign_engine
     from evaluation.db import force_init_db
     from evaluation.job_worker import get_evaluation_job_worker
 
     logger.info("=== Application Startup ===")
     _ensure_base_directories()
-    _initialize_external_clients(_)
+    _initialize_external_clients(app)
     await force_init_db()
     # Construct the production facade before inspecting the singleton worker.
     # CampaignEngine wires the real execution/RAGAS handlers into that worker;
@@ -242,9 +245,11 @@ async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
     try:
         await _initialize_rag_components()
         await _warm_up_pdf_ocr()
+        set_readiness(app, True)
         logger.info("=== All components ready ===")
         yield
     finally:
+        set_readiness(app, False)
         if worker_started:
             await lifecycle_worker.stop()
         elif lifecycle_worker is not worker and getattr(lifecycle_worker, "is_running", False):
@@ -268,6 +273,7 @@ def create_app() -> FastAPI:
         version="2.1.0",
         lifespan=app_lifespan,
     )
+    set_readiness(app, False)
     _configure_cors(app)
     _register_middlewares(app)
     _register_error_handlers(app)
