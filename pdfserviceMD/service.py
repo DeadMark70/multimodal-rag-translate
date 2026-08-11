@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import json
 import logging
-import ntpath
 import os
 import shutil
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 from fastapi import UploadFile
 from fastapi.concurrency import run_in_threadpool
 
 from core.errors import AppError, ErrorCode
+from core.uploads import build_document_storage_path, resolve_document_storage_path
 from graph_rag.store import GraphStore
 from data_base.vector_store_manager import delete_document_from_knowledge_base_async
 from pdfserviceMD.PDF_OCR_services import ocr_service_sync
@@ -116,15 +117,19 @@ async def prepare_retry_index_context(
             status_code=409,
         )
 
-    original_path = row.get("original_path")
-    if not original_path:
+    original_file = _resolve_stored_file(
+        user_id=user_id,
+        doc_id=doc_id,
+        storage_path=row.get("original_path"),
+    )
+    if not original_file:
         raise AppError(
-            code=ErrorCode.BAD_REQUEST,
-            message="Document has no original path",
-            status_code=409,
+            code=ErrorCode.NOT_FOUND,
+            message="Document file unavailable",
+            status_code=404,
         )
 
-    user_folder = os.path.dirname(os.path.normpath(original_path))
+    user_folder = str(original_file.parent)
     extracted_path, _ = get_ocr_artifact_paths(user_folder=user_folder)
     if not os.path.exists(extracted_path):
         raise AppError(
@@ -188,9 +193,19 @@ def load_ocr_artifacts(*, user_folder: str) -> tuple[str, list[str]]:
     return markdown_text, image_blocks
 
 
-def _has_file(path: str | None) -> bool:
-    """Returns True when a stored file path exists on disk."""
-    return bool(path) and os.path.exists(os.path.normpath(path))
+def _resolve_stored_file(
+    *, user_id: str, doc_id: str, storage_path: str | None
+) -> Path | None:
+    """Resolve one stored reference only when its local file is available."""
+    if not storage_path:
+        return None
+    try:
+        resolved = resolve_document_storage_path(
+            user_id=user_id, doc_id=doc_id, storage_path=storage_path
+        )
+    except ValueError:
+        return None
+    return resolved if resolved.is_file() else None
 
 
 def _build_download_url(
@@ -200,21 +215,25 @@ def _build_download_url(
     return f"/pdfmd/file/{doc_id}?type={file_type}"
 
 
-def _can_translate_document(row: dict) -> bool:
+def _can_translate_document(*, row: dict, user_id: str) -> bool:
     """Derives whether manual translation should be enabled for the document."""
     status = row.get("status")
     if status not in _TRANSLATABLE_STATUSES:
         return False
-    if _has_file(row.get("translated_path")):
+    doc_id = row.get("id")
+    if not isinstance(doc_id, str):
         return False
-    if not _has_file(row.get("original_path")):
+    if _resolve_stored_file(
+        user_id=user_id, doc_id=doc_id, storage_path=row.get("translated_path")
+    ):
+        return False
+    original_file = _resolve_stored_file(
+        user_id=user_id, doc_id=doc_id, storage_path=row.get("original_path")
+    )
+    if not original_file:
         return False
 
-    original_path = row.get("original_path")
-    if not original_path:
-        return False
-
-    user_folder = os.path.dirname(os.path.normpath(original_path))
+    user_folder = str(original_file.parent)
     extracted_path, image_blocks_path = get_ocr_artifact_paths(user_folder=user_folder)
     return os.path.exists(extracted_path) and os.path.exists(image_blocks_path)
 
@@ -246,7 +265,9 @@ async def run_upload_pipeline(
             doc_id=document_id,
             user_id=user_id,
             file_name=filename,
-            original_path=save_path,
+            original_path=build_document_storage_path(
+                user_id=user_id, doc_id=document_id, filename=filename
+            ),
         )
 
         await update_processing_step(doc_id=document_id, step="ocr")
@@ -333,9 +354,21 @@ async def list_user_documents(*, user_id: str) -> DocumentListResponse:
                 created_at=row["created_at"],
                 status=row["status"],
                 processing_step=row.get("processing_step"),
-                has_original_pdf=_has_file(row.get("original_path")),
-                has_translated_pdf=_has_file(row.get("translated_path")),
-                can_translate=_can_translate_document(row),
+                has_original_pdf=bool(
+                    _resolve_stored_file(
+                        user_id=user_id,
+                        doc_id=row["id"],
+                        storage_path=row.get("original_path"),
+                    )
+                ),
+                has_translated_pdf=bool(
+                    _resolve_stored_file(
+                        user_id=user_id,
+                        doc_id=row["id"],
+                        storage_path=row.get("translated_path"),
+                    )
+                ),
+                can_translate=_can_translate_document(row=row, user_id=user_id),
                 error_message=row.get("error_message"),
             )
         )
@@ -362,8 +395,16 @@ async def get_document_processing_status(
         )
 
     step = row.get("processing_step") or "uploading"
-    has_original_pdf = _has_file(row.get("original_path"))
-    has_translated_pdf = _has_file(row.get("translated_path"))
+    has_original_pdf = bool(
+        _resolve_stored_file(
+            user_id=user_id, doc_id=doc_id, storage_path=row.get("original_path")
+        )
+    )
+    has_translated_pdf = bool(
+        _resolve_stored_file(
+            user_id=user_id, doc_id=doc_id, storage_path=row.get("translated_path")
+        )
+    )
 
     return ProcessingStatusResponse(
         step=step,
@@ -397,37 +438,31 @@ async def get_document_file_info(
     translated_path = row.get("translated_path")
 
     if file_type == "original":
-        file_path = original_path
+        storage_path = original_path
+        is_translated = False
     elif file_type == "translated":
-        file_path = translated_path
+        storage_path = translated_path
+        is_translated = True
     else:
-        file_path = translated_path or original_path
+        storage_path = translated_path or original_path
+        is_translated = bool(translated_path)
 
-    if not file_path:
+    resolved_file = _resolve_stored_file(
+        user_id=user_id, doc_id=doc_id, storage_path=storage_path
+    )
+    if not resolved_file:
         raise AppError(
             code=ErrorCode.NOT_FOUND,
-            message="File path not found in record",
+            message="Document file unavailable",
             status_code=404,
         )
 
-    normalized_path = os.path.normpath(file_path)
-    if not os.path.exists(normalized_path):
-        raise AppError(
-            code=ErrorCode.NOT_FOUND,
-            message="File not found on disk",
-            status_code=404,
-        )
-
-    if file_type == "translated" or (
-        file_type is None
-        and translated_path
-        and normalized_path == os.path.normpath(translated_path)
-    ):
-        download_name = ntpath.basename(normalized_path)
+    if is_translated:
+        download_name = resolved_file.name
     else:
         download_name = row.get("file_name", "document.pdf")
 
-    return normalized_path, download_name
+    return str(resolved_file), download_name
 
 
 async def update_indexing_processing_step(
@@ -467,7 +502,11 @@ async def finalize_indexing_status(*, doc_id: str, user_id: str) -> None:
     if not row:
         return
 
-    if _has_file(row.get("translated_path")):
+    if _resolve_stored_file(
+        user_id=user_id,
+        doc_id=doc_id,
+        storage_path=row.get("translated_path"),
+    ):
         logger.info("Preserving translated status for %s after indexing", doc_id)
         return
 
@@ -516,7 +555,17 @@ async def translate_user_document(*, doc_id: str, user_id: str) -> TranslatePdfR
             status_code=404,
         )
 
-    if _has_file(row.get("translated_path")):
+    translated_path = row.get("translated_path")
+    if translated_path:
+        translated_file = _resolve_stored_file(
+            user_id=user_id, doc_id=doc_id, storage_path=translated_path
+        )
+        if not translated_file:
+            raise AppError(
+                code=ErrorCode.NOT_FOUND,
+                message="Document file unavailable",
+                status_code=404,
+            )
         raise AppError(
             code=ErrorCode.BAD_REQUEST,
             message="Translated PDF already exists",
@@ -532,17 +581,21 @@ async def translate_user_document(*, doc_id: str, user_id: str) -> TranslatePdfR
             status_code=409,
         )
 
-    original_path = row.get("original_path")
-    if not original_path or not os.path.exists(os.path.normpath(original_path)):
+    original_file = _resolve_stored_file(
+        user_id=user_id,
+        doc_id=doc_id,
+        storage_path=row.get("original_path"),
+    )
+    if not original_file:
         raise AppError(
             code=ErrorCode.NOT_FOUND,
-            message="Original PDF not found on disk",
+            message="Document file unavailable",
             status_code=404,
         )
 
-    user_folder = os.path.dirname(os.path.normpath(original_path))
+    user_folder = str(original_file.parent)
     output_pdf_filename = f"translated_{row.get('file_name', 'document.pdf')}"
-    output_pdf_path = os.path.normpath(os.path.join(user_folder, output_pdf_filename))
+    output_pdf_path = str(original_file.parent / output_pdf_filename)
 
     try:
         markdown_text, image_blocks = await run_in_threadpool(
@@ -570,7 +623,11 @@ async def translate_user_document(*, doc_id: str, user_id: str) -> TranslatePdfR
         await update_document_status(
             doc_id=doc_id,
             status="completed",
-            translated_path=output_pdf_path,
+            translated_path=build_document_storage_path(
+                user_id=user_id,
+                doc_id=doc_id,
+                filename=output_pdf_filename,
+            ),
             error_message=None,
         )
         next_step = (

@@ -620,10 +620,12 @@ def test_retry_index_endpoint_rejects_non_index_failed_doc() -> None:
 
 @pytest.mark.asyncio
 async def test_prepare_retry_index_context_validates_and_derives_payload(
-    tmp_path,
+    tmp_path, monkeypatch
 ) -> None:
-    artifact_dir = tmp_path / "doc-1"
-    artifact_dir.mkdir()
+    monkeypatch.chdir(tmp_path)
+    artifact_dir = tmp_path / "uploads" / TEST_USER_ID / "doc-1"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "demo.pdf").write_bytes(b"%PDF")
     (artifact_dir / "extracted.md").write_text("markdown", encoding="utf-8")
 
     with (
@@ -633,7 +635,7 @@ async def test_prepare_retry_index_context_validates_and_derives_payload(
                 return_value={
                     "id": "doc-1",
                     "file_name": "demo.pdf",
-                    "original_path": str(artifact_dir / "demo.pdf"),
+                    "original_path": f"uploads/{TEST_USER_ID}/doc-1/demo.pdf",
                     "processing_step": "index_failed",
                     "status": "completed",
                 }
@@ -651,5 +653,5 @@ async def test_prepare_retry_index_context_validates_and_derives_payload(
         book_title="demo",
         current_status="completed",
         user_id=TEST_USER_ID,
-        user_folder=str(artifact_dir),
+        user_folder=str(artifact_dir.resolve()),
     )

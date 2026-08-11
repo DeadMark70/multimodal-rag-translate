@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -33,19 +34,23 @@ def _build_client():
 
 
 @pytest.mark.asyncio
-async def test_get_document_file_info_supports_type_selection() -> None:
-    original_path = r"D:\flutterserver\pdftopng\uploads\demo.pdf"
-    translated_path = r"D:\flutterserver\pdftopng\uploads\translated_demo.pdf"
+async def test_get_document_file_info_supports_type_selection(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    folder = tmp_path / "uploads" / TEST_USER_ID / "doc-1"
+    folder.mkdir(parents=True)
+    original_file = folder / "demo.pdf"
+    translated_file = folder / "translated_demo.pdf"
+    original_file.write_bytes(b"%PDF")
+    translated_file.write_bytes(b"%PDF")
     row = {
         "file_name": "demo.pdf",
-        "original_path": original_path,
-        "translated_path": translated_path,
+        "original_path": rf"uploads\{TEST_USER_ID}\doc-1\demo.pdf",
+        "translated_path": f"uploads/{TEST_USER_ID}/doc-1/translated_demo.pdf",
     }
 
-    with (
-        patch("pdfserviceMD.service.get_document", new=AsyncMock(return_value=row)),
-        patch("pdfserviceMD.service.os.path.exists", return_value=True),
-    ):
+    with patch("pdfserviceMD.service.get_document", new=AsyncMock(return_value=row)):
         default_path, default_name = await get_document_file_info(
             doc_id="doc-1",
             user_id=TEST_USER_ID,
@@ -61,33 +66,31 @@ async def test_get_document_file_info_supports_type_selection() -> None:
             file_type="translated",
         )
 
-    assert default_path == str(translated_path)
+    assert default_path == str(translated_file.resolve())
     assert default_name == "translated_demo.pdf"
-    assert original_only_path == str(original_path)
+    assert original_only_path == str(original_file.resolve())
     assert original_only_name == "demo.pdf"
-    assert translated_only_path == str(translated_path)
+    assert translated_only_path == str(translated_file.resolve())
     assert translated_only_name == "translated_demo.pdf"
 
 
 @pytest.mark.asyncio
-async def test_translate_user_document_returns_409_when_artifacts_missing() -> None:
-    original_path = r"D:\flutterserver\pdftopng\uploads\demo.pdf"
+async def test_translate_user_document_returns_409_when_artifacts_missing(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    original_file = tmp_path / "uploads" / TEST_USER_ID / "doc-1" / "demo.pdf"
+    original_file.parent.mkdir(parents=True)
+    original_file.write_bytes(b"%PDF")
     row = {
         "file_name": "demo.pdf",
-        "original_path": original_path,
+        "original_path": rf"uploads\{TEST_USER_ID}\doc-1\demo.pdf",
         "translated_path": None,
         "status": "ready",
         "processing_step": "ocr_completed",
     }
 
-    def fake_exists(path: str) -> bool:
-        normalized = path.replace("/", "\\")
-        return normalized == original_path
-
-    with (
-        patch("pdfserviceMD.service.get_document", new=AsyncMock(return_value=row)),
-        patch("pdfserviceMD.service.os.path.exists", side_effect=fake_exists),
-    ):
+    with patch("pdfserviceMD.service.get_document", new=AsyncMock(return_value=row)):
         with pytest.raises(AppError) as exc_info:
             await translate_user_document(doc_id="doc-1", user_id=TEST_USER_ID)
 
@@ -96,10 +99,18 @@ async def test_translate_user_document_returns_409_when_artifacts_missing() -> N
 
 
 @pytest.mark.asyncio
-async def test_finalize_indexing_status_preserves_completed_translation() -> None:
+async def test_finalize_indexing_status_preserves_completed_translation(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    translated_file = (
+        tmp_path / "uploads" / TEST_USER_ID / "doc-1" / "translated_demo.pdf"
+    )
+    translated_file.parent.mkdir(parents=True)
+    translated_file.write_bytes(b"%PDF")
     row = {
         "status": "completed",
-        "translated_path": __file__,
+        "translated_path": f"uploads/{TEST_USER_ID}/doc-1/translated_demo.pdf",
     }
 
     with (
@@ -109,6 +120,45 @@ async def test_finalize_indexing_status_preserves_completed_translation() -> Non
         await finalize_indexing_status(doc_id="doc-1", user_id=TEST_USER_ID)
 
     update_status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_translate_user_document_persists_portable_path_and_generates_locally(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    folder = tmp_path / "uploads" / TEST_USER_ID / "doc-1"
+    folder.mkdir(parents=True)
+    original_file = folder / "demo.pdf"
+    original_file.write_bytes(b"%PDF")
+    (folder / "extracted.md").write_text("markdown", encoding="utf-8")
+    (folder / "image_blocks.json").write_text("[]", encoding="utf-8")
+    row = {
+        "file_name": "demo.pdf",
+        "original_path": f"uploads/{TEST_USER_ID}/doc-1/demo.pdf",
+        "translated_path": None,
+        "status": "ready",
+        "processing_step": "ocr_completed",
+    }
+    output_pdf = folder / "translated_demo.pdf"
+
+    def write_pdf(_markdown: str, output_path: str, _user_folder: str) -> None:
+        assert Path(output_path) == output_pdf.resolve()
+        output_pdf.write_bytes(b"%PDF")
+
+    with (
+        patch("pdfserviceMD.service.get_document", new=AsyncMock(return_value=row)),
+        patch("pdfserviceMD.service.update_processing_step", new=AsyncMock()),
+        patch("pdfserviceMD.service.update_document_status", new=AsyncMock()) as update_status,
+        patch("pdfserviceMD.service.translate_text", new=AsyncMock(return_value="translated")),
+        patch("pdfserviceMD.service.replace_markdown", return_value="translated"),
+        patch("pdfserviceMD.service.markdown_to_pdf", side_effect=write_pdf),
+    ):
+        await translate_user_document(doc_id="doc-1", user_id=TEST_USER_ID)
+
+    assert update_status.await_args.kwargs["translated_path"] == (
+        f"uploads/{TEST_USER_ID}/doc-1/translated_demo.pdf"
+    )
 
 
 def test_translate_endpoint_returns_service_response() -> None:
