@@ -74,6 +74,7 @@
   - `final_answer_hash`
 - `repeat_number` is returned separately from stored `run_number` so repeated and ablation-expanded campaigns can render correctly.
 - `derived_metrics` is intentionally sparse and numeric-first; dashboards should not assume every metric exists on every run.
+- `total_tokens` is `null` when a persisted run has no known token total; clients must not treat it as zero.
 
 ### Condition Comparison Contract
 

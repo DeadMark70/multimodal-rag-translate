@@ -610,7 +610,7 @@ class EvaluationRunListItem(BaseModel):
     agentic_execution_version: AgenticExecutionVersion = "v8"
     response_status: Optional[str] = None
     status: CampaignResultStatus
-    total_tokens: int = Field(default=0, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
     total_latency_ms: Optional[float] = Field(default=None, ge=0)
     created_at: datetime
 

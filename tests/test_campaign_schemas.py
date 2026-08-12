@@ -13,6 +13,7 @@ from evaluation.campaign_schemas import (
     CampaignProgressEvent,
     CampaignResult,
     CampaignResultStatus,
+    EvaluationRunListItem,
 )
 from evaluation.schemas import ModelConfig
 
@@ -93,6 +94,22 @@ def test_campaign_result_allows_nested_token_usage_payloads() -> None:
 
     assert result.token_usage["total_tokens"] == 42
     assert result.token_usage["input_token_details"] == {"cache_read": 0}
+
+
+def test_run_list_item_allows_unknown_total_tokens() -> None:
+    item = EvaluationRunListItem(
+        run_id="run-1",
+        campaign_id="campaign-1",
+        question_id="Q1",
+        question="question",
+        mode="naive",
+        run_number=1,
+        status=CampaignResultStatus.COMPLETED,
+        total_tokens=None,
+        created_at=datetime.now(UTC),
+    )
+
+    assert item.total_tokens is None
 
 
 def test_campaign_result_snapshot_fields_default_to_none_or_empty() -> None:

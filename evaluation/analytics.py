@@ -1724,7 +1724,7 @@ class EvaluationAnalyticsService:
                     agentic_execution_version=item.agentic_execution_version,
                     response_status=item.response_status,
                     status=item.status,
-                    total_tokens=item.total_tokens or 0,
+                    total_tokens=item.total_tokens,
                     total_latency_ms=item.total_latency_ms,
                     created_at=item.created_at,
                 )

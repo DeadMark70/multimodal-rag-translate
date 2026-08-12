@@ -11445,10 +11445,16 @@
             "$ref": "#/components/schemas/CampaignResultStatus"
           },
           "total_tokens": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Total Tokens",
-            "default": 0
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Tokens"
           },
           "total_latency_ms": {
             "anyOf": [

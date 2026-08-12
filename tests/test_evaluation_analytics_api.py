@@ -191,7 +191,7 @@ async def _seed_legacy_campaign_result(*, db_path: Path, user_id: str) -> tuple[
                     id, campaign_id, user_id, question_id, question, ground_truth,
                     mode, run_number, answer, contexts_json, source_doc_ids_json,
                     expected_sources_json, latency_ms, token_usage_json, status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, '[]', '[]', '[]', 0, '{}', 'completed', ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, '[]', '[]', '[]', 0, '{"accounting_schema_version":"2"}', 'completed', ?)
                 """,
                 (
                     run_id,
@@ -389,6 +389,11 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
         assert legacy_retrieval.json()["retrieval_chunks"] == []
         incompatible_diff = client.get(f"/api/evaluation/runs/{run_id}/diff?baseline_run_id={legacy_run_id}")
         assert incompatible_diff.status_code == 400
+        legacy_runs = client.get(
+            f"/api/evaluation/campaigns/{legacy_campaign_id}/runs"
+        )
+        assert legacy_runs.status_code == 200
+        assert legacy_runs.json()["runs"][0]["total_tokens"] is None
         legacy_overview = client.get(f"/api/evaluation/campaigns/{legacy_campaign_id}/overview")
         assert legacy_overview.status_code == 200
 
