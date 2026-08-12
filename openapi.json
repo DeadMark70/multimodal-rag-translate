@@ -8197,6 +8197,57 @@
         "title": "ChatMessageResponse",
         "description": "Response model for a single chat message.\n\nAttributes:\n    id: Message ID.\n    role: Message role ('user' or 'assistant' or 'system').\n    content: Message content.\n    metadata: Optional metadata.\n    created_at: Message timestamp."
       },
+      "ClaimEvidenceReference": {
+        "properties": {
+          "evidence_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Id"
+          },
+          "doc_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doc Id"
+          },
+          "chunk_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Id"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          }
+        },
+        "type": "object",
+        "title": "ClaimEvidenceReference",
+        "description": "Allow-listed evidence locator for the interactive claim projection."
+      },
       "ComparisonPlan": {
         "properties": {
           "subjects": {
@@ -8326,6 +8377,57 @@
         ],
         "title": "ConflictCandidate",
         "description": "A persisted scope-aware conflict requiring qualification or arbitration."
+      },
+      "ContextPackEvidenceReference": {
+        "properties": {
+          "evidence_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Id"
+          },
+          "doc_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doc Id"
+          },
+          "chunk_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Id"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          }
+        },
+        "type": "object",
+        "title": "ContextPackEvidenceReference",
+        "description": "Allow-listed locator for evidence excluded from a context pack."
       },
       "ConversationCreate": {
         "properties": {
@@ -9335,7 +9437,7 @@
         ],
         "title": "EvaluationAttemptStatus"
       },
-      "EvaluationClaim": {
+      "EvaluationClaimProjection": {
         "properties": {
           "claim_id": {
             "type": "string",
@@ -9441,6 +9543,44 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "evidence_refs": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimEvidenceReference"
+            },
+            "type": "array",
+            "title": "Evidence Refs"
+          },
+          "repair_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repair Action"
+          },
+          "post_repair_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Post Repair Status"
+          },
+          "extraction_status": {
+            "type": "string",
+            "enum": [
+              "recorded",
+              "empty",
+              "not_instrumented"
+            ],
+            "title": "Extraction Status"
           }
         },
         "type": "object",
@@ -9448,12 +9588,13 @@
           "claim_id",
           "run_id",
           "campaign_id",
-          "claim_text"
+          "claim_text",
+          "extraction_status"
         ],
-        "title": "EvaluationClaim",
-        "description": "Generated claim and evidence alignment status."
+        "title": "EvaluationClaimProjection",
+        "description": "Interactive claim projection that excludes provider and raw claim payloads."
       },
-      "EvaluationContextPack": {
+      "EvaluationContextPackProjection": {
         "properties": {
           "context_pack_id": {
             "type": "string",
@@ -9524,8 +9665,7 @@
           },
           "retrieved_but_not_packed_evidence": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/ContextPackEvidenceReference"
             },
             "type": "array",
             "title": "Retrieved But Not Packed Evidence"
@@ -9548,10 +9688,10 @@
           "campaign_id",
           "created_at"
         ],
-        "title": "EvaluationContextPack",
-        "description": "Context-packing summary for retrieved evidence."
+        "title": "EvaluationContextPackProjection",
+        "description": "Interactive context-pack projection with typed evidence locators only."
       },
-      "EvaluationGraphEvent": {
+      "EvaluationGraphEventProjection": {
         "properties": {
           "graph_event_id": {
             "type": "string",
@@ -9745,8 +9885,8 @@
           "graph_search_mode",
           "graph_route"
         ],
-        "title": "EvaluationGraphEvent",
-        "description": "Persisted GraphRAG retrieval observability summary for one run."
+        "title": "EvaluationGraphEventProjection",
+        "description": "Interactive graph event with unrestricted feature metadata removed."
       },
       "EvaluationGraphEvidenceItem": {
         "properties": {
@@ -9862,7 +10002,7 @@
         "title": "EvaluationGraphEvidenceItem",
         "description": "Persisted graph evidence row aligned to a GraphRAG retrieval event."
       },
-      "EvaluationHumanRating": {
+      "EvaluationHumanRatingProjection": {
         "properties": {
           "human_rating_id": {
             "type": "string",
@@ -9976,8 +10116,8 @@
           "usefulness_score",
           "created_at"
         ],
-        "title": "EvaluationHumanRating",
-        "description": "Human rating row used for RAGAS calibration."
+        "title": "EvaluationHumanRatingProjection",
+        "description": "Interactive human-rating projection without unrestricted metadata."
       },
       "EvaluationJob": {
         "properties": {
@@ -10220,7 +10360,7 @@
         ],
         "title": "EvaluationJobType"
       },
-      "EvaluationLlmCall": {
+      "EvaluationLlmCallProjection": {
         "properties": {
           "llm_call_id": {
             "type": "string",
@@ -10485,8 +10625,8 @@
           "campaign_id",
           "created_at"
         ],
-        "title": "EvaluationLlmCall",
-        "description": "Normalized LLM usage row for a run or evaluator call."
+        "title": "EvaluationLlmCallProjection",
+        "description": "Interactive LLM projection with only the bounded prompt preview."
       },
       "EvaluationMetrics": {
         "properties": {
@@ -10706,7 +10846,7 @@
         ],
         "title": "EvaluationRerunRequest"
       },
-      "EvaluationRetrievalChunk": {
+      "EvaluationRetrievalChunkProjection": {
         "properties": {
           "retrieval_chunk_id": {
             "type": "string",
@@ -10844,19 +10984,37 @@
             "title": "Rerank Score"
           },
           "used_in_context": {
-            "type": "boolean",
-            "title": "Used In Context",
-            "default": false
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used In Context"
           },
           "used_in_answer": {
-            "type": "boolean",
-            "title": "Used In Answer",
-            "default": false
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used In Answer"
           },
           "expected_evidence_match": {
-            "type": "boolean",
-            "title": "Expected Evidence Match",
-            "default": false
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Evidence Match"
           },
           "excerpt": {
             "anyOf": [
@@ -10889,6 +11047,19 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "provenance": {
+            "type": "string",
+            "enum": [
+              "measured",
+              "persisted",
+              "derived",
+              "heuristic"
+            ],
+            "title": "Provenance"
+          },
+          "availability": {
+            "$ref": "#/components/schemas/ObservationAvailability"
           }
         },
         "type": "object",
@@ -10898,12 +11069,14 @@
           "campaign_id",
           "retrieval_event_id",
           "chunk_id",
-          "created_at"
+          "created_at",
+          "provenance",
+          "availability"
         ],
-        "title": "EvaluationRetrievalChunk",
-        "description": "One retrieved chunk plus evidence matching flags."
+        "title": "EvaluationRetrievalChunkProjection",
+        "description": "Interactive retrieval projection with explicit provenance and no raw payload."
       },
-      "EvaluationRetrievalEvent": {
+      "EvaluationRetrievalEventProjection": {
         "properties": {
           "retrieval_event_id": {
             "type": "string",
@@ -11012,10 +11185,10 @@
           "campaign_id",
           "created_at"
         ],
-        "title": "EvaluationRetrievalEvent",
-        "description": "Normalized retrieval request/response summary."
+        "title": "EvaluationRetrievalEventProjection",
+        "description": "Interactive retrieval summary without the unrestricted payload."
       },
-      "EvaluationRoutingDecision": {
+      "EvaluationRoutingDecisionProjection": {
         "properties": {
           "routing_decision_id": {
             "type": "string",
@@ -11164,8 +11337,8 @@
           "selected_mode",
           "created_at"
         ],
-        "title": "EvaluationRoutingDecision",
-        "description": "Router or retrospective routing analysis for one run."
+        "title": "EvaluationRoutingDecisionProjection",
+        "description": "Interactive routing projection with typed provenance and no raw payload."
       },
       "EvaluationRunListItem": {
         "properties": {
@@ -11344,56 +11517,56 @@
           },
           "trace_events": {
             "items": {
-              "$ref": "#/components/schemas/EvaluationTraceEvent"
+              "$ref": "#/components/schemas/EvaluationTraceEventProjection"
             },
             "type": "array",
             "title": "Trace Events"
           },
           "llm_calls": {
             "items": {
-              "$ref": "#/components/schemas/EvaluationLlmCall"
+              "$ref": "#/components/schemas/EvaluationLlmCallProjection"
             },
             "type": "array",
             "title": "Llm Calls"
           },
           "retrieval_events": {
             "items": {
-              "$ref": "#/components/schemas/EvaluationRetrievalEvent"
+              "$ref": "#/components/schemas/EvaluationRetrievalEventProjection"
             },
             "type": "array",
             "title": "Retrieval Events"
           },
           "retrieval_chunks": {
             "items": {
-              "$ref": "#/components/schemas/EvaluationRetrievalChunk"
+              "$ref": "#/components/schemas/EvaluationRetrievalChunkProjection"
             },
             "type": "array",
             "title": "Retrieval Chunks"
           },
           "context_packs": {
             "items": {
-              "$ref": "#/components/schemas/EvaluationContextPack"
+              "$ref": "#/components/schemas/EvaluationContextPackProjection"
             },
             "type": "array",
             "title": "Context Packs"
           },
           "tool_calls": {
             "items": {
-              "$ref": "#/components/schemas/EvaluationToolCall"
+              "$ref": "#/components/schemas/EvaluationToolCallProjection"
             },
             "type": "array",
             "title": "Tool Calls"
           },
           "routing_decisions": {
             "items": {
-              "$ref": "#/components/schemas/EvaluationRoutingDecision"
+              "$ref": "#/components/schemas/EvaluationRoutingDecisionProjection"
             },
             "type": "array",
             "title": "Routing Decisions"
           },
           "graph_events": {
             "items": {
-              "$ref": "#/components/schemas/EvaluationGraphEvent"
+              "$ref": "#/components/schemas/EvaluationGraphEventProjection"
             },
             "type": "array",
             "title": "Graph Events"
@@ -11417,17 +11590,37 @@
           },
           "claims": {
             "items": {
-              "$ref": "#/components/schemas/EvaluationClaim"
+              "$ref": "#/components/schemas/EvaluationClaimProjection"
             },
             "type": "array",
             "title": "Claims"
           },
+          "claim_extraction_status": {
+            "type": "string",
+            "enum": [
+              "recorded",
+              "empty",
+              "not_instrumented"
+            ],
+            "title": "Claim Extraction Status",
+            "default": "not_instrumented"
+          },
           "human_ratings": {
             "items": {
-              "$ref": "#/components/schemas/EvaluationHumanRating"
+              "$ref": "#/components/schemas/EvaluationHumanRatingProjection"
             },
             "type": "array",
             "title": "Human Ratings"
+          },
+          "agentic_v9": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V9ExecutionObservability"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "evidence_coverage": {
             "anyOf": [
@@ -11593,7 +11786,7 @@
         "title": "EvaluationRunSummary",
         "description": "Selected-run identity and strict token projection."
       },
-      "EvaluationToolCall": {
+      "EvaluationToolCallProjection": {
         "properties": {
           "tool_call_id": {
             "type": "string",
@@ -11681,10 +11874,10 @@
           "tool_name",
           "created_at"
         ],
-        "title": "EvaluationToolCall",
-        "description": "External tool invocation made during a run."
+        "title": "EvaluationToolCallProjection",
+        "description": "Interactive tool-call projection without provider input/output/error bodies."
       },
-      "EvaluationTraceEvent": {
+      "EvaluationTraceEventProjection": {
         "properties": {
           "event_id": {
             "type": "string",
@@ -11844,8 +12037,8 @@
           "status",
           "created_at"
         ],
-        "title": "EvaluationTraceEvent",
-        "description": "Generic span/event row for evaluation run observability."
+        "title": "EvaluationTraceEventProjection",
+        "description": "Interactive trace projection that cannot retain raw payloads or errors."
       },
       "EvaluationWarnings": {
         "properties": {
@@ -15366,6 +15559,34 @@
         "type": "object",
         "title": "NodeVectorSyncStatusResponse",
         "description": "Response for node-vector manual sync status."
+      },
+      "ObservationAvailability": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "partial",
+              "not_instrumented",
+              "not_available",
+              "not_applicable"
+            ],
+            "title": "Status"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reasons"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "ObservationAvailability",
+        "description": "Availability of one safely projected observability observation."
       },
       "ProcessingStatusResponse": {
         "properties": {
