@@ -738,6 +738,12 @@ async def test_campaign_result_records_retrieval_context_and_evidence_flow(
     assert chunks[0].rank_after_rerank is None
     assert chunks[0].payload["reranker_status"] == "not_instrumented"
     assert chunks[0].payload["expected_evidence_match_status"] == "matched"
+    assert chunks[0].payload["observation_provenance"] == "derived"
+    assert chunks[0].payload["availability_status"] == "partial"
+    assert chunks[0].payload["availability_reasons"] == [
+        "result_context_reconstruction"
+    ]
+    assert chunks[0].payload["used_in_answer_provenance"] == "heuristic"
     assert chunks[0].used_in_context is True
     assert chunks[0].used_in_answer is True
     assert chunks[0].expected_evidence_match is True
@@ -911,9 +917,20 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks(
         0.82,
         None,
     ]
+    for chunk in chunks_by_context_order:
+        assert chunk.payload["observation_provenance"] == "derived"
+        assert chunk.payload["availability_status"] == "partial"
+        assert chunk.payload["availability_reasons"] == [
+            "result_context_reconstruction"
+        ]
+        assert chunk.payload["used_in_answer_provenance"] == "heuristic"
     assert [chunk.payload for chunk in chunks_by_context_order] == [
         {
             "instrumentation_depth": "result_level",
+            "observation_provenance": "derived",
+            "availability_status": "partial",
+            "availability_reasons": ["result_context_reconstruction"],
+            "used_in_answer_provenance": "heuristic",
             "expected_evidence_match_status": "matched",
             "reranker_status": "executed",
             "reranker_fallback_reason": None,
@@ -932,6 +949,10 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks(
         },
         {
             "instrumentation_depth": "result_level",
+            "observation_provenance": "derived",
+            "availability_status": "partial",
+            "availability_reasons": ["result_context_reconstruction"],
+            "used_in_answer_provenance": "heuristic",
             "expected_evidence_match_status": "matched",
             "reranker_status": "executed",
             "reranker_fallback_reason": None,
@@ -950,6 +971,10 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks(
         },
         {
             "instrumentation_depth": "result_level",
+            "observation_provenance": "derived",
+            "availability_status": "partial",
+            "availability_reasons": ["result_context_reconstruction"],
+            "used_in_answer_provenance": "heuristic",
             "expected_evidence_match_status": "not_matched",
             "reranker_status": "executed",
             "reranker_fallback_reason": None,
@@ -959,6 +984,10 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks(
         },
         {
             "instrumentation_depth": "result_level",
+            "observation_provenance": "derived",
+            "availability_status": "partial",
+            "availability_reasons": ["result_context_reconstruction"],
+            "used_in_answer_provenance": "heuristic",
             "expected_evidence_match_status": "not_matched",
             "reranker_status": "not_instrumented",
             "reranker_fallback_reason": None,
@@ -1120,6 +1149,10 @@ async def test_campaign_result_marks_unresolved_expected_source_identity_without
     assert chunks[0].payload["expected_evidence_match_status"] == "identity_unresolved"
     assert set(chunks[0].payload) <= {
         "instrumentation_depth",
+        "observation_provenance",
+        "availability_status",
+        "availability_reasons",
+        "used_in_answer_provenance",
         "expected_evidence_match_status",
         "reranker_status",
         "reranker_fallback_reason",
@@ -1261,6 +1294,7 @@ async def test_campaign_result_persists_claim_rows_and_derived_claim_metrics(
     assert claims[0].evidence == [{"chunk_id": "doc-a:1"}]
     assert claims[0].payload["support_score"] == 0.9
     assert claims[1].unsupported_reason == "No evidence found"
+    assert result.derived_metrics["claim_extraction_status"] == "recorded"
     assert result.derived_metrics["supported_claim_ratio"] == pytest.approx(0.5)
     assert result.derived_metrics["unsupported_claim_ratio"] == pytest.approx(0.5)
     assert result.derived_metrics["repair_count"] == 0

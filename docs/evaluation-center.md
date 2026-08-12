@@ -48,6 +48,22 @@ but the Evaluation Center uses the typed `research-question-comparison`
 projection. Generic legacy analytics must not be interpreted as a complete
 research comparison.
 
+## Retrieval and claim provenance
+
+Run observability exposes retrieval chunks through a safe typed projection. Each
+row includes `provenance` and `availability`; raw persistence payloads are never
+returned. Result-context reconstruction is `derived` with `partial`
+availability and a `result_context_reconstruction` reason. Its answer-use flag
+is heuristic, not a measured retriever fact. Only normalized retriever
+instrumentation may report `measured`/`complete`; older rows are
+`not_available` with `provenance_not_recorded`, and their retrieval booleans are
+null rather than false.
+
+Claim projections return only evidence ID, document ID, chunk ID, and integer
+page references, plus scalar repair fields. Provider bodies and original claim
+payloads are excluded. Run-level `claim_extraction_status` distinguishes a
+recorded empty extraction from a run that did not instrument claims.
+
 ## Comparison rules
 
 - `naive` is the quality baseline when the question has the required compatible

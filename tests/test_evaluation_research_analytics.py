@@ -19,6 +19,7 @@ from evaluation.db import (
 )
 from evaluation.research_analytics import (
     ResearchAnalyticsService,
+    _claim_extraction_status,
     _evaluator_identity,
     _tokens,
     nearest_rank,
@@ -41,6 +42,11 @@ from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
 def test_nearest_rank_percentiles_are_observed_values() -> None:
     assert nearest_rank([100, 200, 300, 400, 500], 0.50) == 300
     assert nearest_rank([100, 200, 300, 400, 500], 0.95) == 500
+
+
+def test_claim_extraction_status_distinguishes_empty_from_not_instrumented() -> None:
+    assert _claim_extraction_status({"claim_extraction_status": "empty"}) == "empty"
+    assert _claim_extraction_status({}) == "not_instrumented"
 
 
 def test_token_breakdown_requires_provider_phase_rows_to_match_runtime_total() -> None:
@@ -346,11 +352,41 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
             )]
 
         async def list_retrieval_chunks_for_run(self, run_id):
-            return [EvaluationRetrievalChunk(
-                retrieval_chunk_id="chunk-1", run_id=run_id, campaign_id="cmp-1",
-                retrieval_event_id="retrieval-1", chunk_id="chunk-1", excerpt="safe excerpt",
-                created_at=now,
-            )]
+            return [
+                EvaluationRetrievalChunk(
+                    retrieval_chunk_id="chunk-derived", run_id=run_id, campaign_id="cmp-1",
+                    retrieval_event_id="retrieval-1", chunk_id="chunk-derived",
+                    excerpt="safe excerpt", used_in_context=True, used_in_answer=True,
+                    expected_evidence_match=True,
+                    payload={
+                        "observation_provenance": "derived",
+                        "availability_status": "partial",
+                        "availability_reasons": ["result_context_reconstruction"],
+                        "used_in_answer_provenance": "heuristic",
+                        "provider_body": {"secret": "redact"},
+                    },
+                    created_at=now,
+                ),
+                EvaluationRetrievalChunk(
+                    retrieval_chunk_id="chunk-measured", run_id=run_id, campaign_id="cmp-1",
+                    retrieval_event_id="retrieval-1", chunk_id="chunk-measured",
+                    used_in_context=True, used_in_answer=False,
+                    expected_evidence_match=True,
+                    payload={
+                        "observation_provenance": "measured",
+                        "availability_status": "complete",
+                        "availability_reasons": [],
+                    },
+                    created_at=now,
+                ),
+                EvaluationRetrievalChunk(
+                    retrieval_chunk_id="chunk-historical", run_id=run_id, campaign_id="cmp-1",
+                    retrieval_event_id="retrieval-1", chunk_id="chunk-historical",
+                    used_in_context=True, used_in_answer=True,
+                    expected_evidence_match=True, payload={"provider_body": "secret"},
+                    created_at=now,
+                ),
+            ]
 
         async def list_graph_events_for_run(self, run_id):
             return [EvaluationGraphEvent(
@@ -377,7 +413,16 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
         async def list_claims_for_run(self, run_id):
             return [EvaluationClaim(
                 claim_id="claim-1", run_id=run_id, campaign_id="cmp-1",
-                claim_text="safe claim", created_at=now,
+                claim_text="safe claim",
+                evidence=[{
+                    "evidence_id": "evidence-1", "doc_id": "doc-1",
+                    "chunk_id": "chunk-1", "page": 8, "provider_body": {"secret": "redact"},
+                }],
+                payload={
+                    "repair_action": "requery", "post_repair_status": "supported",
+                    "provider_body": {"secret": "redact"},
+                },
+                created_at=now,
             )]
 
         async def list_human_ratings_for_run(self, run_id):
@@ -418,6 +463,34 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
     assert [row.human_rating_id for row in detail.human_ratings] == ["rating-1"]
     assert detail.agentic_v9 is not None
     assert detail.agentic_v9.schema_version == "1"
+    derived, measured, historical = detail.retrieval_chunks
+    assert derived.provenance == "derived"
+    assert derived.availability.status == "partial"
+    assert derived.availability.reasons == ["result_context_reconstruction"]
+    assert derived.used_in_context is True
+    assert derived.used_in_answer is True
+    assert derived.expected_evidence_match is True
+    assert derived.payload == {}
+    assert measured.provenance == "measured"
+    assert measured.availability.status == "complete"
+    assert measured.used_in_context is True
+    assert measured.used_in_answer is False
+    assert measured.expected_evidence_match is True
+    assert historical.availability.status == "not_available"
+    assert historical.availability.reasons == ["provenance_not_recorded"]
+    assert historical.used_in_context is None
+    assert historical.used_in_answer is None
+    assert historical.expected_evidence_match is None
+    assert historical.payload == {}
+    projected_claim = detail.claims[0]
+    assert projected_claim.evidence_refs[0].model_dump() == {
+        "evidence_id": "evidence-1", "doc_id": "doc-1", "chunk_id": "chunk-1", "page": 8,
+    }
+    assert projected_claim.repair_action == "requery"
+    assert projected_claim.post_repair_status == "supported"
+    assert projected_claim.extraction_status == "recorded"
+    assert projected_claim.payload == {}
+    assert "secret" not in projected_claim.model_dump_json()
 
 
 @pytest.mark.asyncio

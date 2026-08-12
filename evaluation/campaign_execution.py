@@ -190,6 +190,7 @@ def _build_derived_metrics(
     trace_payload = payload.agent_trace or {}
     claims = trace_payload.get("claims") if isinstance(trace_payload, dict) else None
     if isinstance(claims, list):
+        metrics["claim_extraction_status"] = "recorded" if claims else "empty"
         supported = sum(
             1 for claim in claims if _claim_support_status(claim) == "supported"
         )
@@ -212,6 +213,8 @@ def _build_derived_metrics(
                 ),
             }
         )
+    else:
+        metrics["claim_extraction_status"] = "not_instrumented"
     if unit.test_case.atomic_facts:
         metrics["gold_fact_attrition"] = build_gold_fact_attrition(
             atomic_facts=list(unit.test_case.atomic_facts),
@@ -1075,6 +1078,10 @@ async def _record_unit_research_observability(
                 content_hash=selected_content_hash,
                 payload={
                     "instrumentation_depth": "result_level",
+                    "observation_provenance": "derived",
+                    "availability_status": "partial",
+                    "availability_reasons": ["result_context_reconstruction"],
+                    "used_in_answer_provenance": "heuristic",
                     "expected_evidence_match_status": expected_evidence_match_status,
                     "reranker_status": (
                         rerank_diagnostic["reranker_status"]

@@ -490,6 +490,10 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         assert exported_chunk["rerank_score"] == 0.73
         assert exported_chunk["payload"] == {
             "instrumentation_depth": "result_level",
+            "observation_provenance": "derived",
+            "availability_status": "partial",
+            "availability_reasons": ["result_context_reconstruction"],
+            "used_in_answer_provenance": "heuristic",
             "expected_evidence_match_status": "not_matched",
             "reranker_status": "executed",
             "reranker_fallback_reason": None,

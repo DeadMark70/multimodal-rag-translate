@@ -17,6 +17,10 @@ TracePhase = Literal["planning", "execution", "drilldown", "evaluation", "synthe
 TraceStatus = Literal["completed", "partial", "failed"]
 TraceSummaryStatus = Literal["completed", "partial", "failed", "not_instrumented"]
 TraceEventStatus = Literal["running", "success", "failed", "skipped", "timeout", "partial"]
+AvailabilityStatus = Literal[
+    "complete", "partial", "not_instrumented", "not_available", "not_applicable"
+]
+ObservationProvenance = Literal["measured", "persisted", "derived", "heuristic"]
 LlmCallPhase = Literal[
     "unknown",
     "contract_planning",
@@ -150,6 +154,24 @@ class EvaluationRetrievalChunk(BaseModel):
     created_at: datetime
 
 
+class ObservationAvailability(BaseModel):
+    """Availability of one safely projected observability observation."""
+
+    status: AvailabilityStatus
+    reasons: list[str] = Field(default_factory=list)
+
+
+class EvaluationRetrievalChunkProjection(EvaluationRetrievalChunk):
+    """Interactive retrieval projection with explicit provenance and no raw payload."""
+
+    used_in_context: bool | None = None
+    used_in_answer: bool | None = None
+    expected_evidence_match: bool | None = None
+    provenance: ObservationProvenance
+    availability: ObservationAvailability
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class EvaluationContextPack(BaseModel):
     """Context-packing summary for retrieved evidence."""
 
@@ -246,6 +268,25 @@ class EvaluationClaim(BaseModel):
     unsupported_reason: Optional[str] = None
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ClaimEvidenceReference(BaseModel):
+    """Allow-listed evidence locator for the interactive claim projection."""
+
+    evidence_id: str | None = None
+    doc_id: str | None = None
+    chunk_id: str | None = None
+    page: int | None = None
+
+
+class EvaluationClaimProjection(EvaluationClaim):
+    """Interactive claim projection that excludes provider and raw claim payloads."""
+
+    evidence_refs: list[ClaimEvidenceReference] = Field(default_factory=list)
+    repair_action: str | None = None
+    post_repair_status: str | None = None
+    extraction_status: Literal["recorded", "empty", "not_instrumented"]
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class EvaluationEvidencePacket(BaseModel):
@@ -361,14 +402,15 @@ class EvaluationRunObservabilityDetail(BaseModel):
     trace_events: list[EvaluationTraceEvent] = Field(default_factory=list)
     llm_calls: list[EvaluationLlmCall] = Field(default_factory=list)
     retrieval_events: list[EvaluationRetrievalEvent] = Field(default_factory=list)
-    retrieval_chunks: list[EvaluationRetrievalChunk] = Field(default_factory=list)
+    retrieval_chunks: list[EvaluationRetrievalChunkProjection] = Field(default_factory=list)
     context_packs: list[EvaluationContextPack] = Field(default_factory=list)
     tool_calls: list[EvaluationToolCall] = Field(default_factory=list)
     routing_decisions: list[EvaluationRoutingDecision] = Field(default_factory=list)
     graph_events: list[EvaluationGraphEvent] = Field(default_factory=list)
     graph_evidence_items: list[EvaluationGraphEvidenceItem] = Field(default_factory=list)
     graph_observability_status: Literal["recorded", "fallback", "not_instrumented"] = "not_instrumented"
-    claims: list[EvaluationClaim] = Field(default_factory=list)
+    claims: list[EvaluationClaimProjection] = Field(default_factory=list)
+    claim_extraction_status: Literal["recorded", "empty", "not_instrumented"] = "not_instrumented"
     human_ratings: list[EvaluationHumanRating] = Field(default_factory=list)
     agentic_v9: V9ExecutionObservability | None = None
     evidence_coverage: Optional[list[dict[str, Any]]] = None

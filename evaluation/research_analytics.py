@@ -65,12 +65,107 @@ from evaluation.observability_storage import (
 )
 from evaluation.analytics import reconcile_official_tokens
 from evaluation.trace_schemas import (
+    ClaimEvidenceReference,
+    EvaluationClaim,
+    EvaluationClaimProjection,
+    EvaluationRetrievalChunk,
+    EvaluationRetrievalChunkProjection,
     EvaluationRunObservabilityDetail,
     EvaluationRunSummary,
+    ObservationAvailability,
 )
 
 PRIMARY_QUALITY_METRICS = ("answer_correctness", "faithfulness", "answer_relevancy")
 OPTIONAL_CONTEXT_METRICS = ("context_precision", "context_recall")
+_AVAILABILITY_STATUSES = {
+    "complete", "partial", "not_instrumented", "not_available", "not_applicable"
+}
+_OBSERVATION_PROVENANCES = {"measured", "persisted", "derived", "heuristic"}
+_CLAIM_EXTRACTION_STATUSES = {"recorded", "empty", "not_instrumented"}
+
+
+def _safe_scalar_text(value: object) -> str | None:
+    """Return a scalar field without serializing provider objects or nested payloads."""
+    if isinstance(value, (str, int, float, bool)):
+        return str(value)
+    return None
+
+
+def _project_retrieval_chunk(
+    chunk: EvaluationRetrievalChunk,
+) -> EvaluationRetrievalChunkProjection:
+    """Promote recorded provenance metadata into the safe interactive contract."""
+    payload = chunk.payload if isinstance(chunk.payload, dict) else {}
+    provenance = payload.get("observation_provenance")
+    availability_status = payload.get("availability_status")
+    if (
+        provenance not in _OBSERVATION_PROVENANCES
+        or availability_status not in _AVAILABILITY_STATUSES
+    ):
+        provenance = "persisted"
+        availability_status = "not_available"
+        reasons = ["provenance_not_recorded"]
+    else:
+        raw_reasons = payload.get("availability_reasons")
+        reasons = [
+            reason for reason in raw_reasons if isinstance(reason, str)
+        ] if isinstance(raw_reasons, list) else []
+    unavailable = availability_status == "not_available"
+    return EvaluationRetrievalChunkProjection.model_validate(
+        {
+            **chunk.model_dump(),
+            "used_in_context": None if unavailable else chunk.used_in_context,
+            "used_in_answer": None if unavailable else chunk.used_in_answer,
+            "expected_evidence_match": (
+                None if unavailable else chunk.expected_evidence_match
+            ),
+            "provenance": provenance,
+            "availability": ObservationAvailability(
+                status=availability_status, reasons=reasons
+            ),
+            "payload": {},
+        }
+    )
+
+
+def _project_claim(claim: EvaluationClaim) -> EvaluationClaimProjection:
+    """Expose only safe claim evidence locators and scalar repair observations."""
+    payload = claim.payload if isinstance(claim.payload, dict) else {}
+    evidence_refs = []
+    for evidence in claim.evidence:
+        if not isinstance(evidence, dict):
+            continue
+        page = evidence.get("page")
+        evidence_refs.append(
+            ClaimEvidenceReference(
+                evidence_id=_safe_scalar_text(evidence.get("evidence_id")),
+                doc_id=_safe_scalar_text(evidence.get("doc_id")),
+                chunk_id=_safe_scalar_text(evidence.get("chunk_id")),
+                page=page if isinstance(page, int) and not isinstance(page, bool) else None,
+            )
+        )
+    return EvaluationClaimProjection.model_validate(
+        {
+            **claim.model_dump(),
+            "evidence": [],
+            "evidence_refs": evidence_refs,
+            "repair_action": _safe_scalar_text(payload.get("repair_action")),
+            "post_repair_status": _safe_scalar_text(
+                payload.get("post_repair_status")
+            ),
+            "extraction_status": "recorded",
+            "payload": {},
+        }
+    )
+
+
+def _claim_extraction_status(derived_metrics: object) -> str:
+    """Read the explicit claim extraction marker without guessing from claim IDs."""
+    if isinstance(derived_metrics, dict):
+        status = derived_metrics.get("claim_extraction_status")
+        if status in _CLAIM_EXTRACTION_STATUSES:
+            return status
+    return "not_instrumented"
 
 
 def _attach_work_metadata(scores, work_metadata):
@@ -375,11 +470,10 @@ class ResearchAnalyticsService:
             if item.campaign_id == campaign_id
         ]
         retrieval_chunks = [
-            item.model_copy(
-                update={
-                    "excerpt": safe_plain_text_excerpt(item.excerpt),
-                    "payload": {},
-                }
+            _project_retrieval_chunk(
+                item.model_copy(
+                    update={"excerpt": safe_plain_text_excerpt(item.excerpt)}
+                )
             )
             for item in await self._observability.list_retrieval_chunks_for_run(run_id)
             if item.campaign_id == campaign_id
@@ -410,12 +504,10 @@ class ResearchAnalyticsService:
             if item.campaign_id == campaign_id
         ]
         claims = [
-            item.model_copy(
-                update={
-                    "claim_text": safe_plain_text_excerpt(item.claim_text),
-                    "evidence": [],
-                    "payload": {},
-                }
+            _project_claim(
+                item.model_copy(
+                    update={"claim_text": safe_plain_text_excerpt(item.claim_text)}
+                )
             )
             for item in await self._observability.list_claims_for_run(run_id)
             if item.campaign_id == campaign_id
@@ -460,6 +552,7 @@ class ResearchAnalyticsService:
             tool_calls=tool_calls,
             routing_decisions=routing_decisions,
             claims=claims,
+            claim_extraction_status=_claim_extraction_status(derived_metrics),
             human_ratings=human_ratings,
             agentic_v9=await self._v9_observability_for_result(
                 result=result, campaign_id=campaign_id, run_id=run_id

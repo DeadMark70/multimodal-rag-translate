@@ -7,8 +7,10 @@ from evaluation import db as evaluation_db
 from evaluation.trace_schemas import (
     AgentTraceDetail,
     EvaluationClaim,
+    EvaluationClaimProjection,
     EvaluationEvidencePacket,
     EvaluationLlmCall,
+    EvaluationRetrievalChunkProjection,
     EvaluationSlotResolution,
     EvaluationTraceEvent,
 )
@@ -470,3 +472,31 @@ def test_evaluation_claim_exposes_decoded_evidence_field() -> None:
     )
 
     assert claim.evidence[0]["doc_id"] == "paper-a.pdf"
+
+
+def test_safe_observability_projections_allow_only_typed_evidence() -> None:
+    now = datetime.now(timezone.utc)
+    retrieval = EvaluationRetrievalChunkProjection(
+        retrieval_chunk_id="retrieval-chunk-1",
+        run_id="run-1",
+        campaign_id="campaign-1",
+        retrieval_event_id="retrieval-1",
+        chunk_id="chunk-1",
+        provenance="measured",
+        availability={"status": "complete"},
+        created_at=now,
+    )
+    claim = EvaluationClaimProjection(
+        claim_id="claim-1",
+        run_id="run-1",
+        campaign_id="campaign-1",
+        claim_text="The reported value is 0.9079.",
+        evidence_refs=[{"doc_id": "paper-a.pdf", "page": 5}],
+        extraction_status="recorded",
+        created_at=now,
+    )
+
+    assert retrieval.availability.status == "complete"
+    assert retrieval.payload == {}
+    assert claim.evidence_refs[0].page == 5
+    assert claim.payload == {}
