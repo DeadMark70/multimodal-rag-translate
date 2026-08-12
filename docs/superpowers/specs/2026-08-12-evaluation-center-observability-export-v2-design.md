@@ -316,6 +316,20 @@ payload objects are never exported. Disabling answers or excerpts also removes
 equivalent content nested inside trace and v9 projections. Fields suppressed by
 policy remain present as `null` where a fixed v2 shape requires them.
 
+The policy boundaries are exact:
+
+- `include_raw_trace_payloads` controls only the sanitized allow-listed
+  `trace_events[].payload`; it never opens retrieval, tool, claim, routing, or
+  provider payload objects;
+- `include_answers=false` clears the result answer, answer preview, claim
+  statements, final-claim statements, and evidence-coverage fact text while
+  preserving identifiers and statuses;
+- `include_retrieved_excerpts=false` clears retrieval excerpts and v9 evidence
+  packet statements while preserving document, chunk, page, asset, and slot
+  locators; and
+- a full prompt is present only when it was captured at execution and
+  `include_full_prompts=true`.
+
 ### Typed response
 
 Schema v2 directly replaces the old response. All top-level keys and section
@@ -333,7 +347,8 @@ names are required and typed:
   "campaign": {},
   "sections": {
     "overview": { "availability": {}, "data": {
-      "research_summary": {}, "release_metrics": null
+      "research_summary": {},
+      "release_metrics": { "availability": {}, "data": null }
     }},
     "question_analysis": { "availability": {}, "data": {} },
     "agent_behavior": { "availability": {}, "data": {} },
@@ -360,13 +375,25 @@ names are required and typed:
 }
 ```
 
-`campaign` is a safe typed identity/configuration snapshot. `result` is an
+`campaign` is a small allow-listed identity/configuration snapshot rather than
+the complete runtime campaign object. It contains the campaign ID, name,
+lifecycle status, benchmark identity, selected modes, repeat count, and
+timestamps only. `result` is an
 export-specific fixed model rather than the runtime `CampaignResult`, because
-redaction can make answer and reference fields null. `sections` uses the same
+redaction can make answer and reference fields null. It includes the run and
+question identifiers, question text, execution identity/version, status,
+answer/reference content subject to policy, source locators, token/latency
+scalars, and timestamp; it excludes arbitrary token usage, snapshots, and
+derived-metric dictionaries. `sections` uses the same
 authoritative services as the active panels: research summary and optional
 release metrics, research question comparison, agent behavior, retrospective
 router analysis, ablation, human comparison/queue, errors, and stage warnings.
 Legacy overview and comparison helpers are not used.
+
+When release metrics are not applicable, the nested release section has
+`availability.status="not_applicable"` and retains the typed report returned by
+the canonical release service when available; `data=null` is reserved for a
+truly absent optional projection.
 
 Official RAGAS selection and accounting completeness are shared typed helpers,
 not duplicated export SQL. Official scores must match the result's current
