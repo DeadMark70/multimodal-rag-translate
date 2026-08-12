@@ -47,6 +47,7 @@ from evaluation.campaign_schemas import (
     ModeComparisonResponse,
     QuestionComparisonResponse,
     RepeatStabilitySummary,
+    RouterAnalysisRow,
     RouterAnalysisResponse,
     RunClaimsResponse,
     RunContextResponse,
@@ -750,7 +751,9 @@ class EvaluationAnalyticsService:
         decisions = await self._routing_decisions_for_context(context)
         return self._build_router_analysis(context, decisions)
 
-    async def _routing_decisions_for_context(self, context: _CampaignAnalyticsContext) -> list[dict[str, Any]]:
+    async def _routing_decisions_for_context(
+        self, context: _CampaignAnalyticsContext
+    ) -> list[RouterAnalysisRow]:
         list_for_campaign = getattr(
             self._observability_repository,
             "list_routing_decisions_for_campaign",
@@ -759,37 +762,65 @@ class EvaluationAnalyticsService:
         if list_for_campaign is not None:
             grouped = await list_for_campaign(context.campaign_id)
             return [
-                {
-                    **_dump(item),
-                    "question_id": result.question_id,
-                    "repeat_number": _repeat_number(result),
-                    "run_id": result.id,
-                }
+                RouterAnalysisRow(
+                    routing_decision_id=item.routing_decision_id,
+                    run_id=result.id,
+                    campaign_id=item.campaign_id,
+                    question_id=result.question_id,
+                    repeat_number=_repeat_number(result),
+                    span_id=item.span_id,
+                    selected_mode=item.selected_mode,
+                    analysis_type="retrospective",
+                    decision_source=item.decision_source,
+                    candidate_routes=list(item.candidate_routes),
+                    matched_rules=list(item.matched_rules),
+                    fallback_reason=item.fallback_reason,
+                    confidence=item.confidence,
+                    reason=item.reason,
+                    created_at=item.created_at,
+                )
                 for result in context.results
                 for item in grouped.get(result.id, [])
-                if item.campaign_id == context.campaign_id
+                if (
+                    item.campaign_id == context.campaign_id
+                    and item.analysis_type == "retrospective"
+                )
             ]
 
         # Compatibility fallback for older injected repository doubles only.
         # The production repository always exposes the bulk method above.
-        decisions: list[dict[str, Any]] = []
+        decisions: list[RouterAnalysisRow] = []
         for result in context.results:
             decisions.extend(
-                {
-                    **_dump(item),
-                    "question_id": result.question_id,
-                    "repeat_number": _repeat_number(result),
-                    "run_id": result.id,
-                }
+                RouterAnalysisRow(
+                    routing_decision_id=item.routing_decision_id,
+                    run_id=result.id,
+                    campaign_id=item.campaign_id,
+                    question_id=result.question_id,
+                    repeat_number=_repeat_number(result),
+                    span_id=item.span_id,
+                    selected_mode=item.selected_mode,
+                    analysis_type="retrospective",
+                    decision_source=item.decision_source,
+                    candidate_routes=list(item.candidate_routes),
+                    matched_rules=list(item.matched_rules),
+                    fallback_reason=item.fallback_reason,
+                    confidence=item.confidence,
+                    reason=item.reason,
+                    created_at=item.created_at,
+                )
                 for item in await self._observability_repository.list_routing_decisions_for_run(result.id)
-                if item.campaign_id == context.campaign_id
+                if (
+                    item.campaign_id == context.campaign_id
+                    and item.analysis_type == "retrospective"
+                )
             )
         return decisions
 
     def _build_router_analysis(
         self,
         context: _CampaignAnalyticsContext,
-        decisions: list[dict[str, Any]],
+        decisions: list[RouterAnalysisRow],
     ) -> RouterAnalysisResponse:
         overview = context.overview or self._build_campaign_overview(context)
         return RouterAnalysisResponse(

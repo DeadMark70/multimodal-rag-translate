@@ -14,6 +14,7 @@ from evaluation.campaign_schemas import (
     CampaignResult,
     CampaignResultStatus,
     EvaluationRunListItem,
+    RouterAnalysisResponse,
 )
 from evaluation.schemas import ModelConfig
 
@@ -35,6 +36,60 @@ def _model_config() -> ModelConfig:
 
 def test_campaign_progress_event_does_not_publish_latest_result_id() -> None:
     assert "latest_result_id" not in CampaignProgressEvent.model_fields
+
+
+def test_router_analysis_response_uses_typed_retrospective_rows() -> None:
+    response = RouterAnalysisResponse(
+        campaign_id="cmp-1",
+        analysis_unit="execution",
+        rows=[
+            {
+                "routing_decision_id": "retro-1",
+                "run_id": "run-1",
+                "campaign_id": "cmp-1",
+                "question_id": "Q1",
+                "repeat_number": 1,
+                "span_id": None,
+                "selected_mode": "agentic",
+                "analysis_type": "retrospective",
+                "decision_source": None,
+                "candidate_routes": ["agentic"],
+                "matched_rules": ["complex_query"],
+                "fallback_reason": None,
+                "confidence": None,
+                "reason": None,
+                "created_at": datetime.now(UTC),
+            }
+        ],
+    )
+
+    assert response.analysis_type == "retrospective"
+    assert "payload" not in response.rows[0].model_dump()
+
+    with pytest.raises(ValidationError):
+        RouterAnalysisResponse(
+            campaign_id="cmp-1",
+            analysis_unit="execution",
+            rows=[
+                {
+                    "routing_decision_id": "actual-1",
+                    "run_id": "run-1",
+                    "campaign_id": "cmp-1",
+                    "question_id": "Q1",
+                    "repeat_number": 1,
+                    "span_id": None,
+                    "selected_mode": "agentic",
+                    "analysis_type": "actual",
+                    "decision_source": None,
+                    "candidate_routes": [],
+                    "matched_rules": [],
+                    "fallback_reason": None,
+                    "confidence": None,
+                    "reason": None,
+                    "created_at": datetime.now(UTC),
+                }
+            ],
+        )
 
 
 def test_new_evaluation_campaign_contracts_default_to_agentic_v9() -> None:

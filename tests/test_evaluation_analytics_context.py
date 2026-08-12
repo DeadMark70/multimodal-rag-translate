@@ -10,6 +10,7 @@ from evaluation.trace_schemas import (
     EvaluationClaim,
     EvaluationLlmCall,
     EvaluationRetrievalChunk,
+    EvaluationRoutingDecision,
     EvaluationTraceEvent,
 )
 
@@ -502,6 +503,43 @@ class BulkOnlyObservabilityRepository:
         raise AssertionError("campaign analytics must not use per-run claim reads")
 
 
+class RouterAnalysisObservabilityRepository(CountingObservabilityRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        created_at = datetime(2026, 8, 13, tzinfo=timezone.utc)
+        self.routing_decisions = [
+            EvaluationRoutingDecision(
+                routing_decision_id="retro-1",
+                run_id="run-1",
+                campaign_id="campaign-1",
+                selected_mode="agentic",
+                analysis_type="retrospective",
+                candidate_routes=["agentic"],
+                matched_rules=["complex_query"],
+                reason="Retrospective route analysis.",
+                payload={"internal_only": "must not be exposed"},
+                created_at=created_at,
+            ),
+            EvaluationRoutingDecision(
+                routing_decision_id="actual-1",
+                run_id="run-1",
+                campaign_id="campaign-1",
+                selected_mode="agentic",
+                analysis_type="actual",
+                decision_source="safe_fallback",
+                candidate_routes=["single_lookup"],
+                matched_rules=["ambiguous"],
+                fallback_reason="planner_timeout",
+                payload={"internal_only": "actual row remains persisted"},
+                created_at=created_at,
+            ),
+        ]
+
+    async def list_routing_decisions_for_campaign(self, campaign_id: str):
+        assert campaign_id == "campaign-1"
+        return {"run-1": self.routing_decisions}
+
+
 @pytest.mark.asyncio
 async def test_campaign_overview_uses_bulk_llm_calls() -> None:
     result_repository = CountingResultRepository()
@@ -583,6 +621,21 @@ async def test_mode_comparison_reuses_single_campaign_context() -> None:
     assert observability_repository.bulk_llm_calls == ["campaign-1"]
     assert observability_repository.per_run_llm_calls == []
     assert result_repository.list_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_router_analysis_filters_actual_rows_and_uses_typed_projection() -> None:
+    service = EvaluationAnalyticsService(
+        campaign_repository=SingleRunCampaignRepository(),
+        result_repository=SingleRunResultRepository(),
+        observability_repository=RouterAnalysisObservabilityRepository(),
+    )
+
+    response = await service.router_analysis(user_id="user-1", campaign_id="campaign-1")
+
+    assert [row.routing_decision_id for row in response.rows] == ["retro-1"]
+    assert response.analysis_type == "retrospective"
+    assert "payload" not in response.rows[0].model_dump()
 
 
 @pytest.mark.asyncio

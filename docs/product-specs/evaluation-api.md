@@ -30,7 +30,12 @@
 - `GET /api/evaluation/campaigns/{campaign_id}/question-comparison`
 - `GET /api/evaluation/campaigns/{campaign_id}/cost-latency`
 - `GET /api/evaluation/campaigns/{campaign_id}/router-analysis`
-  - current implementation reports `analysis_type="retrospective"`
+  - returns a typed retrospective-only `RouterAnalysisRow` projection
+  - only persisted decisions with `analysis_type="retrospective"` are included;
+    actual router decisions remain durable run telemetry but are excluded from
+    campaign aggregates
+  - response rows allow-list routing provenance fields and never expose raw
+    persisted `payload`
 - `GET /api/evaluation/campaigns/{campaign_id}/ablation`
   - legacy condition counts plus `summaries.condition_comparison` when two or more persisted condition IDs exist
 - `GET /api/evaluation/campaigns/{campaign_id}/repeat-stability`

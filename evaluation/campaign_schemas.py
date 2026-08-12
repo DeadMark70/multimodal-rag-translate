@@ -526,10 +526,33 @@ class CostLatencyResponse(AnalyticsAggregateResponse):
     """Cost and latency analytics."""
 
 
-class RouterAnalysisResponse(AnalyticsAggregateResponse):
-    """Router retrospective or actual-router analytics."""
+class RouterAnalysisRow(BaseModel):
+    """One safe retrospective routing analysis projection."""
 
-    analysis_type: Literal["retrospective", "actual"] = "retrospective"
+    routing_decision_id: str
+    run_id: str
+    campaign_id: str
+    question_id: str
+    repeat_number: int = Field(ge=1)
+    span_id: str | None = None
+    selected_mode: CampaignMode
+    analysis_type: Literal["retrospective"]
+    decision_source: Literal[
+        "deterministic", "llm_planner", "safe_fallback"
+    ] | None
+    candidate_routes: list[str]
+    matched_rules: list[str]
+    fallback_reason: str | None
+    confidence: float | None
+    reason: str | None
+    created_at: datetime
+
+
+class RouterAnalysisResponse(AnalyticsAggregateResponse):
+    """Typed retrospective router analytics."""
+
+    analysis_type: Literal["retrospective"] = "retrospective"
+    rows: list[RouterAnalysisRow] = Field(default_factory=list)
 
 
 class ConditionMetricSummary(BaseModel):

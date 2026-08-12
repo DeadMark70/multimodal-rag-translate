@@ -17221,8 +17221,7 @@
           },
           "rows": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/RouterAnalysisRow"
             },
             "type": "array",
             "title": "Rows"
@@ -17234,10 +17233,7 @@
           },
           "analysis_type": {
             "type": "string",
-            "enum": [
-              "retrospective",
-              "actual"
-            ],
+            "const": "retrospective",
             "title": "Analysis Type",
             "default": "retrospective"
           }
@@ -17248,7 +17244,165 @@
           "analysis_unit"
         ],
         "title": "RouterAnalysisResponse",
-        "description": "Router retrospective or actual-router analytics."
+        "description": "Typed retrospective router analytics."
+      },
+      "RouterAnalysisRow": {
+        "properties": {
+          "routing_decision_id": {
+            "type": "string",
+            "title": "Routing Decision Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "question_id": {
+            "type": "string",
+            "title": "Question Id"
+          },
+          "repeat_number": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Repeat Number"
+          },
+          "span_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Span Id"
+          },
+          "selected_mode": {
+            "type": "string",
+            "enum": [
+              "naive",
+              "naive-baseline",
+              "advanced",
+              "graph",
+              "agentic",
+              "agentic-v8",
+              "v8",
+              "agentic-v9",
+              "v9",
+              "agentic-v9-shadow",
+              "router",
+              "graph_raw_current",
+              "graph_provenance_gated",
+              "graph_locator_to_chunk",
+              "graph_locator_claim_gate",
+              "always_no_graph",
+              "always_graph_locator",
+              "router_auto_graph",
+              "oracle_graph_router",
+              "graph_local_first",
+              "graph_global_first",
+              "graph_blended",
+              "graph_path_pruned",
+              "graph_planning_only"
+            ],
+            "title": "Selected Mode"
+          },
+          "analysis_type": {
+            "type": "string",
+            "const": "retrospective",
+            "title": "Analysis Type"
+          },
+          "decision_source": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "deterministic",
+                  "llm_planner",
+                  "safe_fallback"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Source"
+          },
+          "candidate_routes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Candidate Routes"
+          },
+          "matched_rules": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Matched Rules"
+          },
+          "fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Reason"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "routing_decision_id",
+          "run_id",
+          "campaign_id",
+          "question_id",
+          "repeat_number",
+          "selected_mode",
+          "analysis_type",
+          "decision_source",
+          "candidate_routes",
+          "matched_rules",
+          "fallback_reason",
+          "confidence",
+          "reason",
+          "created_at"
+        ],
+        "title": "RouterAnalysisRow",
+        "description": "One safe retrospective routing analysis projection."
       },
       "RunClaimsResponse": {
         "properties": {

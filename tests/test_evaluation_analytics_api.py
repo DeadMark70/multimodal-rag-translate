@@ -22,7 +22,9 @@ from evaluation.campaign_engine import CampaignEngine
 from evaluation import db as evaluation_db
 from evaluation.analytics import EvaluationAnalyticsService
 from evaluation.campaign_schemas import CampaignResultStatus
+from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.rag_modes import BenchmarkExecutionResult
+from evaluation.trace_schemas import EvaluationRoutingDecision
 from main import app
 
 
@@ -414,6 +416,84 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
             f"/api/evaluation/campaigns/{campaign_id}/overview"
         )
         assert unauthenticated_overview.status_code == 401
+
+
+def test_router_analysis_api_serializes_only_typed_retrospective_rows() -> None:
+    engine = CampaignEngine(runner=Mock(), ragas_evaluator=FakeRagasEvaluator())
+    upload_root = _make_upload_root()
+    db_path = _make_db_path()
+    with _build_client("user-1", upload_root, db_path, engine) as client:
+        campaign_id, run_id = asyncio.run(
+            _seed_legacy_campaign_result(db_path=db_path, user_id="user-1")
+        )
+        created_at = datetime.now(timezone.utc)
+        repository = EvaluationObservabilityRepository()
+        asyncio.run(
+            repository.record_routing_decision(
+                EvaluationRoutingDecision(
+                    routing_decision_id="retro-1",
+                    run_id=run_id,
+                    campaign_id=campaign_id,
+                    selected_mode="agentic",
+                    analysis_type="retrospective",
+                    candidate_routes=["agentic"],
+                    matched_rules=["complex_query"],
+                    reason="Retrospective route analysis.",
+                    payload={"internal_only": "must not be exposed"},
+                    created_at=created_at,
+                )
+            )
+        )
+        asyncio.run(
+            repository.record_routing_decision(
+                EvaluationRoutingDecision(
+                    routing_decision_id="actual-1",
+                    run_id=run_id,
+                    campaign_id=campaign_id,
+                    selected_mode="agentic",
+                    analysis_type="actual",
+                    decision_source="safe_fallback",
+                    candidate_routes=["single_lookup"],
+                    matched_rules=["ambiguous"],
+                    fallback_reason="planner_timeout",
+                    payload={"internal_only": "actual row remains persisted"},
+                    created_at=created_at,
+                )
+            )
+        )
+
+        response = client.get(f"/api/evaluation/campaigns/{campaign_id}/router-analysis")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [row["routing_decision_id"] for row in body["rows"]] == ["retro-1"]
+    assert body["analysis_type"] == "retrospective"
+    assert set(body["rows"][0]) == {
+        "routing_decision_id",
+        "run_id",
+        "campaign_id",
+        "question_id",
+        "repeat_number",
+        "span_id",
+        "selected_mode",
+        "analysis_type",
+        "decision_source",
+        "candidate_routes",
+        "matched_rules",
+        "fallback_reason",
+        "confidence",
+        "reason",
+        "created_at",
+    }
+    assert "payload" not in body["rows"][0]
+
+    schema = json.loads(
+        (Path(__file__).parent.parent / "openapi.json").read_text(encoding="utf-8")
+    )
+    row_items = schema["components"]["schemas"]["RouterAnalysisResponse"][
+        "properties"
+    ]["rows"]["items"]
+    assert row_items == {"$ref": "#/components/schemas/RouterAnalysisRow"}
 
 
 def test_v9_campaign_preflight_uses_golden_routes_and_reports_incompatible_setup() -> None:
