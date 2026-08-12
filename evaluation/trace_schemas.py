@@ -472,6 +472,15 @@ class EvaluationHumanRatingProjection(EvaluationHumanRating):
         return self
 
 
+class EvaluationGraphEventProjection(EvaluationGraphEvent):
+    """Interactive graph event with unrestricted feature metadata removed."""
+
+    @model_validator(mode="after")
+    def clear_unrestricted_fields(self) -> EvaluationGraphEventProjection:
+        self.graph_feature_flags = {}
+        return self
+
+
 class EvaluationRunObservabilityDetail(BaseModel):
     """Normalized observability payload for one evaluation run."""
 
@@ -484,7 +493,7 @@ class EvaluationRunObservabilityDetail(BaseModel):
     context_packs: list[EvaluationContextPackProjection] = Field(default_factory=list)
     tool_calls: list[EvaluationToolCallProjection] = Field(default_factory=list)
     routing_decisions: list[EvaluationRoutingDecisionProjection] = Field(default_factory=list)
-    graph_events: list[EvaluationGraphEvent] = Field(default_factory=list)
+    graph_events: list[EvaluationGraphEventProjection] = Field(default_factory=list)
     graph_evidence_items: list[EvaluationGraphEvidenceItem] = Field(default_factory=list)
     graph_observability_status: Literal["recorded", "fallback", "not_instrumented"] = "not_instrumented"
     claims: list[EvaluationClaimProjection] = Field(default_factory=list)

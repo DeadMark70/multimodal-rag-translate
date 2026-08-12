@@ -354,7 +354,9 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
         async def list_retrieval_events_for_run(self, run_id):
             return [EvaluationRetrievalEvent(
                 retrieval_event_id="retrieval-1", run_id=run_id, campaign_id="cmp-1",
-                retriever_name="hybrid", result_count=3,
+                query=f"{'q' * 700} api_key=sentinel-retrieval-query-secret",
+                retriever_name="hybrid api_key=sentinel-retriever-secret",
+                result_count=3,
                 payload={"provider_body": "sentinel-retrieval-provider"},
                 created_at=now,
             )]
@@ -400,7 +402,17 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
         async def list_graph_events_for_run(self, run_id):
             return [EvaluationGraphEvent(
                 graph_event_id="graph-1", run_id=run_id, campaign_id="cmp-1",
-                graph_query="query", graph_search_mode="local", graph_route="local",
+                graph_query="query api_key=sentinel-graph-query-secret",
+                graph_search_mode="local api_key=sentinel-graph-search-secret",
+                graph_evidence_mode="raw api_key=sentinel-graph-evidence-mode-secret",
+                graph_route="local api_key=sentinel-graph-route-secret",
+                router_reason="reason api_key=sentinel-graph-reason-secret",
+                graph_feature_flags={
+                    "provider_metadata": "sentinel-graph-metadata",
+                    "api_key": "sentinel-graph-feature-secret",
+                },
+                graph_snapshot_version="snapshot api_key=sentinel-graph-snapshot-secret",
+                matched_entity_ids=["entity api_key=sentinel-graph-entity-secret"],
                 created_at=now,
             )]
 
@@ -438,9 +450,12 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
             return [EvaluationRoutingDecision(
                 routing_decision_id="route-1", run_id=run_id, campaign_id="cmp-1",
                 selected_mode="agentic", analysis_type="actual",
-                decision_source="llm_planner", candidate_routes=["agentic", "graph"],
-                matched_rules=["complex_query"], fallback_reason=None,
-                confidence=0.75, reason="typed safe reason",
+                decision_source="llm_planner",
+                candidate_routes=["agentic api_key=sentinel-route-candidate-secret"],
+                matched_rules=["complex api_key=sentinel-route-rule-secret"],
+                fallback_reason="fallback api_key=sentinel-route-fallback-secret",
+                confidence=0.75,
+                reason="reason api_key=sentinel-routing-reason-secret",
                 payload={"provider_body": "sentinel-routing-provider"},
                 created_at=now,
             )]
@@ -527,8 +542,10 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
     assert projected_claim.post_repair_status == "supported"
     assert projected_claim.extraction_status == "recorded"
     assert projected_claim.payload == {}
-    assert detail.retrieval_events[0].retriever_name == "hybrid"
+    assert detail.retrieval_events[0].retriever_name == "hybrid [redacted]"
     assert detail.retrieval_events[0].result_count == 3
+    assert detail.retrieval_events[0].query is not None
+    assert len(detail.retrieval_events[0].query) <= 500
     assert [
         row.model_dump()
         for row in detail.context_packs[0].retrieved_but_not_packed_evidence
@@ -541,7 +558,7 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
     assert detail.tool_calls[0].tool_name == "search"
     assert detail.tool_calls[0].status == "failed"
     assert detail.routing_decisions[0].decision_source == "llm_planner"
-    assert detail.routing_decisions[0].candidate_routes == ["agentic", "graph"]
+    assert detail.graph_events[0].graph_feature_flags == {}
     assert detail.human_ratings[0].comments == "Useful [redacted]"
     serialized = detail.model_dump_json()
     for sentinel in (
@@ -551,6 +568,8 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
         "sentinel-llm-provider",
         "sentinel-llm-stack",
         "sentinel-retrieval-provider",
+        "sentinel-retrieval-query-secret",
+        "sentinel-retriever-secret",
         "sentinel-chunk-provider",
         "sentinel-historical-chunk-provider",
         "sentinel-context-provider",
@@ -560,6 +579,19 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
         "sentinel-tool-provider",
         "sentinel-tool-stack",
         "sentinel-routing-provider",
+        "sentinel-route-candidate-secret",
+        "sentinel-route-rule-secret",
+        "sentinel-route-fallback-secret",
+        "sentinel-routing-reason-secret",
+        "sentinel-graph-metadata",
+        "sentinel-graph-feature-secret",
+        "sentinel-graph-query-secret",
+        "sentinel-graph-search-secret",
+        "sentinel-graph-evidence-mode-secret",
+        "sentinel-graph-route-secret",
+        "sentinel-graph-reason-secret",
+        "sentinel-graph-snapshot-secret",
+        "sentinel-graph-entity-secret",
         "sentinel-claim-evidence-provider",
         "sentinel-claim-provider",
         "sk-rating-secret",

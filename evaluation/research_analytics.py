@@ -64,6 +64,7 @@ from evaluation.observability_storage import (
     safe_plain_text_excerpt,
 )
 from evaluation.analytics import reconcile_official_tokens
+from evaluation.schemas import EvaluationGraphEvent
 from evaluation.trace_schemas import (
     ClaimEvidenceReference,
     ContextPackEvidenceReference,
@@ -71,6 +72,7 @@ from evaluation.trace_schemas import (
     EvaluationClaimProjection,
     EvaluationContextPack,
     EvaluationContextPackProjection,
+    EvaluationGraphEventProjection,
     EvaluationHumanRating,
     EvaluationHumanRatingProjection,
     EvaluationLlmCall,
@@ -106,6 +108,21 @@ def _safe_scalar_text(value: object) -> str | None:
     return None
 
 
+def _safe_optional_text(value: str | None) -> str | None:
+    """Bound and credential-redact an optional interactive display string."""
+    return safe_plain_text_excerpt(value) if value is not None else None
+
+
+def _safe_required_text(value: str) -> str:
+    """Bound required display text while preserving a non-empty model value."""
+    return safe_plain_text_excerpt(value) or "[redacted]"
+
+
+def _safe_text_list(values: list[str]) -> list[str]:
+    """Bound and credential-redact retained interactive display strings."""
+    return [safe_plain_text_excerpt(value) for value in values]
+
+
 def _project_trace_event(
     event: EvaluationTraceEvent,
 ) -> EvaluationTraceEventProjection:
@@ -131,7 +148,13 @@ def _project_retrieval_event(
     event: EvaluationRetrievalEvent,
 ) -> EvaluationRetrievalEventProjection:
     """Return a typed retrieval summary without its unrestricted payload."""
-    return EvaluationRetrievalEventProjection.model_validate(event.model_dump())
+    return EvaluationRetrievalEventProjection.model_validate(
+        {
+            **event.model_dump(),
+            "query": _safe_optional_text(event.query),
+            "retriever_name": _safe_optional_text(event.retriever_name),
+        }
+    )
 
 
 def _project_retrieval_chunk(
@@ -205,7 +228,40 @@ def _project_routing_decision(
     decision: EvaluationRoutingDecision,
 ) -> EvaluationRoutingDecisionProjection:
     """Return typed routing provenance without its unrestricted payload."""
-    return EvaluationRoutingDecisionProjection.model_validate(decision.model_dump())
+    return EvaluationRoutingDecisionProjection.model_validate(
+        {
+            **decision.model_dump(),
+            "candidate_routes": _safe_text_list(decision.candidate_routes),
+            "matched_rules": _safe_text_list(decision.matched_rules),
+            "fallback_reason": _safe_optional_text(decision.fallback_reason),
+            "reason": _safe_optional_text(decision.reason),
+        }
+    )
+
+
+def _project_graph_event(
+    event: EvaluationGraphEvent,
+) -> EvaluationGraphEventProjection:
+    """Return bounded graph display fields without arbitrary feature metadata."""
+    return EvaluationGraphEventProjection.model_validate(
+        {
+            **event.model_dump(),
+            "graph_query": _safe_required_text(event.graph_query),
+            "graph_search_mode": _safe_required_text(event.graph_search_mode),
+            "graph_evidence_mode": _safe_required_text(event.graph_evidence_mode),
+            "graph_route": _safe_required_text(event.graph_route),
+            "router_reason": _safe_optional_text(event.router_reason),
+            "graph_feature_flags": {},
+            "graph_snapshot_version": _safe_optional_text(
+                event.graph_snapshot_version
+            ),
+            "graph_schema_version": _safe_optional_text(event.graph_schema_version),
+            "graph_extraction_prompt_version": _safe_optional_text(
+                event.graph_extraction_prompt_version
+            ),
+            "matched_entity_ids": _safe_text_list(event.matched_entity_ids),
+        }
+    )
 
 
 def _project_claim(claim: EvaluationClaim) -> EvaluationClaimProjection:
@@ -569,7 +625,7 @@ class ResearchAnalyticsService:
             if item.campaign_id == campaign_id
         ]
         graph_events = [
-            item
+            _project_graph_event(item)
             for item in await self._observability.list_graph_events_for_run(run_id)
             if item.campaign_id == campaign_id
         ]
