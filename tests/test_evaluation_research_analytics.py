@@ -3,12 +3,13 @@
 from datetime import datetime, timezone
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 
 from evaluation import db as evaluation_db
-from evaluation.accounting_schemas import AccountingScopeStart, UsageEventCreate
+from evaluation.accounting_schemas import AccountingScopeStart, TokenBreakdown, UsageEventCreate
 from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.campaign_schemas import CampaignConfig, CampaignResultStatus
 from evaluation.db import (
@@ -25,7 +26,16 @@ from evaluation.research_analytics import (
 from evaluation.job_store import build_legacy_evaluator_compatibility_signature
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.schemas import ModelConfig
-from evaluation.trace_schemas import EvaluationLlmCall, EvaluationV9AttemptMaterialization
+from evaluation.trace_schemas import (
+    EvaluationClaim,
+    EvaluationHumanRating,
+    EvaluationLlmCall,
+    EvaluationRetrievalChunk,
+    EvaluationRetrievalEvent,
+    EvaluationTraceEvent,
+    EvaluationV9AttemptMaterialization,
+)
+from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
 
 
 def test_nearest_rank_percentiles_are_observed_values() -> None:
@@ -279,6 +289,135 @@ async def _official_scope(
         official=True,
         tokens=tokens,
     )
+
+
+@pytest.mark.asyncio
+async def test_get_run_observability_projects_owned_v9_normalized_data() -> None:
+    now = datetime.now(timezone.utc)
+
+    class Campaigns:
+        async def get(self, *, user_id: str, campaign_id: str):
+            assert (user_id, campaign_id) == ("user-1", "cmp-1")
+
+    result = SimpleNamespace(
+        id="run-1",
+        question_id="q-1",
+        mode="agentic",
+        repeat_number=1,
+        answer="safe answer",
+        total_latency_ms=12.0,
+        latency_ms=12.0,
+        created_at=now,
+        agentic_execution_version="v9",
+        source_attempt_id="attempt-1",
+        derived_metrics={"gold_fact_attrition": []},
+    )
+
+    class Results:
+        async def get(self, *, user_id: str, campaign_id: str, result_id: str):
+            assert (user_id, campaign_id, result_id) == ("user-1", "cmp-1", "run-1")
+            return result
+
+    class Observability:
+        async def list_trace_events_for_run(self, run_id):
+            return [
+                EvaluationTraceEvent(
+                    event_id="trace-1", run_id=run_id, campaign_id="cmp-1",
+                    span_id="span-1", event_type="retrieval", sequence=1,
+                    stage_type="retrieval", stage_name="retrieve", started_at=now,
+                    status="success", payload={"secret": "redact"}, error={"secret": "redact"},
+                    created_at=now,
+                )
+            ]
+
+        async def list_llm_calls_for_run(self, run_id):
+            return [
+                EvaluationLlmCall(
+                    llm_call_id="llm-1", run_id=run_id, campaign_id="cmp-1",
+                    prompt_preview="safe prompt", payload={"secret": "redact"},
+                    error={"secret": "redact"}, created_at=now,
+                )
+            ]
+
+        async def list_retrieval_events_for_run(self, run_id):
+            return [EvaluationRetrievalEvent(
+                retrieval_event_id="retrieval-1", run_id=run_id, campaign_id="cmp-1",
+                created_at=now,
+            )]
+
+        async def list_retrieval_chunks_for_run(self, run_id):
+            return [EvaluationRetrievalChunk(
+                retrieval_chunk_id="chunk-1", run_id=run_id, campaign_id="cmp-1",
+                retrieval_event_id="retrieval-1", chunk_id="chunk-1", excerpt="safe excerpt",
+                created_at=now,
+            )]
+
+        async def list_graph_events_for_run(self, run_id):
+            return [EvaluationGraphEvent(
+                graph_event_id="graph-1", run_id=run_id, campaign_id="cmp-1",
+                graph_query="query", graph_search_mode="local", graph_route="local",
+                created_at=now,
+            )]
+
+        async def list_graph_evidence_items_for_run(self, run_id):
+            return [EvaluationGraphEvidenceItem(
+                graph_evidence_item_id="evidence-1", graph_event_id="graph-1",
+                provenance_status="full", created_at=now,
+            )]
+
+        async def list_context_packs_for_run(self, run_id):
+            return []
+
+        async def list_tool_calls_for_run(self, run_id):
+            return []
+
+        async def list_routing_decisions_for_run(self, run_id):
+            return []
+
+        async def list_claims_for_run(self, run_id):
+            return [EvaluationClaim(
+                claim_id="claim-1", run_id=run_id, campaign_id="cmp-1",
+                claim_text="safe claim", created_at=now,
+            )]
+
+        async def list_human_ratings_for_run(self, run_id):
+            return [EvaluationHumanRating(
+                human_rating_id="rating-1", run_id=run_id, campaign_id="cmp-1",
+                rater_id_hash="rater", rubric_version="v1", correctness_score=1,
+                faithfulness_score=1, completeness_score=1, citation_quality_score=1,
+                usefulness_score=1, created_at=now,
+            )]
+
+        async def get_v9_attempt_materialization(self, attempt_id):
+            assert attempt_id == "attempt-1"
+            return EvaluationV9AttemptMaterialization(
+                attempt_id=attempt_id, run_id="run-1", campaign_id="cmp-1",
+                trace_payload={}, created_at=now,
+            )
+
+        async def list_evidence_packets_for_attempt(self, attempt_id):
+            return []
+
+        async def list_slot_resolutions_for_attempt(self, attempt_id):
+            return []
+
+    service = ResearchAnalyticsService(
+        campaigns=Campaigns(), results=Results(), observability=Observability()
+    )
+    service.get_run_token_breakdown = AsyncMock(return_value=TokenBreakdown(
+        total_tokens=7, accounting_status="complete", phase_attribution_status="complete"
+    ))
+
+    detail = await service.get_run_observability(
+        user_id="user-1", campaign_id="cmp-1", run_id="run-1"
+    )
+
+    assert detail.run_id == "run-1"
+    assert detail.run_summary is not None
+    assert detail.accounting_diagnostics.accounting_status == "complete"
+    assert [row.human_rating_id for row in detail.human_ratings] == ["rating-1"]
+    assert detail.agentic_v9 is not None
+    assert detail.agentic_v9.schema_version == "1"
 
 
 @pytest.mark.asyncio

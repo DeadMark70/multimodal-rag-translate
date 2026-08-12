@@ -10,7 +10,18 @@ import math
 from collections import defaultdict
 from statistics import mean
 
-from data_base.agentic_v9.schemas import ATOMIC_SLOT_MATCHING_EXPERIMENTAL
+from data_base.agentic_v9.schemas import (
+    ATOMIC_SLOT_MATCHING_EXPERIMENTAL,
+    BudgetReservation,
+    ConflictCandidate,
+    EvidencePacket,
+    FinalClaim,
+    QueryContract,
+    SlotResolution,
+    SufficiencyReport,
+    V9ExecutionMetrics,
+)
+from data_base.agentic_v9.repair import RepairPlan
 from evaluation.accounting_schemas import (
     CampaignResearchSummaryResponse,
     CostSummary,
@@ -31,6 +42,10 @@ from evaluation.campaign_schemas import (
     QuestionModeComparison,
     ResearchQuestionComparisonResponse,
     V9AgentBehaviorMetrics,
+    V9ContextPack,
+    V9EvidencePacket,
+    V9ExecutionObservability,
+    V9SlotResolution,
 )
 from evaluation.db import (
     AgentTraceRepository,
@@ -43,8 +58,16 @@ from evaluation.job_store import (
     build_legacy_evaluator_compatibility_signature,
     build_evaluator_compatibility_signature,
 )
-from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.observability_storage import (
+    EvaluationObservabilityRepository,
+    redact_sensitive_value,
+    safe_plain_text_excerpt,
+)
 from evaluation.analytics import reconcile_official_tokens
+from evaluation.trace_schemas import (
+    EvaluationRunObservabilityDetail,
+    EvaluationRunSummary,
+)
 
 PRIMARY_QUALITY_METRICS = ("answer_correctness", "faithfulness", "answer_relevancy")
 OPTIONAL_CONTEXT_METRICS = ("context_precision", "context_recall")
@@ -306,6 +329,260 @@ class ResearchAnalyticsService:
             runtime_total_tokens=tokens.total_tokens,
             observability_partial_reasons=observability_partial_reasons,
         )
+
+    async def get_run_observability(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        run_id: str,
+    ) -> EvaluationRunObservabilityDetail:
+        """Return the safe canonical projection for one owned campaign run."""
+        await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
+        result = await self._results.get(
+            user_id=user_id, campaign_id=campaign_id, result_id=run_id
+        )
+        derived_metrics = (
+            result.derived_metrics if isinstance(result.derived_metrics, dict) else {}
+        )
+        token_breakdown = await self.get_run_token_breakdown(
+            campaign_id=campaign_id,
+            run_id=run_id,
+            agentic_execution_version=result.agentic_execution_version,
+            observability_partial_reasons=derived_metrics.get(
+                "observability_partial_reasons", []
+            ),
+        )
+        trace_events = [
+            item.model_copy(update={"payload": {}, "error": {}})
+            for item in await self._observability.list_trace_events_for_run(run_id)
+            if item.campaign_id == campaign_id
+        ]
+        llm_calls = [
+            item.model_copy(
+                update={
+                    "prompt_preview": safe_plain_text_excerpt(item.prompt_preview),
+                    "payload": {},
+                    "error": {},
+                }
+            )
+            for item in await self._observability.list_llm_calls_for_run(run_id)
+            if item.campaign_id == campaign_id
+        ]
+        retrieval_events = [
+            item
+            for item in await self._observability.list_retrieval_events_for_run(run_id)
+            if item.campaign_id == campaign_id
+        ]
+        retrieval_chunks = [
+            item.model_copy(
+                update={
+                    "excerpt": safe_plain_text_excerpt(item.excerpt),
+                    "payload": {},
+                }
+            )
+            for item in await self._observability.list_retrieval_chunks_for_run(run_id)
+            if item.campaign_id == campaign_id
+        ]
+        graph_events = [
+            item
+            for item in await self._observability.list_graph_events_for_run(run_id)
+            if item.campaign_id == campaign_id
+        ]
+        graph_evidence_items = [
+            item
+            for item in await self._observability.list_graph_evidence_items_for_run(run_id)
+            if any(event.graph_event_id == item.graph_event_id for event in graph_events)
+        ]
+        context_packs = [
+            item
+            for item in await self._observability.list_context_packs_for_run(run_id)
+            if item.campaign_id == campaign_id
+        ]
+        tool_calls = [
+            item
+            for item in await self._observability.list_tool_calls_for_run(run_id)
+            if item.campaign_id == campaign_id
+        ]
+        routing_decisions = [
+            item
+            for item in await self._observability.list_routing_decisions_for_run(run_id)
+            if item.campaign_id == campaign_id
+        ]
+        claims = [
+            item.model_copy(
+                update={
+                    "claim_text": safe_plain_text_excerpt(item.claim_text),
+                    "evidence": [],
+                    "payload": {},
+                }
+            )
+            for item in await self._observability.list_claims_for_run(run_id)
+            if item.campaign_id == campaign_id
+        ]
+        human_ratings = [
+            item
+            for item in await self._observability.list_human_ratings_for_run(run_id)
+            if item.campaign_id == campaign_id
+        ]
+        graph_observability_status = "not_instrumented"
+        if graph_events:
+            graph_observability_status = "recorded"
+            if any(
+                event.graph_route.lower() in {"skip", "fallback"}
+                or "fallback=" in (event.router_reason or "").lower()
+                or "fallback" in event.graph_route.lower()
+                for event in graph_events
+            ):
+                graph_observability_status = "fallback"
+        else:
+            for event in retrieval_events:
+                payload = event.payload
+                if not isinstance(payload, dict):
+                    continue
+                fallback_reason = payload.get("graph_fallback_reason") or payload.get(
+                    "fallback_reason"
+                )
+                if payload.get("graph_fallback_used") or fallback_reason:
+                    graph_observability_status = "fallback"
+                    break
+        return EvaluationRunObservabilityDetail(
+            run_id=run_id,
+            campaign_id=campaign_id,
+            trace_events=trace_events,
+            llm_calls=llm_calls,
+            retrieval_events=retrieval_events,
+            retrieval_chunks=retrieval_chunks,
+            graph_events=graph_events,
+            graph_evidence_items=graph_evidence_items,
+            graph_observability_status=graph_observability_status,
+            context_packs=context_packs,
+            tool_calls=tool_calls,
+            routing_decisions=routing_decisions,
+            claims=claims,
+            human_ratings=human_ratings,
+            agentic_v9=await self._v9_observability_for_result(
+                result=result, campaign_id=campaign_id, run_id=run_id
+            ),
+            accounting_diagnostics=token_breakdown,
+            evidence_coverage=(
+                derived_metrics.get("gold_fact_attrition")
+                if isinstance(derived_metrics.get("gold_fact_attrition"), list)
+                else None
+            ),
+            evidence_coverage_status=(
+                "complete"
+                if isinstance(derived_metrics.get("gold_fact_attrition"), list)
+                else "not_instrumented"
+            ),
+            run_summary=EvaluationRunSummary(
+                run_id=run_id,
+                campaign_id=campaign_id,
+                question_id=result.question_id,
+                mode=result.mode,
+                repeat_number=result.repeat_number,
+                answer_preview=result.answer[:500] if result.answer else None,
+                latency_ms=(
+                    result.total_latency_ms
+                    if result.total_latency_ms is not None
+                    else result.latency_ms
+                ),
+                total_tokens=token_breakdown.total_tokens,
+                accounting_status=(
+                    token_breakdown.accounting_status
+                    if token_breakdown.accounting_status != "incomplete_legacy"
+                    else "not_available"
+                ),
+                created_at=result.created_at,
+            ),
+        )
+
+    async def _v9_observability_for_result(
+        self, *, result, campaign_id: str, run_id: str
+    ) -> V9ExecutionObservability | None:
+        """Project the selected result's owned v9 attempt without a second result query."""
+        attempt_id = result.source_attempt_id
+        if not attempt_id:
+            return None
+        materialization = await self._observability.get_v9_attempt_materialization(
+            attempt_id
+        )
+        if (
+            materialization is None
+            or materialization.campaign_id != campaign_id
+            or materialization.run_id != run_id
+        ):
+            return None
+        payload = materialization.trace_payload
+        try:
+            evidence = []
+            for item in await self._observability.list_evidence_packets_for_attempt(
+                attempt_id
+            ):
+                packet = EvidencePacket.model_validate(item.packet)
+                evidence.append(
+                    V9EvidencePacket(
+                        evidence_id=item.evidence_id,
+                        packet=packet.model_copy(
+                            update={
+                                "statement": safe_plain_text_excerpt(packet.statement)
+                            }
+                        ),
+                    )
+                )
+            slots = [
+                V9SlotResolution(
+                    slot_id=item.slot_id,
+                    resolution_stage=item.resolution_stage,
+                    resolution=SlotResolution.model_validate(item.resolution),
+                )
+                for item in await self._observability.list_slot_resolutions_for_attempt(
+                    attempt_id
+                )
+            ]
+            return V9ExecutionObservability(
+                schema_version=materialization.schema_version,
+                contract=(
+                    QueryContract.model_validate(payload["query_contract"])
+                    if payload.get("query_contract")
+                    else None
+                ),
+                slot_resolutions=slots,
+                evidence_packets=evidence,
+                sufficiency=(
+                    SufficiencyReport.model_validate(payload["sufficiency"])
+                    if payload.get("sufficiency")
+                    else None
+                ),
+                context_pack=(
+                    V9ContextPack.model_validate(payload["context_pack"])
+                    if payload.get("context_pack")
+                    else None
+                ),
+                budget=[
+                    BudgetReservation.model_validate(item)
+                    for item in payload.get("budget_reservations", [])
+                ],
+                repairs=[
+                    RepairPlan.model_validate(item) for item in payload.get("repairs", [])
+                ],
+                conflicts=[
+                    ConflictCandidate.model_validate(item)
+                    for item in payload.get("conflicts", [])
+                ],
+                final_claims=[
+                    FinalClaim.model_validate(item)
+                    for item in payload.get("final_claims", [])
+                ],
+                metrics=V9ExecutionMetrics.model_validate(payload.get("metrics", {})),
+                comparison=(
+                    redact_sensitive_value(payload["comparison"])
+                    if isinstance(payload.get("comparison"), dict)
+                    else None
+                ),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
 
     async def get_question_comparison(
         self, *, user_id: str, campaign_id: str

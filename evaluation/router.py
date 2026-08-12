@@ -59,16 +59,11 @@ from evaluation.model_capabilities import normalize_model_config_for_storage
 from evaluation.research_analytics import ResearchAnalyticsService
 from evaluation.release_metrics import ReleaseMetricsReport, ReleaseMetricsService
 from evaluation.model_discovery import list_available_models
-from evaluation.db import CampaignResultRepository
 from evaluation.job_schemas import (
     EvaluationAttempt,
     EvaluationJob,
     EvaluationJobItemSummary,
     EvaluationRerunRequest,
-)
-from evaluation.observability_storage import (
-    EvaluationObservabilityRepository,
-    safe_plain_text_excerpt,
 )
 from evaluation.schemas import (
     AvailableModel,
@@ -93,7 +88,6 @@ from evaluation.storage import (
 from evaluation.trace_schemas import (
     AgentTraceDetail,
     AgentTraceSummary,
-    EvaluationRunSummary,
     EvaluationRunObservabilityDetail,
 )
 
@@ -800,164 +794,10 @@ async def get_campaign_run_observability(
     analytics: ResearchAnalyticsService = Depends(get_research_analytics_service),
 ) -> EvaluationRunObservabilityDetail:
     """Fetch normalized observability details for one campaign run."""
-    engine = get_campaign_engine()
-    await engine.get_campaign(user_id=user_id, campaign_id=campaign_id)
-    result = await CampaignResultRepository().get(
-        user_id=user_id, campaign_id=campaign_id, result_id=run_id
-    )
-    token_breakdown = await analytics.get_run_token_breakdown(
+    return await analytics.get_run_observability(
+        user_id=user_id,
         campaign_id=campaign_id,
         run_id=run_id,
-        agentic_execution_version=result.agentic_execution_version,
-        observability_partial_reasons=(
-            result.derived_metrics.get("observability_partial_reasons", [])
-            if isinstance(result.derived_metrics, dict)
-            else []
-        ),
-    )
-
-    repository = EvaluationObservabilityRepository()
-    trace_events = [
-        item.model_copy(update={"payload": {}, "error": {}})
-        for item in await repository.list_trace_events_for_run(run_id)
-        if item.campaign_id == campaign_id
-    ]
-    llm_calls = [
-        item.model_copy(
-            update={
-                "prompt_preview": safe_plain_text_excerpt(item.prompt_preview),
-                "payload": {},
-                "error": {},
-            }
-        )
-        for item in await repository.list_llm_calls_for_run(run_id)
-        if item.campaign_id == campaign_id
-    ]
-    retrieval_events = [
-        item
-        for item in await repository.list_retrieval_events_for_run(run_id)
-        if item.campaign_id == campaign_id
-    ]
-    retrieval_chunks = [
-        item.model_copy(
-            update={
-                "excerpt": safe_plain_text_excerpt(item.excerpt),
-                "payload": {},
-            }
-        )
-        for item in await repository.list_retrieval_chunks_for_run(run_id)
-        if item.campaign_id == campaign_id
-    ]
-    graph_events = [
-        item
-        for item in await repository.list_graph_events_for_run(run_id)
-        if item.campaign_id == campaign_id
-    ]
-    graph_evidence_items = [
-        item
-        for item in await repository.list_graph_evidence_items_for_run(run_id)
-        if any(
-            event.graph_event_id == item.graph_event_id for event in graph_events
-        )
-    ]
-    context_packs = [
-        item
-        for item in await repository.list_context_packs_for_run(run_id)
-        if item.campaign_id == campaign_id
-    ]
-    tool_calls = [
-        item
-        for item in await repository.list_tool_calls_for_run(run_id)
-        if item.campaign_id == campaign_id
-    ]
-    routing_decisions = [
-        item
-        for item in await repository.list_routing_decisions_for_run(run_id)
-        if item.campaign_id == campaign_id
-    ]
-    claims = [
-        item.model_copy(
-            update={
-                "claim_text": safe_plain_text_excerpt(item.claim_text),
-                "evidence": [],
-                "payload": {},
-            }
-        )
-        for item in await repository.list_claims_for_run(run_id)
-        if item.campaign_id == campaign_id
-    ]
-    human_ratings = [
-        item
-        for item in await repository.list_human_ratings_for_run(run_id)
-        if item.campaign_id == campaign_id
-    ]
-    graph_observability_status = "not_instrumented"
-    if graph_events:
-        graph_observability_status = "recorded"
-        if any(
-            event.graph_route.lower() in {"skip", "fallback"}
-            or "fallback=" in (event.router_reason or "").lower()
-            or "fallback" in event.graph_route.lower()
-            for event in graph_events
-        ):
-            graph_observability_status = "fallback"
-    else:
-        for event in retrieval_events:
-            payload = event.payload
-            if not isinstance(payload, dict):
-                continue
-            fallback_reason = payload.get("graph_fallback_reason") or payload.get(
-                "fallback_reason"
-            )
-            if payload.get("graph_fallback_used") or fallback_reason:
-                graph_observability_status = "fallback"
-                break
-    return EvaluationRunObservabilityDetail(
-        run_id=run_id,
-        campaign_id=campaign_id,
-        trace_events=trace_events,
-        llm_calls=llm_calls,
-        retrieval_events=retrieval_events,
-        retrieval_chunks=retrieval_chunks,
-        graph_events=graph_events,
-        graph_evidence_items=graph_evidence_items,
-        graph_observability_status=graph_observability_status,
-        context_packs=context_packs,
-        tool_calls=tool_calls,
-        routing_decisions=routing_decisions,
-        claims=claims,
-        human_ratings=human_ratings,
-        accounting_diagnostics=token_breakdown,
-        evidence_coverage=(
-            result.derived_metrics.get("gold_fact_attrition")
-            if isinstance(result.derived_metrics.get("gold_fact_attrition"), list)
-            else None
-        ),
-        evidence_coverage_status=(
-            "complete"
-            if isinstance(result.derived_metrics.get("gold_fact_attrition"), list)
-            else "not_instrumented"
-        ),
-        run_summary=EvaluationRunSummary(
-            run_id=run_id,
-            campaign_id=campaign_id,
-            question_id=result.question_id,
-            mode=result.mode,
-            repeat_number=result.repeat_number,
-            answer_preview=result.answer[:500] if result.answer else None,
-            latency_ms=(
-                result.total_latency_ms
-                if result.total_latency_ms is not None
-                else result.latency_ms
-            ),
-            total_tokens=token_breakdown.total_tokens,
-            accounting_status=(
-                token_breakdown.accounting_status
-                if token_breakdown.accounting_status != "incomplete_legacy"
-                else "not_available"
-            ),
-            created_at=result.created_at,
-        ),
     )
 
 

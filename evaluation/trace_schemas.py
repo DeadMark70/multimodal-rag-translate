@@ -8,7 +8,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
 from evaluation.accounting_schemas import TokenBreakdown
-from evaluation.campaign_schemas import CampaignMode
+from evaluation.campaign_schemas import CampaignMode, V9ExecutionObservability
 from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
 from data_base.agentic_v9.repair import RepairPlan
 from data_base.agentic_v9.schemas import BudgetReservation, QueryContract, SufficiencyReport
@@ -370,6 +370,7 @@ class EvaluationRunObservabilityDetail(BaseModel):
     graph_observability_status: Literal["recorded", "fallback", "not_instrumented"] = "not_instrumented"
     claims: list[EvaluationClaim] = Field(default_factory=list)
     human_ratings: list[EvaluationHumanRating] = Field(default_factory=list)
+    agentic_v9: V9ExecutionObservability | None = None
     evidence_coverage: Optional[list[dict[str, Any]]] = None
     evidence_coverage_status: Literal[
         "complete", "partial", "not_available", "not_instrumented"

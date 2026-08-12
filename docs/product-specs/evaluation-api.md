@@ -53,7 +53,9 @@
 - `GET /api/evaluation/runs/{run_id}/diff?baseline_run_id=...`
 - `POST /api/evaluation/runs/{run_id}/human-ratings`
 - `GET /api/evaluation/campaigns/{campaign_id}/runs/{run_id}/observability`
-  - normalized all-in-one dump for one run under one campaign
+  - canonical safe, normalized all-in-one projection for one owned run under one campaign
+  - includes strict accounting diagnostics, normalized trace/retrieval/graph/claim/human-rating data, and optional materialized Agentic v9 observability
+  - interactive output redacts raw payloads, provider errors, and captured prompt content
 
 ## Run Snapshot Contract
 
