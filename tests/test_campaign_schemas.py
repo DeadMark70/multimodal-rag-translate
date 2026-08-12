@@ -10,6 +10,7 @@ from evaluation.campaign_schemas import (
     AgentBehaviorRow,
     CampaignConfig,
     CampaignCreateRequest,
+    CampaignProgressEvent,
     CampaignResult,
     CampaignResultStatus,
 )
@@ -29,6 +30,10 @@ def _model_config() -> ModelConfig:
         thinking_mode=False,
         thinking_budget=8192,
     )
+
+
+def test_campaign_progress_event_does_not_publish_latest_result_id() -> None:
+    assert "latest_result_id" not in CampaignProgressEvent.model_fields
 
 
 def test_new_evaluation_campaign_contracts_default_to_agentic_v9() -> None:

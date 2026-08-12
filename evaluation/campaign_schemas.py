@@ -911,7 +911,6 @@ class CampaignProgressEvent(BaseModel):
     evaluation_total_units: int = Field(default=0, ge=0)
     current_question_id: Optional[str] = None
     current_mode: Optional[CampaignMode] = None
-    latest_result_id: Optional[str] = None
 
 
 class MetricAggregate(BaseModel):
