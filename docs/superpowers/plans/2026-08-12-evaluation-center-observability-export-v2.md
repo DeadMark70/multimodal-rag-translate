@@ -1,5 +1,10 @@
 # Evaluation Center Observability and Export v2 Implementation Plan
 
+> **Execution status:** Wave 1 is retained here as completed history. Do not
+> execute this file's Wave 2-4 tasks; they were superseded after the post-Wave 1
+> code audit by
+> `docs/superpowers/plans/2026-08-13-evaluation-center-waves-2-4.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make every active Evaluation Center value traceable to a real backend projection and replace the campaign export with a clean Schema v2 that optionally includes sanitized observability for every run.
