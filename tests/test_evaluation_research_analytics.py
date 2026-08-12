@@ -29,10 +29,13 @@ from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.schemas import ModelConfig
 from evaluation.trace_schemas import (
     EvaluationClaim,
+    EvaluationContextPack,
     EvaluationHumanRating,
     EvaluationLlmCall,
     EvaluationRetrievalChunk,
     EvaluationRetrievalEvent,
+    EvaluationRoutingDecision,
+    EvaluationToolCall,
     EvaluationTraceEvent,
     EvaluationV9AttemptMaterialization,
 )
@@ -331,7 +334,9 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
                     event_id="trace-1", run_id=run_id, campaign_id="cmp-1",
                     span_id="span-1", event_type="retrieval", sequence=1,
                     stage_type="retrieval", stage_name="retrieve", started_at=now,
-                    status="success", payload={"secret": "redact"}, error={"secret": "redact"},
+                    status="success",
+                    payload={"secret": "sentinel-trace-payload"},
+                    error={"stack": "sentinel-trace-stack"},
                     created_at=now,
                 )
             ]
@@ -340,14 +345,17 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
             return [
                 EvaluationLlmCall(
                     llm_call_id="llm-1", run_id=run_id, campaign_id="cmp-1",
-                    prompt_preview="safe prompt", payload={"secret": "redact"},
-                    error={"secret": "redact"}, created_at=now,
+                    prompt_preview="safe prompt api_key=sk-llm-secret",
+                    payload={"provider_body": "sentinel-llm-provider"},
+                    error={"stack": "sentinel-llm-stack"}, created_at=now,
                 )
             ]
 
         async def list_retrieval_events_for_run(self, run_id):
             return [EvaluationRetrievalEvent(
                 retrieval_event_id="retrieval-1", run_id=run_id, campaign_id="cmp-1",
+                retriever_name="hybrid", result_count=3,
+                payload={"provider_body": "sentinel-retrieval-provider"},
                 created_at=now,
             )]
 
@@ -363,7 +371,7 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
                         "availability_status": "partial",
                         "availability_reasons": ["result_context_reconstruction"],
                         "used_in_answer_provenance": "heuristic",
-                        "provider_body": {"secret": "redact"},
+                        "provider_body": "sentinel-chunk-provider",
                     },
                     created_at=now,
                 ),
@@ -383,7 +391,8 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
                     retrieval_chunk_id="chunk-historical", run_id=run_id, campaign_id="cmp-1",
                     retrieval_event_id="retrieval-1", chunk_id="chunk-historical",
                     used_in_context=True, used_in_answer=True,
-                    expected_evidence_match=True, payload={"provider_body": "secret"},
+                    expected_evidence_match=True,
+                    payload={"provider_body": "sentinel-historical-chunk-provider"},
                     created_at=now,
                 ),
             ]
@@ -402,13 +411,39 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
             )]
 
         async def list_context_packs_for_run(self, run_id):
-            return []
+            return [EvaluationContextPack(
+                context_pack_id="pack-1", run_id=run_id, campaign_id="cmp-1",
+                input_chunk_count=3, packed_chunk_count=2, token_count=17,
+                retrieved_but_not_packed_evidence=[{
+                    "evidence_id": "evidence-safe", "doc_id": "doc-safe",
+                    "provider_body": "sentinel-context-provider",
+                    "error": "sentinel-context-stack",
+                }],
+                payload={"api_key": "sentinel-context-secret"}, created_at=now,
+            )]
 
         async def list_tool_calls_for_run(self, run_id):
-            return []
+            return [EvaluationToolCall(
+                tool_call_id="tool-1", run_id=run_id, campaign_id="cmp-1",
+                tool_name="search", action="query", status="failed",
+                payload={
+                    "input_summary": "sentinel-tool-input",
+                    "output_summary": "sentinel-tool-provider",
+                    "error": "sentinel-tool-stack",
+                },
+                created_at=now,
+            )]
 
         async def list_routing_decisions_for_run(self, run_id):
-            return []
+            return [EvaluationRoutingDecision(
+                routing_decision_id="route-1", run_id=run_id, campaign_id="cmp-1",
+                selected_mode="agentic", analysis_type="actual",
+                decision_source="llm_planner", candidate_routes=["agentic", "graph"],
+                matched_rules=["complex_query"], fallback_reason=None,
+                confidence=0.75, reason="typed safe reason",
+                payload={"provider_body": "sentinel-routing-provider"},
+                created_at=now,
+            )]
 
         async def list_claims_for_run(self, run_id):
             return [EvaluationClaim(
@@ -416,11 +451,12 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
                 claim_text="safe claim",
                 evidence=[{
                     "evidence_id": "evidence-1", "doc_id": "doc-1",
-                    "chunk_id": "chunk-1", "page": 8, "provider_body": {"secret": "redact"},
+                    "chunk_id": "chunk-1", "page": 8,
+                    "provider_body": "sentinel-claim-evidence-provider",
                 }],
                 payload={
                     "repair_action": "requery", "post_repair_status": "supported",
-                    "provider_body": {"secret": "redact"},
+                    "provider_body": "sentinel-claim-provider",
                 },
                 created_at=now,
             )]
@@ -430,7 +466,8 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
                 human_rating_id="rating-1", run_id=run_id, campaign_id="cmp-1",
                 rater_id_hash="rater", rubric_version="v1", correctness_score=1,
                 faithfulness_score=1, completeness_score=1, citation_quality_score=1,
-                usefulness_score=1, created_at=now,
+                usefulness_score=1, comments="Useful api_key=sk-rating-secret",
+                payload={"provider_body": "sentinel-rating-provider"}, created_at=now,
             )]
 
         async def get_v9_attempt_materialization(self, attempt_id):
@@ -490,7 +527,45 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
     assert projected_claim.post_repair_status == "supported"
     assert projected_claim.extraction_status == "recorded"
     assert projected_claim.payload == {}
-    assert "secret" not in projected_claim.model_dump_json()
+    assert detail.retrieval_events[0].retriever_name == "hybrid"
+    assert detail.retrieval_events[0].result_count == 3
+    assert [
+        row.model_dump()
+        for row in detail.context_packs[0].retrieved_but_not_packed_evidence
+    ] == [{
+        "evidence_id": "evidence-safe",
+        "doc_id": "doc-safe",
+        "chunk_id": None,
+        "page": None,
+    }]
+    assert detail.tool_calls[0].tool_name == "search"
+    assert detail.tool_calls[0].status == "failed"
+    assert detail.routing_decisions[0].decision_source == "llm_planner"
+    assert detail.routing_decisions[0].candidate_routes == ["agentic", "graph"]
+    assert detail.human_ratings[0].comments == "Useful [redacted]"
+    serialized = detail.model_dump_json()
+    for sentinel in (
+        "sentinel-trace-payload",
+        "sentinel-trace-stack",
+        "sk-llm-secret",
+        "sentinel-llm-provider",
+        "sentinel-llm-stack",
+        "sentinel-retrieval-provider",
+        "sentinel-chunk-provider",
+        "sentinel-historical-chunk-provider",
+        "sentinel-context-provider",
+        "sentinel-context-stack",
+        "sentinel-context-secret",
+        "sentinel-tool-input",
+        "sentinel-tool-provider",
+        "sentinel-tool-stack",
+        "sentinel-routing-provider",
+        "sentinel-claim-evidence-provider",
+        "sentinel-claim-provider",
+        "sk-rating-secret",
+        "sentinel-rating-provider",
+    ):
+        assert sentinel not in serialized
 
 
 @pytest.mark.asyncio

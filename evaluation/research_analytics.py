@@ -66,12 +66,27 @@ from evaluation.observability_storage import (
 from evaluation.analytics import reconcile_official_tokens
 from evaluation.trace_schemas import (
     ClaimEvidenceReference,
+    ContextPackEvidenceReference,
     EvaluationClaim,
     EvaluationClaimProjection,
+    EvaluationContextPack,
+    EvaluationContextPackProjection,
+    EvaluationHumanRating,
+    EvaluationHumanRatingProjection,
+    EvaluationLlmCall,
+    EvaluationLlmCallProjection,
+    EvaluationRetrievalEvent,
+    EvaluationRetrievalEventProjection,
     EvaluationRetrievalChunk,
     EvaluationRetrievalChunkProjection,
+    EvaluationRoutingDecision,
+    EvaluationRoutingDecisionProjection,
     EvaluationRunObservabilityDetail,
     EvaluationRunSummary,
+    EvaluationToolCall,
+    EvaluationToolCallProjection,
+    EvaluationTraceEvent,
+    EvaluationTraceEventProjection,
     ObservationAvailability,
 )
 
@@ -87,8 +102,36 @@ _CLAIM_EXTRACTION_STATUSES = {"recorded", "empty", "not_instrumented"}
 def _safe_scalar_text(value: object) -> str | None:
     """Return a scalar field without serializing provider objects or nested payloads."""
     if isinstance(value, (str, int, float, bool)):
-        return str(value)
+        return safe_plain_text_excerpt(str(value))
     return None
+
+
+def _project_trace_event(
+    event: EvaluationTraceEvent,
+) -> EvaluationTraceEventProjection:
+    """Return a typed trace row with unrestricted fields removed."""
+    return EvaluationTraceEventProjection.model_validate(event.model_dump())
+
+
+def _project_llm_call(call: EvaluationLlmCall) -> EvaluationLlmCallProjection:
+    """Return typed LLM accounting with a bounded, redacted prompt preview."""
+    return EvaluationLlmCallProjection.model_validate(
+        {
+            **call.model_dump(),
+            "prompt_preview": (
+                safe_plain_text_excerpt(call.prompt_preview)
+                if call.prompt_preview is not None
+                else None
+            ),
+        }
+    )
+
+
+def _project_retrieval_event(
+    event: EvaluationRetrievalEvent,
+) -> EvaluationRetrievalEventProjection:
+    """Return a typed retrieval summary without its unrestricted payload."""
+    return EvaluationRetrievalEventProjection.model_validate(event.model_dump())
 
 
 def _project_retrieval_chunk(
@@ -128,6 +171,43 @@ def _project_retrieval_chunk(
     )
 
 
+def _project_context_pack(
+    pack: EvaluationContextPack,
+) -> EvaluationContextPackProjection:
+    """Allow-list evidence locators and remove raw context-packing payloads."""
+    evidence_refs = []
+    for evidence in pack.retrieved_but_not_packed_evidence:
+        if not isinstance(evidence, dict):
+            continue
+        page = evidence.get("page")
+        evidence_refs.append(
+            ContextPackEvidenceReference(
+                evidence_id=_safe_scalar_text(evidence.get("evidence_id")),
+                doc_id=_safe_scalar_text(evidence.get("doc_id")),
+                chunk_id=_safe_scalar_text(evidence.get("chunk_id")),
+                page=page if isinstance(page, int) and not isinstance(page, bool) else None,
+            )
+        )
+    return EvaluationContextPackProjection.model_validate(
+        {
+            **pack.model_dump(),
+            "retrieved_but_not_packed_evidence": evidence_refs,
+        }
+    )
+
+
+def _project_tool_call(call: EvaluationToolCall) -> EvaluationToolCallProjection:
+    """Return typed tool status without input, output, provider, or error bodies."""
+    return EvaluationToolCallProjection.model_validate(call.model_dump())
+
+
+def _project_routing_decision(
+    decision: EvaluationRoutingDecision,
+) -> EvaluationRoutingDecisionProjection:
+    """Return typed routing provenance without its unrestricted payload."""
+    return EvaluationRoutingDecisionProjection.model_validate(decision.model_dump())
+
+
 def _project_claim(claim: EvaluationClaim) -> EvaluationClaimProjection:
     """Expose only safe claim evidence locators and scalar repair observations."""
     payload = claim.payload if isinstance(claim.payload, dict) else {}
@@ -155,6 +235,22 @@ def _project_claim(claim: EvaluationClaim) -> EvaluationClaimProjection:
             ),
             "extraction_status": "recorded",
             "payload": {},
+        }
+    )
+
+
+def _project_human_rating(
+    rating: EvaluationHumanRating,
+) -> EvaluationHumanRatingProjection:
+    """Return rubric fields with bounded comments and no unrestricted payload."""
+    return EvaluationHumanRatingProjection.model_validate(
+        {
+            **rating.model_dump(),
+            "comments": (
+                safe_plain_text_excerpt(rating.comments)
+                if rating.comments is not None
+                else None
+            ),
         }
     )
 
@@ -449,23 +545,17 @@ class ResearchAnalyticsService:
             ),
         )
         trace_events = [
-            item.model_copy(update={"payload": {}, "error": {}})
+            _project_trace_event(item)
             for item in await self._observability.list_trace_events_for_run(run_id)
             if item.campaign_id == campaign_id
         ]
         llm_calls = [
-            item.model_copy(
-                update={
-                    "prompt_preview": safe_plain_text_excerpt(item.prompt_preview),
-                    "payload": {},
-                    "error": {},
-                }
-            )
+            _project_llm_call(item)
             for item in await self._observability.list_llm_calls_for_run(run_id)
             if item.campaign_id == campaign_id
         ]
         retrieval_events = [
-            item
+            _project_retrieval_event(item)
             for item in await self._observability.list_retrieval_events_for_run(run_id)
             if item.campaign_id == campaign_id
         ]
@@ -489,17 +579,17 @@ class ResearchAnalyticsService:
             if any(event.graph_event_id == item.graph_event_id for event in graph_events)
         ]
         context_packs = [
-            item
+            _project_context_pack(item)
             for item in await self._observability.list_context_packs_for_run(run_id)
             if item.campaign_id == campaign_id
         ]
         tool_calls = [
-            item
+            _project_tool_call(item)
             for item in await self._observability.list_tool_calls_for_run(run_id)
             if item.campaign_id == campaign_id
         ]
         routing_decisions = [
-            item
+            _project_routing_decision(item)
             for item in await self._observability.list_routing_decisions_for_run(run_id)
             if item.campaign_id == campaign_id
         ]
@@ -513,7 +603,7 @@ class ResearchAnalyticsService:
             if item.campaign_id == campaign_id
         ]
         human_ratings = [
-            item
+            _project_human_rating(item)
             for item in await self._observability.list_human_ratings_for_run(run_id)
             if item.campaign_id == campaign_id
         ]

@@ -78,6 +78,16 @@ class EvaluationTraceEvent(BaseModel):
     created_at: datetime
 
 
+class EvaluationTraceEventProjection(EvaluationTraceEvent):
+    """Interactive trace projection that cannot retain raw payloads or errors."""
+
+    @model_validator(mode="after")
+    def clear_unrestricted_fields(self) -> EvaluationTraceEventProjection:
+        self.payload = {}
+        self.error = {}
+        return self
+
+
 class EvaluationLlmCall(BaseModel):
     """Normalized LLM usage row for a run or evaluator call."""
 
@@ -110,6 +120,16 @@ class EvaluationLlmCall(BaseModel):
     created_at: datetime
 
 
+class EvaluationLlmCallProjection(EvaluationLlmCall):
+    """Interactive LLM projection with only the bounded prompt preview."""
+
+    @model_validator(mode="after")
+    def clear_unrestricted_fields(self) -> EvaluationLlmCallProjection:
+        self.payload = {}
+        self.error = {}
+        return self
+
+
 class EvaluationRetrievalEvent(BaseModel):
     """Normalized retrieval request/response summary."""
 
@@ -125,6 +145,15 @@ class EvaluationRetrievalEvent(BaseModel):
     latency_ms: Optional[float] = Field(default=None, ge=0)
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
+
+
+class EvaluationRetrievalEventProjection(EvaluationRetrievalEvent):
+    """Interactive retrieval summary without the unrestricted payload."""
+
+    @model_validator(mode="after")
+    def clear_unrestricted_fields(self) -> EvaluationRetrievalEventProjection:
+        self.payload = {}
+        return self
 
 
 class EvaluationRetrievalChunk(BaseModel):
@@ -190,6 +219,28 @@ class EvaluationContextPack(BaseModel):
     created_at: datetime
 
 
+class ContextPackEvidenceReference(BaseModel):
+    """Allow-listed locator for evidence excluded from a context pack."""
+
+    evidence_id: str | None = None
+    doc_id: str | None = None
+    chunk_id: str | None = None
+    page: int | None = None
+
+
+class EvaluationContextPackProjection(EvaluationContextPack):
+    """Interactive context-pack projection with typed evidence locators only."""
+
+    retrieved_but_not_packed_evidence: list[ContextPackEvidenceReference] = Field(
+        default_factory=list
+    )
+
+    @model_validator(mode="after")
+    def clear_unrestricted_fields(self) -> EvaluationContextPackProjection:
+        self.payload = {}
+        return self
+
+
 class EvaluationToolCall(BaseModel):
     """External tool invocation made during a run."""
 
@@ -203,6 +254,15 @@ class EvaluationToolCall(BaseModel):
     status: TraceEventStatus = "success"
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
+
+
+class EvaluationToolCallProjection(EvaluationToolCall):
+    """Interactive tool-call projection without provider input/output/error bodies."""
+
+    @model_validator(mode="after")
+    def clear_unrestricted_fields(self) -> EvaluationToolCallProjection:
+        self.payload = {}
+        return self
 
 
 class EvaluationRoutingDecision(BaseModel):
@@ -248,6 +308,15 @@ class EvaluationRoutingDecision(BaseModel):
             )
         if self.matched_rules:
             self.payload.setdefault("matched_rules", list(self.matched_rules))
+        return self
+
+
+class EvaluationRoutingDecisionProjection(EvaluationRoutingDecision):
+    """Interactive routing projection with typed provenance and no raw payload."""
+
+    @model_validator(mode="after")
+    def clear_unrestricted_fields(self) -> EvaluationRoutingDecisionProjection:
+        self.payload = {}
         return self
 
 
@@ -394,24 +463,33 @@ class EvaluationHumanRating(BaseModel):
     created_at: datetime
 
 
+class EvaluationHumanRatingProjection(EvaluationHumanRating):
+    """Interactive human-rating projection without unrestricted metadata."""
+
+    @model_validator(mode="after")
+    def clear_unrestricted_fields(self) -> EvaluationHumanRatingProjection:
+        self.payload = {}
+        return self
+
+
 class EvaluationRunObservabilityDetail(BaseModel):
     """Normalized observability payload for one evaluation run."""
 
     run_id: str = Field(min_length=1)
     campaign_id: str = Field(min_length=1)
-    trace_events: list[EvaluationTraceEvent] = Field(default_factory=list)
-    llm_calls: list[EvaluationLlmCall] = Field(default_factory=list)
-    retrieval_events: list[EvaluationRetrievalEvent] = Field(default_factory=list)
+    trace_events: list[EvaluationTraceEventProjection] = Field(default_factory=list)
+    llm_calls: list[EvaluationLlmCallProjection] = Field(default_factory=list)
+    retrieval_events: list[EvaluationRetrievalEventProjection] = Field(default_factory=list)
     retrieval_chunks: list[EvaluationRetrievalChunkProjection] = Field(default_factory=list)
-    context_packs: list[EvaluationContextPack] = Field(default_factory=list)
-    tool_calls: list[EvaluationToolCall] = Field(default_factory=list)
-    routing_decisions: list[EvaluationRoutingDecision] = Field(default_factory=list)
+    context_packs: list[EvaluationContextPackProjection] = Field(default_factory=list)
+    tool_calls: list[EvaluationToolCallProjection] = Field(default_factory=list)
+    routing_decisions: list[EvaluationRoutingDecisionProjection] = Field(default_factory=list)
     graph_events: list[EvaluationGraphEvent] = Field(default_factory=list)
     graph_evidence_items: list[EvaluationGraphEvidenceItem] = Field(default_factory=list)
     graph_observability_status: Literal["recorded", "fallback", "not_instrumented"] = "not_instrumented"
     claims: list[EvaluationClaimProjection] = Field(default_factory=list)
     claim_extraction_status: Literal["recorded", "empty", "not_instrumented"] = "not_instrumented"
-    human_ratings: list[EvaluationHumanRating] = Field(default_factory=list)
+    human_ratings: list[EvaluationHumanRatingProjection] = Field(default_factory=list)
     agentic_v9: V9ExecutionObservability | None = None
     evidence_coverage: Optional[list[dict[str, Any]]] = None
     evidence_coverage_status: Literal[
