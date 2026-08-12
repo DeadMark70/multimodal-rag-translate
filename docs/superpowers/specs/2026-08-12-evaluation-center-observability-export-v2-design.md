@@ -1,8 +1,14 @@
 # Evaluation Center Observability and Export v2 Design
 
-> Status: approved on 2026-08-12. This design is based on the current backend
-> and frontend code contracts. The local SQLite data is explicitly not treated
-> as evidence of what exists in the server environment.
+> Status: Wave 1 completed and validated; Wave 2-4 revision approved on
+> 2026-08-13. This design is based on the current backend and frontend code
+> contracts. Local SQLite content is explicitly not treated as evidence of what
+> exists in the server environment.
+
+> Revision note: the Wave 2-4 design was re-audited against the post-Wave 1
+> code. The revision removes planned interfaces that do not exist, narrows
+> repairs to APIs used by the active Evaluation Center, and separates the
+> interactive-safe observability projection from the richer export projection.
 
 ## Goal
 
@@ -183,178 +189,215 @@ Export may include explicitly requested raw trace or full prompt material only
 through the existing authorized options and the export redaction policy. The
 interactive endpoint never accepts those options.
 
-## Panel Corrections
+## Post-Wave 1 Baseline
 
-### Run Trace and v9 panels
+Wave 1 is complete. The campaign-scoped observability route is the canonical
+selected-run contract, v9 data is nullable for non-v9 runs, normalized claim
+and evidence projections are typed, text-bearing interactive fields are
+bounded and credential-redacted, and frontend stale-request protection is in
+place. Wave 2-4 must build on those contracts rather than reimplement them.
 
-The frontend `RunDetailResponse` type and API client are aligned to the
-canonical observability schema. The v9 trace, evidence explorer, atomic slot
-alignment, claim repair, context pack, and execution route all read the same
-`agentic_v9` object.
+## Wave 2 Panel Corrections
 
-Selected-run requests are protected against stale responses: switching
-campaign or run cannot allow a slower previous request to replace the current
-detail.
+### Active API contract hygiene
 
-### Claim Evidence
+Only contracts used by the mounted Evaluation Center are repaired in this
+track. `EvaluationRunListItem.total_tokens` becomes nullable so an unknown run
+total cannot be serialized as zero. The unused run-diff and repeat-stability
+APIs are not expanded or refactored as part of this feature.
 
-Claim rows receive safe typed evidence references and repair fields. The
-frontend no longer reads claim evidence or repair state from a payload that the
-backend clears.
+`CampaignProgressEvent.latest_result_id` is removed from backend and frontend
+contracts. The server never populated it, the mounted client does not consume
+it, and durable-job refresh does not require a result identifier.
 
-An empty claim list is not automatically evidence of zero unsupported claims.
-The claim projection carries availability/provenance so `no claims extracted`
-can be distinguished from `claim extraction ran and found zero claims`.
-
-Per-slot graph data is shown only when a real per-slot contract exists. Until
-then, the table omits that synthetic column and shows one capability notice for
-the section.
-
-### Retrieval Evidence
-
-Normalized retrieval rows expose explicit measurement/provenance state.
-Result-context reconstruction is labelled `derived`; text or expected-document
-matching is labelled `heuristic`. Dense score, BM25 score, page, and modality
-remain null when their write path did not record them.
-
-`used_in_context` and `used_in_answer` are never promoted to measured values
-unless the recorder supplies measured attribution. The frontend no longer uses
-redacted payload depth as the authority for whether a top-level field is real.
-
-Graph evidence mappers consume the backend's normalized fields, including
-`source_doc_ids`, `source_chunk_ids`, `pages`, and `asset_ids`, instead of
-looking for unrelated singular aliases.
+Every public schema change is synchronized through the backend OpenAPI
+artifacts and the frontend contract pin. A stale generated contract is a
+blocking failure, not documentation debt to defer.
 
 ### Router Lab
 
-Campaign router analysis and selected-run execution route are distinct:
+Campaign router analysis and selected-run execution route remain separate:
 
-- campaign router analysis remains explicitly `retrospective` unless a future
-  benchmark contract proves otherwise; and
-- selected-run execution route comes from that run's v9 observability.
+- the campaign endpoint returns only recorded retrospective decisions and is
+  typed accordingly; actual execution rows are not mixed into this response;
+- the selected-run route is `agentic_v9.contract.route`; the optional
+  `agentic_v9.contract.route_decision` describes provenance but is not required
+  to display a valid route; and
+- direct entry loads router analysis, the campaign run list, and the selected
+  run observability without requiring a previous visit to Run Trace.
 
-Entering Router Lab directly loads the run list and the current selected run's
-observability. It does not depend on the user visiting Run Trace first, and a
-campaign switch clears the previous execution route.
+The frontend removes fields the backend does not produce: tier, complexity,
+saved tokens, quality loss/gain, latency comparison, token comparison, regret,
+utility formula, oracle label, and confusion matrix. Retrospective failures do
+not erase a valid selected-run route, and selected-run failures do not erase
+retrospective analysis. A campaign switch clears the old run route immediately
+while preserving the active tab.
 
-Saved tokens, quality loss/gain, regret, oracle label, and confusion matrix are
-rendered only when the backend response contains authoritative values. The
-frontend does not manufacture a formula, oracle source, or empty matrix.
+### Question and capability placeholders
 
-### Question Analysis
+Question Analysis removes the hard-coded Router Selected Mode and empty
+ablation flags from types, mappers, tables, and heatmaps.
 
-The hard-coded Router Selected Mode and empty ablation flags are removed from
-the current table and mapper. They may return only through a future typed
-backend contract backed by persisted data.
+The UI removes repeated values that are not instrumented by the current
+contract:
 
-### V9 evidence capability gaps
+- v9 evidence packet `Cited`;
+- context-pack per-slot and per-source token counts;
+- claim alignment per-slot graph state; and
+- Agent Behavior atomic completeness while the backend can only return the
+  experimental/uninstrumented placeholder.
 
-The UI removes per-row values that are currently hard-coded rather than
-instrumented, including cited state, per-slot token count, per-source token
-count, and per-slot graph state. One section-level capability notice explains
-what is not instrumented. This is clearer and smaller than repeating `N/A` in
-every row.
+Each affected section may show one scoped capability notice. The design does
+not introduce a generic capability framework or pretend that capability flags
+already exist in the API.
 
-### Counts and operational status
+### Numeric semantics
 
-Missing or non-finite Ablation and human-evaluation counts render as
-unavailable, not `0`. Run summaries and active Evaluation Center APIs follow
-the same rule.
+Missing and non-finite Ablation, human-evaluation, and condition sample counts
+render `N/A`; a measured zero remains `0`. A zero-millisecond normalized or
+legacy trace duration renders `0 ms`, not `n/a`.
 
-The existing durable `EvaluationJobPanel` is mounted in the selected campaign's
-operation area. It reuses existing job APIs and polling behavior; no new tab or
-API is introduced. The progress event's `latest_result_id` must either contain
-the actual newest persisted result identifier or be absent from the contract;
-this design selects the former so polling consumers can refresh deterministically.
+Overview stops requesting errors that it does not render. Errors and stage
+warnings remain owned by the diagnostics surface.
 
-Overview no longer performs an errors request whose result it does not render.
-Errors and stage warnings remain in the diagnostics surface that consumes them.
+### Durable jobs
+
+The existing `EvaluationJobPanel` is mounted for the selected campaign and
+shows an explicit empty state. Existing polling and job APIs are reused.
+
+Campaign inventory loading becomes a stable operation so a terminal-job
+refresh does not reset the active tab. Terminal notification is one-shot per
+terminal job. It refreshes campaign inventory and invalidates the selected
+campaign's currently loaded panel data; it does not depend on
+`latest_result_id`.
 
 ## Export Schema v2
 
-### Request
+### Three projection layers
 
-The existing export endpoint remains:
+The post-Wave 1 interactive response is intentionally safe and has already
+discarded arbitrary payloads. Export therefore cannot be implemented by
+serializing `EvaluationRunObservabilityDetail` and then trying to restore raw
+content. The backend uses three explicit layers:
+
+```text
+CampaignObservabilitySnapshot (internal, persistence-derived)
+    -> interactive projector -> EvaluationRunObservabilityDetail
+    -> export policy projector -> ExportRunObservabilityDataV2
+```
+
+The internal snapshot is not an HTTP model. It contains the typed normalized
+rows and exact result/source-attempt relationships required by both projectors.
+The two public projectors share selection and analytics helpers but enforce
+different allow lists.
+
+### Request and content policy
+
+The endpoint remains:
 
 ```text
 POST /api/evaluation/campaigns/{campaign_id}/export
 ```
 
-The redaction/content options remain available. The request adds:
+The five existing content flags remain, and the request adds:
 
 ```text
 include_run_observability: boolean = false
 ```
 
-The frontend checkbox label is **Include all run observability** and includes a
-**Larger file** hint. It is off by default.
+The frontend checkbox is labelled **Include all run observability**, includes a
+**Larger file** hint, and is off by default. It always sends the boolean
+explicitly.
 
-### Response
+All export modes are sanitized. Enabling raw trace or full prompts authorizes
+only the corresponding stored, allow-listed content. Provider response bodies,
+credentials, authorization headers, stack traces, and unrestricted error or
+payload objects are never exported. Disabling answers or excerpts also removes
+equivalent content nested inside trace and v9 projections. Fields suppressed by
+policy remain present as `null` where a fixed v2 shape requires them.
 
-Schema v2 directly replaces the previous response:
+### Typed response
+
+Schema v2 directly replaces the old response. All top-level keys and section
+names are required and typed:
 
 ```json
 {
   "schema_version": "2.0",
   "export_metadata": {
-    "exported_at": "2026-08-12T00:00:00Z",
-    "options": {
-      "include_run_observability": false
-    },
+    "exported_at": "2026-08-13T00:00:00Z",
+    "options": { "include_run_observability": false },
     "redaction": {},
     "availability_warnings": []
   },
   "campaign": {},
   "sections": {
-    "overview": { "availability": {}, "data": {} },
+    "overview": { "availability": {}, "data": {
+      "research_summary": {}, "release_metrics": null
+    }},
     "question_analysis": { "availability": {}, "data": {} },
     "agent_behavior": { "availability": {}, "data": {} },
     "router_analysis": { "availability": {}, "data": {} },
     "ablation": { "availability": {}, "data": {} },
-    "human_evaluation": { "availability": {}, "data": {} },
-    "diagnostics": { "availability": {}, "data": {} }
+    "human_evaluation": { "availability": {}, "data": {
+      "comparison": {}, "queue": {}
+    }},
+    "diagnostics": { "availability": {}, "data": {
+      "errors": {}, "stage_warnings": {}
+    }}
   },
-  "runs": [
-    {
-      "result": {},
-      "ragas_metrics": {},
-      "observability": {
-        "included": false,
-        "availability": {},
-        "data": null
-      }
+  "runs": [{
+    "result": {},
+    "ragas_metrics": {},
+    "accounting": {},
+    "latency": {},
+    "observability": {
+      "included": false,
+      "availability": {},
+      "data": null
     }
-  ]
+  }]
 }
 ```
 
-Each `sections.*.data` value is the same canonical response projection used by
-the corresponding panel. Conditional sections, such as release metrics for a
-campaign without a compatible benchmark, use `not_applicable` rather than an
-empty object that looks complete.
+`campaign` is a safe typed identity/configuration snapshot. `result` is an
+export-specific fixed model rather than the runtime `CampaignResult`, because
+redaction can make answer and reference fields null. `sections` uses the same
+authoritative services as the active panels: research summary and optional
+release metrics, research question comparison, agent behavior, retrospective
+router analysis, ablation, human comparison/queue, errors, and stage warnings.
+Legacy overview and comparison helpers are not used.
 
-`diagnostics.data` contains campaign errors and stage warnings. Human
-evaluation contains the human-versus-automatic comparison and evaluation
-queue. Ablation contains condition comparison and graph-family summaries.
+Official RAGAS selection and accounting completeness are shared typed helpers,
+not duplicated export SQL. Official scores must match the result's current
+source attempt and evaluator identity. Each run includes accounting and latency
+even when detailed observability is disabled.
 
-### Optional complete run observability
+### Optional all-run observability
 
-When `include_run_observability` is false, every run still includes its result,
-finite official RAGAS metrics, token/accounting status, and latency summary.
-`observability.included` is false and `data` is null.
+When `include_run_observability` is false, every run has
+`observability.included=false`, an explicit `not_applicable` reason, and
+`data=null`.
 
-When true, every campaign run contains the complete sanitized canonical run
-projection. The export loads normalized data with campaign-level bulk
-repository methods, groups rows by run identifier, and assembles runs without
-calling a per-run endpoint or issuing a per-run database query.
+When true, every campaign result receives one `ExportRunObservabilityDataV2`
+built from a campaign-level snapshot. Every normalized entity family and
+accounting family is loaded a bounded number of times, grouped in memory by run
+and exact `source_attempt_id`, and never loaded through a per-run query loop.
+Multiple attempt materializations must not overwrite one another in a
+run-keyed dictionary.
 
-The response is all-or-error. It does not silently truncate runs or event
-arrays. Availability warnings describe legitimately unavailable instrumentation,
-not transport truncation.
+Required section or run-container failure makes the export fail as one request.
+Optional missing instrumentation produces explicit availability. Runs and
+event arrays are never silently omitted or truncated.
 
-### Filename
+### Frontend contract and filename
 
-The filename identifies both scope and content policy:
+The frontend uses strict named v2 interfaces and an export-specific run/result
+type. It validates the received v2 shape at the API boundary before creating a
+download. It does not extend the response with `Record<string, unknown>` or
+reuse `CampaignResult` for redacted export data.
+
+The filename identifies scope and content policy:
 
 ```text
 {campaign_id}-summary-redacted-v2.json
@@ -363,153 +406,157 @@ The filename identifies both scope and content policy:
 {campaign_id}-observability-custom-v2.json
 ```
 
-`observability` is selected when all run observability is included. `custom` is
-selected when full prompts or raw trace payloads are explicitly enabled. The
-response's redaction metadata remains the authoritative audit record.
+`custom` means full prompts or raw trace payloads were explicitly requested.
+Server `export_metadata` remains authoritative for the preview and audit
+record. A summary preview never fabricates a zero LLM-call count when detailed
+calls were not requested.
 
 ## Performance and Failure Handling
 
 - Panel reads remain lazy by tab.
-- Router Lab explicitly loads only the run list and selected run required for
-  its execution-route card.
-- Summary export uses bounded campaign projections and does not load detailed
-  run observability.
-- Full export uses one bulk load per normalized entity family, not one query per
-  run.
-- A failed export leaves the previous preview untouched and displays the
-  established Evaluation Center error state.
-- The frontend always revokes its temporary object URL after starting a
-  download.
-- The backend fails the request if a canonical required projection cannot be
-  assembled; optional or uninstrumented sections use explicit availability.
+- Router direct entry loads only router analysis, the run list, and one selected
+  run detail.
+- Summary export does not load detailed run observability.
+- Full export uses one campaign snapshot and bounded loaders; query count does
+  not grow linearly with the number of runs.
+- Independent campaign sections may be assembled concurrently, but a required
+  section failure returns no partial v2 artifact.
+- A failed frontend export keeps the previous preview, creates no download, and
+  restores controls.
+- The frontend revokes every temporary object URL.
+
+## Contract Synchronization
+
+Backend schema tasks update and verify all three generated artifacts:
+
+- `openapi.json`;
+- `contracts/openapi-contract.json`; and
+- `docs/generated/api-surface.md`.
+
+The frontend pins the resulting backend HEAD contract and runs
+`contract:check`. Generated UI docs are synchronized only after component and
+API tests pass. Contract drift blocks the wave checkpoint.
 
 ## Delivery Waves
 
-### Wave 1: Canonical run observability
+### Wave 1: Canonical run observability — complete
 
-1. Backend canonical observability service, v9 envelope, human ratings, and
-   response contract.
-2. Frontend selected-run API/types, stale-request protection, and v9 consumers.
-3. Safe claim fields, graph evidence mapping, and retrieval provenance.
-
-Checkpoint: deploy/push these commits and validate a real v9 campaign across
-Run Trace, Retrieval Evidence, Claim Evidence, and the execution-route view.
+Canonical backend projection, safe typed evidence, frontend consumption,
+stale-request protection, and two consolidated-review correction rounds were
+implemented and validated before this revision.
 
 ### Wave 2: Panel truthfulness and operations
 
-1. Separate retrospective router analysis from actual selected-run execution.
-2. Remove unsupported Question, Router, V9 Evidence, and Claim placeholders.
-3. Repair null/zero and availability semantics on active panels and APIs.
-4. Mount durable job visibility and populate progress `latest_result_id`.
+1. Repair generated API baseline, remove the unused progress field, and
+   preserve nullable run-list tokens.
+2. Type and filter retrospective router analysis.
+3. Make direct Router entry and Question Analysis truthful.
+4. Remove uninstrumented capability placeholders.
+5. Correct missing-count and zero-duration rendering.
+6. Mount durable jobs with stable, one-shot refresh behavior.
 
-Checkpoint: validate all eight panels, direct Router Lab entry, campaign
-switching, missing instrumentation, and durable job polling in the real system.
+Checkpoint: validate all eight panels, direct Router entry, campaign switching,
+missing instrumentation, zero versus unknown, and durable polling in the real
+system. Stop before Export v2.
 
 ### Wave 3: Export Schema v2
 
-1. Backend request/response types and canonical campaign sections.
-2. Optional bulk all-run observability, redaction, and parity tests.
-3. Frontend option, filename, strict types, download, and preview.
+1. Define typed public v2 schemas, export policy, and synchronized OpenAPI.
+2. Build the internal campaign snapshot and shared official RAGAS/accounting
+   projections with no-N+1 proof.
+3. Compose every authoritative section and replace the old export route with
+   all-or-error behavior.
+4. Add the strict frontend consumer, default-off option, deterministic
+   filename, and server-authoritative preview.
 
-Checkpoint: download summary and full-observability artifacts from a real
-campaign, inspect redaction, compare section values with the panels, and confirm
-all campaign runs are present in the full artifact.
+Checkpoint: download default and full artifacts, inspect policy metadata,
+compare panel values, and prove every campaign run is present. Stop before the
+release parity wave.
 
-### Wave 4: Integration and cleanup
+### Wave 4: Parity and release gate
 
-1. Cross-panel/export contract parity tests.
-2. API, frontend, generated UI, and operational verification documentation.
-3. Remove only duplicate helpers and mappers made obsolete by this repair.
+1. Use authenticated HTTP tests over one durable fixture to prove complete
+   serialized panel/export parity and bounded query behavior.
+2. Lock frontend runtime-contract rejection and focused cross-campaign/UI
+   behavior.
+3. Synchronize backend/frontend/generated documentation and run release gates.
 
-Checkpoint: run the full regression set and repeat the production smoke
-checklist before release acceptance.
+Checkpoint: run the complete regression, contract, lint, build, docs, and real
+environment checklist before release acceptance.
 
 ## Commit and Checkpoint Protocol
 
-Every implementation task follows this sequence:
+Every task adds a failing test, implements the smallest complete change, runs
+focused checks, updates directly affected docs, and creates exactly one focused
+commit. Tasks never share a commit. Unrelated working-tree changes are never
+staged.
 
-1. add a failing test;
-2. implement the smallest complete change;
-3. run the task's focused frontend and/or backend tests;
-4. update affected API/UI documentation in the same change set; and
-5. create exactly one focused commit.
+Execution uses a fresh implementation subagent per task. Per the approved
+workflow, there is one consolidated code review at the end of each wave rather
+than a review after every task. Any Critical or Important finding is corrected
+inside the same wave with a separate commit and one scoped re-review.
 
-A task does not share a commit with another task. Existing unrelated working
-tree changes are never staged.
-
-At the end of a wave, the implementation agent provides:
-
-- commit hashes and subjects;
-- focused and wave-level test results;
-- contract or persistence changes;
-- the exact real-system verification checklist; and
-- known availability limitations that production data may reveal.
-
-The agent then stops. It must not begin the next wave until the user explicitly
-accepts the checkpoint. A real-environment failure creates a corrective task
-and a separate commit inside the same wave.
+At each checkpoint the agent reports commit hashes, exact test totals, contract
+changes, query-count evidence where relevant, and a safe real-system checklist,
+then stops. The next wave starts only after explicit user acceptance.
 
 ## Test Strategy
 
 ### Backend
 
-- Contract tests prove the canonical observability response includes v9,
-  human ratings, graph evidence, evidence status, and accounting diagnostics.
-- Analytics tests distinguish measured, derived, heuristic, unavailable, and
-  zero values.
-- Repository-spy tests prove full export uses campaign bulk methods and no
-  per-run query loop.
-- Export parity tests compare every section with its canonical analytics
-  service using the same fixture.
-- Redaction tests cover every combination that permits full prompts or raw
-  trace payloads and prove secrets/provider bodies remain excluded.
-- Authorization tests prove campaign and run ownership on interactive and
-  export paths.
+- Schema tests cover nullable run tokens and the removed progress field.
+- Router tests prove the campaign response is typed and retrospective-only.
+- Export policy tests cover the complete boolean-option matrix and permanent
+  secret/provider/error exclusions.
+- Repository spies fail on every per-run/per-attempt loader and prove bounded
+  campaign loads, exact attempt selection, and no truncation.
+- Authenticated HTTP parity tests compare complete serialized named sections,
+  not a selected subset of convenient fields.
+- Authorization tests cover campaign/run ownership on interactive and export
+  paths.
 
 ### Frontend
 
-- API contract tests cover the canonical observability route and new export
-  request flag.
-- Mapper tests prove normalized graph fields and explicit retrieval provenance.
-- Integration tests enter every run-dependent tab directly and switch campaign
-  while requests are in flight.
-- Component tests prove unsupported metrics are absent, capability notices are
-  singular, and unknown counts are not zero.
-- Export tests cover default-off behavior, all four filename classes, preview
-  stability on failure, and object URL cleanup.
-- Durable job tests prove the panel mounts only for a selected campaign and
-  refreshes when a terminal result identifier arrives.
+- Router integration tests cover direct entry, valid contract route without
+  route-decision provenance, failure isolation, campaign switching, and stale
+  requests.
+- Component tests prove unsupported columns are absent, capability notices are
+  scoped, missing counts are `N/A`, and zero durations are `0 ms`.
+- Durable-job tests cover selected-campaign mount, empty state, one-shot
+  terminal refresh, and tab preservation.
+- Export tests cover runtime shape rejection, default-off requests, all four
+  filenames, server-authoritative previews, failure stability, and URL cleanup.
+- Contract and generated-doc checks run against committed backend artifacts.
 
 ### Real environment
 
 Automated tests establish contract correctness, not production instrumentation
-coverage. Each wave therefore ends with an explicit real-server verification
-using at least:
-
-- one agentic v9 run with graph or visual evidence;
-- one run without optional instrumentation;
-- one failed or partial-stage run when available;
-- direct navigation to Router Lab; and
-- one campaign large enough to exercise multi-run export.
+coverage. Each checkpoint uses at least one v9 run with evidence, one run
+without optional instrumentation, one legacy/v8 run, one failed/partial run if
+available, direct Router navigation, and a campaign large enough for all-run
+export.
 
 ## Acceptance Criteria
 
-1. Every active Evaluation Center panel value is backed by a typed backend
-   field or clearly identified as unavailable/derived/heuristic.
+1. Every active panel value is backed by a typed backend field or clearly shown
+   as unavailable, derived, or heuristic.
 2. No hard-coded monitoring placeholder is presented as observed data.
-3. Selected-run v9 data loads from the canonical campaign observability route
-   on first entry and after campaign/run switches.
-4. Claim, graph, and retrieval panels do not depend on redacted arbitrary
-   payloads.
-5. Unknown counts and token values remain unknown rather than becoming zero.
-6. Router retrospective analysis is never presented as actual execution
-   performance.
-7. Export Schema v2 contains the canonical campaign sections used by the
-   panels.
-8. The default export omits detailed run observability and records that choice.
-9. The opt-in export contains complete sanitized observability for every
-   campaign run without N+1 loading or silent truncation.
-10. Export filename and metadata correctly describe scope and redaction.
-11. Durable evaluation job state is visible for the selected campaign.
-12. Every task has one focused commit, and implementation stops after each wave
-    for real-system verification.
+3. Router retrospective decisions never masquerade as actual route performance;
+   actual route comes from `agentic_v9.contract.route`.
+4. Direct Router entry and campaign switching cannot show stale route data.
+5. Unknown active run totals and UI counts remain unknown; measured zero remains
+   zero.
+6. Durable job state is visible and terminal refresh does not reset the active
+   tab or depend on a nonexistent result ID.
+7. Export v2 has required named typed sections and export-specific redacted run
+   models.
+8. Default export explicitly omits detailed run observability.
+9. Opt-in export contains sanitized observability for every result, uses the
+   exact source attempt, and has no N+1 or silent truncation.
+10. Provider bodies, credentials, unrestricted errors, and stack traces never
+    appear in any export option combination.
+11. Export metadata, preview, and filename accurately describe the artifact.
+12. Backend OpenAPI, frontend contract pin, generated docs, tests, lint, and
+    build are synchronized at the final gate.
+13. Every task has one focused commit and execution stops after each wave for
+    real-system validation.
