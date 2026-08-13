@@ -15,16 +15,18 @@ from evaluation.accounting_schemas import (
     TokenBreakdown,
 )
 from evaluation.campaign_schemas import (
-    AblationResponse,
-    AgentBehaviorResponse,
-    CampaignErrorsResponse,
+    AgentBehaviorRow,
     CampaignLifecycleStatus,
     CampaignMode,
     CampaignResultStatus,
-    CampaignStageWarningsResponse,
-    HumanVsAutoResponse,
-    ResearchQuestionComparisonResponse,
-    RouterAnalysisResponse,
+    ConditionMetricSummary,
+    LegacyAgentBehaviorMetrics,
+    QuestionComparisonRow,
+    QuestionModeComparison,
+    RouterAnalysisRow,
+    SanitizedErrorRow,
+    StageWarningRow,
+    V9AgentBehaviorMetrics,
     V9ContextPack,
     V9SlotResolution,
 )
@@ -420,6 +422,85 @@ class ExportV9FinalClaimV2(ExportModel):
     qualified_reason: str | None = None
 
 
+class ExportV9ComparisonValidationIssueV2(ExportModel):
+    path: str
+    type: str
+
+
+class ExportV9ComparisonSubjectV2(ExportModel):
+    subject_id: str
+    display_name: str
+    aliases: list[str]
+
+
+class ExportV9ComparisonSelectedV2(ExportModel):
+    doc_id: str | None = None
+    chunk_id: str | None = None
+
+
+class ExportV9ComparisonTaskDiagnosticV2(ExportModel):
+    task_id: str
+    subject_id: str
+    query_hash: str
+    query_preview: str
+    status: Literal["executed", "fallback", "not_instrumented"]
+    fallback_reason: Literal[
+        "reranker_unavailable",
+        "reranker_error",
+        "reranker_empty_result",
+        "unknown",
+    ] | None
+    candidate_count: int = Field(ge=0)
+    pre_subject_limit_count: int = Field(ge=0)
+    selected_count: int = Field(ge=0)
+    selected: list[ExportV9ComparisonSelectedV2]
+
+
+class ExportV9ComparisonFinalEvidenceV2(ExportModel):
+    evidence_id: str
+    doc_id: str
+    chunk_id: str | None
+    subject_ids: list[str]
+
+
+class ExportV9ComparisonV2(ExportModel):
+    planner_status: Literal["not_requested", "planned", "fallback", "unknown"]
+    planner_latency_ms: float = Field(ge=0)
+    planner_fallback_reason: Literal[
+        "timeout",
+        "provider_error",
+        "invalid_response",
+        "schema_violation",
+        "invalid_subjects",
+        "not_comparison",
+        "unknown",
+    ] | None
+    fallback_stage: Literal[
+        "response_decode",
+        "transport_schema",
+        "subject_validation",
+        "trusted_plan_validation",
+        "numeric_guard",
+        "unknown",
+    ] | None
+    validation_issues: list[ExportV9ComparisonValidationIssueV2]
+    is_comparison: bool
+    subjects: list[ExportV9ComparisonSubjectV2]
+    dimensions: list[str]
+    task_diagnostics: list[ExportV9ComparisonTaskDiagnosticV2]
+    coverage_before_repair: list[str]
+    missing_before_repair: list[str]
+    repair_executed: bool
+    coverage_after_repair: list[str]
+    missing_after_repair: list[str]
+    final_status: Literal[
+        "complete", "qualified_partial", "insufficient", "unknown"
+    ]
+    final_evidence_subjects: list[str]
+    final_evidence_count: int = Field(ge=0)
+    final_evidence: list[ExportV9ComparisonFinalEvidenceV2]
+
+
 class ExportV9ExecutionObservabilityV2(ExportModel):
     schema_version: str = "1"
     contract: QueryContract | None = None
@@ -432,7 +513,7 @@ class ExportV9ExecutionObservabilityV2(ExportModel):
     conflicts: list[ConflictCandidate] = Field(default_factory=list)
     final_claims: list[ExportV9FinalClaimV2] = Field(default_factory=list)
     metrics: V9ExecutionMetrics = Field(default_factory=V9ExecutionMetrics)
-    comparison: dict[str, JsonValue] | None = None
+    comparison: ExportV9ComparisonV2 | None = None
 
 
 class ExportRunSummaryV2(ExportModel):
@@ -600,8 +681,183 @@ class ExportReleaseMetricsV2(ExportModel):
     statistics: ExportReleaseStatisticsV2 | None = None
 
 
+class ExportResearchSummaryV2(CampaignResearchSummaryResponse):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExportQuestionModeComparisonV2(QuestionModeComparison):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExportQuestionComparisonRowV2(QuestionComparisonRow):
+    model_config = ConfigDict(extra="forbid")
+
+    by_mode: list[ExportQuestionModeComparisonV2]
+
+
+class ExportLegacyAgentBehaviorMetricsV2(LegacyAgentBehaviorMetrics):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExportV9AgentBehaviorMetricsV2(V9AgentBehaviorMetrics):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExportAgentBehaviorRowV2(AgentBehaviorRow):
+    model_config = ConfigDict(extra="forbid")
+
+    legacy: ExportLegacyAgentBehaviorMetricsV2 | None
+    v9: ExportV9AgentBehaviorMetricsV2 | None
+
+
+class ExportRouterAnalysisRowV2(RouterAnalysisRow):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExportAnalyticsBaseV2(ExportModel):
+    campaign_id: str
+    analysis_unit: Literal["execution", "question", "category"]
+    sample_count: int = Field(ge=0)
+    independent_question_count: int = Field(ge=0)
+    repeat_count: int = Field(ge=0)
+    sample_note: str
+    warnings: list[str]
+
+
+class ExportQuestionAnalysisV2(ExportAnalyticsBaseV2):
+    rows: list[ExportQuestionComparisonRowV2]
+    summaries: dict[str, ExportQuestionComparisonRowV2]
+
+
+class ExportAgentBehaviorV2(ExportAnalyticsBaseV2):
+    behavior_schema_version: Literal["2"]
+    rows: list[ExportAgentBehaviorRowV2]
+    summaries: dict[str, ExportAgentBehaviorRowV2]
+
+
+class ExportRouterAnalysisSummaryV2(ExportModel):
+    decision_count: int = Field(default=0, ge=0)
+
+
+class ExportRouterAnalysisV2(ExportAnalyticsBaseV2):
+    analysis_type: Literal["retrospective"]
+    rows: list[ExportRouterAnalysisRowV2]
+    summaries: ExportRouterAnalysisSummaryV2
+
+
+ExportAblationFlagScalarV2 = bool | int | float | str | None
+ExportAblationFlagNestedV2 = dict[str, ExportAblationFlagScalarV2]
+ExportAblationFlagValueV2 = (
+    ExportAblationFlagScalarV2
+    | ExportAblationFlagNestedV2
+    | dict[str, ExportAblationFlagNestedV2]
+)
+
+
+class ExportConditionMetricSummaryV2(ConditionMetricSummary):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExportConditionAggregateV2(ExportModel):
+    condition_id: str
+    label: str
+    ablation_flags: dict[str, ExportAblationFlagValueV2]
+    execution_count: int = Field(ge=0)
+    completed_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    quality: dict[str, ExportConditionMetricSummaryV2]
+    mean_tokens: float | None = Field(ge=0)
+    mean_latency_ms: float | None = Field(ge=0)
+
+
+class ExportConditionPairedComparisonV2(ExportModel):
+    baseline_condition_id: str
+    guided_condition_id: str
+    completed_pair_count: int = Field(ge=0)
+    metric_pair_counts: dict[str, int]
+    delta: dict[str, ExportConditionMetricSummaryV2]
+    excluded_pairs: dict[str, int]
+
+
+class ExportConditionMetricAvailabilityV2(ExportModel):
+    ragas_rows_found: bool
+    valid_metric_row_count: int = Field(ge=0)
+    warning: str | None
+
+
+class ExportConditionComparisonV2(ExportModel):
+    conditions: dict[str, ExportConditionAggregateV2]
+    paired: ExportConditionPairedComparisonV2 | None
+    availability: ExportConditionMetricAvailabilityV2
+
+
+class ExportAblationSummariesV2(ExportModel):
+    condition_counts: dict[str, int] = Field(default_factory=dict)
+    condition_labels: dict[str, str] = Field(default_factory=dict)
+    conditions_by_ablation_family: dict[str, dict[str, int]] = Field(
+        default_factory=dict
+    )
+    graph_metrics_by_ablation_family: dict[str, dict[str, float | None]] = Field(
+        default_factory=dict
+    )
+    condition_comparison: ExportConditionComparisonV2 | None = None
+
+
+class ExportEmptyAnalyticsRowV2(ExportModel):
+    pass
+
+
+class ExportAblationV2(ExportAnalyticsBaseV2):
+    rows: list[ExportEmptyAnalyticsRowV2]
+    summaries: ExportAblationSummariesV2
+
+
+class ExportHumanVsAutoRowV2(ExportModel):
+    run_id: str
+    question_id: str
+    mode: CampaignMode
+    rating_count: int = Field(ge=0)
+    human_correctness_mean: float = Field(ge=0, le=1)
+    human_faithfulness_mean: float = Field(ge=0, le=1)
+    ragas_answer_correctness: float | None = Field(ge=0, le=1)
+    ragas_faithfulness: float | None = Field(ge=0, le=1)
+
+
+class ExportHumanVsAutoSummaryV2(ExportModel):
+    human_rating_count: int = Field(default=0, ge=0)
+    paired_sample_count: int = Field(default=0, ge=0)
+    human_correctness_mean: float | None = Field(default=None, ge=0, le=1)
+    human_faithfulness_mean: float | None = Field(default=None, ge=0, le=1)
+    ragas_human_pearson_r: float | None = Field(default=None, ge=-1, le=1)
+    ragas_human_spearman_r: float | None = Field(default=None, ge=-1, le=1)
+    inter_rater_agreement: float | None = Field(default=None, ge=0, le=1)
+
+
+class ExportHumanVsAutoV2(ExportAnalyticsBaseV2):
+    rows: list[ExportHumanVsAutoRowV2]
+    summaries: ExportHumanVsAutoSummaryV2
+
+
+class ExportSanitizedErrorRowV2(SanitizedErrorRow):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExportCampaignErrorsV2(ExportModel):
+    campaign_id: str
+    rows: list[ExportSanitizedErrorRowV2]
+
+
+class ExportStageWarningRowV2(StageWarningRow):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExportCampaignStageWarningsV2(ExportModel):
+    campaign_id: str
+    rows: list[ExportStageWarningRowV2]
+
+
 class ExportOverviewDataV2(ExportModel):
-    research_summary: CampaignResearchSummaryResponse
+    research_summary: ExportResearchSummaryV2
     release_metrics: ExportSection[ExportReleaseMetricsV2]
 
 
@@ -624,21 +880,21 @@ class ExportHumanEvalQueueV2(ExportModel):
 
 
 class ExportHumanEvaluationDataV2(ExportModel):
-    comparison: HumanVsAutoResponse
+    comparison: ExportHumanVsAutoV2
     queue: ExportHumanEvalQueueV2
 
 
 class ExportDiagnosticsDataV2(ExportModel):
-    errors: CampaignErrorsResponse
-    stage_warnings: CampaignStageWarningsResponse
+    errors: ExportCampaignErrorsV2
+    stage_warnings: ExportCampaignStageWarningsV2
 
 
 class ExportSectionsV2(ExportModel):
     overview: ExportSection[ExportOverviewDataV2]
-    question_analysis: ExportSection[ResearchQuestionComparisonResponse]
-    agent_behavior: ExportSection[AgentBehaviorResponse]
-    router_analysis: ExportSection[RouterAnalysisResponse]
-    ablation: ExportSection[AblationResponse]
+    question_analysis: ExportSection[ExportQuestionAnalysisV2]
+    agent_behavior: ExportSection[ExportAgentBehaviorV2]
+    router_analysis: ExportSection[ExportRouterAnalysisV2]
+    ablation: ExportSection[ExportAblationV2]
     human_evaluation: ExportSection[ExportHumanEvaluationDataV2]
     diagnostics: ExportSection[ExportDiagnosticsDataV2]
 

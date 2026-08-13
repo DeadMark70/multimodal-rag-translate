@@ -44,9 +44,106 @@ from evaluation.export_schemas import (
     ExportV9ExecutionObservabilityV2,
     resolve_export_content_policy,
 )
-from evaluation.observability_storage import redact_sensitive_value
+from core.sensitive_data import is_sensitive_credential_key
+from evaluation.observability_storage import (
+    redact_sensitive_text,
+    safe_comparison_projection,
+)
 from evaluation.release_metrics import ReleaseMetricsService
 from evaluation.research_analytics import CanonicalRunObservability, ResearchAnalyticsService
+
+
+_MAX_EXPORT_TEXT_CHARS = 64 * 1024
+_ANSWER_CONTENT_KEYS = {
+    "answer",
+    "answer_preview",
+    "answer_text",
+    "claim",
+    "claim_text",
+    "completion",
+    "final_answer",
+    "final_claim",
+}
+_EXCERPT_CONTENT_KEYS = {
+    "context",
+    "contexts",
+    "excerpt",
+    "fact_text",
+    "retrieved_excerpt",
+    "statement",
+}
+_PERMANENTLY_EXCLUDED_KEYS = {
+    "error",
+    "errors",
+    "provider_body",
+    "provider_error",
+    "provider_response",
+    "raw_provider_response",
+    "stack",
+    "stack_trace",
+    "traceback",
+}
+
+
+def _safe_export_text(value: object) -> str:
+    text = redact_sensitive_text(value)
+    if len(text) > _MAX_EXPORT_TEXT_CHARS:
+        return f"{text[: _MAX_EXPORT_TEXT_CHARS - 3]}..."
+    return text
+
+
+def _safe_optional_export_text(value: object | None) -> str | None:
+    return _safe_export_text(value) if value is not None else None
+
+
+def _sanitize_export_value(value: Any) -> Any:
+    """Credential-redact and bound every free-text value in the artifact."""
+    if isinstance(value, dict):
+        return {
+            str(key): (
+                item
+                if is_sensitive_credential_key(str(key))
+                and isinstance(item, str)
+                and item in {"redacted", "[redacted]"}
+                else "[redacted]"
+                if is_sensitive_credential_key(str(key))
+                else _sanitize_export_value(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_export_value(item) for item in value]
+    return _safe_export_text(value) if isinstance(value, str) else value
+
+
+def _project_trace_payload(
+    value: Any, *, request: ExportCampaignRequest, field_name: str | None = None
+) -> Any:
+    """Allow-list raw trace structure while enforcing answer/excerpt policy."""
+    if field_name in _ANSWER_CONTENT_KEYS and not request.include_answers:
+        return None
+    if field_name in _EXCERPT_CONTENT_KEYS and not request.include_retrieved_excerpts:
+        return None
+    if isinstance(value, dict):
+        projected: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text.lower() in _PERMANENTLY_EXCLUDED_KEYS:
+                continue
+            projected[key_text] = (
+                "[redacted]"
+                if is_sensitive_credential_key(key_text)
+                else _project_trace_payload(
+                    item, request=request, field_name=key_text.lower()
+                )
+            )
+        return projected
+    if isinstance(value, (list, tuple)):
+        return [
+            _project_trace_payload(item, request=request, field_name=field_name)
+            for item in value
+        ]
+    return _safe_export_text(value) if isinstance(value, str) else value
 
 
 def _availability(status: str = "complete", *reasons: str) -> ExportAvailability:
@@ -76,8 +173,15 @@ def _project_agentic_v9(
     if not request.include_answers:
         for item in row.get("final_claims", []):
             item["statement"] = None
-    row["comparison"] = redact_sensitive_value(row.get("comparison"))
-    return ExportV9ExecutionObservabilityV2.model_validate(row)
+    comparison = row.get("comparison")
+    row["comparison"] = (
+        _sanitize_export_value(safe_comparison_projection(comparison))
+        if isinstance(comparison, dict)
+        else None
+    )
+    return ExportV9ExecutionObservabilityV2.model_validate(
+        _sanitize_export_value(row)
+    )
 
 
 def _project_export_run_observability(
@@ -90,7 +194,7 @@ def _project_export_run_observability(
     for item in canonical.trace_events:
         row = item.model_dump(mode="python", exclude={"error"})
         row["payload"] = (
-            redact_sensitive_value(row["payload"])
+            _project_trace_payload(row["payload"], request=request)
             if request.include_raw_trace_payloads
             else {}
         )
@@ -105,9 +209,13 @@ def _project_export_run_observability(
             request,
             captured_at_execution=item.full_prompt_capture_status == "captured",
         )
-        row["prompt_preview"] = item.prompt_preview if preview_policy.prompt_preview_allowed else None
+        row["prompt_preview"] = (
+            _safe_optional_export_text(item.prompt_preview)
+            if preview_policy.prompt_preview_allowed
+            else None
+        )
         row["full_prompt"] = (
-            redact_sensitive_value(item.payload.get("full_prompt"))
+            _safe_optional_export_text(item.payload.get("full_prompt"))
             if full_policy.full_prompt_allowed
             else None
         )
@@ -116,7 +224,11 @@ def _project_export_run_observability(
         ExportRetrievalChunkV2.model_validate(
             {
                 **item.model_dump(mode="python", exclude={"payload"}),
-                "excerpt": item.excerpt if request.include_retrieved_excerpts else None,
+                "excerpt": (
+                    _safe_optional_export_text(item.excerpt)
+                    if request.include_retrieved_excerpts
+                    else None
+                ),
                 "provenance": "persisted",
                 "availability": _availability(),
             }
@@ -132,7 +244,11 @@ def _project_export_run_observability(
             condition_id=item.condition_id,
             schema_version=item.schema_version,
             span_id=item.span_id,
-            claim_text=item.claim_text if request.include_answers else None,
+            claim_text=(
+                _safe_optional_export_text(item.claim_text)
+                if request.include_answers
+                else None
+            ),
             claim_type=item.claim_type,
             support_status=item.support_status,
             evidence_refs=_references(item.evidence),
@@ -149,7 +265,11 @@ def _project_export_run_observability(
             ExportEvidenceCoverageV2.model_validate(
                 {
                     **item,
-                    "fact_text": item.get("fact_text") if request.include_answers else None,
+                    "fact_text": (
+                        _safe_optional_export_text(item.get("fact_text"))
+                        if request.include_answers
+                        else None
+                    ),
                 }
             )
             for item in canonical.evidence_coverage
@@ -166,7 +286,11 @@ def _project_export_run_observability(
             question_id=result.question_id,
             mode=result.mode,
             repeat_number=result.repeat_number,
-            answer_preview=result.answer[:500] if request.include_answers else None,
+            answer_preview=(
+                _safe_export_text(result.answer)[:500]
+                if request.include_answers
+                else None
+            ),
             latency_ms=result.total_latency_ms if result.total_latency_ms is not None else result.latency_ms,
             total_tokens=tokens.total_tokens,
             accounting_status=tokens.accounting_status if tokens.accounting_status != "incomplete_legacy" else "not_available",
@@ -310,7 +434,7 @@ class EvaluationExportService:
                     ),
                 )
             )
-        return ExportCampaignResponse(
+        response = ExportCampaignResponse(
             export_metadata=ExportMetadataV2(
                 exported_at=datetime.now(timezone.utc),
                 options=request,
@@ -331,21 +455,29 @@ class EvaluationExportService:
                 overview=ExportSection(
                     availability=complete,
                     data=ExportOverviewDataV2(
-                        research_summary=summary,
+                        research_summary=summary.model_dump(mode="python"),
                         release_metrics=ExportSection(
                             availability=release_availability,
                             data=release_projection,
                         ),
                     ),
                 ),
-                question_analysis=ExportSection(availability=complete, data=question),
-                agent_behavior=ExportSection(availability=complete, data=behavior),
-                router_analysis=ExportSection(availability=complete, data=router),
-                ablation=ExportSection(availability=complete, data=ablation),
+                question_analysis=ExportSection(
+                    availability=complete, data=question.model_dump(mode="python")
+                ),
+                agent_behavior=ExportSection(
+                    availability=complete, data=behavior.model_dump(mode="python")
+                ),
+                router_analysis=ExportSection(
+                    availability=complete, data=router.model_dump(mode="python")
+                ),
+                ablation=ExportSection(
+                    availability=complete, data=ablation.model_dump(mode="python")
+                ),
                 human_evaluation=ExportSection(
                     availability=complete,
                     data=ExportHumanEvaluationDataV2(
-                        comparison=human,
+                        comparison=human.model_dump(mode="python"),
                         queue=ExportHumanEvalQueueV2(
                             campaign_id=queue.campaign_id,
                             rows=[
@@ -364,10 +496,16 @@ class EvaluationExportService:
                 ),
                 diagnostics=ExportSection(
                     availability=complete,
-                    data=ExportDiagnosticsDataV2(errors=errors, stage_warnings=warnings),
+                    data=ExportDiagnosticsDataV2(
+                        errors=errors.model_dump(mode="python"),
+                        stage_warnings=warnings.model_dump(mode="python"),
+                    ),
                 ),
             ),
             runs=runs,
+        )
+        return ExportCampaignResponse.model_validate(
+            _sanitize_export_value(response.model_dump(mode="json"))
         )
 
 

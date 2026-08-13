@@ -1,6 +1,11 @@
 """Exact-shape contract tests for Evaluation Export Schema v2."""
 
+from copy import deepcopy
+
 from datetime import datetime, timezone
+
+import pytest
+from pydantic import ValidationError
 
 from evaluation.accounting_schemas import (
     CampaignResearchSummaryResponse,
@@ -383,6 +388,83 @@ def test_schema_v2_has_exact_top_level_and_section_shapes() -> None:
     assert ExportCampaignResponse.model_fields["schema_version"].default == "2.0"
 
 
+def test_schema_v2_rejects_arbitrary_properties_in_every_named_section() -> None:
+    response = _fully_populated_response().model_dump(mode="python")
+    paths = [
+        ("overview", "data", "research_summary"),
+        ("question_analysis", "data"),
+        ("agent_behavior", "data"),
+        ("router_analysis", "data"),
+        ("ablation", "data"),
+        ("human_evaluation", "data", "comparison"),
+        ("diagnostics", "data", "errors"),
+        ("diagnostics", "data", "stage_warnings"),
+    ]
+
+    for path in paths:
+        invalid = deepcopy(response)
+        target = invalid["sections"]
+        for key in path:
+            target = target[key]
+        target["unexpected"] = "must be rejected"
+        with pytest.raises(ValidationError):
+            ExportCampaignResponse.model_validate(invalid)
+
+
+def test_schema_v2_v9_comparison_has_one_fixed_shape_and_rejects_extras() -> None:
+    comparison = {
+        "planner_status": "planned",
+        "planner_latency_ms": 1.5,
+        "planner_fallback_reason": None,
+        "fallback_stage": None,
+        "validation_issues": [{"path": "subjects.0", "type": "invalid"}],
+        "is_comparison": True,
+        "subjects": [
+            {"subject_id": "subject-1", "display_name": "Subject", "aliases": []}
+        ],
+        "dimensions": ["quality"],
+        "task_diagnostics": [
+            {
+                "task_id": "task-1",
+                "subject_id": "subject-1",
+                "query_hash": "hash",
+                "query_preview": "query",
+                "status": "executed",
+                "fallback_reason": None,
+                "candidate_count": 1,
+                "pre_subject_limit_count": 1,
+                "selected_count": 1,
+                "selected": [{"doc_id": "doc-1", "chunk_id": "chunk-1"}],
+            }
+        ],
+        "coverage_before_repair": ["subject-1"],
+        "missing_before_repair": [],
+        "repair_executed": False,
+        "coverage_after_repair": ["subject-1"],
+        "missing_after_repair": [],
+        "final_status": "complete",
+        "final_evidence_subjects": ["subject-1"],
+        "final_evidence_count": 1,
+        "final_evidence": [
+            {
+                "evidence_id": "evidence-1",
+                "doc_id": "doc-1",
+                "chunk_id": "chunk-1",
+                "subject_ids": ["subject-1"],
+            }
+        ],
+    }
+
+    exported = ExportV9ExecutionObservabilityV2(comparison=comparison)
+    assert exported.comparison is not None
+    assert exported.comparison.final_evidence_count == 1
+
+    with pytest.raises(ValidationError):
+        ExportV9ExecutionObservabilityV2(
+            comparison={**comparison, "provider_body": "must be rejected"}
+        )
+
+
 def test_schema_v2_allow_lists_identity_result_and_observability_rows() -> None:
     assert set(ExportCampaignIdentityV2.model_fields) == {
         "id",
@@ -447,7 +529,7 @@ def test_schema_v2_redacted_answer_and_reference_fields_accept_none() -> None:
     assert result.contexts is None
 
 
-def test_schema_v2_constructs_a_fully_populated_response() -> None:
+def _fully_populated_response() -> ExportCampaignResponse:
     research_summary = CampaignResearchSummaryResponse(
         campaign_id="campaign-1",
         completed_run_count=1,
@@ -471,7 +553,7 @@ def test_schema_v2_constructs_a_fully_populated_response() -> None:
         overview=ExportSection(
             availability=availability,
             data=ExportOverviewDataV2(
-                research_summary=research_summary,
+                research_summary=research_summary.model_dump(mode="python"),
                 release_metrics=ExportSection(
                     availability=availability,
                     data=ExportReleaseMetricsV2(
@@ -484,34 +566,38 @@ def test_schema_v2_constructs_a_fully_populated_response() -> None:
         ),
         question_analysis=ExportSection(
             availability=availability,
-            data=_aggregate(ResearchQuestionComparisonResponse),
+            data=_aggregate(ResearchQuestionComparisonResponse).model_dump(
+                mode="python"
+            ),
         ),
         agent_behavior=ExportSection(
             availability=availability,
-            data=_aggregate(AgentBehaviorResponse),
+            data=_aggregate(AgentBehaviorResponse).model_dump(mode="python"),
         ),
         router_analysis=ExportSection(
             availability=availability,
-            data=_aggregate(RouterAnalysisResponse),
+            data=_aggregate(RouterAnalysisResponse).model_dump(mode="python"),
         ),
         ablation=ExportSection(
             availability=availability,
-            data=_aggregate(AblationResponse),
+            data=_aggregate(AblationResponse).model_dump(mode="python"),
         ),
         human_evaluation=ExportSection(
             availability=availability,
             data=ExportHumanEvaluationDataV2(
-                comparison=_aggregate(HumanVsAutoResponse),
+                comparison=_aggregate(HumanVsAutoResponse).model_dump(mode="python"),
                 queue=ExportHumanEvalQueueV2(campaign_id="campaign-1", rows=[]),
             ),
         ),
         diagnostics=ExportSection(
             availability=availability,
             data=ExportDiagnosticsDataV2(
-                errors=CampaignErrorsResponse(campaign_id="campaign-1", rows=[]),
+                errors=CampaignErrorsResponse(
+                    campaign_id="campaign-1", rows=[]
+                ).model_dump(mode="python"),
                 stage_warnings=CampaignStageWarningsResponse(
                     campaign_id="campaign-1", rows=[]
-                ),
+                ).model_dump(mode="python"),
             ),
         ),
     )
@@ -577,7 +663,11 @@ def test_schema_v2_constructs_a_fully_populated_response() -> None:
         ],
     )
 
-    dumped = response.model_dump(mode="json")
+    return response
+
+
+def test_schema_v2_constructs_a_fully_populated_response() -> None:
+    dumped = _fully_populated_response().model_dump(mode="json")
     assert dumped["schema_version"] == "2.0"
     assert dumped["sections"]["overview"]["data"]["release_metrics"]["data"]
     assert dumped["runs"][0]["ragas_metrics"] == {"faithfulness": 0.9}

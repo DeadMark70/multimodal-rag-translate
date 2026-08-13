@@ -64,6 +64,7 @@ from main import app
 
 CONTENT_POLICY_ROWS = list(itertools.product((False, True), repeat=5))
 NOW = datetime(2026, 8, 13, tzinfo=timezone.utc)
+FREE_TEXT_SECRET = "api_key=export-free-text-secret"
 
 
 @pytest.mark.parametrize(
@@ -136,8 +137,8 @@ def _export_result() -> CampaignResult:
         run_number=1,
         repeat_number=1,
         agentic_execution_version="v9",
-        answer="Answer text",
-        contexts=["Context text"],
+        answer=f"Answer text {FREE_TEXT_SECRET}",
+        contexts=[f"Context text {FREE_TEXT_SECRET}"],
         source_doc_ids=["doc-1"],
         latency_ms=12,
         total_latency_ms=15,
@@ -172,8 +173,18 @@ def _canonical_export_run() -> CanonicalRunObservability:
                 started_at=NOW,
                 status="success",
                 payload={
-                    "safe": "value",
+                    "safe": f"value {FREE_TEXT_SECRET}",
                     "access_token": "trace-secret-sentinel",
+                    "nested": {
+                        "answer": f"Nested answer {FREE_TEXT_SECRET}",
+                        "statement": f"Nested statement {FREE_TEXT_SECRET}",
+                        "context": f"Nested context {FREE_TEXT_SECRET}",
+                        "excerpt": f"Nested excerpt {FREE_TEXT_SECRET}",
+                        "doc_id": "doc-identity-must-survive",
+                    },
+                    "provider_response": {"body": "provider-body-sentinel"},
+                    "stack_trace": "stack-trace-sentinel",
+                    "error": {"message": "unrestricted-error-sentinel"},
                 },
                 created_at=NOW,
             )
@@ -190,8 +201,8 @@ def _canonical_export_run() -> CanonicalRunObservability:
                 total_tokens=17,
                 prompt_capture_status="captured",
                 full_prompt_capture_status="captured",
-                prompt_preview="Prompt preview",
-                payload={"full_prompt": "Full prompt"},
+                prompt_preview=f"Prompt preview {FREE_TEXT_SECRET}",
+                payload={"full_prompt": f"Full prompt {FREE_TEXT_SECRET}"},
                 created_at=NOW,
             )
         ],
@@ -204,7 +215,7 @@ def _canonical_export_run() -> CanonicalRunObservability:
                 retrieval_event_id="retrieval-1",
                 chunk_id="chunk-1",
                 doc_id="doc-1",
-                excerpt="Retrieved excerpt",
+                excerpt=f"Retrieved excerpt {FREE_TEXT_SECRET}",
                 created_at=NOW,
             )
         ],
@@ -218,7 +229,7 @@ def _canonical_export_run() -> CanonicalRunObservability:
                 claim_id="claim-1",
                 run_id=result.id,
                 campaign_id=result.campaign_id,
-                claim_text="Claim statement",
+                claim_text=f"Claim statement {FREE_TEXT_SECRET}",
                 created_at=NOW,
             )
         ],
@@ -234,7 +245,7 @@ def _canonical_export_run() -> CanonicalRunObservability:
                         round_id="round-1",
                         query_id="query-1",
                         slot_ids=["slot-1"],
-                        statement="Evidence statement",
+                        statement=f"Evidence statement {FREE_TEXT_SECRET}",
                         support_type="direct",
                         source={"doc_id": "doc-1", "chunk_id": "chunk-1"},
                         scope={"dataset": "benchmark"},
@@ -245,18 +256,37 @@ def _canonical_export_run() -> CanonicalRunObservability:
             final_claims=[
                 FinalClaim(
                     claim_id="final-claim-1",
-                    statement="Final claim statement",
+                    statement=f"Final claim statement {FREE_TEXT_SECRET}",
                     support_type="direct",
                     evidence_ids=["evidence-1"],
                 )
             ],
+            comparison={
+                "planner_status": "planned",
+                "subjects": [
+                    {
+                        "subject_id": "subject-1",
+                        "display_name": f"Subject {FREE_TEXT_SECRET}",
+                    }
+                ],
+                "task_diagnostics": [
+                    {
+                        "task_id": "task-1",
+                        "subject_id": "subject-1",
+                        "query_preview": f"Query {FREE_TEXT_SECRET}",
+                        "selected": [{"doc_id": "doc-1", "chunk_id": "chunk-1"}],
+                    }
+                ],
+                "provider_body": "comparison-provider-body-sentinel",
+                "stack_trace": "comparison-stack-sentinel",
+            },
         ),
         graph_observability_status="not_instrumented",
         claim_extraction_status="recorded",
         evidence_coverage=[
             {
                 "atomic_fact_id": "fact-1",
-                "fact_text": "Atomic fact text",
+                "fact_text": f"Atomic fact text {FREE_TEXT_SECRET}",
                 "retrieved": True,
                 "packed": True,
                 "mentioned": True,
@@ -298,43 +328,82 @@ def test_export_projector_applies_all_nested_content_policies(
     )
 
     assert projected.trace_events[0].payload == (
-        {"safe": "value", "access_token": "[redacted]"}
+        {
+            "safe": "value [redacted]",
+            "access_token": "[redacted]",
+            "nested": {
+                "answer": "Nested answer [redacted]" if include_answers else None,
+                "statement": (
+                    "Nested statement [redacted]"
+                    if include_retrieved_excerpts
+                    else None
+                ),
+                "context": (
+                    "Nested context [redacted]"
+                    if include_retrieved_excerpts
+                    else None
+                ),
+                "excerpt": (
+                    "Nested excerpt [redacted]"
+                    if include_retrieved_excerpts
+                    else None
+                ),
+                "doc_id": "doc-identity-must-survive",
+            },
+        }
         if include_raw_trace_payloads
         else {}
     )
     assert projected.llm_calls[0].prompt_preview == (
-        "Prompt preview" if include_prompt_previews else None
+        "Prompt preview [redacted]" if include_prompt_previews else None
     )
     assert projected.llm_calls[0].full_prompt == (
-        "Full prompt" if include_full_prompts else None
+        "Full prompt [redacted]" if include_full_prompts else None
     )
     assert projected.run_summary.answer_preview == (
-        "Answer text" if include_answers else None
+        "Answer text [redacted]" if include_answers else None
     )
     assert projected.claims[0].claim_text == (
-        "Claim statement" if include_answers else None
+        "Claim statement [redacted]" if include_answers else None
     )
     assert projected.evidence_coverage[0].fact_text == (
-        "Atomic fact text" if include_answers else None
+        "Atomic fact text [redacted]" if include_answers else None
     )
     assert projected.retrieval_chunks[0].excerpt == (
-        "Retrieved excerpt" if include_retrieved_excerpts else None
+        "Retrieved excerpt [redacted]" if include_retrieved_excerpts else None
     )
     assert projected.agentic_v9 is not None
     assert projected.agentic_v9.final_claims[0].statement == (
-        "Final claim statement" if include_answers else None
+        "Final claim statement [redacted]" if include_answers else None
     )
     assert projected.agentic_v9.evidence_packets[0].packet.statement == (
-        "Evidence statement" if include_retrieved_excerpts else None
+        "Evidence statement [redacted]" if include_retrieved_excerpts else None
     )
     assert projected.agentic_v9.evidence_packets[0].packet.locator.pdf_page_index == 0
+    assert projected.agentic_v9.comparison is not None
+    assert projected.agentic_v9.comparison.subjects[0].display_name == "Subject [redacted]"
+    assert (
+        projected.agentic_v9.comparison.task_diagnostics[0].query_preview
+        == "Query [redacted]"
+    )
+    serialized = projected.model_dump_json()
+    for forbidden in (
+        "export-free-text-secret",
+        "provider-body-sentinel",
+        "stack-trace-sentinel",
+        "unrestricted-error-sentinel",
+        "comparison-provider-body-sentinel",
+        "comparison-stack-sentinel",
+    ):
+        assert forbidden not in serialized
 
 
 @pytest.mark.asyncio
 async def test_export_summary_composes_named_sections_without_loading_observability() -> None:
+    oversized_name = f"Campaign {FREE_TEXT_SECRET} " + ("x" * 100_000)
     campaign = SimpleNamespace(
         id="campaign-1",
-        name="Campaign",
+        name=oversized_name,
         status="completed",
         config=SimpleNamespace(
             benchmark_id=None,
@@ -456,6 +525,10 @@ async def test_export_summary_composes_named_sections_without_loading_observabil
     assert response.runs[0].latency.total_latency_ms == 15
     assert response.runs[0].observability.included is False
     assert response.runs[0].observability.data is None
+    assert response.campaign.name is not None
+    assert "export-free-text-secret" not in response.model_dump_json()
+    assert len(response.campaign.name) < len(oversized_name)
+    assert response.campaign.name == "[REDACTED]"
     research.get_campaign_run_observability.assert_not_awaited()
 
     research.get_campaign_run_observability.side_effect = None

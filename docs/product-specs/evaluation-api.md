@@ -157,6 +157,14 @@ applies only to sanitized trace-event payloads. Prompt previews follow
 `include_full_prompts=true` and execution-time capture. Answers and retrieved
 excerpts are independently nullable under their respective controls.
 
+All named analytics and diagnostics sections, including agentic-v9 comparison
+diagnostics, use export-owned strict models. Dynamic maps accept only their
+declared concrete value type; unrestricted JSON is limited to the sanitized
+trace-event payload. The export boundary credential-redacts and bounds every
+free-text field. Raw trace projection also removes provider bodies, errors, and
+stack traces recursively, and applies the answer/excerpt flags to equivalent
+nested keys while retaining typed identity and locator fields.
+
 ## Compatibility And Empty States
 
 - Legacy campaign APIs remain available for existing consumers.

@@ -452,7 +452,9 @@
   - required panel sections are composed from their canonical services and fail all-or-error
   - summary exports do not load detailed observability; full exports use one campaign snapshot and require exact result/run-ID equality
   - every `runs[]` row contains the fixed result projection, official finite-only RAGAS metrics, accounting, latency, and a fixed observability envelope
-  - trace event `payload` is blank unless `include_raw_trace_payloads=true`, and included trace payloads are recursively credential-redacted
+  - trace event `payload` is blank unless `include_raw_trace_payloads=true`; included payloads recursively exclude provider bodies/errors/stack traces, redact credentials, and apply answer/excerpt policy to equivalent nested keys
+  - every exported free-text field is credential-redacted and bounded; typed identity and locator fields remain present
+  - named analytics/diagnostics and agentic-v9 comparison use strict export-owned shapes; unrestricted JSON exists only at the sanitized trace payload boundary
   - prompt previews follow `include_prompt_previews`; full prompts require `include_full_prompts=true` and execution-time capture
   - `include_answers=false` clears result/preview/claim/fact/final-claim content, including the human-evaluation queue preview
   - `include_retrieved_excerpts=false` clears excerpts and evidence statements while retaining identity and locator fields
