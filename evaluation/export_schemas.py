@@ -808,7 +808,9 @@ class ExportAblationSummariesV2(ExportModel):
     graph_metrics_by_ablation_family: dict[str, dict[str, float | None]] = Field(
         default_factory=dict
     )
-    condition_comparison: ExportConditionComparisonV2 | None = None
+    condition_comparison: ExportConditionComparisonV2 | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class ExportEmptyAnalyticsRowV2(ExportModel):

@@ -524,6 +524,10 @@ async def test_export_summary_composes_named_sections_without_loading_observabil
     assert release_data is not None
     assert release_data.manifest.model_dump() == {}
     assert release_data.statistics.model_dump() == {}
+    ablation_summary = response.model_dump(mode="json")["sections"]["ablation"][
+        "data"
+    ]["summaries"]
+    assert "condition_comparison" not in ablation_summary
     assert response.runs[0].ragas_metrics == {"faithfulness": 0.9}
     assert response.runs[0].accounting.total_tokens is None
     assert response.runs[0].latency.total_latency_ms == 15
