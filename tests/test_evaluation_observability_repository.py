@@ -7,6 +7,7 @@ import aiosqlite
 
 from evaluation import db as evaluation_db
 from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
 from evaluation.trace_schemas import (
     EvaluationClaim,
     EvaluationContextPack,
@@ -55,27 +56,37 @@ async def _seed_campaign(campaign_id: str) -> None:
 
 async def _seed_attempt(campaign_id: str, attempt_id: str) -> None:
     now = _now().isoformat()
+    job_id = f"job-{attempt_id}"
+    work_item_id = f"work-item-{attempt_id}"
+    job_item_id = f"job-item-{attempt_id}"
     async with evaluation_db.connect_db() as connection:
         await connection.execute(
             """
             INSERT INTO evaluation_jobs (id, user_id, campaign_id, job_type, selection_json, config_snapshot_json, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            ("job-1", "user-a", campaign_id, "execution", "{}", "{}", now),
+            (job_id, "user-a", campaign_id, "execution", "{}", "{}", now),
         )
         await connection.execute(
             """
             INSERT INTO evaluation_work_items (id, campaign_id, logical_key, work_type, input_snapshot_json, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            ("work-item-1", campaign_id, "logical-key-1", "execution", "{}", now),
+            (
+                work_item_id,
+                campaign_id,
+                f"logical-key-{attempt_id}",
+                "execution",
+                "{}",
+                now,
+            ),
         )
         await connection.execute(
             """
             INSERT INTO evaluation_job_items (id, job_id, work_item_id, status, max_attempts, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            ("job-item-1", "job-1", "work-item-1", "running", 1, now, now),
+            (job_item_id, job_id, work_item_id, "running", 1, now, now),
         )
         await connection.execute(
             """
@@ -83,7 +94,7 @@ async def _seed_attempt(campaign_id: str, attempt_id: str) -> None:
                 id, job_id, job_item_id, work_item_id, attempt_number, status, started_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (attempt_id, "job-1", "job-item-1", "work-item-1", 1, "running", now),
+            (attempt_id, job_id, job_item_id, work_item_id, 1, "running", now),
         )
         await connection.commit()
 
@@ -123,12 +134,18 @@ async def test_observability_repository_round_trips_v9_evidence_and_slot_resolut
     await repository.record_slot_resolution(resolution)
     await repository.record_slot_resolution(resolution)
 
-    assert await repository.list_evidence_packets_for_attempt("attempt-v9") == [evidence]
-    assert await repository.list_slot_resolutions_for_attempt("attempt-v9") == [resolution]
+    assert await repository.list_evidence_packets_for_attempt("attempt-v9") == [
+        evidence
+    ]
+    assert await repository.list_slot_resolutions_for_attempt("attempt-v9") == [
+        resolution
+    ]
 
 
 @pytest.mark.asyncio
-async def test_observability_repository_rejects_oversized_v9_payload(tmp_path, monkeypatch) -> None:
+async def test_observability_repository_rejects_oversized_v9_payload(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
     await _seed_campaign("campaign-v9-limit")
     await _seed_attempt("campaign-v9-limit", "attempt-v9-limit")
@@ -149,7 +166,9 @@ async def test_observability_repository_rejects_oversized_v9_payload(tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_observability_repository_round_trips_run_details(tmp_path, monkeypatch) -> None:
+async def test_observability_repository_round_trips_run_details(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
     repository = EvaluationObservabilityRepository()
     created_at = _now()
@@ -329,7 +348,9 @@ async def test_observability_repository_round_trips_run_details(tmp_path, monkey
         )
     )
 
-    assert (await repository.list_trace_events_for_run("run-1"))[0].payload["query_hash"] == "hash-1"
+    assert (await repository.list_trace_events_for_run("run-1"))[0].payload[
+        "query_hash"
+    ] == "hash-1"
     llm_call = (await repository.list_llm_calls_for_run("run-1"))[0]
     assert llm_call.total_tokens == 30
     assert llm_call.phase == "final_answer"
@@ -339,14 +360,22 @@ async def test_observability_repository_round_trips_run_details(tmp_path, monkey
     assert llm_call.full_prompt_capture_status == "not_captured_at_execution"
     assert llm_call.reasoning_tokens == 4
     assert llm_call.other_tokens == 2
-    assert (await repository.list_retrieval_events_for_run("run-1"))[0].payload["fusion"] == "rrf"
-    assert (await repository.list_retrieval_chunks_for_run("run-1"))[0].expected_evidence_match is True
-    assert (await repository.list_context_packs_for_run("run-1"))[0].retrieved_but_not_packed_evidence == [
-        {"evidence_id": "E2"}
-    ]
+    assert (await repository.list_retrieval_events_for_run("run-1"))[0].payload[
+        "fusion"
+    ] == "rrf"
+    assert (await repository.list_retrieval_chunks_for_run("run-1"))[
+        0
+    ].expected_evidence_match is True
+    assert (await repository.list_context_packs_for_run("run-1"))[
+        0
+    ].retrieved_but_not_packed_evidence == [{"evidence_id": "E2"}]
     assert (await repository.list_tool_calls_for_run("run-1"))[0].payload["page"] == 5
-    assert (await repository.list_routing_decisions_for_run("run-1"))[0].selected_mode == "agentic"
-    assert (await repository.list_claims_for_run("run-1"))[0].evidence[0]["doc_id"] == "paper-a.pdf"
+    assert (await repository.list_routing_decisions_for_run("run-1"))[
+        0
+    ].selected_mode == "agentic"
+    assert (await repository.list_claims_for_run("run-1"))[0].evidence[0][
+        "doc_id"
+    ] == "paper-a.pdf"
     assert (await repository.list_human_ratings_for_run("run-1"))[0].is_blinded is True
 
 
@@ -354,9 +383,7 @@ async def test_observability_repository_round_trips_run_details(tmp_path, monkey
 async def test_actual_and_retrospective_routing_rows_keep_distinct_provenance(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(
-        evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db"
-    )
+    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
     await _seed_campaign("campaign-route-types")
     repository = EvaluationObservabilityRepository()
     created_at = datetime(2026, 7, 26, tzinfo=timezone.utc)
@@ -389,9 +416,7 @@ async def test_actual_and_retrospective_routing_rows_keep_distinct_provenance(
         )
     )
 
-    decisions = await repository.list_routing_decisions_for_run(
-        "run-route-types"
-    )
+    decisions = await repository.list_routing_decisions_for_run("run-route-types")
     assert [decision.analysis_type for decision in decisions] == [
         "retrospective",
         "actual",
@@ -551,7 +576,8 @@ async def test_observability_repository_lists_campaign_details_grouped_by_run(
                 status="success",
                 error={},
                 payload={},
-                created_at=created_at + timedelta(seconds=1 if run_id == "run-2" else 0),
+                created_at=created_at
+                + timedelta(seconds=1 if run_id == "run-2" else 0),
             )
         )
         await repository.record_retrieval_event(
@@ -649,7 +675,9 @@ async def test_observability_repository_lists_campaign_details_grouped_by_run(
     trace_by_run = await repository.list_trace_events_for_campaign("campaign-bulk")
     llm_by_run = await repository.list_llm_calls_for_campaign("campaign-bulk")
     chunks_by_run = await repository.list_retrieval_chunks_for_campaign("campaign-bulk")
-    routing_by_run = await repository.list_routing_decisions_for_campaign("campaign-bulk")
+    routing_by_run = await repository.list_routing_decisions_for_campaign(
+        "campaign-bulk"
+    )
     claims_by_run = await repository.list_claims_for_campaign("campaign-bulk")
     ratings_by_run = await repository.list_human_ratings_for_campaign("campaign-bulk")
 
@@ -669,12 +697,214 @@ async def test_observability_repository_lists_campaign_details_grouped_by_run(
 
 
 @pytest.mark.asyncio
+async def test_campaign_observability_snapshot_is_complete_isolated_and_ordered(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
+    repository = EvaluationObservabilityRepository()
+    created_at = datetime(2026, 8, 13, tzinfo=timezone.utc)
+    campaigns_and_runs = (
+        ("campaign-snapshot", "run-2"),
+        ("campaign-other", "run-other"),
+        ("campaign-snapshot", "run-1"),
+    )
+    await _seed_campaign("campaign-snapshot")
+    await _seed_campaign("campaign-other")
+
+    for campaign_id, run_id in campaigns_and_runs:
+        await repository.record_trace_event(
+            EvaluationTraceEvent(
+                event_id=f"trace-{run_id}",
+                run_id=run_id,
+                campaign_id=campaign_id,
+                span_id=f"span-{run_id}",
+                event_type="span_completed",
+                sequence=1,
+                stage_type="retrieval",
+                stage_name="retrieve",
+                started_at=created_at,
+                status="success",
+                created_at=created_at,
+            )
+        )
+        await repository.record_llm_call(
+            EvaluationLlmCall(
+                llm_call_id=f"llm-{run_id}",
+                run_id=run_id,
+                campaign_id=campaign_id,
+                created_at=created_at,
+            )
+        )
+        await repository.record_retrieval_event(
+            EvaluationRetrievalEvent(
+                retrieval_event_id=f"retrieval-{run_id}",
+                run_id=run_id,
+                campaign_id=campaign_id,
+                result_count=1,
+                created_at=created_at,
+            )
+        )
+        await repository.record_retrieval_chunk(
+            EvaluationRetrievalChunk(
+                retrieval_chunk_id=f"chunk-row-{run_id}",
+                run_id=run_id,
+                campaign_id=campaign_id,
+                retrieval_event_id=f"retrieval-{run_id}",
+                chunk_id=f"chunk-{run_id}",
+                created_at=created_at,
+            )
+        )
+        await repository.record_context_pack(
+            EvaluationContextPack(
+                context_pack_id=f"context-{run_id}",
+                run_id=run_id,
+                campaign_id=campaign_id,
+                created_at=created_at,
+            )
+        )
+        await repository.record_tool_call(
+            EvaluationToolCall(
+                tool_call_id=f"tool-{run_id}",
+                run_id=run_id,
+                campaign_id=campaign_id,
+                tool_name="search",
+                created_at=created_at,
+            )
+        )
+        await repository.record_routing_decision(
+            EvaluationRoutingDecision(
+                routing_decision_id=f"routing-{run_id}",
+                run_id=run_id,
+                campaign_id=campaign_id,
+                selected_mode="agentic",
+                created_at=created_at,
+            )
+        )
+        graph_event_id = f"graph-{run_id}"
+        await repository.record_graph_event(
+            EvaluationGraphEvent(
+                graph_event_id=graph_event_id,
+                run_id=run_id,
+                campaign_id=campaign_id,
+                graph_query="question",
+                graph_search_mode="local",
+                graph_route="local",
+                created_at=created_at,
+            )
+        )
+        await repository.record_graph_evidence_item(
+            EvaluationGraphEvidenceItem(
+                graph_evidence_item_id=f"graph-evidence-{run_id}",
+                graph_event_id=graph_event_id,
+                created_at=created_at,
+            )
+        )
+        await repository.record_claim(
+            EvaluationClaim(
+                claim_id=f"claim-{run_id}",
+                run_id=run_id,
+                campaign_id=campaign_id,
+                claim_text=f"Claim {run_id}",
+                created_at=created_at,
+            )
+        )
+        await repository.record_human_rating(
+            EvaluationHumanRating(
+                human_rating_id=f"rating-{run_id}",
+                run_id=run_id,
+                campaign_id=campaign_id,
+                rater_id_hash="rater",
+                rubric_version="v1",
+                correctness_score=1,
+                faithfulness_score=1,
+                completeness_score=1,
+                citation_quality_score=1,
+                usefulness_score=1,
+                created_at=created_at,
+            )
+        )
+
+    for attempt_id in ("attempt-current", "attempt-old"):
+        await _seed_attempt("campaign-snapshot", attempt_id)
+        await repository.materialize_v9_attempt(
+            attempt_id=attempt_id,
+            run_id="run-1",
+            campaign_id="campaign-snapshot",
+            condition_id="condition-1",
+            schema_version="1",
+            trace_payload={"attempt": attempt_id},
+            evidence_packets=[
+                EvaluationEvidencePacket(
+                    attempt_id=attempt_id,
+                    run_id="run-1",
+                    campaign_id="campaign-snapshot",
+                    condition_id="condition-1",
+                    evidence_id=f"evidence-{attempt_id}",
+                    packet={"attempt": attempt_id},
+                    created_at=created_at,
+                )
+            ],
+            slot_resolutions=[
+                EvaluationSlotResolution(
+                    attempt_id=attempt_id,
+                    run_id="run-1",
+                    campaign_id="campaign-snapshot",
+                    condition_id="condition-1",
+                    slot_id=f"slot-{attempt_id}",
+                    resolution={"attempt": attempt_id},
+                    created_at=created_at,
+                )
+            ],
+        )
+
+    snapshot = await repository.load_campaign_observability_snapshot(
+        "campaign-snapshot"
+    )
+
+    family_names = (
+        "trace_events_by_run_id",
+        "llm_calls_by_run_id",
+        "retrieval_events_by_run_id",
+        "retrieval_chunks_by_run_id",
+        "context_packs_by_run_id",
+        "tool_calls_by_run_id",
+        "routing_decisions_by_run_id",
+        "graph_events_by_run_id",
+        "graph_evidence_items_by_run_id",
+        "claims_by_run_id",
+        "human_ratings_by_run_id",
+    )
+    for family_name in family_names:
+        assert list(getattr(snapshot, family_name)) == ["run-1", "run-2"]
+    assert [row.attempt_id for row in snapshot.materializations_by_run_id["run-1"]] == [
+        "attempt-current",
+        "attempt-old",
+    ]
+    assert [row.attempt_id for row in snapshot.evidence_packets_by_run_id["run-1"]] == [
+        "attempt-current",
+        "attempt-old",
+    ]
+    assert [row.attempt_id for row in snapshot.slot_resolutions_by_run_id["run-1"]] == [
+        "attempt-current",
+        "attempt-old",
+    ]
+    assert "run-other" not in {
+        run_id
+        for family_name in (
+            *family_names,
+            "materializations_by_run_id",
+            "evidence_packets_by_run_id",
+            "slot_resolutions_by_run_id",
+        )
+        for run_id in getattr(snapshot, family_name)
+    }
+
+
+@pytest.mark.asyncio
 async def test_llm_retry_attempt_rows_are_append_only_and_uniquely_addressable(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(
-        evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db"
-    )
+    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
     await _seed_campaign("campaign-retry")
     repository = EvaluationObservabilityRepository()
     created_at = datetime(2026, 7, 27, tzinfo=timezone.utc)

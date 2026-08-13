@@ -3,14 +3,17 @@
 from datetime import datetime, timezone
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 
 from evaluation import db as evaluation_db
-from evaluation.accounting_schemas import AccountingScopeStart, TokenBreakdown, UsageEventCreate
-from evaluation.accounting_store import EvaluationAccountingStore
+from evaluation import research_analytics as research_analytics_module
+from evaluation.accounting_schemas import AccountingScopeStart, UsageEventCreate
+from evaluation.accounting_store import (
+    CampaignAccountingSnapshot,
+    EvaluationAccountingStore,
+)
 from evaluation.campaign_schemas import CampaignConfig, CampaignResultStatus
 from evaluation.db import (
     CampaignRepository,
@@ -25,7 +28,10 @@ from evaluation.research_analytics import (
     nearest_rank,
 )
 from evaluation.job_store import build_legacy_evaluator_compatibility_signature
-from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.observability_storage import (
+    CampaignObservabilitySnapshot,
+    EvaluationObservabilityRepository,
+)
 from evaluation.schemas import ModelConfig
 from evaluation.trace_schemas import (
     EvaluationClaim,
@@ -50,6 +56,48 @@ def test_nearest_rank_percentiles_are_observed_values() -> None:
 def test_claim_extraction_status_distinguishes_empty_from_not_instrumented() -> None:
     assert _claim_extraction_status({"claim_extraction_status": "empty"}) == "empty"
     assert _claim_extraction_status({}) == "not_instrumented"
+
+
+@pytest.mark.asyncio
+async def test_question_and_agent_behavior_share_official_ragas_helper(
+    research_service, monkeypatch
+) -> None:
+    campaign_id = "shared-official-ragas"
+    await _campaign(campaign_id, ["naive"])
+    result_id = await _result(campaign_id, "naive", "attempt-1")
+    await _official_scope(campaign_id, result_id, "attempt-1")
+    calls: list[tuple[str, ...]] = []
+
+    def official_ragas_by_run(*, results, scores, work_metadata):
+        del scores, work_metadata
+        calls.append(tuple(result.id for result in results))
+        return {
+            result_id: {
+                "answer_correctness": 0.33,
+                "faithfulness": 0.44,
+            }
+        }
+
+    monkeypatch.setattr(
+        research_analytics_module,
+        "_official_ragas_by_run",
+        official_ragas_by_run,
+        raising=False,
+    )
+
+    comparison = await research_service.get_question_comparison(
+        user_id="user-1", campaign_id=campaign_id
+    )
+    behavior = await research_service.get_agent_behavior(
+        user_id="user-1", campaign_id=campaign_id
+    )
+
+    comparison_mode = comparison.rows[0].by_mode[0]
+    assert comparison_mode.answer_correctness == pytest.approx(0.33)
+    assert comparison_mode.faithfulness == pytest.approx(0.44)
+    assert behavior.rows[0].correctness == pytest.approx(0.33)
+    assert behavior.rows[0].faithfulness == pytest.approx(0.44)
+    assert calls == [(result_id,), (result_id,)]
 
 
 def test_token_breakdown_requires_provider_phase_rows_to_match_runtime_total() -> None:
@@ -310,6 +358,7 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
 
     result = SimpleNamespace(
         id="run-1",
+        campaign_id="cmp-1",
         question_id="q-1",
         mode="agentic",
         repeat_number=1,
@@ -331,9 +380,15 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
         async def list_trace_events_for_run(self, run_id):
             return [
                 EvaluationTraceEvent(
-                    event_id="trace-1", run_id=run_id, campaign_id="cmp-1",
-                    span_id="span-1", event_type="retrieval", sequence=1,
-                    stage_type="retrieval", stage_name="retrieve", started_at=now,
+                    event_id="trace-1",
+                    run_id=run_id,
+                    campaign_id="cmp-1",
+                    span_id="span-1",
+                    event_type="retrieval",
+                    sequence=1,
+                    stage_type="retrieval",
+                    stage_name="retrieve",
+                    started_at=now,
                     status="success",
                     payload={"secret": "sentinel-trace-payload"},
                     error={"stack": "sentinel-trace-stack"},
@@ -344,29 +399,53 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
         async def list_llm_calls_for_run(self, run_id):
             return [
                 EvaluationLlmCall(
-                    llm_call_id="llm-1", run_id=run_id, campaign_id="cmp-1",
+                    llm_call_id="llm-1",
+                    run_id=run_id,
+                    campaign_id="cmp-1",
+                    phase="final_answer",
+                    reservation_id="reservation-1",
+                    provider_attempt=1,
+                    prompt_tokens=3,
+                    completion_tokens=4,
+                    total_tokens=7,
+                    reasoning_tokens=0,
+                    other_tokens=0,
                     prompt_preview="safe prompt api_key=sk-llm-secret",
-                    payload={"provider_body": "sentinel-llm-provider"},
-                    error={"stack": "sentinel-llm-stack"}, created_at=now,
+                    payload={
+                        "usage_status": "measured",
+                        "official_total_tokens": 7,
+                        "provider_body": "sentinel-llm-provider",
+                    },
+                    error={"stack": "sentinel-llm-stack"},
+                    created_at=now,
                 )
             ]
 
         async def list_retrieval_events_for_run(self, run_id):
-            return [EvaluationRetrievalEvent(
-                retrieval_event_id="retrieval-1", run_id=run_id, campaign_id="cmp-1",
-                query=f"{'q' * 700} api_key=sentinel-retrieval-query-secret",
-                retriever_name="hybrid api_key=sentinel-retriever-secret",
-                result_count=3,
-                payload={"provider_body": "sentinel-retrieval-provider"},
-                created_at=now,
-            )]
+            return [
+                EvaluationRetrievalEvent(
+                    retrieval_event_id="retrieval-1",
+                    run_id=run_id,
+                    campaign_id="cmp-1",
+                    query=f"{'q' * 700} api_key=sentinel-retrieval-query-secret",
+                    retriever_name="hybrid api_key=sentinel-retriever-secret",
+                    result_count=3,
+                    payload={"provider_body": "sentinel-retrieval-provider"},
+                    created_at=now,
+                )
+            ]
 
         async def list_retrieval_chunks_for_run(self, run_id):
             return [
                 EvaluationRetrievalChunk(
-                    retrieval_chunk_id="chunk-derived", run_id=run_id, campaign_id="cmp-1",
-                    retrieval_event_id="retrieval-1", chunk_id="chunk-derived",
-                    excerpt="safe excerpt", used_in_context=True, used_in_answer=True,
+                    retrieval_chunk_id="chunk-derived",
+                    run_id=run_id,
+                    campaign_id="cmp-1",
+                    retrieval_event_id="retrieval-1",
+                    chunk_id="chunk-derived",
+                    excerpt="safe excerpt",
+                    used_in_context=True,
+                    used_in_answer=True,
                     expected_evidence_match=True,
                     payload={
                         "observation_provenance": "derived",
@@ -378,9 +457,13 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
                     created_at=now,
                 ),
                 EvaluationRetrievalChunk(
-                    retrieval_chunk_id="chunk-measured", run_id=run_id, campaign_id="cmp-1",
-                    retrieval_event_id="retrieval-1", chunk_id="chunk-measured",
-                    used_in_context=True, used_in_answer=False,
+                    retrieval_chunk_id="chunk-measured",
+                    run_id=run_id,
+                    campaign_id="cmp-1",
+                    retrieval_event_id="retrieval-1",
+                    chunk_id="chunk-measured",
+                    used_in_context=True,
+                    used_in_answer=False,
                     expected_evidence_match=True,
                     payload={
                         "observation_provenance": "measured",
@@ -390,9 +473,13 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
                     created_at=now,
                 ),
                 EvaluationRetrievalChunk(
-                    retrieval_chunk_id="chunk-historical", run_id=run_id, campaign_id="cmp-1",
-                    retrieval_event_id="retrieval-1", chunk_id="chunk-historical",
-                    used_in_context=True, used_in_answer=True,
+                    retrieval_chunk_id="chunk-historical",
+                    run_id=run_id,
+                    campaign_id="cmp-1",
+                    retrieval_event_id="retrieval-1",
+                    chunk_id="chunk-historical",
+                    used_in_context=True,
+                    used_in_answer=True,
                     expected_evidence_match=True,
                     payload={"provider_body": "sentinel-historical-chunk-provider"},
                     created_at=now,
@@ -400,96 +487,149 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
             ]
 
         async def list_graph_events_for_run(self, run_id):
-            return [EvaluationGraphEvent(
-                graph_event_id="graph-1", run_id=run_id, campaign_id="cmp-1",
-                graph_query="query api_key=sentinel-graph-query-secret",
-                graph_search_mode="local api_key=sentinel-graph-search-secret",
-                graph_evidence_mode="raw api_key=sentinel-graph-evidence-mode-secret",
-                graph_route="local api_key=sentinel-graph-route-secret",
-                router_reason="reason api_key=sentinel-graph-reason-secret",
-                graph_feature_flags={
-                    "provider_metadata": "sentinel-graph-metadata",
-                    "api_key": "sentinel-graph-feature-secret",
-                },
-                graph_snapshot_version="snapshot api_key=sentinel-graph-snapshot-secret",
-                matched_entity_ids=["entity api_key=sentinel-graph-entity-secret"],
-                created_at=now,
-            )]
+            return [
+                EvaluationGraphEvent(
+                    graph_event_id="graph-1",
+                    run_id=run_id,
+                    campaign_id="cmp-1",
+                    graph_query="query api_key=sentinel-graph-query-secret",
+                    graph_search_mode="local api_key=sentinel-graph-search-secret",
+                    graph_evidence_mode="raw api_key=sentinel-graph-evidence-mode-secret",
+                    graph_route="local api_key=sentinel-graph-route-secret",
+                    router_reason="reason api_key=sentinel-graph-reason-secret",
+                    graph_feature_flags={
+                        "provider_metadata": "sentinel-graph-metadata",
+                        "api_key": "sentinel-graph-feature-secret",
+                    },
+                    graph_snapshot_version="snapshot api_key=sentinel-graph-snapshot-secret",
+                    matched_entity_ids=["entity api_key=sentinel-graph-entity-secret"],
+                    created_at=now,
+                )
+            ]
 
         async def list_graph_evidence_items_for_run(self, run_id):
-            return [EvaluationGraphEvidenceItem(
-                graph_evidence_item_id="evidence-1", graph_event_id="graph-1",
-                provenance_status="full", created_at=now,
-            )]
+            return [
+                EvaluationGraphEvidenceItem(
+                    graph_evidence_item_id="evidence-1",
+                    graph_event_id="graph-1",
+                    provenance_status="full",
+                    created_at=now,
+                )
+            ]
 
         async def list_context_packs_for_run(self, run_id):
-            return [EvaluationContextPack(
-                context_pack_id="pack-1", run_id=run_id, campaign_id="cmp-1",
-                input_chunk_count=3, packed_chunk_count=2, token_count=17,
-                retrieved_but_not_packed_evidence=[{
-                    "evidence_id": "evidence-safe", "doc_id": "doc-safe",
-                    "provider_body": "sentinel-context-provider",
-                    "error": "sentinel-context-stack",
-                }],
-                payload={"api_key": "sentinel-context-secret"}, created_at=now,
-            )]
+            return [
+                EvaluationContextPack(
+                    context_pack_id="pack-1",
+                    run_id=run_id,
+                    campaign_id="cmp-1",
+                    input_chunk_count=3,
+                    packed_chunk_count=2,
+                    token_count=17,
+                    retrieved_but_not_packed_evidence=[
+                        {
+                            "evidence_id": "evidence-safe",
+                            "doc_id": "doc-safe",
+                            "provider_body": "sentinel-context-provider",
+                            "error": "sentinel-context-stack",
+                        }
+                    ],
+                    payload={"api_key": "sentinel-context-secret"},
+                    created_at=now,
+                )
+            ]
 
         async def list_tool_calls_for_run(self, run_id):
-            return [EvaluationToolCall(
-                tool_call_id="tool-1", run_id=run_id, campaign_id="cmp-1",
-                tool_name="search", action="query", status="failed",
-                payload={
-                    "input_summary": "sentinel-tool-input",
-                    "output_summary": "sentinel-tool-provider",
-                    "error": "sentinel-tool-stack",
-                },
-                created_at=now,
-            )]
+            return [
+                EvaluationToolCall(
+                    tool_call_id="tool-1",
+                    run_id=run_id,
+                    campaign_id="cmp-1",
+                    tool_name="search",
+                    action="query",
+                    status="failed",
+                    payload={
+                        "input_summary": "sentinel-tool-input",
+                        "output_summary": "sentinel-tool-provider",
+                        "error": "sentinel-tool-stack",
+                    },
+                    created_at=now,
+                )
+            ]
 
         async def list_routing_decisions_for_run(self, run_id):
-            return [EvaluationRoutingDecision(
-                routing_decision_id="route-1", run_id=run_id, campaign_id="cmp-1",
-                selected_mode="agentic", analysis_type="actual",
-                decision_source="llm_planner",
-                candidate_routes=["agentic api_key=sentinel-route-candidate-secret"],
-                matched_rules=["complex api_key=sentinel-route-rule-secret"],
-                fallback_reason="fallback api_key=sentinel-route-fallback-secret",
-                confidence=0.75,
-                reason="reason api_key=sentinel-routing-reason-secret",
-                payload={"provider_body": "sentinel-routing-provider"},
-                created_at=now,
-            )]
+            return [
+                EvaluationRoutingDecision(
+                    routing_decision_id="route-1",
+                    run_id=run_id,
+                    campaign_id="cmp-1",
+                    selected_mode="agentic",
+                    analysis_type="actual",
+                    decision_source="llm_planner",
+                    candidate_routes=[
+                        "agentic api_key=sentinel-route-candidate-secret"
+                    ],
+                    matched_rules=["complex api_key=sentinel-route-rule-secret"],
+                    fallback_reason="fallback api_key=sentinel-route-fallback-secret",
+                    confidence=0.75,
+                    reason="reason api_key=sentinel-routing-reason-secret",
+                    payload={"provider_body": "sentinel-routing-provider"},
+                    created_at=now,
+                )
+            ]
 
         async def list_claims_for_run(self, run_id):
-            return [EvaluationClaim(
-                claim_id="claim-1", run_id=run_id, campaign_id="cmp-1",
-                claim_text="safe claim",
-                evidence=[{
-                    "evidence_id": "evidence-1", "doc_id": "doc-1",
-                    "chunk_id": "chunk-1", "page": 8,
-                    "provider_body": "sentinel-claim-evidence-provider",
-                }],
-                payload={
-                    "repair_action": "requery", "post_repair_status": "supported",
-                    "provider_body": "sentinel-claim-provider",
-                },
-                created_at=now,
-            )]
+            return [
+                EvaluationClaim(
+                    claim_id="claim-1",
+                    run_id=run_id,
+                    campaign_id="cmp-1",
+                    claim_text="safe claim",
+                    evidence=[
+                        {
+                            "evidence_id": "evidence-1",
+                            "doc_id": "doc-1",
+                            "chunk_id": "chunk-1",
+                            "page": 8,
+                            "provider_body": "sentinel-claim-evidence-provider",
+                        }
+                    ],
+                    payload={
+                        "repair_action": "requery",
+                        "post_repair_status": "supported",
+                        "provider_body": "sentinel-claim-provider",
+                    },
+                    created_at=now,
+                )
+            ]
 
         async def list_human_ratings_for_run(self, run_id):
-            return [EvaluationHumanRating(
-                human_rating_id="rating-1", run_id=run_id, campaign_id="cmp-1",
-                rater_id_hash="rater", rubric_version="v1", correctness_score=1,
-                faithfulness_score=1, completeness_score=1, citation_quality_score=1,
-                usefulness_score=1, comments="Useful api_key=sk-rating-secret",
-                payload={"provider_body": "sentinel-rating-provider"}, created_at=now,
-            )]
+            return [
+                EvaluationHumanRating(
+                    human_rating_id="rating-1",
+                    run_id=run_id,
+                    campaign_id="cmp-1",
+                    rater_id_hash="rater",
+                    rubric_version="v1",
+                    correctness_score=1,
+                    faithfulness_score=1,
+                    completeness_score=1,
+                    citation_quality_score=1,
+                    usefulness_score=1,
+                    comments="Useful api_key=sk-rating-secret",
+                    payload={"provider_body": "sentinel-rating-provider"},
+                    created_at=now,
+                )
+            ]
 
         async def get_v9_attempt_materialization(self, attempt_id):
             assert attempt_id == "attempt-1"
             return EvaluationV9AttemptMaterialization(
-                attempt_id=attempt_id, run_id="run-1", campaign_id="cmp-1",
-                trace_payload={}, created_at=now,
+                attempt_id=attempt_id,
+                run_id="run-1",
+                campaign_id="cmp-1",
+                trace_payload={},
+                created_at=now,
             )
 
         async def list_evidence_packets_for_attempt(self, attempt_id):
@@ -498,12 +638,81 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
         async def list_slot_resolutions_for_attempt(self, attempt_id):
             return []
 
+        async def load_campaign_observability_snapshot(self, campaign_id):
+            assert campaign_id == "cmp-1"
+            run_id = "run-1"
+            return CampaignObservabilitySnapshot(
+                trace_events_by_run_id={
+                    run_id: await self.list_trace_events_for_run(run_id)
+                },
+                llm_calls_by_run_id={run_id: await self.list_llm_calls_for_run(run_id)},
+                retrieval_events_by_run_id={
+                    run_id: await self.list_retrieval_events_for_run(run_id)
+                },
+                retrieval_chunks_by_run_id={
+                    run_id: await self.list_retrieval_chunks_for_run(run_id)
+                },
+                context_packs_by_run_id={
+                    run_id: await self.list_context_packs_for_run(run_id)
+                },
+                tool_calls_by_run_id={
+                    run_id: await self.list_tool_calls_for_run(run_id)
+                },
+                routing_decisions_by_run_id={
+                    run_id: await self.list_routing_decisions_for_run(run_id)
+                },
+                graph_events_by_run_id={
+                    run_id: await self.list_graph_events_for_run(run_id)
+                },
+                graph_evidence_items_by_run_id={
+                    run_id: await self.list_graph_evidence_items_for_run(run_id)
+                },
+                claims_by_run_id={run_id: await self.list_claims_for_run(run_id)},
+                human_ratings_by_run_id={
+                    run_id: await self.list_human_ratings_for_run(run_id)
+                },
+                materializations_by_run_id={
+                    run_id: [await self.get_v9_attempt_materialization("attempt-1")]
+                },
+                evidence_packets_by_run_id={run_id: []},
+                slot_resolutions_by_run_id={run_id: []},
+            )
+
+    class Accounting:
+        async def load_campaign_snapshot(self, campaign_id):
+            assert campaign_id == "cmp-1"
+            scope = SimpleNamespace(
+                scope_id="scope-1",
+                scope_type="execution_run",
+                accounting_schema_version="2",
+                status="completed",
+                observed_call_count=1,
+                measured_call_count=1,
+                missing_usage_call_count=0,
+                targets=[SimpleNamespace(is_official=True)],
+            )
+            event = SimpleNamespace(
+                usage_status="measured",
+                reconciliation_status="balanced",
+                phase="answer_generation",
+                purpose="generation",
+                provider="gemini",
+                input_tokens=3,
+                output_text_tokens=4,
+                reasoning_tokens=0,
+                other_tokens=0,
+            )
+            return CampaignAccountingSnapshot(
+                scopes_by_run_id={"run-1": [scope]},
+                events_by_scope_id={"scope-1": [event]},
+            )
+
     service = ResearchAnalyticsService(
-        campaigns=Campaigns(), results=Results(), observability=Observability()
+        campaigns=Campaigns(),
+        results=Results(),
+        observability=Observability(),
+        accounting=Accounting(),
     )
-    service.get_run_token_breakdown = AsyncMock(return_value=TokenBreakdown(
-        total_tokens=7, accounting_status="complete", phase_attribution_status="complete"
-    ))
 
     detail = await service.get_run_observability(
         user_id="user-1", campaign_id="cmp-1", run_id="run-1"
@@ -536,7 +745,10 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
     assert historical.payload == {}
     projected_claim = detail.claims[0]
     assert projected_claim.evidence_refs[0].model_dump() == {
-        "evidence_id": "evidence-1", "doc_id": "doc-1", "chunk_id": "chunk-1", "page": 8,
+        "evidence_id": "evidence-1",
+        "doc_id": "doc-1",
+        "chunk_id": "chunk-1",
+        "page": 8,
     }
     assert projected_claim.repair_action == "requery"
     assert projected_claim.post_repair_status == "supported"
@@ -549,12 +761,14 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
     assert [
         row.model_dump()
         for row in detail.context_packs[0].retrieved_but_not_packed_evidence
-    ] == [{
-        "evidence_id": "evidence-safe",
-        "doc_id": "doc-safe",
-        "chunk_id": None,
-        "page": None,
-    }]
+    ] == [
+        {
+            "evidence_id": "evidence-safe",
+            "doc_id": "doc-safe",
+            "chunk_id": None,
+            "page": None,
+        }
+    ]
     assert detail.tool_calls[0].tool_name == "search"
     assert detail.tool_calls[0].status == "failed"
     assert detail.routing_decisions[0].decision_source == "llm_planner"
@@ -683,12 +897,8 @@ async def test_research_analytics_reconciles_v9_attempts_per_run_before_aggregat
     second_result_id = await _result(
         campaign_id, "agentic", "attempt-v9-second", run_number=2
     )
-    await _official_scope(
-        campaign_id, first_result_id, "attempt-v9-first", tokens=10
-    )
-    await _official_scope(
-        campaign_id, second_result_id, "attempt-v9-second", tokens=10
-    )
+    await _official_scope(campaign_id, first_result_id, "attempt-v9-first", tokens=10)
+    await _official_scope(campaign_id, second_result_id, "attempt-v9-second", tokens=10)
     await evaluation_db.init_db()
     async with evaluation_db.connect_db() as connection:
         await connection.execute(

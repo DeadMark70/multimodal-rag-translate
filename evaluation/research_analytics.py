@@ -6,10 +6,14 @@ it does not reuse the legacy analytics projection or RAGAS evaluator.
 
 from __future__ import annotations
 
+import asyncio
 import math
 from collections import defaultdict
+from dataclasses import dataclass
 from statistics import mean
+from typing import Any, Literal, Sequence
 
+from core.errors import AppError, ErrorCode
 from data_base.agentic_v9.schemas import (
     ATOMIC_SLOT_MATCHING_EXPERIMENTAL,
     BudgetReservation,
@@ -32,10 +36,14 @@ from evaluation.accounting_schemas import (
     ResearchWarning,
     TokenBreakdown,
 )
-from evaluation.accounting_store import EvaluationAccountingStore
+from evaluation.accounting_store import (
+    CampaignAccountingSnapshot,
+    EvaluationAccountingStore,
+)
 from evaluation.campaign_schemas import (
     AgentBehaviorResponse,
     AgentBehaviorRow,
+    CampaignResult,
     CampaignResultStatus,
     LegacyAgentBehaviorMetrics,
     QuestionComparisonRow,
@@ -49,6 +57,7 @@ from evaluation.campaign_schemas import (
 )
 from evaluation.db import (
     AgentTraceRepository,
+    CampaignResearchResult,
     CampaignRepository,
     CampaignResultRepository,
     RagasScoreRepository,
@@ -59,12 +68,13 @@ from evaluation.job_store import (
     build_evaluator_compatibility_signature,
 )
 from evaluation.observability_storage import (
+    CampaignObservabilitySnapshot,
     EvaluationObservabilityRepository,
     redact_sensitive_value,
     safe_plain_text_excerpt,
 )
 from evaluation.analytics import reconcile_official_tokens
-from evaluation.schemas import EvaluationGraphEvent
+from evaluation.schemas import EvaluationGraphEvent, EvaluationGraphEvidenceItem
 from evaluation.trace_schemas import (
     ClaimEvidenceReference,
     ContextPackEvidenceReference,
@@ -95,10 +105,38 @@ from evaluation.trace_schemas import (
 PRIMARY_QUALITY_METRICS = ("answer_correctness", "faithfulness", "answer_relevancy")
 OPTIONAL_CONTEXT_METRICS = ("context_precision", "context_recall")
 _AVAILABILITY_STATUSES = {
-    "complete", "partial", "not_instrumented", "not_available", "not_applicable"
+    "complete",
+    "partial",
+    "not_instrumented",
+    "not_available",
+    "not_applicable",
 }
 _OBSERVATION_PROVENANCES = {"measured", "persisted", "derived", "heuristic"}
 _CLAIM_EXTRACTION_STATUSES = {"recorded", "empty", "not_instrumented"}
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalRunObservability:
+    result: CampaignResult
+    token_breakdown: TokenBreakdown
+    trace_events: Sequence[EvaluationTraceEvent]
+    llm_calls: Sequence[EvaluationLlmCall]
+    retrieval_events: Sequence[EvaluationRetrievalEvent]
+    retrieval_chunks: Sequence[EvaluationRetrievalChunk]
+    context_packs: Sequence[EvaluationContextPack]
+    tool_calls: Sequence[EvaluationToolCall]
+    routing_decisions: Sequence[EvaluationRoutingDecision]
+    graph_events: Sequence[EvaluationGraphEvent]
+    graph_evidence_items: Sequence[EvaluationGraphEvidenceItem]
+    claims: Sequence[EvaluationClaim]
+    human_ratings: Sequence[EvaluationHumanRating]
+    agentic_v9: V9ExecutionObservability | None
+    graph_observability_status: Literal["recorded", "fallback", "not_instrumented"]
+    claim_extraction_status: Literal["recorded", "empty", "not_instrumented"]
+    evidence_coverage: list[dict[str, Any]] | None
+    evidence_coverage_status: Literal[
+        "complete", "partial", "not_available", "not_instrumented"
+    ]
 
 
 def _safe_scalar_text(value: object) -> str | None:
@@ -173,9 +211,11 @@ def _project_retrieval_chunk(
         reasons = ["provenance_not_recorded"]
     else:
         raw_reasons = payload.get("availability_reasons")
-        reasons = [
-            reason for reason in raw_reasons if isinstance(reason, str)
-        ] if isinstance(raw_reasons, list) else []
+        reasons = (
+            [reason for reason in raw_reasons if isinstance(reason, str)]
+            if isinstance(raw_reasons, list)
+            else []
+        )
     unavailable = availability_status == "not_available"
     return EvaluationRetrievalChunkProjection.model_validate(
         {
@@ -208,7 +248,9 @@ def _project_context_pack(
                 evidence_id=_safe_scalar_text(evidence.get("evidence_id")),
                 doc_id=_safe_scalar_text(evidence.get("doc_id")),
                 chunk_id=_safe_scalar_text(evidence.get("chunk_id")),
-                page=page if isinstance(page, int) and not isinstance(page, bool) else None,
+                page=page
+                if isinstance(page, int) and not isinstance(page, bool)
+                else None,
             )
         )
     return EvaluationContextPackProjection.model_validate(
@@ -252,9 +294,7 @@ def _project_graph_event(
             "graph_route": _safe_required_text(event.graph_route),
             "router_reason": _safe_optional_text(event.router_reason),
             "graph_feature_flags": {},
-            "graph_snapshot_version": _safe_optional_text(
-                event.graph_snapshot_version
-            ),
+            "graph_snapshot_version": _safe_optional_text(event.graph_snapshot_version),
             "graph_schema_version": _safe_optional_text(event.graph_schema_version),
             "graph_extraction_prompt_version": _safe_optional_text(
                 event.graph_extraction_prompt_version
@@ -277,7 +317,9 @@ def _project_claim(claim: EvaluationClaim) -> EvaluationClaimProjection:
                 evidence_id=_safe_scalar_text(evidence.get("evidence_id")),
                 doc_id=_safe_scalar_text(evidence.get("doc_id")),
                 chunk_id=_safe_scalar_text(evidence.get("chunk_id")),
-                page=page if isinstance(page, int) and not isinstance(page, bool) else None,
+                page=page
+                if isinstance(page, int) and not isinstance(page, bool)
+                else None,
             )
         )
     return EvaluationClaimProjection.model_validate(
@@ -286,9 +328,7 @@ def _project_claim(claim: EvaluationClaim) -> EvaluationClaimProjection:
             "evidence": [],
             "evidence_refs": evidence_refs,
             "repair_action": _safe_scalar_text(payload.get("repair_action")),
-            "post_repair_status": _safe_scalar_text(
-                payload.get("post_repair_status")
-            ),
+            "post_repair_status": _safe_scalar_text(payload.get("post_repair_status")),
             "extraction_status": "recorded",
             "payload": {},
         }
@@ -318,6 +358,337 @@ def _claim_extraction_status(derived_metrics: object) -> str:
         if status in _CLAIM_EXTRACTION_STATUSES:
             return status
     return "not_instrumented"
+
+
+def _observability_error(message: str) -> AppError:
+    return AppError(
+        code=ErrorCode.INTERNAL_ERROR,
+        message=message,
+        status_code=500,
+    )
+
+
+def _has_run_container(snapshot: CampaignObservabilitySnapshot, run_id: str) -> bool:
+    return any(
+        run_id in family
+        for family in (
+            snapshot.trace_events_by_run_id,
+            snapshot.llm_calls_by_run_id,
+            snapshot.retrieval_events_by_run_id,
+            snapshot.retrieval_chunks_by_run_id,
+            snapshot.context_packs_by_run_id,
+            snapshot.tool_calls_by_run_id,
+            snapshot.routing_decisions_by_run_id,
+            snapshot.graph_events_by_run_id,
+            snapshot.graph_evidence_items_by_run_id,
+            snapshot.claims_by_run_id,
+            snapshot.human_ratings_by_run_id,
+            snapshot.materializations_by_run_id,
+            snapshot.evidence_packets_by_run_id,
+            snapshot.slot_resolutions_by_run_id,
+        )
+    )
+
+
+def _v9_observability_from_snapshot(
+    *, result: CampaignResult, observability: CampaignObservabilitySnapshot
+) -> V9ExecutionObservability | None:
+    attempt_id = result.source_attempt_id
+    if not attempt_id:
+        return None
+    materialization = next(
+        (
+            item
+            for item in observability.materializations_by_run_id.get(result.id, [])
+            if item.attempt_id == attempt_id
+        ),
+        None,
+    )
+    if (
+        materialization is None
+        or materialization.run_id != result.id
+        or materialization.campaign_id != result.campaign_id
+    ):
+        raise _observability_error("Current v9 materialization could not be assembled")
+    payload = materialization.trace_payload
+    try:
+        evidence = [
+            V9EvidencePacket(
+                evidence_id=item.evidence_id,
+                packet=EvidencePacket.model_validate(item.packet).model_copy(
+                    update={
+                        "statement": safe_plain_text_excerpt(
+                            EvidencePacket.model_validate(item.packet).statement
+                        )
+                    }
+                ),
+            )
+            for item in observability.evidence_packets_by_run_id.get(result.id, [])
+            if item.attempt_id == attempt_id
+        ]
+        slots = [
+            V9SlotResolution(
+                slot_id=item.slot_id,
+                resolution_stage=item.resolution_stage,
+                resolution=SlotResolution.model_validate(item.resolution),
+            )
+            for item in observability.slot_resolutions_by_run_id.get(result.id, [])
+            if item.attempt_id == attempt_id
+        ]
+        return V9ExecutionObservability(
+            schema_version=materialization.schema_version,
+            contract=(
+                QueryContract.model_validate(payload["query_contract"])
+                if payload.get("query_contract")
+                else None
+            ),
+            slot_resolutions=slots,
+            evidence_packets=evidence,
+            sufficiency=(
+                SufficiencyReport.model_validate(payload["sufficiency"])
+                if payload.get("sufficiency")
+                else None
+            ),
+            context_pack=(
+                V9ContextPack.model_validate(payload["context_pack"])
+                if payload.get("context_pack")
+                else None
+            ),
+            budget=[
+                BudgetReservation.model_validate(item)
+                for item in payload.get("budget_reservations", [])
+            ],
+            repairs=[
+                RepairPlan.model_validate(item) for item in payload.get("repairs", [])
+            ],
+            conflicts=[
+                ConflictCandidate.model_validate(item)
+                for item in payload.get("conflicts", [])
+            ],
+            final_claims=[
+                FinalClaim.model_validate(item)
+                for item in payload.get("final_claims", [])
+            ],
+            metrics=V9ExecutionMetrics.model_validate(payload.get("metrics", {})),
+            comparison=(
+                redact_sensitive_value(payload["comparison"])
+                if isinstance(payload.get("comparison"), dict)
+                else None
+            ),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _observability_error("Current v9 materialization is malformed") from exc
+
+
+def _token_breakdown_for_run(
+    *,
+    result: CampaignResult,
+    accounting: CampaignAccountingSnapshot,
+    llm_calls: Sequence[EvaluationLlmCall],
+) -> TokenBreakdown:
+    run_scopes = [
+        scope
+        for scope in accounting.scopes_by_run_id.get(result.id, [])
+        if scope.scope_type == "execution_run"
+        and scope.accounting_schema_version == "2"
+        and any(target.is_official for target in scope.targets)
+    ]
+    events = [
+        event
+        for scope in run_scopes
+        for event in accounting.events_by_scope_id.get(scope.scope_id, [])
+    ]
+    tokens = _tokens(run_scopes, events)
+    if result.agentic_execution_version != "v9":
+        return tokens
+    derived_metrics = (
+        result.derived_metrics if isinstance(result.derived_metrics, dict) else {}
+    )
+    return _tokens(
+        run_scopes,
+        events,
+        provider_attempts=llm_calls,
+        runtime_total_tokens=tokens.total_tokens,
+        observability_partial_reasons=derived_metrics.get(
+            "observability_partial_reasons", []
+        ),
+    )
+
+
+def _build_canonical_run_observability(
+    *,
+    result: CampaignResult,
+    observability: CampaignObservabilitySnapshot,
+    accounting: CampaignAccountingSnapshot,
+) -> CanonicalRunObservability:
+    if not _has_run_container(observability, result.id):
+        raise _observability_error("Run observability container is missing")
+    trace_events = observability.trace_events_by_run_id.get(result.id, [])
+    llm_calls = observability.llm_calls_by_run_id.get(result.id, [])
+    retrieval_events = observability.retrieval_events_by_run_id.get(result.id, [])
+    graph_events = observability.graph_events_by_run_id.get(result.id, [])
+    graph_observability_status: Literal["recorded", "fallback", "not_instrumented"] = (
+        "not_instrumented"
+    )
+    if graph_events:
+        graph_observability_status = "recorded"
+        if any(
+            event.graph_route.lower() in {"skip", "fallback"}
+            or "fallback=" in (event.router_reason or "").lower()
+            or "fallback" in event.graph_route.lower()
+            for event in graph_events
+        ):
+            graph_observability_status = "fallback"
+    else:
+        for event in retrieval_events:
+            payload = event.payload
+            if not isinstance(payload, dict):
+                continue
+            fallback_reason = payload.get("graph_fallback_reason") or payload.get(
+                "fallback_reason"
+            )
+            if payload.get("graph_fallback_used") or fallback_reason:
+                graph_observability_status = "fallback"
+                break
+    derived_metrics = (
+        result.derived_metrics if isinstance(result.derived_metrics, dict) else {}
+    )
+    evidence_coverage = (
+        derived_metrics.get("gold_fact_attrition")
+        if isinstance(derived_metrics.get("gold_fact_attrition"), list)
+        else None
+    )
+    return CanonicalRunObservability(
+        result=result,
+        token_breakdown=_token_breakdown_for_run(
+            result=result, accounting=accounting, llm_calls=llm_calls
+        ),
+        trace_events=trace_events,
+        llm_calls=llm_calls,
+        retrieval_events=retrieval_events,
+        retrieval_chunks=observability.retrieval_chunks_by_run_id.get(result.id, []),
+        context_packs=observability.context_packs_by_run_id.get(result.id, []),
+        tool_calls=observability.tool_calls_by_run_id.get(result.id, []),
+        routing_decisions=observability.routing_decisions_by_run_id.get(result.id, []),
+        graph_events=graph_events,
+        graph_evidence_items=observability.graph_evidence_items_by_run_id.get(
+            result.id, []
+        ),
+        claims=observability.claims_by_run_id.get(result.id, []),
+        human_ratings=observability.human_ratings_by_run_id.get(result.id, []),
+        agentic_v9=_v9_observability_from_snapshot(
+            result=result, observability=observability
+        ),
+        graph_observability_status=graph_observability_status,
+        claim_extraction_status=_claim_extraction_status(derived_metrics),
+        evidence_coverage=evidence_coverage,
+        evidence_coverage_status=(
+            "complete" if evidence_coverage is not None else "not_instrumented"
+        ),
+    )
+
+
+def _project_interactive_run_observability(
+    canonical: CanonicalRunObservability,
+) -> EvaluationRunObservabilityDetail:
+    result = canonical.result
+    tokens = canonical.token_breakdown
+    return EvaluationRunObservabilityDetail(
+        run_id=result.id,
+        campaign_id=result.campaign_id,
+        trace_events=[_project_trace_event(item) for item in canonical.trace_events],
+        llm_calls=[_project_llm_call(item) for item in canonical.llm_calls],
+        retrieval_events=[
+            _project_retrieval_event(item) for item in canonical.retrieval_events
+        ],
+        retrieval_chunks=[
+            _project_retrieval_chunk(
+                item.model_copy(
+                    update={"excerpt": safe_plain_text_excerpt(item.excerpt)}
+                )
+            )
+            for item in canonical.retrieval_chunks
+        ],
+        context_packs=[_project_context_pack(item) for item in canonical.context_packs],
+        tool_calls=[_project_tool_call(item) for item in canonical.tool_calls],
+        routing_decisions=[
+            _project_routing_decision(item) for item in canonical.routing_decisions
+        ],
+        graph_events=[_project_graph_event(item) for item in canonical.graph_events],
+        graph_evidence_items=list(canonical.graph_evidence_items),
+        graph_observability_status=canonical.graph_observability_status,
+        claims=[
+            _project_claim(
+                item.model_copy(
+                    update={"claim_text": safe_plain_text_excerpt(item.claim_text)}
+                )
+            )
+            for item in canonical.claims
+        ],
+        claim_extraction_status=canonical.claim_extraction_status,
+        human_ratings=[_project_human_rating(item) for item in canonical.human_ratings],
+        agentic_v9=canonical.agentic_v9,
+        evidence_coverage=canonical.evidence_coverage,
+        evidence_coverage_status=canonical.evidence_coverage_status,
+        accounting_diagnostics=tokens,
+        run_summary=EvaluationRunSummary(
+            run_id=result.id,
+            campaign_id=result.campaign_id,
+            question_id=result.question_id,
+            mode=result.mode,
+            repeat_number=result.repeat_number,
+            answer_preview=result.answer[:500] if result.answer else None,
+            latency_ms=(
+                result.total_latency_ms
+                if result.total_latency_ms is not None
+                else result.latency_ms
+            ),
+            total_tokens=tokens.total_tokens,
+            accounting_status=(
+                tokens.accounting_status
+                if tokens.accounting_status != "incomplete_legacy"
+                else "not_available"
+            ),
+            created_at=result.created_at,
+        ),
+    )
+
+
+def _official_ragas_by_run(
+    *,
+    results: Sequence[CampaignResult | CampaignResearchResult],
+    scores: Sequence[dict[str, Any]],
+    work_metadata: Sequence[dict[str, Any]],
+) -> dict[str, dict[str, float]]:
+    finite_scores = [
+        score
+        for score in scores
+        if isinstance(score.get("metric_value"), (int, float))
+        and not isinstance(score.get("metric_value"), bool)
+        and math.isfinite(float(score["metric_value"]))
+    ]
+    attached = _attach_work_metadata(finite_scores, work_metadata)
+    canonical_identities = _canonical_identities_by_metric(results, attached)
+    results_by_id = {str(result.id): result for result in results}
+    attempts_by_result = {
+        str(result.id): result.source_attempt_id
+        for result in results
+        if result.source_attempt_id
+    }
+    output: dict[str, dict[str, float]] = defaultdict(dict)
+    for score in attached:
+        result_id = str(score.get("campaign_result_id"))
+        metric_name = str(score.get("metric_name"))
+        if (
+            result_id not in attempts_by_result
+            or score.get("source_attempt_id") != attempts_by_result[result_id]
+            or metric_name not in canonical_identities
+            or _evaluator_identity(score, results_by_id.get(result_id))
+            != canonical_identities[metric_name]
+        ):
+            continue
+        output[result_id][metric_name] = float(score["metric_value"])
+    return dict(output)
 
 
 def _attach_work_metadata(scores, work_metadata):
@@ -577,7 +948,79 @@ class ResearchAnalyticsService:
             observability_partial_reasons=observability_partial_reasons,
         )
 
+    async def _load_campaign_run_observability(
+        self,
+        *,
+        campaign_id: str,
+        results: Sequence[CampaignResult],
+    ) -> dict[str, CanonicalRunObservability]:
+        observability, accounting = await asyncio.gather(
+            self._observability.load_campaign_observability_snapshot(campaign_id),
+            self._accounting.load_campaign_snapshot(campaign_id),
+        )
+        return {
+            result.id: _build_canonical_run_observability(
+                result=result,
+                observability=observability,
+                accounting=accounting,
+            )
+            for result in results
+        }
+
+    async def get_campaign_run_observability(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        results: Sequence[CampaignResult],
+    ) -> dict[str, CanonicalRunObservability]:
+        """Build every supplied campaign run from two bounded campaign loads."""
+        await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
+        return await self._load_campaign_run_observability(
+            campaign_id=campaign_id, results=results
+        )
+
+    async def get_official_ragas_by_run(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        results: Sequence[CampaignResult],
+    ) -> dict[str, dict[str, float]]:
+        """Return finite official scores for the supplied current attempts."""
+        await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
+        scores, work_metadata = await asyncio.gather(
+            self._ragas_scores.list_for_campaign(
+                user_id=user_id, campaign_id=campaign_id
+            ),
+            self._ragas_scores.list_work_metadata_for_campaign(
+                user_id=user_id, campaign_id=campaign_id
+            ),
+        )
+        return _official_ragas_by_run(
+            results=results,
+            scores=scores,
+            work_metadata=work_metadata,
+        )
+
     async def get_run_observability(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        run_id: str,
+    ) -> EvaluationRunObservabilityDetail:
+        """Return the safe projection of the shared canonical run container."""
+        await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
+        result = await self._results.get(
+            user_id=user_id, campaign_id=campaign_id, result_id=run_id
+        )
+        canonical = await self._load_campaign_run_observability(
+            campaign_id=campaign_id, results=[result]
+        )
+        return _project_interactive_run_observability(canonical[run_id])
+
+    async def _get_run_observability_legacy(
         self,
         *,
         user_id: str,
@@ -631,8 +1074,12 @@ class ResearchAnalyticsService:
         ]
         graph_evidence_items = [
             item
-            for item in await self._observability.list_graph_evidence_items_for_run(run_id)
-            if any(event.graph_event_id == item.graph_event_id for event in graph_events)
+            for item in await self._observability.list_graph_evidence_items_for_run(
+                run_id
+            )
+            if any(
+                event.graph_event_id == item.graph_event_id for event in graph_events
+            )
         ]
         context_packs = [
             _project_context_pack(item)
@@ -803,7 +1250,8 @@ class ResearchAnalyticsService:
                     for item in payload.get("budget_reservations", [])
                 ],
                 repairs=[
-                    RepairPlan.model_validate(item) for item in payload.get("repairs", [])
+                    RepairPlan.model_validate(item)
+                    for item in payload.get("repairs", [])
                 ],
                 conflicts=[
                     ConflictCandidate.model_validate(item)
@@ -842,36 +1290,18 @@ class ResearchAnalyticsService:
         work_metadata = await self._ragas_scores.list_work_metadata_for_campaign(
             user_id=user_id, campaign_id=campaign_id
         )
-        scores = _attach_work_metadata(scores, work_metadata)
-        canonical_identities = _canonical_identities_by_metric(completed, scores)
+        score_map = _official_ragas_by_run(
+            results=completed,
+            scores=scores,
+            work_metadata=work_metadata,
+        )
         result_by_id = {str(result.id): result for result in completed}
-        attempts_by_result = {
-            str(result.id): result.source_attempt_id
-            for result in completed
-            if result.source_attempt_id
-        }
         scopes = await self._accounting.list_campaign_scopes(campaign_id)
         events = await self._accounting.list_campaign_events(campaign_id)
         events_by_scope: dict[str, list] = defaultdict(list)
         for event in events:
             events_by_scope[event.scope_id].append(event)
         llm_calls_by_run = await self._list_llm_calls_for_campaign(campaign_id)
-
-        score_map: dict[str, dict[str, float]] = defaultdict(dict)
-        for score in scores:
-            result_id = str(score.get("campaign_result_id"))
-            metric_name = str(score.get("metric_name"))
-            if (
-                result_id not in attempts_by_result
-                or score.get("source_attempt_id") != attempts_by_result[result_id]
-                or metric_name not in canonical_identities
-                or _evaluator_identity(score, result_by_id.get(result_id))
-                != canonical_identities[metric_name]
-            ):
-                continue
-            value = score.get("metric_value")
-            if isinstance(value, (int, float)):
-                score_map[result_id][metric_name] = float(value)
 
         official_scopes = _official_execution_scopes(completed, scopes)
         tokens_by_result: dict[str, TokenBreakdown] = {}
@@ -888,14 +1318,12 @@ class ResearchAnalyticsService:
             breakdown = _tokens([scope], events_by_scope[scope.scope_id])
             for result_id in result_ids:
                 result = result_by_id.get(str(result_id))
-                tokens_by_result[str(result_id)] = (
-                    _reconcile_v9_result_tokens(
-                        tokens=breakdown,
-                        scopes=[scope],
-                        events=events_by_scope[scope.scope_id],
-                        results=[result] if result is not None else [],
-                        llm_calls_by_run=llm_calls_by_run,
-                    )
+                tokens_by_result[str(result_id)] = _reconcile_v9_result_tokens(
+                    tokens=breakdown,
+                    scopes=[scope],
+                    events=events_by_scope[scope.scope_id],
+                    results=[result] if result is not None else [],
+                    llm_calls_by_run=llm_calls_by_run,
                 )
 
         results_by_question: dict[str, list] = defaultdict(list)
@@ -1165,29 +1593,11 @@ class ResearchAnalyticsService:
         work_metadata = await self._ragas_scores.list_work_metadata_for_campaign(
             user_id=user_id, campaign_id=campaign_id
         )
-        scores = _attach_work_metadata(scores, work_metadata)
-        canonical_identities = _canonical_identities_by_metric(completed, scores)
-        result_by_id = {str(result.id): result for result in completed}
-        attempts_by_result = {
-            str(result.id): result.source_attempt_id
-            for result in completed
-            if result.source_attempt_id
-        }
-        score_map: dict[str, dict[str, float]] = defaultdict(dict)
-        for score in scores:
-            result_id = str(score.get("campaign_result_id"))
-            metric_name = str(score.get("metric_name"))
-            if (
-                result_id not in attempts_by_result
-                or score.get("source_attempt_id") != attempts_by_result[result_id]
-                or metric_name not in canonical_identities
-                or _evaluator_identity(score, result_by_id.get(result_id))
-                != canonical_identities[metric_name]
-            ):
-                continue
-            value = score.get("metric_value")
-            if isinstance(value, (int, float)):
-                score_map[result_id][metric_name] = float(value)
+        score_map = _official_ragas_by_run(
+            results=completed,
+            scores=scores,
+            work_metadata=work_metadata,
+        )
         scopes = await self._accounting.list_campaign_scopes(campaign_id)
         events = await self._accounting.list_campaign_events(campaign_id)
         events_by_scope: dict[str, list] = defaultdict(list)
@@ -1980,10 +2390,8 @@ def _reconcile_v9_result_tokens(
         run_scope_ids = {scope.scope_id for scope in run_scopes}
         run_events = [event for event in events if event.scope_id in run_scope_ids]
         run_tokens = _tokens(run_scopes, run_events)
-        partial_reasons = (
-            (getattr(result, "derived_metrics", {}) or {}).get(
-                "observability_partial_reasons", []
-            )
+        partial_reasons = (getattr(result, "derived_metrics", {}) or {}).get(
+            "observability_partial_reasons", []
         )
         reconciled_runs.append(
             _tokens(

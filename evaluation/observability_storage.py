@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import html
 import re
@@ -47,6 +48,8 @@ _SECRET_PATTERNS = (
         re.IGNORECASE,
     ),
 )
+
+
 def _json_default(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
@@ -87,7 +90,9 @@ def _parse_dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
-def safe_plain_text_excerpt(value: Any, *, limit: int = DEFAULT_EVIDENCE_EXCERPT_CHARS) -> str:
+def safe_plain_text_excerpt(
+    value: Any, *, limit: int = DEFAULT_EVIDENCE_EXCERPT_CHARS
+) -> str:
     """Render untrusted evidence as a bounded, secret-redacted text excerpt."""
     text = html.unescape(redact_sensitive_text(value))
     text = re.sub(r"<[^>]*>", " ", text)
@@ -152,7 +157,9 @@ def _validate_materialization_rows(
             or row.condition_id != condition_id
             or row.schema_version != schema_version
         ):
-            raise ValueError("v9 materialization row does not match its attempt identity")
+            raise ValueError(
+                "v9 materialization row does not match its attempt identity"
+            )
 
 
 def _sanitize_v9_trace_payload(
@@ -210,11 +217,7 @@ def safe_comparison_projection(value: dict[str, Any]) -> dict[str, Any]:
     def strings(raw: Any, *, limit: int, width: int = 160) -> list[str]:
         if not isinstance(raw, list):
             return []
-        return [
-            item[:width]
-            for item in raw[:limit]
-            if isinstance(item, str) and item
-        ]
+        return [item[:width] for item in raw[:limit] if isinstance(item, str) and item]
 
     def nonnegative_int(raw: Any) -> int:
         try:
@@ -273,9 +276,7 @@ def safe_comparison_projection(value: dict[str, Any]) -> dict[str, Any]:
             "query_hash": str(raw.get("query_hash") or "")[:80],
             "query_preview": str(raw.get("query_preview") or "")[:160],
             "status": (
-                task_status
-                if task_status in task_statuses
-                else "not_instrumented"
+                task_status if task_status in task_statuses else "not_instrumented"
             ),
             "fallback_reason": (
                 task_fallback_reason
@@ -312,9 +313,7 @@ def safe_comparison_projection(value: dict[str, Any]) -> dict[str, Any]:
                     if raw.get("chunk_id") is not None
                     else None
                 ),
-                "subject_ids": strings(
-                    raw.get("subject_ids"), limit=4, width=80
-                ),
+                "subject_ids": strings(raw.get("subject_ids"), limit=4, width=80),
             }
         )
         if len(final_evidence) >= 6:
@@ -327,9 +326,7 @@ def safe_comparison_projection(value: dict[str, Any]) -> dict[str, Any]:
         else None
     )
     fallback_stage = (
-        str(value["fallback_stage"])
-        if value.get("fallback_stage")
-        else None
+        str(value["fallback_stage"]) if value.get("fallback_stage") else None
     )
     validation_issues: list[dict[str, str]] = []
     for raw in value.get("validation_issues") or []:
@@ -357,9 +354,7 @@ def safe_comparison_projection(value: dict[str, Any]) -> dict[str, Any]:
         "planner_status": (
             planner_status if planner_status in planner_statuses else "unknown"
         ),
-        "planner_latency_ms": nonnegative_float(
-            value.get("planner_latency_ms")
-        ),
+        "planner_latency_ms": nonnegative_float(value.get("planner_latency_ms")),
         "planner_fallback_reason": (
             planner_fallback_reason
             if planner_fallback_reason in planner_fallback_reasons
@@ -392,15 +387,11 @@ def safe_comparison_projection(value: dict[str, Any]) -> dict[str, Any]:
         "missing_after_repair": strings(
             value.get("missing_after_repair"), limit=4, width=80
         ),
-        "final_status": (
-            final_status if final_status in final_statuses else "unknown"
-        ),
+        "final_status": (final_status if final_status in final_statuses else "unknown"),
         "final_evidence_subjects": strings(
             value.get("final_evidence_subjects"), limit=4, width=80
         ),
-        "final_evidence_count": nonnegative_int(
-            value.get("final_evidence_count")
-        ),
+        "final_evidence_count": nonnegative_int(value.get("final_evidence_count")),
         "final_evidence": final_evidence,
     }
 
@@ -499,7 +490,9 @@ class EvaluationGraphEventRepository:
             )
             await connection.commit()
 
-    async def list_graph_events_for_run(self, run_id: str) -> list[EvaluationGraphEvent]:
+    async def list_graph_events_for_run(
+        self, run_id: str
+    ) -> list[EvaluationGraphEvent]:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
@@ -532,10 +525,14 @@ class EvaluationGraphEventRepository:
 class EvaluationGraphEvidenceItemRepository:
     """Persistence operations for GraphRAG evidence rows."""
 
-    async def record_graph_evidence_item(self, item: EvaluationGraphEvidenceItem) -> None:
+    async def record_graph_evidence_item(
+        self, item: EvaluationGraphEvidenceItem
+    ) -> None:
         await self.record_graph_evidence_items([item])
 
-    async def record_graph_evidence_items(self, items: list[EvaluationGraphEvidenceItem]) -> None:
+    async def record_graph_evidence_items(
+        self, items: list[EvaluationGraphEvidenceItem]
+    ) -> None:
         if not items:
             return
         await init_db()
@@ -641,11 +638,73 @@ class CampaignReleaseObservabilitySnapshot:
     graph_events_by_run_id: dict[str, list[EvaluationGraphEvent]]
 
 
+@dataclass(frozen=True, slots=True)
+class CampaignObservabilitySnapshot:
+    """All normalized observability rows for one campaign, grouped by run."""
+
+    trace_events_by_run_id: dict[str, list[EvaluationTraceEvent]]
+    llm_calls_by_run_id: dict[str, list[EvaluationLlmCall]]
+    retrieval_events_by_run_id: dict[str, list[EvaluationRetrievalEvent]]
+    retrieval_chunks_by_run_id: dict[str, list[EvaluationRetrievalChunk]]
+    context_packs_by_run_id: dict[str, list[EvaluationContextPack]]
+    tool_calls_by_run_id: dict[str, list[EvaluationToolCall]]
+    routing_decisions_by_run_id: dict[str, list[EvaluationRoutingDecision]]
+    graph_events_by_run_id: dict[str, list[EvaluationGraphEvent]]
+    graph_evidence_items_by_run_id: dict[str, list[EvaluationGraphEvidenceItem]]
+    claims_by_run_id: dict[str, list[EvaluationClaim]]
+    human_ratings_by_run_id: dict[str, list[EvaluationHumanRating]]
+    materializations_by_run_id: dict[str, list[EvaluationV9AttemptMaterialization]]
+    evidence_packets_by_run_id: dict[str, list[EvaluationEvidencePacket]]
+    slot_resolutions_by_run_id: dict[str, list[EvaluationSlotResolution]]
+
+
 class EvaluationObservabilityRepository(
     EvaluationGraphEventRepository,
     EvaluationGraphEvidenceItemRepository,
 ):
     """Persistence operations for normalized evaluation observability rows."""
+
+    async def load_campaign_observability_snapshot(
+        self, campaign_id: str
+    ) -> CampaignObservabilitySnapshot:
+        """Load every normalized family once for canonical campaign projection."""
+        (
+            release,
+            trace_events,
+            llm_calls,
+            retrieval_events,
+            retrieval_chunks,
+            tool_calls,
+            routing_decisions,
+            graph_evidence_items,
+            human_ratings,
+        ) = await asyncio.gather(
+            self.load_campaign_release_snapshot(campaign_id),
+            self.list_trace_events_for_campaign(campaign_id),
+            self.list_llm_calls_for_campaign(campaign_id),
+            self.list_retrieval_events_for_campaign(campaign_id),
+            self.list_retrieval_chunks_for_campaign(campaign_id),
+            self.list_tool_calls_for_campaign(campaign_id),
+            self.list_routing_decisions_for_campaign(campaign_id),
+            self.list_graph_evidence_items_for_campaign(campaign_id),
+            self.list_human_ratings_for_campaign(campaign_id),
+        )
+        return CampaignObservabilitySnapshot(
+            trace_events_by_run_id=trace_events,
+            llm_calls_by_run_id=llm_calls,
+            retrieval_events_by_run_id=retrieval_events,
+            retrieval_chunks_by_run_id=retrieval_chunks,
+            context_packs_by_run_id=release.context_packs_by_run_id,
+            tool_calls_by_run_id=tool_calls,
+            routing_decisions_by_run_id=routing_decisions,
+            graph_events_by_run_id=release.graph_events_by_run_id,
+            graph_evidence_items_by_run_id=graph_evidence_items,
+            claims_by_run_id=release.claims_by_run_id,
+            human_ratings_by_run_id=human_ratings,
+            materializations_by_run_id=release.materializations_by_run_id,
+            evidence_packets_by_run_id=release.evidence_packets_by_run_id,
+            slot_resolutions_by_run_id=release.slot_resolutions_by_run_id,
+        )
 
     async def load_campaign_release_snapshot(
         self, campaign_id: str
@@ -695,52 +754,107 @@ class EvaluationObservabilityRepository(
                     (campaign_id,),
                 )
             ).fetchall()
-        materializations_by_run_id: dict[str, list[EvaluationV9AttemptMaterialization]] = defaultdict(list)
+        materializations_by_run_id: dict[
+            str, list[EvaluationV9AttemptMaterialization]
+        ] = defaultdict(list)
         for row in materialization_rows:
-            materializations_by_run_id[str(row["run_id"])].append(EvaluationV9AttemptMaterialization(
-                attempt_id=row["attempt_id"], run_id=row["run_id"], campaign_id=row["campaign_id"],
-                condition_id=row["condition_id"], schema_version=row["schema_version"],
-                trace_payload=_json_loads(row["trace_json"], {}),
-                materialization_status=row["materialization_status"], completed_at=_parse_dt(row["completed_at"]),
-                created_at=_parse_dt(row["created_at"]) or datetime.now(timezone.utc),
-            ))
-        evidence_packets_by_run_id: dict[str, list[EvaluationEvidencePacket]] = defaultdict(list)
+            materializations_by_run_id[str(row["run_id"])].append(
+                EvaluationV9AttemptMaterialization(
+                    attempt_id=row["attempt_id"],
+                    run_id=row["run_id"],
+                    campaign_id=row["campaign_id"],
+                    condition_id=row["condition_id"],
+                    schema_version=row["schema_version"],
+                    trace_payload=_json_loads(row["trace_json"], {}),
+                    materialization_status=row["materialization_status"],
+                    completed_at=_parse_dt(row["completed_at"]),
+                    created_at=_parse_dt(row["created_at"])
+                    or datetime.now(timezone.utc),
+                )
+            )
+        evidence_packets_by_run_id: dict[str, list[EvaluationEvidencePacket]] = (
+            defaultdict(list)
+        )
         for row in evidence_rows:
-            evidence_packets_by_run_id[str(row["run_id"])].append(EvaluationEvidencePacket(
-                attempt_id=row["attempt_id"], run_id=row["run_id"], campaign_id=row["campaign_id"],
-                condition_id=row["condition_id"], schema_version=row["schema_version"], evidence_id=row["evidence_id"],
-                packet=_json_loads(row["packet_json"], {}), created_at=datetime.fromisoformat(row["created_at"]),
-            ))
-        slot_resolutions_by_run_id: dict[str, list[EvaluationSlotResolution]] = defaultdict(list)
+            evidence_packets_by_run_id[str(row["run_id"])].append(
+                EvaluationEvidencePacket(
+                    attempt_id=row["attempt_id"],
+                    run_id=row["run_id"],
+                    campaign_id=row["campaign_id"],
+                    condition_id=row["condition_id"],
+                    schema_version=row["schema_version"],
+                    evidence_id=row["evidence_id"],
+                    packet=_json_loads(row["packet_json"], {}),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                )
+            )
+        slot_resolutions_by_run_id: dict[str, list[EvaluationSlotResolution]] = (
+            defaultdict(list)
+        )
         for row in slot_rows:
-            slot_resolutions_by_run_id[str(row["run_id"])].append(EvaluationSlotResolution(
-                attempt_id=row["attempt_id"], run_id=row["run_id"], campaign_id=row["campaign_id"],
-                condition_id=row["condition_id"], schema_version=row["schema_version"], slot_id=row["slot_id"],
-                resolution_stage=row["resolution_stage"], resolution=_json_loads(row["resolution_json"], {}),
-                created_at=datetime.fromisoformat(row["created_at"]),
-            ))
+            slot_resolutions_by_run_id[str(row["run_id"])].append(
+                EvaluationSlotResolution(
+                    attempt_id=row["attempt_id"],
+                    run_id=row["run_id"],
+                    campaign_id=row["campaign_id"],
+                    condition_id=row["condition_id"],
+                    schema_version=row["schema_version"],
+                    slot_id=row["slot_id"],
+                    resolution_stage=row["resolution_stage"],
+                    resolution=_json_loads(row["resolution_json"], {}),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                )
+            )
         claims_by_run_id: dict[str, list[EvaluationClaim]] = defaultdict(list)
         for row in claim_rows:
-            claims_by_run_id[str(row["run_id"])].append(EvaluationClaim(
-                claim_id=row["claim_id"], run_id=row["run_id"], campaign_id=row["campaign_id"],
-                attempt_id=row["attempt_id"], condition_id=row["condition_id"], schema_version=row["schema_version"],
-                span_id=row["span_id"], claim_text=row["claim_text"], claim_type=row["claim_type"],
-                support_status=row["support_status"], evidence=_json_loads(row["evidence_json"], []),
-                unsupported_reason=row["unsupported_reason"], payload=_json_loads(row["payload_json"], {}),
-                created_at=datetime.fromisoformat(row["created_at"]),
-            ))
-        context_packs_by_run_id: dict[str, list[EvaluationContextPack]] = defaultdict(list)
+            claims_by_run_id[str(row["run_id"])].append(
+                EvaluationClaim(
+                    claim_id=row["claim_id"],
+                    run_id=row["run_id"],
+                    campaign_id=row["campaign_id"],
+                    attempt_id=row["attempt_id"],
+                    condition_id=row["condition_id"],
+                    schema_version=row["schema_version"],
+                    span_id=row["span_id"],
+                    claim_text=row["claim_text"],
+                    claim_type=row["claim_type"],
+                    support_status=row["support_status"],
+                    evidence=_json_loads(row["evidence_json"], []),
+                    unsupported_reason=row["unsupported_reason"],
+                    payload=_json_loads(row["payload_json"], {}),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                )
+            )
+        context_packs_by_run_id: dict[str, list[EvaluationContextPack]] = defaultdict(
+            list
+        )
         for row in context_rows:
-            context_packs_by_run_id[str(row["run_id"])].append(EvaluationContextPack(
-                context_pack_id=row["context_pack_id"], run_id=row["run_id"], campaign_id=row["campaign_id"],
-                attempt_id=row["attempt_id"], condition_id=row["condition_id"], schema_version=row["schema_version"],
-                span_id=row["span_id"], input_chunk_count=row["input_chunk_count"], packed_chunk_count=row["packed_chunk_count"],
-                token_count=row["token_count"], retrieved_but_not_packed_evidence=_json_loads(row["retrieved_but_not_packed_evidence_json"], []),
-                payload=_json_loads(row["payload_json"], {}), created_at=datetime.fromisoformat(row["created_at"]),
-            ))
-        graph_events_by_run_id: dict[str, list[EvaluationGraphEvent]] = defaultdict(list)
+            context_packs_by_run_id[str(row["run_id"])].append(
+                EvaluationContextPack(
+                    context_pack_id=row["context_pack_id"],
+                    run_id=row["run_id"],
+                    campaign_id=row["campaign_id"],
+                    attempt_id=row["attempt_id"],
+                    condition_id=row["condition_id"],
+                    schema_version=row["schema_version"],
+                    span_id=row["span_id"],
+                    input_chunk_count=row["input_chunk_count"],
+                    packed_chunk_count=row["packed_chunk_count"],
+                    token_count=row["token_count"],
+                    retrieved_but_not_packed_evidence=_json_loads(
+                        row["retrieved_but_not_packed_evidence_json"], []
+                    ),
+                    payload=_json_loads(row["payload_json"], {}),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                )
+            )
+        graph_events_by_run_id: dict[str, list[EvaluationGraphEvent]] = defaultdict(
+            list
+        )
         for row in graph_rows:
-            graph_events_by_run_id[str(row["run_id"])].append(_graph_event_from_row(row))
+            graph_events_by_run_id[str(row["run_id"])].append(
+                _graph_event_from_row(row)
+            )
         return CampaignReleaseObservabilitySnapshot(
             materializations_by_run_id=dict(materializations_by_run_id),
             evidence_packets_by_run_id=dict(evidence_packets_by_run_id),
@@ -944,7 +1058,9 @@ class EvaluationObservabilityRepository(
         return dict(counts)
 
     @staticmethod
-    async def _insert_evidence_packet(connection: Any, packet: EvaluationEvidencePacket) -> None:
+    async def _insert_evidence_packet(
+        connection: Any, packet: EvaluationEvidencePacket
+    ) -> None:
         await connection.execute(
             """
             INSERT INTO evaluation_evidence_packets (
@@ -989,7 +1105,9 @@ class EvaluationObservabilityRepository(
             raise ValueError("attempt does not belong to the supplied campaign")
 
     @staticmethod
-    async def _insert_slot_resolution(connection: Any, resolution: EvaluationSlotResolution) -> None:
+    async def _insert_slot_resolution(
+        connection: Any, resolution: EvaluationSlotResolution
+    ) -> None:
         await connection.execute(
             """
             INSERT INTO evaluation_slot_resolutions (
@@ -1122,7 +1240,9 @@ class EvaluationObservabilityRepository(
             for row in rows
         ]
 
-    async def record_slot_resolution(self, resolution: EvaluationSlotResolution) -> None:
+    async def record_slot_resolution(
+        self, resolution: EvaluationSlotResolution
+    ) -> None:
         """Persist one v9 slot resolution idempotently for its attempt and stage."""
         await init_db()
         async with connect_db() as connection:
@@ -1230,7 +1350,9 @@ class EvaluationObservabilityRepository(
                 )
             await connection.commit()
 
-    async def list_trace_events_for_run(self, run_id: str) -> list[EvaluationTraceEvent]:
+    async def list_trace_events_for_run(
+        self, run_id: str
+    ) -> list[EvaluationTraceEvent]:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
@@ -1263,7 +1385,9 @@ class EvaluationObservabilityRepository(
             for row in rows
         ]
 
-    async def list_trace_events_for_campaign(self, campaign_id: str) -> dict[str, list[EvaluationTraceEvent]]:
+    async def list_trace_events_for_campaign(
+        self, campaign_id: str
+    ) -> dict[str, list[EvaluationTraceEvent]]:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
@@ -1393,7 +1517,9 @@ class EvaluationObservabilityRepository(
             for row in rows
         ]
 
-    async def list_llm_calls_for_campaign(self, campaign_id: str) -> dict[str, list[EvaluationLlmCall]]:
+    async def list_llm_calls_for_campaign(
+        self, campaign_id: str
+    ) -> dict[str, list[EvaluationLlmCall]]:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
@@ -1467,7 +1593,9 @@ class EvaluationObservabilityRepository(
             )
             await connection.commit()
 
-    async def list_retrieval_events_for_run(self, run_id: str) -> list[EvaluationRetrievalEvent]:
+    async def list_retrieval_events_for_run(
+        self, run_id: str
+    ) -> list[EvaluationRetrievalEvent]:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
@@ -1492,6 +1620,40 @@ class EvaluationObservabilityRepository(
             )
             for row in rows
         ]
+
+    async def list_retrieval_events_for_campaign(
+        self, campaign_id: str
+    ) -> dict[str, list[EvaluationRetrievalEvent]]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM evaluation_retrieval_events
+                WHERE campaign_id = ?
+                ORDER BY run_id ASC, created_at ASC, retrieval_event_id ASC
+                """,
+                (campaign_id,),
+            )
+            rows = await cursor.fetchall()
+        grouped: dict[str, list[EvaluationRetrievalEvent]] = defaultdict(list)
+        for row in rows:
+            grouped[str(row["run_id"])].append(
+                EvaluationRetrievalEvent(
+                    retrieval_event_id=row["retrieval_event_id"],
+                    run_id=row["run_id"],
+                    campaign_id=row["campaign_id"],
+                    span_id=row["span_id"],
+                    query=row["query"],
+                    query_hash=row["query_hash"],
+                    retriever_name=row["retriever_name"],
+                    top_k=row["top_k"],
+                    result_count=row["result_count"],
+                    latency_ms=row["latency_ms"],
+                    payload=_json_loads(row["payload_json"], {}),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                )
+            )
+        return dict(grouped)
 
     async def record_retrieval_chunk(self, chunk: EvaluationRetrievalChunk) -> None:
         await init_db()
@@ -1533,7 +1695,9 @@ class EvaluationObservabilityRepository(
             )
             await connection.commit()
 
-    async def list_retrieval_chunks_for_run(self, run_id: str) -> list[EvaluationRetrievalChunk]:
+    async def list_retrieval_chunks_for_run(
+        self, run_id: str
+    ) -> list[EvaluationRetrievalChunk]:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
@@ -1569,7 +1733,9 @@ class EvaluationObservabilityRepository(
             for row in rows
         ]
 
-    async def list_retrieval_chunks_for_campaign(self, campaign_id: str) -> dict[str, list[EvaluationRetrievalChunk]]:
+    async def list_retrieval_chunks_for_campaign(
+        self, campaign_id: str
+    ) -> dict[str, list[EvaluationRetrievalChunk]]:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
@@ -1641,7 +1807,9 @@ class EvaluationObservabilityRepository(
             )
             await connection.commit()
 
-    async def list_context_packs_for_run(self, run_id: str) -> list[EvaluationContextPack]:
+    async def list_context_packs_for_run(
+        self, run_id: str
+    ) -> list[EvaluationContextPack]:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
@@ -1723,7 +1891,41 @@ class EvaluationObservabilityRepository(
             for row in rows
         ]
 
-    async def record_routing_decision(self, decision: EvaluationRoutingDecision) -> None:
+    async def list_tool_calls_for_campaign(
+        self, campaign_id: str
+    ) -> dict[str, list[EvaluationToolCall]]:
+        await init_db()
+        async with connect_db() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM evaluation_tool_calls
+                WHERE campaign_id = ?
+                ORDER BY run_id ASC, created_at ASC, tool_call_id ASC
+                """,
+                (campaign_id,),
+            )
+            rows = await cursor.fetchall()
+        grouped: dict[str, list[EvaluationToolCall]] = defaultdict(list)
+        for row in rows:
+            grouped[str(row["run_id"])].append(
+                EvaluationToolCall(
+                    tool_call_id=row["tool_call_id"],
+                    run_id=row["run_id"],
+                    campaign_id=row["campaign_id"],
+                    span_id=row["span_id"],
+                    tool_name=row["tool_name"],
+                    action=row["action"],
+                    latency_ms=row["latency_ms"],
+                    status=row["status"],
+                    payload=_json_loads(row["payload_json"], {}),
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                )
+            )
+        return dict(grouped)
+
+    async def record_routing_decision(
+        self, decision: EvaluationRoutingDecision
+    ) -> None:
         await self._record_simple(
             "evaluation_routing_decisions",
             (
@@ -1752,7 +1954,9 @@ class EvaluationObservabilityRepository(
             ),
         )
 
-    async def list_routing_decisions_for_run(self, run_id: str) -> list[EvaluationRoutingDecision]:
+    async def list_routing_decisions_for_run(
+        self, run_id: str
+    ) -> list[EvaluationRoutingDecision]:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
@@ -1890,7 +2094,9 @@ class EvaluationObservabilityRepository(
             for row in rows
         ]
 
-    async def list_claims_for_campaign(self, campaign_id: str) -> dict[str, list[EvaluationClaim]]:
+    async def list_claims_for_campaign(
+        self, campaign_id: str
+    ) -> dict[str, list[EvaluationClaim]]:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
@@ -1965,7 +2171,9 @@ class EvaluationObservabilityRepository(
             ),
         )
 
-    async def list_human_ratings_for_run(self, run_id: str) -> list[EvaluationHumanRating]:
+    async def list_human_ratings_for_run(
+        self, run_id: str
+    ) -> list[EvaluationHumanRating]:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
@@ -1995,7 +2203,9 @@ class EvaluationObservabilityRepository(
             for row in rows
         ]
 
-    async def list_human_ratings_for_campaign(self, campaign_id: str) -> dict[str, list[EvaluationHumanRating]]:
+    async def list_human_ratings_for_campaign(
+        self, campaign_id: str
+    ) -> dict[str, list[EvaluationHumanRating]]:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
