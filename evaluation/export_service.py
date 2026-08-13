@@ -390,8 +390,6 @@ class EvaluationExportService:
         if request.include_run_observability and set(canonical) != expected_ids:
             raise ValueError("canonical observability result IDs do not match campaign results")
         release_data = release.model_dump(mode="python") if hasattr(release, "model_dump") else vars(release)
-        if release_data.get("availability") == "not_applicable":
-            release_data.update(manifest=None, arms=[], statistics=None)
         release_projection = ExportReleaseMetricsV2.model_validate(release_data)
         complete = _availability()
         release_availability = (

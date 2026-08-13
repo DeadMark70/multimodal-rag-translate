@@ -609,6 +609,10 @@ class ExportReleaseEvaluatorBlindingV2(ExportModel):
     method: str
 
 
+class ExportReleaseEmptyObjectV2(ExportModel):
+    """Closed representation of an intentionally empty release detail block."""
+
+
 class ExportReleaseManifestV2(ExportModel):
     benchmark_id: str
     kind: Literal["smoke", "formal", "insufficient"]
@@ -638,7 +642,9 @@ class ExportReleaseMetricsV2(ExportModel):
     availability: Literal["available", "not_applicable"] = "available"
     not_applicable_reason: str | None = None
     gate_reasons: list[str] = Field(default_factory=list)
-    manifest: ExportReleaseManifestV2 | None = None
+    manifest: ExportReleaseManifestV2 | ExportReleaseEmptyObjectV2 = Field(
+        default_factory=ExportReleaseEmptyObjectV2
+    )
     arms: list[ExportReleaseArmV2] = Field(default_factory=list)
     required_slot_coverage: ExportReleaseMetricV2 = Field(
         default_factory=ExportReleaseMetricV2
@@ -678,7 +684,9 @@ class ExportReleaseMetricsV2(ExportModel):
     per_question_quality_deltas: dict[str, ExportReleaseMetricV2] = Field(
         default_factory=dict
     )
-    statistics: ExportReleaseStatisticsV2 | None = None
+    statistics: ExportReleaseStatisticsV2 | ExportReleaseEmptyObjectV2 = Field(
+        default_factory=ExportReleaseEmptyObjectV2
+    )
 
 
 class ExportResearchSummaryV2(CampaignResearchSummaryResponse):

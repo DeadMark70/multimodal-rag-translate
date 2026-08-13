@@ -15604,6 +15604,13 @@
         ],
         "title": "ExportReleaseArmV2"
       },
+      "ExportReleaseEmptyObjectV2": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ExportReleaseEmptyObjectV2",
+        "description": "Closed representation of an intentionally empty release detail block."
+      },
       "ExportReleaseEvaluatorBlindingV2": {
         "properties": {
           "enabled": {
@@ -15840,9 +15847,10 @@
                 "$ref": "#/components/schemas/ExportReleaseManifestV2"
               },
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ExportReleaseEmptyObjectV2"
               }
-            ]
+            ],
+            "title": "Manifest"
           },
           "arms": {
             "items": {
@@ -15907,9 +15915,10 @@
                 "$ref": "#/components/schemas/ExportReleaseStatisticsV2"
               },
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ExportReleaseEmptyObjectV2"
               }
-            ]
+            ],
+            "title": "Statistics"
           }
         },
         "additionalProperties": false,
