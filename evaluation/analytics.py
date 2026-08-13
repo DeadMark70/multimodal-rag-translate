@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import math
 import re
 from collections import Counter, defaultdict
@@ -12,7 +11,6 @@ from dataclasses import dataclass
 from statistics import mean
 from typing import Any, Literal
 from uuid import uuid4
-from pathlib import Path
 
 from pydantic import BaseModel
 
@@ -116,9 +114,6 @@ _CONDITION_QUALITY_METRICS = (
     "faithfulness",
     "answer_relevancy",
 )
-_V9_GOLDEN_DATASET = Path(__file__).resolve().parent / "golden" / "agentic_v9_questions_v2.json"
-
-
 @dataclass(frozen=True, slots=True)
 class OfficialTokenReconciliation:
     status: Literal["complete", "partial", "not_available"]
@@ -280,22 +275,6 @@ def reconcile_official_tokens(
 
 def _dump(value: BaseModel) -> dict[str, Any]:
     return value.model_dump(mode="json")
-
-
-def _load_v9_golden_routes() -> dict[str, str]:
-    """Read the immutable route authority once per preflight request."""
-    try:
-        payload = json.loads(_V9_GOLDEN_DATASET.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    questions = payload.get("questions") if isinstance(payload, dict) else []
-    return {
-        str(question["id"]): str(question["expected_route"])
-        for question in questions
-        if isinstance(question, dict)
-        and isinstance(question.get("id"), str)
-        and isinstance(question.get("expected_route"), str)
-    }
 
 
 def _cost_rollup(values: list[float | None]) -> tuple[float | None, int, int, str]:
@@ -479,18 +458,17 @@ class EvaluationAnalyticsService:
             for case in await list_test_cases(user_id)
             if isinstance(case, dict) and case.get("id")
         }
-        golden = _load_v9_golden_routes()
         setup_snapshot = request.model_preset.model_dump(mode="json")
         questions: list[CampaignPreflightQuestion] = []
         for question_id in request.test_case_ids:
-            expected_route = golden.get(question_id)
+            expected_route: str | None = None
             issues: list[CampaignPreflightIssue] = []
             test_case = test_cases.get(question_id)
-            if test_case is None or expected_route is None:
+            if test_case is None:
                 issues.append(
                     CampaignPreflightIssue(
                         stage="post_contract",
-                        reason="golden_expected_route_unavailable",
+                        reason="test_case_unavailable",
                     )
                 )
             else:

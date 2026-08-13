@@ -496,7 +496,7 @@ def test_router_analysis_api_serializes_only_typed_retrospective_rows() -> None:
     assert row_items == {"$ref": "#/components/schemas/RouterAnalysisRow"}
 
 
-def test_v9_campaign_preflight_uses_golden_routes_and_reports_incompatible_setup() -> None:
+def test_v9_campaign_preflight_builds_dynamic_routes_and_reports_incompatible_setup() -> None:
     """The admission check is deterministic, per question, and token-only."""
     engine = CampaignEngine(runner=Mock(), ragas_evaluator=FakeRagasEvaluator())
     temp_root = Path(tempfile.mkdtemp(prefix="analytics_v9_preflight_"))
@@ -552,6 +552,58 @@ def test_v9_campaign_preflight_uses_golden_routes_and_reports_incompatible_setup
         issue = incompatible.json()["questions"][0]["issues"][0]
         assert issue["status"] == "configuration_incompatible"
         assert issue["reason"] == "thinking_reserve_unknown"
+
+
+def test_v9_campaign_preflight_admits_imported_case_outside_frozen_golden_ids() -> None:
+    """User-imported cases use the current admission contract, not an ID allowlist."""
+    engine = CampaignEngine(runner=Mock(), ragas_evaluator=FakeRagasEvaluator())
+    with tempfile.TemporaryDirectory(
+        prefix="analytics_v9_preflight_imported_", dir=Path.cwd()
+    ) as temp_dir:
+        temp_root = Path(temp_dir)
+        upload_root = temp_root / "uploads"
+        upload_root.mkdir()
+        db_path = temp_root / "evaluation.db"
+        with _build_client("user-a", upload_root, db_path, engine) as client:
+            created_case = client.post(
+                "/api/evaluation/test-cases",
+                json={
+                    "id": "Q17",
+                    "question": "What is the imported method?",
+                    "ground_truth": "An imported answer.",
+                },
+            )
+            assert created_case.status_code == 200
+
+            response = client.post(
+                "/api/evaluation/campaigns/preflight",
+                json={
+                    "test_case_ids": ["Q17"],
+                    "model_config": {
+                        "id": "cfg-v9",
+                        "name": "v9",
+                        "model_name": "gemini-2.5-flash",
+                        "temperature": 0.7,
+                        "top_p": 0.95,
+                        "top_k": 40,
+                        "max_input_tokens": 8192,
+                        "max_output_tokens": 2048,
+                        "thinking_mode": False,
+                        "thinking_budget": 8192,
+                    },
+                    "runtime_token_budget": 10000,
+                    "max_llm_calls": 5,
+                },
+            )
+
+            assert response.status_code == 200
+            question = response.json()["questions"][0]
+            assert question == {
+                "question_id": "Q17",
+                "expected_route": "single_lookup",
+                "status": "feasible",
+                "issues": [],
+            }
 
 
 def test_v9_campaign_preflight_admits_visual_route_with_five_call_setup_reserve() -> None:

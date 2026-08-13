@@ -78,6 +78,10 @@
 - Request middleware attaches `X-Request-Id` to the response.
 - `TEST_MODE` or `USE_FAKE_PROVIDERS` skip real warmups and provider calls during startup-sensitive paths.
 - Evaluation persists campaign state in SQLite with WAL mode and supports results, traces, metrics, manual evaluate, cancel, and SSE reconnect.
+- Agentic v9 campaign preflight derives each selected case's current route from
+  the same admission-contract boundary used by runtime. Newly imported case IDs
+  are not restricted to the frozen Q1-Q16 regression corpus; ownership,
+  source-scope resolution, and token/call-budget feasibility remain mandatory.
 - Campaign trace-list reads use the migrated `agent_traces.summary_json` projection and its campaign/user/created index; full `trace_json` is reserved for trace-detail reads. Existing rows with no usable summary remain readable as a minimal `not_instrumented` summary rather than forcing the list path to deserialize a complete trace.
 - Evaluation answers are capped at 1,048,576 UTF-8 bytes. Oversize answers are recorded as failed work with the stable error code `EVALUATION_ANSWER_TOO_LARGE`; callers must not retry by silently truncating or substituting the answer.
 - Vector-store hot paths now run through an async coordination seam in `data_base/vector_store_manager.py`:

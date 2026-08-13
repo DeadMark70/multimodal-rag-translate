@@ -17,6 +17,10 @@
 - Campaign progress recovery must be keyed by persisted campaign state, not in-memory only state.
 - Evaluation model discovery and runtime generation should remain architecturally separated.
 - Evaluation model discovery (`GET /api/evaluation/models`) must require bearer authentication (no anonymous discovery path).
+- Agentic v9 preflight builds the current admission contract for every selected,
+  owned test case, including newly imported IDs. Frozen golden routes are
+  regression fixtures, not a runtime allowlist; missing selected cases remain
+  incompatible, and source-scope plus token/call-budget checks still fail closed.
 
 ## Research API Surface
 
