@@ -64,6 +64,27 @@ page references, plus scalar repair fields. Provider bodies and original claim
 payloads are excluded. Run-level `claim_extraction_status` distinguishes a
 recorded empty extraction from a run that did not instrument claims.
 
+## Export v2 parity
+
+`POST /api/evaluation/campaigns/{campaign_id}/export` returns one authenticated,
+all-or-error snapshot. The seven named `sections` are the same serialized
+objects returned by the active panel services. With safe-default content flags,
+each full-export run observability object is the same safe projection returned
+by the selected-run observability endpoint. Summary export is the default;
+`include_run_observability=true` adds every campaign result ID using one
+campaign observability snapshot and one accounting snapshot, independent of run
+count. A campaign without a benchmark retains the release endpoint's empty
+manifest/statistics objects and nested `not_applicable` state.
+
+Release verification must cover an authenticated two-mode campaign with
+official RAGAS and accounting, v9 evidence, routing, ablation, a human rating,
+an error, and a stage warning. Also verify a v8/legacy run, missing
+instrumentation, a failed or partial run when available, a terminal durable job,
+and a multi-run full export. Confirm foreign ownership returns `404`, failures
+never return a partial v2 body, and exported run IDs exactly equal campaign
+result IDs. Record only response shapes and statuses; never copy secrets into
+verification notes.
+
 ## Comparison rules
 
 - `naive` is the quality baseline when the question has the required compatible

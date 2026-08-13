@@ -449,8 +449,10 @@
     - `format` (`json` only)
 - Export Schema v2 behavior:
   - `EvaluationExportService.export_campaign` is the only composer; the route no longer has a legacy response path
-  - required panel sections are composed from their canonical services and fail all-or-error
+  - required panel sections are composed from their canonical services, match the active HTTP panel objects, and fail all-or-error
   - summary exports do not load detailed observability; full exports use one campaign snapshot and require exact result/run-ID equality
+  - full export and selected-run detail share the interactive safe projector before export-only content flags are applied, so provenance, availability, empty safe payloads, and structural identifiers cannot drift
+  - campaign observability and accounting snapshot load counts are constant for one or fifty runs; no per-run observability/accounting loaders are used
   - every `runs[]` row contains the fixed result projection, official finite-only RAGAS metrics, accounting, latency, and a fixed observability envelope
   - trace event `payload` is blank unless `include_raw_trace_payloads=true`; included payloads recursively exclude provider bodies/errors/stack traces, redact credentials, and apply answer/excerpt policy to equivalent nested keys
   - every exported free-text field is credential-redacted and bounded; typed identity and locator fields remain present
@@ -459,6 +461,7 @@
   - `include_answers=false` clears result/preview/claim/fact/final-claim content, including the human-evaluation queue preview
   - `include_retrieved_excerpts=false` clears excerpts and evidence statements while retaining identity and locator fields
   - provider bodies, non-trace arbitrary payloads, unrestricted errors, stack traces, credentials, and authorization headers are permanently excluded
+- The HTTP parity release test uses authenticated temporary durable storage and compares complete serialized panel/export objects for two modes, official RAGAS/accounting, v9 evidence, routing, ablation, human evaluation, errors, and stage warnings. It also preserves the release endpoint's nested `not_applicable` shape when no benchmark is configured.
 - Sanitized errors are stored and exported instead of raw provider dumps. Multiline stack traces and obvious secrets are redacted.
 
 ### Durable Evaluation Recovery
