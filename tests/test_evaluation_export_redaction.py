@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import time
 from contextlib import contextmanager
@@ -9,16 +10,68 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from core.auth import get_current_user_id
+from evaluation import db as evaluation_db
 from evaluation.campaign_engine import CampaignEngine
 from evaluation.evidence import content_hash
-from evaluation import db as evaluation_db
+from evaluation.export_schemas import (
+    ExportCampaignRequest as ExportCampaignRequestV2,
+    resolve_export_content_policy,
+)
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.rag_modes import BenchmarkExecutionResult
 from evaluation.trace_schemas import EvaluationLlmCall, EvaluationTraceEvent
 from main import app
+
+
+CONTENT_POLICY_ROWS = list(itertools.product((False, True), repeat=5))
+
+
+@pytest.mark.parametrize(
+    (
+        "include_raw_trace_payloads",
+        "include_prompt_previews",
+        "include_full_prompts",
+        "include_answers",
+        "include_retrieved_excerpts",
+    ),
+    CONTENT_POLICY_ROWS,
+)
+def test_content_policy_covers_all_32_flag_combinations(
+    include_raw_trace_payloads: bool,
+    include_prompt_previews: bool,
+    include_full_prompts: bool,
+    include_answers: bool,
+    include_retrieved_excerpts: bool,
+) -> None:
+    request = ExportCampaignRequestV2(
+        include_run_observability=False,
+        include_raw_trace_payloads=include_raw_trace_payloads,
+        include_prompt_previews=include_prompt_previews,
+        include_full_prompts=include_full_prompts,
+        include_answers=include_answers,
+        include_retrieved_excerpts=include_retrieved_excerpts,
+    )
+
+    captured = resolve_export_content_policy(request, captured_at_execution=True)
+    not_captured = resolve_export_content_policy(request, captured_at_execution=False)
+
+    assert len(CONTENT_POLICY_ROWS) == 32
+    assert captured.raw_trace_allowed is include_raw_trace_payloads
+    assert captured.prompt_preview_allowed is include_prompt_previews
+    assert captured.full_prompt_allowed is include_full_prompts
+    assert not_captured.full_prompt_allowed is False
+    assert captured.answer_text_allowed is include_answers
+    assert captured.excerpt_text_allowed is include_retrieved_excerpts
+    assert captured.provider_bodies_allowed is False
+    assert captured.credentials_allowed is False
+    assert captured.authorization_headers_allowed is False
+    assert captured.stack_traces_allowed is False
+    assert captured.unrestricted_errors_allowed is False
+    assert captured.non_trace_payloads_allowed is False
 
 
 class FakeRagasEvaluator:
@@ -29,7 +82,9 @@ class FakeRagasEvaluator:
 
 
 @contextmanager
-def _build_client(user_id: str, upload_root: Path, db_path: Path, engine: CampaignEngine):
+def _build_client(
+    user_id: str, upload_root: Path, db_path: Path, engine: CampaignEngine
+):
     process_worker = Mock(is_configured=False)
     with (
         patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
@@ -37,7 +92,10 @@ def _build_client(user_id: str, upload_root: Path, db_path: Path, engine: Campai
         patch("evaluation.storage.BASE_UPLOAD_FOLDER", str(upload_root)),
         patch("evaluation.db.EVALUATION_DB_PATH", db_path),
         patch("evaluation.campaign_engine.get_campaign_engine", return_value=engine),
-        patch("evaluation.job_worker.get_evaluation_job_worker", return_value=process_worker),
+        patch(
+            "evaluation.job_worker.get_evaluation_job_worker",
+            return_value=process_worker,
+        ),
         patch("evaluation.router.get_campaign_engine", return_value=engine),
     ):
         app.dependency_overrides[get_current_user_id] = lambda: user_id
@@ -58,9 +116,7 @@ def _wait_for_completed(client: TestClient, campaign_id: str) -> None:
     raise AssertionError(f"campaign {campaign_id} did not complete")
 
 
-async def _seed_export_rows(
-    *, run_id: str, campaign_id: str, attempt_id: str
-) -> None:
+async def _seed_export_rows(*, run_id: str, campaign_id: str, attempt_id: str) -> None:
     repository = EvaluationObservabilityRepository()
     now = datetime.now(timezone.utc)
     await repository.record_trace_event(
@@ -82,7 +138,10 @@ async def _seed_export_rows(
             status="failed",
             retry_count=0,
             payload={"provider": "test"},
-            error={"code": "PROVIDER_ERROR", "message": "apiKey=sk-secret exploded with stack trace"},
+            error={
+                "code": "PROVIDER_ERROR",
+                "message": "apiKey=sk-secret exploded with stack trace",
+            },
             created_at=now,
         )
     )
@@ -164,9 +223,7 @@ async def _seed_export_rows(
                         "importance": "core",
                         "coverage_status": "candidate",
                         "available_representations": ["plain_text"],
-                        "candidate_evidence_refs": [
-                            "doc-1:runtime-export-chunk"
-                        ],
+                        "candidate_evidence_refs": ["doc-1:runtime-export-chunk"],
                     }
                 ],
                 "response_constraints": [
@@ -188,7 +245,7 @@ async def _seed_export_rows(
                     "truncated_requirement_count": 0,
                     "truncated_constraint_count": 0,
                 },
-            }
+            },
         },
         evidence_packets=[],
         slot_resolutions=[],
@@ -413,18 +470,22 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
             }
         ]
 
-        default_export = client.post(f"/api/evaluation/campaigns/{campaign_id}/export", json={})
+        default_export = client.post(
+            f"/api/evaluation/campaigns/{campaign_id}/export", json={}
+        )
         assert default_export.status_code == 200
         export_body = default_export.json()
         assert export_body["redaction"]["include_full_prompts"] is False
-        llm_call = next(item for item in export_body["llm_calls"] if item["llm_call_id"] == f"{run_id}-llm")
+        llm_call = next(
+            item
+            for item in export_body["llm_calls"]
+            if item["llm_call_id"] == f"{run_id}-llm"
+        )
         assert llm_call["prompt_preview"] == "Question: preview only"
         assert llm_call["full_prompt_capture_status"] == "redacted"
         assert "full_prompt" not in llm_call["payload"]
         assert export_body["summary"]["run_count"] == 1
-        assert export_body["summary"]["llm_call_count"] == len(
-            export_body["llm_calls"]
-        )
+        assert export_body["summary"]["llm_call_count"] == len(export_body["llm_calls"])
         assert export_body["summary"]["per_phase_counts"]["final_answer"] == 1
         assert export_body["summary"]["per_phase_counts"]["evidence_extract"] == 1
         assert export_body["summary"]["prompt_hash_availability"]["captured"] >= 2
@@ -457,9 +518,7 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
                             "importance": "core",
                             "coverage_status": "candidate",
                             "available_representations": ["plain_text"],
-                            "candidate_evidence_refs": [
-                                "doc-1:runtime-export-chunk"
-                            ],
+                            "candidate_evidence_refs": ["doc-1:runtime-export-chunk"],
                         }
                     ],
                     "response_constraints": [
@@ -508,7 +567,9 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         )
         assert full_export.status_code == 200
         full_llm_call = next(
-            item for item in full_export.json()["llm_calls"] if item["llm_call_id"] == f"{run_id}-llm"
+            item
+            for item in full_export.json()["llm_calls"]
+            if item["llm_call_id"] == f"{run_id}-llm"
         )
         assert "hunter2" not in full_export.text
         assert "quoted-api-key" not in full_export.text
@@ -556,13 +617,14 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         assert redacted_chunk["rank_after_rerank"] == 2
         assert redacted_chunk["rerank_score"] == 0.73
         assert (
-            redacted_chunk["payload"]["expected_evidence_match_status"]
-            == "not_matched"
+            redacted_chunk["payload"]["expected_evidence_match_status"] == "not_matched"
         )
         assert redacted_chunk["payload"]["reranker_status"] == "executed"
 
 
-def test_export_includes_condition_comparison_and_finite_per_run_ragas_metrics() -> None:
+def test_export_includes_condition_comparison_and_finite_per_run_ragas_metrics() -> (
+    None
+):
     async def runner(**kwargs) -> BenchmarkExecutionResult:
         test_case = kwargs["test_case"]
         return BenchmarkExecutionResult(
@@ -623,12 +685,13 @@ def test_export_includes_condition_comparison_and_finite_per_run_ragas_metrics()
         payload = export_response.json()
         runs_by_id = {run["id"]: run for run in payload["runs"]}
 
-        assert payload["metrics"]["condition_comparison"]["paired"][
-            "completed_pair_count"
-        ] == 1
-        assert runs_by_id[result_ids_by_condition["v9-baseline"]][
-            "ragas_metrics"
-        ] == {"answer_correctness": 0.7}
+        assert (
+            payload["metrics"]["condition_comparison"]["paired"]["completed_pair_count"]
+            == 1
+        )
+        assert runs_by_id[result_ids_by_condition["v9-baseline"]]["ragas_metrics"] == {
+            "answer_correctness": 0.7
+        }
         assert runs_by_id[result_ids_by_condition["v9-guided"]]["ragas_metrics"] == {
             "answer_correctness": 0.9
         }
@@ -674,5 +737,7 @@ def test_user_cannot_export_another_users_campaign() -> None:
         _wait_for_completed(client_a, campaign_id)
 
     with _build_client("user-b", upload_root, db_path, engine) as client_b:
-        denied = client_b.post(f"/api/evaluation/campaigns/{campaign_id}/export", json={})
+        denied = client_b.post(
+            f"/api/evaluation/campaigns/{campaign_id}/export", json={}
+        )
         assert denied.status_code == 404

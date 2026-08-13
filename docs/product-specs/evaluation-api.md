@@ -110,6 +110,7 @@
   - `prompt_preview`
   - optional payload fields when instrumentation provides them
 - `POST /api/evaluation/campaigns/{campaign_id}/export` accepts:
+  - `include_run_observability` (defaults to `false`; controls export scope)
   - `include_raw_trace_payloads`
   - `include_prompt_previews`
   - `include_full_prompts`
@@ -123,6 +124,36 @@
   - answers and retrieval excerpts can be independently removed
   - every exported run includes a finite-only `ragas_metrics` map, and `metrics.condition_comparison` matches the `/ablation` projection
   - question snapshots are still partially redacted even when exporting runs
+
+### Export Schema v2 Contract
+
+The typed v2 contract is owned by `evaluation/export_schemas.py`. Its route and
+service switch is atomic: until that migration is made, the existing endpoint
+continues to serve only the legacy response and never exposes both response
+shapes at once.
+
+Schema v2 has exactly five required top-level keys: `schema_version` (`"2.0"`),
+`export_metadata`, `campaign`, `sections`, and `runs`. The seven required named
+sections are `overview`, `question_analysis`, `agent_behavior`,
+`router_analysis`, `ablation`, `human_evaluation`, and `diagnostics`. Every
+section pairs typed data with an explicit availability status: `complete`,
+`partial`, `not_instrumented`, `not_available`, or `not_applicable`.
+
+The default request is a summary export. Detailed per-run observability is
+included only when `include_run_observability=true`; this scope flag is
+independent of the five content controls. Each run always has a fixed redacted
+result, finite-only RAGAS metrics, typed token accounting, and nullable measured
+latency/timestamps. Detailed run rows use fixed allow lists for trace, LLM,
+retrieval, context, tool, routing, graph, claim, rating, and evidence-coverage
+families.
+
+Content controls never relax permanent exclusions. Provider bodies,
+credentials, authorization headers, stack traces, unrestricted errors, and
+non-trace arbitrary payloads are never exported. Raw trace authorization
+applies only to sanitized trace-event payloads. Prompt previews follow
+`include_prompt_previews`; a full prompt additionally requires both
+`include_full_prompts=true` and execution-time capture. Answers and retrieved
+excerpts are independently nullable under their respective controls.
 
 ## Compatibility And Empty States
 
