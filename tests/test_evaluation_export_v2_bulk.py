@@ -455,6 +455,20 @@ def test_canonical_builder_rejects_missing_run_container() -> None:
         )
 
 
+def test_canonical_builder_does_not_require_v9_materialization_for_v8_run() -> None:
+    result = _result(source_attempt_id="attempt-current").model_copy(
+        update={"agentic_execution_version": "v8"}
+    )
+
+    canonical = research_analytics._build_canonical_run_observability(
+        result=result,
+        observability=_empty_snapshot(),
+        accounting=_accounting_snapshot([result]),
+    )
+
+    assert canonical.agentic_v9 is None
+
+
 def test_canonical_builder_rejects_malformed_current_v9_materialization() -> None:
     result = _result(source_attempt_id="attempt-current")
     snapshot = _empty_snapshot()

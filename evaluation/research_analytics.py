@@ -393,6 +393,8 @@ def _has_run_container(snapshot: CampaignObservabilitySnapshot, run_id: str) -> 
 def _v9_observability_from_snapshot(
     *, result: CampaignResult, observability: CampaignObservabilitySnapshot
 ) -> V9ExecutionObservability | None:
+    if result.agentic_execution_version != "v9":
+        return None
     attempt_id = result.source_attempt_id
     if not attempt_id:
         return None
