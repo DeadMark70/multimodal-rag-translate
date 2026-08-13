@@ -50,7 +50,11 @@ from evaluation.observability_storage import (
     safe_comparison_projection,
 )
 from evaluation.release_metrics import ReleaseMetricsService
-from evaluation.research_analytics import CanonicalRunObservability, ResearchAnalyticsService
+from evaluation.research_analytics import (
+    CanonicalRunObservability,
+    ResearchAnalyticsService,
+    _project_interactive_run_observability,
+)
 
 
 _MAX_EXPORT_TEXT_CHARS = 64 * 1024
@@ -188,34 +192,37 @@ def _project_export_run_observability(
     *, canonical: CanonicalRunObservability, request: ExportCampaignRequest
 ) -> ExportRunObservabilityDataV2:
     """Project one canonical run through the sole detailed content boundary."""
-    result = canonical.result
-    tokens = canonical.token_breakdown
+    interactive = _project_interactive_run_observability(canonical)
     trace_events = []
-    for item in canonical.trace_events:
-        row = item.model_dump(mode="python", exclude={"error"})
+    for source, projected in zip(
+        canonical.trace_events, interactive.trace_events, strict=True
+    ):
+        row = projected.model_dump(mode="python")
         row["payload"] = (
-            _project_trace_payload(row["payload"], request=request)
+            _project_trace_payload(source.payload, request=request)
             if request.include_raw_trace_payloads
             else {}
         )
         trace_events.append(ExportTraceEventV2.model_validate(row))
     llm_calls = []
-    for item in canonical.llm_calls:
-        row = item.model_dump(mode="python", exclude={"payload", "error"})
+    for source, projected in zip(
+        canonical.llm_calls, interactive.llm_calls, strict=True
+    ):
+        row = projected.model_dump(mode="python")
         preview_policy = resolve_export_content_policy(
-            request, captured_at_execution=item.prompt_capture_status == "captured"
+            request, captured_at_execution=source.prompt_capture_status == "captured"
         )
         full_policy = resolve_export_content_policy(
             request,
-            captured_at_execution=item.full_prompt_capture_status == "captured",
+            captured_at_execution=source.full_prompt_capture_status == "captured",
         )
         row["prompt_preview"] = (
-            _safe_optional_export_text(item.prompt_preview)
+            projected.prompt_preview
             if preview_policy.prompt_preview_allowed
             else None
         )
         row["full_prompt"] = (
-            _safe_optional_export_text(item.payload.get("full_prompt"))
+            _safe_optional_export_text(source.payload.get("full_prompt"))
             if full_policy.full_prompt_allowed
             else None
         )
@@ -223,42 +230,24 @@ def _project_export_run_observability(
     chunks = [
         ExportRetrievalChunkV2.model_validate(
             {
-                **item.model_dump(mode="python", exclude={"payload"}),
+                **item.model_dump(mode="python"),
                 "excerpt": (
-                    _safe_optional_export_text(item.excerpt)
+                    item.excerpt
                     if request.include_retrieved_excerpts
                     else None
                 ),
-                "provenance": "persisted",
-                "availability": _availability(),
             }
         )
-        for item in canonical.retrieval_chunks
+        for item in interactive.retrieval_chunks
     ]
     claims = [
-        ExportClaimV2(
-            claim_id=item.claim_id,
-            run_id=item.run_id,
-            campaign_id=item.campaign_id,
-            attempt_id=item.attempt_id,
-            condition_id=item.condition_id,
-            schema_version=item.schema_version,
-            span_id=item.span_id,
-            claim_text=(
-                _safe_optional_export_text(item.claim_text)
-                if request.include_answers
-                else None
-            ),
-            claim_type=item.claim_type,
-            support_status=item.support_status,
-            evidence_refs=_references(item.evidence),
-            unsupported_reason=item.unsupported_reason,
-            repair_action=item.payload.get("repair_action"),
-            post_repair_status=item.payload.get("post_repair_status"),
-            extraction_status=canonical.claim_extraction_status,
-            created_at=item.created_at,
+        ExportClaimV2.model_validate(
+            {
+                **item.model_dump(mode="python"),
+                "claim_text": item.claim_text if request.include_answers else None,
+            }
         )
-        for item in canonical.claims
+        for item in interactive.claims
     ]
     coverage = (
         [
@@ -278,48 +267,55 @@ def _project_export_run_observability(
         else None
     )
     return ExportRunObservabilityDataV2(
-        run_id=result.id,
-        campaign_id=result.campaign_id,
-        run_summary=ExportRunSummaryV2(
-            run_id=result.id,
-            campaign_id=result.campaign_id,
-            question_id=result.question_id,
-            mode=result.mode,
-            repeat_number=result.repeat_number,
-            answer_preview=(
-                _safe_export_text(result.answer)[:500]
-                if request.include_answers
-                else None
-            ),
-            latency_ms=result.total_latency_ms if result.total_latency_ms is not None else result.latency_ms,
-            total_tokens=tokens.total_tokens,
-            accounting_status=tokens.accounting_status if tokens.accounting_status != "incomplete_legacy" else "not_available",
-            created_at=result.created_at,
+        run_id=interactive.run_id,
+        campaign_id=interactive.campaign_id,
+        run_summary=ExportRunSummaryV2.model_validate(
+            {
+                **interactive.run_summary.model_dump(mode="python"),
+                "answer_preview": (
+                    interactive.run_summary.answer_preview
+                    if request.include_answers
+                    else None
+                ),
+            }
         ),
-        accounting_diagnostics=tokens,
+        accounting_diagnostics=interactive.accounting_diagnostics,
         trace_events=trace_events,
         llm_calls=llm_calls,
-        retrieval_events=[ExportRetrievalEventV2.model_validate(item.model_dump(mode="python", exclude={"payload"})) for item in canonical.retrieval_events],
+        retrieval_events=[
+            ExportRetrievalEventV2.model_validate(item.model_dump(mode="python"))
+            for item in interactive.retrieval_events
+        ],
         retrieval_chunks=chunks,
         context_packs=[
-            ExportContextPackV2.model_validate(
-                {
-                    **item.model_dump(mode="python", exclude={"payload", "retrieved_but_not_packed_evidence"}),
-                    "retrieved_but_not_packed_evidence": _references(item.retrieved_but_not_packed_evidence),
-                }
-            )
-            for item in canonical.context_packs
+            ExportContextPackV2.model_validate(item.model_dump(mode="python"))
+            for item in interactive.context_packs
         ],
-        tool_calls=[ExportToolCallV2.model_validate(item.model_dump(mode="python", exclude={"payload"})) for item in canonical.tool_calls],
-        routing_decisions=[ExportRoutingDecisionV2.model_validate(item.model_dump(mode="python", exclude={"payload"})) for item in canonical.routing_decisions],
-        graph_events=[ExportGraphEventV2.model_validate(item.model_dump(mode="python", exclude={"graph_feature_flags"})) for item in canonical.graph_events],
-        graph_evidence_items=[ExportGraphEvidenceItemV2.model_validate(item.model_dump(mode="python")) for item in canonical.graph_evidence_items],
-        graph_observability_status=canonical.graph_observability_status,
+        tool_calls=[
+            ExportToolCallV2.model_validate(item.model_dump(mode="python"))
+            for item in interactive.tool_calls
+        ],
+        routing_decisions=[
+            ExportRoutingDecisionV2.model_validate(item.model_dump(mode="python"))
+            for item in interactive.routing_decisions
+        ],
+        graph_events=[
+            ExportGraphEventV2.model_validate(item.model_dump(mode="python"))
+            for item in interactive.graph_events
+        ],
+        graph_evidence_items=[
+            ExportGraphEvidenceItemV2.model_validate(item.model_dump(mode="python"))
+            for item in interactive.graph_evidence_items
+        ],
+        graph_observability_status=interactive.graph_observability_status,
         claims=claims,
-        claim_extraction_status=canonical.claim_extraction_status,
-        human_ratings=[ExportHumanRatingV2.model_validate(item.model_dump(mode="python", exclude={"payload"})) for item in canonical.human_ratings],
+        claim_extraction_status=interactive.claim_extraction_status,
+        human_ratings=[
+            ExportHumanRatingV2.model_validate(item.model_dump(mode="python"))
+            for item in interactive.human_ratings
+        ],
         evidence_coverage=coverage,
-        evidence_coverage_status=canonical.evidence_coverage_status,
+        evidence_coverage_status=interactive.evidence_coverage_status,
         agentic_v9=_project_agentic_v9(canonical, request),
     )
 

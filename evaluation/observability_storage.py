@@ -41,10 +41,10 @@ from evaluation.trace_schemas import (
 MAX_V9_OBSERVABILITY_PAYLOAD_BYTES = 256 * 1024
 DEFAULT_EVIDENCE_EXCERPT_CHARS = 500
 _SECRET_PATTERNS = (
-    re.compile(r"sk-[A-Za-z0-9_-]+"),
+    re.compile(r"(?<![A-Za-z0-9_])sk-[A-Za-z0-9_-]+"),
     re.compile(
         r"(?:api[_-]?key|authorization|password|secret|token|bearer)"
-        r"\s*[:=]?\s*(?:\"[^\"]*\"|'[^']*'|\S+)",
+        r"(?:\s*[:=]\s*|\s+)(?:\"[^\"]*\"|'[^']*'|\S+)",
         re.IGNORECASE,
     ),
 )

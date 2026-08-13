@@ -99,6 +99,10 @@ class ExportAvailability(ExportModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+class ExportEmptyObjectV2(ExportModel):
+    """A serialized empty object with no extensible payload surface."""
+
+
 class ExportSection(ExportModel, Generic[T]):
     availability: ExportAvailability
     data: T | None
@@ -166,6 +170,7 @@ class ExportTraceEventV2(ExportModel):
     status: TraceEventStatus
     retry_count: int = Field(ge=0)
     payload: dict[str, JsonValue] = Field(default_factory=dict)
+    error: ExportEmptyObjectV2 = Field(default_factory=ExportEmptyObjectV2)
     created_at: datetime
 
 
@@ -195,6 +200,8 @@ class ExportLlmCallV2(ExportModel):
     full_prompt_capture_status: PromptCaptureStatus
     prompt_preview: str | None = None
     full_prompt: str | None = None
+    error: ExportEmptyObjectV2 = Field(default_factory=ExportEmptyObjectV2)
+    payload: ExportEmptyObjectV2 = Field(default_factory=ExportEmptyObjectV2)
     created_at: datetime
 
 
@@ -209,6 +216,7 @@ class ExportRetrievalEventV2(ExportModel):
     top_k: int | None = Field(default=None, ge=0)
     result_count: int = Field(ge=0)
     latency_ms: float | None = Field(default=None, ge=0)
+    payload: ExportEmptyObjectV2 = Field(default_factory=ExportEmptyObjectV2)
     created_at: datetime
 
 
@@ -235,6 +243,7 @@ class ExportRetrievalChunkV2(ExportModel):
     content_hash: str | None = None
     provenance: ObservationProvenance
     availability: ExportAvailability
+    payload: ExportEmptyObjectV2 = Field(default_factory=ExportEmptyObjectV2)
     created_at: datetime
 
 
@@ -257,6 +266,7 @@ class ExportContextPackV2(ExportModel):
     packed_chunk_count: int = Field(ge=0)
     token_count: int = Field(ge=0)
     retrieved_but_not_packed_evidence: list[ExportEvidenceReferenceV2]
+    payload: ExportEmptyObjectV2 = Field(default_factory=ExportEmptyObjectV2)
     created_at: datetime
 
 
@@ -269,6 +279,7 @@ class ExportToolCallV2(ExportModel):
     action: str | None = None
     latency_ms: float | None = Field(default=None, ge=0)
     status: TraceEventStatus
+    payload: ExportEmptyObjectV2 = Field(default_factory=ExportEmptyObjectV2)
     created_at: datetime
 
 
@@ -285,6 +296,7 @@ class ExportRoutingDecisionV2(ExportModel):
     fallback_reason: str | None
     confidence: float | None
     reason: str | None
+    payload: ExportEmptyObjectV2 = Field(default_factory=ExportEmptyObjectV2)
     created_at: datetime
 
 
@@ -298,6 +310,9 @@ class ExportGraphEventV2(ExportModel):
     graph_evidence_mode: str
     graph_route: str
     router_reason: str | None
+    graph_feature_flags: ExportEmptyObjectV2 = Field(
+        default_factory=ExportEmptyObjectV2
+    )
     graph_snapshot_version: str | None
     graph_schema_version: str | None
     graph_extraction_prompt_version: str | None
@@ -345,11 +360,13 @@ class ExportClaimV2(ExportModel):
     support_status: Literal[
         "supported", "partially_supported", "unsupported", "contradicted"
     ]
+    evidence: list[ExportEvidenceReferenceV2] = Field(default_factory=list)
     evidence_refs: list[ExportEvidenceReferenceV2]
     unsupported_reason: str | None
     repair_action: str | None
     post_repair_status: str | None
     extraction_status: Literal["recorded", "empty", "not_instrumented"]
+    payload: ExportEmptyObjectV2 = Field(default_factory=ExportEmptyObjectV2)
     created_at: datetime
 
 
@@ -368,6 +385,7 @@ class ExportHumanRatingV2(ExportModel):
     comments: str | None
     is_blinded: bool
     shown_mode_label: bool
+    payload: ExportEmptyObjectV2 = Field(default_factory=ExportEmptyObjectV2)
     created_at: datetime
 
 

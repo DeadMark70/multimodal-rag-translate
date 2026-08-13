@@ -48,10 +48,16 @@ from evaluation.export_service import (
     EvaluationExportService,
     _project_export_run_observability,
 )
-from evaluation.observability_storage import EvaluationObservabilityRepository
+from evaluation.observability_storage import (
+    EvaluationObservabilityRepository,
+    redact_sensitive_text,
+)
 from evaluation.rag_modes import BenchmarkExecutionResult
 from evaluation.release_metrics import ReleaseMetricsReport
-from evaluation.research_analytics import CanonicalRunObservability
+from evaluation.research_analytics import (
+    CanonicalRunObservability,
+    _project_interactive_run_observability,
+)
 from evaluation.trace_schemas import (
     EvaluationClaim,
     EvaluationLlmCall,
@@ -565,6 +571,25 @@ def test_export_projector_does_not_truncate_event_tail() -> None:
 
     assert len(projected.trace_events) == 101
     assert projected.trace_events[-1].event_id == "trace-100"
+
+
+def test_export_safe_defaults_match_interactive_observability_projection() -> None:
+    canonical = _canonical_export_run()
+
+    exported = _project_export_run_observability(
+        canonical=canonical, request=ExportCampaignRequestV2()
+    )
+    interactive = _project_interactive_run_observability(canonical)
+
+    assert exported.model_dump(mode="json") == interactive.model_dump(mode="json")
+
+
+def test_credential_redaction_preserves_structural_token_and_task_identifiers() -> None:
+    text = "provider_total_tokens_unknown task-1 api_key=sk-live-secret"
+
+    redacted = redact_sensitive_text(text)
+
+    assert redacted == "provider_total_tokens_unknown task-1 [redacted]"
 
 
 def test_export_required_section_failure_returns_no_partial_v2_body() -> None:

@@ -10616,6 +10616,10 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "full_prompt": {
+            "type": "null",
+            "title": "Full Prompt"
           }
         },
         "type": "object",
@@ -13371,6 +13375,13 @@
             ],
             "title": "Support Status"
           },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/ExportEvidenceReferenceV2"
+            },
+            "type": "array",
+            "title": "Evidence"
+          },
           "evidence_refs": {
             "items": {
               "$ref": "#/components/schemas/ExportEvidenceReferenceV2"
@@ -13419,6 +13430,9 @@
               "not_instrumented"
             ],
             "title": "Extraction Status"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/ExportEmptyObjectV2"
           },
           "created_at": {
             "type": "string",
@@ -13799,6 +13813,9 @@
             "type": "array",
             "title": "Retrieved But Not Packed Evidence"
           },
+          "payload": {
+            "$ref": "#/components/schemas/ExportEmptyObjectV2"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -13843,6 +13860,13 @@
         "additionalProperties": false,
         "type": "object",
         "title": "ExportEmptyAnalyticsRowV2"
+      },
+      "ExportEmptyObjectV2": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ExportEmptyObjectV2",
+        "description": "A serialized empty object with no extensible payload surface."
       },
       "ExportEvidenceCoverageV2": {
         "properties": {
@@ -14007,6 +14031,9 @@
               }
             ],
             "title": "Router Reason"
+          },
+          "graph_feature_flags": {
+            "$ref": "#/components/schemas/ExportEmptyObjectV2"
           },
           "graph_snapshot_version": {
             "anyOf": [
@@ -14479,6 +14506,9 @@
           "shown_mode_label": {
             "type": "boolean",
             "title": "Shown Mode Label"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/ExportEmptyObjectV2"
           },
           "created_at": {
             "type": "string",
@@ -15053,6 +15083,12 @@
               }
             ],
             "title": "Full Prompt"
+          },
+          "error": {
+            "$ref": "#/components/schemas/ExportEmptyObjectV2"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/ExportEmptyObjectV2"
           },
           "created_at": {
             "type": "string",
@@ -16590,6 +16626,9 @@
           "availability": {
             "$ref": "#/components/schemas/ExportAvailability"
           },
+          "payload": {
+            "$ref": "#/components/schemas/ExportEmptyObjectV2"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -16696,6 +16735,9 @@
               }
             ],
             "title": "Latency Ms"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/ExportEmptyObjectV2"
           },
           "created_at": {
             "type": "string",
@@ -17083,6 +17125,9 @@
               }
             ],
             "title": "Reason"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/ExportEmptyObjectV2"
           },
           "created_at": {
             "type": "string",
@@ -17939,6 +17984,9 @@
             ],
             "title": "Status"
           },
+          "payload": {
+            "$ref": "#/components/schemas/ExportEmptyObjectV2"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -18084,6 +18132,9 @@
             },
             "type": "object",
             "title": "Payload"
+          },
+          "error": {
+            "$ref": "#/components/schemas/ExportEmptyObjectV2"
           },
           "created_at": {
             "type": "string",

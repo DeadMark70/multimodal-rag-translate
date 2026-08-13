@@ -123,6 +123,8 @@ class EvaluationLlmCall(BaseModel):
 class EvaluationLlmCallProjection(EvaluationLlmCall):
     """Interactive LLM projection with only the bounded prompt preview."""
 
+    full_prompt: None = None
+
     @model_validator(mode="after")
     def clear_unrestricted_fields(self) -> EvaluationLlmCallProjection:
         self.payload = {}

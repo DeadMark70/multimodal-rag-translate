@@ -485,15 +485,14 @@ def test_schema_v2_allow_lists_identity_result_and_observability_rows() -> None:
         "error_message",
     }
     assert forbidden_result_fields.isdisjoint(ExportResultV2.model_fields)
-    assert "error" not in ExportTraceEventV2.model_fields
+    assert {"payload", "error"}.issubset(ExportTraceEventV2.model_fields)
     assert {
         "provider_body",
         "provider_error",
-        "error",
-        "payload",
         "credentials",
         "authorization",
     }.isdisjoint(ExportLlmCallV2.model_fields)
+    assert {"error", "payload"}.issubset(ExportLlmCallV2.model_fields)
 
 
 def test_schema_v2_redacted_answer_and_reference_fields_accept_none() -> None:

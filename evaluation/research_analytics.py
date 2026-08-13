@@ -71,6 +71,7 @@ from evaluation.observability_storage import (
     CampaignObservabilitySnapshot,
     EvaluationObservabilityRepository,
     redact_sensitive_value,
+    safe_comparison_projection,
     safe_plain_text_excerpt,
 )
 from evaluation.analytics import reconcile_official_tokens
@@ -595,6 +596,18 @@ def _project_interactive_run_observability(
 ) -> EvaluationRunObservabilityDetail:
     result = canonical.result
     tokens = canonical.token_breakdown
+    agentic_v9 = None
+    if canonical.agentic_v9 is not None:
+        agentic_v9_data = redact_sensitive_value(
+            canonical.agentic_v9.model_dump(mode="python")
+        )
+        comparison = agentic_v9_data.get("comparison")
+        agentic_v9_data["comparison"] = (
+            safe_comparison_projection(comparison)
+            if isinstance(comparison, dict)
+            else None
+        )
+        agentic_v9 = V9ExecutionObservability.model_validate(agentic_v9_data)
     return EvaluationRunObservabilityDetail(
         run_id=result.id,
         campaign_id=result.campaign_id,
@@ -629,8 +642,8 @@ def _project_interactive_run_observability(
         ],
         claim_extraction_status=canonical.claim_extraction_status,
         human_ratings=[_project_human_rating(item) for item in canonical.human_ratings],
-        agentic_v9=canonical.agentic_v9,
-        evidence_coverage=canonical.evidence_coverage,
+        agentic_v9=agentic_v9,
+        evidence_coverage=redact_sensitive_value(canonical.evidence_coverage),
         evidence_coverage_status=canonical.evidence_coverage_status,
         accounting_diagnostics=tokens,
         run_summary=EvaluationRunSummary(
@@ -639,7 +652,11 @@ def _project_interactive_run_observability(
             question_id=result.question_id,
             mode=result.mode,
             repeat_number=result.repeat_number,
-            answer_preview=result.answer[:500] if result.answer else None,
+            answer_preview=(
+                safe_plain_text_excerpt(result.answer)[:500]
+                if result.answer
+                else None
+            ),
             latency_ms=(
                 result.total_latency_ms
                 if result.total_latency_ms is not None
