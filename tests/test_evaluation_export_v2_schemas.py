@@ -14,11 +14,9 @@ from evaluation.campaign_schemas import (
     AgentBehaviorResponse,
     CampaignErrorsResponse,
     CampaignStageWarningsResponse,
-    HumanEvalQueueResponse,
     HumanVsAutoResponse,
     ResearchQuestionComparisonResponse,
     RouterAnalysisResponse,
-    V9ExecutionObservability,
 )
 from evaluation.export_schemas import (
     ExportAvailability,
@@ -33,6 +31,7 @@ from evaluation.export_schemas import (
     ExportGraphEventV2,
     ExportGraphEvidenceItemV2,
     ExportHumanRatingV2,
+    ExportHumanEvalQueueV2,
     ExportHumanEvaluationDataV2,
     ExportLlmCallV2,
     ExportMetadataV2,
@@ -52,6 +51,7 @@ from evaluation.export_schemas import (
     ExportSectionsV2,
     ExportToolCallV2,
     ExportTraceEventV2,
+    ExportV9ExecutionObservabilityV2,
 )
 
 NOW = datetime(2026, 8, 13, tzinfo=timezone.utc)
@@ -345,7 +345,7 @@ def _observability_data() -> ExportRunObservabilityDataV2:
             )
         ],
         evidence_coverage_status="complete",
-        agentic_v9=V9ExecutionObservability(),
+        agentic_v9=ExportV9ExecutionObservabilityV2(),
     )
 
 
@@ -502,7 +502,7 @@ def test_schema_v2_constructs_a_fully_populated_response() -> None:
             availability=availability,
             data=ExportHumanEvaluationDataV2(
                 comparison=_aggregate(HumanVsAutoResponse),
-                queue=HumanEvalQueueResponse(campaign_id="campaign-1", rows=[]),
+                queue=ExportHumanEvalQueueV2(campaign_id="campaign-1", rows=[]),
             ),
         ),
         diagnostics=ExportSection(

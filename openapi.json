@@ -12598,8 +12598,135 @@
         "title": "ExecutePlanResponse",
         "description": "Response model for research plan execution.\n\nAttributes:\n    question: Original research question.\n    summary: Executive summary of findings.\n    detailed_answer: Full research report.\n    sub_tasks: All executed sub-tasks (original + drill-down).\n    all_sources: Deduplicated list of all document sources.\n    confidence: Overall confidence score (0.0-1.0).\n    total_iterations: Number of drill-down iterations performed."
       },
+      "ExportAvailability": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "partial",
+              "not_instrumented",
+              "not_available",
+              "not_applicable"
+            ],
+            "title": "Status"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reasons"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "ExportAvailability"
+      },
+      "ExportCampaignIdentityV2": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CampaignLifecycleStatus"
+          },
+          "benchmark_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Benchmark Id"
+          },
+          "modes": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "naive",
+                "naive-baseline",
+                "advanced",
+                "graph",
+                "agentic",
+                "agentic-v8",
+                "v8",
+                "agentic-v9",
+                "v9",
+                "agentic-v9-shadow",
+                "router",
+                "graph_raw_current",
+                "graph_provenance_gated",
+                "graph_locator_to_chunk",
+                "graph_locator_claim_gate",
+                "always_no_graph",
+                "always_graph_locator",
+                "router_auto_graph",
+                "oracle_graph_router",
+                "graph_local_first",
+                "graph_global_first",
+                "graph_blended",
+                "graph_path_pruned",
+                "graph_planning_only"
+              ]
+            },
+            "type": "array",
+            "title": "Modes"
+          },
+          "repeat_count": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Repeat Count"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "status",
+          "benchmark_id",
+          "modes",
+          "repeat_count",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ExportCampaignIdentityV2"
+      },
       "ExportCampaignRequest": {
         "properties": {
+          "include_run_observability": {
+            "type": "boolean",
+            "title": "Include Run Observability",
+            "default": false
+          },
           "include_raw_trace_payloads": {
             "type": "boolean",
             "title": "Include Raw Trace Payloads",
@@ -12632,87 +12759,1234 @@
             "default": "json"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "ExportCampaignRequest",
-        "description": "Explicit export options for research data."
+        "description": "Explicit export scope and content controls."
       },
       "ExportCampaignResponse": {
         "properties": {
-          "campaign": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Campaign"
+          "schema_version": {
+            "type": "string",
+            "const": "2.0",
+            "title": "Schema Version",
+            "default": "2.0"
           },
-          "redaction": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Redaction"
+          "export_metadata": {
+            "$ref": "#/components/schemas/ExportMetadataV2"
+          },
+          "campaign": {
+            "$ref": "#/components/schemas/ExportCampaignIdentityV2"
+          },
+          "sections": {
+            "$ref": "#/components/schemas/ExportSectionsV2"
           },
           "runs": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/ExportRunV2"
             },
             "type": "array",
             "title": "Runs"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "export_metadata",
+          "campaign",
+          "sections",
+          "runs"
+        ],
+        "title": "ExportCampaignResponse"
+      },
+      "ExportClaimV2": {
+        "properties": {
+          "claim_id": {
+            "type": "string",
+            "title": "Claim Id"
           },
-          "metrics": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Metrics"
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
           },
-          "trace_events": {
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "attempt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Id"
+          },
+          "condition_id": {
+            "type": "string",
+            "title": "Condition Id"
+          },
+          "schema_version": {
+            "type": "string",
+            "title": "Schema Version"
+          },
+          "span_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Span Id"
+          },
+          "claim_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Text"
+          },
+          "claim_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Type"
+          },
+          "support_status": {
+            "type": "string",
+            "enum": [
+              "supported",
+              "partially_supported",
+              "unsupported",
+              "contradicted"
+            ],
+            "title": "Support Status"
+          },
+          "evidence_refs": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/ExportEvidenceReferenceV2"
             },
             "type": "array",
-            "title": "Trace Events"
+            "title": "Evidence Refs"
           },
-          "llm_calls": {
+          "unsupported_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unsupported Reason"
+          },
+          "repair_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repair Action"
+          },
+          "post_repair_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Post Repair Status"
+          },
+          "extraction_status": {
+            "type": "string",
+            "enum": [
+              "recorded",
+              "empty",
+              "not_instrumented"
+            ],
+            "title": "Extraction Status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "claim_id",
+          "run_id",
+          "campaign_id",
+          "attempt_id",
+          "condition_id",
+          "schema_version",
+          "span_id",
+          "claim_text",
+          "claim_type",
+          "support_status",
+          "evidence_refs",
+          "unsupported_reason",
+          "repair_action",
+          "post_repair_status",
+          "extraction_status",
+          "created_at"
+        ],
+        "title": "ExportClaimV2"
+      },
+      "ExportContextPackV2": {
+        "properties": {
+          "context_pack_id": {
+            "type": "string",
+            "title": "Context Pack Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "attempt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Id"
+          },
+          "condition_id": {
+            "type": "string",
+            "title": "Condition Id"
+          },
+          "schema_version": {
+            "type": "string",
+            "title": "Schema Version"
+          },
+          "span_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Span Id"
+          },
+          "input_chunk_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Input Chunk Count"
+          },
+          "packed_chunk_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Packed Chunk Count"
+          },
+          "token_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Token Count"
+          },
+          "retrieved_but_not_packed_evidence": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/ExportEvidenceReferenceV2"
             },
             "type": "array",
-            "title": "Llm Calls"
+            "title": "Retrieved But Not Packed Evidence"
           },
-          "retrieval_summary": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "context_pack_id",
+          "run_id",
+          "campaign_id",
+          "condition_id",
+          "schema_version",
+          "input_chunk_count",
+          "packed_chunk_count",
+          "token_count",
+          "retrieved_but_not_packed_evidence",
+          "created_at"
+        ],
+        "title": "ExportContextPackV2"
+      },
+      "ExportDiagnosticsDataV2": {
+        "properties": {
+          "errors": {
+            "$ref": "#/components/schemas/CampaignErrorsResponse"
+          },
+          "stage_warnings": {
+            "$ref": "#/components/schemas/CampaignStageWarningsResponse"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "errors",
+          "stage_warnings"
+        ],
+        "title": "ExportDiagnosticsDataV2"
+      },
+      "ExportEvidenceCoverageV2": {
+        "properties": {
+          "atomic_fact_id": {
+            "type": "string",
+            "title": "Atomic Fact Id"
+          },
+          "fact_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact Text"
+          },
+          "retrieved": {
+            "type": "boolean",
+            "title": "Retrieved"
+          },
+          "packed": {
+            "type": "boolean",
+            "title": "Packed"
+          },
+          "mentioned": {
+            "type": "boolean",
+            "title": "Mentioned"
+          },
+          "cited": {
+            "type": "boolean",
+            "title": "Cited"
+          },
+          "expected_doc_ids": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "type": "string"
             },
             "type": "array",
-            "title": "Retrieval Summary"
+            "title": "Expected Doc Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "atomic_fact_id",
+          "fact_text",
+          "retrieved",
+          "packed",
+          "mentioned",
+          "cited",
+          "expected_doc_ids"
+        ],
+        "title": "ExportEvidenceCoverageV2"
+      },
+      "ExportEvidenceReferenceV2": {
+        "properties": {
+          "evidence_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Id"
           },
-          "claim_summary": {
+          "doc_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doc Id"
+          },
+          "chunk_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Id"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ExportEvidenceReferenceV2"
+      },
+      "ExportGraphEventV2": {
+        "properties": {
+          "graph_event_id": {
+            "type": "string",
+            "title": "Graph Event Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "campaign_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Id"
+          },
+          "span_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Span Id"
+          },
+          "graph_query": {
+            "type": "string",
+            "title": "Graph Query"
+          },
+          "graph_search_mode": {
+            "type": "string",
+            "title": "Graph Search Mode"
+          },
+          "graph_evidence_mode": {
+            "type": "string",
+            "title": "Graph Evidence Mode"
+          },
+          "graph_route": {
+            "type": "string",
+            "title": "Graph Route"
+          },
+          "router_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Router Reason"
+          },
+          "graph_snapshot_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Snapshot Version"
+          },
+          "graph_schema_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Schema Version"
+          },
+          "graph_extraction_prompt_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Extraction Prompt Version"
+          },
+          "matched_entity_ids": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "type": "string"
             },
             "type": "array",
-            "title": "Claim Summary"
+            "title": "Matched Entity Ids"
           },
-          "comparison_summary": {
+          "community_ids": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "type": "integer"
             },
             "type": "array",
-            "title": "Comparison Summary"
+            "title": "Community Ids"
           },
-          "requirement_summary": {
+          "node_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Node Count"
+          },
+          "edge_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Edge Count"
+          },
+          "path_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Path Count"
+          },
+          "graph_latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Latency Ms"
+          },
+          "graph_context_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Graph Context Tokens"
+          },
+          "graph_to_chunk_success_rate": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph To Chunk Success Rate"
+          },
+          "graph_noise_ratio": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Noise Ratio"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "graph_event_id",
+          "run_id",
+          "campaign_id",
+          "span_id",
+          "graph_query",
+          "graph_search_mode",
+          "graph_evidence_mode",
+          "graph_route",
+          "router_reason",
+          "graph_snapshot_version",
+          "graph_schema_version",
+          "graph_extraction_prompt_version",
+          "matched_entity_ids",
+          "community_ids",
+          "node_count",
+          "edge_count",
+          "path_count",
+          "graph_context_tokens",
+          "created_at"
+        ],
+        "title": "ExportGraphEventV2"
+      },
+      "ExportGraphEvidenceItemV2": {
+        "properties": {
+          "graph_evidence_item_id": {
+            "type": "string",
+            "title": "Graph Evidence Item Id"
+          },
+          "graph_event_id": {
+            "type": "string",
+            "title": "Graph Event Id"
+          },
+          "node_ids": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "type": "string"
             },
             "type": "array",
-            "title": "Requirement Summary"
+            "title": "Node Ids"
           },
-          "summary": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Summary"
+          "edge_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Edge Ids"
+          },
+          "relation_path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Relation Path"
+          },
+          "source_doc_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Source Doc Ids"
+          },
+          "source_chunk_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Source Chunk Ids"
+          },
+          "pages": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Pages"
+          },
+          "asset_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Asset Ids"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence"
+          },
+          "provenance_status": {
+            "type": "string",
+            "enum": [
+              "full",
+              "partial",
+              "missing"
+            ],
+            "title": "Provenance Status"
+          },
+          "used_as_locator": {
+            "type": "boolean",
+            "title": "Used As Locator"
+          },
+          "packed_in_context": {
+            "type": "boolean",
+            "title": "Packed In Context"
+          },
+          "used_in_answer": {
+            "type": "boolean",
+            "title": "Used In Answer"
+          },
+          "supported_claim_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Supported Claim Ids"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "graph_evidence_item_id",
+          "graph_event_id",
+          "node_ids",
+          "edge_ids",
+          "relation_path",
+          "source_doc_ids",
+          "source_chunk_ids",
+          "pages",
+          "asset_ids",
+          "confidence",
+          "provenance_status",
+          "used_as_locator",
+          "packed_in_context",
+          "used_in_answer",
+          "supported_claim_ids",
+          "created_at"
+        ],
+        "title": "ExportGraphEvidenceItemV2"
+      },
+      "ExportHumanEvalQueueItemV2": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "question_id": {
+            "type": "string",
+            "title": "Question Id"
+          },
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "naive",
+              "naive-baseline",
+              "advanced",
+              "graph",
+              "agentic",
+              "agentic-v8",
+              "v8",
+              "agentic-v9",
+              "v9",
+              "agentic-v9-shadow",
+              "router",
+              "graph_raw_current",
+              "graph_provenance_gated",
+              "graph_locator_to_chunk",
+              "graph_locator_claim_gate",
+              "always_no_graph",
+              "always_graph_locator",
+              "router_auto_graph",
+              "oracle_graph_router",
+              "graph_local_first",
+              "graph_global_first",
+              "graph_blended",
+              "graph_path_pruned",
+              "graph_planning_only"
+            ],
+            "title": "Mode"
+          },
+          "run_number": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Run Number"
+          },
+          "repeat_number": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Repeat Number"
+          },
+          "answer_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer Preview"
+          },
+          "existing_rating_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Existing Rating Count"
+          },
+          "already_rated_by_current_user": {
+            "type": "boolean",
+            "title": "Already Rated By Current User"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "campaign_id",
+          "question_id",
+          "question",
+          "mode",
+          "run_number",
+          "repeat_number",
+          "answer_preview",
+          "existing_rating_count",
+          "already_rated_by_current_user"
+        ],
+        "title": "ExportHumanEvalQueueItemV2"
+      },
+      "ExportHumanEvalQueueV2": {
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ExportHumanEvalQueueItemV2"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "campaign_id"
+        ],
+        "title": "ExportHumanEvalQueueV2"
+      },
+      "ExportHumanEvaluationDataV2": {
+        "properties": {
+          "comparison": {
+            "$ref": "#/components/schemas/HumanVsAutoResponse"
+          },
+          "queue": {
+            "$ref": "#/components/schemas/ExportHumanEvalQueueV2"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "comparison",
+          "queue"
+        ],
+        "title": "ExportHumanEvaluationDataV2"
+      },
+      "ExportHumanRatingV2": {
+        "properties": {
+          "human_rating_id": {
+            "type": "string",
+            "title": "Human Rating Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "span_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Span Id"
+          },
+          "rater_id_hash": {
+            "type": "string",
+            "title": "Rater Id Hash"
+          },
+          "rubric_version": {
+            "type": "string",
+            "title": "Rubric Version"
+          },
+          "correctness_score": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Correctness Score"
+          },
+          "faithfulness_score": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Faithfulness Score"
+          },
+          "completeness_score": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Completeness Score"
+          },
+          "citation_quality_score": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Citation Quality Score"
+          },
+          "usefulness_score": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Usefulness Score"
+          },
+          "comments": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comments"
+          },
+          "is_blinded": {
+            "type": "boolean",
+            "title": "Is Blinded"
+          },
+          "shown_mode_label": {
+            "type": "boolean",
+            "title": "Shown Mode Label"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "human_rating_id",
+          "run_id",
+          "campaign_id",
+          "span_id",
+          "rater_id_hash",
+          "rubric_version",
+          "correctness_score",
+          "faithfulness_score",
+          "completeness_score",
+          "citation_quality_score",
+          "usefulness_score",
+          "comments",
+          "is_blinded",
+          "shown_mode_label",
+          "created_at"
+        ],
+        "title": "ExportHumanRatingV2"
+      },
+      "ExportLlmCallV2": {
+        "properties": {
+          "llm_call_id": {
+            "type": "string",
+            "title": "Llm Call Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "span_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Span Id"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "phase": {
+            "type": "string",
+            "title": "Phase"
+          },
+          "purpose": {
+            "type": "string",
+            "title": "Purpose"
+          },
+          "reservation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservation Id"
+          },
+          "provider_attempt": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Attempt"
+          },
+          "prompt_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Prompt Tokens"
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Completion Tokens"
+          },
+          "total_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total Tokens"
+          },
+          "reasoning_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Tokens"
+          },
+          "other_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Other Tokens"
+          },
+          "estimated_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Usd"
+          },
+          "estimated_cost_twd": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Twd"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "success",
+              "failed",
+              "skipped",
+              "timeout",
+              "partial"
+            ],
+            "title": "Status"
+          },
+          "prompt_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Hash"
+          },
+          "response_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Hash"
+          },
+          "prompt_capture_status": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "captured",
+              "redacted",
+              "not_captured_at_execution",
+              "capture_failed"
+            ],
+            "title": "Prompt Capture Status"
+          },
+          "full_prompt_capture_status": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "captured",
+              "redacted",
+              "not_captured_at_execution",
+              "capture_failed"
+            ],
+            "title": "Full Prompt Capture Status"
+          },
+          "prompt_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Preview"
+          },
+          "full_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Prompt"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "llm_call_id",
+          "run_id",
+          "campaign_id",
+          "phase",
+          "purpose",
+          "prompt_tokens",
+          "completion_tokens",
+          "total_tokens",
+          "status",
+          "prompt_capture_status",
+          "full_prompt_capture_status",
+          "created_at"
+        ],
+        "title": "ExportLlmCallV2"
+      },
+      "ExportMetadataV2": {
+        "properties": {
+          "exported_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Exported At"
+          },
+          "options": {
+            "$ref": "#/components/schemas/ExportCampaignRequest"
+          },
+          "redaction": {
+            "$ref": "#/components/schemas/ExportRedactionMetadata"
           },
           "availability_warnings": {
             "items": {
@@ -12722,13 +13996,2498 @@
             "title": "Availability Warnings"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
-          "campaign",
-          "redaction"
+          "exported_at",
+          "options",
+          "redaction",
+          "availability_warnings"
         ],
-        "title": "ExportCampaignResponse",
-        "description": "Redaction-aware campaign export payload."
+        "title": "ExportMetadataV2"
+      },
+      "ExportOverviewDataV2": {
+        "properties": {
+          "research_summary": {
+            "$ref": "#/components/schemas/CampaignResearchSummaryResponse"
+          },
+          "release_metrics": {
+            "$ref": "#/components/schemas/ExportSection_ExportReleaseMetricsV2_"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "research_summary",
+          "release_metrics"
+        ],
+        "title": "ExportOverviewDataV2"
+      },
+      "ExportRedactionMetadata": {
+        "properties": {
+          "provider_errors": {
+            "type": "string",
+            "const": "excluded",
+            "title": "Provider Errors",
+            "default": "excluded"
+          },
+          "stack_traces": {
+            "type": "string",
+            "const": "excluded",
+            "title": "Stack Traces",
+            "default": "excluded"
+          },
+          "credentials": {
+            "type": "string",
+            "const": "redacted",
+            "title": "Credentials",
+            "default": "redacted"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ExportRedactionMetadata"
+      },
+      "ExportReleaseArmV2": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "condition_id": {
+            "type": "string",
+            "title": "Condition Id"
+          },
+          "execution_profile": {
+            "type": "string",
+            "title": "Execution Profile"
+          },
+          "agentic_execution_version": {
+            "type": "string",
+            "title": "Agentic Execution Version"
+          },
+          "shadow_evaluation_policy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shadow Evaluation Policy"
+          },
+          "response_status_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Response Status Counts"
+          },
+          "run_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Run Count"
+          },
+          "complete_run_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Complete Run Count"
+          },
+          "accounting_complete_run_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Accounting Complete Run Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "mode",
+          "condition_id",
+          "execution_profile",
+          "agentic_execution_version",
+          "run_count",
+          "complete_run_count",
+          "accounting_complete_run_count"
+        ],
+        "title": "ExportReleaseArmV2"
+      },
+      "ExportReleaseEvaluatorBlindingV2": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "shown_mode_label": {
+            "type": "boolean",
+            "title": "Shown Mode Label"
+          },
+          "method": {
+            "type": "string",
+            "title": "Method"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "enabled",
+          "shown_mode_label",
+          "method"
+        ],
+        "title": "ExportReleaseEvaluatorBlindingV2"
+      },
+      "ExportReleaseManifestBlockV2": {
+        "properties": {
+          "question_id": {
+            "type": "string",
+            "title": "Question Id"
+          },
+          "repeat_number": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Repeat Number"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "condition_id": {
+            "type": "string",
+            "title": "Condition Id"
+          },
+          "execution_profile": {
+            "type": "string",
+            "title": "Execution Profile"
+          },
+          "agentic_execution_version": {
+            "type": "string",
+            "title": "Agentic Execution Version"
+          },
+          "shadow_evaluation_policy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shadow Evaluation Policy"
+          },
+          "golden_question_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Golden Question Fingerprint"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "question_id",
+          "repeat_number",
+          "mode",
+          "condition_id",
+          "execution_profile",
+          "agentic_execution_version"
+        ],
+        "title": "ExportReleaseManifestBlockV2"
+      },
+      "ExportReleaseManifestV2": {
+        "properties": {
+          "benchmark_id": {
+            "type": "string",
+            "title": "Benchmark Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "smoke",
+              "formal",
+              "insufficient"
+            ],
+            "title": "Kind"
+          },
+          "arm_order_seed": {
+            "type": "integer",
+            "title": "Arm Order Seed"
+          },
+          "ordered_blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ExportReleaseManifestBlockV2"
+            },
+            "type": "array",
+            "title": "Ordered Blocks"
+          },
+          "evaluator_blinding": {
+            "$ref": "#/components/schemas/ExportReleaseEvaluatorBlindingV2"
+          },
+          "environment_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment Fingerprint"
+          },
+          "evaluator_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluator Fingerprint"
+          },
+          "non_blocking_ablations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Non Blocking Ablations"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "benchmark_id",
+          "kind",
+          "arm_order_seed",
+          "ordered_blocks",
+          "evaluator_blinding",
+          "non_blocking_ablations"
+        ],
+        "title": "ExportReleaseManifestV2"
+      },
+      "ExportReleaseMetricV2": {
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ExportReleaseMetricV2"
+      },
+      "ExportReleaseMetricsV2": {
+        "properties": {
+          "benchmark_id": {
+            "type": "string",
+            "title": "Benchmark Id"
+          },
+          "benchmark_kind": {
+            "type": "string",
+            "title": "Benchmark Kind"
+          },
+          "comparable": {
+            "type": "boolean",
+            "title": "Comparable"
+          },
+          "availability": {
+            "type": "string",
+            "enum": [
+              "available",
+              "not_applicable"
+            ],
+            "title": "Availability",
+            "default": "available"
+          },
+          "not_applicable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Not Applicable Reason"
+          },
+          "gate_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Gate Reasons"
+          },
+          "manifest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExportReleaseManifestV2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "arms": {
+            "items": {
+              "$ref": "#/components/schemas/ExportReleaseArmV2"
+            },
+            "type": "array",
+            "title": "Arms"
+          },
+          "required_slot_coverage": {
+            "$ref": "#/components/schemas/ExportReleaseMetricV2"
+          },
+          "important_unsupported_claim_rate": {
+            "$ref": "#/components/schemas/ExportReleaseMetricV2"
+          },
+          "provenance_failure_rate": {
+            "$ref": "#/components/schemas/ExportReleaseMetricV2"
+          },
+          "pack_efficiency": {
+            "$ref": "#/components/schemas/ExportReleaseMetricV2"
+          },
+          "graph_locator_success": {
+            "$ref": "#/components/schemas/ExportReleaseMetricV2"
+          },
+          "graph_locator_fallback": {
+            "$ref": "#/components/schemas/ExportReleaseMetricV2"
+          },
+          "final_generation_count": {
+            "$ref": "#/components/schemas/ExportReleaseMetricV2"
+          },
+          "latency_p95_ms": {
+            "$ref": "#/components/schemas/ExportReleaseMetricV2"
+          },
+          "token_ratio": {
+            "$ref": "#/components/schemas/ExportReleaseMetricV2"
+          },
+          "paired_quality_delta": {
+            "$ref": "#/components/schemas/ExportReleaseMetricV2"
+          },
+          "paired_quality_ci_lower": {
+            "$ref": "#/components/schemas/ExportReleaseMetricV2"
+          },
+          "paired_quality_ci_upper": {
+            "$ref": "#/components/schemas/ExportReleaseMetricV2"
+          },
+          "category_quality_deltas": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ExportReleaseMetricV2"
+            },
+            "type": "object",
+            "title": "Category Quality Deltas"
+          },
+          "per_question_quality_deltas": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ExportReleaseMetricV2"
+            },
+            "type": "object",
+            "title": "Per Question Quality Deltas"
+          },
+          "statistics": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExportReleaseStatisticsV2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "benchmark_id",
+          "benchmark_kind",
+          "comparable"
+        ],
+        "title": "ExportReleaseMetricsV2"
+      },
+      "ExportReleaseStatisticsV2": {
+        "properties": {
+          "method": {
+            "type": "string",
+            "title": "Method"
+          },
+          "availability": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "release_gate_blocked"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Availability"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          },
+          "resamples": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resamples"
+          },
+          "cluster_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cluster Count"
+          },
+          "repeat_aggregation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repeat Aggregation"
+          },
+          "token_ratio_method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Ratio Method"
+          },
+          "final_generation_count_aggregation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Generation Count Aggregation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "method"
+        ],
+        "title": "ExportReleaseStatisticsV2"
+      },
+      "ExportResultV2": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "question_id": {
+            "type": "string",
+            "title": "Question Id"
+          },
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "naive",
+              "naive-baseline",
+              "advanced",
+              "graph",
+              "agentic",
+              "agentic-v8",
+              "v8",
+              "agentic-v9",
+              "v9",
+              "agentic-v9-shadow",
+              "router",
+              "graph_raw_current",
+              "graph_provenance_gated",
+              "graph_locator_to_chunk",
+              "graph_locator_claim_gate",
+              "always_no_graph",
+              "always_graph_locator",
+              "router_auto_graph",
+              "oracle_graph_router",
+              "graph_local_first",
+              "graph_global_first",
+              "graph_blended",
+              "graph_path_pruned",
+              "graph_planning_only"
+            ],
+            "title": "Mode"
+          },
+          "run_number": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Run Number"
+          },
+          "repeat_number": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Repeat Number"
+          },
+          "condition_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition Id"
+          },
+          "execution_profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Profile"
+          },
+          "context_policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Policy Version"
+          },
+          "agentic_execution_version": {
+            "type": "string",
+            "enum": [
+              "v8",
+              "v9"
+            ],
+            "title": "Agentic Execution Version"
+          },
+          "execution_identity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Identity"
+          },
+          "response_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Status"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CampaignResultStatus"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer"
+          },
+          "ground_truth": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ground Truth"
+          },
+          "ground_truth_short": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ground Truth Short"
+          },
+          "contexts": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contexts"
+          },
+          "source_doc_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Source Doc Ids"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "total_latency_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Latency Ms"
+          },
+          "total_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Tokens"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "campaign_id",
+          "question_id",
+          "question",
+          "mode",
+          "run_number",
+          "repeat_number",
+          "condition_id",
+          "execution_profile",
+          "context_policy_version",
+          "agentic_execution_version",
+          "execution_identity",
+          "response_status",
+          "status",
+          "answer",
+          "ground_truth",
+          "ground_truth_short",
+          "contexts",
+          "source_doc_ids",
+          "created_at"
+        ],
+        "title": "ExportResultV2"
+      },
+      "ExportRetrievalChunkV2": {
+        "properties": {
+          "retrieval_chunk_id": {
+            "type": "string",
+            "title": "Retrieval Chunk Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "span_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Span Id"
+          },
+          "retrieval_event_id": {
+            "type": "string",
+            "title": "Retrieval Event Id"
+          },
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "doc_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doc Id"
+          },
+          "page_start": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Start"
+          },
+          "page_end": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page End"
+          },
+          "modality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modality"
+          },
+          "rank_before_rerank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank Before Rerank"
+          },
+          "rank_after_rerank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank After Rerank"
+          },
+          "dense_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dense Score"
+          },
+          "bm25_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bm25 Score"
+          },
+          "rerank_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerank Score"
+          },
+          "used_in_context": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used In Context"
+          },
+          "used_in_answer": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used In Answer"
+          },
+          "expected_evidence_match": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Evidence Match"
+          },
+          "excerpt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excerpt"
+          },
+          "content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Hash"
+          },
+          "provenance": {
+            "type": "string",
+            "enum": [
+              "measured",
+              "persisted",
+              "derived",
+              "heuristic"
+            ],
+            "title": "Provenance"
+          },
+          "availability": {
+            "$ref": "#/components/schemas/ExportAvailability"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "retrieval_chunk_id",
+          "run_id",
+          "campaign_id",
+          "retrieval_event_id",
+          "chunk_id",
+          "provenance",
+          "availability",
+          "created_at"
+        ],
+        "title": "ExportRetrievalChunkV2"
+      },
+      "ExportRetrievalEventV2": {
+        "properties": {
+          "retrieval_event_id": {
+            "type": "string",
+            "title": "Retrieval Event Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "span_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Span Id"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query"
+          },
+          "query_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Hash"
+          },
+          "retriever_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retriever Name"
+          },
+          "top_k": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top K"
+          },
+          "result_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Result Count"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "retrieval_event_id",
+          "run_id",
+          "campaign_id",
+          "result_count",
+          "created_at"
+        ],
+        "title": "ExportRetrievalEventV2"
+      },
+      "ExportRoutingDecisionV2": {
+        "properties": {
+          "routing_decision_id": {
+            "type": "string",
+            "title": "Routing Decision Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "span_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Span Id"
+          },
+          "selected_mode": {
+            "type": "string",
+            "enum": [
+              "naive",
+              "naive-baseline",
+              "advanced",
+              "graph",
+              "agentic",
+              "agentic-v8",
+              "v8",
+              "agentic-v9",
+              "v9",
+              "agentic-v9-shadow",
+              "router",
+              "graph_raw_current",
+              "graph_provenance_gated",
+              "graph_locator_to_chunk",
+              "graph_locator_claim_gate",
+              "always_no_graph",
+              "always_graph_locator",
+              "router_auto_graph",
+              "oracle_graph_router",
+              "graph_local_first",
+              "graph_global_first",
+              "graph_blended",
+              "graph_path_pruned",
+              "graph_planning_only"
+            ],
+            "title": "Selected Mode"
+          },
+          "analysis_type": {
+            "type": "string",
+            "enum": [
+              "retrospective",
+              "actual"
+            ],
+            "title": "Analysis Type"
+          },
+          "decision_source": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "deterministic",
+                  "llm_planner",
+                  "safe_fallback"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Source"
+          },
+          "candidate_routes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Candidate Routes"
+          },
+          "matched_rules": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Matched Rules"
+          },
+          "fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Reason"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "routing_decision_id",
+          "run_id",
+          "campaign_id",
+          "selected_mode",
+          "analysis_type",
+          "decision_source",
+          "candidate_routes",
+          "matched_rules",
+          "fallback_reason",
+          "confidence",
+          "reason",
+          "created_at"
+        ],
+        "title": "ExportRoutingDecisionV2"
+      },
+      "ExportRunLatencyV2": {
+        "properties": {
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "total_latency_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Latency Ms"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ExportRunLatencyV2"
+      },
+      "ExportRunObservabilityDataV2": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "run_summary": {
+            "$ref": "#/components/schemas/ExportRunSummaryV2"
+          },
+          "accounting_diagnostics": {
+            "$ref": "#/components/schemas/TokenBreakdown"
+          },
+          "trace_events": {
+            "items": {
+              "$ref": "#/components/schemas/ExportTraceEventV2"
+            },
+            "type": "array",
+            "title": "Trace Events"
+          },
+          "llm_calls": {
+            "items": {
+              "$ref": "#/components/schemas/ExportLlmCallV2"
+            },
+            "type": "array",
+            "title": "Llm Calls"
+          },
+          "retrieval_events": {
+            "items": {
+              "$ref": "#/components/schemas/ExportRetrievalEventV2"
+            },
+            "type": "array",
+            "title": "Retrieval Events"
+          },
+          "retrieval_chunks": {
+            "items": {
+              "$ref": "#/components/schemas/ExportRetrievalChunkV2"
+            },
+            "type": "array",
+            "title": "Retrieval Chunks"
+          },
+          "context_packs": {
+            "items": {
+              "$ref": "#/components/schemas/ExportContextPackV2"
+            },
+            "type": "array",
+            "title": "Context Packs"
+          },
+          "tool_calls": {
+            "items": {
+              "$ref": "#/components/schemas/ExportToolCallV2"
+            },
+            "type": "array",
+            "title": "Tool Calls"
+          },
+          "routing_decisions": {
+            "items": {
+              "$ref": "#/components/schemas/ExportRoutingDecisionV2"
+            },
+            "type": "array",
+            "title": "Routing Decisions"
+          },
+          "graph_events": {
+            "items": {
+              "$ref": "#/components/schemas/ExportGraphEventV2"
+            },
+            "type": "array",
+            "title": "Graph Events"
+          },
+          "graph_evidence_items": {
+            "items": {
+              "$ref": "#/components/schemas/ExportGraphEvidenceItemV2"
+            },
+            "type": "array",
+            "title": "Graph Evidence Items"
+          },
+          "graph_observability_status": {
+            "type": "string",
+            "enum": [
+              "recorded",
+              "fallback",
+              "not_instrumented"
+            ],
+            "title": "Graph Observability Status"
+          },
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/ExportClaimV2"
+            },
+            "type": "array",
+            "title": "Claims"
+          },
+          "claim_extraction_status": {
+            "type": "string",
+            "enum": [
+              "recorded",
+              "empty",
+              "not_instrumented"
+            ],
+            "title": "Claim Extraction Status"
+          },
+          "human_ratings": {
+            "items": {
+              "$ref": "#/components/schemas/ExportHumanRatingV2"
+            },
+            "type": "array",
+            "title": "Human Ratings"
+          },
+          "evidence_coverage": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ExportEvidenceCoverageV2"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Coverage"
+          },
+          "evidence_coverage_status": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "partial",
+              "not_available",
+              "not_instrumented"
+            ],
+            "title": "Evidence Coverage Status"
+          },
+          "agentic_v9": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExportV9ExecutionObservabilityV2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "campaign_id",
+          "run_summary",
+          "accounting_diagnostics",
+          "trace_events",
+          "llm_calls",
+          "retrieval_events",
+          "retrieval_chunks",
+          "context_packs",
+          "tool_calls",
+          "routing_decisions",
+          "graph_events",
+          "graph_evidence_items",
+          "graph_observability_status",
+          "claims",
+          "claim_extraction_status",
+          "human_ratings",
+          "evidence_coverage",
+          "evidence_coverage_status",
+          "agentic_v9"
+        ],
+        "title": "ExportRunObservabilityDataV2"
+      },
+      "ExportRunObservabilityV2": {
+        "properties": {
+          "included": {
+            "type": "boolean",
+            "title": "Included"
+          },
+          "availability": {
+            "$ref": "#/components/schemas/ExportAvailability"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExportRunObservabilityDataV2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "included",
+          "availability",
+          "data"
+        ],
+        "title": "ExportRunObservabilityV2"
+      },
+      "ExportRunSummaryV2": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "question_id": {
+            "type": "string",
+            "title": "Question Id"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "naive",
+              "naive-baseline",
+              "advanced",
+              "graph",
+              "agentic",
+              "agentic-v8",
+              "v8",
+              "agentic-v9",
+              "v9",
+              "agentic-v9-shadow",
+              "router",
+              "graph_raw_current",
+              "graph_provenance_gated",
+              "graph_locator_to_chunk",
+              "graph_locator_claim_gate",
+              "always_no_graph",
+              "always_graph_locator",
+              "router_auto_graph",
+              "oracle_graph_router",
+              "graph_local_first",
+              "graph_global_first",
+              "graph_blended",
+              "graph_path_pruned",
+              "graph_planning_only"
+            ],
+            "title": "Mode"
+          },
+          "repeat_number": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Repeat Number"
+          },
+          "answer_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer Preview"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "total_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Tokens"
+          },
+          "accounting_status": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "partial",
+              "not_available"
+            ],
+            "title": "Accounting Status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "campaign_id",
+          "question_id",
+          "mode",
+          "repeat_number",
+          "answer_preview",
+          "accounting_status",
+          "created_at"
+        ],
+        "title": "ExportRunSummaryV2"
+      },
+      "ExportRunV2": {
+        "properties": {
+          "result": {
+            "$ref": "#/components/schemas/ExportResultV2"
+          },
+          "ragas_metrics": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Ragas Metrics"
+          },
+          "accounting": {
+            "$ref": "#/components/schemas/TokenBreakdown"
+          },
+          "latency": {
+            "$ref": "#/components/schemas/ExportRunLatencyV2"
+          },
+          "observability": {
+            "$ref": "#/components/schemas/ExportRunObservabilityV2"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "result",
+          "ragas_metrics",
+          "accounting",
+          "latency",
+          "observability"
+        ],
+        "title": "ExportRunV2"
+      },
+      "ExportSection_AblationResponse_": {
+        "properties": {
+          "availability": {
+            "$ref": "#/components/schemas/ExportAvailability"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AblationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "availability",
+          "data"
+        ],
+        "title": "ExportSection[AblationResponse]"
+      },
+      "ExportSection_AgentBehaviorResponse_": {
+        "properties": {
+          "availability": {
+            "$ref": "#/components/schemas/ExportAvailability"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentBehaviorResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "availability",
+          "data"
+        ],
+        "title": "ExportSection[AgentBehaviorResponse]"
+      },
+      "ExportSection_ExportDiagnosticsDataV2_": {
+        "properties": {
+          "availability": {
+            "$ref": "#/components/schemas/ExportAvailability"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExportDiagnosticsDataV2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "availability",
+          "data"
+        ],
+        "title": "ExportSection[ExportDiagnosticsDataV2]"
+      },
+      "ExportSection_ExportHumanEvaluationDataV2_": {
+        "properties": {
+          "availability": {
+            "$ref": "#/components/schemas/ExportAvailability"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExportHumanEvaluationDataV2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "availability",
+          "data"
+        ],
+        "title": "ExportSection[ExportHumanEvaluationDataV2]"
+      },
+      "ExportSection_ExportOverviewDataV2_": {
+        "properties": {
+          "availability": {
+            "$ref": "#/components/schemas/ExportAvailability"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExportOverviewDataV2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "availability",
+          "data"
+        ],
+        "title": "ExportSection[ExportOverviewDataV2]"
+      },
+      "ExportSection_ExportReleaseMetricsV2_": {
+        "properties": {
+          "availability": {
+            "$ref": "#/components/schemas/ExportAvailability"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExportReleaseMetricsV2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "availability",
+          "data"
+        ],
+        "title": "ExportSection[ExportReleaseMetricsV2]"
+      },
+      "ExportSection_ResearchQuestionComparisonResponse_": {
+        "properties": {
+          "availability": {
+            "$ref": "#/components/schemas/ExportAvailability"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResearchQuestionComparisonResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "availability",
+          "data"
+        ],
+        "title": "ExportSection[ResearchQuestionComparisonResponse]"
+      },
+      "ExportSection_RouterAnalysisResponse_": {
+        "properties": {
+          "availability": {
+            "$ref": "#/components/schemas/ExportAvailability"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RouterAnalysisResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "availability",
+          "data"
+        ],
+        "title": "ExportSection[RouterAnalysisResponse]"
+      },
+      "ExportSectionsV2": {
+        "properties": {
+          "overview": {
+            "$ref": "#/components/schemas/ExportSection_ExportOverviewDataV2_"
+          },
+          "question_analysis": {
+            "$ref": "#/components/schemas/ExportSection_ResearchQuestionComparisonResponse_"
+          },
+          "agent_behavior": {
+            "$ref": "#/components/schemas/ExportSection_AgentBehaviorResponse_"
+          },
+          "router_analysis": {
+            "$ref": "#/components/schemas/ExportSection_RouterAnalysisResponse_"
+          },
+          "ablation": {
+            "$ref": "#/components/schemas/ExportSection_AblationResponse_"
+          },
+          "human_evaluation": {
+            "$ref": "#/components/schemas/ExportSection_ExportHumanEvaluationDataV2_"
+          },
+          "diagnostics": {
+            "$ref": "#/components/schemas/ExportSection_ExportDiagnosticsDataV2_"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "overview",
+          "question_analysis",
+          "agent_behavior",
+          "router_analysis",
+          "ablation",
+          "human_evaluation",
+          "diagnostics"
+        ],
+        "title": "ExportSectionsV2"
+      },
+      "ExportToolCallV2": {
+        "properties": {
+          "tool_call_id": {
+            "type": "string",
+            "title": "Tool Call Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "span_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Span Id"
+          },
+          "tool_name": {
+            "type": "string",
+            "title": "Tool Name"
+          },
+          "action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "success",
+              "failed",
+              "skipped",
+              "timeout",
+              "partial"
+            ],
+            "title": "Status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tool_call_id",
+          "run_id",
+          "campaign_id",
+          "tool_name",
+          "status",
+          "created_at"
+        ],
+        "title": "ExportToolCallV2"
+      },
+      "ExportTraceEventV2": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "title": "Event Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "span_id": {
+            "type": "string",
+            "title": "Span Id"
+          },
+          "parent_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Event Id"
+          },
+          "parent_span_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Span Id"
+          },
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "event_schema_version": {
+            "type": "string",
+            "title": "Event Schema Version"
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Sequence"
+          },
+          "stage_type": {
+            "type": "string",
+            "enum": [
+              "routing",
+              "planning",
+              "retrieval",
+              "rerank",
+              "graph",
+              "visual",
+              "tool",
+              "context_packing",
+              "generation",
+              "claim_verification",
+              "evaluation",
+              "export"
+            ],
+            "title": "Stage Type"
+          },
+          "stage_name": {
+            "type": "string",
+            "title": "Stage Name"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "success",
+              "failed",
+              "skipped",
+              "timeout",
+              "partial"
+            ],
+            "title": "Status"
+          },
+          "retry_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Retry Count"
+          },
+          "payload": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object",
+            "title": "Payload"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "event_id",
+          "run_id",
+          "campaign_id",
+          "span_id",
+          "event_type",
+          "event_schema_version",
+          "sequence",
+          "stage_type",
+          "stage_name",
+          "started_at",
+          "status",
+          "retry_count",
+          "created_at"
+        ],
+        "title": "ExportTraceEventV2"
+      },
+      "ExportV9EvidencePacketDataV2": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "title": "Schema Version"
+          },
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "round_id": {
+            "type": "string",
+            "title": "Round Id"
+          },
+          "query_id": {
+            "type": "string",
+            "title": "Query Id"
+          },
+          "slot_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Slot Ids"
+          },
+          "statement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statement"
+          },
+          "support_type": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "calculated",
+              "scope_constraint",
+              "contradictory"
+            ],
+            "title": "Support Type"
+          },
+          "source": {
+            "$ref": "#/components/schemas/EvidenceSource"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/EvidenceScope"
+          },
+          "locator": {
+            "$ref": "#/components/schemas/SourceLocator"
+          },
+          "raw_value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Value"
+          },
+          "normalized_value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Normalized Value"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "calculation_operation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calculation Operation"
+          },
+          "premise_evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Premise Evidence Ids"
+          },
+          "display_precision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Precision"
+          },
+          "rounding_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rounding Mode"
+          },
+          "extractor_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extractor Version"
+          },
+          "prompt_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Version"
+          },
+          "validation_status": {
+            "type": "string",
+            "enum": [
+              "deterministic_valid",
+              "quote_bound",
+              "derived_non_evidence",
+              "invalid"
+            ],
+            "title": "Validation Status",
+            "default": "deterministic_valid"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "schema_version",
+          "evidence_id",
+          "task_id",
+          "round_id",
+          "query_id",
+          "slot_ids",
+          "statement",
+          "support_type",
+          "source",
+          "scope",
+          "locator"
+        ],
+        "title": "ExportV9EvidencePacketDataV2",
+        "description": "Export-owned packet shape whose content may be policy-suppressed."
+      },
+      "ExportV9EvidencePacketV2": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id"
+          },
+          "packet": {
+            "$ref": "#/components/schemas/ExportV9EvidencePacketDataV2"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "packet"
+        ],
+        "title": "ExportV9EvidencePacketV2"
+      },
+      "ExportV9ExecutionObservabilityV2": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "title": "Schema Version",
+            "default": "1"
+          },
+          "contract": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QueryContract"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slot_resolutions": {
+            "items": {
+              "$ref": "#/components/schemas/V9SlotResolution"
+            },
+            "type": "array",
+            "title": "Slot Resolutions"
+          },
+          "evidence_packets": {
+            "items": {
+              "$ref": "#/components/schemas/ExportV9EvidencePacketV2"
+            },
+            "type": "array",
+            "title": "Evidence Packets"
+          },
+          "sufficiency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SufficiencyReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "context_pack": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/V9ContextPack"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "budget": {
+            "items": {
+              "$ref": "#/components/schemas/BudgetReservation"
+            },
+            "type": "array",
+            "title": "Budget"
+          },
+          "repairs": {
+            "items": {
+              "$ref": "#/components/schemas/RepairPlan"
+            },
+            "type": "array",
+            "title": "Repairs"
+          },
+          "conflicts": {
+            "items": {
+              "$ref": "#/components/schemas/ConflictCandidate"
+            },
+            "type": "array",
+            "title": "Conflicts"
+          },
+          "final_claims": {
+            "items": {
+              "$ref": "#/components/schemas/ExportV9FinalClaimV2"
+            },
+            "type": "array",
+            "title": "Final Claims"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/V9ExecutionMetrics"
+          },
+          "comparison": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comparison"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ExportV9ExecutionObservabilityV2"
+      },
+      "ExportV9FinalClaimV2": {
+        "properties": {
+          "claim_id": {
+            "type": "string",
+            "title": "Claim Id"
+          },
+          "slot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Id"
+          },
+          "statement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statement"
+          },
+          "support_type": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "calculated",
+              "comparative_inference",
+              "qualified"
+            ],
+            "title": "Support Type"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence Ids"
+          },
+          "premise_evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Premise Evidence Ids"
+          },
+          "qualified_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualified Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "claim_id",
+          "statement",
+          "support_type"
+        ],
+        "title": "ExportV9FinalClaimV2"
       },
       "ExtractedDocument": {
         "properties": {

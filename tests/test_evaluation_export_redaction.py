@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-import json
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
@@ -14,20 +15,55 @@ import pytest
 from fastapi.testclient import TestClient
 
 from core.auth import get_current_user_id
+from core.errors import AppError, ErrorCode
+from evaluation.router import get_evaluation_export_service
 from evaluation import db as evaluation_db
+from evaluation.accounting_schemas import (
+    CampaignResearchSummaryResponse,
+    CostSummary,
+    EvaluationOverheadSummary,
+    LatencySummary,
+    TokenBreakdown,
+)
 from evaluation.campaign_engine import CampaignEngine
+from evaluation.campaign_schemas import (
+    AblationResponse,
+    AgentBehaviorResponse,
+    CampaignErrorsResponse,
+    CampaignResult,
+    CampaignStageWarningsResponse,
+    HumanEvalQueueResponse,
+    HumanVsAutoResponse,
+    ResearchQuestionComparisonResponse,
+    RouterAnalysisResponse,
+    V9EvidencePacket,
+    V9ExecutionObservability,
+)
 from evaluation.evidence import content_hash
 from evaluation.export_schemas import (
     ExportCampaignRequest as ExportCampaignRequestV2,
     resolve_export_content_policy,
 )
+from evaluation.export_service import (
+    EvaluationExportService,
+    _project_export_run_observability,
+)
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.rag_modes import BenchmarkExecutionResult
-from evaluation.trace_schemas import EvaluationLlmCall, EvaluationTraceEvent
+from evaluation.release_metrics import ReleaseMetricsReport
+from evaluation.research_analytics import CanonicalRunObservability
+from evaluation.trace_schemas import (
+    EvaluationClaim,
+    EvaluationLlmCall,
+    EvaluationRetrievalChunk,
+    EvaluationTraceEvent,
+)
+from data_base.agentic_v9.schemas import EvidencePacket, FinalClaim
 from main import app
 
 
 CONTENT_POLICY_ROWS = list(itertools.product((False, True), repeat=5))
+NOW = datetime(2026, 8, 13, tzinfo=timezone.utc)
 
 
 @pytest.mark.parametrize(
@@ -72,6 +108,406 @@ def test_content_policy_covers_all_32_flag_combinations(
     assert captured.stack_traces_allowed is False
     assert captured.unrestricted_errors_allowed is False
     assert captured.non_trace_payloads_allowed is False
+
+
+def _aggregate(model_type):
+    return model_type(
+        campaign_id="campaign-1",
+        analysis_unit="execution",
+        sample_count=1,
+        independent_question_count=1,
+        repeat_count=1,
+        sample_note="one execution",
+        warnings=[],
+        rows=[],
+        summaries={},
+    )
+
+
+def _export_result() -> CampaignResult:
+    return CampaignResult(
+        id="run-1",
+        campaign_id="campaign-1",
+        question_id="question-1",
+        question="Question?",
+        ground_truth="Ground truth",
+        ground_truth_short="Truth",
+        mode="agentic",
+        run_number=1,
+        repeat_number=1,
+        agentic_execution_version="v9",
+        answer="Answer text",
+        contexts=["Context text"],
+        source_doc_ids=["doc-1"],
+        latency_ms=12,
+        total_latency_ms=15,
+        total_tokens=17,
+        source_attempt_id="attempt-1",
+        status="completed",
+        created_at=NOW,
+    )
+
+
+def _canonical_export_run() -> CanonicalRunObservability:
+    result = _export_result()
+    return CanonicalRunObservability(
+        result=result,
+        token_breakdown=TokenBreakdown(
+            input_tokens=10,
+            output_text_tokens=7,
+            total_tokens=17,
+            accounting_status="complete",
+            phase_attribution_status="complete",
+        ),
+        trace_events=[
+            EvaluationTraceEvent(
+                event_id="trace-1",
+                run_id=result.id,
+                campaign_id=result.campaign_id,
+                span_id="span-1",
+                event_type="generation",
+                sequence=1,
+                stage_type="generation",
+                stage_name="final_answer",
+                started_at=NOW,
+                status="success",
+                payload={
+                    "safe": "value",
+                    "access_token": "trace-secret-sentinel",
+                },
+                created_at=NOW,
+            )
+        ],
+        llm_calls=[
+            EvaluationLlmCall(
+                llm_call_id="llm-1",
+                run_id=result.id,
+                campaign_id=result.campaign_id,
+                phase="final_answer",
+                purpose="generation",
+                prompt_tokens=10,
+                completion_tokens=7,
+                total_tokens=17,
+                prompt_capture_status="captured",
+                full_prompt_capture_status="captured",
+                prompt_preview="Prompt preview",
+                payload={"full_prompt": "Full prompt"},
+                created_at=NOW,
+            )
+        ],
+        retrieval_events=[],
+        retrieval_chunks=[
+            EvaluationRetrievalChunk(
+                retrieval_chunk_id="chunk-row-1",
+                run_id=result.id,
+                campaign_id=result.campaign_id,
+                retrieval_event_id="retrieval-1",
+                chunk_id="chunk-1",
+                doc_id="doc-1",
+                excerpt="Retrieved excerpt",
+                created_at=NOW,
+            )
+        ],
+        context_packs=[],
+        tool_calls=[],
+        routing_decisions=[],
+        graph_events=[],
+        graph_evidence_items=[],
+        claims=[
+            EvaluationClaim(
+                claim_id="claim-1",
+                run_id=result.id,
+                campaign_id=result.campaign_id,
+                claim_text="Claim statement",
+                created_at=NOW,
+            )
+        ],
+        human_ratings=[],
+        agentic_v9=V9ExecutionObservability(
+            evidence_packets=[
+                V9EvidencePacket(
+                    evidence_id="evidence-row-1",
+                    packet=EvidencePacket(
+                        schema_version="1",
+                        evidence_id="evidence-1",
+                        task_id="task-1",
+                        round_id="round-1",
+                        query_id="query-1",
+                        slot_ids=["slot-1"],
+                        statement="Evidence statement",
+                        support_type="direct",
+                        source={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+                        scope={"dataset": "benchmark"},
+                        locator={"pdf_page_index": 0},
+                    ),
+                )
+            ],
+            final_claims=[
+                FinalClaim(
+                    claim_id="final-claim-1",
+                    statement="Final claim statement",
+                    support_type="direct",
+                    evidence_ids=["evidence-1"],
+                )
+            ],
+        ),
+        graph_observability_status="not_instrumented",
+        claim_extraction_status="recorded",
+        evidence_coverage=[
+            {
+                "atomic_fact_id": "fact-1",
+                "fact_text": "Atomic fact text",
+                "retrieved": True,
+                "packed": True,
+                "mentioned": True,
+                "cited": True,
+                "expected_doc_ids": ["doc-1"],
+            }
+        ],
+        evidence_coverage_status="complete",
+    )
+
+
+@pytest.mark.parametrize(
+    (
+        "include_raw_trace_payloads",
+        "include_prompt_previews",
+        "include_full_prompts",
+        "include_answers",
+        "include_retrieved_excerpts",
+    ),
+    CONTENT_POLICY_ROWS,
+)
+def test_export_projector_applies_all_nested_content_policies(
+    include_raw_trace_payloads: bool,
+    include_prompt_previews: bool,
+    include_full_prompts: bool,
+    include_answers: bool,
+    include_retrieved_excerpts: bool,
+) -> None:
+    projected = _project_export_run_observability(
+        canonical=_canonical_export_run(),
+        request=ExportCampaignRequestV2(
+            include_run_observability=True,
+            include_raw_trace_payloads=include_raw_trace_payloads,
+            include_prompt_previews=include_prompt_previews,
+            include_full_prompts=include_full_prompts,
+            include_answers=include_answers,
+            include_retrieved_excerpts=include_retrieved_excerpts,
+        ),
+    )
+
+    assert projected.trace_events[0].payload == (
+        {"safe": "value", "access_token": "[redacted]"}
+        if include_raw_trace_payloads
+        else {}
+    )
+    assert projected.llm_calls[0].prompt_preview == (
+        "Prompt preview" if include_prompt_previews else None
+    )
+    assert projected.llm_calls[0].full_prompt == (
+        "Full prompt" if include_full_prompts else None
+    )
+    assert projected.run_summary.answer_preview == (
+        "Answer text" if include_answers else None
+    )
+    assert projected.claims[0].claim_text == (
+        "Claim statement" if include_answers else None
+    )
+    assert projected.evidence_coverage[0].fact_text == (
+        "Atomic fact text" if include_answers else None
+    )
+    assert projected.retrieval_chunks[0].excerpt == (
+        "Retrieved excerpt" if include_retrieved_excerpts else None
+    )
+    assert projected.agentic_v9 is not None
+    assert projected.agentic_v9.final_claims[0].statement == (
+        "Final claim statement" if include_answers else None
+    )
+    assert projected.agentic_v9.evidence_packets[0].packet.statement == (
+        "Evidence statement" if include_retrieved_excerpts else None
+    )
+    assert projected.agentic_v9.evidence_packets[0].packet.locator.pdf_page_index == 0
+
+
+@pytest.mark.asyncio
+async def test_export_summary_composes_named_sections_without_loading_observability() -> None:
+    campaign = SimpleNamespace(
+        id="campaign-1",
+        name="Campaign",
+        status="completed",
+        config=SimpleNamespace(
+            benchmark_id=None,
+            modes=["agentic"],
+            repeat_count=1,
+        ),
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    result = _export_result()
+    analytics = SimpleNamespace(
+        router_analysis=AsyncMock(return_value=_aggregate(RouterAnalysisResponse)),
+        ablation=AsyncMock(return_value=_aggregate(AblationResponse)),
+        human_vs_auto=AsyncMock(return_value=_aggregate(HumanVsAutoResponse)),
+        human_eval_queue=AsyncMock(
+            return_value=HumanEvalQueueResponse(campaign_id="campaign-1", rows=[])
+        ),
+        campaign_errors=AsyncMock(
+            return_value=CampaignErrorsResponse(campaign_id="campaign-1", rows=[])
+        ),
+        campaign_stage_warnings=AsyncMock(
+            return_value=CampaignStageWarningsResponse(
+                campaign_id="campaign-1", rows=[]
+            )
+        ),
+    )
+    research = SimpleNamespace(
+        get_summary=AsyncMock(
+            return_value=CampaignResearchSummaryResponse(
+                campaign_id="campaign-1",
+                completed_run_count=1,
+                total_run_count=1,
+                failed_run_count=0,
+                quality_status="partial",
+                token_accounting_status="incomplete_legacy",
+                pricing_status="unknown",
+                phase_attribution_status="not_available",
+                sample_count=1,
+                latency=LatencySummary(mean_ms=15, sample_count=1),
+                tokens=TokenBreakdown(
+                    total_tokens=None,
+                    accounting_status="incomplete_legacy",
+                    phase_attribution_status="not_available",
+                ),
+                execution_cost=CostSummary(pricing_status="unknown"),
+                modes=[],
+                evaluation_overhead=EvaluationOverheadSummary(
+                    tokens=TokenBreakdown(
+                        total_tokens=None,
+                        accounting_status="incomplete_legacy",
+                        phase_attribution_status="not_available",
+                    ),
+                    pricing_status="unknown",
+                ),
+            )
+        ),
+        get_question_comparison=AsyncMock(
+            return_value=_aggregate(ResearchQuestionComparisonResponse)
+        ),
+        get_agent_behavior=AsyncMock(
+            return_value=_aggregate(AgentBehaviorResponse)
+        ),
+        get_official_ragas_by_run=AsyncMock(
+            return_value={result.id: {"faithfulness": 0.9}}
+        ),
+        get_campaign_run_accounting=AsyncMock(
+            return_value={
+                result.id: TokenBreakdown(
+                    total_tokens=None,
+                    accounting_status="incomplete_legacy",
+                    phase_attribution_status="not_available",
+                )
+            }
+        ),
+        get_campaign_run_observability=AsyncMock(
+            side_effect=AssertionError("summary export loaded observability")
+        ),
+    )
+    release = SimpleNamespace(
+        get_report=AsyncMock(
+            return_value=ReleaseMetricsReport(
+                benchmark_id="",
+                benchmark_kind="not_applicable",
+                comparable=False,
+                availability="not_applicable",
+                not_applicable_reason="benchmark_not_configured",
+                gate_reasons=["benchmark_not_configured"],
+            )
+        )
+    )
+    service = EvaluationExportService(
+        campaigns=SimpleNamespace(get=AsyncMock(return_value=campaign)),
+        results=SimpleNamespace(list_for_campaign=AsyncMock(return_value=[result])),
+        analytics=analytics,
+        research=research,
+        release=release,
+    )
+
+    response = await service.export_campaign(
+        user_id="user-1",
+        campaign_id="campaign-1",
+        request=ExportCampaignRequestV2(),
+    )
+
+    assert set(type(response.sections).model_fields) == {
+        "overview",
+        "question_analysis",
+        "agent_behavior",
+        "router_analysis",
+        "ablation",
+        "human_evaluation",
+        "diagnostics",
+    }
+    assert response.sections.overview.data.release_metrics.availability.status == (
+        "not_applicable"
+    )
+    assert response.runs[0].ragas_metrics == {"faithfulness": 0.9}
+    assert response.runs[0].accounting.total_tokens is None
+    assert response.runs[0].latency.total_latency_ms == 15
+    assert response.runs[0].observability.included is False
+    assert response.runs[0].observability.data is None
+    research.get_campaign_run_observability.assert_not_awaited()
+
+    research.get_campaign_run_observability.side_effect = None
+    research.get_campaign_run_observability.return_value = {}
+    with pytest.raises(ValueError, match="result IDs"):
+        await service.export_campaign(
+            user_id="user-1",
+            campaign_id="campaign-1",
+            request=ExportCampaignRequestV2(include_run_observability=True),
+        )
+
+
+def test_export_projector_does_not_truncate_event_tail() -> None:
+    canonical = _canonical_export_run()
+    trace_events = [
+        canonical.trace_events[0].model_copy(
+            update={"event_id": f"trace-{index}", "sequence": index + 1}
+        )
+        for index in range(101)
+    ]
+
+    projected = _project_export_run_observability(
+        canonical=replace(canonical, trace_events=trace_events),
+        request=ExportCampaignRequestV2(include_run_observability=True),
+    )
+
+    assert len(projected.trace_events) == 101
+    assert projected.trace_events[-1].event_id == "trace-100"
+
+
+def test_export_required_section_failure_returns_no_partial_v2_body() -> None:
+    class FailingExportService:
+        async def export_campaign(self, **_: object) -> object:
+            raise AppError(
+                code=ErrorCode.INTERNAL_ERROR,
+                message="required export section unavailable",
+                status_code=500,
+            )
+
+    engine = CampaignEngine(runner=AsyncMock(), ragas_evaluator=FakeRagasEvaluator())
+    upload_root, db_path = _make_workspace_paths("export_all_or_error")
+    with _build_client("user-a", upload_root, db_path, engine) as client:
+        app.dependency_overrides[get_evaluation_export_service] = (
+            lambda: FailingExportService()
+        )
+        response = client.post(
+            "/api/evaluation/campaigns/campaign-1/export", json={}
+        )
+
+    assert response.status_code == 500
+    assert "schema_version" not in response.json()
+    assert response.json()["error"]["code"] == "INTERNAL_ERROR"
 
 
 class FakeRagasEvaluator:
@@ -475,107 +911,44 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         )
         assert default_export.status_code == 200
         export_body = default_export.json()
-        assert export_body["redaction"]["include_full_prompts"] is False
-        llm_call = next(
-            item
-            for item in export_body["llm_calls"]
-            if item["llm_call_id"] == f"{run_id}-llm"
-        )
-        assert llm_call["prompt_preview"] == "Question: preview only"
-        assert llm_call["full_prompt_capture_status"] == "redacted"
-        assert "full_prompt" not in llm_call["payload"]
-        assert export_body["summary"]["run_count"] == 1
-        assert export_body["summary"]["llm_call_count"] == len(export_body["llm_calls"])
-        assert export_body["summary"]["per_phase_counts"]["final_answer"] == 1
-        assert export_body["summary"]["per_phase_counts"]["evidence_extract"] == 1
-        assert export_body["summary"]["prompt_hash_availability"]["captured"] >= 2
-        assert export_body["summary"]["full_prompt_availability"]["redacted"] == 1
-        assert export_body["requirement_summary"] == [
-            {
-                "run_id": run_id,
-                "requirement_guidance": {
-                    "enabled": True,
-                    "source": "setup_snapshot",
-                    "applied_task_count": 2,
-                    "fallback_reason": None,
-                },
-                "requirement_shadow": {
-                    "schema_version": "shadow_requirements_v2",
-                    "behavior_influence": False,
-                    "support_assessment": "candidate_only",
-                    "requirements": [
-                        {
-                            "requirement_id": "R1",
-                            "text": "What failed?",
-                            "answer_kind": "text",
-                            "information_need": "plain_text",
-                            "information_needs": ["plain_text"],
-                            "decomposition_method": "fallback",
-                            "decomposition_confidence": "low",
-                            "visual_precision": "none",
-                            "visual_decision": "not_requested",
-                            "visual_reason": "text_representation_expected",
-                            "importance": "core",
-                            "coverage_status": "candidate",
-                            "available_representations": ["plain_text"],
-                            "candidate_evidence_refs": ["doc-1:runtime-export-chunk"],
-                        }
-                    ],
-                    "response_constraints": [
-                        {
-                            "constraint_id": "C1",
-                            "kind": "conditional_scope",
-                            "text": "若不能，必須按 claim scope 分開回答。",
-                        }
-                    ],
-                    "truncated": False,
-                    "summary": {
-                        "requirement_count": 1,
-                        "candidate_count": 1,
-                        "missing_count": 0,
-                        "supported_count": 0,
-                        "visual_required_count": 0,
-                        "constraint_count": 1,
-                        "low_confidence_count": 1,
-                        "truncated_requirement_count": 0,
-                        "truncated_constraint_count": 0,
-                    },
-                },
-            }
-        ]
-        exported_chunk = export_body["retrieval_summary"][0]["chunks"][0]
-        assert exported_chunk["rank_before_rerank"] == 7
-        assert exported_chunk["rank_after_rerank"] == 2
-        assert exported_chunk["rerank_score"] == 0.73
-        assert exported_chunk["payload"] == {
-            "instrumentation_depth": "result_level",
-            "observation_provenance": "derived",
-            "availability_status": "partial",
-            "availability_reasons": ["result_context_reconstruction"],
-            "used_in_answer_provenance": "heuristic",
-            "expected_evidence_match_status": "not_matched",
-            "reranker_status": "executed",
-            "reranker_fallback_reason": None,
-            "retrieval_task_id": "export-retrieval-task",
-            "rerank_candidate_count": 8,
-            "rerank_selected_count": 4,
+        assert export_body["schema_version"] == "2.0"
+        assert set(export_body) == {
+            "schema_version",
+            "export_metadata",
+            "campaign",
+            "sections",
+            "runs",
+        }
+        assert export_body["export_metadata"]["options"]["include_run_observability"] is False
+        assert export_body["export_metadata"]["redaction"] == {
+            "provider_errors": "excluded",
+            "stack_traces": "excluded",
+            "credentials": "redacted",
+        }
+        assert export_body["runs"][0]["observability"] == {
+            "included": False,
+            "availability": {
+                "status": "not_applicable",
+                "reasons": ["not_requested"],
+            },
+            "data": None,
         }
 
         full_export = client.post(
             f"/api/evaluation/campaigns/{campaign_id}/export",
-            json={"include_full_prompts": True},
+            json={"include_run_observability": True, "include_full_prompts": True},
         )
         assert full_export.status_code == 200
         full_llm_call = next(
             item
-            for item in full_export.json()["llm_calls"]
+            for item in full_export.json()["runs"][0]["observability"]["data"]["llm_calls"]
             if item["llm_call_id"] == f"{run_id}-llm"
         )
+        assert '"note":"safe"' in full_llm_call["full_prompt"]
         assert "hunter2" not in full_export.text
         assert "quoted-api-key" not in full_export.text
         assert "quoted-token" not in full_export.text
         assert "quoted-credential" not in full_export.text
-        assert "export-public-client-id" in full_export.text
         for sentinel in (
             "export-access-token-sentinel",
             "export-client-secret-sentinel",
@@ -586,21 +959,16 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
             "export-list-client-secret-sentinel",
         ):
             assert sentinel not in full_export.text
-        assert full_llm_call["payload"]["other_field"] == "kept"
         unavailable = next(
             item
-            for item in full_export.json()["llm_calls"]
+            for item in full_export.json()["runs"][0]["observability"]["data"]["llm_calls"]
             if item["llm_call_id"] == f"{run_id}-not-captured"
         )
         assert unavailable["full_prompt_capture_status"] == (
             "not_captured_at_execution"
         )
-        assert "full_prompt" not in unavailable["payload"]
+        assert unavailable["full_prompt"] is None
         assert "MUST NEVER BE EXPORTED" not in full_export.text
-        assert any(
-            "not captured at execution" in warning.lower()
-            for warning in full_export.json()["availability_warnings"]
-        )
 
         redacted_export = client.post(
             f"/api/evaluation/campaigns/{campaign_id}/export",
@@ -611,18 +979,11 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         assert "Grounded answer" not in redacted_text
         assert "A safe answer" not in redacted_text
         assert "SECRET RETRIEVED CONTEXT" not in redacted_text
-        redacted_chunk = redacted_export.json()["retrieval_summary"][0]["chunks"][0]
-        assert redacted_chunk["excerpt"] is None
-        assert redacted_chunk["rank_before_rerank"] == 7
-        assert redacted_chunk["rank_after_rerank"] == 2
-        assert redacted_chunk["rerank_score"] == 0.73
-        assert (
-            redacted_chunk["payload"]["expected_evidence_match_status"] == "not_matched"
-        )
-        assert redacted_chunk["payload"]["reranker_status"] == "executed"
+        assert redacted_export.json()["runs"][0]["result"]["answer"] is None
+        assert redacted_export.json()["runs"][0]["result"]["contexts"] is None
 
 
-def test_export_includes_condition_comparison_and_finite_per_run_ragas_metrics() -> (
+def test_export_includes_condition_comparison_and_excludes_unattributed_ragas() -> (
     None
 ):
     async def runner(**kwargs) -> BenchmarkExecutionResult:
@@ -683,19 +1044,16 @@ def test_export_includes_condition_comparison_and_finite_per_run_ragas_metrics()
         )
         assert export_response.status_code == 200
         payload = export_response.json()
-        runs_by_id = {run["id"]: run for run in payload["runs"]}
+        runs_by_id = {run["result"]["run_id"]: run for run in payload["runs"]}
 
         assert (
-            payload["metrics"]["condition_comparison"]["paired"]["completed_pair_count"]
+            payload["sections"]["ablation"]["data"]["summaries"]
+            ["condition_comparison"]["paired"]["completed_pair_count"]
             == 1
         )
-        assert runs_by_id[result_ids_by_condition["v9-baseline"]]["ragas_metrics"] == {
-            "answer_correctness": 0.7
-        }
-        assert runs_by_id[result_ids_by_condition["v9-guided"]]["ragas_metrics"] == {
-            "answer_correctness": 0.9
-        }
-        assert "full_prompt" not in json.dumps(payload["runs"])
+        assert runs_by_id[result_ids_by_condition["v9-baseline"]]["ragas_metrics"] == {}
+        assert runs_by_id[result_ids_by_condition["v9-guided"]]["ragas_metrics"] == {}
+        assert payload["runs"][0]["observability"]["data"] is None
 
 
 def test_user_cannot_export_another_users_campaign() -> None:

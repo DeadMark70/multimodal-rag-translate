@@ -13,6 +13,8 @@ from sse_starlette.sse import EventSourceResponse
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
 from evaluation.analytics import EvaluationAnalyticsService
+from evaluation.export_schemas import ExportCampaignRequest, ExportCampaignResponse
+from evaluation.export_service import EvaluationExportService
 from evaluation.accounting_schemas import CampaignResearchSummaryResponse
 from evaluation.campaign_engine import get_campaign_engine
 from evaluation.campaign_schemas import (
@@ -34,8 +36,6 @@ from evaluation.campaign_schemas import (
     CampaignStatus,
     CostLatencyResponse,
     EvaluationRunListResponse,
-    ExportCampaignRequest,
-    ExportCampaignResponse,
     HumanEvalQueueResponse,
     HumanRatingRequest,
     HumanRatingResponse,
@@ -170,8 +170,11 @@ def _to_sse_event(
 _ANALYTICS_SERVICE = EvaluationAnalyticsService()
 _RESEARCH_ANALYTICS_SERVICE = ResearchAnalyticsService()
 _RELEASE_METRICS_SERVICE = ReleaseMetricsService()
-
-
+_EXPORT_SERVICE = EvaluationExportService(
+    analytics=_ANALYTICS_SERVICE,
+    research=_RESEARCH_ANALYTICS_SERVICE,
+    release=_RELEASE_METRICS_SERVICE,
+)
 def get_evaluation_analytics_service() -> EvaluationAnalyticsService:
     """Factory for evaluation analytics service."""
     return _ANALYTICS_SERVICE
@@ -185,6 +188,11 @@ def get_research_analytics_service() -> ResearchAnalyticsService:
 def get_release_metrics_service() -> ReleaseMetricsService:
     """Factory for fail-closed benchmark release metrics."""
     return _RELEASE_METRICS_SERVICE
+
+
+def get_evaluation_export_service() -> EvaluationExportService:
+    """Factory for the sanitized Export Schema v2 composer."""
+    return _EXPORT_SERVICE
 
 
 async def _preserve_omitted_test_case_metadata(
@@ -632,10 +640,10 @@ async def post_campaign_export(
     campaign_id: str,
     payload: ExportCampaignRequest,
     user_id: str = Depends(get_current_user_id),
-    analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+    export_service: EvaluationExportService = Depends(get_evaluation_export_service),
 ) -> ExportCampaignResponse:
     """Export without escalating the campaign's execution-time capture policy."""
-    return await analytics.export_campaign(
+    return await export_service.export_campaign(
         user_id=user_id, campaign_id=campaign_id, request=payload
     )
 

@@ -4,7 +4,6 @@ from types import SimpleNamespace
 import pytest
 
 from evaluation.analytics import EvaluationAnalyticsService, reconcile_official_tokens
-from evaluation.campaign_schemas import ExportCampaignRequest
 from evaluation.campaign_schemas import CampaignLifecycleStatus
 from evaluation.trace_schemas import (
     EvaluationClaim,
@@ -769,29 +768,3 @@ async def test_campaign_stage_warnings_redact_unstructured_failure_reason() -> N
     )
 
     assert response.rows[0].failure_reason == "capability_gap_reason_redacted"
-
-
-@pytest.mark.asyncio
-async def test_export_campaign_uses_bulk_observability() -> None:
-    observability_repository = BulkOnlyObservabilityRepository()
-    service = EvaluationAnalyticsService(
-        campaign_repository=SingleRunCampaignRepository(),
-        result_repository=SingleRunResultRepository(),
-        observability_repository=observability_repository,
-    )
-
-    response = await service.export_campaign(
-        user_id="user-a",
-        campaign_id="campaign-1",
-        request=ExportCampaignRequest(),
-    )
-
-    assert response.llm_calls[0]["llm_call_id"] == "llm-1"
-    assert "full_prompt" not in response.llm_calls[0]["payload"]
-    assert response.retrieval_summary[0]["chunk_count"] == 1
-    assert response.claim_summary[0]["claims"][0]["claim_id"] == "claim-1"
-    assert observability_repository.bulk_trace_calls == ["campaign-1"]
-    assert observability_repository.bulk_llm_calls == ["campaign-1"]
-    assert observability_repository.bulk_chunk_calls == ["campaign-1"]
-    assert observability_repository.bulk_claim_calls == ["campaign-1"]
-    assert observability_repository.per_run_calls == []

@@ -980,6 +980,28 @@ class ResearchAnalyticsService:
             campaign_id=campaign_id, results=results
         )
 
+    async def get_campaign_run_accounting(
+        self,
+        *,
+        user_id: str,
+        campaign_id: str,
+        results: Sequence[CampaignResult],
+    ) -> dict[str, TokenBreakdown]:
+        """Project official per-run accounting from one bounded campaign load."""
+        await self._campaigns.get(user_id=user_id, campaign_id=campaign_id)
+        snapshot, llm_calls_by_run = await asyncio.gather(
+            self._accounting.load_campaign_snapshot(campaign_id),
+            self._list_llm_calls_for_campaign(campaign_id),
+        )
+        return {
+            result.id: _token_breakdown_for_run(
+                result=result,
+                accounting=snapshot,
+                llm_calls=llm_calls_by_run.get(result.id, []),
+            )
+            for result in results
+        }
+
     async def get_official_ragas_by_run(
         self,
         *,

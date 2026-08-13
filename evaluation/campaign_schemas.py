@@ -894,34 +894,6 @@ class CampaignAnalyticsDashboardResponse(BaseModel):
     errors: CampaignErrorsResponse
 
 
-class ExportCampaignRequest(BaseModel):
-    """Explicit export options for research data."""
-
-    include_raw_trace_payloads: bool = False
-    include_prompt_previews: bool = True
-    include_full_prompts: bool = False
-    include_answers: bool = True
-    include_retrieved_excerpts: bool = True
-    format: Literal["json"] = "json"
-
-
-class ExportCampaignResponse(BaseModel):
-    """Redaction-aware campaign export payload."""
-
-    campaign: dict[str, Any]
-    redaction: dict[str, Any]
-    runs: list[dict[str, Any]] = Field(default_factory=list)
-    metrics: dict[str, Any] = Field(default_factory=dict)
-    trace_events: list[dict[str, Any]] = Field(default_factory=list)
-    llm_calls: list[dict[str, Any]] = Field(default_factory=list)
-    retrieval_summary: list[dict[str, Any]] = Field(default_factory=list)
-    claim_summary: list[dict[str, Any]] = Field(default_factory=list)
-    comparison_summary: list[dict[str, Any]] = Field(default_factory=list)
-    requirement_summary: list[dict[str, Any]] = Field(default_factory=list)
-    summary: dict[str, Any] = Field(default_factory=dict)
-    availability_warnings: list[str] = Field(default_factory=list)
-
-
 class CampaignProgressEvent(BaseModel):
     """Incremental SSE progress payload."""
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from math import isfinite
 from typing import Generic, Literal, TypeVar
 
@@ -21,11 +22,25 @@ from evaluation.campaign_schemas import (
     CampaignMode,
     CampaignResultStatus,
     CampaignStageWarningsResponse,
-    HumanEvalQueueResponse,
     HumanVsAutoResponse,
     ResearchQuestionComparisonResponse,
     RouterAnalysisResponse,
-    V9ExecutionObservability,
+    V9ContextPack,
+    V9SlotResolution,
+)
+from data_base.agentic_v9.repair import RepairPlan
+from data_base.agentic_v9.schemas import (
+    BudgetReservation,
+    ClaimSupportType,
+    ConflictCandidate,
+    EvidenceScope,
+    EvidenceSource,
+    EvidenceSupportType,
+    EvidenceValidationStatus,
+    QueryContract,
+    SourceLocator,
+    SufficiencyReport,
+    V9ExecutionMetrics,
 )
 
 T = TypeVar("T")
@@ -364,6 +379,62 @@ class ExportEvidenceCoverageV2(ExportModel):
     expected_doc_ids: list[str]
 
 
+class ExportV9EvidencePacketDataV2(ExportModel):
+    """Export-owned packet shape whose content may be policy-suppressed."""
+
+    schema_version: str
+    evidence_id: str
+    task_id: str
+    round_id: str
+    query_id: str
+    slot_ids: list[str]
+    statement: str | None
+    support_type: EvidenceSupportType
+    source: EvidenceSource
+    scope: EvidenceScope
+    locator: SourceLocator
+    raw_value: Decimal | None = None
+    normalized_value: Decimal | None = None
+    unit: str | None = None
+    calculation_operation: str | None = None
+    premise_evidence_ids: list[str] = Field(default_factory=list)
+    display_precision: int | None = Field(default=None, ge=0)
+    rounding_mode: str | None = None
+    extractor_version: str | None = None
+    prompt_version: str | None = None
+    validation_status: EvidenceValidationStatus = "deterministic_valid"
+
+
+class ExportV9EvidencePacketV2(ExportModel):
+    evidence_id: str
+    packet: ExportV9EvidencePacketDataV2
+
+
+class ExportV9FinalClaimV2(ExportModel):
+    claim_id: str
+    slot_id: str | None = None
+    statement: str | None
+    support_type: ClaimSupportType
+    evidence_ids: list[str] = Field(default_factory=list)
+    premise_evidence_ids: list[str] = Field(default_factory=list)
+    qualified_reason: str | None = None
+
+
+class ExportV9ExecutionObservabilityV2(ExportModel):
+    schema_version: str = "1"
+    contract: QueryContract | None = None
+    slot_resolutions: list[V9SlotResolution] = Field(default_factory=list)
+    evidence_packets: list[ExportV9EvidencePacketV2] = Field(default_factory=list)
+    sufficiency: SufficiencyReport | None = None
+    context_pack: V9ContextPack | None = None
+    budget: list[BudgetReservation] = Field(default_factory=list)
+    repairs: list[RepairPlan] = Field(default_factory=list)
+    conflicts: list[ConflictCandidate] = Field(default_factory=list)
+    final_claims: list[ExportV9FinalClaimV2] = Field(default_factory=list)
+    metrics: V9ExecutionMetrics = Field(default_factory=V9ExecutionMetrics)
+    comparison: dict[str, JsonValue] | None = None
+
+
 class ExportRunSummaryV2(ExportModel):
     run_id: str
     campaign_id: str
@@ -399,7 +470,7 @@ class ExportRunObservabilityDataV2(ExportModel):
     evidence_coverage_status: Literal[
         "complete", "partial", "not_available", "not_instrumented"
     ]
-    agentic_v9: V9ExecutionObservability | None
+    agentic_v9: ExportV9ExecutionObservabilityV2 | None
 
 
 class ExportRunObservabilityV2(ExportModel):
@@ -534,9 +605,27 @@ class ExportOverviewDataV2(ExportModel):
     release_metrics: ExportSection[ExportReleaseMetricsV2]
 
 
+class ExportHumanEvalQueueItemV2(ExportModel):
+    run_id: str
+    campaign_id: str
+    question_id: str
+    question: str
+    mode: CampaignMode
+    run_number: int = Field(ge=1)
+    repeat_number: int = Field(ge=1)
+    answer_preview: str | None
+    existing_rating_count: int = Field(ge=0)
+    already_rated_by_current_user: bool
+
+
+class ExportHumanEvalQueueV2(ExportModel):
+    campaign_id: str
+    rows: list[ExportHumanEvalQueueItemV2] = Field(default_factory=list)
+
+
 class ExportHumanEvaluationDataV2(ExportModel):
     comparison: HumanVsAutoResponse
-    queue: HumanEvalQueueResponse
+    queue: ExportHumanEvalQueueV2
 
 
 class ExportDiagnosticsDataV2(ExportModel):

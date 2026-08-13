@@ -118,19 +118,19 @@
   - `include_retrieved_excerpts`
   - `format` (`json`)
 - Export guarantees:
-  - trace payloads are blank unless explicitly requested
-  - prompt previews can be suppressed
-  - `payload.full_prompt` is removed unless explicitly requested
-  - answers and retrieval excerpts can be independently removed
-  - every exported run includes a finite-only `ragas_metrics` map, and `metrics.condition_comparison` matches the `/ablation` projection
-  - question snapshots are still partially redacted even when exporting runs
+  - the response is either one complete Schema v2 artifact or a non-2xx error; required-section failures never return a partial artifact
+  - campaign ownership and the complete result set are loaded before section composition
+  - every result has official finite-only RAGAS, accounting, and measured latency projections
+  - trace payloads are blank unless explicitly requested and are credential-sanitized when included
+  - prompt previews, answers, and retrieval excerpts can be independently suppressed
+  - full prompts require both an explicit request and execution-time capture
 
 ### Export Schema v2 Contract
 
-The typed v2 contract is owned by `evaluation/export_schemas.py`. Its route and
-service switch is atomic: until that migration is made, the existing endpoint
-continues to serve only the legacy response and never exposes both response
-shapes at once.
+The typed v2 contract is owned by `evaluation/export_schemas.py`, and
+`EvaluationExportService.export_campaign` is its only composer. The export
+route now serves only Schema v2; the legacy response composer and schemas have
+been removed.
 
 Schema v2 has exactly five required top-level keys: `schema_version` (`"2.0"`),
 `export_metadata`, `campaign`, `sections`, and `runs`. The seven required named
@@ -145,7 +145,9 @@ independent of the five content controls. Each run always has a fixed redacted
 result, finite-only RAGAS metrics, typed token accounting, and nullable measured
 latency/timestamps. Detailed run rows use fixed allow lists for trace, LLM,
 retrieval, context, tool, routing, graph, claim, rating, and evidence-coverage
-families.
+families. Summary exports do not load the campaign observability snapshot;
+full exports load it once in bulk and require its run IDs to equal the campaign
+result IDs exactly. Event arrays are complete rather than dashboard-truncated.
 
 Content controls never relax permanent exclusions. Provider bodies,
 credentials, authorization headers, stack traces, unrestricted errors, and

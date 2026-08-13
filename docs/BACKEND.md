@@ -440,22 +440,23 @@
 - Export is POST-only for the research surface:
   - `POST /api/evaluation/campaigns/{campaign_id}/export`
   - request body controls redaction:
+    - `include_run_observability` (default `false`)
     - `include_raw_trace_payloads`
     - `include_prompt_previews`
     - `include_full_prompts`
     - `include_answers`
     - `include_retrieved_excerpts`
     - `format` (`json` only)
-- Export behavior in current code:
-  - trace event `payload` is blanked unless `include_raw_trace_payloads=true`
-  - `prompt_preview` is omitted unless `include_prompt_previews=true`
-  - `payload.full_prompt` is removed unless `include_full_prompts=true`
-  - answer, ground truth, and final-answer hash are removed when `include_answers=false`
-  - retrieval excerpts and result context/source lists are removed when `include_retrieved_excerpts=false`
-  - each `retrieval_summary[]` row now also carries `graph_events`, `graph_event_count`, `graph_evidence_items`, and `graph_evidence_item_count` when GraphRAG observability rows exist for that run
-  - each exported `runs[]` row carries a finite-only `ragas_metrics` map; historical unscored runs carry `{}`
-  - `metrics.condition_comparison` reuses the same condition-level projection as `/ablation`, including finite-only paired deltas and exclusion reasons
-  - `question_snapshot` is always partially redacted on export by removing `ground_truth`, `ground_truth_short`, `source_docs`, `atomic_facts`, and `expected_evidence`
+- Export Schema v2 behavior:
+  - `EvaluationExportService.export_campaign` is the only composer; the route no longer has a legacy response path
+  - required panel sections are composed from their canonical services and fail all-or-error
+  - summary exports do not load detailed observability; full exports use one campaign snapshot and require exact result/run-ID equality
+  - every `runs[]` row contains the fixed result projection, official finite-only RAGAS metrics, accounting, latency, and a fixed observability envelope
+  - trace event `payload` is blank unless `include_raw_trace_payloads=true`, and included trace payloads are recursively credential-redacted
+  - prompt previews follow `include_prompt_previews`; full prompts require `include_full_prompts=true` and execution-time capture
+  - `include_answers=false` clears result/preview/claim/fact/final-claim content, including the human-evaluation queue preview
+  - `include_retrieved_excerpts=false` clears excerpts and evidence statements while retaining identity and locator fields
+  - provider bodies, non-trace arbitrary payloads, unrestricted errors, stack traces, credentials, and authorization headers are permanently excluded
 - Sanitized errors are stored and exported instead of raw provider dumps. Multiline stack traces and obvious secrets are redacted.
 
 ### Durable Evaluation Recovery
