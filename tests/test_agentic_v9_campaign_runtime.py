@@ -2034,7 +2034,7 @@ async def test_v9_runtime_repeats_feasibility_after_contract_before_retrieval(
         required_slots=[RequiredSlot(slot_id="S1", description="table value")],
         visual_required=True,
         evidence_extraction_required=True,
-        max_llm_calls=2,
+        max_llm_calls=1,
         runtime_token_budget=40_000,
         resolved_source_scope=scope,
     )
@@ -2046,8 +2046,8 @@ async def test_v9_runtime_repeats_feasibility_after_contract_before_retrieval(
         "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract", admission
     )
 
-    # The contract requires visual + evidence + final provider work but permits
-    # only two calls.  It must be rejected before retrieval starts.
+    # The contract requires visual + final provider work but permits only one
+    # call. It must be rejected before retrieval starts.
     result = await runtime.execute(
         question="What is the table score?",
         user_id="user-a",
@@ -2061,6 +2061,71 @@ async def test_v9_runtime_repeats_feasibility_after_contract_before_retrieval(
     assert result.agent_trace["response_status"] == "configuration_incompatible"
     retrieve_documents.assert_not_awaited()
     provider.ainvoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_v9_runtime_passes_zero_qualification_provider_calls_for_prose_curation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _Provider()
+    source_scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        route="single_lookup",
+        intent="Find the reported score.",
+        evidence_extraction_required=True,
+        max_retrieval_rounds=1,
+        max_llm_calls=1,
+        runtime_token_budget=10_000,
+        resolved_source_scope=source_scope,
+    )
+
+    async def admission(**_kwargs: object) -> V9AdmissionContract:
+        return V9AdmissionContract(source_scope=source_scope, contract=contract)
+
+    observed_provider_call_counts: list[object] = []
+    original_feasibility = runtime_module.validate_post_contract_feasibility
+
+    def observe_feasibility(**kwargs: object):
+        observed_provider_call_counts.append(
+            kwargs.get("evidence_qualification_provider_calls")
+        )
+        return original_feasibility(**kwargs)
+
+    monkeypatch.setattr(
+        runtime_module, "build_v9_admission_contract", admission
+    )
+    monkeypatch.setattr(
+        runtime_module, "validate_post_contract_feasibility", observe_feasibility
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="The source reports a score of 0.91.",
+                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+                )
+            ]
+        ),
+        provider_factory=lambda _purpose: provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What is the reported score?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "runtime_token_budget": 10_000},
+        trace_id="attempt-trace-prose-curation-provider-calls",
+    )
+
+    assert result.agent_trace["response_status"] == "complete"
+    assert observed_provider_call_counts
+    assert set(observed_provider_call_counts) == {0}
+    assert provider.ainvoke.await_count == 1
 
 
 @pytest.mark.asyncio

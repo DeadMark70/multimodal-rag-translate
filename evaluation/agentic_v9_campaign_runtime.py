@@ -395,6 +395,7 @@ class AgenticV9CampaignRuntime:
                     remaining_llm_calls=runtime_contract.max_llm_calls,
                     route_plan_used=False,
                     contract_plan_requested=True,
+                    evidence_qualification_provider_calls=0,
                 )
                 if post_contract.status is FeasibilityStatus.FEASIBLE:
                     planner_admitted = True
@@ -406,6 +407,7 @@ class AgenticV9CampaignRuntime:
                         remaining_llm_calls=runtime_contract.max_llm_calls,
                         route_plan_used=False,
                         contract_plan_requested=False,
+                        evidence_qualification_provider_calls=0,
                     )
             else:
                 post_contract = validate_post_contract_feasibility(
@@ -415,6 +417,7 @@ class AgenticV9CampaignRuntime:
                     remaining_llm_calls=runtime_contract.max_llm_calls,
                     route_plan_used=False,
                     contract_plan_requested=False,
+                    evidence_qualification_provider_calls=0,
                 )
 
             state["post_contract"] = post_contract

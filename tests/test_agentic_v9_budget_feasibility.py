@@ -1,5 +1,7 @@
 """Tests for Agentic v9 configuration feasibility before provider admission."""
 
+import pytest
+
 from data_base.agentic_v9.budget_feasibility import (
     ADMISSION_PRIORITY,
     FeasibilityStatus,
@@ -212,6 +214,7 @@ def test_post_contract_reserves_required_visual_and_graph_before_curation() -> N
         setup_snapshot=_setup(),
         remaining_token_budget=35_968,
         remaining_llm_calls=4,
+        evidence_qualification_provider_calls=1,
     )
 
     assert result.status is FeasibilityStatus.FEASIBLE
@@ -234,6 +237,71 @@ def test_post_contract_reserves_required_visual_and_graph_before_curation() -> N
         "conflict_arbitration",
         "claim_verifier",
     )
+
+
+def test_post_contract_qualification_provider_calls_reserve_only_actual_work() -> None:
+    contract = QueryContract(
+        route="single_lookup",
+        intent="Find the reported score.",
+        evidence_extraction_required=True,
+        max_llm_calls=1,
+        runtime_token_budget=9_728,
+    )
+
+    without_provider_qualification = validate_post_contract_feasibility(
+        contract=contract,
+        setup_snapshot=_setup(),
+        remaining_token_budget=9_728,
+        remaining_llm_calls=1,
+        evidence_qualification_provider_calls=0,
+    )
+    default_qualification = validate_post_contract_feasibility(
+        contract=contract,
+        setup_snapshot=_setup(),
+        remaining_token_budget=9_728,
+        remaining_llm_calls=1,
+    )
+    with_provider_qualification = validate_post_contract_feasibility(
+        contract=contract,
+        setup_snapshot=_setup(),
+        remaining_token_budget=9_728,
+        remaining_llm_calls=1,
+        evidence_qualification_provider_calls=1,
+    )
+
+    assert without_provider_qualification.status is FeasibilityStatus.FEASIBLE
+    assert without_provider_qualification.required_provider_calls == {"final_answer": 1}
+    assert default_qualification.status is FeasibilityStatus.FEASIBLE
+    assert default_qualification.required_provider_calls == {"final_answer": 1}
+    assert with_provider_qualification.status is FeasibilityStatus.CONFIGURATION_INCOMPATIBLE
+    assert with_provider_qualification.reason == "required_provider_calls_exceed_call_budget"
+    assert with_provider_qualification.required_provider_calls == {
+        "evidence_extract": 1,
+        "final_answer": 1,
+    }
+
+
+@pytest.mark.parametrize("provider_calls", [-1, 2])
+def test_post_contract_rejects_invalid_initial_qualification_provider_calls(
+    provider_calls: int,
+) -> None:
+    contract = QueryContract(
+        route="single_lookup",
+        intent="Find the reported score.",
+        max_llm_calls=2,
+        runtime_token_budget=19_456,
+    )
+
+    result = validate_post_contract_feasibility(
+        contract=contract,
+        setup_snapshot=_setup(),
+        remaining_token_budget=19_456,
+        remaining_llm_calls=2,
+        evidence_qualification_provider_calls=provider_calls,
+    )
+
+    assert result.status is FeasibilityStatus.CONFIGURATION_INCOMPATIBLE
+    assert result.reason == "invalid_initial_evidence_qualification_provider_calls"
 
 
 def test_post_contract_rejects_route_call_budget_below_required_admission() -> None:
