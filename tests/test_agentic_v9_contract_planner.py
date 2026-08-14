@@ -20,6 +20,7 @@ from data_base.agentic_v9.requirement_decomposition import (
     DecomposedRequirement,
     QuestionDecomposition,
 )
+from data_base.agentic_v9.retrieval_tasks import compile_retrieval_tasks
 from data_base.agentic_v9.route_planner import RoutePlanner
 from data_base.agentic_v9.schemas import (
     AgenticV9Route,
@@ -40,10 +41,20 @@ QUESTIONS_PATH = (
     / "golden"
     / "agentic_v9_questions_v2.json"
 )
+ATOMIC_QUESTIONS_PATH = (
+    Path(__file__).resolve().parent
+    / "fixtures"
+    / "agentic_v9_atomic_questions_v1.json"
+)
 
 
 def _questions() -> dict[str, dict]:
     rows = json.loads(QUESTIONS_PATH.read_text(encoding="utf-8"))["questions"]
+    return {row["id"]: row for row in rows}
+
+
+def _atomic_questions() -> dict[str, dict]:
+    rows = json.loads(ATOMIC_QUESTIONS_PATH.read_text(encoding="utf-8"))["questions"]
     return {row["id"]: row for row in rows}
 
 
@@ -636,16 +647,141 @@ async def test_degraded_fallbacks_for_all_failure_modes(
     assert outcome.contract.slot_plan_source == "safe_fallback"
     assert outcome.contract.slot_plan_confidence == "low"
     assert outcome.contract.slot_plan_fallback_reason == expected_fallback_reason
+    assert outcome.contract.route == base_contract.route
+    assert outcome.contract.resolved_source_scope == base_contract.resolved_source_scope
+    assert outcome.contract.graph_policy == base_contract.graph_policy
+    assert outcome.contract.visual_requested == base_contract.visual_requested
+    assert outcome.contract.visual_required == base_contract.visual_required
+    assert outcome.contract.max_retrieval_rounds == base_contract.max_retrieval_rounds
+    assert outcome.contract.max_repair_rounds == base_contract.max_repair_rounds
+    assert outcome.contract.max_llm_calls == base_contract.max_llm_calls
+    assert outcome.contract.runtime_token_budget == base_contract.runtime_token_budget
     assert len(outcome.contract.required_slots) == 1
     assert outcome.contract.required_slots[0].slot_id == "S1"
-    assert (
-        outcome.contract.required_slots[0].description
-        == "Resolve the complete source-bound requirement in the original question."
-    )
+    assert outcome.contract.required_slots[0].description == "Unclear question."
     assert outcome.contract.required_slots[0].authorized_source_doc_ids == ["doc-1"]
     assert outcome.contract.synthesis_obligations == []
     assert outcome.contract.response_constraints == []
     assert outcome.contract.comparison_plan is None
+
+
+@pytest.mark.asyncio
+async def test_safe_fallback_compiles_each_normalized_original_question() -> None:
+    """Fails if fallback retrieval regresses to one generic query."""
+    questions = (
+        "  What exact values does SegVol Table 3 report?  ",
+        "Which method reports the lowest FLOPs in Table 2?",
+    )
+    preparation = AtomicContractPreparation(
+        decomposition=QuestionDecomposition(
+            requirements=(
+                DecomposedRequirement(
+                    text="Unclear.", method="fallback", confidence="low"
+                ),
+            ),
+            confidence="low",
+            semantic_planning_reasons=("unclear",),
+        ),
+        semantic_planning_requested=True,
+        comparison_candidate=False,
+    )
+
+    outcomes = [
+        await QuestionContractPlanner().plan(
+            question=question,
+            base_contract=_make_base_contract(),
+            preparation=preparation,
+            allow_semantic_planning=False,
+        )
+        for question in questions
+    ]
+    expected_queries = [
+        "What exact values does SegVol Table 3 report?",
+        "Which method reports the lowest FLOPs in Table 2?",
+    ]
+
+    compiled_queries: list[str] = []
+    for index, (outcome, expected_query) in enumerate(
+        zip(outcomes, expected_queries, strict=True), start=1
+    ):
+        assert outcome.contract.required_slots[0].slot_id == "S1"
+        assert outcome.contract.required_slots[0].description == expected_query
+        plan = compile_retrieval_tasks(
+            question=questions[index - 1],
+            query_id=f"safe-fallback-{index}",
+            contract=outcome.contract,
+        )
+        compiled_queries.append(plan.tasks[0].query)
+
+    assert compiled_queries == expected_queries
+    assert compiled_queries[0] != compiled_queries[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("question_id", ["Q13", "Q24"])
+async def test_safe_fallback_replays_q13_and_q24_without_generic_query(
+    question_id: str,
+) -> None:
+    """Fails if fallback replay loses either question's retrieval target."""
+    case = _atomic_questions()[question_id]
+    preparation = AtomicContractPreparation(
+        decomposition=QuestionDecomposition(
+            requirements=(
+                DecomposedRequirement(
+                    text="Unclear.", method="fallback", confidence="low"
+                ),
+            ),
+            confidence="low",
+            semantic_planning_reasons=("unclear",),
+        ),
+        semantic_planning_requested=True,
+        comparison_candidate=False,
+    )
+    outcome = await QuestionContractPlanner().plan(
+        question=case["question"],
+        base_contract=_make_base_contract(),
+        preparation=preparation,
+        allow_semantic_planning=False,
+    )
+
+    plan = compile_retrieval_tasks(
+        question=case["question"],
+        query_id=question_id,
+        contract=outcome.contract,
+    )
+
+    assert plan.tasks[0].query == case["question"]
+    assert "Resolve the complete source-bound requirement" not in plan.tasks[0].query
+
+
+@pytest.mark.asyncio
+async def test_safe_fallback_normalizes_whitespace_and_bounds_description_length() -> (
+    None
+):
+    """Fails if fallback accepts unbounded or whitespace-padded query text."""
+    question = f"  {'x' * 513}  "
+    preparation = AtomicContractPreparation(
+        decomposition=QuestionDecomposition(
+            requirements=(
+                DecomposedRequirement(
+                    text="Unclear.", method="fallback", confidence="low"
+                ),
+            ),
+            confidence="low",
+            semantic_planning_reasons=("unclear",),
+        ),
+        semantic_planning_requested=True,
+        comparison_candidate=False,
+    )
+
+    outcome = await QuestionContractPlanner().plan(
+        question=question,
+        base_contract=_make_base_contract(),
+        preparation=preparation,
+        allow_semantic_planning=False,
+    )
+
+    assert outcome.contract.required_slots[0].description == "x" * 512
 
 
 @pytest.mark.asyncio

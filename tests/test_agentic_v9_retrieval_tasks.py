@@ -349,6 +349,61 @@ def test_q16_compiles_atomic_source_and_locator_groups_without_answer_text() -> 
 
 
 @pytest.mark.parametrize(
+    ("query_id", "description", "source_name", "locator_hint", "expected_query"),
+    [
+        (
+            "Q5",
+            "根據 nnMamba 架構描述，請重建 MICCSS 模塊中 CSS（Channel-Spatial Siamese）階段的特徵融合流程",
+            "2402.03526v2nnMamba.pdf",
+            "",
+            "2402.03526v2nnMamba.pdf 根據 nnMamba 架構描述，請重建 MICCSS 模塊中 CSS（Channel-Spatial Siamese）階段的特徵融合流程",
+        ),
+        (
+            "Q23",
+            "SegFormer3D 對相對 nnFormer 的效率有兩種摘要說法：Abstract 寫約 33× fewer parameters、13× GFLOPs reduction，正文 contribution 則寫 34×、13×。請以 Table 1 的精確數值重新計算，判斷哪些數字只能視為近似表述",
+            "2404.10156v2SegFormer3D.pdf",
+            "Table 1",
+            "2404.10156v2SegFormer3D.pdf SegFormer3D 對相對 nnFormer 的效率有兩種摘要說法：Abstract 寫約 33× fewer parameters、13× GFLOPs reduction，正文 contribution 則寫 34×、13×。請以 Table 1 的精確數值重新計算，判斷哪些數字只能視為近似表述 Table 1",
+        ),
+    ],
+)
+def test_q5_q23_atomic_compiler_output_is_unchanged(
+    query_id: str,
+    description: str,
+    source_name: str,
+    locator_hint: str,
+    expected_query: str,
+) -> None:
+    """Fails if fallback work changes ordinary atomic compilation."""
+    contract = QueryContract(
+        contract_version="2",
+        route="exact_structured",
+        intent="Retrieve source-bound evidence.",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description=description,
+                source_name_hints=[source_name],
+                locator_hints=[locator_hint] if locator_hint else [],
+                authorized_source_doc_ids=["doc-1"],
+            )
+        ],
+        max_retrieval_rounds=1,
+        max_llm_calls=1,
+        runtime_token_budget=1,
+        resolved_source_scope=_scope("doc-1"),
+    )
+
+    plan = compile_retrieval_tasks(
+        question="A different original question must not change atomic output.",
+        query_id=query_id,
+        contract=contract,
+    )
+
+    assert [task.query for task in plan.tasks] == [expected_query]
+
+
+@pytest.mark.parametrize(
     ("query_id", "entities"),
     [
         ("Q1", ["SwinUNETR", "MedNeXt", "nnMamba"]),
@@ -599,4 +654,3 @@ def test_comparison_contract_fails_closed_when_subject_has_no_valid_slots_or_no_
         compile_retrieval_tasks(
             question="Compare.", query_id="q-err2", contract=contract_no_docs
         )
-

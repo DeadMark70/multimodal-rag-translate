@@ -44,6 +44,7 @@ _PROMPT_PATH = (
     Path(__file__).resolve().parents[2] / "prompts" / "agentic_v9_contract_planner.json"
 )
 _PROMPT_KEY = "atomic_contract_planning"
+_SAFE_FALLBACK_DESCRIPTION_MAX_LENGTH = 512
 
 _EXACT_LOCATOR_PATTERN = re.compile(
     r"\b(Figure|Fig\.|Table|Appendix|Formula|Equation|Theorem|Page|Section)"
@@ -298,6 +299,7 @@ class QuestionContractPlanner:
         if prep.semantic_planning_requested:
             if not allow_semantic_planning:
                 return _safe_fallback_outcome(
+                    question=question,
                     base_contract=base_contract,
                     fallback_reason="semantic_planning_not_admitted",
                     planner_call_count=0,
@@ -305,6 +307,7 @@ class QuestionContractPlanner:
                 )
             if self._llm_invoker is None:
                 return _safe_fallback_outcome(
+                    question=question,
                     base_contract=base_contract,
                     fallback_reason="planner_unavailable",
                     planner_call_count=0,
@@ -385,6 +388,7 @@ class QuestionContractPlanner:
                 )
             except TimeoutError:
                 return _safe_fallback_outcome(
+                    question=question,
                     base_contract=base_contract,
                     fallback_reason="planner_timeout",
                     planner_call_count=1,
@@ -394,6 +398,7 @@ class QuestionContractPlanner:
                 )
             except BudgetExceededError:
                 return _safe_fallback_outcome(
+                    question=question,
                     base_contract=base_contract,
                     fallback_reason="planner_budget_rejected",
                     planner_call_count=1,
@@ -403,6 +408,7 @@ class QuestionContractPlanner:
                 )
             except PlannerProviderInvocationError:
                 return _safe_fallback_outcome(
+                    question=question,
                     base_contract=base_contract,
                     fallback_reason="invalid_planner_output",
                     planner_call_count=1,
@@ -412,6 +418,7 @@ class QuestionContractPlanner:
                 )
             except PlannerProviderEmptyResponseError:
                 return _safe_fallback_outcome(
+                    question=question,
                     base_contract=base_contract,
                     fallback_reason="invalid_planner_output",
                     planner_call_count=1,
@@ -422,6 +429,7 @@ class QuestionContractPlanner:
                 )
             except PlannerResponseDecodeError:
                 return _safe_fallback_outcome(
+                    question=question,
                     base_contract=base_contract,
                     fallback_reason="invalid_planner_output",
                     planner_call_count=1,
@@ -432,6 +440,7 @@ class QuestionContractPlanner:
                 )
             except PlannerSchemaValidationError:
                 return _safe_fallback_outcome(
+                    question=question,
                     base_contract=base_contract,
                     fallback_reason="invalid_planner_output",
                     planner_call_count=1,
@@ -442,6 +451,7 @@ class QuestionContractPlanner:
                 )
             except PlannerSemanticValidationError:
                 return _safe_fallback_outcome(
+                    question=question,
                     base_contract=base_contract,
                     fallback_reason="invalid_planner_output",
                     planner_call_count=1,
@@ -452,6 +462,7 @@ class QuestionContractPlanner:
                 )
             except _UnauthorizedSourceExpansion:
                 return _safe_fallback_outcome(
+                    question=question,
                     base_contract=base_contract,
                     fallback_reason="unauthorized_source_expansion",
                     planner_call_count=1,
@@ -462,6 +473,7 @@ class QuestionContractPlanner:
                 )
             except Exception:
                 return _safe_fallback_outcome(
+                    question=question,
                     base_contract=base_contract,
                     fallback_reason="invalid_planner_output",
                     planner_call_count=1,
@@ -518,6 +530,7 @@ class QuestionContractPlanner:
             )
         except Exception:
             return _safe_fallback_outcome(
+                question=question,
                 base_contract=base_contract,
                 fallback_reason="deterministic_unusable",
                 planner_call_count=0,
@@ -528,6 +541,7 @@ class QuestionContractPlanner:
 
 def _safe_fallback_outcome(
     *,
+    question: str,
     base_contract: QueryContract,
     fallback_reason: str,
     planner_call_count: Literal[0, 1],
@@ -536,11 +550,6 @@ def _safe_fallback_outcome(
     failure_code: str | None = None,
     provider_response_received: bool = False,
 ) -> AtomicContractPlanningOutcome:
-    requested_names = (
-        list(base_contract.resolved_source_scope.requested_source_names)
-        if base_contract.resolved_source_scope
-        else []
-    )
     authorized_ids = (
         list(base_contract.resolved_source_scope.authorized_doc_ids)
         if base_contract.resolved_source_scope
@@ -548,8 +557,10 @@ def _safe_fallback_outcome(
     )
     slot = RequiredSlot(
         slot_id="S1",
-        description="Resolve the complete source-bound requirement in the original question.",
-        source_name_hints=requested_names,
+        description=" ".join(question.split())[
+            :_SAFE_FALLBACK_DESCRIPTION_MAX_LENGTH
+        ],
+        source_name_hints=[],
         authorized_source_doc_ids=authorized_ids,
         locator_hints=[],
         expected_answer_type="text",

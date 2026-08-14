@@ -1038,7 +1038,7 @@ async def test_v9_comparison_status_uses_final_balanced_packet_coverage(
 
 
 @pytest.mark.asyncio
-async def test_v9_comparison_planner_failure_preserves_base_retrieval(
+async def test_v9_comparison_planner_failure_safe_fallback_preserves_original_question(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = _Provider()
@@ -1088,6 +1088,10 @@ async def test_v9_comparison_planner_failure_preserves_base_retrieval(
     assert v9["metrics"]["semantic_qualification"] == "not_enabled"
     assert result.documents
     retrieve_documents.assert_awaited()
+    assert (
+        retrieve_documents.await_args.args[1]
+        == "Model A vs. Model B: which performs better?"
+    )
     assert provider.ainvoke.await_count == 2
 
 
