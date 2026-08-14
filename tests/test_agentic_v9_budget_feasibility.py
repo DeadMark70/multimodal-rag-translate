@@ -43,7 +43,7 @@ def test_preflight_reserves_worst_case_planning_and_downstream_calls() -> None:
         "retrieval_judge": 1,
         "graph_route": 1,
         "visual_extract": 1,
-        "evidence_extract": 1,
+        "evidence_extract": 3,
         "conflict_arbitration": 1,
         "claim_verifier": 1,
         "final_answer": 1,

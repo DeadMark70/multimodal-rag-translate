@@ -45,10 +45,12 @@ PHASE_POLICIES: dict[str, PhasePolicy] = {
     "final_answer": PhasePolicy(0.25, 0.90, 40, 1536),
 }
 
-# The runtime contract permits one provider attempt for each model phase.  Tool
-# work is intentionally absent: it is budgeted separately from LLM attempts.
+# Model phases permit one provider attempt, except evidence qualification may run
+# once initially and once after each of the two bounded repair rounds. Tool work
+# is intentionally absent: it is budgeted separately from LLM attempts.
 MAX_PROVIDER_CALLS_BY_PHASE: dict[str, int] = {
-    phase: 1 for phase in PHASE_POLICIES
+    phase: (3 if phase == "evidence_extract" else 1)
+    for phase in PHASE_POLICIES
 }
 
 

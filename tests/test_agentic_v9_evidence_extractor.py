@@ -309,6 +309,26 @@ async def test_curator_failure_fails_closed_without_supporting_generic_slot() ->
 
 
 @pytest.mark.asyncio
+async def test_extractor_retains_prevalidated_packets_without_retaining_invalid_raw_candidates() -> (
+    None
+):
+    accepted = _item(
+        "E-valid", "Verified prose.", slot_ids=["S1"], table_id=None
+    ).packet.model_copy(update={"validation_status": "quote_bound"})
+    raw = _item(
+        "E-raw", "Unverified prose.", slot_ids=["S2"], table_id=None
+    ).packet.model_copy(update={"validation_status": "invalid"})
+
+    result = await EvidenceExtractor().extract(
+        _contract(_slot("S1", "First"), _slot("S2", "Second")),
+        [accepted, raw],
+        repairs_complete=True,
+    )
+
+    assert [packet.evidence_id for packet in result] == ["E-valid"]
+
+
+@pytest.mark.asyncio
 async def test_invalid_curator_packet_is_dropped_without_a_second_repair_call() -> None:
     item = _item("E1", "The decoder has two stages.", slot_ids=["method"])
     invoker = _RecordingInvoker(

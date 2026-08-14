@@ -620,7 +620,7 @@ class V9ExecutionMetrics(BaseModel):
     retrieval_query_count: int = Field(default=0, ge=0)
     final_generation_count: int = Field(default=0, ge=0, le=1)
     subtask_answer_count: int = Field(default=0, ge=0, le=0)
-    prose_curator_call_count: int = Field(default=0, ge=0, le=1)
+    prose_curator_call_count: int = Field(default=0, ge=0, le=3)
     arbitration_call_count: int = Field(default=0, ge=0, le=1)
     reserved_tokens: int = Field(default=0, ge=0)
     reconciled_tokens: int = Field(default=0, ge=0)

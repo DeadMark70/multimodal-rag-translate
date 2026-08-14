@@ -66,7 +66,12 @@ class EvidenceExtractor:
         """Finish deterministic work, then curate the remaining prose slots once."""
         self._final_claims.clear()
         items = _as_items(pool)
-        packets = self.extract_deterministic(contract, items)
+        accepted = [
+            item.packet for item in items if _is_prevalidated_packet(item.packet)
+        ]
+        packets = _deduplicate_packets(
+            [*accepted, *self.extract_deterministic(contract, items)]
+        )
         unresolved = [
             slot
             for slot in contract.required_slots
@@ -362,6 +367,17 @@ def _render_source_evidence(
                 if item.packet.evidence_id in evidence_ids
             ]
         )
+    )
+
+
+def _is_prevalidated_packet(packet: EvidencePacket) -> bool:
+    if packet.support_type == "contradictory":
+        return False
+    if packet.validation_status in {"quote_bound", "derived_non_evidence"}:
+        return True
+    return packet.validation_status == "deterministic_valid" and (
+        packet.extractor_version is not None
+        or packet.source.source_span_hash is not None
     )
 
 

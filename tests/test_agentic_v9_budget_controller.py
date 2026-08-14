@@ -147,3 +147,36 @@ async def test_controller_caps_each_phase_and_numbers_provider_attempts() -> Non
         await controller.reserve_call(
             phase="route_plan", purpose="planner", estimated_input_tokens=1
         )
+
+
+@pytest.mark.asyncio
+async def test_evidence_qualification_phase_is_bounded_by_rounds_and_final_reserve() -> None:
+    controller = RunBudgetController(
+        max_llm_calls=5,
+        runtime_token_budget=10_000,
+        setup_snapshot={"max_output_tokens": 100, "thinking_mode": False},
+        final_input_tokens=100,
+    )
+
+    reservations = [
+        await controller.reserve_call(
+            phase="evidence_extract",
+            purpose="evidence_extraction",
+            estimated_input_tokens=10,
+        )
+        for _ in range(3)
+    ]
+    with pytest.raises(
+        BudgetExceededError, match="provider_phase_call_limit_exhausted"
+    ):
+        await controller.reserve_call(
+            phase="evidence_extract",
+            purpose="evidence_extraction",
+            estimated_input_tokens=10,
+        )
+    final = await controller.reserve_call(
+        phase="final_answer", purpose="final", estimated_input_tokens=100
+    )
+
+    assert [item.provider_attempt for item in reservations] == [1, 2, 3]
+    assert final.provider_attempt == 4

@@ -4,6 +4,7 @@ import pytest
 
 from core.llm_factory import current_llm_runtime_overrides, llm_runtime_override
 from data_base.agentic_v9.phase_policy import (
+    MAX_PROVIDER_CALLS_BY_PHASE,
     PHASE_POLICIES,
     agentic_phase_policy_scope,
     resolve_phase_policy,
@@ -61,6 +62,15 @@ def test_phase_policy_applies_setup_and_remaining_budget_ceilings() -> None:
 
     assert policy.max_output_tokens == 800
     assert policy.max_input_tokens == 5000
+
+
+def test_only_evidence_qualification_allows_initial_plus_two_repair_attempts() -> None:
+    assert MAX_PROVIDER_CALLS_BY_PHASE["evidence_extract"] == 3
+    assert {
+        limit
+        for phase, limit in MAX_PROVIDER_CALLS_BY_PHASE.items()
+        if phase != "evidence_extract"
+    } == {1}
 
 
 def test_phase_scope_preserves_setup_model_thinking_and_ceilings() -> None:

@@ -7,7 +7,7 @@ typed adapter callables so this module cannot change the legacy v8 path.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from inspect import isawaitable
 from typing import Any, TypeVar
@@ -175,22 +175,34 @@ class V9ExecutionCore:
         )
 
         task_results: list[TaskRetrievalResult] = []
-        evidence_packets: list[EvidencePacket] = []
+        candidate_packets: list[EvidencePacket] = []
+        qualified_packets: tuple[EvidencePacket, ...] = ()
+        qualification_round_count = 0
         initial_tasks = self._initial_tasks(request, contract)
         if initial_tasks:
             await self._retrieve_candidates(
                 initial_tasks,
                 contract,
                 task_results,
-                evidence_packets,
+                candidate_packets,
                 deadline,
                 cancellation,
             )
+        if candidate_packets:
+            qualified_packets = await self._qualify_evidence(
+                question=request.question,
+                contract=contract,
+                candidates=candidate_packets,
+                accepted=qualified_packets,
+                deadline=deadline,
+                cancellation=cancellation,
+            )
+            qualification_round_count += 1
 
         # Initial sufficiency owns the only repair decision; repair policy is
         # adapter-supplied, while the loop cap is a contract invariant.
         sufficiency = self._stages.evaluate_sufficiency(
-            contract, tuple(evidence_packets)
+            contract, qualified_packets
         )
         repair_round = 0
         repair_cap = min(contract.max_repair_rounds, MAX_REPAIR_ROUNDS)
@@ -222,16 +234,27 @@ class V9ExecutionCore:
             if not repair_tasks:
                 break
             repair_round += 1
+            candidate_count = len(candidate_packets)
             await self._retrieve_candidates(
                 repair_tasks,
                 contract,
                 task_results,
-                evidence_packets,
+                candidate_packets,
                 deadline,
                 cancellation,
             )
+            if len(candidate_packets) > candidate_count:
+                qualified_packets = await self._qualify_evidence(
+                    question=request.question,
+                    contract=contract,
+                    candidates=candidate_packets,
+                    accepted=qualified_packets,
+                    deadline=deadline,
+                    cancellation=cancellation,
+                )
+                qualification_round_count += 1
             sufficiency = self._stages.evaluate_sufficiency(
-                contract, tuple(evidence_packets)
+                contract, qualified_packets
             )
         else:
             if sufficiency.report.evidence_complete:
@@ -246,28 +269,13 @@ class V9ExecutionCore:
                 terminal_reason = "repair_round_cap_reached"
             self._record_repair_terminal(repair_round, terminal_reason)
 
-        # One final prose batch may curate packets; it cannot produce an answer.
-        curated_packets = tuple(
-            await self._run_stage(
-                "llm",
-                "evidence_extract",
-                self._stages.prose_curate(
-                    request.question, contract, tuple(evidence_packets)
-                ),
-                deadline,
-                cancellation,
-            )
-        )
-        prose_curator_call_count = 1
-        assert prose_curator_call_count <= 1
-
-        final_sufficiency = self._stages.evaluate_sufficiency(contract, curated_packets)
+        final_sufficiency = sufficiency
         if self._runtime.has_final_reserve(deadline):
             conflict = await self._run_stage(
                 "llm",
                 "retrieval_judge",
                 self._stages.resolve_conflicts(
-                    contract, curated_packets, final_sufficiency
+                    contract, qualified_packets, final_sufficiency
                 ),
                 deadline,
                 cancellation,
@@ -285,7 +293,7 @@ class V9ExecutionCore:
                 "retrieval",
                 "evidence_extract",
                 self._stages.pack(
-                    request.question, contract, curated_packets, conflict.sufficiency
+                    request.question, contract, qualified_packets, conflict.sufficiency
                 ),
                 deadline,
                 cancellation,
@@ -331,7 +339,7 @@ class V9ExecutionCore:
                 "retrieval_query_count": len(task_results),
                 "final_generation_count": final_generation_count,
                 "subtask_answer_count": subtask_answer_count,
-                "prose_curator_call_count": prose_curator_call_count,
+                "prose_curator_call_count": qualification_round_count,
                 "arbitration_call_count": conflict.arbitration_call_count,
             },
         )
@@ -358,7 +366,7 @@ class V9ExecutionCore:
         tasks: tuple[RetrievalTask, ...],
         contract: QueryContract,
         task_results: list[TaskRetrievalResult],
-        evidence_packets: list[EvidencePacket],
+        candidate_packets: list[EvidencePacket],
         deadline: ExecutionDeadline,
         cancellation: Any,
     ) -> None:
@@ -383,7 +391,27 @@ class V9ExecutionCore:
             deadline,
             cancellation,
         )
-        evidence_packets.extend(candidates)
+        candidate_packets.extend(candidates)
+
+    async def _qualify_evidence(
+        self,
+        *,
+        question: str,
+        contract: QueryContract,
+        candidates: Sequence[EvidencePacket],
+        accepted: Sequence[EvidencePacket],
+        deadline: ExecutionDeadline,
+        cancellation: Any,
+    ) -> tuple[EvidencePacket, ...]:
+        combined = _deduplicate_packets([*accepted, *candidates])
+        qualified = await self._run_stage(
+            "llm",
+            "evidence_extract",
+            self._stages.prose_curate(question, contract, combined),
+            deadline,
+            cancellation,
+        )
+        return _deduplicate_packets(qualified)
 
     async def _run_stage(
         self,
@@ -432,6 +460,15 @@ async def _resolve(value: _MaybeAwaitable[_T]) -> _T:
 def _is_packable(packed: object) -> bool:
     """Accept the typed pack projection without coupling the core to policy."""
     return bool(getattr(packed, "is_packable", False))
+
+
+def _deduplicate_packets(
+    packets: Iterable[EvidencePacket],
+) -> tuple[EvidencePacket, ...]:
+    unique: dict[str, EvidencePacket] = {}
+    for packet in packets:
+        unique.setdefault(packet.evidence_id, packet)
+    return tuple(unique.values())
 
 
 __all__ = [
