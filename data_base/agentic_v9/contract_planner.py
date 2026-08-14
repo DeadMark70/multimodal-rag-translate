@@ -289,6 +289,8 @@ class QuestionContractPlanner:
         allow_semantic_planning: bool = True,
     ) -> AtomicContractPlanningOutcome:
         """Plan atomic contract requirements using deterministic or budgeted semantic planning."""
+        if not question.strip():
+            raise ValueError("question must not be empty")
         start_time = time.perf_counter()
         prep = (
             preparation

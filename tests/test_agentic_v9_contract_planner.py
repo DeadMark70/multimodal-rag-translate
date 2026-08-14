@@ -785,6 +785,36 @@ async def test_safe_fallback_normalizes_whitespace_and_bounds_description_length
 
 
 @pytest.mark.asyncio
+async def test_safe_fallback_rejects_whitespace_only_question_before_provider() -> (
+    None
+):
+    """Fails if an empty normalized question reaches provider or fallback work."""
+    invoker = _MockInvoker()
+    preparation = AtomicContractPreparation(
+        decomposition=QuestionDecomposition(
+            requirements=(
+                DecomposedRequirement(
+                    text="Unclear.", method="fallback", confidence="low"
+                ),
+            ),
+            confidence="low",
+            semantic_planning_reasons=("unclear",),
+        ),
+        semantic_planning_requested=True,
+        comparison_candidate=False,
+    )
+
+    with pytest.raises(ValueError, match="question must not be empty"):
+        await QuestionContractPlanner(llm_invoker=invoker).plan(
+            question=" \t\n ",
+            base_contract=_make_base_contract(),
+            preparation=preparation,
+        )
+
+    assert invoker.calls == []
+
+
+@pytest.mark.asyncio
 async def test_no_retry_after_invalid_output() -> None:
     invoker = _MockInvoker(response={"content": "not-valid-json"})
     base_contract = _make_base_contract()
