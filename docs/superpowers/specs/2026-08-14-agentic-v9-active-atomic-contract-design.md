@@ -154,6 +154,19 @@ Route provenance and slot-plan provenance remain separate. The contract records:
 
 Route provenance continues to describe how the route was chosen. Slot provenance describes only how evidence requirements were derived.
 
+### Comparison-to-slot binding
+
+Each active `ComparisonSubject` carries `evidence_slot_ids`, a bounded list of
+the `S1` through `S8` evidence slots that must be retrieved for that subject.
+Retrieval, subject coverage, repair, and final evidence diagnostics use this
+explicit mapping; they must not infer subject ownership from slot names or
+restore the historical `comparison-subject:*` slot namespace.
+
+The field may default to an empty list only when parsing historical persisted
+contracts. The active atomic overlay must emit at least one valid evidence slot
+ID for every comparison subject, and every referenced ID must exist in the same
+contract.
+
 ## Deterministic Decomposition
 
 The existing decomposition strategies remain the first path:
@@ -364,6 +377,7 @@ The imported Q1-Q32 question set should be used as a fixed regression corpus whe
 - retrieval tasks target existing atomic evidence slots only;
 - obligations and constraints generate no retrieval tasks;
 - comparison task grouping remains bounded and subject-aware;
+- every active comparison subject references one or more existing `S1..S8` evidence slots;
 - sufficiency considers atomic evidence slots only;
 - repair targets only missing evidence slots;
 - context packing preserves required-first behavior;
