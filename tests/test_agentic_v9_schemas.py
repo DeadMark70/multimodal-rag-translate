@@ -9,6 +9,8 @@ import pytest
 from pydantic import ValidationError
 
 from data_base.agentic_v9.schemas import (
+    ComparisonPlan,
+    ComparisonSubject,
     EvidencePacket,
     EvidenceScope,
     EvidenceSource,
@@ -20,16 +22,20 @@ from data_base.agentic_v9.schemas import (
     RagRetrievalResult,
     ResolvedSourceScope,
     RequiredSlot,
+    ResponseConstraint,
     RouteDecision,
     SlotResolution,
     SourceLocator,
     SupportedFinding,
     SufficiencyReport,
+    SynthesisObligation,
     TaskRetrievalResult,
     UnresolvedRequirement,
+    V9ExecutionMetrics,
     V9ExecutionResult,
     V9ExecutionRequest,
     default_graph_policy,
+    validate_active_atomic_contract,
 )
 from evaluation.trace_schemas import (
     AgentTraceDetail,
@@ -330,6 +336,215 @@ def test_query_contract_v1_projects_legacy_generic_atomic_completeness_na() -> N
     assert contract.slot_plan_status is None
     assert contract.atomic_completeness is None
     assert contract.atomic_completeness_reason is None
+
+
+def test_query_contract_v2_active_atomic_contract_shape_and_serialization() -> None:
+    contract = QueryContract(
+        contract_version="2",
+        route="bounded_compare",
+        intent="Compare two models from authorized sources",
+        required_slots=[
+            RequiredSlot(slot_id="S1", description="Retrieve A latency."),
+            RequiredSlot(slot_id="S2", description="Retrieve B latency."),
+        ],
+        synthesis_obligations=[
+            SynthesisObligation(
+                obligation_id="O1",
+                kind="comparison",
+                description="Compare the two reported latencies.",
+                depends_on_slot_ids=["S1", "S2"],
+            )
+        ],
+        response_constraints=[
+            ResponseConstraint(
+                constraint_id="C1",
+                kind="prohibition",
+                description="Do not claim a universal ranking.",
+            )
+        ],
+        comparison_plan=ComparisonPlan(
+            subjects=[
+                ComparisonSubject(
+                    subject_id="model_a",
+                    display_name="Model A",
+                    retrieval_query="Model A reported latency",
+                    evidence_slot_ids=["S1"],
+                ),
+                ComparisonSubject(
+                    subject_id="model_b",
+                    display_name="Model B",
+                    retrieval_query="Model B reported latency",
+                    evidence_slot_ids=["S2"],
+                ),
+            ]
+        ),
+        slot_plan_status="complete",
+        slot_plan_source="deterministic",
+        slot_plan_confidence="high",
+        slot_plan_fallback_reason=None,
+        truncated_requirement_count=0,
+    )
+    assert contract.route == "bounded_compare"
+    assert contract.comparison_plan is not None
+    assert contract.comparison_plan.subjects[0].evidence_slot_ids == ["S1"]
+
+    validated = validate_active_atomic_contract(contract)
+    assert validated is contract
+
+    dumped = contract.model_dump(mode="json")
+    assert dumped["synthesis_obligations"][0]["obligation_id"] == "O1"
+    assert dumped["synthesis_obligations"][0]["kind"] == "comparison"
+    assert dumped["synthesis_obligations"][0]["depends_on_slot_ids"] == ["S1", "S2"]
+    assert dumped["response_constraints"][0]["constraint_id"] == "C1"
+    assert dumped["response_constraints"][0]["kind"] == "prohibition"
+    assert dumped["slot_plan_source"] == "deterministic"
+    assert dumped["slot_plan_confidence"] == "high"
+    assert "slot_plan_fallback_reason" not in dumped
+    assert dumped["truncated_requirement_count"] == 0
+    assert dumped["comparison_plan"]["subjects"][0]["evidence_slot_ids"] == ["S1"]
+
+
+def test_query_contract_rejects_duplicate_slot_ids() -> None:
+    with pytest.raises(ValidationError):
+        QueryContract(
+            route="single_lookup",
+            intent="Resolve duplicate slots",
+            required_slots=[
+                RequiredSlot(slot_id="S1", description="Slot 1"),
+                RequiredSlot(slot_id="S1", description="Duplicate Slot 1"),
+            ],
+        )
+
+
+def test_query_contract_rejects_obligation_referencing_unknown_slot() -> None:
+    with pytest.raises(ValidationError):
+        QueryContract(
+            route="single_lookup",
+            intent="Resolve slot with dangling obligation",
+            required_slots=[RequiredSlot(slot_id="S1", description="Slot 1")],
+            synthesis_obligations=[
+                SynthesisObligation(
+                    obligation_id="O1",
+                    kind="comparison",
+                    description="Obligation referencing missing S2",
+                    depends_on_slot_ids=["S1", "S2"],
+                )
+            ],
+        )
+
+
+def test_query_contract_rejects_comparison_subject_referencing_unknown_slot() -> None:
+    with pytest.raises(ValidationError):
+        QueryContract(
+            route="bounded_compare",
+            intent="Compare models with invalid slot binding",
+            required_slots=[RequiredSlot(slot_id="S1", description="Slot 1")],
+            comparison_plan=ComparisonPlan(
+                subjects=[
+                    ComparisonSubject(
+                        subject_id="model_a",
+                        display_name="Model A",
+                        retrieval_query="Model A evidence",
+                        evidence_slot_ids=["S1"],
+                    ),
+                    ComparisonSubject(
+                        subject_id="model_b",
+                        display_name="Model B",
+                        retrieval_query="Model B evidence",
+                        evidence_slot_ids=["S2"],
+                    ),
+                ]
+            ),
+        )
+
+
+def test_validate_active_atomic_contract_rejects_non_sequential_or_excessive_slots() -> None:
+    with pytest.raises(ValueError, match="1 to 8 slots"):
+        validate_active_atomic_contract(
+            QueryContract(
+                route="single_lookup",
+                intent="Empty slots",
+                required_slots=[],
+            )
+        )
+
+    slots_9 = [
+        RequiredSlot(slot_id=f"S{i}", description=f"Slot {i}") for i in range(1, 10)
+    ]
+    with pytest.raises(ValueError, match="1 to 8 slots"):
+        validate_active_atomic_contract(
+            QueryContract(
+                route="multi_document_exact",
+                intent="9 slots",
+                required_slots=slots_9,
+            )
+        )
+
+    with pytest.raises(ValueError, match="sequential slot IDs"):
+        validate_active_atomic_contract(
+            QueryContract(
+                route="multi_document_exact",
+                intent="Non sequential slots",
+                required_slots=[
+                    RequiredSlot(slot_id="S1", description="Slot 1"),
+                    RequiredSlot(slot_id="S3", description="Slot 3"),
+                ],
+            )
+        )
+
+    with pytest.raises(ValueError, match="sequential slot IDs"):
+        validate_active_atomic_contract(
+            QueryContract(
+                route="single_lookup",
+                intent="Legacy slot ID",
+                required_slots=[
+                    RequiredSlot(slot_id="fact", description="Generic fact")
+                ],
+            )
+        )
+
+
+def test_validate_active_atomic_contract_requires_non_empty_comparison_binding() -> None:
+    contract = QueryContract(
+        route="bounded_compare",
+        intent="Compare models with unbound subjects",
+        required_slots=[
+            RequiredSlot(slot_id="S1", description="Slot 1"),
+            RequiredSlot(slot_id="S2", description="Slot 2"),
+        ],
+        comparison_plan=ComparisonPlan(
+            subjects=[
+                ComparisonSubject(
+                    subject_id="model_a",
+                    display_name="Model A",
+                    retrieval_query="Model A query",
+                    evidence_slot_ids=[],
+                ),
+                ComparisonSubject(
+                    subject_id="model_b",
+                    display_name="Model B",
+                    retrieval_query="Model B query",
+                    evidence_slot_ids=["S2"],
+                ),
+            ]
+        ),
+    )
+    with pytest.raises(ValueError, match="must bind to at least one evidence slot"):
+        validate_active_atomic_contract(contract)
+
+
+def test_v9_execution_metrics_atomic_defaults_and_guards() -> None:
+    metrics = V9ExecutionMetrics()
+    assert metrics.atomic_planner_call_count == 0
+    assert metrics.comparison_planner_call_count == 0
+    assert metrics.slot_binding_method == "not_instrumented"
+    assert metrics.semantic_qualification == "not_instrumented"
+
+    with pytest.raises(ValidationError):
+        V9ExecutionMetrics(atomic_planner_call_count=2)
+
+    with pytest.raises(ValidationError):
+        V9ExecutionMetrics(comparison_planner_call_count=1)  # type: ignore[arg-type]
 
 
 def test_actual_routing_trace_has_first_class_route_provenance() -> None:

@@ -350,6 +350,20 @@ def test_legacy_serialization_omits_absent_comparison_plan() -> None:
     assert "comparison_plan" not in contract.model_dump(mode="json")
 
 
+def test_historical_comparison_subject_deserializes_without_evidence_slot_ids() -> None:
+    data = {
+        "subject_id": "nnmamba",
+        "display_name": "nnMamba",
+        "retrieval_query": "nnMamba efficiency",
+        "aliases": ["nnMamba-v1"],
+    }
+    subject = ComparisonSubject.model_validate(data)
+    assert subject.evidence_slot_ids == []
+    dumped = subject.model_dump(mode="json")
+    assert "evidence_slot_ids" not in dumped
+
+
+
 @pytest.mark.asyncio
 async def test_valid_planner_response_identifies_subjects_not_dimensions() -> None:
     invoker = _Invoker(_payload())

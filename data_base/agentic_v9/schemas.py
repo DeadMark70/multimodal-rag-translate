@@ -20,8 +20,15 @@ AgenticV9Route = Literal[
 ]
 GraphPolicy = Literal["never", "locator_fallback", "required_locator"]
 DecisionSource = Literal["deterministic", "llm_planner", "safe_fallback"]
+SlotPlanSource = Literal["deterministic", "llm_planner", "safe_fallback"]
 SlotPlanStatus = Literal["complete", "degraded"]
 SlotSemantics = Literal["heuristic_experimental", "atomic", "legacy_generic"]
+SynthesisObligationKind = Literal[
+    "comparison", "selection", "causal", "aggregation", "qualification"
+]
+ResponseConstraintKind = Literal[
+    "conditional_scope", "output_format", "prohibition", "allowed_labels"
+]
 VisualPolicy = Literal["never", "preferred", "required"]
 ExpectedAnswerType = Literal[
     "number",
@@ -76,6 +83,27 @@ def default_graph_policy(route: AgenticV9Route) -> GraphPolicy:
     return ROUTE_GRAPH_POLICIES[route]
 
 
+class SynthesisObligation(BaseModel):
+    """A typed cross-slot synthesis task required for the final answer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    obligation_id: str = Field(pattern=r"^O[1-9][0-9]*$")
+    kind: SynthesisObligationKind
+    description: str = Field(min_length=1, max_length=512)
+    depends_on_slot_ids: list[str] = Field(min_length=1, max_length=8)
+
+
+class ResponseConstraint(BaseModel):
+    """A typed negative constraint or format instruction on the final response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    constraint_id: str = Field(pattern=r"^C[1-9][0-9]*$")
+    kind: ResponseConstraintKind
+    description: str = Field(min_length=1, max_length=512)
+
+
 class RequiredSlot(BaseModel):
     """One fact, comparison, or locator the answer must resolve."""
 
@@ -124,6 +152,11 @@ class ComparisonSubject(BaseModel):
     display_name: str = Field(min_length=1, max_length=160)
     aliases: list[str] = Field(default_factory=list, max_length=8)
     retrieval_query: str = Field(min_length=1, max_length=512)
+    evidence_slot_ids: list[str] = Field(
+        default_factory=list,
+        max_length=8,
+        exclude_if=lambda value: not value,
+    )
 
     @model_validator(mode="after")
     def normalize_and_validate_identity(self) -> ComparisonSubject:
@@ -233,6 +266,16 @@ class QueryContract(BaseModel):
     route: AgenticV9Route
     intent: str = Field(min_length=1)
     required_slots: list[RequiredSlot] = Field(default_factory=list)
+    synthesis_obligations: list[SynthesisObligation] = Field(
+        default_factory=list,
+        max_length=8,
+        exclude_if=lambda value: not value,
+    )
+    response_constraints: list[ResponseConstraint] = Field(
+        default_factory=list,
+        max_length=8,
+        exclude_if=lambda value: not value,
+    )
     entities: list[str] = Field(default_factory=list)
     locator_hints: list[str] = Field(default_factory=list)
     graph_policy: GraphPolicy | None = None
@@ -251,6 +294,24 @@ class QueryContract(BaseModel):
         exclude_if=lambda value: value is None,
     )
     slot_plan_status: SlotPlanStatus | None = None
+    slot_plan_source: SlotPlanSource | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    slot_plan_confidence: Literal["high", "medium", "low"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    slot_plan_fallback_reason: str | None = Field(
+        default=None,
+        max_length=160,
+        exclude_if=lambda value: value is None,
+    )
+    truncated_requirement_count: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+    )
     slot_semantics: SlotSemantics | None = None
     atomic_completeness: bool | None = None
     atomic_completeness_reason: str | None = None
@@ -272,7 +333,82 @@ class QueryContract(BaseModel):
             self.atomic_completeness_reason = ATOMIC_SLOT_MATCHING_EXPERIMENTAL
         if self.visual_required:
             self.visual_requested = True
+
+        slot_ids = [slot.slot_id for slot in self.required_slots]
+        if len(slot_ids) != len(set(slot_ids)):
+            raise ValueError("required slot IDs must be unique")
+
+        obligation_ids = [o.obligation_id for o in self.synthesis_obligations]
+        if len(obligation_ids) != len(set(obligation_ids)):
+            raise ValueError("synthesis obligation IDs must be unique")
+
+        constraint_ids = [c.constraint_id for c in self.response_constraints]
+        if len(constraint_ids) != len(set(constraint_ids)):
+            raise ValueError("response constraint IDs must be unique")
+
+        known_slots = set(slot_ids)
+        for obligation in self.synthesis_obligations:
+            for slot_id in obligation.depends_on_slot_ids:
+                if slot_id not in known_slots:
+                    raise ValueError(
+                        f"synthesis obligation '{obligation.obligation_id}' references unknown slot '{slot_id}'"
+                    )
+
+        if self.comparison_plan is not None:
+            for subject in self.comparison_plan.subjects:
+                for slot_id in subject.evidence_slot_ids:
+                    if slot_id not in known_slots:
+                        raise ValueError(
+                            f"comparison subject '{subject.subject_id}' references unknown evidence slot '{slot_id}'"
+                        )
+
         return self
+
+
+def validate_active_atomic_contract(contract: QueryContract) -> QueryContract:
+    """Validate active atomic contract invariants (S1..S8, binding, counts)."""
+    slot_count = len(contract.required_slots)
+    if not (1 <= slot_count <= 8):
+        raise ValueError(
+            f"active atomic contract requires 1 to 8 slots, got {slot_count}"
+        )
+
+    expected_slot_ids = [f"S{i}" for i in range(1, slot_count + 1)]
+    actual_slot_ids = [slot.slot_id for slot in contract.required_slots]
+    if actual_slot_ids != expected_slot_ids:
+        raise ValueError(
+            f"active atomic contract requires sequential slot IDs {expected_slot_ids}, got {actual_slot_ids}"
+        )
+
+    obligation_ids = [o.obligation_id for o in contract.synthesis_obligations]
+    if len(obligation_ids) != len(set(obligation_ids)):
+        raise ValueError("synthesis obligation IDs must be unique")
+
+    known_slots = set(actual_slot_ids)
+    for obligation in contract.synthesis_obligations:
+        for slot_id in obligation.depends_on_slot_ids:
+            if slot_id not in known_slots:
+                raise ValueError(
+                    f"synthesis obligation '{obligation.obligation_id}' references unknown slot '{slot_id}'"
+                )
+
+    constraint_ids = [c.constraint_id for c in contract.response_constraints]
+    if len(constraint_ids) != len(set(constraint_ids)):
+        raise ValueError("response constraint IDs must be unique")
+
+    if contract.comparison_plan is not None:
+        for subject in contract.comparison_plan.subjects:
+            if not subject.evidence_slot_ids:
+                raise ValueError(
+                    f"active comparison subject '{subject.subject_id}' must bind to at least one evidence slot"
+                )
+            for slot_id in subject.evidence_slot_ids:
+                if slot_id not in known_slots:
+                    raise ValueError(
+                        f"comparison subject '{subject.subject_id}' references unknown evidence slot '{slot_id}'"
+                    )
+
+    return contract
 
 
 class RetrievalTask(BaseModel):
@@ -622,6 +758,14 @@ class V9ExecutionMetrics(BaseModel):
     subtask_answer_count: int = Field(default=0, ge=0, le=0)
     prose_curator_call_count: int = Field(default=0, ge=0, le=3)
     arbitration_call_count: int = Field(default=0, ge=0, le=1)
+    atomic_planner_call_count: int = Field(default=0, ge=0, le=1)
+    comparison_planner_call_count: Literal[0] = 0
+    slot_binding_method: Literal[
+        "task_target_inherited", "not_instrumented"
+    ] = "not_instrumented"
+    semantic_qualification: Literal[
+        "not_enabled", "not_instrumented"
+    ] = "not_instrumented"
     reserved_tokens: int = Field(default=0, ge=0)
     reconciled_tokens: int = Field(default=0, ge=0)
 
