@@ -1,15 +1,13 @@
 {
   "prompts": {
     "atomic_contract_planning": {
-      "version": 1,
+      "version": 2,
       "description": "Answer-free atomic contract planning for an ambiguous Agentic v9 question.",
       "required_variables": [
         "question",
-        "authorized_source_names",
-        "authorized_doc_ids",
-        "authorized_source_mapping"
+        "authorized_source_names"
       ],
-      "template": "Return strict JSON only with selected_route, slots, route_reason, and confidence. Each slot must contain description, source_name_hints, authorized_source_doc_ids, locator_hints, expected_answer_type, depends_on_slot_ids, and visual_policy. Use one to eight answer-free slots. Dependencies may reference only earlier slot IDs. Locator hints must be bounded source locations such as Figure, Table, Appendix, Formula, Equation, Theorem, Page, Section, source passage, or a named equation or matrix. Never answer the question, invent values, or expand or mismatch the supplied source names and IDs. Use the authoritative mapping below; never guess opaque name-to-ID pairing.\n\nQuestion: {question}\nAuthorized source names: {authorized_source_names}\nAuthorized document IDs: {authorized_doc_ids}\nAuthoritative source mapping: {authorized_source_mapping}\nReturn the atomic contract JSON object."
+      "template": "Return strict JSON only for atomic contract planning with evidence_requirements, synthesis_obligations, response_constraints, comparison, and confidence.\n\nRules:\n1. evidence_requirements: 1 to 8 answer-free evidence requirements needed from authorized sources. Each item contains description, source_name_hints, locator_hints, expected_answer_type, depends_on_requirement_indexes, and visual_policy. Dependencies may reference only earlier 0-based requirement indexes.\n2. synthesis_obligations: 0 to 8 items with kind (comparison, selection, causal, aggregation, qualification), description, and depends_on_requirement_indexes (0-based requirement indexes).\n3. response_constraints: 0 to 8 items with kind (conditional_scope, output_format, prohibition, allowed_labels) and description.\n4. comparison: optional object with 2 to 4 subjects (each with subject_id, display_name, aliases, retrieval_query, and evidence_requirement_indexes referencing 0-based requirement indexes) and dimensions.\n5. confidence: float between 0.0 and 1.0.\n\nNever answer the question, invent values, or reference unauthorized sources or document IDs.\n\nQuestion: {question}\nAuthorized source names: {authorized_source_names}\nReturn the JSON object."
     }
   }
 }

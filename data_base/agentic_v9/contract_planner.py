@@ -6,19 +6,35 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
+import time
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from core.prompt_loader import PromptRegistry
+from data_base.agentic_v9.requirement_decomposition import (
+    DecomposedRequirement,
+    QuestionDecomposition,
+    decompose_question,
+)
 from data_base.agentic_v9.schemas import (
-    AgenticV9Route,
+    ATOMIC_SLOT_MATCHING_EXPERIMENTAL,
     BudgetExceededError,
+    ComparisonPlan,
+    ComparisonSubject,
+    ExpectedAnswerType,
     LlmInvoker,
     QueryContract,
     RequiredSlot,
     ResolvedSourceScope,
-    RouteDecision,
+    ResponseConstraint,
+    ResponseConstraintKind,
+    SlotPlanSource,
+    SlotPlanStatus,
+    SynthesisObligation,
+    SynthesisObligationKind,
+    VisualPolicy,
+    validate_active_atomic_contract,
 )
 from data_base.agentic_v9.slot_constraints import canonical_structured_locator
 
@@ -26,431 +42,780 @@ _PROMPT_PATH = (
     Path(__file__).resolve().parents[2] / "prompts" / "agentic_v9_contract_planner.json"
 )
 _PROMPT_KEY = "atomic_contract_planning"
-_ENTITY_PATTERN = re.compile(
-    r"(?<![\w-])[A-Za-z][A-Za-z0-9]*(?:[-.][A-Za-z0-9]+)*(?![\w-])"
-)
+
 _EXACT_LOCATOR_PATTERN = re.compile(
     r"\b(Figure|Fig\.|Table|Appendix|Formula|Equation|Theorem|Page|Section)"
     r"\s*(\(?[A-Za-z0-9](?:[A-Za-z0-9_:-]*[A-Za-z0-9])?"
     r"(?:\.[A-Za-z0-9_:-]+)*(?:\([A-Za-z0-9]{1,3}\))?\)?)",
     re.IGNORECASE,
 )
-_LOCATOR_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("figure", ("figure", "fig.", "圖")),
-    ("table", ("table", "表")),
-    ("appendix", ("appendix", "附錄")),
-    ("formula", ("formula", "equation", "theorem", "公式", "定理")),
-    ("page", ("page", "頁")),
-)
 
 
-@dataclass(frozen=True, slots=True)
-class _RouteBudget:
-    max_retrieval_rounds: int
-    max_repair_rounds: int
-    max_llm_calls: int
-    runtime_token_budget: int
-
-
-_ROUTE_BUDGETS: dict[AgenticV9Route, _RouteBudget] = {
-    "single_lookup": _RouteBudget(1, 0, 3, 30_000),
-    "bounded_compare": _RouteBudget(2, 1, 3, 40_000),
-    "exact_structured": _RouteBudget(1, 1, 3, 40_000),
-    "multi_document_exact": _RouteBudget(2, 1, 3, 50_000),
-    "multi_hop": _RouteBudget(2, 1, 3, 50_000),
-    "graph_relational": _RouteBudget(1, 1, 4, 50_000),
-}
-
-
-class _PlannerSlot(BaseModel):
+class _PlannerEvidenceRequirement(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    description: str
-    source_name_hints: list[str]
-    authorized_source_doc_ids: list[str]
-    locator_hints: list[str]
-    expected_answer_type: Literal[
-        "number",
-        "equation",
-        "definition",
-        "comparison",
-        "explanation",
-        "text",
-    ]
-    depends_on_slot_ids: list[str]
-    visual_policy: Literal["never", "preferred", "required"]
+    description: str = Field(min_length=1, max_length=512)
+    source_name_hints: list[str] = Field(default_factory=list, max_length=8)
+    locator_hints: list[str] = Field(default_factory=list, max_length=8)
+    expected_answer_type: ExpectedAnswerType = "text"
+    depends_on_requirement_indexes: list[int] = Field(
+        default_factory=list, max_length=8
+    )
+    visual_policy: VisualPolicy = "never"
+
+
+class _PlannerSynthesisObligation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: SynthesisObligationKind
+    description: str = Field(min_length=1, max_length=512)
+    depends_on_requirement_indexes: list[int] = Field(
+        default_factory=list, max_length=8
+    )
+
+
+class _PlannerResponseConstraint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: ResponseConstraintKind
+    description: str = Field(min_length=1, max_length=512)
+
+
+class _PlannerComparisonSubject(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject_id: str = Field(min_length=1, max_length=80)
+    display_name: str = Field(min_length=1, max_length=160)
+    aliases: list[str] = Field(default_factory=list, max_length=8)
+    retrieval_query: str = Field(min_length=1, max_length=512)
+    evidence_requirement_indexes: list[int] = Field(
+        default_factory=list, max_length=8
+    )
+
+
+class _PlannerComparison(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subjects: list[_PlannerComparisonSubject] = Field(
+        min_length=2, max_length=4
+    )
+    dimensions: list[str] = Field(default_factory=list, max_length=12)
+    qualification: str | None = Field(default=None, max_length=512)
 
 
 class _PlannerDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    selected_route: Literal[
-        "single_lookup",
-        "bounded_compare",
-        "exact_structured",
-        "multi_document_exact",
-        "multi_hop",
-        "graph_relational",
-    ]
-    slots: list[_PlannerSlot]
-    route_reason: str
-    confidence: float
+    evidence_requirements: list[_PlannerEvidenceRequirement] = Field(
+        min_length=1, max_length=8
+    )
+    synthesis_obligations: list[_PlannerSynthesisObligation] = Field(
+        default_factory=list, max_length=8
+    )
+    response_constraints: list[_PlannerResponseConstraint] = Field(
+        default_factory=list, max_length=8
+    )
+    comparison: _PlannerComparison | None = None
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+def atomic_contract_planner_response_schema() -> dict[str, Any]:
+    """Return the JSON schema for the consolidated atomic planner response."""
+    return _PlannerDecision.model_json_schema()
 
 
 @dataclass(frozen=True, slots=True)
-class _AmbiguityResult:
-    route: AgenticV9Route
-    slots: list[RequiredSlot] | None
-    route_reason: str
-    confidence: float
-    decision_source: Literal["llm_planner", "safe_fallback"]
-    fallback_reason: str | None
+class AtomicContractPreparation:
+    """Pure deterministic pre-planning analysis of question and base contract."""
+
+    decomposition: QuestionDecomposition
+    semantic_planning_requested: bool
+    comparison_candidate: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AtomicContractPlanningOutcome:
+    """Consolidated outcome of atomic contract planning."""
+
+    contract: QueryContract
+    planner_call_count: Literal[0, 1]
+    latency_ms: float
+
+
+def apply_atomic_contract_overlay(
+    base_contract: QueryContract,
+    *,
+    required_slots: list[RequiredSlot],
+    synthesis_obligations: list[SynthesisObligation] | None = None,
+    response_constraints: list[ResponseConstraint] | None = None,
+    comparison_plan: ComparisonPlan | None = None,
+    slot_plan_status: SlotPlanStatus,
+    slot_plan_source: SlotPlanSource,
+    slot_plan_confidence: Literal["high", "medium", "low"] | None = None,
+    slot_plan_fallback_reason: str | None = None,
+    truncated_requirement_count: int | None = None,
+) -> QueryContract:
+    """Apply atomic contract fields over an immutable base contract."""
+    overlaid = base_contract.model_copy(
+        update={
+            "contract_version": "2",
+            "slot_semantics": "heuristic_experimental",
+            "atomic_completeness": None,
+            "atomic_completeness_reason": ATOMIC_SLOT_MATCHING_EXPERIMENTAL,
+            "required_slots": list(required_slots),
+            "synthesis_obligations": (
+                list(synthesis_obligations)
+                if synthesis_obligations is not None
+                else []
+            ),
+            "response_constraints": (
+                list(response_constraints)
+                if response_constraints is not None
+                else []
+            ),
+            "comparison_plan": comparison_plan,
+            "slot_plan_status": slot_plan_status,
+            "slot_plan_source": slot_plan_source,
+            "slot_plan_confidence": slot_plan_confidence,
+            "slot_plan_fallback_reason": slot_plan_fallback_reason,
+            "truncated_requirement_count": truncated_requirement_count,
+        }
+    )
+    return validate_active_atomic_contract(overlaid)
+
+
+class _UnauthorizedSourceExpansion(ValueError):
+    """Planner attempted to add a source outside the authorized scope."""
 
 
 class QuestionContractPlanner:
-    """Build v2 contracts from the question, authorized sources, and setup only."""
+    """Plan answer-free atomic v2 contracts over an immutable base contract."""
 
     def __init__(self, *, llm_invoker: LlmInvoker | None = None) -> None:
         self._llm_invoker = llm_invoker
+
+    @classmethod
+    def prepare(
+        cls,
+        *,
+        question: str,
+        base_contract: QueryContract,
+        decomposition: QuestionDecomposition | None = None,
+    ) -> AtomicContractPreparation:
+        """Analyze question deterministically to determine if semantic planning is needed."""
+        decomp = (
+            decomposition
+            if decomposition is not None
+            else decompose_question(question)
+        )
+        is_comparison_candidate = (
+            base_contract.route == "bounded_compare"
+            or len(decomp.comparison_subjects) >= 2
+            or any(o.kind == "comparison" for o in decomp.synthesis_obligations)
+            or _contains_any(
+                question.casefold(),
+                ("compare", "versus", " vs ", "比較", "是否優於"),
+            )
+        )
+
+        deterministic_comparison_usable = False
+        if is_comparison_candidate:
+            subjects = decomp.comparison_subjects
+            if 2 <= len(subjects) <= 4:
+                subject_slot_mapping: list[list[int]] = []
+                for subject_name in subjects:
+                    mapped = [
+                        idx
+                        for idx, req in enumerate(decomp.requirements)
+                        if subject_name.casefold() in req.text.casefold()
+                        or subject_name in req.entity_ids
+                    ]
+                    subject_slot_mapping.append(mapped)
+                if all(len(mapped) >= 1 for mapped in subject_slot_mapping):
+                    deterministic_comparison_usable = True
+
+        semantic_planning_requested = False
+        if decomp.requires_semantic_planning:
+            semantic_planning_requested = True
+        elif decomp.confidence == "low":
+            semantic_planning_requested = True
+        elif (
+            decomp.truncated_requirement_count > 0
+            or decomp.truncated_constraint_count > 0
+            or decomp.truncated_synthesis_count > 0
+        ):
+            semantic_planning_requested = True
+        elif not (1 <= len(decomp.requirements) <= 8):
+            semantic_planning_requested = True
+        elif is_comparison_candidate and not deterministic_comparison_usable:
+            semantic_planning_requested = True
+
+        return AtomicContractPreparation(
+            decomposition=decomp,
+            semantic_planning_requested=semantic_planning_requested,
+            comparison_candidate=is_comparison_candidate,
+        )
 
     async def plan(
         self,
         *,
         question: str,
-        authorized_source_names: list[str],
-        authorized_source_doc_ids: list[str],
-        setup_policy: dict[str, Any],
-        authorized_source_name_to_doc_ids: dict[str, list[str]] | None = None,
-    ) -> QueryContract:
-        del setup_policy  # Task 6 applies these authoritative provider limits.
-        normalized_question = question.strip()
-        if not normalized_question:
-            raise ValueError("question must not be empty")
-        source_mapping = _source_mapping(
-            source_names=authorized_source_names,
-            source_doc_ids=authorized_source_doc_ids,
-            authoritative=authorized_source_name_to_doc_ids,
-        )
-        ordered_source_doc_ids = [
-            source_mapping[name][0]
-            for name in authorized_source_names
-            if source_mapping.get(name)
-        ]
-        if not ordered_source_doc_ids:
-            ordered_source_doc_ids = list(authorized_source_doc_ids)
-        mapping_missing = bool(authorized_source_names) and (
-            set(source_mapping) != set(authorized_source_names)
+        base_contract: QueryContract,
+        preparation: AtomicContractPreparation | None = None,
+        allow_semantic_planning: bool = True,
+    ) -> AtomicContractPlanningOutcome:
+        """Plan atomic contract requirements using deterministic or budgeted semantic planning."""
+        start_time = time.perf_counter()
+        prep = (
+            preparation
+            if preparation is not None
+            else self.prepare(question=question, base_contract=base_contract)
         )
 
-        route = _deterministic_route(normalized_question)
-        ambiguity: _AmbiguityResult | None = None
-        planner_call_requested = False
-        if mapping_missing:
-            ambiguity = _safe_ambiguity_result("authoritative_source_mapping_missing")
-            if route is None:
-                route = ambiguity.route
-        elif route is None:
-            planner_call_requested = True
-            ambiguity = await self._resolve_ambiguous_contract(
-                question=normalized_question,
-                authorized_source_names=authorized_source_names,
-                authorized_source_doc_ids=authorized_source_doc_ids,
-                authorized_source_name_to_doc_ids=source_mapping,
-            )
-            route = ambiguity.route
-        if mapping_missing:
-            slots = [
-                _slot(
-                    description=(
-                        "Resolve the bounded requirement without assuming "
-                        "source-name-to-document-ID pairing."
-                    ),
-                    answer_type="text",
-                    source_names=authorized_source_names,
-                    source_doc_ids=authorized_source_doc_ids,
+        if prep.semantic_planning_requested:
+            if not allow_semantic_planning:
+                return _safe_fallback_outcome(
+                    base_contract=base_contract,
+                    fallback_reason="semantic_planning_not_admitted",
+                    planner_call_count=0,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
                 )
-            ]
-            matched_rules = ["authoritative_source_mapping_missing"]
-        elif ambiguity and ambiguity.slots:
-            slots = ambiguity.slots
-            matched_rules = ["llm_atomic_decomposition"]
-        else:
-            slots, matched_rules = _decompose(
-                question=normalized_question,
-                source_names=authorized_source_names,
-                source_doc_ids=ordered_source_doc_ids,
-            )
-        if not slots:
-            slots = [
-                _slot(
-                    description="Resolve the source-bound requirement in the question.",
-                    answer_type="text",
-                    source_names=authorized_source_names,
-                    source_doc_ids=ordered_source_doc_ids,
+            if self._llm_invoker is None:
+                return _safe_fallback_outcome(
+                    base_contract=base_contract,
+                    fallback_reason="planner_unavailable",
+                    planner_call_count=0,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
                 )
-            ]
-        if len(slots) == 1 and route in {
-            "bounded_compare",
-            "multi_document_exact",
-            "multi_hop",
-            "graph_relational",
-        }:
-            slots.append(
-                _slot(
-                    description="Resolve the independent source-bound comparison or qualification.",
-                    answer_type="comparison",
-                    source_names=authorized_source_names,
-                    source_doc_ids=ordered_source_doc_ids,
-                )
-            )
-        slots = [
-            slot.model_copy(update={"slot_id": f"S{index}"})
-            for index, slot in enumerate(slots[:8], 1)
-        ]
-        locators = list(
-            dict.fromkeys(locator for slot in slots for locator in slot.locator_hints)
-        ) or ["source passage for each target slot"]
-        entities = _extract_entities(normalized_question)
-        budget = _ROUTE_BUDGETS[route]
-        decision_source = ambiguity.decision_source if ambiguity else "deterministic"
-        decision = RouteDecision(
-            selected_route=route,
-            decision_source=decision_source,
-            matched_rules=matched_rules,
-            candidate_routes=_candidate_routes(route, matched_rules),
-            route_reason=(
-                ambiguity.route_reason
-                if ambiguity
-                else _route_reason(route, matched_rules)
-            ),
-            planner_call_used=(
-                planner_call_requested and self._llm_invoker is not None
-            ),
-            fallback_reason=ambiguity.fallback_reason if ambiguity else None,
-            confidence=ambiguity.confidence if ambiguity else 1.0,
-        )
-        visual_requested = any(
-            slot.visual_policy in {"preferred", "required"} for slot in slots
-        )
-        visual_required = any(slot.visual_policy == "required" for slot in slots)
-        return QueryContract(
-            contract_version="2",
-            route=route,
-            intent=_intent_for_route(route, normalized_question),
-            required_slots=slots,
-            entities=entities,
-            locator_hints=locators,
-            visual_requested=visual_requested,
-            visual_required=visual_required,
-            evidence_extraction_required=False,
-            max_retrieval_rounds=budget.max_retrieval_rounds,
-            max_repair_rounds=budget.max_repair_rounds,
-            max_llm_calls=budget.max_llm_calls + int(planner_call_requested),
-            runtime_token_budget=budget.runtime_token_budget,
-            resolved_source_scope=ResolvedSourceScope(
-                requested_source_names=authorized_source_names,
-                resolved_doc_ids=authorized_source_doc_ids,
-                authorized_doc_ids=authorized_source_doc_ids,
-                source_name_to_doc_ids=source_mapping,
-            ),
-            strategy_tier=(
-                "budgeted_ambiguity"
-                if planner_call_requested
-                else "safe_fallback"
-                if mapping_missing
-                else "deterministic"
-            ),
-            route_decision=decision,
-            slot_plan_status=(
-                "degraded" if decision_source == "safe_fallback" else "complete"
-            ),
-        )
 
-    async def _resolve_ambiguous_contract(
-        self,
-        *,
-        question: str,
-        authorized_source_names: list[str],
-        authorized_source_doc_ids: list[str],
-        authorized_source_name_to_doc_ids: dict[str, list[str]],
-    ) -> _AmbiguityResult:
-        if self._llm_invoker is None:
-            return _safe_ambiguity_result("planner_unavailable")
-        prompt = PromptRegistry(_PROMPT_PATH).format(
-            _PROMPT_KEY,
-            question=question,
-            authorized_source_names=json.dumps(
-                authorized_source_names, ensure_ascii=False
-            ),
-            authorized_doc_ids=json.dumps(authorized_source_doc_ids),
-            authorized_source_mapping=json.dumps(
-                authorized_source_name_to_doc_ids,
-                ensure_ascii=False,
-                sort_keys=True,
-            ),
-        )
+            requested_source_names = (
+                list(base_contract.resolved_source_scope.requested_source_names)
+                if base_contract.resolved_source_scope
+                else []
+            )
+            prompt = PromptRegistry(_PROMPT_PATH).format(
+                _PROMPT_KEY,
+                question=question,
+                authorized_source_names=json.dumps(
+                    requested_source_names, ensure_ascii=False
+                ),
+            )
+            try:
+                response = await self._llm_invoker.invoke(
+                    phase="contract_planning",
+                    purpose="atomic_contract_planning",
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                decision = _parse_decision(response)
+                _validate_decision_scope(
+                    decision,
+                    allowed_source_names=set(requested_source_names),
+                )
+                _validate_decision_indexes(decision)
+                _validate_answer_free(
+                    decision,
+                    question=question,
+                    authorized_source_names=requested_source_names,
+                )
+
+                slots = _build_slots_from_decision(
+                    decision,
+                    scope=base_contract.resolved_source_scope,
+                )
+                obligations = _build_obligations_from_decision(decision)
+                constraints = _build_constraints_from_decision(decision)
+                comparison_plan = _build_comparison_from_decision(
+                    decision.comparison
+                )
+
+                contract = apply_atomic_contract_overlay(
+                    base_contract,
+                    required_slots=slots,
+                    synthesis_obligations=obligations,
+                    response_constraints=constraints,
+                    comparison_plan=comparison_plan,
+                    slot_plan_status="complete",
+                    slot_plan_source="llm_planner",
+                    slot_plan_confidence=_confidence_label(decision.confidence),
+                    slot_plan_fallback_reason=None,
+                    truncated_requirement_count=None,
+                )
+                return AtomicContractPlanningOutcome(
+                    contract=contract,
+                    planner_call_count=1,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                )
+            except TimeoutError:
+                return _safe_fallback_outcome(
+                    base_contract=base_contract,
+                    fallback_reason="planner_timeout",
+                    planner_call_count=1,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                )
+            except BudgetExceededError:
+                return _safe_fallback_outcome(
+                    base_contract=base_contract,
+                    fallback_reason="planner_budget_rejected",
+                    planner_call_count=1,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                )
+            except _UnauthorizedSourceExpansion:
+                return _safe_fallback_outcome(
+                    base_contract=base_contract,
+                    fallback_reason="unauthorized_source_expansion",
+                    planner_call_count=1,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                )
+            except Exception:
+                return _safe_fallback_outcome(
+                    base_contract=base_contract,
+                    fallback_reason="invalid_planner_output",
+                    planner_call_count=1,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                )
+
+        # Deterministic path
         try:
-            response = await self._llm_invoker.invoke(
-                phase="contract_planning",
-                purpose="atomic_contract_planning",
-                messages=[
-                    {"role": "user", "content": prompt},
+            slots = _build_slots_from_decomposition(
+                prep.decomposition.requirements,
+                scope=base_contract.resolved_source_scope,
+            )
+            if not (1 <= len(slots) <= 8):
+                raise ValueError("deterministic slots must be 1 to 8")
+
+            obligations = _build_obligations_from_decomposition(
+                prep.decomposition.synthesis_obligations,
+                slot_count=len(slots),
+            )
+            constraints = _build_constraints_from_decomposition(
+                prep.decomposition.response_constraints
+            )
+            comparison_plan = None
+            if prep.comparison_candidate:
+                comparison_plan = _build_deterministic_comparison_plan(
+                    prep.decomposition,
+                    slots=slots,
+                )
+
+            contract = apply_atomic_contract_overlay(
+                base_contract,
+                required_slots=slots,
+                synthesis_obligations=obligations,
+                response_constraints=constraints,
+                comparison_plan=comparison_plan,
+                slot_plan_status="complete",
+                slot_plan_source="deterministic",
+                slot_plan_confidence=prep.decomposition.confidence,
+                slot_plan_fallback_reason=None,
+                truncated_requirement_count=(
+                    prep.decomposition.truncated_requirement_count or None
+                ),
+            )
+            return AtomicContractPlanningOutcome(
+                contract=contract,
+                planner_call_count=0,
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+            )
+        except Exception:
+            return _safe_fallback_outcome(
+                base_contract=base_contract,
+                fallback_reason="deterministic_unusable",
+                planner_call_count=0,
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+            )
+
+
+def _safe_fallback_outcome(
+    *,
+    base_contract: QueryContract,
+    fallback_reason: str,
+    planner_call_count: Literal[0, 1],
+    latency_ms: float,
+) -> AtomicContractPlanningOutcome:
+    requested_names = (
+        list(base_contract.resolved_source_scope.requested_source_names)
+        if base_contract.resolved_source_scope
+        else []
+    )
+    authorized_ids = (
+        list(base_contract.resolved_source_scope.authorized_doc_ids)
+        if base_contract.resolved_source_scope
+        else []
+    )
+    slot = RequiredSlot(
+        slot_id="S1",
+        description="Resolve the complete source-bound requirement in the original question.",
+        source_name_hints=requested_names,
+        authorized_source_doc_ids=authorized_ids,
+        locator_hints=[],
+        expected_answer_type="text",
+        depends_on_slot_ids=[],
+        visual_policy="never",
+    )
+    contract = apply_atomic_contract_overlay(
+        base_contract,
+        required_slots=[slot],
+        synthesis_obligations=[],
+        response_constraints=[],
+        comparison_plan=None,
+        slot_plan_status="degraded",
+        slot_plan_source="safe_fallback",
+        slot_plan_confidence="low",
+        slot_plan_fallback_reason=fallback_reason,
+        truncated_requirement_count=None,
+    )
+    return AtomicContractPlanningOutcome(
+        contract=contract,
+        planner_call_count=planner_call_count,
+        latency_ms=latency_ms,
+    )
+
+
+def _parse_decision(response: Any) -> _PlannerDecision:
+    content = response
+    if isinstance(response, dict) and "content" in response:
+        content = response["content"]
+    elif hasattr(response, "content"):
+        content = response.content
+    if not isinstance(content, str):
+        raise ValueError("contract planner response must contain JSON text")
+    return _PlannerDecision.model_validate_json(content)
+
+
+def _validate_decision_scope(
+    decision: _PlannerDecision,
+    *,
+    allowed_source_names: set[str],
+) -> None:
+    if allowed_source_names:
+        for req in decision.evidence_requirements:
+            if req.source_name_hints and not set(req.source_name_hints) <= allowed_source_names:
+                raise _UnauthorizedSourceExpansion("unauthorized source name")
+
+
+def _validate_decision_indexes(decision: _PlannerDecision) -> None:
+    req_count = len(decision.evidence_requirements)
+    if not (1 <= req_count <= 8):
+        raise ValueError(f"evidence requirements must be 1 to 8, got {req_count}")
+
+    for idx, req in enumerate(decision.evidence_requirements):
+        for dep in req.depends_on_requirement_indexes:
+            if not (0 <= dep < idx):
+                raise ValueError(
+                    f"requirement index {idx} has invalid dependency index {dep}"
+                )
+
+    for ob_idx, ob in enumerate(decision.synthesis_obligations):
+        if not ob.depends_on_requirement_indexes:
+            raise ValueError(
+                f"synthesis obligation {ob_idx} must specify at least one requirement dependency"
+            )
+        for dep in ob.depends_on_requirement_indexes:
+            if not (0 <= dep < req_count):
+                raise ValueError(
+                    f"synthesis obligation {ob_idx} references invalid requirement index {dep}"
+                )
+
+    if decision.comparison is not None:
+        sub_count = len(decision.comparison.subjects)
+        if not (2 <= sub_count <= 4):
+            raise ValueError(f"comparison must have 2 to 4 subjects, got {sub_count}")
+        subject_ids = [s.subject_id for s in decision.comparison.subjects]
+        if len(subject_ids) != len(set(subject_ids)):
+            raise ValueError("comparison subject IDs must be unique")
+        for sub in decision.comparison.subjects:
+            if not sub.evidence_requirement_indexes:
+                raise ValueError(
+                    f"comparison subject {sub.subject_id} must have evidence requirement indexes"
+                )
+            for dep in sub.evidence_requirement_indexes:
+                if not (0 <= dep < req_count):
+                    raise ValueError(
+                        f"comparison subject {sub.subject_id} references invalid requirement index {dep}"
+                    )
+
+
+def _validate_answer_free(
+    decision: _PlannerDecision,
+    *,
+    question: str,
+    authorized_source_names: list[str] | None = None,
+) -> None:
+    question_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", question))
+    if authorized_source_names:
+        for name in authorized_source_names:
+            question_numbers.update(re.findall(r"\b\d+(?:\.\d+)?\b", name))
+
+    for req in decision.evidence_requirements:
+        for locator in req.locator_hints:
+            if not _valid_locator_hint(locator):
+                raise ValueError(f"invalid locator hint: {locator}")
+            question_numbers.update(re.findall(r"\b\d+(?:\.\d+)?\b", locator))
+
+    planner_texts: list[str] = []
+    for req in decision.evidence_requirements:
+        planner_texts.append(req.description)
+    for ob in decision.synthesis_obligations:
+        planner_texts.append(ob.description)
+    for con in decision.response_constraints:
+        planner_texts.append(con.description)
+    if decision.comparison is not None:
+        if decision.comparison.qualification:
+            planner_texts.append(decision.comparison.qualification)
+        for dim in decision.comparison.dimensions:
+            planner_texts.append(dim)
+        for sub in decision.comparison.subjects:
+            planner_texts.append(sub.display_name)
+            planner_texts.append(sub.retrieval_query)
+
+    for text in planner_texts:
+        authored_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", text))
+        if not authored_numbers <= question_numbers:
+            raise ValueError("planner text contains an answer-like value")
+
+
+def _valid_locator_hint(value: str) -> bool:
+    """Admit only bounded source-location descriptions, never free-form values."""
+    normalized = value.strip().casefold()
+    if not normalized or len(normalized) > 120:
+        return False
+    if normalized.startswith("section"):
+        return canonical_structured_locator(value) is not None
+    return bool(
+        re.match(
+            r"^(figure|fig\.?|table|appendix|formula|equation|theorem|page|section)\b",
+            normalized,
+        )
+        or any(
+            term in normalized
+            for term in ("source passage", "regional impurity equation", "matrix")
+        )
+    )
+
+
+def _confidence_label(score: float) -> Literal["high", "medium", "low"]:
+    if score >= 0.8:
+        return "high"
+    if score >= 0.5:
+        return "medium"
+    return "low"
+
+
+def _promote_source_hints(
+    hints: list[str],
+    scope: ResolvedSourceScope | None,
+) -> tuple[list[str], list[str]]:
+    if scope is None:
+        return list(hints), []
+    requested = scope.requested_source_names
+    valid_hints = [h for h in hints if h in requested] or list(requested)
+    doc_ids: list[str] = []
+    if scope.source_name_to_doc_ids:
+        for name in valid_hints:
+            for doc_id in scope.source_name_to_doc_ids.get(name, ()):
+                if doc_id not in doc_ids:
+                    doc_ids.append(doc_id)
+    if not doc_ids:
+        doc_ids = list(scope.authorized_doc_ids)
+    return valid_hints, doc_ids
+
+
+def _build_slots_from_decision(
+    decision: _PlannerDecision,
+    *,
+    scope: ResolvedSourceScope | None,
+) -> list[RequiredSlot]:
+    slots: list[RequiredSlot] = []
+    for idx, req in enumerate(decision.evidence_requirements, 1):
+        source_names, doc_ids = _promote_source_hints(req.source_name_hints, scope)
+        slots.append(
+            RequiredSlot(
+                slot_id=f"S{idx}",
+                description=req.description,
+                source_name_hints=source_names,
+                authorized_source_doc_ids=doc_ids,
+                locator_hints=list(req.locator_hints),
+                expected_answer_type=req.expected_answer_type,
+                depends_on_slot_ids=[
+                    f"S{dep + 1}" for dep in req.depends_on_requirement_indexes
+                ],
+                visual_policy=req.visual_policy,
+            )
+        )
+    return slots
+
+
+def _build_obligations_from_decision(
+    decision: _PlannerDecision,
+) -> list[SynthesisObligation]:
+    obligations: list[SynthesisObligation] = []
+    for idx, ob in enumerate(decision.synthesis_obligations, 1):
+        obligations.append(
+            SynthesisObligation(
+                obligation_id=f"O{idx}",
+                kind=ob.kind,
+                description=ob.description,
+                depends_on_slot_ids=[
+                    f"S{dep + 1}" for dep in ob.depends_on_requirement_indexes
                 ],
             )
-            decision = _parse_decision(response)
-            _validate_planner_scope(
-                decision,
-                authorized_source_names=authorized_source_names,
-                authorized_source_doc_ids=authorized_source_doc_ids,
-                authorized_source_name_to_doc_ids=(authorized_source_name_to_doc_ids),
-            )
-            _validate_answer_free(decision, question=question)
-        except TimeoutError:
-            return _safe_ambiguity_result("planner_timeout")
-        except BudgetExceededError:
-            return _safe_ambiguity_result("planner_budget_rejected")
-        except _UnauthorizedSourceExpansion:
-            return _safe_ambiguity_result("unauthorized_source_expansion")
-        except (TypeError, ValueError):
-            return _safe_ambiguity_result("invalid_planner_output")
-        return _AmbiguityResult(
-            route=decision.selected_route,
-            slots=[
-                RequiredSlot(
-                    slot_id=f"S{index}",
-                    description=slot.description,
-                    source_name_hints=slot.source_name_hints,
-                    authorized_source_doc_ids=slot.authorized_source_doc_ids,
-                    locator_hints=slot.locator_hints,
-                    expected_answer_type=slot.expected_answer_type,
-                    depends_on_slot_ids=slot.depends_on_slot_ids,
-                    visual_policy=slot.visual_policy,
-                )
-                for index, slot in enumerate(decision.slots[:8], 1)
-            ],
-            route_reason=decision.route_reason,
-            confidence=max(0.0, min(decision.confidence, 1.0)),
-            decision_source="llm_planner",
-            fallback_reason=None,
         )
+    return obligations
 
 
-def _decompose(
-    *, question: str, source_names: list[str], source_doc_ids: list[str]
-) -> tuple[list[RequiredSlot], list[str]]:
-    matched_rules: list[str] = []
-    if len(source_names) > 1:
-        matched_rules.append("multiple_named_sources")
-
-    clauses = _split_clauses(question)
-    if len(clauses) > 1:
-        matched_rules.append("numbered_subquestions")
-    slots: list[RequiredSlot] = []
-    for clause in clauses:
-        parallel = _parallel_value_descriptions(clause)
-        if parallel:
-            matched_rules.append("parallel_values")
-            descriptions = parallel
-        else:
-            clause_locators = _exact_locators(clause)
-            descriptions = (
-                [
-                    f"Resolve the requirement at {locator}."
-                    for locator in clause_locators
-                ]
-                if len(clause_locators) > 1
-                else [_answer_free_description(clause)]
+def _build_constraints_from_decision(
+    decision: _PlannerDecision,
+) -> list[ResponseConstraint]:
+    constraints: list[ResponseConstraint] = []
+    for idx, con in enumerate(decision.response_constraints, 1):
+        constraints.append(
+            ResponseConstraint(
+                constraint_id=f"C{idx}",
+                kind=con.kind,
+                description=con.description,
             )
-        for description in descriptions:
-            slots.append(
-                _slot(
-                    description=description,
-                    answer_type=_answer_type(description),
-                    source_names=_source_hints(description, source_names),
-                    source_doc_ids=_source_ids_for_hints(
-                        _source_hints(description, source_names),
-                        source_names,
-                        source_doc_ids,
-                    ),
-                    locators=_exact_locators(clause),
-                )
+        )
+    return constraints
+
+
+def _build_comparison_from_decision(
+    comparison: _PlannerComparison | None,
+) -> ComparisonPlan | None:
+    if comparison is None:
+        return None
+    subjects: list[ComparisonSubject] = []
+    for sub in comparison.subjects:
+        subjects.append(
+            ComparisonSubject(
+                subject_id=sub.subject_id,
+                display_name=sub.display_name,
+                aliases=list(sub.aliases),
+                retrieval_query=sub.retrieval_query,
+                evidence_slot_ids=[
+                    f"S{dep + 1}" for dep in sub.evidence_requirement_indexes
+                ],
             )
-    return slots, list(dict.fromkeys(matched_rules))
+        )
+    return ComparisonPlan(
+        subjects=subjects,
+        dimensions=list(comparison.dimensions),
+        qualification=comparison.qualification,
+    )
 
 
-def _slot(
+def _build_slots_from_decomposition(
+    requirements: tuple[DecomposedRequirement, ...],
     *,
-    description: str,
-    answer_type: str,
-    source_names: list[str],
-    source_doc_ids: list[str],
-    locators: list[str] | None = None,
-) -> RequiredSlot:
-    return RequiredSlot(
-        slot_id="pending",
-        description=description,
-        source_name_hints=source_names,
-        authorized_source_doc_ids=source_doc_ids,
-        locator_hints=locators or [],
-        expected_answer_type=answer_type,
-        visual_policy=(
+    scope: ResolvedSourceScope | None,
+) -> list[RequiredSlot]:
+    slots: list[RequiredSlot] = []
+    requested_names = list(scope.requested_source_names) if scope else []
+    for idx, req in enumerate(requirements[:8], 1):
+        hints = _source_hints(req.text, requested_names)
+        source_names, doc_ids = _promote_source_hints(hints, scope)
+        locators = _exact_locators(req.text)
+        visual_policy: VisualPolicy = (
             "preferred"
-            if any(
-                locator.casefold().startswith(("figure", "table"))
-                for locator in locators or []
-            )
-            or bool(re.search(r"\b(?:figure|table)\b", description, re.IGNORECASE))
+            if any(loc.casefold().startswith(("figure", "table")) for loc in locators)
+            or bool(re.search(r"\b(?:figure|table)\b", req.text, re.I))
             else "never"
-        ),
-    )
+        )
+        slots.append(
+            RequiredSlot(
+                slot_id=f"S{idx}",
+                description=req.text,
+                source_name_hints=source_names,
+                authorized_source_doc_ids=doc_ids,
+                locator_hints=locators,
+                expected_answer_type=_answer_type(req.text),
+                depends_on_slot_ids=[],
+                visual_policy=visual_policy,
+            )
+        )
+    return slots
 
 
-def _split_clauses(question: str) -> list[str]:
-    numbered = re.split(
-        r"(?:^|\s)(?:\d+[.)]|[-*•])\s*|;\s*|(?=\band explain Equation\b)",
-        question,
-        flags=re.IGNORECASE,
-    )
-    clauses = [value.strip(" ;") for value in numbered if value.strip(" ;")]
-    if len(clauses) > 1 and clauses[0].casefold().startswith(("using ", "from ")):
-        clauses = clauses[1:]
-    return clauses or [question]
+def _build_obligations_from_decomposition(
+    obligations: tuple[Any, ...],
+    *,
+    slot_count: int,
+) -> list[SynthesisObligation]:
+    result: list[SynthesisObligation] = []
+    all_slot_ids = [f"S{i}" for i in range(1, slot_count + 1)]
+    for idx, ob in enumerate(obligations[:8], 1):
+        deps = [
+            f"S{dep + 1}"
+            for dep in getattr(ob, "depends_on_requirement_indexes", ())
+            if 0 <= dep < slot_count
+        ]
+        result.append(
+            SynthesisObligation(
+                obligation_id=f"O{idx}",
+                kind=getattr(ob, "kind", "comparison"),
+                description=getattr(ob, "text", str(ob)),
+                depends_on_slot_ids=deps or all_slot_ids,
+            )
+        )
+    return result
 
 
-def _parallel_value_descriptions(clause: str) -> list[str]:
-    match = re.search(
-        r"\b([A-Za-z][A-Za-z0-9 .+-]*)\s+(?:and|,)\s+"
-        r"([A-Za-z][A-Za-z0-9 .+-]*)\s+(Dice|value|score)s?\b",
-        clause,
-        re.IGNORECASE,
-    )
-    if not match:
-        return []
-    metric = match.group(3)
-    return [
-        f"Retrieve the {match.group(1).strip()} {metric}.",
-        f"Retrieve the {match.group(2).strip()} {metric}.",
+def _build_constraints_from_decomposition(
+    constraints: tuple[Any, ...],
+) -> list[ResponseConstraint]:
+    result: list[ResponseConstraint] = []
+    for idx, con in enumerate(constraints[:8], 1):
+        result.append(
+            ResponseConstraint(
+                constraint_id=f"C{idx}",
+                kind=getattr(con, "kind", "output_format"),
+                description=getattr(con, "text", str(con)),
+            )
+        )
+    return result
+
+
+def _build_deterministic_comparison_plan(
+    decomposition: QuestionDecomposition,
+    *,
+    slots: list[RequiredSlot],
+) -> ComparisonPlan | None:
+    subjects_raw = decomposition.comparison_subjects
+    if not (2 <= len(subjects_raw) <= 4):
+        return None
+    subjects: list[ComparisonSubject] = []
+    for subject_name in subjects_raw:
+        safe_id = re.sub(
+            r"[^a-z0-9_-]", "", subject_name.strip().casefold().replace(" ", "_")
+        ) or "subject"
+        display_name = subject_name.strip()
+        mapped_slot_ids = [
+            slot.slot_id
+            for slot in slots
+            if display_name.casefold() in slot.description.casefold()
+        ]
+        if not mapped_slot_ids:
+            mapped_slot_ids = [slots[0].slot_id]
+        mapped_req_texts = [
+            s.description for s in slots if s.slot_id in mapped_slot_ids
+        ]
+        retrieval_query = f"{display_name} {' '.join(mapped_req_texts)}".strip()
+        subjects.append(
+            ComparisonSubject(
+                subject_id=safe_id,
+                display_name=display_name,
+                aliases=[],
+                retrieval_query=retrieval_query[:512],
+                evidence_slot_ids=mapped_slot_ids,
+            )
+        )
+    dimensions = [
+        ob.description
+        for ob in _build_obligations_from_decomposition(
+            decomposition.synthesis_obligations, slot_count=len(slots)
+        )
+        if ob.kind == "comparison"
     ]
-
-
-def _answer_free_description(clause: str) -> str:
-    cleaned = clause.strip().rstrip("?.")
-    return f"Resolve: {cleaned}."
-
-
-def _answer_type(text: str) -> str:
-    normalized = text.casefold()
-    if any(term in normalized for term in ("equation", "formula")):
-        return "equation"
-    if any(term in normalized for term in ("meaning", "define", "what is |")):
-        return "definition"
-    if any(term in normalized for term in ("compare", "which")):
-        return "comparison"
-    if any(term in normalized for term in ("why", "reason", "explain")):
-        return "explanation"
-    if any(term in normalized for term in ("dice", "score", "value", "how many")):
-        return "number"
-    return "text"
+    return ComparisonPlan(subjects=subjects, dimensions=dimensions)
 
 
 def _exact_locators(text: str) -> list[str]:
@@ -478,219 +843,29 @@ def _source_hints(text: str, source_names: list[str]) -> list[str]:
     return matched or source_names
 
 
-def _source_ids_for_hints(
-    hints: list[str], source_names: list[str], source_doc_ids: list[str]
-) -> list[str]:
-    mapping = dict(zip(source_names, source_doc_ids, strict=False))
-    return [mapping[name] for name in hints if name in mapping] or source_doc_ids
-
-
-def _deterministic_route(question: str) -> AgenticV9Route | None:
-    normalized = question.casefold()
-    entities = _extract_entities(question)
-    locator_hints = _locator_hints(normalized)
-    if _contains_any(
-        normalized,
-        ("lineage path", "graph path", "relationship path", "關係路徑", "譜系路徑"),
-    ):
-        return "graph_relational"
-    if len(locator_hints) >= 2 and len(entities) >= 2:
-        return "multi_document_exact"
-    if _contains_any(normalized, ("from ", "至 ", "從", "源自", "追溯")) or (
-        len(entities) >= 3
-        and _contains_any(normalized, ("compare", "which", "比較", "判斷"))
-    ):
-        return "multi_hop"
-    if locator_hints or _contains_any(
-        normalized, ("calculate", "how many", "計算", "列出", "擷取")
-    ):
-        return "exact_structured"
-    if _contains_any(
-        normalized,
-        ("compare", "versus", " vs ", "which performs", "比較", "是否優於"),
-    ):
-        return "bounded_compare"
-    if _contains_any(normalized, ("what is", "what are", "find ", "什麼是", "何謂")):
-        return "single_lookup"
-    return None
-
-
-def _extract_entities(question: str) -> list[str]:
-    ignored = {
-        "according",
-        "and",
-        "appendix",
-        "compare",
-        "figure",
-        "find",
-        "from",
-        "please",
-        "table",
-        "the",
-        "to",
-        "what",
-        "which",
-    }
-    return list(
-        dict.fromkeys(
-            value
-            for value in _ENTITY_PATTERN.findall(question)
-            if value.casefold() not in ignored
-            and (
-                any(character.isupper() for character in value)
-                or "-" in value
-                or any(character.isdigit() for character in value)
-            )
-        )
-    )
-
-
-def _locator_hints(normalized_question: str) -> list[str]:
-    return [
-        label
-        for label, terms in _LOCATOR_TERMS
-        if _contains_any(normalized_question, terms)
-    ]
+def _answer_type(text: str) -> ExpectedAnswerType:
+    normalized = text.casefold()
+    if any(term in normalized for term in ("equation", "formula")):
+        return "equation"
+    if any(term in normalized for term in ("meaning", "define", "what is ")):
+        return "definition"
+    if any(term in normalized for term in ("compare", "which")):
+        return "comparison"
+    if any(term in normalized for term in ("why", "reason", "explain")):
+        return "explanation"
+    if any(term in normalized for term in ("dice", "score", "value", "how many")):
+        return "number"
+    return "text"
 
 
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term.casefold() in text for term in terms)
 
 
-def _candidate_routes(
-    route: AgenticV9Route, matched_rules: list[str]
-) -> list[AgenticV9Route]:
-    candidates: list[AgenticV9Route] = [route]
-    if "multiple_named_sources" in matched_rules and route != "exact_structured":
-        candidates.append("exact_structured")
-    return candidates
-
-
-def _route_reason(route: AgenticV9Route, matched_rules: list[str]) -> str:
-    suffix = f" Matched: {', '.join(matched_rules)}." if matched_rules else ""
-    return f"Selected {route} from question-only deterministic analysis.{suffix}"
-
-
-def _intent_for_route(route: AgenticV9Route, question: str) -> str:
-    labels = {
-        "single_lookup": "Locate one source-bound fact",
-        "bounded_compare": "Compare a bounded set of source-bound claims",
-        "exact_structured": "Extract exact structured values and locators",
-        "multi_document_exact": "Extract exact values across named source groups",
-        "multi_hop": "Resolve a source-bound multi-document relationship",
-        "graph_relational": "Locate a graph relationship before source retrieval",
-    }
-    return f"{labels[route]}: {question}"
-
-
-class _UnauthorizedSourceExpansion(ValueError):
-    """Planner attempted to add a source outside the authorized intersection."""
-
-
-def _parse_decision(response: Any) -> _PlannerDecision:
-    content = response
-    if isinstance(response, dict) and "content" in response:
-        content = response["content"]
-    elif hasattr(response, "content"):
-        content = response.content
-    if not isinstance(content, str):
-        raise ValueError("contract planner response must contain JSON text")
-    try:
-        decision = _PlannerDecision.model_validate_json(content)
-    except ValueError as error:
-        raise ValueError("invalid contract planner response") from error
-    if not 1 <= len(decision.slots) <= 8:
-        raise ValueError("contract planner must return one to eight slots")
-    return decision
-
-
-def _validate_planner_scope(
-    decision: _PlannerDecision,
-    *,
-    authorized_source_names: list[str],
-    authorized_source_doc_ids: list[str],
-    authorized_source_name_to_doc_ids: dict[str, list[str]],
-) -> None:
-    allowed_names = set(authorized_source_names)
-    allowed_ids = set(authorized_source_doc_ids)
-    for slot in decision.slots:
-        if not set(slot.source_name_hints) <= allowed_names:
-            raise _UnauthorizedSourceExpansion
-        if not set(slot.authorized_source_doc_ids) <= allowed_ids:
-            raise _UnauthorizedSourceExpansion
-        paired_ids = {
-            doc_id
-            for name in slot.source_name_hints
-            for doc_id in authorized_source_name_to_doc_ids.get(name, ())
-        }
-        if not set(slot.authorized_source_doc_ids) <= paired_ids:
-            raise _UnauthorizedSourceExpansion
-
-
-def _validate_answer_free(decision: _PlannerDecision, *, question: str) -> None:
-    question_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", question))
-    planner_text = [decision.route_reason]
-    for index, slot in enumerate(decision.slots, 1):
-        planner_text.extend([slot.description, *slot.locator_hints])
-        valid_dependencies = {f"S{prior}" for prior in range(1, index)}
-        if not set(slot.depends_on_slot_ids) <= valid_dependencies:
-            raise ValueError("slot dependency must reference an earlier slot")
-        for locator in slot.locator_hints:
-            if not _valid_locator_hint(locator):
-                raise ValueError("invalid planner locator hint")
-    for text in planner_text:
-        authored_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", text))
-        if not authored_numbers <= question_numbers:
-            raise ValueError("planner text contains an answer-like value")
-
-
-def _valid_locator_hint(value: str) -> bool:
-    """Admit only bounded source-location descriptions, never free-form values."""
-    normalized = value.strip().casefold()
-    if not normalized or len(normalized) > 120:
-        return False
-    if normalized.startswith("section"):
-        return canonical_structured_locator(value) is not None
-    return bool(
-        re.match(
-            r"^(figure|fig\.?|table|appendix|formula|equation|theorem|page|section)\b",
-            normalized,
-        )
-        or any(
-            term in normalized
-            for term in ("source passage", "regional impurity equation", "matrix")
-        )
-    )
-
-
-def _source_mapping(
-    *,
-    source_names: list[str],
-    source_doc_ids: list[str],
-    authoritative: dict[str, list[str]] | None,
-) -> dict[str, list[str]]:
-    if authoritative is not None:
-        allowed_ids = set(source_doc_ids)
-        allowed_names = set(source_names)
-        return {
-            name: list(dict.fromkeys(doc_ids))
-            for name, doc_ids in authoritative.items()
-            if name in allowed_names and doc_ids and set(doc_ids) <= allowed_ids
-        }
-    if len(source_names) == 1 and len(source_doc_ids) == 1:
-        return {source_names[0]: [source_doc_ids[0]]}
-    return {}
-
-
-def _safe_ambiguity_result(reason: str) -> _AmbiguityResult:
-    return _AmbiguityResult(
-        route="single_lookup",
-        slots=None,
-        route_reason="Ambiguity planning failed; use bounded safe retrieval.",
-        confidence=0.0,
-        decision_source="safe_fallback",
-        fallback_reason=reason,
-    )
-
-
-__all__ = ["QuestionContractPlanner"]
+__all__ = [
+    "AtomicContractPlanningOutcome",
+    "AtomicContractPreparation",
+    "QuestionContractPlanner",
+    "apply_atomic_contract_overlay",
+    "atomic_contract_planner_response_schema",
+]
