@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -43,12 +45,193 @@ from data_base.rag_graph_locator import GraphSourceLocatorResult
 
 class _Provider:
     def __init__(self) -> None:
-        self.ainvoke = AsyncMock(
-            return_value=SimpleNamespace(
+        self.ainvoke = AsyncMock(side_effect=self._respond)
+
+    @staticmethod
+    def _respond(messages: list[dict[str, Any]]) -> object:
+        system = str(messages[0].get("content", ""))
+        if "curate only the remaining prose evidence slots" in system:
+            purpose = "evidence_extraction"
+        elif "Return JSON with exactly supported_findings" in system:
+            purpose = "final_answer"
+        elif "Verify only the listed claims" in system:
+            purpose = "claim_verifier"
+        else:
+            return SimpleNamespace(
                 content="The reported score is 0.91.",
                 usage_metadata={"input_tokens": 12, "output_tokens": 7},
             )
+        return _StructuredProviderFactory().respond(purpose, messages)
+
+
+def _set_nonstructured_responses(
+    provider: _Provider, *responses: object
+) -> None:
+    pending = iter(responses)
+
+    async def respond(messages: list[dict[str, Any]]) -> object:
+        system = str(messages[0].get("content", ""))
+        if any(
+            marker in system
+            for marker in (
+                "curate only the remaining prose evidence slots",
+                "Return JSON with exactly supported_findings",
+                "Verify only the listed claims",
+            )
+        ):
+            return _Provider._respond(messages)
+        response = next(pending)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+    provider.ainvoke.side_effect = respond
+
+
+class _PurposeProvider:
+    def __init__(self, owner: "_StructuredProviderFactory", purpose: str) -> None:
+        self._owner = owner
+        self._purpose = purpose
+
+    async def ainvoke(self, messages: list[dict[str, Any]]) -> object:
+        return self._owner.respond(self._purpose, messages)
+
+
+class _StructuredProviderFactory:
+    """Production-shaped provider double for v9 qualification and synthesis."""
+
+    _SOURCE_LINE = re.compile(
+        r"^(evidence:[^ ]+) \[eligible slots: ([^\]]+)\]: (.+)$"
+    )
+
+    def __init__(
+        self,
+        *,
+        qualification_slots_by_round: list[set[str] | None] | None = None,
+        final_slots: set[str] | None = None,
+        final_statement_by_slot: dict[str, str] | None = None,
+        verifier_supported: bool = True,
+    ) -> None:
+        self.qualification_slots_by_round = qualification_slots_by_round or []
+        self.final_slots = final_slots
+        self.final_statement_by_slot = final_statement_by_slot or {}
+        self.verifier_supported = verifier_supported
+        self.purposes: list[str] = []
+        self.qualification_outputs: list[dict[str, object]] = []
+        self.final_payloads: list[dict[str, Any]] = []
+        self._qualification_round = 0
+
+    def __call__(self, purpose: str) -> _PurposeProvider:
+        self.purposes.append(purpose)
+        return _PurposeProvider(self, purpose)
+
+    def respond(self, purpose: str, messages: list[dict[str, Any]]) -> object:
+        if purpose == "evidence_extraction":
+            content = self._qualification_response(messages)
+        elif purpose in {"final_answer", "agentic_v9_final_answer"}:
+            content = self._final_response(messages)
+        elif purpose == "claim_verifier":
+            content = self._verifier_response(messages)
+        else:
+            raise AssertionError(f"unexpected provider purpose: {purpose}")
+        return SimpleNamespace(
+            content=json.dumps(content),
+            usage_metadata={
+                "input_tokens": 2,
+                "output_tokens": 1,
+                "total_tokens": 3,
+            },
         )
+
+    def _qualification_response(
+        self, messages: list[dict[str, Any]]
+    ) -> dict[str, object]:
+        selected_slots = (
+            self.qualification_slots_by_round[self._qualification_round]
+            if self._qualification_round < len(self.qualification_slots_by_round)
+            else None
+        )
+        self._qualification_round += 1
+        packets: list[dict[str, object]] = []
+        for line in str(messages[-1]["content"]).splitlines():
+            match = self._SOURCE_LINE.fullmatch(line)
+            if match is None:
+                continue
+            evidence_id, raw_slots, statement = match.groups()
+            slot_ids = [
+                slot_id
+                for slot_id in raw_slots.split(",")
+                if selected_slots is None or slot_id in selected_slots
+            ]
+            if slot_ids:
+                packets.append(
+                    {
+                        "source_evidence_id": evidence_id,
+                        "slot_ids": slot_ids,
+                        "statement": statement,
+                    }
+                )
+        result: dict[str, object] = {"packets": packets}
+        self.qualification_outputs.append(result)
+        return result
+
+    def _final_response(
+        self, messages: list[dict[str, Any]]
+    ) -> dict[str, object]:
+        payload = json.loads(str(messages[-1]["content"]))
+        self.final_payloads.append(payload)
+        packets = payload["packed_evidence_packets"]
+        findings: list[dict[str, object]] = []
+        unresolved: list[dict[str, str]] = []
+        for slot in payload["contract"]["required_slots"]:
+            slot_id = slot["slot_id"]
+            packet = next(
+                (
+                    item
+                    for item in packets
+                    if slot_id in item["slot_ids"]
+                ),
+                None,
+            )
+            if (
+                packet is None
+                or self.final_slots is not None
+                and slot_id not in self.final_slots
+            ):
+                unresolved.append(
+                    {"slot_id": slot_id, "reason": "qualified evidence unavailable"}
+                )
+                continue
+            findings.append(
+                {
+                    "slot_id": slot_id,
+                    "statement": self.final_statement_by_slot.get(
+                        slot_id, packet["statement"]
+                    ),
+                    "support_type": "direct",
+                    "evidence_ids": [packet["evidence_id"]],
+                    "premise_evidence_ids": [],
+                }
+            )
+        return {
+            "supported_findings": findings,
+            "unresolved_requirements": unresolved,
+        }
+
+    def _verifier_response(
+        self, messages: list[dict[str, Any]]
+    ) -> dict[str, object]:
+        payload = json.loads(str(messages[-1]["content"]))
+        return {
+            "verdicts": [
+                {
+                    "claim_id": claim["claim_id"],
+                    "supported": self.verifier_supported,
+                    "reason": None if self.verifier_supported else "not supported",
+                }
+                for claim in payload["claims"]
+            ]
+        }
 
 
 @pytest.mark.asyncio
@@ -175,7 +358,8 @@ async def test_v9_graph_route_usage_is_budgeted_observed_and_reconciled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = _Provider()
-    provider.ainvoke.side_effect = [
+    _set_nonstructured_responses(
+        provider,
         SimpleNamespace(
             content='{"query_kind":"relation","path":"local-first"}',
             usage_metadata={
@@ -184,15 +368,7 @@ async def test_v9_graph_route_usage_is_budgeted_observed_and_reconciled(
                 "total_tokens": 7,
             },
         ),
-        SimpleNamespace(
-            content="Graph-aware evidence answer.",
-            usage_metadata={
-                "input_tokens": 12,
-                "output_tokens": 7,
-                "total_tokens": 19,
-            },
-        ),
-    ]
+    )
     observer = _RecordingObserver()
     source_document = Document(
         page_content="Source-backed relationship evidence.",
@@ -210,7 +386,7 @@ async def test_v9_graph_route_usage_is_budgeted_observed_and_reconciled(
         required_slots=[RequiredSlot(slot_id="base", description="relationship")],
         graph_policy="required_locator",
         max_retrieval_rounds=1,
-        max_llm_calls=2,
+        max_llm_calls=3,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -281,10 +457,11 @@ async def test_v9_graph_route_usage_is_budgeted_observed_and_reconciled(
 
     assert [call.phase for call in observer.calls] == [
         "graph_route",
+        "evidence_extract",
         "final_answer",
     ]
-    assert sum(call.usage["total_tokens"] for call in observer.calls) == 26
-    assert result.usage["total_tokens"] == 26
+    assert sum(call.usage["total_tokens"] for call in observer.calls) == 13
+    assert result.usage["total_tokens"] == 13
     assert observer.partial_reasons == []
     assert result.agent_trace["agentic_v9"]["retrieval_diagnostics"]
     assert result.agent_trace["execution_profile"] == (
@@ -523,7 +700,7 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     ]
     assert result.documents
     retrieve_documents.assert_awaited()
-    provider.ainvoke.assert_awaited_once()
+    assert provider.ainvoke.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -531,7 +708,8 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = _Provider()
-    provider.ainvoke.side_effect = [
+    _set_nonstructured_responses(
+        provider,
         SimpleNamespace(
             content=json.dumps(
                 {
@@ -552,11 +730,7 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
             ),
             usage_metadata={"input_tokens": 20, "output_tokens": 10},
         ),
-        SimpleNamespace(
-            content="The evidence supports a bounded comparison.",
-            usage_metadata={"input_tokens": 12, "output_tokens": 7},
-        ),
-    ]
+    )
     scope = ResolvedSourceScope(
         requested_doc_ids=["doc-1"],
         resolved_doc_ids=["doc-1"],
@@ -567,7 +741,7 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
         intent="Compare two models.",
         required_slots=[RequiredSlot(slot_id="base", description="comparison")],
         max_retrieval_rounds=1,
-        max_llm_calls=1,
+        max_llm_calls=2,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -704,7 +878,7 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
         ("comparison-subject:nnmamba",),
         ("comparison-subject:efficientmednext-l",),
     }
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -712,7 +886,8 @@ async def test_invalid_comparison_subjects_preserve_base_contract_and_retrieval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = _Provider()
-    provider.ainvoke.side_effect = [
+    _set_nonstructured_responses(
+        provider,
         SimpleNamespace(
             content=json.dumps(
                     {
@@ -724,11 +899,7 @@ async def test_invalid_comparison_subjects_preserve_base_contract_and_retrieval(
             ),
             usage_metadata={"input_tokens": 20, "output_tokens": 10},
         ),
-        SimpleNamespace(
-            content="The evidence supports a qualified answer.",
-            usage_metadata={"input_tokens": 12, "output_tokens": 7},
-        ),
-    ]
+    )
     retrieve_documents = AsyncMock(
         return_value=[
             Document(
@@ -747,7 +918,7 @@ async def test_invalid_comparison_subjects_preserve_base_contract_and_retrieval(
         intent="Check claims about one model.",
         required_slots=[RequiredSlot(slot_id="base", description="claim evidence")],
         max_retrieval_rounds=1,
-        max_llm_calls=1,
+        max_llm_calls=2,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -779,7 +950,7 @@ async def test_invalid_comparison_subjects_preserve_base_contract_and_retrieval(
     assert "comparison_plan" not in v9["query_contract"]
     assert retrieve_documents.await_count == 1
     assert result.documents
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -793,7 +964,8 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
     expected_status: str,
 ) -> None:
     provider = _Provider()
-    provider.ainvoke.side_effect = [
+    _set_nonstructured_responses(
+        provider,
         SimpleNamespace(
             content=json.dumps(
                 {
@@ -814,11 +986,7 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
             ),
             usage_metadata={"input_tokens": 20, "output_tokens": 10},
         ),
-        SimpleNamespace(
-            content="The evidence supports the available comparison.",
-            usage_metadata={"input_tokens": 12, "output_tokens": 7},
-        ),
-    ]
+    )
     scope = ResolvedSourceScope(
         requested_doc_ids=["doc-a", "doc-b"],
         resolved_doc_ids=["doc-a", "doc-b"],
@@ -830,7 +998,7 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
         required_slots=[RequiredSlot(slot_id="base", description="comparison")],
         max_retrieval_rounds=1,
         max_repair_rounds=0,
-        max_llm_calls=1,
+        max_llm_calls=3,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -921,7 +1089,8 @@ async def test_v9_comparison_status_uses_final_balanced_packet_coverage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = _Provider()
-    provider.ainvoke.side_effect = [
+    _set_nonstructured_responses(
+        provider,
         SimpleNamespace(
             content=json.dumps(
                 {
@@ -942,11 +1111,7 @@ async def test_v9_comparison_status_uses_final_balanced_packet_coverage(
             ),
             usage_metadata={"input_tokens": 20, "output_tokens": 10},
         ),
-        SimpleNamespace(
-            content="Only the packed evidence may be used.",
-            usage_metadata={"input_tokens": 12, "output_tokens": 7},
-        ),
-    ]
+    )
     scope = ResolvedSourceScope(
         requested_doc_ids=["doc-1"],
         resolved_doc_ids=["doc-1"],
@@ -958,7 +1123,7 @@ async def test_v9_comparison_status_uses_final_balanced_packet_coverage(
         required_slots=[RequiredSlot(slot_id="base", description="comparison")],
         max_retrieval_rounds=1,
         max_repair_rounds=0,
-        max_llm_calls=1,
+        max_llm_calls=3,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -1009,13 +1174,7 @@ async def test_v9_comparison_planner_failure_preserves_base_retrieval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = _Provider()
-    provider.ainvoke.side_effect = [
-        RuntimeError("planner unavailable"),
-        SimpleNamespace(
-            content="Fallback answer from retrieved evidence.",
-            usage_metadata={"input_tokens": 12, "output_tokens": 7},
-        ),
-    ]
+    _set_nonstructured_responses(provider, RuntimeError("planner unavailable"))
     retrieve_documents = AsyncMock(
         return_value=[
             Document(
@@ -1050,7 +1209,7 @@ async def test_v9_comparison_planner_failure_preserves_base_retrieval(
     }
     assert result.documents
     retrieve_documents.assert_awaited()
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
     assert v9["comparison"] == {
         "planner_status": "fallback",
         "planner_latency_ms": v9["comparison"]["planner_latency_ms"],
@@ -1079,7 +1238,8 @@ async def test_v9_comparison_planner_failure_preserves_base_retrieval(
 @pytest.mark.asyncio
 async def test_v9_comparison_transport_diagnostics_reach_agent_trace() -> None:
     provider = _Provider()
-    provider.ainvoke.side_effect = [
+    _set_nonstructured_responses(
+        provider,
         SimpleNamespace(
             content=json.dumps(
                 {
@@ -1098,11 +1258,7 @@ async def test_v9_comparison_transport_diagnostics_reach_agent_trace() -> None:
             ),
             usage_metadata={"input_tokens": 10, "output_tokens": 5},
         ),
-        SimpleNamespace(
-            content="Fallback answer from retrieved evidence.",
-            usage_metadata={"input_tokens": 12, "output_tokens": 7},
-        ),
-    ]
+    )
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(
             return_value=[
@@ -1130,7 +1286,7 @@ async def test_v9_comparison_transport_diagnostics_reach_agent_trace() -> None:
     assert v9["comparison_planner"]["validation_issues"] == expected_issues
     assert v9["comparison"]["fallback_stage"] == "transport_schema"
     assert v9["comparison"]["validation_issues"] == expected_issues
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -1163,7 +1319,7 @@ async def test_v9_comparison_specialization_flag_restores_existing_path() -> Non
     assert "comparison_plan" not in v9["query_contract"]
     assert v9["comparison_planner"]["requested"] is False
     assert "comparison" not in v9
-    assert provider.ainvoke.await_count == 1
+    assert provider.ainvoke.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -1640,7 +1796,7 @@ async def test_v9_runtime_persists_requirement_shadow_without_influencing_behavi
     assert v9["visual_execution"]["state"] == "not_requested"
     assert result.agent_trace["response_status"] == "complete"
     assert result.documents
-    assert provider.ainvoke.await_count == 1
+    assert provider.ainvoke.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -1670,7 +1826,7 @@ async def test_v9_requirement_guided_runtime_defaults_off_and_keeps_baseline_que
     assert guidance["enabled"] is False
     assert guidance["mode"] == "off"
     assert guidance["applied_task_count"] == 0
-    assert provider.ainvoke.await_count == 1
+    assert provider.ainvoke.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -1702,7 +1858,7 @@ async def test_v9_requirement_guided_runtime_on_adds_advisory_without_extra_llm_
     assert guidance["enabled"] is True
     assert guidance["mode"] == "advisory"
     assert guidance["applied_task_count"] >= 1
-    assert provider.ainvoke.await_count == 1
+    assert provider.ainvoke.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -2243,3 +2399,502 @@ async def test_required_visual_execution_error_remains_qualified_partial(
     assert result.agent_trace["response_status"] == "qualified_partial"
     assert visual["state"] == "required_but_not_satisfied"
     assert visual["failure_reason"] == "RuntimeError:stage_execution_failed"
+
+
+def _wave2_scope(*doc_ids: str) -> ResolvedSourceScope:
+    return ResolvedSourceScope(
+        requested_doc_ids=list(doc_ids),
+        resolved_doc_ids=list(doc_ids),
+        authorized_doc_ids=list(doc_ids),
+    )
+
+
+def _wave2_document(doc_id: str, statement: str) -> Document:
+    return Document(
+        page_content=statement,
+        metadata={"doc_id": doc_id, "chunk_id": f"chunk-{doc_id}"},
+    )
+
+
+def _patch_wave2_admission(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    scope: ResolvedSourceScope,
+    contract: QueryContract,
+) -> None:
+    async def admission(**_kwargs: object) -> V9AdmissionContract:
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
+
+
+@pytest.mark.asyncio
+async def test_campaign_qualifies_two_slots_and_persists_slot_bound_claims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scope = _wave2_scope("doc-1", "doc-2")
+    contract = QueryContract(
+        route="exact_structured",
+        intent="Report the requested protocol facts.",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="first protocol",
+                authorized_source_doc_ids=["doc-1"],
+            ),
+            RequiredSlot(
+                slot_id="S2",
+                description="second protocol",
+                authorized_source_doc_ids=["doc-2"],
+            ),
+        ],
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=3,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+    documents = {
+        "doc-1": _wave2_document("doc-1", "Protocol Alpha uses frozen layers."),
+        "doc-2": _wave2_document("doc-2", "Protocol Beta tunes all layers."),
+    }
+
+    async def retrieve(
+        _user_id: str,
+        _query: str,
+        authorized_doc_ids: list[str],
+    ) -> list[Document]:
+        return [documents[doc_id] for doc_id in authorized_doc_ids]
+
+    _patch_wave2_admission(monkeypatch, scope=scope, contract=contract)
+    provider = _StructuredProviderFactory()
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve,
+        provider_factory=provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="Report the two requested facts.",
+        user_id="user-a",
+        authorized_doc_ids=list(scope.authorized_doc_ids),
+        setup_snapshot={**_setup(), "max_output_tokens": 8192},
+        trace_id="wave2-two-slot-trace",
+    )
+
+    v9 = result.agent_trace["agentic_v9"]
+    assert set(v9["sufficiency"]["supported_slot_ids"]) == {"S1", "S2"}
+    packed_ids = set(v9["context_pack"]["packed_evidence_ids"])
+    assert {
+        slot_id
+        for packet in v9["evidence_packets"]
+        if packet["evidence_id"] in packed_ids
+        for slot_id in packet["slot_ids"]
+    } == {"S1", "S2"}
+    assert {claim["slot_id"] for claim in v9["final_claims"]} == {"S1", "S2"}
+    assert len(v9["final_claims"]) == 2
+    assert result.agent_trace["response_status"] == "complete"
+    assert {packet["validation_status"] for packet in v9["evidence_packets"]} == {
+        "quote_bound"
+    }
+    assert len(provider.qualification_outputs[0]["packets"]) == 2
+    assert len(
+        {
+            packet["source_evidence_id"]
+            for packet in provider.qualification_outputs[0]["packets"]
+        }
+    ) == 2
+    assert {packet["source"]["doc_id"] for packet in v9["evidence_packets"]} == {
+        "doc-1",
+        "doc-2",
+    }, {
+        "retrieval_diagnostics": v9["retrieval_diagnostics"],
+        "evidence_packets": v9["evidence_packets"],
+        "qualification_outputs": provider.qualification_outputs,
+        "purposes": provider.purposes,
+    }
+    packet_docs = {
+        packet["evidence_id"]: packet["source"]["doc_id"]
+        for packet in v9["evidence_packets"]
+    }
+    claimed_docs = {
+        packet_docs[evidence_id]
+        for claim in v9["final_claims"]
+        for evidence_id in claim["evidence_ids"]
+    }
+    assert {document.metadata["doc_id"] for document in result.documents} == claimed_docs
+    assert provider.final_payloads[0]["contract"]["required_slots"]
+    assert provider.final_payloads[0]["slot_resolutions"]
+
+
+@pytest.mark.asyncio
+async def test_campaign_rejects_raw_candidate_when_qualification_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scope = _wave2_scope("doc-1")
+    contract = QueryContract(
+        route="exact_structured",
+        intent="Report the protocol.",
+        required_slots=[RequiredSlot(slot_id="S1", description="protocol")],
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=2,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+    _patch_wave2_admission(monkeypatch, scope=scope, contract=contract)
+    provider = _StructuredProviderFactory(qualification_slots_by_round=[set()])
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[_wave2_document("doc-1", "The protocol uses frozen layers.")]
+        ),
+        provider_factory=provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="Report the protocol.",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "max_output_tokens": 8192},
+        trace_id="wave2-invalid-qualification",
+    )
+
+    v9 = result.agent_trace["agentic_v9"]
+    assert result.agent_trace["response_status"] == "insufficient"
+    assert v9["evidence_packets"] == []
+    assert v9["final_claims"] == []
+    assert v9["metrics"]["final_generation_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_campaign_qualifies_repair_evidence_before_marking_slot_supported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scope = _wave2_scope("doc-1")
+    contract = QueryContract(
+        route="exact_structured",
+        intent="Report the recovered protocol.",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="recovered protocol",
+                authorized_source_doc_ids=["doc-1"],
+            )
+        ],
+        max_retrieval_rounds=2,
+        max_repair_rounds=1,
+        max_llm_calls=3,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+    retrieval_count = 0
+
+    async def retrieve(
+        _user_id: str,
+        _query: str,
+        _authorized_doc_ids: list[str],
+    ) -> list[Document]:
+        nonlocal retrieval_count
+        retrieval_count += 1
+        if retrieval_count == 1:
+            return []
+        return [_wave2_document("doc-1", "The recovered protocol freezes layers.")]
+
+    _patch_wave2_admission(monkeypatch, scope=scope, contract=contract)
+    provider = _StructuredProviderFactory()
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve,
+        provider_factory=provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="Report the recovered protocol.",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "max_output_tokens": 8192},
+        trace_id="wave2-repair-qualification",
+    )
+
+    v9 = result.agent_trace["agentic_v9"]
+    assert retrieval_count == 2
+    assert result.agent_trace["response_status"] == "complete"
+    assert v9["repairs"][0]["repair_round_index"] == 1
+    assert v9["slot_resolutions"][0]["status"] == "supported"
+    assert v9["evidence_packets"][0]["validation_status"] == "quote_bound"
+
+
+@pytest.mark.asyncio
+async def test_campaign_denied_repair_qualification_preserves_prior_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scope = _wave2_scope("doc-1", "doc-2")
+    contract = QueryContract(
+        route="multi_document_exact",
+        intent="Report both protocols.",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="known protocol",
+                authorized_source_doc_ids=["doc-1"],
+            ),
+            RequiredSlot(
+                slot_id="S2",
+                description="missing protocol",
+                authorized_source_doc_ids=["doc-2"],
+            ),
+        ],
+        max_retrieval_rounds=2,
+        max_repair_rounds=1,
+        max_llm_calls=2,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+    doc_2_retrievals = 0
+
+    async def retrieve(
+        _user_id: str,
+        _query: str,
+        authorized_doc_ids: list[str],
+    ) -> list[Document]:
+        nonlocal doc_2_retrievals
+        if authorized_doc_ids == ["doc-1"]:
+            return [_wave2_document("doc-1", "The known protocol freezes layers.")]
+        doc_2_retrievals += 1
+        if doc_2_retrievals <= 2:
+            return []
+        return [_wave2_document("doc-2", "The missing protocol tunes layers.")]
+
+    _patch_wave2_admission(monkeypatch, scope=scope, contract=contract)
+    provider = _StructuredProviderFactory(final_slots={"S1"})
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=retrieve,
+        provider_factory=provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="Report both protocols.",
+        user_id="user-a",
+        authorized_doc_ids=list(scope.authorized_doc_ids),
+        setup_snapshot={**_setup(), "max_output_tokens": 8192},
+        trace_id="wave2-denied-repair-qualification",
+    )
+
+    v9 = result.agent_trace["agentic_v9"]
+    assert result.agent_trace["response_status"] == "qualified_partial"
+    assert {packet["source"]["doc_id"] for packet in v9["evidence_packets"]} == {
+        "doc-1"
+    }
+    assert v9["slot_resolutions"] == [
+        {
+            "slot_id": "S1",
+            "status": "supported",
+            "evidence_ids": [v9["evidence_packets"][0]["evidence_id"]],
+            "reason": None,
+            "resolution_stage": "sufficiency_gate",
+        },
+        {
+            "slot_id": "S2",
+            "status": "not_found",
+            "evidence_ids": [],
+            "reason": "No valid evidence or persisted resolution is available.",
+            "resolution_stage": "sufficiency_gate",
+        },
+    ]
+    assert [document.metadata["doc_id"] for document in result.documents] == [
+        "doc-1"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_campaign_rejected_high_risk_claim_is_not_used_as_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scope = _wave2_scope("doc-1")
+    statement = "Model A is best with a score of 91 points."
+    contract = QueryContract(
+        route="exact_structured",
+        intent="Report the recorded score.",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="recorded score",
+                locator_hints=["Section Results"],
+            )
+        ],
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=3,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+    _patch_wave2_admission(monkeypatch, scope=scope, contract=contract)
+    provider = _StructuredProviderFactory(
+        final_statement_by_slot={"S1": statement},
+        verifier_supported=False,
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content=statement,
+                    metadata={
+                        "doc_id": "doc-1",
+                        "chunk_id": "chunk-doc-1",
+                        "section": "Results",
+                    },
+                )
+            ]
+        ),
+        provider_factory=provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="Report the recorded score.",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "max_output_tokens": 8192},
+        trace_id="wave2-rejected-high-risk-claim",
+    )
+
+    final_claims = result.agent_trace["agentic_v9"]["final_claims"]
+    assert final_claims, {
+        "status": result.agent_trace["response_status"],
+        "purposes": provider.purposes,
+        "v9": result.agent_trace["agentic_v9"],
+    }
+    claim = final_claims[0]
+    assert result.agent_trace["response_status"] == "insufficient"
+    assert claim["support_type"] == "qualified"
+    assert claim["qualified_reason"] == "not supported"
+    assert result.documents == []
+    assert result.source_doc_ids == []
+
+
+def test_deterministic_partial_does_not_accept_unverified_high_risk_claim() -> None:
+    scope = _wave2_scope("doc-1")
+    contract = QueryContract(
+        route="exact_structured",
+        intent="Report the recorded score.",
+        required_slots=[RequiredSlot(slot_id="S1", description="recorded score")],
+        max_retrieval_rounds=1,
+        max_llm_calls=1,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+    packet = EvidencePacket(
+        schema_version="1",
+        evidence_id="det:high-risk",
+        task_id="task-1",
+        round_id="round-1",
+        query_id="query-1",
+        slot_ids=["S1"],
+        statement="Model A is best with a score of 91 points.",
+        support_type="direct",
+        source=EvidenceSource(
+            doc_id="doc-1",
+            chunk_id="chunk-1",
+            source_span_hash="sha256:source-span",
+        ),
+        scope=EvidenceScope(),
+        locator=SourceLocator(section="Results"),
+        extractor_version="v9-deterministic-1",
+        validation_status="deterministic_valid",
+    )
+    evaluation = runtime_module.evaluate_sufficiency(contract, (packet,))
+
+    result = runtime_module._deterministic_partial_answer(
+        contract=contract,
+        evaluation=evaluation,
+        packets=(packet,),
+    )
+
+    assert result.response_status == "insufficient"
+    assert result.used_evidence_ids == []
+    assert result.claims[0].support_type == "qualified"
+    assert result.claims[0].qualified_reason == (
+        "claim_verification_required_but_unavailable"
+    )
+    assert "Unable to confirm" in result.answer
+
+
+@pytest.mark.asyncio
+async def test_campaign_preserves_validated_visual_packet_through_final_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scope = _wave2_scope("doc-1")
+    contract = QueryContract(
+        route="exact_structured",
+        intent="Report the visible table fact.",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="visible table fact",
+                visual_policy="required",
+            )
+        ],
+        visual_required=True,
+        evidence_extraction_required=True,
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=3,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+
+    async def extract_visual(
+        task: object,
+        _documents: list[Document],
+        _question: str,
+        _controller: object,
+    ) -> VisualEvidenceExtractionResult:
+        return VisualEvidenceExtractionResult(
+            packets=(
+                EvidencePacket(
+                    schema_version="1",
+                    evidence_id="visual-evidence-1",
+                    task_id=task.task_id,
+                    round_id=task.round_id,
+                    query_id=task.query_id,
+                    slot_ids=list(task.target_slot_ids),
+                    statement="The table shows the visible result.",
+                    support_type="direct",
+                    source=EvidenceSource(
+                        doc_id="doc-1", chunk_id="chunk-doc-1", asset_id="asset-1"
+                    ),
+                    scope=EvidenceScope(),
+                    locator=SourceLocator(pdf_page_index=1, table_id="table-1"),
+                    validation_status="deterministic_valid",
+                ),
+            )
+        )
+
+    _patch_wave2_admission(monkeypatch, scope=scope, contract=contract)
+    provider = _StructuredProviderFactory()
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[_wave2_document("doc-1", "")]
+        ),
+        visual_extractor=extract_visual,
+        provider_factory=provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="Report the visible table fact.",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "max_output_tokens": 8192},
+        trace_id="wave2-visual-preservation",
+    )
+
+    v9 = result.agent_trace["agentic_v9"]
+    assert result.agent_trace["response_status"] == "complete"
+    assert [packet["evidence_id"] for packet in v9["evidence_packets"]] == [
+        "visual-evidence-1"
+    ]
+    assert v9["final_claims"][0]["slot_id"] == "S1"
+    assert v9["final_claims"][0]["evidence_ids"] == ["visual-evidence-1"]

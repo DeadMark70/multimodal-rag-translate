@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -20,13 +21,32 @@ from evaluation.agentic_v9_admission import V9AdmissionContract
 from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
 
 
-class _LegacyTextProvider:
+class _StructuredFinalProvider:
     def __init__(self) -> None:
-        self.ainvoke = AsyncMock(
-            return_value=SimpleNamespace(
-                content="The authorized source reports a score of 0.91.",
-                usage_metadata={"input_tokens": 12, "output_tokens": 9},
-            )
+        self.ainvoke = AsyncMock(side_effect=self._respond)
+
+    @staticmethod
+    async def _respond(messages: list[dict[str, object]]) -> object:
+        payload = json.loads(str(messages[-1]["content"]))
+        packet = payload["packed_evidence_packets"][0]
+        return SimpleNamespace(
+            content=json.dumps(
+                {
+                    "supported_findings": [
+                        {
+                            "slot_id": "S1",
+                            "statement": (
+                                "The authorized source reports a score of 0.91."
+                            ),
+                            "support_type": "direct",
+                            "evidence_ids": [packet["evidence_id"]],
+                            "premise_evidence_ids": [],
+                        }
+                    ],
+                    "unresolved_requirements": [],
+                }
+            ),
+            usage_metadata={"input_tokens": 12, "output_tokens": 9},
         )
 
 
@@ -44,7 +64,11 @@ async def test_missing_visual_capability_preserves_authorized_text_answer(
         route="exact_structured",
         intent="read the reported table score",
         required_slots=[
-            RequiredSlot(slot_id="S1", description="reported table score")
+            RequiredSlot(
+                slot_id="S1",
+                description="reported table score",
+                locator_hints=["Table 1"],
+            )
         ],
         visual_required=True,
         evidence_extraction_required=True,
@@ -62,16 +86,17 @@ async def test_missing_visual_capability_preserves_authorized_text_answer(
         "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract",
         admission,
     )
-    provider = _LegacyTextProvider()
+    provider = _StructuredFinalProvider()
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(
             return_value=[
                 Document(
-                    page_content="Table 1 reports a score of 0.91.",
+                    page_content="Table 1 reports a score of 0.91 points.",
                     metadata={
                         "doc_id": "doc-1",
                         "chunk_id": "chunk-1",
                         "page_number": 2,
+                        "table_id": "Table 1",
                     },
                 )
             ]
@@ -97,7 +122,8 @@ async def test_missing_visual_capability_preserves_authorized_text_answer(
     )
 
     assert result.agent_trace["response_status"] == "complete"
-    assert result.answer == "The authorized source reports a score of 0.91."
+    assert "The authorized source reports a score of 0.91." in result.answer
+    assert "[v1:doc-1 p.3, Table 1;" in result.answer
     assert result.documents
     assert result.source_doc_ids == ["doc-1"]
     assert (
