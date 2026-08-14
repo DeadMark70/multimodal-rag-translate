@@ -12,8 +12,11 @@ from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
     EvidenceSource,
+    QueryContract,
     RequiredSlot,
+    ResponseConstraint,
     SourceLocator,
+    SynthesisObligation,
 )
 from data_base.agentic_v9.token_estimator import PromptTokenEstimate, TokenEstimator
 
@@ -477,3 +480,47 @@ def test_required_packet_closure_overrides_preferred_packet_limit() -> None:
         decision.reason == "required_evidence_over_preferred_limit"
         for decision in result.selection_decisions
     )
+
+
+def test_synthesis_obligations_and_constraints_never_appear_in_context_packing() -> None:
+    contract = QueryContract(
+        contract_version="2",
+        route="bounded_compare",
+        intent="Compare Model A and Model B.",
+        required_slots=[
+            RequiredSlot(slot_id="S1", description="Model A score"),
+            RequiredSlot(slot_id="S2", description="Model B score"),
+        ],
+        synthesis_obligations=[
+            SynthesisObligation(
+                obligation_id="O1",
+                kind="comparison",
+                description="Compare scores",
+                depends_on_slot_ids=["S1", "S2"],
+            )
+        ],
+        response_constraints=[
+            ResponseConstraint(
+                constraint_id="C1",
+                kind="output_format",
+                description="Table output",
+            )
+        ],
+    )
+    packets = [
+        _packet("p1", slot_ids=["S1"], statement="Model A score is 0.95"),
+        _packet("p2", slot_ids=["S2"], statement="Model B score is 0.90"),
+    ]
+    packer = EvidenceContextPacker(
+        setup_input_ceiling=500,
+        remaining_runtime_tokens=500,
+        final_output_reserve=50,
+    )
+
+    result = packer.pack(packets, required_slots=contract)
+
+    assert result.failure_reason is None
+    assert set(result.tokens_by_slot.keys()) == {"S1", "S2"}
+    assert "O1" not in result.tokens_by_slot
+    assert "C1" not in result.tokens_by_slot
+

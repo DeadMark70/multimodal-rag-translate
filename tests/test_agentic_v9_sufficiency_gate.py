@@ -12,8 +12,10 @@ from data_base.agentic_v9.schemas import (
     EvidenceSource,
     QueryContract,
     RequiredSlot,
+    ResponseConstraint,
     SlotResolution,
     SourceLocator,
+    SynthesisObligation,
 )
 from data_base.agentic_v9.sufficiency_gate import evaluate_sufficiency
 
@@ -161,3 +163,45 @@ def test_gate_rejects_persisted_supported_resolution_without_known_valid_evidenc
                 )
             ],
         )
+
+
+def test_synthesis_obligations_and_constraints_never_appear_in_sufficiency_or_repairables() -> None:
+    contract = QueryContract(
+        contract_version="2",
+        route="bounded_compare",
+        intent="Compare Model A and Model B.",
+        required_slots=[
+            RequiredSlot(slot_id="S1", description="Model A score"),
+            RequiredSlot(slot_id="S2", description="Model B score"),
+        ],
+        synthesis_obligations=[
+            SynthesisObligation(
+                obligation_id="O1",
+                kind="comparison",
+                description="Compare scores",
+                depends_on_slot_ids=["S1", "S2"],
+            )
+        ],
+        response_constraints=[
+            ResponseConstraint(
+                constraint_id="C1",
+                kind="output_format",
+                description="Table output",
+            )
+        ],
+    )
+
+    result = evaluate_sufficiency(
+        contract,
+        [_packet("p1", "S1")],
+    )
+
+    assert [r.slot_id for r in result.slot_resolutions] == ["S1", "S2"]
+    assert result.report.supported_slot_ids == ["S1"]
+    assert result.report.not_found_slot_ids == ["S2"]
+    assert result.repairable_slot_ids == ("S2",)
+    assert all("O1" not in res.slot_id for res in result.slot_resolutions)
+    assert all("C1" not in res.slot_id for res in result.slot_resolutions)
+    assert "O1" not in result.repairable_slot_ids
+    assert "C1" not in result.repairable_slot_ids
+

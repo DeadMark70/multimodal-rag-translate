@@ -15,9 +15,11 @@ from data_base.agentic_v9.schemas import (
     QueryContract,
     RequiredSlot,
     ResolvedSourceScope,
+    ResponseConstraint,
     SlotResolution,
     SourceLocator,
     SufficiencyReport,
+    SynthesisObligation,
 )
 from data_base.agentic_v9.sufficiency_gate import (
     SufficiencyEvaluation,
@@ -496,3 +498,119 @@ def test_equivalent_locator_and_term_variants_group_before_two_task_cap() -> Non
         ["S3"],
     ]
     assert plan.tasks[0].locator_hints == ["Table 3"]
+
+
+def test_atomic_comparison_repair_targets_only_missing_slots_of_first_missing_subject() -> None:
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-a", "doc-b"],
+        resolved_doc_ids=["doc-a", "doc-b"],
+        authorized_doc_ids=["doc-a", "doc-b"],
+        source_name_to_doc_ids={
+            "DocA.pdf": ["doc-a"],
+            "DocB.pdf": ["doc-b"],
+        },
+    )
+    contract = QueryContract(
+        contract_version="2",
+        route="bounded_compare",
+        intent="Compare Model A and Model B.",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Model A parameters",
+                entity_ids=["Model A"],
+                authorized_source_doc_ids=["doc-a"],
+                locator_hints=["Table 1"],
+            ),
+            RequiredSlot(
+                slot_id="S2",
+                description="Model A FLOPs",
+                entity_ids=["Model A"],
+                authorized_source_doc_ids=["doc-a"],
+                locator_hints=["Table 1"],
+            ),
+            RequiredSlot(
+                slot_id="S3",
+                description="Model B parameters",
+                entity_ids=["Model B"],
+                authorized_source_doc_ids=["doc-b"],
+                locator_hints=["Table 2"],
+            ),
+            RequiredSlot(
+                slot_id="S4",
+                description="Model B FLOPs",
+                entity_ids=["Model B"],
+                authorized_source_doc_ids=["doc-b"],
+                locator_hints=["Table 2"],
+            ),
+        ],
+        synthesis_obligations=[
+            SynthesisObligation(
+                obligation_id="O1",
+                kind="comparison",
+                description="Synthesize comparison",
+                depends_on_slot_ids=["S1", "S2", "S3", "S4"],
+            )
+        ],
+        response_constraints=[
+            ResponseConstraint(
+                constraint_id="C1",
+                kind="output_format",
+                description="Present in markdown table",
+            )
+        ],
+        comparison_plan=ComparisonPlan(
+            subjects=[
+                ComparisonSubject(
+                    subject_id="model_a",
+                    display_name="Model A",
+                    retrieval_query="Model A parameters FLOPs",
+                    evidence_slot_ids=["S1", "S2"],
+                ),
+                ComparisonSubject(
+                    subject_id="model_b",
+                    display_name="Model B",
+                    retrieval_query="Model B parameters FLOPs",
+                    evidence_slot_ids=["S3", "S4"],
+                ),
+            ],
+            dimensions=["parameters", "FLOPs"],
+        ),
+        max_repair_rounds=1,
+        resolved_source_scope=scope,
+    )
+    sufficiency = SufficiencyEvaluation(
+        slot_resolutions=(
+            SlotResolution(slot_id="S1", status="supported", evidence_ids=["e1"]),
+            SlotResolution(slot_id="S2", status="supported", evidence_ids=["e2"]),
+            SlotResolution(slot_id="S3", status="supported", evidence_ids=["e3"]),
+            SlotResolution(slot_id="S4", status="not_found"),
+        ),
+        report=SufficiencyReport(
+            evidence_complete=False,
+            answerable=True,
+            response_status="qualified_partial",
+            supported_slot_ids=["S1", "S2", "S3"],
+            not_found_slot_ids=["S4"],
+        ),
+        repairable_slot_ids=("S4",),
+    )
+
+    plan = build_repair_plan(
+        contract=contract,
+        sufficiency=sufficiency,
+        query_id="q-repair-atomic",
+        repair_round_index=1,
+        final_budget_available=True,
+    )
+
+    assert len(plan.tasks) == 1
+    task = plan.tasks[0]
+    assert task.subject_id == "model_b"
+    assert task.target_slot_ids == ["S4"]
+    assert "O1" not in task.target_slot_ids
+    assert "C1" not in task.target_slot_ids
+    assert task.source_scope.authorized_doc_ids == ["doc-b"]
+    assert "Model B" in task.query
+    assert "Table 2" in task.locator_hints
+

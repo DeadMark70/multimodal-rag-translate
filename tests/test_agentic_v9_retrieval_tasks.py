@@ -5,13 +5,18 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from data_base.agentic_v9.retrieval_tasks import RetrievalTaskCompiler
+from data_base.agentic_v9.retrieval_tasks import (
+    RetrievalTaskCompiler,
+    compile_retrieval_tasks,
+)
 from data_base.agentic_v9.schemas import (
     ComparisonPlan,
     ComparisonSubject,
     QueryContract,
     RequiredSlot,
     ResolvedSourceScope,
+    ResponseConstraint,
+    SynthesisObligation,
 )
 
 
@@ -422,3 +427,176 @@ def test_legacy_retrieval_task_serialization_omits_absent_subject_id() -> None:
     ).tasks[0]
 
     assert "subject_id" not in task.model_dump(mode="json")
+
+
+def test_comparison_contract_compiles_subject_bound_tasks_to_atomic_slot_ids() -> None:
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-a", "doc-b"],
+        resolved_doc_ids=["doc-a", "doc-b"],
+        authorized_doc_ids=["doc-a", "doc-b"],
+        source_name_to_doc_ids={
+            "DocA.pdf": ["doc-a"],
+            "DocB.pdf": ["doc-b"],
+        },
+    )
+    contract = QueryContract(
+        contract_version="2",
+        route="bounded_compare",
+        intent="Compare Model A and Model B.",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Model A parameters",
+                entity_ids=["Model A"],
+                authorized_source_doc_ids=["doc-a"],
+                locator_hints=["Table 1"],
+            ),
+            RequiredSlot(
+                slot_id="S2",
+                description="Model A FLOPs",
+                entity_ids=["Model A"],
+                authorized_source_doc_ids=["doc-a"],
+                locator_hints=["Table 1"],
+            ),
+            RequiredSlot(
+                slot_id="S3",
+                description="Model B parameters",
+                entity_ids=["Model B"],
+                authorized_source_doc_ids=["doc-b"],
+                locator_hints=["Table 2"],
+            ),
+            RequiredSlot(
+                slot_id="S4",
+                description="Model B FLOPs",
+                entity_ids=["Model B"],
+                authorized_source_doc_ids=["doc-b"],
+                locator_hints=["Table 2"],
+            ),
+        ],
+        synthesis_obligations=[
+            SynthesisObligation(
+                obligation_id="O1",
+                kind="comparison",
+                description="Synthesize comparison between Model A and Model B",
+                depends_on_slot_ids=["S1", "S2", "S3", "S4"],
+            )
+        ],
+        response_constraints=[
+            ResponseConstraint(
+                constraint_id="C1",
+                kind="output_format",
+                description="Present in markdown table",
+            )
+        ],
+        comparison_plan=ComparisonPlan(
+            subjects=[
+                ComparisonSubject(
+                    subject_id="model_a",
+                    display_name="Model A",
+                    retrieval_query="Model A parameters FLOPs Table 1",
+                    evidence_slot_ids=["S1", "S2"],
+                ),
+                ComparisonSubject(
+                    subject_id="model_b",
+                    display_name="Model B",
+                    retrieval_query="Model B parameters FLOPs Table 2",
+                    evidence_slot_ids=["S3", "S4"],
+                ),
+            ],
+            dimensions=["parameters", "FLOPs"],
+        ),
+        max_retrieval_rounds=1,
+        max_repair_rounds=1,
+        max_llm_calls=2,
+        runtime_token_budget=10_000,
+        resolved_source_scope=scope,
+    )
+
+    plan = compile_retrieval_tasks(
+        question="Compare A and B.", query_id="q-1", contract=contract
+    )
+
+    assert [task.target_slot_ids for task in plan.tasks] == [["S1", "S2"], ["S3", "S4"]]
+    assert all("O1" not in task.target_slot_ids for task in plan.tasks)
+    assert all("C1" not in task.target_slot_ids for task in plan.tasks)
+    assert plan.tasks[0].source_scope.authorized_doc_ids == ["doc-a"]
+    assert plan.tasks[1].source_scope.authorized_doc_ids == ["doc-b"]
+    assert plan.tasks[0].subject_id == "model_a"
+    assert plan.tasks[1].subject_id == "model_b"
+
+
+def test_comparison_contract_fails_closed_when_subject_has_no_valid_slots_or_no_authorized_sources() -> None:
+    scope = ResolvedSourceScope(
+        authorized_doc_ids=["doc-a", "doc-b"],
+    )
+    contract_invalid_slots = QueryContract(
+        contract_version="2",
+        route="bounded_compare",
+        intent="Compare.",
+        required_slots=[
+            RequiredSlot(slot_id="S1", description="Slot 1"),
+            RequiredSlot(slot_id="S2", description="Slot 2"),
+        ],
+        comparison_plan=ComparisonPlan(
+            subjects=[
+                ComparisonSubject(
+                    subject_id="sub_a",
+                    display_name="Sub A",
+                    retrieval_query="Sub A query",
+                    evidence_slot_ids=["S1"],
+                ),
+                ComparisonSubject(
+                    subject_id="sub_b",
+                    display_name="Sub B",
+                    retrieval_query="Sub B query",
+                    evidence_slot_ids=["S2"],
+                ),
+            ]
+        ),
+        resolved_source_scope=scope,
+    )
+    contract_invalid_slots.comparison_plan.subjects[0].evidence_slot_ids = ["S99"]
+    with pytest.raises(ValueError, match="no valid mapped slots"):
+        compile_retrieval_tasks(
+            question="Compare.", query_id="q-err", contract=contract_invalid_slots
+        )
+
+    contract_no_docs = QueryContract(
+        contract_version="2",
+        route="bounded_compare",
+        intent="Compare.",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Slot 1",
+                authorized_source_doc_ids=["doc-unrelated"],
+            ),
+            RequiredSlot(
+                slot_id="S2",
+                description="Slot 2",
+                authorized_source_doc_ids=["doc-b"],
+            ),
+        ],
+        comparison_plan=ComparisonPlan(
+            subjects=[
+                ComparisonSubject(
+                    subject_id="sub_a",
+                    display_name="Sub A",
+                    retrieval_query="Sub A query",
+                    evidence_slot_ids=["S1"],
+                ),
+                ComparisonSubject(
+                    subject_id="sub_b",
+                    display_name="Sub B",
+                    retrieval_query="Sub B query",
+                    evidence_slot_ids=["S2"],
+                ),
+            ]
+        ),
+        resolved_source_scope=scope,
+    )
+    with pytest.raises(ValueError, match="no authorized source intersection"):
+        compile_retrieval_tasks(
+            question="Compare.", query_id="q-err2", contract=contract_no_docs
+        )
+

@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from pydantic import BaseModel, ConfigDict, Field
 
 from data_base.agentic_v9.schemas import (
+    ComparisonSubject,
     QueryContract,
     RequiredSlot,
     ResolvedSourceScope,
@@ -119,28 +120,49 @@ class RetrievalTaskCompiler:
         comparison = contract.comparison_plan
         if comparison is None:
             raise ValueError("comparison task compilation requires a plan")
-        slot_ids = {slot.slot_id for slot in contract.required_slots}
         tasks: list[RetrievalTask] = []
         for subject in comparison.subjects:
-            slot_id = f"comparison-subject:{subject.subject_id}"
-            if slot_id not in slot_ids:
+            target_slot_ids = _comparison_subject_slot_ids(subject, contract)
+            slots = [
+                slot
+                for slot in contract.required_slots
+                if slot.slot_id in target_slot_ids
+            ]
+            if not slots:
                 raise ValueError(
-                    f"comparison subject has no required slot: {subject.subject_id}"
+                    f"comparison subject has no valid mapped slots: {subject.subject_id}"
+                )
+            authorized_doc_ids = _unique(
+                doc_id
+                for slot in slots
+                for doc_id in authorized_doc_ids_for_slot(slot, scope)
+            )
+            if not authorized_doc_ids:
+                raise ValueError(
+                    f"comparison subject has no authorized source intersection: {subject.subject_id}"
                 )
             source_group_id = f"comparison:{subject.subject_id}"
+            locator_hints = _unique(
+                hint
+                for slot in slots
+                for hint in (slot.locator_hints or contract.locator_hints)
+            ) or list(contract.locator_hints)
+            visual_required = contract.visual_required or any(
+                slot.visual_policy == "required" for slot in slots
+            )
             tasks.append(
                 RetrievalTask(
                     task_id=f"{query_id}:round-1:{source_group_id}",
                     round_id="round-1",
                     query_id=query_id,
                     query=subject.retrieval_query,
-                    target_slot_ids=[slot_id],
-                    source_scope=scope,
+                    target_slot_ids=target_slot_ids,
+                    source_scope=_scope_for_docs(scope, authorized_doc_ids),
                     source_group_id=source_group_id,
                     subject_id=subject.subject_id,
-                    locator_hints=list(contract.locator_hints),
+                    locator_hints=locator_hints,
                     graph_policy=contract.graph_policy or "never",
-                    visual_required=contract.visual_required,
+                    visual_required=visual_required,
                 )
             )
         return tasks
@@ -365,6 +387,33 @@ class RetrievalTaskCompiler:
     def _partition_slots(self, contract: QueryContract) -> tuple[list[str], list[str]]:
         slot_ids = self._slot_ids(contract)
         return [slot_ids[0]], slot_ids[1:] or [slot_ids[0]]
+
+
+def _comparison_subject_slot_ids(
+    subject: ComparisonSubject, contract: QueryContract
+) -> list[str]:
+    """Resolve active or historical slot IDs for one comparison subject."""
+    if subject.evidence_slot_ids:
+        known_slots = {slot.slot_id for slot in contract.required_slots}
+        valid_slots = [
+            slot_id
+            for slot_id in subject.evidence_slot_ids
+            if slot_id in known_slots
+        ]
+        if not valid_slots or len(valid_slots) != len(subject.evidence_slot_ids):
+            raise ValueError(
+                f"comparison subject has no valid mapped slots: {subject.subject_id}"
+            )
+        return valid_slots
+
+    historical_slot_id = f"comparison-subject:{subject.subject_id}"
+    known_slots = {slot.slot_id for slot in contract.required_slots}
+    if historical_slot_id in known_slots:
+        return [historical_slot_id]
+
+    raise ValueError(
+        f"comparison subject has no valid mapped slots: {subject.subject_id}"
+    )
 
 
 def _scope_for_doc(scope: ResolvedSourceScope, doc_id: str) -> ResolvedSourceScope:

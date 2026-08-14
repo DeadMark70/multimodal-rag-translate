@@ -179,6 +179,12 @@ def _build_comparison_repair_plan(
             stop_reason="repair_round_cap_reached",
         )
 
+    if contract.comparison_plan is None:
+        return RepairPlan(
+            repair_round_index=repair_round_index,
+            stop_reason="no_repairable_slots",
+        )
+
     not_found_slot_ids = {
         resolution.slot_id
         for resolution in sufficiency.slot_resolutions
@@ -192,16 +198,26 @@ def _build_comparison_repair_plan(
         for slot in contract.required_slots
         if slot.required and slot.slot_id in missing_slot_ids
     }
-    subjects_by_slot_id = {
-        f"comparison-subject:{subject.subject_id}": subject
-        for subject in contract.comparison_plan.subjects
-    }
 
     tasks: list[RetrievalTask] = []
-    for slot_id, subject in subjects_by_slot_id.items():
-        slot = slots_by_id.get(slot_id)
-        if slot is None:
+    for subject in contract.comparison_plan.subjects:
+        subject_slot_ids = _comparison_subject_slot_ids(subject, contract)
+        missing_slots = [
+            slots_by_id[slot_id]
+            for slot_id in subject_slot_ids
+            if slot_id in slots_by_id
+        ]
+        if not missing_slots:
             continue
+
+        authorized_doc_ids = _unique(
+            doc_id
+            for slot in missing_slots
+            for doc_id in authorized_doc_ids_for_slot(slot, scope)
+        )
+        if not authorized_doc_ids:
+            continue
+
         source_group_id = (
             f"repair-{repair_round_index}:comparison:{subject.subject_id}"
         )
@@ -212,19 +228,22 @@ def _build_comparison_repair_plan(
                 query_id=query_id,
                 query=_comparison_repair_query(
                     contract=contract,
-                    slot=slot,
+                    slots=missing_slots,
                     subject=subject,
                 ),
-                target_slot_ids=[slot.slot_id],
-                source_scope=scope.model_copy(deep=True),
+                target_slot_ids=[slot.slot_id for slot in missing_slots],
+                source_scope=_scope_for_docs(scope, authorized_doc_ids),
                 source_group_id=source_group_id,
                 subject_id=subject.subject_id,
                 locator_hints=display_locator_hints(
-                    slot.locator_hints or contract.locator_hints
+                    hint
+                    for slot in missing_slots
+                    for hint in (slot.locator_hints or contract.locator_hints)
                 ),
                 graph_policy=contract.graph_policy or "never",
                 visual_required=(
-                    contract.visual_required or slot.visual_policy == "required"
+                    contract.visual_required
+                    or any(slot.visual_policy == "required" for slot in missing_slots)
                 ),
             )
         )
@@ -241,26 +260,44 @@ def _build_comparison_repair_plan(
     return RepairPlan(repair_round_index=repair_round_index, tasks=tasks)
 
 
+def _comparison_subject_slot_ids(
+    subject: ComparisonSubject, contract: QueryContract
+) -> list[str]:
+    """Resolve active or historical slot IDs for one comparison subject."""
+    if subject.evidence_slot_ids:
+        known_slots = {slot.slot_id for slot in contract.required_slots}
+        return [
+            slot_id
+            for slot_id in subject.evidence_slot_ids
+            if slot_id in known_slots
+        ]
+    historical_slot_id = f"comparison-subject:{subject.subject_id}"
+    known_slots = {slot.slot_id for slot in contract.required_slots}
+    if historical_slot_id in known_slots:
+        return [historical_slot_id]
+    return []
+
+
 def _comparison_repair_query(
     *,
     contract: QueryContract,
-    slot: RequiredSlot,
+    slots: list[RequiredSlot],
     subject: ComparisonSubject,
 ) -> str:
     plan = contract.comparison_plan
     assert plan is not None
-    return " ".join(
-        _unique(
-            [
-                subject.display_name,
-                *subject.aliases,
-                subject.retrieval_query,
-                *plan.dimensions,
-                slot.description,
-                *slot.locator_hints,
-            ]
-        )
-    )
+    parts = [
+        subject.display_name,
+        *subject.aliases,
+        subject.retrieval_query,
+        *plan.dimensions,
+    ]
+    for slot in slots:
+        parts.extend(slot.source_name_hints)
+        parts.extend(slot.entity_ids)
+        parts.append(slot.description)
+        parts.extend(slot.locator_hints)
+    return " ".join(_unique(parts))
 
 
 def _repair_query(*, contract: QueryContract, slot_id: str) -> str:
