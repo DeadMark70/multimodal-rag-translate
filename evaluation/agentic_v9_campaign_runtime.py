@@ -36,11 +36,9 @@ from data_base.agentic_v9.context_packer import (
     FinalContextSelectionPolicy,
     PackedEvidenceContext,
 )
-from data_base.agentic_v9.comparison_planner import (
-    ComparisonPlanner,
-    apply_comparison_overlay,
-    comparison_planner_response_schema,
-    is_suspected_comparison,
+from data_base.agentic_v9.contract_planner import (
+    QuestionContractPlanner,
+    atomic_contract_planner_response_schema,
 )
 from data_base.agentic_v9.comparison_context import (
     select_balanced_comparison_packets,
@@ -344,16 +342,16 @@ class AgenticV9CampaignRuntime:
         )
         source_scope = admission.source_scope
         runtime_contract = admission.contract
-        comparison_plan_requested = (
-            self._comparison_specialization_enabled
-            and is_suspected_comparison(question)
+        preparation = QuestionContractPlanner.prepare(
+            question=question,
+            base_contract=runtime_contract,
         )
         request = V9ExecutionRequest(
             question=question,
             requested_doc_ids=list(source_scope.authorized_doc_ids),
             setup_snapshot=dict(setup_snapshot),
             trace_id=trace_id,
-            comparison_plan_requested=comparison_plan_requested,
+            contract_plan_requested=preparation.semantic_planning_requested,
         )
         deadline = self._policy_runtime.start_deadline()
         cancellation = ExecutionCancellation()
@@ -371,23 +369,14 @@ class AgenticV9CampaignRuntime:
             "comparison_coverage_before_repair": None,
             "comparison_coverage_after_repair": None,
             "final_evidence_packets": None,
-            "comparison_planner": {
-                "requested": comparison_plan_requested,
-                "status": "not_requested",
-                "fallback_reason": None,
-                "fallback_stage": None,
-                "validation_issues": [],
-                "latency_ms": 0.0,
-            },
+            "atomic_planner_call_count": 0,
+            "atomic_planner_latency_ms": 0.0,
             "graph_execution": None,
             "visual_execution": None,
             "visual_packets": [],
             "visual_packets_emitted": False,
             "retrieval_diagnostics": [],
             "requirement_shadow_documents": [],
-            "requirement_guidance": _initial_requirement_guidance(
-                question=question, setup_snapshot=setup_snapshot
-            ),
         }
 
         async def resolve_scope(_: V9ExecutionRequest) -> ResolvedSourceScope:
@@ -396,72 +385,77 @@ class AgenticV9CampaignRuntime:
         async def plan_contract(
             _: V9ExecutionRequest, scope: ResolvedSourceScope
         ) -> QueryContract:
-            # Route planning remains deterministic unless the planner has an
-            # explicitly injected budgeted ambiguity invoker.  This prevents an
-            # unreserved provider call while the contract budget is unknown.
-            contract = (
-                runtime_contract.model_copy(
-                    update={"max_llm_calls": runtime_contract.max_llm_calls + 1}
+            planner_admitted = False
+            if preparation.semantic_planning_requested:
+                post_contract = validate_post_contract_feasibility(
+                    contract=runtime_contract,
+                    setup_snapshot=setup_snapshot,
+                    remaining_token_budget=runtime_contract.runtime_token_budget,
+                    remaining_llm_calls=runtime_contract.max_llm_calls,
+                    route_plan_used=False,
+                    contract_plan_requested=True,
                 )
-                if comparison_plan_requested
-                else runtime_contract
-            )
-            post_contract = validate_post_contract_feasibility(
-                contract=contract,
-                setup_snapshot=setup_snapshot,
-                remaining_token_budget=contract.runtime_token_budget,
-                remaining_llm_calls=contract.max_llm_calls,
-                route_plan_used=False,
-                comparison_plan_requested=comparison_plan_requested,
-            )
+                if post_contract.status is FeasibilityStatus.FEASIBLE:
+                    planner_admitted = True
+                else:
+                    post_contract = validate_post_contract_feasibility(
+                        contract=runtime_contract,
+                        setup_snapshot=setup_snapshot,
+                        remaining_token_budget=runtime_contract.runtime_token_budget,
+                        remaining_llm_calls=runtime_contract.max_llm_calls,
+                        route_plan_used=False,
+                        contract_plan_requested=False,
+                    )
+            else:
+                post_contract = validate_post_contract_feasibility(
+                    contract=runtime_contract,
+                    setup_snapshot=setup_snapshot,
+                    remaining_token_budget=runtime_contract.runtime_token_budget,
+                    remaining_llm_calls=runtime_contract.max_llm_calls,
+                    route_plan_used=False,
+                    contract_plan_requested=False,
+                )
+
             state["post_contract"] = post_contract
             if post_contract.status is FeasibilityStatus.CONFIGURATION_INCOMPATIBLE:
-                state["contract"] = contract
+                state["contract"] = runtime_contract
                 raise _ConfigurationIncompatible(
                     stage="post_contract", feasibility=post_contract
                 )
+
             state["budget_controller"] = RunBudgetController(
-                max_llm_calls=contract.max_llm_calls,
-                runtime_token_budget=contract.runtime_token_budget,
+                max_llm_calls=runtime_contract.max_llm_calls,
+                runtime_token_budget=runtime_contract.runtime_token_budget,
                 setup_snapshot=setup_snapshot,
                 final_input_tokens=_final_input_reserve(
-                    setup_snapshot, contract.runtime_token_budget
+                    setup_snapshot, runtime_contract.runtime_token_budget
                 ),
             )
-            if comparison_plan_requested:
-                controller = state["budget_controller"]
-                assert isinstance(controller, RunBudgetController)
-                planner = ComparisonPlanner(
-                    llm_invoker=BudgetedLlmInvoker(
-                        controller=controller,
-                        provider_factory=self._provider_factory,
-                        observer=llm_call_observer,
-                        provider_name=str(
-                            setup_snapshot.get("provider") or "unknown"
-                        ),
-                        model_name=str(
-                            setup_snapshot.get("model_name") or "unknown"
-                        ),
-                    )
-                )
-                outcome = await planner.plan(
-                    question=question,
-                    timeout_seconds=min(64.0, deadline.remaining_seconds()),
-                )
-                state["comparison_planner"] = {
-                    "requested": True,
-                    "status": outcome.status,
-                    "fallback_reason": outcome.fallback_reason,
-                    "fallback_stage": outcome.fallback_stage,
-                    "validation_issues": [
-                        issue.model_dump(mode="json")
-                        for issue in outcome.validation_issues
-                    ],
-                    "latency_ms": outcome.latency_ms,
-                }
-                if outcome.status == "planned" and outcome.plan is not None:
-                    contract = apply_comparison_overlay(contract, outcome.plan)
+
+            controller = state["budget_controller"]
+            assert isinstance(controller, RunBudgetController)
+            invoker = BudgetedLlmInvoker(
+                controller=controller,
+                provider_factory=self._provider_factory,
+                observer=llm_call_observer,
+                provider_name=str(
+                    setup_snapshot.get("provider") or "unknown"
+                ),
+                model_name=str(
+                    setup_snapshot.get("model_name") or "unknown"
+                ),
+            )
+            planner = QuestionContractPlanner(llm_invoker=invoker)
+            outcome = await planner.plan(
+                question=question,
+                base_contract=runtime_contract,
+                preparation=preparation,
+                allow_semantic_planning=planner_admitted,
+            )
+            contract = outcome.contract
             state["contract"] = contract
+            state["atomic_planner_call_count"] = outcome.planner_call_count
+            state["atomic_planner_latency_ms"] = outcome.latency_ms
             state["graph_execution"] = _initial_graph_execution(contract)
             state["visual_execution"] = _initial_visual_execution(contract)
             return contract
@@ -474,9 +468,7 @@ class AgenticV9CampaignRuntime:
                 state["task_slot_ids"][task.task_id] = list(task.target_slot_ids)
                 state["task_subject_ids"][task.task_id] = task.subject_id
                 source_scope = list(task.source_scope.authorized_doc_ids)
-                retrieval_query, _ = _requirement_guided_query(
-                    task, state["requirement_guidance"]
-                )
+                retrieval_query = task.query
                 if self._uses_default_retrieval:
                     docs = await self._retrieve_documents(
                         user_id,
@@ -829,6 +821,10 @@ class AgenticV9CampaignRuntime:
                 "provider_attempt_count": budget_snapshot.provider_attempt_count,
                 "reserved_tokens": budget_snapshot.reserved_tokens,
                 "reconciled_tokens": budget_snapshot.reconciled_tokens,
+                "atomic_planner_call_count": state.get("atomic_planner_call_count", 0),
+                "comparison_planner_call_count": 0,
+                "slot_binding_method": "task_target_inherited",
+                "semantic_qualification": "not_enabled",
             }
         )
         final = executed.final_answer or FinalAnswerResult(
@@ -865,7 +861,6 @@ class AgenticV9CampaignRuntime:
         if not isinstance(final_evidence_packets, tuple):
             final_evidence_packets = tuple(state["evidence_packets"])
         comparison = _comparison_trace_projection(
-            planner=state["comparison_planner"],
             contract=state["contract"],
             retrieval_diagnostics=state["retrieval_diagnostics"],
             coverage_before=state["comparison_coverage_before_repair"],
@@ -901,11 +896,7 @@ class AgenticV9CampaignRuntime:
                 "expected_sources_used_at_runtime": False,
             },
             "query_contract": state["contract"].model_dump(mode="json"),
-            "comparison_planner": state["comparison_planner"],
             "requirement_shadow": requirement_shadow,
-            "requirement_guidance": _requirement_guidance_projection(
-                state["requirement_guidance"]
-            ),
             "retrieval_diagnostics": state["retrieval_diagnostics"],
             "evidence_packets": [
                 packet.model_dump(mode="json")
@@ -1169,7 +1160,8 @@ def _comparison_subject_coverage(
     covered = [
         subject.subject_id
         for subject in plan.subjects
-        if f"comparison-subject:{subject.subject_id}" in covered_slot_ids
+        if any(slot_id in covered_slot_ids for slot_id in subject.evidence_slot_ids)
+        or f"comparison-subject:{subject.subject_id}" in covered_slot_ids
     ]
     return {
         "covered": covered,
@@ -1183,7 +1175,6 @@ def _comparison_subject_coverage(
 
 def _comparison_trace_projection(
     *,
-    planner: Mapping[str, Any],
     contract: QueryContract,
     retrieval_diagnostics: Sequence[Mapping[str, Any]],
     coverage_before: Mapping[str, Any] | None,
@@ -1192,9 +1183,8 @@ def _comparison_trace_projection(
     packed: PackedEvidenceContext | None,
     final_status: str,
 ) -> dict[str, Any] | None:
-    requested = bool(planner.get("requested"))
     plan = contract.comparison_plan
-    if not requested and plan is None:
+    if plan is None:
         return None
 
     before = coverage_before or {"covered": [], "missing": []}
@@ -1206,25 +1196,31 @@ def _comparison_trace_projection(
             "doc_id": packet.source.doc_id,
             "chunk_id": packet.source.chunk_id,
             "subject_ids": [
-                slot_id.removeprefix("comparison-subject:")
-                for slot_id in packet.slot_ids
-                if slot_id.startswith("comparison-subject:")
+                subject.subject_id
+                for subject in plan.subjects
+                if any(
+                    slot_id in packet.slot_ids
+                    for slot_id in subject.evidence_slot_ids
+                )
+                or f"comparison-subject:{subject.subject_id}" in packet.slot_ids
             ],
         }
         for packet in packed_packets
     ]
-    final_subject_ids: list[str] = []
-    if plan is not None:
-        packed_slot_ids = {
-            slot_id
-            for packet in packed_packets
-            for slot_id in packet.slot_ids
-        }
-        final_subject_ids = [
-            subject.subject_id
-            for subject in plan.subjects
-            if f"comparison-subject:{subject.subject_id}" in packed_slot_ids
-        ]
+    packed_slot_ids = {
+        slot_id
+        for packet in packed_packets
+        for slot_id in packet.slot_ids
+    }
+    final_subject_ids = [
+        subject.subject_id
+        for subject in plan.subjects
+        if any(
+            slot_id in packed_slot_ids
+            for slot_id in subject.evidence_slot_ids
+        )
+        or f"comparison-subject:{subject.subject_id}" in packed_slot_ids
+    ]
 
     task_diagnostics = [
         dict(row)
@@ -1232,33 +1228,24 @@ def _comparison_trace_projection(
         if isinstance(row.get("subject_id"), str)
     ]
     return {
-        "planner_status": str(planner.get("status") or "not_requested"),
-        "planner_latency_ms": float(planner.get("latency_ms") or 0.0),
-        "planner_fallback_reason": (
-            str(planner["fallback_reason"])
-            if planner.get("fallback_reason")
-            else None
+        "planner_status": (
+            "planned"
+            if contract.slot_plan_status in {"planned", "complete"}
+            or contract.comparison_plan is not None
+            else "fallback"
+            if contract.slot_plan_status == "fallback"
+            else "not_requested"
         ),
-        "fallback_stage": (
-            str(planner["fallback_stage"])
-            if planner.get("fallback_stage")
-            else None
-        ),
-        "validation_issues": [
-            dict(issue)
-            for issue in planner.get("validation_issues") or []
-            if isinstance(issue, dict)
+        "planner_latency_ms": 0.0,
+        "planner_fallback_reason": contract.slot_plan_fallback_reason,
+        "fallback_stage": None,
+        "validation_issues": [],
+        "is_comparison": True,
+        "subjects": [
+            subject.model_dump(mode="json")
+            for subject in plan.subjects
         ],
-        "is_comparison": plan is not None,
-        "subjects": (
-            [
-                subject.model_dump(mode="json")
-                for subject in plan.subjects
-            ]
-            if plan is not None
-            else []
-        ),
-        "dimensions": list(plan.dimensions) if plan is not None else [],
+        "dimensions": list(plan.dimensions),
         "task_diagnostics": task_diagnostics,
         "coverage_before_repair": list(before.get("covered") or []),
         "missing_before_repair": list(before.get("missing") or []),
@@ -1543,12 +1530,12 @@ async def _list_owned_document_ids(user_id: str) -> list[str]:
 
 def _provider_for_purpose(purpose: str) -> Any:
     provider = get_llm("synthesizer")
-    if purpose != "agentic_v9_comparison_plan":
-        return provider
-    return bind_json_schema(
-        provider,
-        schema=comparison_planner_response_schema(),
-    )
+    if purpose == "atomic_contract_planning":
+        return bind_json_schema(
+            provider,
+            schema=atomic_contract_planner_response_schema(),
+        )
+    return provider
 
 
 def _project_chunk_id(

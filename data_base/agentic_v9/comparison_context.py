@@ -37,9 +37,10 @@ def select_balanced_comparison_packets(
     candidates: list[_Candidate] = []
     for index, packet in enumerate(packets):
         matches = [
-            subject_id
-            for subject_id in subject_ids
-            if f"comparison-subject:{subject_id}" in packet.slot_ids
+            subject.subject_id
+            for subject in plan.subjects
+            if any(slot_id in packet.slot_ids for slot_id in subject.evidence_slot_ids)
+            or f"comparison-subject:{subject.subject_id}" in packet.slot_ids
         ]
         if len(matches) != 1:
             continue

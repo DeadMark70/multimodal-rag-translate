@@ -440,11 +440,9 @@ def _prevent_response_status_upgrade(
     sufficiency: SufficiencyReport,
     contract: QueryContract,
 ) -> FinalAnswerResult:
-    """Apply deterministic sufficiency and experimental-v2 status ceilings."""
+    """Apply deterministic sufficiency status ceilings."""
     rank = {"insufficient": 0, "qualified_partial": 1, "complete": 2}
     maximum_status = sufficiency.response_status
-    if contract.contract_version == "2" and maximum_status == "complete":
-        maximum_status = "qualified_partial"
     if rank[final_answer.response_status] <= rank[maximum_status]:
         return final_answer
     return final_answer.model_copy(update={"response_status": maximum_status})

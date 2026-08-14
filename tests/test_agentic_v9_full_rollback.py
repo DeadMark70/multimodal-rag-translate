@@ -100,7 +100,16 @@ async def test_missing_visual_capability_preserves_authorized_text_answer(
     assert result.answer == "The authorized source reports a score of 0.91."
     assert result.documents
     assert result.source_doc_ids == ["doc-1"]
+    v9 = result.agent_trace["agentic_v9"]
+    contract = v9["query_contract"]
+    assert contract["contract_version"] == "2"
+    assert [slot["slot_id"] for slot in contract["required_slots"]] == ["S1"]
+    assert v9["metrics"]["atomic_planner_call_count"] <= 1
+    assert v9["metrics"]["comparison_planner_call_count"] == 0
+    assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
+    assert v9["metrics"]["semantic_qualification"] == "not_enabled"
     assert (
-        result.agent_trace["agentic_v9"]["visual_execution"]["state"]
+        v9["visual_execution"]["state"]
         == "required_but_not_satisfied"
     )
+

@@ -356,3 +356,60 @@ async def test_graph_provider_failure_returns_safe_route_fallback() -> None:
     assert invoker.calls == ["graph_route"]
     assert decision.router_reason == "llm_router_fallback"
     assert decision.path == "blended"
+
+
+@pytest.mark.asyncio
+async def test_active_atomic_contract_runtime_boundary_never_invokes_independent_comparison() -> None:
+    from unittest.mock import AsyncMock
+    from langchain_core.documents import Document
+    from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
+
+    recorded_calls: list[dict[str, object]] = []
+
+    class _BoundaryRecordingProvider:
+        async def ainvoke(self, messages: object) -> object:
+            recorded_calls.append({"messages": messages})
+            return SimpleNamespace(
+                content="The reported score is 0.91.",
+                usage_metadata={"input_tokens": 12, "output_tokens": 7},
+            )
+
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="Table 1 reports a score of 0.91.",
+                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+                )
+            ]
+        ),
+        provider_factory=lambda _purpose: _BoundaryRecordingProvider(),
+        document_reference_resolver=AsyncMock(return_value={"doc-1": "doc-1"}),
+    )
+
+    result = await runtime.execute(
+        question="What is the reported score in Table 1?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={
+            "max_input_tokens": 4096,
+            "max_output_tokens": 8192,
+            "max_llm_calls": 5,
+            "runtime_token_budget": 50_000,
+            "thinking_mode": False,
+        },
+        trace_id="boundary-trace-1",
+    )
+
+    v9 = result.agent_trace["agentic_v9"]
+    contract = v9["query_contract"]
+    assert contract["contract_version"] == "2"
+    assert [slot["slot_id"] for slot in contract["required_slots"]] == ["S1"]
+    assert v9["metrics"]["atomic_planner_call_count"] <= 1
+    assert v9["metrics"]["comparison_planner_call_count"] == 0
+    assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
+    assert v9["metrics"]["semantic_qualification"] == "not_enabled"
+    assert not any(
+        call.get("phase") == "comparison_plan" for call in recorded_calls
+    )
+
