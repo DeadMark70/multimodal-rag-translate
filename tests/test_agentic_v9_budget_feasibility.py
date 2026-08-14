@@ -96,7 +96,7 @@ def test_post_contract_admits_high_thinking_single_lookup_and_charges_final() ->
     assert result.reserved_tokens == 9_728
 
 
-def test_post_contract_reserves_optional_comparison_planner_only_when_requested() -> None:
+def test_post_contract_reserves_optional_contract_planner_only_when_requested() -> None:
     contract = QueryContract(
         route="single_lookup",
         intent="Compare two models.",
@@ -109,18 +109,20 @@ def test_post_contract_reserves_optional_comparison_planner_only_when_requested(
         setup_snapshot=_setup(),
         remaining_token_budget=18_688,
         remaining_llm_calls=2,
-        comparison_plan_requested=True,
+        contract_plan_requested=True,
     )
 
     assert result.status is FeasibilityStatus.FEASIBLE
     assert result.required_provider_calls == {
-        "comparison_plan": 1,
+        "contract_planning": 1,
         "final_answer": 1,
     }
-    assert result.max_provider_calls_by_phase["comparison_plan"] == 1
+    assert result.max_provider_calls_by_phase["contract_planning"] == 1
+    assert "comparison_plan" not in result.required_provider_calls
+    assert "comparison_plan" not in result.max_provider_calls_by_phase
 
 
-def test_post_contract_default_does_not_expose_comparison_planner() -> None:
+def test_post_contract_default_does_not_reserve_contract_planner_or_comparison_planner() -> None:
     contract = QueryContract(
         route="single_lookup",
         intent="Find one fact.",
@@ -135,11 +137,12 @@ def test_post_contract_default_does_not_expose_comparison_planner() -> None:
         remaining_llm_calls=1,
     )
 
+    assert "contract_planning" not in result.required_provider_calls
     assert "comparison_plan" not in result.required_provider_calls
     assert "comparison_plan" not in result.max_provider_calls_by_phase
 
 
-def test_post_contract_rejects_unfunded_comparison_planner_before_execution() -> None:
+def test_post_contract_rejects_unfunded_contract_planner_before_execution() -> None:
     contract = QueryContract(
         route="single_lookup",
         intent="Compare two models.",
@@ -147,16 +150,25 @@ def test_post_contract_rejects_unfunded_comparison_planner_before_execution() ->
         runtime_token_budget=9_728,
     )
 
-    result = validate_post_contract_feasibility(
+    with_planner = validate_post_contract_feasibility(
         contract=contract,
         setup_snapshot=_setup(),
-        remaining_token_budget=9_728,
-        remaining_llm_calls=1,
-        comparison_plan_requested=True,
+        remaining_token_budget=contract.runtime_token_budget,
+        remaining_llm_calls=contract.max_llm_calls,
+        contract_plan_requested=True,
+    )
+    without_planner = validate_post_contract_feasibility(
+        contract=contract,
+        setup_snapshot=_setup(),
+        remaining_token_budget=contract.runtime_token_budget,
+        remaining_llm_calls=contract.max_llm_calls,
+        contract_plan_requested=False,
     )
 
-    assert result.status is FeasibilityStatus.CONFIGURATION_INCOMPATIBLE
-    assert result.reason == "required_provider_calls_exceed_call_budget"
+    assert with_planner.status is FeasibilityStatus.CONFIGURATION_INCOMPATIBLE
+    assert with_planner.reason == "required_provider_calls_exceed_call_budget"
+    assert without_planner.status is FeasibilityStatus.FEASIBLE
+    assert contract.max_llm_calls == 1
 
 
 def test_post_contract_charges_used_contract_planning_to_exact_contract() -> None:

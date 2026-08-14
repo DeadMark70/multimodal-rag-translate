@@ -162,8 +162,8 @@ class V9ExecutionCore:
             cancellation,
         )
         planning_phase = (
-            "comparison_plan"
-            if request.comparison_plan_requested
+            "contract_planning"
+            if request.contract_plan_requested
             else "route_plan"
         )
         contract = await self._run_stage(

@@ -1166,3 +1166,88 @@ async def test_core_returns_partial_without_packing_when_deadline_is_exhausted()
     assert calls == ["partial"]
     assert result.final_answer.response_status == "complete"
     assert result.metrics.final_generation_count == 0
+
+
+@pytest.mark.asyncio
+async def test_execution_core_uses_contract_planning_phase_when_requested() -> None:
+    stage_calls: list[SimpleNamespace] = []
+    runtime = V9ExecutionPolicyRuntime()
+    original_run_llm = runtime.run_llm
+    original_run_retrieval = runtime.run_retrieval
+
+    async def spy_run_llm(
+        operation: object,
+        *,
+        phase: str,
+        cancellation: object = None,
+        deadline: object = None,
+    ) -> object:
+        stage_calls.append(SimpleNamespace(kind="llm", phase=phase))
+        return await original_run_llm(
+            operation,  # type: ignore[arg-type]
+            phase=phase,
+            cancellation=cancellation,  # type: ignore[arg-type]
+            deadline=deadline,  # type: ignore[arg-type]
+        )
+
+    async def spy_run_retrieval(
+        operation: object,
+        *,
+        phase: str = "evidence_extract",
+        cancellation: object = None,
+        deadline: object = None,
+    ) -> object:
+        stage_calls.append(SimpleNamespace(kind="retrieval", phase=phase))
+        return await original_run_retrieval(
+            operation,  # type: ignore[arg-type]
+            phase=phase,
+            cancellation=cancellation,  # type: ignore[arg-type]
+            deadline=deadline,  # type: ignore[arg-type]
+        )
+
+    runtime.run_llm = spy_run_llm  # type: ignore[method-assign]
+    runtime.run_retrieval = spy_run_retrieval  # type: ignore[method-assign]
+
+    core = V9ExecutionCore(
+        stages=V9ExecutionStages(
+            resolve_scope=lambda *_: ResolvedSourceScope(authorized_doc_ids=["doc-1"]),
+            plan_contract=lambda *_: _contract(),
+            retrieve=lambda *_: (),
+            deterministic_candidates=lambda *_: (),
+            evaluate_sufficiency=lambda *_: _complete_sufficiency(),
+            plan_repair=lambda *_: (),
+            prose_curate=lambda *_: (),
+            resolve_conflicts=lambda *_: ConflictStageResult(
+                sufficiency=_complete_sufficiency()
+            ),
+            pack=lambda *_: SimpleNamespace(packets=(), is_packable=True),
+            generate_final=lambda *_: FinalAnswerResult(
+                response_status="complete", answer="0.91", final_generation_count=1
+            ),
+            deterministic_partial=lambda *_: FinalAnswerResult(
+                response_status="complete"
+            ),
+        ),
+        runtime=runtime,
+    )
+
+    request = V9ExecutionRequest(
+        question="ambiguous question",
+        trace_id="trace-1",
+        contract_plan_requested=True,
+    )
+    await core.execute(request, runtime_context=_runtime_context())
+    assert len(stage_calls) >= 2
+    assert stage_calls[0].phase == "route_plan"
+    assert stage_calls[1].phase == "contract_planning"
+
+    stage_calls.clear()
+    request_default = V9ExecutionRequest(
+        question="exact question",
+        trace_id="trace-2",
+        contract_plan_requested=False,
+    )
+    await core.execute(request_default, runtime_context=_runtime_context())
+    assert len(stage_calls) >= 2
+    assert stage_calls[0].phase == "route_plan"
+    assert stage_calls[1].phase == "route_plan"
