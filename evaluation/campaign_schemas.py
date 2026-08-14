@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from data_base.agentic_v9.repair import RepairPlan
 from data_base.agentic_v9.schemas import (
+    AtomicPlannerDiagnostics,
     BudgetReservation,
     ConflictCandidate,
     EvidencePacket,
@@ -773,6 +774,7 @@ class V9ExecutionObservability(BaseModel):
     conflicts: list[ConflictCandidate] = Field(default_factory=list)
     final_claims: list[FinalClaim] = Field(default_factory=list)
     metrics: V9ExecutionMetrics = Field(default_factory=V9ExecutionMetrics)
+    planner_diagnostics: AtomicPlannerDiagnostics | None = None
     comparison: dict[str, Any] | None = None
 
 

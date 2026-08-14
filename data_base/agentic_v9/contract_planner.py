@@ -9,7 +9,7 @@ import re
 import time
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from core.prompt_loader import PromptRegistry
 from data_base.agentic_v9.requirement_decomposition import (
@@ -19,6 +19,7 @@ from data_base.agentic_v9.requirement_decomposition import (
 )
 from data_base.agentic_v9.schemas import (
     ATOMIC_SLOT_MATCHING_EXPERIMENTAL,
+    AtomicPlannerDiagnostics,
     BudgetExceededError,
     ComparisonPlan,
     ComparisonSubject,
@@ -36,6 +37,7 @@ from data_base.agentic_v9.schemas import (
     VisualPolicy,
     validate_active_atomic_contract,
 )
+from data_base.agentic_v9.retrieval_tasks import compile_retrieval_tasks
 from data_base.agentic_v9.slot_constraints import canonical_structured_locator
 
 _PROMPT_PATH = (
@@ -140,6 +142,7 @@ class AtomicContractPlanningOutcome:
     contract: QueryContract
     planner_call_count: Literal[0, 1]
     latency_ms: float
+    planner_diagnostics: AtomicPlannerDiagnostics
 
 
 def apply_atomic_contract_overlay(
@@ -186,6 +189,26 @@ def apply_atomic_contract_overlay(
 
 class _UnauthorizedSourceExpansion(ValueError):
     """Planner attempted to add a source outside the authorized scope."""
+
+
+class PlannerProviderInvocationError(RuntimeError):
+    """The admitted provider attempt did not yield a usable response."""
+
+
+class PlannerProviderEmptyResponseError(ValueError):
+    """The provider completed but did not return planner content."""
+
+
+class PlannerResponseDecodeError(ValueError):
+    """The provider response was not valid JSON."""
+
+
+class PlannerSchemaValidationError(ValueError):
+    """The decoded response did not meet the planner transport schema."""
+
+
+class PlannerSemanticValidationError(ValueError):
+    """The schema-valid decision violated planner semantic constraints."""
 
 
 class QuestionContractPlanner:
@@ -301,32 +324,42 @@ class QuestionContractPlanner:
                 ),
             )
             try:
-                response = await self._llm_invoker.invoke(
-                    phase="contract_planning",
-                    purpose="atomic_contract_planning",
-                    messages=[{"role": "user", "content": prompt}],
-                )
+                try:
+                    response = await self._llm_invoker.invoke(
+                        phase="contract_planning",
+                        purpose="atomic_contract_planning",
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                except (BudgetExceededError, TimeoutError):
+                    raise
+                except Exception as error:
+                    raise PlannerProviderInvocationError from error
                 decision = _parse_decision(response)
-                _validate_decision_scope(
-                    decision,
-                    allowed_source_names=set(requested_source_names),
-                )
-                _validate_decision_indexes(decision)
-                _validate_answer_free(
-                    decision,
-                    question=question,
-                    authorized_source_names=requested_source_names,
-                )
+                try:
+                    _validate_decision_scope(
+                        decision,
+                        allowed_source_names=set(requested_source_names),
+                    )
+                    _validate_decision_indexes(decision)
+                    _validate_answer_free(
+                        decision,
+                        question=question,
+                        authorized_source_names=requested_source_names,
+                    )
 
-                slots = _build_slots_from_decision(
-                    decision,
-                    scope=base_contract.resolved_source_scope,
-                )
-                obligations = _build_obligations_from_decision(decision)
-                constraints = _build_constraints_from_decision(decision)
-                comparison_plan = _build_comparison_from_decision(
-                    decision.comparison
-                )
+                    slots = _build_slots_from_decision(
+                        decision,
+                        scope=base_contract.resolved_source_scope,
+                    )
+                    obligations = _build_obligations_from_decision(decision)
+                    constraints = _build_constraints_from_decision(decision)
+                    comparison_plan = _build_comparison_from_decision(
+                        decision.comparison
+                    )
+                except (_UnauthorizedSourceExpansion, PlannerSemanticValidationError):
+                    raise
+                except (TypeError, ValueError, ValidationError) as error:
+                    raise PlannerSemanticValidationError from error
 
                 contract = apply_atomic_contract_overlay(
                     base_contract,
@@ -344,6 +377,11 @@ class QuestionContractPlanner:
                     contract=contract,
                     planner_call_count=1,
                     latency_ms=(time.perf_counter() - start_time) * 1000,
+                    planner_diagnostics=_planner_diagnostics(
+                        contract=contract,
+                        outcome="planned",
+                        provider_response_received=True,
+                    ),
                 )
             except TimeoutError:
                 return _safe_fallback_outcome(
@@ -351,6 +389,8 @@ class QuestionContractPlanner:
                     fallback_reason="planner_timeout",
                     planner_call_count=1,
                     latency_ms=(time.perf_counter() - start_time) * 1000,
+                    failure_stage="provider_invocation",
+                    failure_code="provider_attempt_failed",
                 )
             except BudgetExceededError:
                 return _safe_fallback_outcome(
@@ -358,6 +398,57 @@ class QuestionContractPlanner:
                     fallback_reason="planner_budget_rejected",
                     planner_call_count=1,
                     latency_ms=(time.perf_counter() - start_time) * 1000,
+                    failure_stage="budget_rejected",
+                    failure_code="budget_rejected",
+                )
+            except PlannerProviderInvocationError:
+                return _safe_fallback_outcome(
+                    base_contract=base_contract,
+                    fallback_reason="invalid_planner_output",
+                    planner_call_count=1,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    failure_stage="provider_invocation",
+                    failure_code="provider_attempt_failed",
+                )
+            except PlannerProviderEmptyResponseError:
+                return _safe_fallback_outcome(
+                    base_contract=base_contract,
+                    fallback_reason="invalid_planner_output",
+                    planner_call_count=1,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    failure_stage="provider_empty_response",
+                    failure_code="empty_response",
+                    provider_response_received=True,
+                )
+            except PlannerResponseDecodeError:
+                return _safe_fallback_outcome(
+                    base_contract=base_contract,
+                    fallback_reason="invalid_planner_output",
+                    planner_call_count=1,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    failure_stage="response_decode",
+                    failure_code="invalid_json",
+                    provider_response_received=True,
+                )
+            except PlannerSchemaValidationError:
+                return _safe_fallback_outcome(
+                    base_contract=base_contract,
+                    fallback_reason="invalid_planner_output",
+                    planner_call_count=1,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    failure_stage="schema_validation",
+                    failure_code="pydantic_validation_failed",
+                    provider_response_received=True,
+                )
+            except PlannerSemanticValidationError:
+                return _safe_fallback_outcome(
+                    base_contract=base_contract,
+                    fallback_reason="invalid_planner_output",
+                    planner_call_count=1,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    failure_stage="semantic_validation",
+                    failure_code="planner_semantic_rejection",
+                    provider_response_received=True,
                 )
             except _UnauthorizedSourceExpansion:
                 return _safe_fallback_outcome(
@@ -365,6 +456,9 @@ class QuestionContractPlanner:
                     fallback_reason="unauthorized_source_expansion",
                     planner_call_count=1,
                     latency_ms=(time.perf_counter() - start_time) * 1000,
+                    failure_stage="semantic_validation",
+                    failure_code="planner_semantic_rejection",
+                    provider_response_received=True,
                 )
             except Exception:
                 return _safe_fallback_outcome(
@@ -372,6 +466,9 @@ class QuestionContractPlanner:
                     fallback_reason="invalid_planner_output",
                     planner_call_count=1,
                     latency_ms=(time.perf_counter() - start_time) * 1000,
+                    failure_stage="semantic_validation",
+                    failure_code="planner_semantic_rejection",
+                    provider_response_received=True,
                 )
 
         # Deterministic path
@@ -415,6 +512,11 @@ class QuestionContractPlanner:
                 contract=contract,
                 planner_call_count=0,
                 latency_ms=(time.perf_counter() - start_time) * 1000,
+                planner_diagnostics=_planner_diagnostics(
+                    contract=contract,
+                    outcome="deterministic",
+                    provider_response_received=False,
+                ),
             )
         except Exception:
             return _safe_fallback_outcome(
@@ -422,6 +524,7 @@ class QuestionContractPlanner:
                 fallback_reason="deterministic_unusable",
                 planner_call_count=0,
                 latency_ms=(time.perf_counter() - start_time) * 1000,
+                failure_code="deterministic_unusable",
             )
 
 
@@ -431,6 +534,9 @@ def _safe_fallback_outcome(
     fallback_reason: str,
     planner_call_count: Literal[0, 1],
     latency_ms: float,
+    failure_stage: str | None = None,
+    failure_code: str | None = None,
+    provider_response_received: bool = False,
 ) -> AtomicContractPlanningOutcome:
     requested_names = (
         list(base_contract.resolved_source_scope.requested_source_names)
@@ -468,6 +574,13 @@ def _safe_fallback_outcome(
         contract=contract,
         planner_call_count=planner_call_count,
         latency_ms=latency_ms,
+        planner_diagnostics=_planner_diagnostics(
+            contract=contract,
+            outcome="degraded",
+            failure_stage=failure_stage,
+            failure_code=failure_code,
+            provider_response_received=provider_response_received,
+        ),
     )
 
 
@@ -477,9 +590,53 @@ def _parse_decision(response: Any) -> _PlannerDecision:
         content = response["content"]
     elif hasattr(response, "content"):
         content = response.content
-    if not isinstance(content, str):
-        raise ValueError("contract planner response must contain JSON text")
-    return _PlannerDecision.model_validate_json(content)
+    if not isinstance(content, str) or not content.strip():
+        raise PlannerProviderEmptyResponseError
+    try:
+        decoded = json.loads(content)
+    except json.JSONDecodeError as error:
+        raise PlannerResponseDecodeError from error
+    try:
+        return _PlannerDecision.model_validate(decoded)
+    except ValidationError as error:
+        raise PlannerSchemaValidationError from error
+
+
+def _planner_diagnostics(
+    *,
+    contract: QueryContract,
+    outcome: Literal["deterministic", "planned", "degraded"],
+    provider_response_received: bool,
+    failure_stage: str | None = None,
+    failure_code: str | None = None,
+) -> AtomicPlannerDiagnostics:
+    """Return a bounded projection that never includes provider exception text."""
+    return AtomicPlannerDiagnostics(
+        outcome=outcome,
+        failure_stage=failure_stage,
+        failure_code=failure_code,
+        provider_response_received=provider_response_received,
+        retrieval_query_strategy=(
+            "safe_fallback_original_question"
+            if outcome == "degraded"
+            else "atomic_slots"
+        ),
+        compiled_retrieval_task_count=_compiled_retrieval_task_count(contract),
+    )
+
+
+def _compiled_retrieval_task_count(contract: QueryContract) -> int:
+    """Measure the existing pure compiler without changing its task plan."""
+    try:
+        return len(
+            compile_retrieval_tasks(
+                question="planner diagnostics",
+                query_id="planner-diagnostics",
+                contract=contract,
+            ).tasks
+        )
+    except ValueError:
+        return 0
 
 
 def _validate_decision_scope(

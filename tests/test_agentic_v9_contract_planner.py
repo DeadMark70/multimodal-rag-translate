@@ -181,6 +181,14 @@ async def test_plan_accepted_deterministic_uses_zero_calls_and_deterministic_sou
     assert outcome.contract.slot_plan_source == "deterministic"
     assert outcome.contract.slot_plan_status == "complete"
     assert len(outcome.contract.required_slots) >= 2
+    assert outcome.planner_diagnostics.model_dump() == {
+        "outcome": "deterministic",
+        "failure_stage": None,
+        "failure_code": None,
+        "provider_response_received": False,
+        "retrieval_query_strategy": "atomic_slots",
+        "compiled_retrieval_task_count": len(outcome.contract.required_slots),
+    }
     assert [s.slot_id for s in outcome.contract.required_slots] == [
         f"S{i}" for i in range(1, len(outcome.contract.required_slots) + 1)
     ]
@@ -661,6 +669,108 @@ async def test_no_retry_after_invalid_output() -> None:
     assert outcome.planner_call_count == 1
     assert outcome.contract.slot_plan_status == "degraded"
     assert outcome.contract.slot_plan_fallback_reason == "invalid_planner_output"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "error", "expected_stage", "expected_code", "received"),
+    [
+        (None, RuntimeError("api_key=planner-provider-secret"), "provider_invocation", "provider_attempt_failed", False),
+        ({"content": ""}, None, "provider_empty_response", "empty_response", True),
+        ({"content": "{not json"}, None, "response_decode", "invalid_json", True),
+        ({"content": "{}"}, None, "schema_validation", "pydantic_validation_failed", True),
+        (
+            {
+                "content": json.dumps(
+                    {
+                        "evidence_requirements": [
+                            {
+                                "description": "The score is 0.9079.",
+                                "source_name_hints": ["paper.pdf"],
+                                "locator_hints": [],
+                                "expected_answer_type": "text",
+                                "depends_on_requirement_indexes": [],
+                                "visual_policy": "never",
+                            }
+                        ],
+                        "synthesis_obligations": [],
+                        "response_constraints": [],
+                        "comparison": None,
+                        "confidence": 0.8,
+                    }
+                )
+            },
+            None,
+            "semantic_validation",
+            "planner_semantic_rejection",
+            True,
+        ),
+    ],
+)
+async def test_planner_diagnostic_classifies_each_provider_failure_boundary(
+    response: object,
+    error: Exception | None,
+    expected_stage: str,
+    expected_code: str,
+    received: bool,
+) -> None:
+    """Fails if a planner boundary is merged into a generic fallback."""
+    decomp = QuestionDecomposition(
+        requirements=(DecomposedRequirement(text="Unclear.", method="fallback", confidence="low"),),
+        confidence="low",
+        semantic_planning_reasons=("unclear",),
+    )
+    outcome = await QuestionContractPlanner(
+        llm_invoker=_MockInvoker(response=response, error=error)
+    ).plan(
+        question="Unclear question.",
+        base_contract=_make_base_contract(),
+        preparation=AtomicContractPreparation(
+            decomposition=decomp,
+            semantic_planning_requested=True,
+            comparison_candidate=False,
+        ),
+    )
+
+    assert outcome.planner_diagnostics.model_dump() == {
+        "outcome": "degraded",
+        "failure_stage": expected_stage,
+        "failure_code": expected_code,
+        "provider_response_received": received,
+        "retrieval_query_strategy": "safe_fallback_original_question",
+        "compiled_retrieval_task_count": 1,
+    }
+    assert "planner-provider-secret" not in outcome.planner_diagnostics.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_planner_diagnostic_reports_budget_rejection_without_provider_response() -> None:
+    """Fails if rejected admission is reported as an invocation failure."""
+    decomp = QuestionDecomposition(
+        requirements=(DecomposedRequirement(text="Unclear.", method="fallback", confidence="low"),),
+        confidence="low",
+        semantic_planning_reasons=("unclear",),
+    )
+    outcome = await QuestionContractPlanner(
+        llm_invoker=_MockInvoker(error=BudgetExceededError("budget detail"))
+    ).plan(
+        question="Unclear question.",
+        base_contract=_make_base_contract(),
+        preparation=AtomicContractPreparation(
+            decomposition=decomp,
+            semantic_planning_requested=True,
+            comparison_candidate=False,
+        ),
+    )
+
+    assert outcome.planner_diagnostics.model_dump() == {
+        "outcome": "degraded",
+        "failure_stage": "budget_rejected",
+        "failure_code": "budget_rejected",
+        "provider_response_received": False,
+        "retrieval_query_strategy": "safe_fallback_original_question",
+        "compiled_retrieval_task_count": 1,
+    }
 
 
 @pytest.mark.asyncio

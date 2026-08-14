@@ -23,6 +23,15 @@ DecisionSource = Literal["deterministic", "llm_planner", "safe_fallback"]
 SlotPlanSource = Literal["deterministic", "llm_planner", "safe_fallback"]
 SlotPlanStatus = Literal["complete", "degraded"]
 SlotSemantics = Literal["heuristic_experimental", "atomic", "legacy_generic"]
+AtomicPlannerOutcome = Literal["deterministic", "planned", "degraded"]
+AtomicPlannerFailureStage = Literal[
+    "budget_rejected",
+    "provider_invocation",
+    "provider_empty_response",
+    "response_decode",
+    "schema_validation",
+    "semantic_validation",
+]
 SynthesisObligationKind = Literal[
     "comparison", "selection", "causal", "aggregation", "qualification"
 ]
@@ -76,6 +85,21 @@ ROUTE_GRAPH_POLICIES: dict[AgenticV9Route, GraphPolicy] = {
     "multi_hop": "locator_fallback",
     "graph_relational": "required_locator",
 }
+
+
+class AtomicPlannerDiagnostics(BaseModel):
+    """Sanitized terminal diagnostic for atomic contract planning."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: AtomicPlannerOutcome
+    failure_stage: AtomicPlannerFailureStage | None = None
+    failure_code: str | None = Field(default=None, max_length=96)
+    provider_response_received: bool
+    retrieval_query_strategy: Literal[
+        "atomic_slots", "safe_fallback_original_question"
+    ]
+    compiled_retrieval_task_count: int = Field(ge=0)
 
 
 def default_graph_policy(route: AgenticV9Route) -> GraphPolicy:

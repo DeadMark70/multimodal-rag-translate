@@ -1043,7 +1043,7 @@ async def test_v9_comparison_planner_failure_preserves_base_retrieval(
 ) -> None:
     provider = _Provider()
     provider.ainvoke.side_effect = [
-        RuntimeError("planner unavailable"),
+        RuntimeError("api_key=runtime-planner-secret"),
         SimpleNamespace(
             content="Fallback answer from retrieved evidence.",
             usage_metadata={"input_tokens": 12, "output_tokens": 7},
@@ -1075,6 +1075,15 @@ async def test_v9_comparison_planner_failure_preserves_base_retrieval(
     assert v9["query_contract"]["contract_version"] == "2"
     assert v9["metrics"]["atomic_planner_call_count"] == 1
     assert v9["metrics"]["comparison_planner_call_count"] == 0
+    assert v9["planner_diagnostics"] == {
+        "outcome": "degraded",
+        "failure_stage": "provider_invocation",
+        "failure_code": "provider_attempt_failed",
+        "provider_response_received": False,
+        "retrieval_query_strategy": "safe_fallback_original_question",
+        "compiled_retrieval_task_count": 1,
+    }
+    assert "runtime-planner-secret" not in json.dumps(v9)
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
     assert v9["metrics"]["semantic_qualification"] == "not_enabled"
     assert result.documents

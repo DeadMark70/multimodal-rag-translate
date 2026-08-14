@@ -16,6 +16,7 @@ from typing import Any, Literal, Sequence
 from core.errors import AppError, ErrorCode
 from data_base.agentic_v9.schemas import (
     ATOMIC_SLOT_MATCHING_EXPERIMENTAL,
+    AtomicPlannerDiagnostics,
     BudgetReservation,
     ConflictCandidate,
     EvidencePacket,
@@ -473,6 +474,11 @@ def _v9_observability_from_snapshot(
                 for item in payload.get("final_claims", [])
             ],
             metrics=V9ExecutionMetrics.model_validate(payload.get("metrics", {})),
+            planner_diagnostics=(
+                AtomicPlannerDiagnostics.model_validate(payload["planner_diagnostics"])
+                if payload.get("planner_diagnostics")
+                else None
+            ),
             comparison=(
                 redact_sensitive_value(payload["comparison"])
                 if isinstance(payload.get("comparison"), dict)
@@ -1303,6 +1309,13 @@ class ResearchAnalyticsService:
                     for item in payload.get("final_claims", [])
                 ],
                 metrics=V9ExecutionMetrics.model_validate(payload.get("metrics", {})),
+                planner_diagnostics=(
+                    AtomicPlannerDiagnostics.model_validate(
+                        payload["planner_diagnostics"]
+                    )
+                    if payload.get("planner_diagnostics")
+                    else None
+                ),
                 comparison=(
                     redact_sensitive_value(payload["comparison"])
                     if isinstance(payload.get("comparison"), dict)

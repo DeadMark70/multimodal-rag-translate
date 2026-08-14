@@ -267,6 +267,14 @@ def _canonical_export_run() -> CanonicalRunObservability:
                     evidence_ids=["evidence-1"],
                 )
             ],
+            planner_diagnostics={
+                "outcome": "degraded",
+                "failure_stage": "provider_invocation",
+                "failure_code": f"provider_attempt_failed {FREE_TEXT_SECRET}",
+                "provider_response_received": False,
+                "retrieval_query_strategy": "safe_fallback_original_question",
+                "compiled_retrieval_task_count": 1,
+            },
             comparison={
                 "planner_status": "planned",
                 "subjects": [
@@ -386,6 +394,11 @@ def test_export_projector_applies_all_nested_content_policies(
         "Evidence statement [redacted]" if include_retrieved_excerpts else None
     )
     assert projected.agentic_v9.evidence_packets[0].packet.locator.pdf_page_index == 0
+    assert projected.agentic_v9.planner_diagnostics is not None
+    assert (
+        projected.agentic_v9.planner_diagnostics.failure_code
+        == "provider_attempt_failed [redacted]"
+    )
     assert projected.agentic_v9.comparison is not None
     assert projected.agentic_v9.comparison.subjects[0].display_name == "Subject [redacted]"
     assert (

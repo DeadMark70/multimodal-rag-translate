@@ -371,6 +371,7 @@ class AgenticV9CampaignRuntime:
             "final_evidence_packets": None,
             "atomic_planner_call_count": 0,
             "atomic_planner_latency_ms": 0.0,
+            "planner_diagnostics": None,
             "graph_execution": None,
             "visual_execution": None,
             "visual_packets": [],
@@ -456,6 +457,7 @@ class AgenticV9CampaignRuntime:
             state["contract"] = contract
             state["atomic_planner_call_count"] = outcome.planner_call_count
             state["atomic_planner_latency_ms"] = outcome.latency_ms
+            state["planner_diagnostics"] = outcome.planner_diagnostics
             state["graph_execution"] = _initial_graph_execution(contract)
             state["visual_execution"] = _initial_visual_execution(contract)
             return contract
@@ -930,6 +932,11 @@ class AgenticV9CampaignRuntime:
                 claim.model_dump(mode="json") for claim in final.claims
             ],
             "metrics": metrics.model_dump(mode="json"),
+            "planner_diagnostics": state["planner_diagnostics"].model_dump(
+                mode="json"
+            )
+            if state["planner_diagnostics"] is not None
+            else None,
             "completion": {"status": final.response_status},
         }
         if comparison is not None:

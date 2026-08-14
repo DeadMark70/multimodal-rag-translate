@@ -745,6 +745,12 @@ def test_export_v2_round_trips_active_atomic_contract_and_new_metrics() -> None:
     observability = ExportV9ExecutionObservabilityV2(
         contract=contract,
         metrics=metrics,
+        planner_diagnostics={
+            "outcome": "planned",
+            "provider_response_received": True,
+            "retrieval_query_strategy": "atomic_slots",
+            "compiled_retrieval_task_count": 2,
+        },
     )
 
     dumped = observability.model_dump(mode="json")
@@ -769,6 +775,15 @@ def test_export_v2_round_trips_active_atomic_contract_and_new_metrics() -> None:
     assert loaded.metrics.comparison_planner_call_count == 0
     assert loaded.metrics.slot_binding_method == "task_target_inherited"
     assert loaded.metrics.semantic_qualification == "not_enabled"
+    assert loaded.planner_diagnostics is not None
+    assert loaded.planner_diagnostics.model_dump() == {
+        "outcome": "planned",
+        "failure_stage": None,
+        "failure_code": None,
+        "provider_response_received": True,
+        "retrieval_query_strategy": "atomic_slots",
+        "compiled_retrieval_task_count": 2,
+    }
 
 
 def test_export_v2_comparison_subject_preserves_evidence_slot_ids() -> None:

@@ -32,6 +32,7 @@ from evaluation.campaign_schemas import (
 )
 from data_base.agentic_v9.repair import RepairPlan
 from data_base.agentic_v9.schemas import (
+    AtomicPlannerDiagnostics,
     BudgetReservation,
     ClaimSupportType,
     ConflictCandidate,
@@ -532,6 +533,7 @@ class ExportV9ExecutionObservabilityV2(ExportModel):
     conflicts: list[ConflictCandidate] = Field(default_factory=list)
     final_claims: list[ExportV9FinalClaimV2] = Field(default_factory=list)
     metrics: V9ExecutionMetrics = Field(default_factory=V9ExecutionMetrics)
+    planner_diagnostics: AtomicPlannerDiagnostics | None = None
     comparison: ExportV9ComparisonV2 | None = None
 
 
