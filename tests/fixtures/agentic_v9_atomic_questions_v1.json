@@ -1,0 +1,260 @@
+{
+  "schema_version": "atomic_questions_v1",
+  "questions": [
+    {
+      "id": "Q1",
+      "question": "在 BraTS 類 3D 腦腫瘤分割場景，若訓練資料偏少且 GPU 資源受限，SwinUNETR、MedNeXt、nnMamba 在「長距離依賴建模方式」與「計算成本/穩定性」上應如何取捨？請以「首選 / 次選 / 不優先」格式給出選型裁決，並註明此結論屬於跨文獻相對建議，不是同配置 benchmark 排名。",
+      "source_docs": [
+        "2201.01266v1SwinUNETR.pdf",
+        "2303.09975v5MedNeXt.pdf",
+        "2402.03526v2nnMamba.pdf"
+      ]
+    },
+    {
+      "id": "Q2",
+      "question": "從 MedSAM、SAM-Med3D 到 MedSAM-2，這三代模型在處理 3D 體積資料時，其「空間資訊建模方式」與對應的「提示詞（Prompt）需求數量」有何根本演進？並請描述文獻主張的整體分割表現趨勢，但不要把不同論文設定下的結果寫成嚴格 apples-to-apples 的通用 Dice 排名。",
+      "source_docs": [
+        "2304.12306v3MedSAM.pdf",
+        "2310.15161v3SAM-Med3D.pdf",
+        "2504.03600v1MedSAM2.pdf"
+      ]
+    },
+    {
+      "id": "Q3",
+      "question": "關於 MedSAM-2 的自動化程度，有說法強調其具備「單一提示詞分割（One-prompt Segmentation）」能力；但另一方面，也可主張它仍高度依賴初始 bounding box / prompt 的品質。這兩種說法是否互斥？請根據其記憶注意力與 mask propagation 機制進行裁決。",
+      "source_docs": [
+        "2504.03600v1MedSAM2.pdf",
+        "2304.12306v3MedSAM.pdf",
+        "4605_paperOralSAM.pdf"
+      ]
+    },
+    {
+      "id": "Q4",
+      "question": "Mamba 網路（如 nnMamba）常被認為在序列建模上具有線性複雜度優勢。請結合文獻中的實際 Params 與 FLOPs 報告，對比 nnMamba 與 EfficientMedNeXt-L，裁決「Mamba 在當前 3D 醫療分割具最高計算效率」是否成立。請明確註明：此處只能做跨文獻常見設定下的相對裁決，不能當作嚴格同一實驗配置的 apples-to-apples benchmark。",
+      "source_docs": [
+        "2402.03526v2nnMamba.pdf",
+        "4895_paperEfficientMedNeXt.pdf",
+        "2201.01266v1SwinUNETR.pdf"
+      ]
+    },
+    {
+      "id": "Q5",
+      "question": "根據 nnMamba 架構描述，請重建 MICCSS 模塊中 CSS（Channel-Spatial Siamese）階段的特徵融合流程，並說明三個翻轉分支與 SiamSSM 的運算/累加機制。",
+      "source_docs": [
+        "2402.03526v2nnMamba.pdf"
+      ]
+    },
+    {
+      "id": "Q6",
+      "question": "根據論文方法描述，比較 U-Mamba 與 Weak-Mamba-UNet 在「模型角色」與「監督機制」上的核心差異，並說明 Weak-Mamba-UNet 如何透過 three-view cross-supervision，利用 partial cross-entropy 與 pseudo-label Dice supervision，將 scribble-based 的稀疏監督轉為較密集的訓練訊號。",
+      "source_docs": [
+        "2401.04722v1U-Mamba.pdf",
+        "2402.10887v1Weak-Mamba-UNet.pdf"
+      ]
+    },
+    {
+      "id": "Q7",
+      "question": "在以下四個模型中：SAMed、MedSAM、SAM-Med2D、SAM-Med3D，哪一個模型改造了解碼器的輸出形式，使其可直接產生語義類別遮罩，且在推理階段可做到 Prompt-free？請指出唯一符合者與其關鍵技術，並簡述另外三者為何不符合。",
+      "source_docs": [
+        "2304.13785v2SAMed.pdf",
+        "2304.12306v3MedSAM.pdf",
+        "2308.16184v1SAM-Med2D.pdf",
+        "2310.15161v3SAM-Med3D.pdf"
+      ]
+    },
+    {
+      "id": "Q8",
+      "question": "若任務只有少量完整像素級標註（dense masks）但有大量無標註影像，且希望明確利用 pair of projectors 做像素級對比學習，則在 Semi-Mamba-UNet、Weak-Mamba-UNet、U-Mamba 中應選哪個？並說明另外兩者為何不符合此設定。",
+      "source_docs": [
+        "2402.07245v3Semi-Mamba-UNet.pdf",
+        "2402.10887v1Weak-Mamba-UNet.pdf",
+        "2401.04722v1U-Mamba.pdf"
+      ]
+    },
+    {
+      "id": "Q9",
+      "question": "在 3D 醫學影像分割任務中，SwinUNETR 和 nnU-Net 哪個表現更好？請說明各自的優缺點。",
+      "source_docs": [
+        "2404.09556v2nnU-NetRevisited.pdf",
+        "2201.01266v1SwinUNETR.pdf"
+      ]
+    },
+    {
+      "id": "Q10",
+      "question": "根據《nnU-Net Revisited》這篇研究指出，在 3D 醫學影像分割領域中達成 SOTA（State-of-the-art）效能的真正「秘訣（recipe）」包含哪三個核心要素？此外，該研究如何透過「No-Mamba Base」的消融實驗（ablation study），推翻了《U-Mamba》論文中關於「Mamba層能提升效能」的主張？",
+      "source_docs": [
+        "2404.09556v2nnU-NetRevisited.pdf"
+      ]
+    },
+    {
+      "id": "Q11",
+      "question": "Weak-Mamba-UNet 與 Semi-Mamba-UNet 都帶有 first claim。請判斷是否能唯一決定哪篇是第一個把 Mamba 用到有限標註醫學影像分割；若不能，必須按 claim scope 分開回答。",
+      "source_docs": [
+        "2402.10887v1Weak-Mamba-UNet.pdf",
+        "2402.07245v3Semi-Mamba-UNet.pdf"
+      ]
+    },
+    {
+      "id": "Q12",
+      "question": "「Semi-Mamba-UNet 是第一篇在任何有限標註場景使用 Mamba 的研究。」這句話能不能被附檔支持？",
+      "source_docs": [
+        "2402.10887v1Weak-Mamba-UNet.pdf",
+        "2402.07245v3Semi-Mamba-UNet.pdf"
+      ]
+    },
+    {
+      "id": "Q13",
+      "question": "僅根據 nnFormer 與 U-Mamba 兩篇，請把它們與 nnU-Net 的關係分成：A. 有量化 ensemble/平均預測提升證據；B. 只有公平比較、未提供 ensemble 證據。",
+      "source_docs": [
+        "2109.03201v6nnFormer.pdf",
+        "2401.04722v1U-Mamba.pdf"
+      ]
+    },
+    {
+      "id": "Q14",
+      "question": "有研究者做出以下總結，請判斷是否成立：「SAM、SegmentAnyBone、SegVol 可以被放在同一條技術脈絡中理解：SAM 先提出 promptable segmentation 的 foundation model 框架；SegmentAnyBone 把這個想法延伸到 MRI 骨骼分割，並加入自動與 prompt-based 兩種模式；SegVol 則把這種 foundation-model 與 prompting 的思路推進到 3D volumetric medical segmentation，支援 spatial prompt、semantic prompt 與 multi-prompt，並加入 zoom-out-zoom-in 機制。」",
+      "source_docs": [
+        "2311.13385v5SegVol.pdf",
+        "2310.15161v3SAM-Med3D.pdf"
+      ]
+    },
+    {
+      "id": "Q15",
+      "question": "根據 Polyp-SAM 論文中的圖 1 (Figure 1)，作者提出了兩種遷移學習策略 (a) 與 (b)。若採用圖 1(b) 的策略，在 Table 1 中其於 CVC-ClinicDB 資料集上的 mIoU 表現為何？請計算它比採用圖 1(a) 策略時提升了多少數值？此外，為了訓練此模型，作者使用了多少有效批次大小 (effective batch size)？",
+      "source_docs": [
+        "2305.00293v1Polyp-SAM.pdf"
+      ]
+    },
+    {
+      "id": "Q16",
+      "question": "請執行一項跨文獻的數據擷取與交叉分析任務，您需要檢索 ODES、GEPAR3D 與 Implicit U-KAN2.0 三篇論文，並綜合回答以下三個子問題：1. 幾何懲罰機制 (GEPAR3D): 根據附錄 D 關於 Wasserstein 矩陣的說明，將「牙齒 1 (tooth 1)」誤判為「牙齒 32 (tooth 32)」的精確懲罰數值為何？此外，儘管牙齒 32 在空間物理距離上比「牙齒 2」更接近「牙齒 1」，為何前者的懲罰數值反而更高？ 2. 主動學習公式 (ODES): 在計算區域不純度（Regional Impurity）以進行取樣時，論文中定義該指標 P(x,y) 的精確數學方程式為何？並且，公式中的變數 |A^c(x,y)| 代表什麼具體的物理意義？ 3. 極端抗噪數據與數學邊界 (Implicit U-KAN2.0): 根據 Table 3（不同噪音水平下的 Dice 分數比較），在 ISIC Challenge 資料集中，當噪音水平達到最高測試值 0.4 時，基準模型（U-KAN）與提出方法（Ours）的 Dice 分數精確數值分別為何？此外，在論文 Theorem 1 所提到的多項式近似上界中，變數 m 被定義的容許範圍為何？",
+      "source_docs": [
+        "2508.00155v1GEPAR3D.pdf",
+        "2312.05407v4ODES.pdf",
+        "2503.03141v2ImplicitU-KAN2.0.pdf"
+      ]
+    },
+    {
+      "id": "Q17",
+      "question": "一個新任務是「訓練階段完全未出現的 3D MRI 目標」；部署時不能微調，不提供任何已標註 support image-label pairs，也不提供 point、box 或 text prompt。UniverSeg、Hermes、SegVol 中，是否有任何一個方法被其原始論文完整支持可直接滿足這些條件？請逐一判斷並指出缺口。",
+      "source_docs": [
+        "2304.06131v1UniverSeg.pdf",
+        "2306.02416v3Hermes.pdf",
+        "2311.13385v5SegVol.pdf"
+      ]
+    },
+    {
+      "id": "Q18",
+      "question": "某超音波 cine 分割系統的部署規格是：第一幀可以提供一次完整人工遮罩，之後只能因果地使用目前與過去影格，且不得再要求人工點擊。OralSAM、SonoSAMTrack、MediViSTA 三者中，哪一個最符合此規格？另外兩者各違反哪一項條件？請勿把不同資料集上的 Dice 當成直接排名。",
+      "source_docs": [
+        "4605_paperOralSAM.pdf",
+        "2310.16872v3SonoSAM.pdf",
+        "2309.13539v5MediViSTA-SAM.pdf"
+      ]
+    },
+    {
+      "id": "Q19",
+      "question": "病理團隊希望同一個已發表模型同時做到兩件事：以高、低倍率 WSI patches 融合局部細節與全域脈絡，並在不需要人工 point／box prompt 的情況下輸出多類別 semantic masks。WSI-SAM 或 SAM-Path 是否有任一篇單獨完整滿足這兩項需求？請說明兩者各自解決了什麼、又缺少什麼。",
+      "source_docs": [
+        "2403.09257v2WSI-SAM.pdf",
+        "2307.09570v1SAM-Path.pdf"
+      ]
+    },
+    {
+      "id": "Q20",
+      "question": "若主分割路徑的限制是：送入 SAM 的可訓練元件只能是一個以輸入影像為條件、用來取代原 prompt encoder 的模組；SAM image encoder 與 mask decoder 必須保持 frozen，推論時不提供人工 prompt，且最終 mask 仍由 frozen SAM decoder 產生。AutoSAM、SAM-Path、MedLSAM 中哪一個唯一符合？請用原始論文的資料流與可訓練元件排除另外兩者。",
+      "source_docs": [
+        "2306.06370v1AutoSAM.pdf",
+        "2307.09570v1SAM-Path.pdf",
+        "2306.14752v4MedLSAM.pdf"
+      ]
+    },
+    {
+      "id": "Q21",
+      "question": "AFTer-SAM 的 related work 將 3DSAM-Adapter 描述為主要仍在 2D slice 內使用 adapter、以 temporal convolution 補第三維，因此偏重 intra-slice information。對照 3DSAM-Adapter 原始論文，這個描述能否作為完整且精確的技術摘要？請裁決，並保留 AFTer-SAM 真正可成立的差異。",
+      "source_docs": [
+        "Yan_AFTer-SAM_Adapting_SAM_With_Axial_Fusion_Transformer_for_Medical_Imaging_WACV_2024_paper.pdf",
+        "2306.13465v23DSAM-Adapter.pdf"
+      ]
+    },
+    {
+      "id": "Q22",
+      "question": "FluoroSAM 多次寫成「trained from scratch on FluoroSeg」。這是否表示整個系統的所有 encoder 都由隨機初始化開始、完全沒有使用外部預訓練權重？請依 Methods 裁決，並說明可由全文支持的 claim scope。",
+      "source_docs": [
+        "2403.08059v3FluoroSAM.pdf"
+      ]
+    },
+    {
+      "id": "Q23",
+      "question": "SegFormer3D 對相對 nnFormer 的效率有兩種摘要說法：Abstract 寫約 33× fewer parameters、13× GFLOPs reduction，正文 contribution 則寫 34×、13×。請以 Table 1 的精確數值重新計算，判斷哪些數字只能視為近似表述，並說明可由原文確認或不能確認的取整方式。",
+      "source_docs": [
+        "2404.10156v2SegFormer3D.pdf"
+      ]
+    },
+    {
+      "id": "Q24",
+      "question": "根據 SegVol 的 zoom-out-zoom-in ablation，請裁決「zoom-out-zoom-in 同時是三種策略中最快且最準確」是否成立。請列出 Table 3 的三組 Dice／時間，並計算它相對純 sliding window 的 Dice 提升與推論加速倍數。",
+      "source_docs": [
+        "2311.13385v5SegVol.pdf"
+      ]
+    },
+    {
+      "id": "Q25",
+      "question": "依 HA-SAM 論文 Eq. (1)–(2) 的印刷形式，若 base feature dimension 為 d、standard bottleneck coefficient 為 r，請計算第3層與第12層的 r3、r12及其比值；再說明每個 Transformer block 中兩個 adapter 的插入位置、哪些 SAM 元件保持 frozen，並指出公式附近是否存在 notation inconsistency。",
+      "source_docs": [
+        "3104_paperHA-SAM.pdf"
+      ]
+    },
+    {
+      "id": "Q26",
+      "question": "Hermes 的 ablation prose 與 Table 4 對加入 modality priors 後的數字不一致。請依 Table 4 重建五個設定與 Avg Dice，計算 hierarchy、bidirectional fusion、modality prior、auxiliary modality loss 各自帶來的變化，並說明對83.21與83.11應如何裁決。",
+      "source_docs": [
+        "2306.02416v3Hermes.pdf"
+      ]
+    },
+    {
+      "id": "Q27",
+      "question": "請重建《From Generalist to Specialist》中單一 3D 影像的六個 teacher masks 如何產生，並比較 deterministic distillation與 probabilistic distillation在訓練 target與推論聚合上的差異。答案必須區分 latent dimension N=6 與 inference sample count N=10，並指出原文是否交代 no-ground-truth distillation set 上逐 slice bounding boxes 的來源。",
+      "source_docs": [
+        "2167_paperDistillingaMixture.pdf"
+      ]
+    },
+    {
+      "id": "Q28",
+      "question": "請依 UNETR++ 的 EPA block 重建一次完整資料流：Q／K／V 哪些權重在 spatial與channel branches間共享或獨立、spatial branch如何把複雜度由 quadratic降為linear、channel branch在哪個維度做 attention，以及兩個 branches最後如何融合。",
+      "source_docs": [
+        "2212.04497v3UNETR++.pdf"
+      ]
+    },
+    {
+      "id": "Q29",
+      "question": "若要完整重現 SAM-OCTA 的 artery／vein local segmentation設定，請排除以下常見混淆：它是否直接輸入原始3D OCTA volume、使用哪個SAM ViT版本、哪些權重被更新，以及 local prompt points如何由血管連通元件產生？",
+      "source_docs": [
+        "2309.11758v1SAM-OCTA.pdf"
+      ]
+    },
+    {
+      "id": "Q30",
+      "question": "某實作者把 SP-SAM 簡化成「只輸入 instrument category name，所有 parts 固定等權平均，再由一般 SAM decoder只輸出 whole mask」。這是否仍可稱為忠實重現 SP-SAM？請指出缺少的 prompt形式、兩種 part attention、hierarchical decoding，以及實際 frozen／trainable範圍。",
+      "source_docs": [
+        "2312.14481v2SurgicalSAM.pdf"
+      ]
+    },
+    {
+      "id": "Q31",
+      "question": "若對 SAM 本體的硬性限制是「prompt encoder與mask decoder不得更新，只能在SAM image encoder內加入少量可訓練模組」，且部署仍可提供 point／click prompt，HA-SAM與SonoSAM哪一個符合？另請說明：若限制擴大到整個系統、連模型外的point locator也不得訓練，裁決是否需要加上例外。",
+      "source_docs": [
+        "3104_paperHA-SAM.pdf",
+        "2310.16872v3SonoSAM.pdf"
+      ]
+    },
+    {
+      "id": "Q32",
+      "question": "FluoroSAM與SP-SAM都接受text prompts。能否因此把兩者都概括為「不受既定類別限制的free-form open-vocabulary segmentation」？請比較兩者的文字prompt表示方式、論文中的類別範圍與明確限制，並給出保守裁決。",
+      "source_docs": [
+        "2403.08059v3FluoroSAM.pdf",
+        "2312.14481v2SurgicalSAM.pdf"
+      ]
+    }
+  ]
+}
