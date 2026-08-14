@@ -466,8 +466,6 @@ class QuestionContractPlanner:
                     fallback_reason="invalid_planner_output",
                     planner_call_count=1,
                     latency_ms=(time.perf_counter() - start_time) * 1000,
-                    failure_stage="semantic_validation",
-                    failure_code="planner_semantic_rejection",
                     provider_response_received=True,
                 )
 

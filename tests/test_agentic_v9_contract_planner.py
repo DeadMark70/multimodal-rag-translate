@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+import data_base.agentic_v9.contract_planner as contract_planner_module
 from data_base.agentic_v9.contract_planner import (
     AtomicContractPlanningOutcome,
     AtomicContractPreparation,
@@ -396,6 +397,14 @@ async def test_semantic_planning_low_confidence_invokes_llm_once_and_builds_comb
     assert outcome.contract.slot_plan_source == "llm_planner"
     assert outcome.contract.slot_plan_status == "complete"
     assert outcome.contract.slot_plan_confidence == "high"
+    assert outcome.planner_diagnostics.model_dump() == {
+        "outcome": "planned",
+        "failure_stage": None,
+        "failure_code": None,
+        "provider_response_received": True,
+        "retrieval_query_strategy": "atomic_slots",
+        "compiled_retrieval_task_count": 2,
+    }
 
     # Assigned slot IDs
     assert [s.slot_id for s in outcome.contract.required_slots] == ["S1", "S2"]
@@ -768,6 +777,64 @@ async def test_planner_diagnostic_reports_budget_rejection_without_provider_resp
         "failure_stage": "budget_rejected",
         "failure_code": "budget_rejected",
         "provider_response_received": False,
+        "retrieval_query_strategy": "safe_fallback_original_question",
+        "compiled_retrieval_task_count": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_planner_diagnostic_leaves_unexpected_failure_unclassified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fails if unknown defects are mislabeled as semantic planner rejection."""
+    def raise_unexpected(_: object) -> object:
+        raise RuntimeError("unrelated implementation failure")
+
+    monkeypatch.setattr(
+        contract_planner_module,
+        "_build_constraints_from_decision",
+        raise_unexpected,
+    )
+    payload = {
+        "evidence_requirements": [
+            {
+                "description": "Retrieve fact from paper.pdf.",
+                "source_name_hints": ["paper.pdf"],
+                "locator_hints": [],
+                "expected_answer_type": "text",
+                "depends_on_requirement_indexes": [],
+                "visual_policy": "never",
+            }
+        ],
+        "synthesis_obligations": [],
+        "response_constraints": [],
+        "comparison": None,
+        "confidence": 0.8,
+    }
+    decomp = QuestionDecomposition(
+        requirements=(DecomposedRequirement(text="Unclear.", method="fallback", confidence="low"),),
+        confidence="low",
+        semantic_planning_reasons=("unclear",),
+    )
+
+    outcome = await QuestionContractPlanner(
+        llm_invoker=_MockInvoker(response={"content": json.dumps(payload)})
+    ).plan(
+        question="Unclear question.",
+        base_contract=_make_base_contract(),
+        preparation=AtomicContractPreparation(
+            decomposition=decomp,
+            semantic_planning_requested=True,
+            comparison_candidate=False,
+        ),
+    )
+
+    assert outcome.contract.slot_plan_fallback_reason == "invalid_planner_output"
+    assert outcome.planner_diagnostics.model_dump() == {
+        "outcome": "degraded",
+        "failure_stage": None,
+        "failure_code": None,
+        "provider_response_received": True,
         "retrieval_query_strategy": "safe_fallback_original_question",
         "compiled_retrieval_task_count": 1,
     }
