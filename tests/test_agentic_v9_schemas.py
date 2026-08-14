@@ -383,7 +383,9 @@ def test_structured_final_draft_has_strict_supported_and_unresolved_rows() -> No
             SupportedFinding(
                 slot_id="score",
                 statement="The reported score is 0.91.",
+                support_type="calculated",
                 evidence_ids=["E1"],
+                premise_evidence_ids=["E-source"],
             )
         ],
         unresolved_requirements=[
@@ -392,6 +394,8 @@ def test_structured_final_draft_has_strict_supported_and_unresolved_rows() -> No
     )
 
     assert draft.supported_findings[0].slot_id == "score"
+    assert draft.supported_findings[0].support_type == "calculated"
+    assert draft.supported_findings[0].premise_evidence_ids == ["E-source"]
     assert draft.unresolved_requirements[0].slot_id == "source"
     with pytest.raises(ValidationError):
         FinalAnswerDraft(answer="provider-authored prose")

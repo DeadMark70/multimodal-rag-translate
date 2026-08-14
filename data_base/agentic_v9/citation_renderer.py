@@ -64,7 +64,7 @@ def render_verified_answer(
 ) -> str:
     """Project only verified claims into a deterministic cited answer."""
     packets_by_id = {packet.evidence_id: packet for packet in packets}
-    lines: list[str] = ["## Supported conclusions"]
+    claim_lines: list[str] = []
     for claim in claims:
         statement = claim.statement
         if claim.qualified_reason:
@@ -74,14 +74,24 @@ def render_verified_answer(
             packets_by_id,
             citation_format_version=citation_format_version,
         )
-        lines.append(f"{statement}{' ' + citations if citations else ''}")
-    lines.append("")
-    lines.append("## Unresolved/unverifiable requirements")
-    lines.extend(
-        f"- {requirement.slot_id}: {requirement.reason}"
-        for requirement in unresolved_requirements
+        claim_lines.append(f"{statement}{' ' + citations if citations else ''}")
+    unresolved = tuple(unresolved_requirements)
+    if not unresolved:
+        return "\n".join(claim_lines)
+    if not claim_lines:
+        claim_lines = ["The supplied evidence could not support the requested answer."]
+    return "\n".join(
+        [
+            "## Confirmed from the supplied evidence",
+            *claim_lines,
+            "",
+            "## Unable to confirm from the supplied evidence",
+            *(
+                f"- {requirement.slot_id}: {requirement.reason}"
+                for requirement in unresolved
+            ),
+        ]
     )
-    return "\n".join(lines)
 
 
 __all__ = [

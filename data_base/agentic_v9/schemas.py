@@ -481,7 +481,9 @@ class SupportedFinding(BaseModel):
 
     slot_id: str = Field(min_length=1)
     statement: str = Field(min_length=1)
+    support_type: ClaimSupportType = "direct"
     evidence_ids: list[str] = Field(default_factory=list)
+    premise_evidence_ids: list[str] = Field(default_factory=list)
 
 
 class UnresolvedRequirement(BaseModel):
