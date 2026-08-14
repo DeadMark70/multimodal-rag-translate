@@ -88,25 +88,26 @@ def _complete_sufficiency() -> SufficiencyEvaluation:
     )
 
 
-def test_experimental_v2_slot_support_never_produces_a_complete_answer() -> None:
+def test_active_v2_allows_complete_response_when_sufficiency_is_complete() -> None:
     contract = QueryContract.model_validate(
         {**_contract().model_dump(), "contract_version": "2"}
     )
     complete = _complete_sufficiency().report
 
-    clamped = _prevent_response_status_upgrade(
+    result = _prevent_response_status_upgrade(
         FinalAnswerResult(
             response_status="complete",
-            answer="All heuristic slots appear supported.",
+            answer="All atomic slots supported.",
             final_generation_count=1,
         ),
         complete,
         contract,
     )
 
-    assert clamped.response_status == "qualified_partial"
+    assert result.response_status == "complete"
     assert contract.atomic_completeness is None
     assert contract.atomic_completeness_reason == "atomic_slot_matching_experimental"
+
 
 
 def test_experimental_v2_policy_preserves_insufficient_without_usable_evidence() -> (
