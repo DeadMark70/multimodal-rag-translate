@@ -449,6 +449,7 @@ class ExportV9ComparisonSubjectV2(ExportModel):
     subject_id: str
     display_name: str
     aliases: list[str]
+    evidence_slot_ids: list[str] = Field(default_factory=list)
 
 
 class ExportV9ComparisonSelectedV2(ExportModel):

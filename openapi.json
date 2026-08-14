@@ -8315,6 +8315,14 @@
             "maxLength": 512,
             "minLength": 1,
             "title": "Retrieval Query"
+          },
+          "evidence_slot_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "title": "Evidence Slot Ids"
           }
         },
         "additionalProperties": false,
@@ -18534,6 +18542,13 @@
             },
             "type": "array",
             "title": "Aliases"
+          },
+          "evidence_slot_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence Slot Ids"
           }
         },
         "additionalProperties": false,
@@ -22161,6 +22176,22 @@
             "type": "array",
             "title": "Required Slots"
           },
+          "synthesis_obligations": {
+            "items": {
+              "$ref": "#/components/schemas/SynthesisObligation"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "title": "Synthesis Obligations"
+          },
+          "response_constraints": {
+            "items": {
+              "$ref": "#/components/schemas/ResponseConstraint"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "title": "Response Constraints"
+          },
           "entities": {
             "items": {
               "type": "string"
@@ -22285,6 +22316,62 @@
               }
             ],
             "title": "Slot Plan Status"
+          },
+          "slot_plan_source": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "deterministic",
+                  "llm_planner",
+                  "safe_fallback"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Plan Source"
+          },
+          "slot_plan_confidence": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "high",
+                  "medium",
+                  "low"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Plan Confidence"
+          },
+          "slot_plan_fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 160
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Plan Fallback Reason"
+          },
+          "truncated_requirement_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Truncated Requirement Count"
           },
           "slot_semantics": {
             "anyOf": [
@@ -23444,6 +23531,40 @@
         "type": "object",
         "title": "ResolvedSourceScope",
         "description": "Resolver output; the sole v9 contract that contains authorized IDs."
+      },
+      "ResponseConstraint": {
+        "properties": {
+          "constraint_id": {
+            "type": "string",
+            "pattern": "^C[1-9][0-9]*$",
+            "title": "Constraint Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "conditional_scope",
+              "output_format",
+              "prohibition",
+              "allowed_labels"
+            ],
+            "title": "Kind"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Description"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "constraint_id",
+          "kind",
+          "description"
+        ],
+        "title": "ResponseConstraint",
+        "description": "A typed negative constraint or format instruction on the final response."
       },
       "RetrievalTask": {
         "properties": {
@@ -24876,6 +24997,51 @@
         "title": "SufficiencyReport",
         "description": "Evidence completeness and response usability are deliberately independent."
       },
+      "SynthesisObligation": {
+        "properties": {
+          "obligation_id": {
+            "type": "string",
+            "pattern": "^O[1-9][0-9]*$",
+            "title": "Obligation Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "comparison",
+              "selection",
+              "causal",
+              "aggregation",
+              "qualification"
+            ],
+            "title": "Kind"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Description"
+          },
+          "depends_on_slot_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Depends On Slot Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "obligation_id",
+          "kind",
+          "description",
+          "depends_on_slot_ids"
+        ],
+        "title": "SynthesisObligation",
+        "description": "A typed cross-slot synthesis task required for the final answer."
+      },
       "TestCase": {
         "properties": {
           "id": {
@@ -26019,7 +26185,7 @@
           },
           "prose_curator_call_count": {
             "type": "integer",
-            "maximum": 1.0,
+            "maximum": 3.0,
             "minimum": 0.0,
             "title": "Prose Curator Call Count",
             "default": 0
@@ -26030,6 +26196,37 @@
             "minimum": 0.0,
             "title": "Arbitration Call Count",
             "default": 0
+          },
+          "atomic_planner_call_count": {
+            "type": "integer",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Atomic Planner Call Count",
+            "default": 0
+          },
+          "comparison_planner_call_count": {
+            "type": "integer",
+            "const": 0,
+            "title": "Comparison Planner Call Count",
+            "default": 0
+          },
+          "slot_binding_method": {
+            "type": "string",
+            "enum": [
+              "task_target_inherited",
+              "not_instrumented"
+            ],
+            "title": "Slot Binding Method",
+            "default": "not_instrumented"
+          },
+          "semantic_qualification": {
+            "type": "string",
+            "enum": [
+              "not_enabled",
+              "not_instrumented"
+            ],
+            "title": "Semantic Qualification",
+            "default": "not_instrumented"
           },
           "reserved_tokens": {
             "type": "integer",

@@ -239,13 +239,15 @@ def safe_comparison_projection(value: dict[str, Any]) -> dict[str, Any]:
         display_name = raw.get("display_name")
         if not isinstance(subject_id, str) or not isinstance(display_name, str):
             continue
-        subjects.append(
-            {
-                "subject_id": subject_id[:80],
-                "display_name": display_name[:160],
-                "aliases": strings(raw.get("aliases"), limit=8, width=80),
-            }
-        )
+        subject_data: dict[str, Any] = {
+            "subject_id": subject_id[:80],
+            "display_name": display_name[:160],
+            "aliases": strings(raw.get("aliases"), limit=8, width=80),
+            "evidence_slot_ids": strings(
+                raw.get("evidence_slot_ids"), limit=8, width=80
+            ),
+        }
+        subjects.append(subject_data)
         if len(subjects) >= 4:
             break
 

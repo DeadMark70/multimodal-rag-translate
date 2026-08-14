@@ -82,6 +82,13 @@
   the same admission-contract boundary used by runtime. Newly imported case IDs
   are not restricted to the frozen Q1-Q16 regression corpus; ownership,
   source-scope resolution, and token/call-budget feasibility remain mandatory.
+- Agentic v9 Active Atomic Contract V2 Architecture:
+  - **Deterministic Route + Atomic Overlay Ownership**: The deterministic router maintains canonical route admission and feasibility gating, while the atomic contract planner generates an overlay containing sequential evidence slots (`S1..Sn`, $1 \le n \le 8$), synthesis obligations, response constraints, and optional comparison plans.
+  - **Evidence Slots vs Synthesis Obligations/Constraints**: `required_slots` define verifiable source-backed retrieval goals. `synthesis_obligations` and `response_constraints` dictate answer reasoning, formatting, and structural constraints rather than raw retrieval tasks.
+  - **Single Planning Seam & Zero Active Comparison Calls**: Active atomic execution unifies contract planning into at most one provider call (`atomic_planner_call_count <= 1`, `phase="contract_planning"`, `purpose="atomic_contract_planning"`), entirely replacing separate comparison planning calls (`comparison_planner_call_count == 0`, 0 active `comparison_plan` calls).
+  - **Degraded V2 Contract Fallback**: Provider errors, timeouts, or schema violations during atomic planning gracefully degrade to a deterministic fallback contract (`contract_version="2"`, fallback rationale, single catch-all slot `S1`) without disrupting pipeline execution.
+  - **Explicit Instrumentation Boundaries**: Slot binding is inherited from task targets (`slot_binding_method="task_target_inherited"`), and semantic qualification is recorded as `semantic_qualification="not_enabled"`. Falsified or uninstrumented values fail offline release verification.
+  - **Comparison Subject Evidence Grounding**: Comparison subjects bind to evidence slot IDs declared in `required_slots`, ensuring relational and multi-subject queries maintain grounded provenance across rounds.
 - Campaign trace-list reads use the migrated `agent_traces.summary_json` projection and its campaign/user/created index; full `trace_json` is reserved for trace-detail reads. Existing rows with no usable summary remain readable as a minimal `not_instrumented` summary rather than forcing the list path to deserialize a complete trace.
 - Evaluation answers are capped at 1,048,576 UTF-8 bytes. Oversize answers are recorded as failed work with the stable error code `EVALUATION_ANSWER_TOO_LARGE`; callers must not retry by silently truncating or substituting the answer.
 - Vector-store hot paths now run through an async coordination seam in `data_base/vector_store_manager.py`:

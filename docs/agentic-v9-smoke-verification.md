@@ -70,6 +70,15 @@ slots and final resolutions, targeted repair traces for missing slots,
 phase-linked provider attempts, exact-or-explicitly-partial token reconciliation,
 capture availability against the recorded setup, and unsupported final claims.
 
+### Active Atomic Contract V2 Invariants
+
+- **Deterministic Route & Atomic Overlay**: The admission contract retains deterministic router ownership while the atomic overlay decomposes the prompt into sequential evidence slots (`S1..Sn`, $1 \le n \le 8$), synthesis obligations, response constraints, and comparison plans.
+- **Evidence Slots vs Obligations/Constraints**: Slots represent verifiable source-backed units of evidence (`required_slots`). Obligations (`synthesis_obligations`) and constraints (`response_constraints`) govern answer composition and reasoning structure rather than raw retrieval targets.
+- **Provider Call Accounting**: Active atomic execution budgets at most 1 `contract_planning` provider call (`purpose="atomic_contract_planning"`) and 0 active `comparison_plan` provider calls (`atomic_planner_call_count <= 1`, `comparison_planner_call_count == 0`).
+- **Comparison Subject Grounding**: When a comparison plan is present, all comparison subject `evidence_slot_ids` must reference valid slot IDs declared in `required_slots`.
+- **Degraded V2 Behavior**: When the atomic planner encounters a provider failure, schema violation, or unparseable output, runtime gracefully degrades to a deterministic fallback contract (`contract_version="2"`, fallback `route_reason`, and a single catch-all slot `S1`), ensuring fail-closed safety without aborting execution.
+- **Instrumentation Bounds**: Runtime strictly records `slot_binding_method="task_target_inherited"` and `semantic_qualification="not_enabled"`. Falsified or uninstrumented values are rejected during verification.
+
 The manifest records supplied backend/frontend commit IDs, the setup snapshot and
 hash, dataset identity, SHA-256 input artifact hashes, requirement statuses, and
 residual failures. Use
@@ -79,3 +88,4 @@ as a schema-shaped placeholder when no artifact exists.
 For filesystem safety, `--manifest` refuses both an existing file and a symlink.
 Choose a new output path for every verification run; this CLI intentionally has no
 overwrite flag.
+

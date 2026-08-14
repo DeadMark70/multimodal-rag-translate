@@ -63,11 +63,15 @@ def _complete_run(question_id: str) -> dict[str, Any]:
         "total_tokens": 12,
         "agent_trace": {
             "agentic_execution_version": "v9",
+            "execution_profile": (
+                "agentic_eval_v9_open_corpus_hybrid8_rerank8_diverse_tail2_top4_"
+                "finalpack_r1_active_atomic_contract_v1"
+            ),
             "agentic_v9": {
                 "query_contract": {
                     "contract_version": "2",
                     "route": "multi_hop",
-                    "required_slots": [{"slot_id": "fact-a"}],
+                    "required_slots": [{"slot_id": "S1"}],
                     "route_decision": {
                         "selected_route": "multi_hop",
                         "route_reason": "The question requires two sources.",
@@ -75,7 +79,7 @@ def _complete_run(question_id: str) -> dict[str, Any]:
                 },
                 "slot_resolutions": [
                     {
-                        "slot_id": "fact-a",
+                        "slot_id": "S1",
                         "status": "supported",
                         "evidence_ids": ["evidence-a"],
                     }
@@ -89,12 +93,18 @@ def _complete_run(question_id: str) -> dict[str, Any]:
                 ],
                 "final_claims": [
                     {
-                        "slot_id": "fact-a",
+                        "slot_id": "S1",
                         "support_type": "direct",
                         "evidence_ids": ["evidence-a"],
                     }
                 ],
-                "metrics": {"reconciled_tokens": 12},
+                "metrics": {
+                    "reconciled_tokens": 12,
+                    "atomic_planner_call_count": 0,
+                    "comparison_planner_call_count": 0,
+                    "slot_binding_method": "task_target_inherited",
+                    "semantic_qualification": "not_enabled",
+                },
             },
         },
     }
@@ -120,7 +130,7 @@ def _recovery_diagnostics_export() -> dict[str, Any]:
         v9["evidence_packets"] = [
             {
                 "evidence_id": "evidence-a",
-                "slot_ids": ["fact-a"],
+                "slot_ids": ["S1"],
                 "source": {"doc_id": "doc-authorized"},
             }
         ]
@@ -132,7 +142,7 @@ def _recovery_diagnostics_export() -> dict[str, Any]:
             }
         ]
         v9["locator_diagnostics"] = (
-            [{"slot_id": "fact-a", "state": "matched"}]
+            [{"slot_id": "S1", "state": "matched"}]
             if question_id in {"Q14", "Q16"}
             else []
         )
@@ -414,6 +424,9 @@ def test_recovery_diagnostics_fail_closed_on_task_1_to_3_regressions() -> None:
 def test_comparison_observability_is_bounded_and_fail_closed() -> None:
     artifact = _recovery_diagnostics_export()
     run = artifact["runs"][0]
+    run["agent_trace"]["execution_profile"] = (
+        "agentic_eval_v9_open_corpus_hybrid8_rerank8_diverse_tail2_top4_finalpack_r1_comparison_structured_v2"
+    )
     v9 = run["agent_trace"]["agentic_v9"]
     v9["comparison"] = {
         "planner_status": "planned",
@@ -523,26 +536,26 @@ def test_locator_diagnostics_must_cover_each_structured_slot() -> None:
     q14 = artifact["runs"][3]["agent_trace"]["agentic_v9"]
     q14["query_contract"]["required_slots"].append(
         {
-            "slot_id": "ordinary-slot",
+            "slot_id": "S2",
             "description": "State the ordinary result.",
             "authorized_source_doc_ids": ["doc-authorized"],
         }
     )
     q14["slot_resolutions"].append(
         {
-            "slot_id": "ordinary-slot",
+            "slot_id": "S2",
             "status": "supported",
             "evidence_ids": ["evidence-a"],
         }
     )
     q14["final_claims"].append(
         {
-            "slot_id": "ordinary-slot",
+            "slot_id": "S2",
             "support_type": "direct",
             "evidence_ids": ["evidence-a"],
         }
     )
-    q14["locator_diagnostics"] = [{"slot_id": "ordinary-slot", "state": "matched"}]
+    q14["locator_diagnostics"] = [{"slot_id": "S2", "state": "matched"}]
 
     report = verify_campaign_export(artifact)
 
@@ -558,27 +571,27 @@ def test_named_section_locator_diagnostic_must_cover_the_requested_slot() -> Non
     ]
     q14["query_contract"]["required_slots"].append(
         {
-            "slot_id": "ordinary-slot",
+            "slot_id": "S2",
             "description": "State the ordinary result.",
             "authorized_source_doc_ids": ["doc-authorized"],
         }
     )
     q14["slot_resolutions"].append(
         {
-            "slot_id": "ordinary-slot",
+            "slot_id": "S2",
             "status": "supported",
             "evidence_ids": ["evidence-a"],
         }
     )
     q14["final_claims"].append(
         {
-            "slot_id": "ordinary-slot",
+            "slot_id": "S2",
             "support_type": "direct",
             "evidence_ids": ["evidence-a"],
         }
     )
     q14["locator_diagnostics"] = [
-        {"slot_id": "ordinary-slot", "state": "matched"}
+        {"slot_id": "S2", "state": "matched"}
     ]
 
     report = verify_campaign_export(artifact)
@@ -668,7 +681,7 @@ def test_persisted_route_decision_and_resolution_status_are_required() -> None:
     v9 = artifact["runs"][0]["agent_trace"]["agentic_v9"]
     v9["query_contract"].pop("route_decision")
     v9["query_contract"]["route_reason"] = "invented fallback is not a decision"
-    v9["slot_resolutions"][0] = {"slot_id": "fact-a"}
+    v9["slot_resolutions"][0] = {"slot_id": "S1"}
     v9.pop("final_claims")
 
     report = verify_campaign_export(artifact)
@@ -682,7 +695,7 @@ def test_real_nested_repair_plan_targets_not_found_slot() -> None:
     artifact = _complete_export()
     run = artifact["runs"][0]
     v9 = run["agent_trace"]["agentic_v9"]
-    v9["slot_resolutions"][0] = {"slot_id": "fact-a", "status": "not_found"}
+    v9["slot_resolutions"][0] = {"slot_id": "S1", "status": "not_found"}
     v9["final_claims"] = []
     repair = RepairPlan(
         repair_round_index=1,
@@ -692,7 +705,7 @@ def test_real_nested_repair_plan_targets_not_found_slot() -> None:
                 round_id="repair-1",
                 query_id="Q5",
                 query="source locator target",
-                target_slot_ids=["fact-a"],
+                target_slot_ids=["S1"],
                 source_scope=ResolvedSourceScope(authorized_doc_ids=["doc-a"]),
             )
         ],
@@ -708,7 +721,7 @@ def test_conflicted_terminal_slot_does_not_require_a_retrieval_repair() -> None:
     artifact = _complete_export()
     v9 = artifact["runs"][0]["agent_trace"]["agentic_v9"]
     v9["slot_resolutions"][0] = {
-        "slot_id": "fact-a",
+        "slot_id": "S1",
         "status": "conflicted",
         "reason": "scope conflict recorded",
     }
@@ -722,8 +735,8 @@ def test_conflicted_terminal_slot_does_not_require_a_retrieval_repair() -> None:
 def test_unsupported_slot_cannot_be_exported_as_a_supported_final_claim() -> None:
     artifact = _complete_export()
     v9 = artifact["runs"][0]["agent_trace"]["agentic_v9"]
-    v9["slot_resolutions"][0] = {"slot_id": "fact-a", "status": "not_found"}
-    v9["repairs"] = [{"tasks": [{"target_slot_ids": ["fact-a"]}]}]
+    v9["slot_resolutions"][0] = {"slot_id": "S1", "status": "not_found"}
+    v9["repairs"] = [{"tasks": [{"target_slot_ids": ["S1"]}]}]
 
     report = verify_campaign_export(artifact)
 
@@ -736,7 +749,7 @@ def test_unsupported_slot_cannot_be_exported_as_a_supported_final_claim() -> Non
     [
         {"support_type": "direct", "evidence_ids": []},
         {"slot_id": "unknown-slot", "support_type": "calculated", "evidence_ids": ["evidence-a"]},
-        {"slot_id": "fact-a", "support_type": "comparative_inference", "evidence_ids": []},
+        {"slot_id": "S1", "support_type": "comparative_inference", "evidence_ids": []},
     ],
 )
 def test_positive_final_claims_require_slot_and_evidence_provenance(claim: dict[str, Any]) -> None:
@@ -764,3 +777,164 @@ def test_provider_attempts_require_bidirectional_budget_linkage(mutate: Any) -> 
 
     assert report.status in {"partial", "fail"}
     assert report.requirements["phase_linked_provider_attempts"].status in {"partial", "fail"}
+
+
+def test_smoke_verifier_rejects_contract_version_1() -> None:
+    artifact = _complete_export()
+    artifact["runs"][0]["agent_trace"]["agentic_v9"]["query_contract"]["contract_version"] = "1"
+    report = verify_campaign_export(artifact)
+    assert report.status == "fail"
+    assert report.requirements["contract_and_route"].status == "fail"
+    assert "version" in str(report.requirements["contract_and_route"].reason)
+
+
+@pytest.mark.parametrize(
+    "invalid_slots",
+    [
+        [{"slot_id": "fact-a"}],
+        [{"slot_id": "S2"}],
+        [{"slot_id": "S1"}, {"slot_id": "S3"}],
+        [],
+        [{"slot_id": f"S{i}"} for i in range(1, 10)],
+    ],
+)
+def test_smoke_verifier_rejects_non_sequential_or_out_of_bound_slots(
+    invalid_slots: list[dict[str, Any]],
+) -> None:
+    artifact = _complete_export()
+    v9 = artifact["runs"][0]["agent_trace"]["agentic_v9"]
+    v9["query_contract"]["required_slots"] = invalid_slots
+    v9["slot_resolutions"] = [
+        {"slot_id": s["slot_id"], "status": "supported", "evidence_ids": ["evidence-a"]}
+        for s in invalid_slots
+    ]
+    v9["final_claims"] = [
+        {"slot_id": s["slot_id"], "support_type": "direct", "evidence_ids": ["evidence-a"]}
+        for s in invalid_slots
+    ]
+    report = verify_campaign_export(artifact)
+    assert report.status == "fail"
+    assert report.requirements["slots_and_resolutions"].status == "fail"
+
+
+def test_smoke_verifier_rejects_comparison_subject_referencing_unknown_slot() -> None:
+    artifact = _recovery_diagnostics_export()
+    run = artifact["runs"][0]
+    v9 = run["agent_trace"]["agentic_v9"]
+    v9["query_contract"]["required_slots"] = [
+        {"slot_id": "S1", "authorized_source_doc_ids": ["doc-authorized"]},
+        {"slot_id": "S2", "authorized_source_doc_ids": ["doc-authorized"]},
+    ]
+    v9["slot_resolutions"] = [
+        {"slot_id": "S1", "status": "supported", "evidence_ids": ["evidence-a"]},
+        {"slot_id": "S2", "status": "supported", "evidence_ids": ["evidence-b"]},
+    ]
+    v9["final_claims"] = [
+        {"slot_id": "S1", "support_type": "direct", "evidence_ids": ["evidence-a"]},
+        {"slot_id": "S2", "support_type": "direct", "evidence_ids": ["evidence-b"]},
+    ]
+    v9["comparison"] = {
+        "planner_status": "planned",
+        "planner_latency_ms": 10.0,
+        "is_comparison": True,
+        "subjects": [
+            {
+                "subject_id": "model_a",
+                "display_name": "Model A",
+                "aliases": [],
+                "evidence_slot_ids": ["S99"],
+            },
+            {
+                "subject_id": "model_b",
+                "display_name": "Model B",
+                "aliases": [],
+                "evidence_slot_ids": ["S1"],
+            },
+        ],
+        "dimensions": ["accuracy"],
+        "task_diagnostics": [
+            {"task_id": "task-a", "subject_id": "model_a"},
+            {"task_id": "task-b", "subject_id": "model_b"},
+        ],
+        "final_status": "complete",
+        "final_evidence_subjects": ["model_a", "model_b"],
+        "final_evidence_count": 2,
+        "final_evidence": [
+            {"evidence_id": "evidence-a", "doc_id": "doc-a", "subject_ids": ["model_a"]},
+            {"evidence_id": "evidence-b", "doc_id": "doc-b", "subject_ids": ["model_b"]},
+        ],
+    }
+    report = verify_campaign_export(artifact)
+    assert report.status == "fail"
+    assert report.requirements["comparison_observability"].status == "fail"
+
+
+def test_smoke_verifier_rejects_excessive_atomic_planner_calls() -> None:
+    artifact = _complete_export()
+    run = artifact["runs"][0]
+    v9 = run["agent_trace"]["agentic_v9"]
+    v9["metrics"]["atomic_planner_call_count"] = 2
+    report = verify_campaign_export(artifact)
+    assert report.status == "fail"
+    assert (
+        report.requirements["comparison_observability"].status == "fail"
+        or report.requirements["contract_and_route"].status == "fail"
+    )
+
+
+def test_smoke_verifier_rejects_non_zero_comparison_planner_calls() -> None:
+    artifact = _complete_export()
+    run = artifact["runs"][0]
+    v9 = run["agent_trace"]["agentic_v9"]
+    v9["metrics"]["comparison_planner_call_count"] = 1
+    report = verify_campaign_export(artifact)
+    assert report.status == "fail"
+    assert (
+        report.requirements["comparison_observability"].status == "fail"
+        or report.requirements["contract_and_route"].status == "fail"
+    )
+
+
+def test_smoke_verifier_rejects_active_llm_call_with_comparison_plan_phase() -> None:
+    artifact = _complete_export()
+    run = artifact["runs"][0]
+    artifact["llm_calls"].append(
+        {
+            "run_id": run["id"],
+            "phase": "comparison_plan",
+            "reservation_id": "comparison-res",
+            "provider_attempt": 1,
+            "status": "success",
+            "prompt_hash": "hash-comp",
+            "prompt_capture_status": "captured",
+            "full_prompt_capture_status": "not_captured_at_execution",
+            "total_tokens": 5,
+            "payload": {"usage_status": "measured", "official_total_tokens": 5},
+        }
+    )
+    report = verify_campaign_export(artifact)
+    assert report.status == "fail"
+    assert report.requirements["comparison_observability"].status == "fail"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("slot_binding_method", "semantic_llm"),
+        ("slot_binding_method", "invalid_method"),
+        ("semantic_qualification", "semantic_validated"),
+        ("semantic_qualification", "invalid_qualification"),
+    ],
+)
+def test_smoke_verifier_rejects_falsified_binding_or_qualification_instrumentation(
+    field: str, value: str
+) -> None:
+    artifact = _complete_export()
+    v9 = artifact["runs"][0]["agent_trace"]["agentic_v9"]
+    v9["metrics"][field] = value
+    report = verify_campaign_export(artifact)
+    assert report.status == "fail"
+    assert (
+        report.requirements["contract_and_route"].status == "fail"
+        or report.requirements["comparison_observability"].status == "fail"
+    )

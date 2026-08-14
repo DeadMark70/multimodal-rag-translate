@@ -23,6 +23,15 @@ from evaluation.campaign_schemas import (
     ResearchQuestionComparisonResponse,
     RouterAnalysisResponse,
 )
+from data_base.agentic_v9.schemas import (
+    ComparisonPlan,
+    ComparisonSubject,
+    QueryContract,
+    RequiredSlot,
+    ResponseConstraint,
+    SynthesisObligation,
+    V9ExecutionMetrics,
+)
 from evaluation.export_schemas import (
     ExportAvailability,
     ExportCampaignIdentityV2,
@@ -56,6 +65,7 @@ from evaluation.export_schemas import (
     ExportSectionsV2,
     ExportToolCallV2,
     ExportTraceEventV2,
+    ExportV9ComparisonSubjectV2,
     ExportV9ExecutionObservabilityV2,
 )
 
@@ -676,3 +686,124 @@ def test_schema_v2_constructs_a_fully_populated_response() -> None:
         "stack_traces": "excluded",
         "credentials": "redacted",
     }
+
+
+def test_export_v2_round_trips_active_atomic_contract_and_new_metrics() -> None:
+    contract = QueryContract(
+        contract_version="2",
+        route="bounded_compare",
+        intent="Compare model A and model B",
+        required_slots=[
+            RequiredSlot(slot_id="S1", description="Model A accuracy"),
+            RequiredSlot(slot_id="S2", description="Model B accuracy"),
+        ],
+        synthesis_obligations=[
+            SynthesisObligation(
+                obligation_id="O1",
+                kind="comparison",
+                description="Compare S1 and S2",
+                depends_on_slot_ids=["S1", "S2"],
+            )
+        ],
+        response_constraints=[
+            ResponseConstraint(
+                constraint_id="C1",
+                kind="output_format",
+                description="Format in comparison table",
+            )
+        ],
+        comparison_plan=ComparisonPlan(
+            subjects=[
+                ComparisonSubject(
+                    subject_id="model_a",
+                    display_name="Model A",
+                    retrieval_query="model a accuracy",
+                    evidence_slot_ids=["S1"],
+                ),
+                ComparisonSubject(
+                    subject_id="model_b",
+                    display_name="Model B",
+                    retrieval_query="model b accuracy",
+                    evidence_slot_ids=["S2"],
+                ),
+            ],
+            dimensions=["accuracy"],
+        ),
+        slot_plan_source="deterministic",
+        slot_plan_confidence="high",
+        slot_plan_fallback_reason=None,
+        truncated_requirement_count=0,
+    )
+    metrics = V9ExecutionMetrics(
+        atomic_planner_call_count=1,
+        comparison_planner_call_count=0,
+        slot_binding_method="task_target_inherited",
+        semantic_qualification="not_enabled",
+        reserved_tokens=500,
+        reconciled_tokens=500,
+    )
+    observability = ExportV9ExecutionObservabilityV2(
+        contract=contract,
+        metrics=metrics,
+    )
+
+    dumped = observability.model_dump(mode="json")
+    loaded = ExportV9ExecutionObservabilityV2.model_validate(dumped)
+
+    assert loaded.contract is not None
+    assert loaded.contract.contract_version == "2"
+    assert len(loaded.contract.required_slots) == 2
+    assert [s.slot_id for s in loaded.contract.required_slots] == ["S1", "S2"]
+    assert len(loaded.contract.synthesis_obligations) == 1
+    assert loaded.contract.synthesis_obligations[0].obligation_id == "O1"
+    assert loaded.contract.synthesis_obligations[0].depends_on_slot_ids == ["S1", "S2"]
+    assert len(loaded.contract.response_constraints) == 1
+    assert loaded.contract.response_constraints[0].constraint_id == "C1"
+    assert loaded.contract.comparison_plan is not None
+    assert loaded.contract.comparison_plan.subjects[0].evidence_slot_ids == ["S1"]
+    assert loaded.contract.comparison_plan.subjects[1].evidence_slot_ids == ["S2"]
+    assert loaded.contract.slot_plan_source == "deterministic"
+    assert loaded.contract.slot_plan_confidence == "high"
+    assert loaded.contract.truncated_requirement_count == 0
+    assert loaded.metrics.atomic_planner_call_count == 1
+    assert loaded.metrics.comparison_planner_call_count == 0
+    assert loaded.metrics.slot_binding_method == "task_target_inherited"
+    assert loaded.metrics.semantic_qualification == "not_enabled"
+
+
+def test_export_v2_comparison_subject_preserves_evidence_slot_ids() -> None:
+    subject = ExportV9ComparisonSubjectV2(
+        subject_id="model_a",
+        display_name="Model A",
+        aliases=["A"],
+        evidence_slot_ids=["S1"],
+    )
+    dumped = subject.model_dump(mode="json")
+    loaded = ExportV9ComparisonSubjectV2.model_validate(dumped)
+    assert loaded.evidence_slot_ids == ["S1"]
+
+
+def test_export_v2_reads_historical_contract_without_additive_fields() -> None:
+    legacy_payload = {
+        "schema_version": "1",
+        "contract": {
+            "contract_version": "1",
+            "route": "single_lookup",
+            "intent": "Lookup metric",
+            "required_slots": [{"slot_id": "slot-1", "description": "Metric"}],
+        },
+        "metrics": {
+            "reconciled_tokens": 100,
+        },
+    }
+    loaded = ExportV9ExecutionObservabilityV2.model_validate(legacy_payload)
+    assert loaded.contract is not None
+    assert loaded.contract.contract_version == "1"
+    assert loaded.contract.synthesis_obligations == []
+    assert loaded.contract.response_constraints == []
+    assert loaded.contract.comparison_plan is None
+    assert loaded.contract.slot_plan_source is None
+    assert loaded.metrics.atomic_planner_call_count == 0
+    assert loaded.metrics.comparison_planner_call_count == 0
+    assert loaded.metrics.slot_binding_method == "not_instrumented"
+    assert loaded.metrics.semantic_qualification == "not_instrumented"

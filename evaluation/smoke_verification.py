@@ -291,7 +291,22 @@ def _verify_plan_coverage(runs: list[dict[str, Any]]) -> RequirementResult:
     return RequirementResult("pass")
 
 
+def _execution_profile_for_run(run: Mapping[str, Any]) -> str:
+    trace = _as_mapping(run.get("agent_trace"))
+    result = _as_mapping(run.get("result"))
+    v9 = _v9_payload(dict(run))
+    return str(
+        run.get("execution_profile")
+        or trace.get("execution_profile")
+        or result.get("execution_profile")
+        or v9.get("execution_profile")
+        or ""
+    )
+
+
 def _verify_contracts(runs: list[dict[str, Any]]) -> RequirementResult:
+    valid_binding_methods = {"task_target_inherited", "not_instrumented"}
+    valid_semantic_qualifications = {"not_enabled", "not_instrumented"}
     for run in runs:
         v9 = _v9_payload(run)
         contract = _as_mapping(v9.get("query_contract")) or _as_mapping(v9.get("contract"))
@@ -304,6 +319,35 @@ def _verify_contracts(runs: list[dict[str, Any]]) -> RequirementResult:
         route = str(decision.get("selected_route") or "").strip()
         if not route or not route_reason:
             return RequirementResult("fail", "actual route rationale missing")
+        metrics = _as_mapping(v9.get("metrics"))
+        if metrics:
+            slot_binding = metrics.get("slot_binding_method")
+            if slot_binding is not None and str(slot_binding) not in valid_binding_methods:
+                return RequirementResult(
+                    "fail", "slot binding method is unknown or invalid"
+                )
+            semantic_qual = metrics.get("semantic_qualification")
+            if (
+                semantic_qual is not None
+                and str(semantic_qual) not in valid_semantic_qualifications
+            ):
+                return RequirementResult(
+                    "fail", "semantic qualification is unknown or invalid"
+                )
+            atomic_count = metrics.get("atomic_planner_call_count")
+            if atomic_count is not None and (
+                not isinstance(atomic_count, int) or atomic_count > 1
+            ):
+                return RequirementResult(
+                    "fail", "atomic planner call count must not exceed 1"
+                )
+            comparison_count = metrics.get("comparison_planner_call_count")
+            if comparison_count is not None and (
+                not isinstance(comparison_count, int) or comparison_count != 0
+            ):
+                return RequirementResult(
+                    "fail", "comparison planner call count must be 0"
+                )
     return RequirementResult("pass")
 
 
@@ -329,6 +373,14 @@ def _verify_slots(runs: list[dict[str, Any]]) -> RequirementResult:
         valid_statuses = {"supported", "conflicted", "explicitly_unavailable", "not_found"}
         if not all(expected_ids) or len(expected_ids) != len(slots):
             return RequirementResult("fail", "required atomic slots must have unique non-empty IDs")
+
+        actual_slot_ids = [str(slot.get("slot_id") or "").strip() for slot in slots]
+        expected_sequential_ids = [f"S{i}" for i in range(1, len(slots) + 1)]
+        if not (1 <= len(slots) <= 8) or actual_slot_ids != expected_sequential_ids:
+            return RequirementResult(
+                "fail", "slot IDs must be sequential S1..Sn (1..8)"
+            )
+
         if any(str(row.get("status") or "") not in valid_statuses for row in resolutions):
             return RequirementResult("fail", "final slot resolution status is missing or invalid")
         resolved_ids = {str(row.get("slot_id") or "") for row in resolutions if row.get("slot_id")}
@@ -526,6 +578,7 @@ def _verify_comparison_observability(
         "invalid_response",
         "schema_violation",
         "not_comparison",
+        "invalid_subjects",
     }
     task_statuses = {"executed", "fallback", "not_instrumented"}
     task_fallback_reasons = {
@@ -534,10 +587,69 @@ def _verify_comparison_observability(
         "reranker_empty_result",
     }
     final_statuses = {"complete", "qualified_partial", "insufficient"}
+    valid_binding_methods = {"task_target_inherited", "not_instrumented"}
+    valid_semantic_qualifications = {"not_enabled", "not_instrumented"}
     observed = False
     for run in runs:
         v9 = _v9_payload(run)
         comparison = _as_mapping(v9.get("comparison"))
+        contract = _as_mapping(v9.get("query_contract")) or _as_mapping(v9.get("contract"))
+        profile = _execution_profile_for_run(run)
+        is_historical = profile.endswith("comparison_structured_v2")
+
+        if not is_historical:
+            atomic_calls = [
+                call
+                for call in _calls_for_run(llm_calls, run)
+                if str(call.get("phase") or "") == "contract_planning"
+                and str(call.get("purpose") or "") == "atomic_contract_planning"
+            ]
+            comparison_calls = [
+                call
+                for call in _calls_for_run(llm_calls, run)
+                if str(call.get("phase") or "") == "comparison_plan"
+            ]
+            if len(atomic_calls) > 1:
+                return RequirementResult(
+                    "fail", "atomic contract planner used more than one provider call"
+                )
+            if comparison_calls:
+                return RequirementResult(
+                    "fail", "active atomic execution must not make comparison_plan provider calls"
+                )
+            metrics = _as_mapping(v9.get("metrics"))
+            if metrics:
+                atomic_count = metrics.get("atomic_planner_call_count")
+                if atomic_count is not None and (
+                    not isinstance(atomic_count, int) or atomic_count > 1
+                ):
+                    return RequirementResult(
+                        "fail", "atomic planner call count must not exceed 1"
+                    )
+                comparison_count = metrics.get("comparison_planner_call_count")
+                if comparison_count is not None and (
+                    not isinstance(comparison_count, int) or comparison_count != 0
+                ):
+                    return RequirementResult(
+                        "fail", "comparison planner call count must be 0"
+                    )
+                slot_binding = metrics.get("slot_binding_method")
+                if (
+                    slot_binding is not None
+                    and str(slot_binding) not in valid_binding_methods
+                ):
+                    return RequirementResult(
+                        "fail", "slot binding method is unknown or invalid"
+                    )
+                semantic_qual = metrics.get("semantic_qualification")
+                if (
+                    semantic_qual is not None
+                    and str(semantic_qual) not in valid_semantic_qualifications
+                ):
+                    return RequirementResult(
+                        "fail", "semantic qualification is unknown or invalid"
+                    )
+
         if not comparison:
             continue
         observed = True
@@ -560,6 +672,18 @@ def _verify_comparison_observability(
             for item in subjects
             if isinstance(item, Mapping)
         ]
+        slot_ids_set = {
+            str(s.get("slot_id") or "").strip()
+            for s in _as_list(contract.get("required_slots"))
+        }
+        for item in subjects:
+            if isinstance(item, Mapping):
+                evidence_slot_ids = _as_strings(item.get("evidence_slot_ids"))
+                if evidence_slot_ids and not set(evidence_slot_ids).issubset(slot_ids_set):
+                    return RequirementResult(
+                        "fail", "comparison subject references undeclared evidence slot"
+                    )
+
         if comparison.get("is_comparison") is True:
             if not 2 <= len(subject_ids) <= 4 or len(set(subject_ids)) != len(
                 subject_ids
@@ -651,29 +775,30 @@ def _verify_comparison_observability(
                         "fail", "comparison task fallback reason is unknown"
                     )
 
-        planner_calls = [
-            call
-            for call in _calls_for_run(llm_calls, run)
-            if str(call.get("phase") or "") == "comparison_plan"
-        ]
-        if len(planner_calls) > 1:
-            return RequirementResult(
-                "fail", "comparison planner used more than one provider call"
-            )
-        if planner_status == "planned":
-            if len(planner_calls) != 1:
+        if is_historical:
+            planner_calls = [
+                call
+                for call in _calls_for_run(llm_calls, run)
+                if str(call.get("phase") or "") == "comparison_plan"
+            ]
+            if len(planner_calls) > 1:
                 return RequirementResult(
-                    "partial", "planned comparison lacks one provider call"
+                    "fail", "comparison planner used more than one provider call"
                 )
-            if not isinstance(
-                _as_mapping(planner_calls[0].get("payload")).get(
-                    "official_total_tokens"
-                ),
-                int,
-            ):
-                return RequirementResult(
-                    "partial", "comparison planner token accounting is incomplete"
-                )
+            if planner_status == "planned":
+                if len(planner_calls) != 1:
+                    return RequirementResult(
+                        "partial", "planned comparison lacks one provider call"
+                    )
+                if not isinstance(
+                    _as_mapping(planner_calls[0].get("payload")).get(
+                        "official_total_tokens"
+                    ),
+                    int,
+                ):
+                    return RequirementResult(
+                        "partial", "comparison planner token accounting is incomplete"
+                    )
         if planner_status == "fallback":
             reason = str(comparison.get("planner_fallback_reason") or "")
             if reason not in planner_fallback_reasons:

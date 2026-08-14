@@ -20,7 +20,10 @@ from data_base.reranker import DocumentReranker
 from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
 from evaluation.agentic_v9_admission import V9AdmissionContract
 from evaluation.campaign_schemas import V9ContextPack
-from evaluation.retrieval_profiles import AGENTIC_V9_OPEN_CORPUS_PROFILE
+from evaluation.retrieval_profiles import (
+    AGENTIC_V9_EXPLICIT_SCOPE_PROFILE,
+    AGENTIC_V9_OPEN_CORPUS_PROFILE,
+)
 from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
@@ -487,9 +490,9 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     )
 
     v9 = result.agent_trace["agentic_v9"]
-    assert result.agent_trace["execution_profile"] == (
-        "agentic_eval_v9_explicit_scope_hybrid8_rerank8_diverse_tail2_top4_"
-        "finalpack_r1_comparison_structured_v2"
+    assert (
+        result.agent_trace["execution_profile"]
+        == AGENTIC_V9_EXPLICIT_SCOPE_PROFILE
     )
     assert v9["query_contract"]["contract_version"] == "2"
     assert v9["metrics"]["atomic_planner_call_count"] <= 1
@@ -1907,10 +1910,6 @@ async def test_v9_campaign_runtime_resolves_open_corpus_from_user_acl() -> None:
     retrieved_scope = retrieve_documents.await_args.args[2]
     assert retrieved_scope == ["doc-1", "doc-2"]
     assert result.agent_trace["execution_profile"] == AGENTIC_V9_OPEN_CORPUS_PROFILE
-    assert result.agent_trace["execution_profile"] == (
-        "agentic_eval_v9_open_corpus_hybrid8_rerank8_diverse_tail2_top4_"
-        "finalpack_r1_comparison_structured_v2"
-    )
     assert result.agent_trace["agentic_v9"]["retrieval_scope"] == {
         "policy": "open_user_corpus",
         "expected_sources_used_at_runtime": False,
@@ -1986,9 +1985,9 @@ async def test_v9_runtime_rejects_incompatible_setup_before_provider_or_retrieva
     )
 
     assert result.agent_trace["response_status"] == "configuration_incompatible"
-    assert result.agent_trace["execution_profile"] == (
-        "agentic_eval_v9_explicit_scope_hybrid8_rerank8_diverse_tail2_top4_"
-        "finalpack_r1_comparison_structured_v2"
+    assert (
+        result.agent_trace["execution_profile"]
+        == AGENTIC_V9_EXPLICIT_SCOPE_PROFILE
     )
     assert (
         result.agent_trace["agentic_v9"]["configuration_incompatible"]["stage"]
