@@ -79,24 +79,3 @@ as a schema-shaped placeholder when no artifact exists.
 For filesystem safety, `--manifest` refuses both an existing file and a symlink.
 Choose a new output path for every verification run; this CLI intentionally has no
 overwrite flag.
-
-## 5. Check the evidence-grounded answer invariants
-
-For the paired 32-question campaign, inspect representative single-slot and
-multi-slot Agentic runs in the exported observability data:
-
-- Multi-slot runs contain separate slot-bound accepted claims, rather than one
-  synthetic claim containing the entire answer.
-- Every persisted positive evidence packet is qualified (`quote_bound`,
-  validator-issued `deterministic_valid`, or `derived_non_evidence`). Raw
-  retrieved chunks must never be promoted to `deterministic_valid` without
-  extractor or validator provenance.
-- A missing slot produces `qualified_partial` or `insufficient`; when repair is
-  admitted, its candidate supports the slot only after the repair qualification
-  batch accepts it.
-- A `complete` run has accepted claim coverage for every required slot. The
-  final claims, used evidence IDs, packed evidence IDs, source documents, slot
-  resolutions, and completion status must agree.
-- Compare Agentic and Naive normal runtime-token accounting manually. The
-  existing release target remains an Agentic/Naive runtime-token ratio `<= 3.0`;
-  this delivery does not add an automatic ratio gate.

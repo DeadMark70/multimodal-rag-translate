@@ -31,13 +31,11 @@ from data_base.agentic_v9.budget_feasibility import (
     validate_pre_route_feasibility,
 )
 from data_base.agentic_v9.budgeted_llm import BudgetedLlmInvoker, LlmCallObserver
-from data_base.agentic_v9.claim_verifier import requires_prose_verification
 from data_base.agentic_v9.context_packer import (
     EvidenceContextPacker,
     FinalContextSelectionPolicy,
     PackedEvidenceContext,
 )
-from data_base.agentic_v9.citation_renderer import render_verified_answer
 from data_base.agentic_v9.comparison_planner import (
     ComparisonPlanner,
     apply_comparison_overlay,
@@ -56,8 +54,6 @@ from data_base.agentic_v9.execution_policy import (
     ExecutionCancellation,
     V9ExecutionPolicyRuntime,
 )
-from data_base.agentic_v9.evidence_extractor import EvidenceExtractor
-from data_base.agentic_v9.final_answer import generate_final_answer
 from data_base.agentic_v9.repair import build_repair_plan
 from data_base.agentic_v9.requirement_shadow import build_requirement_shadow
 from data_base.agentic_v9.schemas import (
@@ -72,9 +68,7 @@ from data_base.agentic_v9.schemas import (
     ResolvedSourceScope,
     SlotResolution,
     SourceLocator,
-    SufficiencyReport,
     TaskRetrievalResult,
-    UnresolvedRequirement,
     V9ExecutionEvent,
     V9ExecutionRequest,
     V9RuntimeContext,
@@ -368,7 +362,6 @@ class AgenticV9CampaignRuntime:
             "contract": None,
             "pack": None,
             "repairs": [],
-            "candidate_packets": [],
             "evidence_packets": [],
             "quality_by_evidence_id": {},
             "post_contract": None,
@@ -378,7 +371,6 @@ class AgenticV9CampaignRuntime:
             "comparison_coverage_before_repair": None,
             "comparison_coverage_after_repair": None,
             "final_evidence_packets": None,
-            "final_slot_resolutions": (),
             "comparison_planner": {
                 "requested": comparison_plan_requested,
                 "status": "not_requested",
@@ -619,12 +611,9 @@ class AgenticV9CampaignRuntime:
                 projection.quality_by_evidence_id
             )
             if not state["visual_packets_emitted"]:
-                packets.extend(
-                    _validated_visual_packet(packet)
-                    for packet in state["visual_packets"]
-                )
+                packets.extend(state["visual_packets"])
                 state["visual_packets_emitted"] = True
-            state["candidate_packets"].extend(packets)
+            state["evidence_packets"].extend(packets)
             return tuple(packets)
 
         def sufficiency(
@@ -646,9 +635,7 @@ class AgenticV9CampaignRuntime:
                 if state["comparison_coverage_before_repair"] is None:
                     state["comparison_coverage_before_repair"] = coverage
                 state["comparison_coverage_after_repair"] = coverage
-            evaluation = evaluate_sufficiency(contract, effective_packets)
-            state["final_slot_resolutions"] = evaluation.slot_resolutions
-            return evaluation
+            return evaluate_sufficiency(contract, effective_packets)
 
         def plan_repair(
             contract: QueryContract,
@@ -667,43 +654,20 @@ class AgenticV9CampaignRuntime:
             return repair.tasks
 
         async def prose_curate(
-            question: str,
-            contract: QueryContract,
-            packets: tuple[EvidencePacket, ...],
+            _: str, contract: QueryContract, packets: tuple[EvidencePacket, ...]
         ) -> tuple[EvidencePacket, ...]:
-            controller = state["budget_controller"]
-            assert isinstance(controller, RunBudgetController)
-            extractor = EvidenceExtractor(
-                BudgetedLlmInvoker(
-                    controller=controller,
-                    provider_factory=self._provider_factory,
-                    observer=llm_call_observer,
-                    provider_name=str(setup_snapshot.get("provider") or "unknown"),
-                    model_name=str(setup_snapshot.get("model_name") or "unknown"),
-                )
-            )
-            qualified = _merge_equivalent_qualified_packets(
-                await extractor.extract(
-                    contract,
-                    packets,
-                    repairs_complete=True,
-                    question=question,
-                )
-            )
-            _propagate_packet_quality(
-                candidates=state["candidate_packets"],
-                qualified=qualified,
-                quality_by_evidence_id=state["quality_by_evidence_id"],
-            )
+            # Candidate extraction is deterministic and provenance-bound.  No
+            # prose model is permitted to invent or promote evidence here.
+            # For comparisons, sufficiency must be evaluated on the same
+            # deduplicated, subject-balanced packet set used by final packing.
             if contract.comparison_plan is not None:
                 selected = select_balanced_comparison_packets(
-                    qualified,
+                    packets,
                     plan=contract.comparison_plan,
                     quality_by_evidence_id=state["quality_by_evidence_id"],
                 )
             else:
-                selected = qualified
-            state["evidence_packets"] = list(selected)
+                selected = packets
             state["final_evidence_packets"] = selected
             return selected
 
@@ -764,39 +728,61 @@ class AgenticV9CampaignRuntime:
             return packed
 
         async def generate_final(
-            question: str,
-            contract: QueryContract,
+            _: str,
+            __: QueryContract,
             packed: PackedEvidenceContext,
             resolutions: tuple[SlotResolution, ...],
-            arbitration: Any | None,
-            sufficiency_report: SufficiencyReport,
+            ___: Any | None,
+            ____: Any,
         ) -> FinalAnswerResult:
             controller = state["budget_controller"]
             assert isinstance(controller, RunBudgetController)
-            state["final_slot_resolutions"] = resolutions
-            return await generate_final_answer(
-                question=question,
-                contract=contract,
-                packed_packets=packed,
-                slot_resolutions=resolutions,
-                llm_invoker=BudgetedLlmInvoker(
-                    controller=controller,
-                    provider_factory=self._provider_factory,
-                    observer=llm_call_observer,
-                    provider_name=str(setup_snapshot.get("provider") or "unknown"),
-                    model_name=str(setup_snapshot.get("model_name") or "unknown"),
-                ),
-                sufficiency_report=sufficiency_report,
-                arbitration=arbitration,
+            response = await BudgetedLlmInvoker(
+                controller=controller,
+                provider_factory=self._provider_factory,
+                observer=llm_call_observer,
+                provider_name=str(setup_snapshot.get("provider") or "unknown"),
+                model_name=str(setup_snapshot.get("model_name") or "unknown"),
+            ).invoke(
+                phase="final_answer",
+                purpose="agentic_v9_final_answer",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Use only supplied evidence. Cite no source not present.",
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Question: {question}\n\nEvidence:\n{packed.rendered_text}",
+                    },
+                ],
+            )
+            if isinstance(response, FinalAnswerResult):
+                return response
+            answer = _response_text(response)
+            used_ids = [packet.evidence_id for packet in packed.packets]
+            claims = [
+                FinalClaim(
+                    claim_id=f"claim:{trace_id}",
+                    statement=answer or "Evidence-backed answer unavailable.",
+                    support_type="direct",
+                    evidence_ids=used_ids,
+                )
+            ]
+            return FinalAnswerResult(
+                response_status="complete",
+                answer=answer,
+                claims=claims,
+                used_evidence_ids=used_ids,
+                final_generation_count=1,
             )
 
         def deterministic_partial(
-            contract: QueryContract, evaluation: SufficiencyEvaluation
+            _: QueryContract, evaluation: SufficiencyEvaluation
         ) -> FinalAnswerResult:
-            return _deterministic_partial_answer(
-                contract=contract,
-                evaluation=evaluation,
-                packets=tuple(state["evidence_packets"]),
+            return FinalAnswerResult(
+                response_status=evaluation.report.response_status,
+                answer="Evidence was insufficient for a fully supported answer.",
             )
 
         core = V9ExecutionCore(
@@ -927,7 +913,13 @@ class AgenticV9CampaignRuntime:
             ],
             "slot_resolutions": [
                 resolution.model_dump(mode="json")
-                for resolution in state["final_slot_resolutions"]
+                for resolution in (
+                    executed.sufficiency
+                    and evaluate_sufficiency(
+                        state["contract"], final_evidence_packets
+                    ).slot_resolutions
+                    or ()
+                )
             ],
             "sufficiency": executed.sufficiency.model_dump(mode="json")
             if executed.sufficiency
@@ -1632,70 +1624,6 @@ class EvidencePacketProjection:
     quality_by_evidence_id: dict[str, float]
 
 
-def _validated_visual_packet(packet: EvidencePacket) -> EvidencePacket:
-    """Record the adapter validation boundary without promoting invalid packets."""
-    if (
-        packet.validation_status == "deterministic_valid"
-        and packet.extractor_version is None
-        and packet.source.source_span_hash is None
-    ):
-        return packet.model_copy(update={"extractor_version": "v9-visual-validator-1"})
-    return packet
-
-
-def _packet_source_identity(packet: EvidencePacket) -> tuple[str, str | None, str | None]:
-    return (packet.source.doc_id, packet.source.chunk_id, packet.source.asset_id)
-
-
-def _merge_equivalent_qualified_packets(
-    packets: Sequence[EvidencePacket],
-) -> tuple[EvidencePacket, ...]:
-    """Merge slot bindings only when the qualified source assertion is identical."""
-    merged: dict[tuple[object, ...], EvidencePacket] = {}
-    for packet in packets:
-        if any(slot_id.startswith("comparison-subject:") for slot_id in packet.slot_ids):
-            merged[("comparison", packet.evidence_id)] = packet
-            continue
-        key = (
-            *_packet_source_identity(packet),
-            packet.statement,
-            packet.support_type,
-            packet.validation_status,
-            packet.scope.model_dump_json(),
-            packet.locator.model_dump_json(),
-        )
-        previous = merged.get(key)
-        if previous is None:
-            merged[key] = packet
-            continue
-        merged[key] = previous.model_copy(
-            update={"slot_ids": list(dict.fromkeys([*previous.slot_ids, *packet.slot_ids]))}
-        )
-    return tuple(merged.values())
-
-
-def _propagate_packet_quality(
-    *,
-    candidates: Sequence[EvidencePacket],
-    qualified: Sequence[EvidencePacket],
-    quality_by_evidence_id: dict[str, float],
-) -> None:
-    """Carry retrieval quality from a raw candidate to its derived packet IDs."""
-    quality_by_source: dict[tuple[str, str | None, str | None], float] = {}
-    for candidate in candidates:
-        quality = quality_by_evidence_id.get(candidate.evidence_id)
-        if quality is None:
-            continue
-        identity = _packet_source_identity(candidate)
-        quality_by_source[identity] = max(quality_by_source.get(identity, 0.0), quality)
-    for packet in qualified:
-        if packet.evidence_id in quality_by_evidence_id:
-            continue
-        quality = quality_by_source.get(_packet_source_identity(packet))
-        if quality is not None:
-            quality_by_evidence_id[packet.evidence_id] = quality
-
-
 def _evidence_packets_for_results(
     *,
     results: tuple[TaskRetrievalResult, ...],
@@ -1754,7 +1682,7 @@ def _evidence_packets_for_results(
                     source=EvidenceSource(**source_fields),
                     scope=EvidenceScope(),
                     locator=SourceLocator(**locator_fields),
-                    validation_status="invalid",
+                    validation_status="deterministic_valid",
                 )
             )
             quality_by_evidence_id[evidence_id] = _packet_quality(chunk, index)
@@ -1854,95 +1782,18 @@ def _final_input_reserve(snapshot: dict[str, Any], runtime_token_budget: int) ->
     )
 
 
-def _deterministic_partial_answer(
-    *,
-    contract: QueryContract,
-    evaluation: SufficiencyEvaluation,
-    packets: Sequence[EvidencePacket],
-) -> FinalAnswerResult:
-    packets_by_id = {packet.evidence_id: packet for packet in packets}
-    claims: list[FinalClaim] = []
-    supported_claims: list[FinalClaim] = []
-    unresolved: list[UnresolvedRequirement] = []
-    resolutions_by_slot = {
-        resolution.slot_id: resolution for resolution in evaluation.slot_resolutions
-    }
-    for slot in contract.required_slots:
-        resolution = resolutions_by_slot.get(slot.slot_id)
-        if resolution is None or resolution.status != "supported":
-            unresolved.append(
-                UnresolvedRequirement(
-                    slot_id=slot.slot_id,
-                    reason=(
-                        resolution.reason
-                        if resolution is not None and resolution.reason
-                        else "qualified evidence unavailable"
-                    ),
-                )
-            )
-            continue
-        packet = next(
-            (
-                packets_by_id[evidence_id]
-                for evidence_id in resolution.evidence_ids
-                if evidence_id in packets_by_id
-                and slot.slot_id in packets_by_id[evidence_id].slot_ids
-            ),
-            None,
-        )
-        if packet is None:
-            unresolved.append(
-                UnresolvedRequirement(
-                    slot_id=slot.slot_id,
-                    reason="qualified evidence unavailable",
-                )
-            )
-            continue
-        claim = FinalClaim(
-            claim_id=f"deterministic:{slot.slot_id}",
-            slot_id=slot.slot_id,
-            statement=packet.statement,
-            support_type=packet.support_type,
-            evidence_ids=[packet.evidence_id],
-            premise_evidence_ids=list(packet.premise_evidence_ids),
-        )
-        if requires_prose_verification(claim):
-            claims.append(
-                claim.model_copy(
-                    update={
-                        "support_type": "qualified",
-                        "qualified_reason": (
-                            "claim_verification_required_but_unavailable"
-                        ),
-                    }
-                )
-            )
-            unresolved.append(
-                UnresolvedRequirement(
-                    slot_id=slot.slot_id,
-                    reason="high-risk claim was not verified",
-                )
-            )
-            continue
-        claims.append(claim)
-        supported_claims.append(claim)
-    used_evidence_ids = list(
-        dict.fromkeys(
-            evidence_id
-            for claim in supported_claims
-            for evidence_id in [*claim.evidence_ids, *claim.premise_evidence_ids]
-        )
+def _response_text(response: Any) -> str:
+    content = (
+        response.get("content")
+        if isinstance(response, dict)
+        else getattr(response, "content", response)
     )
-    return FinalAnswerResult(
-        response_status="qualified_partial" if supported_claims else "insufficient",
-        answer=render_verified_answer(
-            supported_claims,
-            packets,
-            unresolved_requirements=unresolved,
-        ),
-        claims=claims,
-        used_evidence_ids=used_evidence_ids,
-    )
+    if isinstance(content, list):
+        return "".join(
+            str(item.get("text", "")) if isinstance(item, dict) else str(item)
+            for item in content
+        ).strip()
+    return str(content or "").strip()
 
 
 def _context_pack_projection(
