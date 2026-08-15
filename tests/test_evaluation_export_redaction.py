@@ -16,8 +16,8 @@ from fastapi.testclient import TestClient
 
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
-from evaluation.router import get_evaluation_export_service
 from evaluation import db as evaluation_db
+from evaluation import export_service as export_service_module
 from evaluation.accounting_schemas import (
     CampaignResearchSummaryResponse,
     CostSummary,
@@ -58,6 +58,7 @@ from evaluation.research_analytics import (
     CanonicalRunObservability,
     _project_interactive_run_observability,
 )
+from evaluation.router import get_evaluation_export_service
 from evaluation.trace_schemas import (
     EvaluationClaim,
     EvaluationLlmCall,
@@ -310,6 +311,21 @@ def _canonical_export_run() -> CanonicalRunObservability:
         ],
         evidence_coverage_status="complete",
     )
+
+
+def test_failed_run_observability_availability_is_explicitly_partial() -> None:
+    failed = _export_result().model_copy(
+        update={"status": "failed", "mode": "agentic-v9", "answer": ""}
+    )
+
+    availability = export_service_module._run_observability_availability(
+        result=failed,
+        requested=True,
+        has_detail=True,
+    )
+
+    assert availability.status == "partial"
+    assert availability.reasons == ["run_failed_before_observability"]
 
 
 @pytest.mark.parametrize(

@@ -6,7 +6,9 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
+from core.sensitive_data import is_sensitive_credential_key
 from evaluation.analytics import EvaluationAnalyticsService
+from evaluation.campaign_schemas import CampaignResult, CampaignResultStatus
 from evaluation.db import CampaignRepository, CampaignResultRepository
 from evaluation.export_schemas import (
     ExportAvailability,
@@ -44,7 +46,6 @@ from evaluation.export_schemas import (
     ExportV9ExecutionObservabilityV2,
     resolve_export_content_policy,
 )
-from core.sensitive_data import is_sensitive_credential_key
 from evaluation.observability_storage import (
     redact_sensitive_text,
     safe_comparison_projection,
@@ -152,6 +153,18 @@ def _project_trace_payload(
 
 def _availability(status: str = "complete", *reasons: str) -> ExportAvailability:
     return ExportAvailability(status=status, reasons=list(reasons))
+
+
+def _run_observability_availability(
+    *, result: CampaignResult, requested: bool, has_detail: bool
+) -> ExportAvailability:
+    if not requested:
+        return _availability("not_applicable", "not_requested")
+    if result.status == CampaignResultStatus.FAILED:
+        return _availability("partial", "run_failed_before_observability")
+    if has_detail:
+        return _availability()
+    return _availability("not_available", "observability_missing")
 
 
 def _references(rows: list[dict[str, Any]]) -> list[ExportEvidenceReferenceV2]:
@@ -419,10 +432,10 @@ class EvaluationExportService:
                     ),
                     observability=ExportRunObservabilityV2(
                         included=request.include_run_observability,
-                        availability=(
-                            complete
-                            if detail
-                            else _availability("not_applicable", "not_requested")
+                        availability=_run_observability_availability(
+                            result=result,
+                            requested=request.include_run_observability,
+                            has_detail=detail is not None,
                         ),
                         data=detail,
                     ),

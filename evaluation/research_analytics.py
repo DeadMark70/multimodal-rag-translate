@@ -395,7 +395,10 @@ def _has_run_container(snapshot: CampaignObservabilitySnapshot, run_id: str) -> 
 def _v9_observability_from_snapshot(
     *, result: CampaignResult, observability: CampaignObservabilitySnapshot
 ) -> V9ExecutionObservability | None:
-    if result.agentic_execution_version != "v9":
+    if (
+        result.status == CampaignResultStatus.FAILED
+        or result.agentic_execution_version != "v9"
+    ):
         return None
     attempt_id = result.source_attempt_id
     if not attempt_id:
@@ -530,7 +533,10 @@ def _build_canonical_run_observability(
     observability: CampaignObservabilitySnapshot,
     accounting: CampaignAccountingSnapshot,
 ) -> CanonicalRunObservability:
-    if not _has_run_container(observability, result.id):
+    if (
+        not _has_run_container(observability, result.id)
+        and result.status != CampaignResultStatus.FAILED
+    ):
         raise _observability_error("Run observability container is missing")
     trace_events = observability.trace_events_by_run_id.get(result.id, [])
     llm_calls = observability.llm_calls_by_run_id.get(result.id, [])

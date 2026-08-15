@@ -150,8 +150,12 @@ result, finite-only RAGAS metrics, typed token accounting, and nullable measured
 latency/timestamps. Detailed run rows use fixed allow lists for trace, LLM,
 retrieval, context, tool, routing, graph, claim, rating, and evidence-coverage
 families. Summary exports do not load the campaign observability snapshot;
-full exports load it once in bulk and require its run IDs to equal the campaign
-result IDs exactly. Event arrays are complete rather than dashboard-truncated.
+full exports load it once in bulk and require the canonical projection IDs to
+equal the campaign result IDs exactly. A failed run that terminates before it
+creates an observability container is retained as a typed empty projection with
+`availability=partial` and reason `run_failed_before_observability`; a completed
+run missing its container remains a hard error. Event arrays are complete rather
+than dashboard-truncated.
 
 Content controls never relax permanent exclusions. Provider bodies,
 credentials, authorization headers, stack traces, unrestricted errors, and

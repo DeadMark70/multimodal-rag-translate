@@ -182,6 +182,42 @@ async def test_bulk_canonical_observability_uses_one_campaign_snapshot_without_n
     accounting.load_campaign_snapshot.assert_awaited_once_with("campaign-1")
 
 
+@pytest.mark.asyncio
+async def test_bulk_canonical_observability_keeps_failed_run_without_container() -> None:
+    completed = _result(1)
+    failed = _result(2, source_attempt_id="attempt-failed").model_copy(
+        update={
+            "status": "failed",
+            "mode": "agentic-v9",
+            "answer": "",
+            "total_tokens": None,
+        }
+    )
+    results = [completed, failed]
+    observability = AsyncMock(spec_set=EvaluationObservabilityRepository)
+    accounting = AsyncMock(spec_set=EvaluationAccountingStore)
+    observability.load_campaign_observability_snapshot.return_value = _empty_snapshot(
+        run_ids=(completed.id,)
+    )
+    accounting.load_campaign_snapshot.return_value = CampaignAccountingSnapshot(
+        scopes_by_run_id={}, events_by_scope_id={}
+    )
+    service = research_analytics.ResearchAnalyticsService(
+        campaigns=SimpleNamespace(get=AsyncMock()),
+        observability=observability,
+        accounting=accounting,
+    )
+
+    details = await service.get_campaign_run_observability(
+        user_id="user-1", campaign_id="campaign-1", results=results
+    )
+
+    assert list(details) == [completed.id, failed.id]
+    assert details[failed.id].trace_events == []
+    assert details[failed.id].agentic_v9 is None
+    assert details[failed.id].token_breakdown.accounting_status == "incomplete_legacy"
+
+
 def _many_rows_snapshot():
     snapshot = _empty_snapshot()
     trace_events = [
@@ -453,6 +489,33 @@ def test_canonical_builder_rejects_missing_run_container() -> None:
             observability=_empty_snapshot(run_ids=()),
             accounting=_accounting_snapshot([result]),
         )
+
+
+def test_canonical_builder_represents_failed_run_without_observability() -> None:
+    result = _result(source_attempt_id="attempt-failed").model_copy(
+        update={
+            "status": "failed",
+            "mode": "agentic-v9",
+            "answer": "",
+            "total_tokens": None,
+        }
+    )
+
+    canonical = research_analytics._build_canonical_run_observability(
+        result=result,
+        observability=_empty_snapshot(run_ids=()),
+        accounting=CampaignAccountingSnapshot(
+            scopes_by_run_id={}, events_by_scope_id={}
+        ),
+    )
+
+    assert canonical.result.status == "failed"
+    assert canonical.trace_events == []
+    assert canonical.llm_calls == []
+    assert canonical.agentic_v9 is None
+    assert canonical.graph_observability_status == "not_instrumented"
+    assert canonical.claim_extraction_status == "not_instrumented"
+    assert canonical.token_breakdown.accounting_status == "incomplete_legacy"
 
 
 def test_canonical_builder_does_not_require_v9_materialization_for_v8_run() -> None:

@@ -478,6 +478,7 @@
   - `EvaluationExportService.export_campaign` is the only composer; the route no longer has a legacy response path
   - required panel sections are composed from their canonical services, match the active HTTP panel objects, and fail all-or-error
   - summary exports do not load detailed observability; full exports use one campaign snapshot and require exact result/run-ID equality
+  - a failed run that terminated before creating an observability container remains in a full export as a typed empty projection with `availability=partial` and reason `run_failed_before_observability`; a completed run missing its container remains a hard export error
   - full export and selected-run detail share the interactive safe projector before export-only content flags are applied, so provenance, availability, empty safe payloads, and structural identifiers cannot drift
   - campaign observability and accounting snapshot load counts are constant for one or fifty runs; no per-run observability/accounting loaders are used
   - every `runs[]` row contains the fixed result projection, official finite-only RAGAS metrics, accounting, latency, and a fixed observability envelope
