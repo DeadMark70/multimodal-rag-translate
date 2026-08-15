@@ -103,13 +103,16 @@ An authorized operator then runs exactly these two commands, once each:
 
 The canary validates the file before provider construction, applies the same model
 normalization, runtime override, contract-planning phase policy, and shared schema
-binding boundary as the campaign, and makes one provider attempt. Each invocation
-writes one sanitized JSON document containing only success, schema, failure
+binding boundary as the campaign. Its task-local `max_retries=0` override disables
+provider retries, so its single wrapper invocation is also exactly one wire-level
+attempt; normal campaign calls retain the provider default. Each invocation writes
+one sanitized JSON document containing only success, schema, failure
 stage/code, relevant package versions, model identifier, and whether a response was
 received. It never includes the model-config body, prompt, response body, key, or
-raw exception. Exit code `0` means the bound response passed local validation; a
-nonzero exit identifies the failed stage. Missing, unreadable, malformed, or
-schema-invalid model configuration fails before any provider construction.
+raw exception or import traceback. Exit code `0` means the bound response passed
+local validation; a nonzero exit identifies the failed stage. Missing, unreadable,
+malformed, non-UTF-8, or schema-invalid model configuration fails before the
+provider-dependent stack is imported.
 
 Record the two complete JSON documents here without adding provider output:
 

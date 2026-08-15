@@ -44,6 +44,27 @@ def test_get_llm_override_model():
         raise e
 
 
+def test_task_local_max_retries_override_reaches_provider_constructor() -> None:
+    clear_llm_cache()
+    with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
+        mock_chat.return_value.model = "gemini-2.5-flash-lite"
+        with llm_runtime_override(max_retries=0):
+            get_llm("synthesizer")
+
+    mock_chat.assert_called_once()
+    assert mock_chat.call_args.kwargs["max_retries"] == 0
+
+
+def test_unset_max_retries_keeps_provider_default() -> None:
+    clear_llm_cache()
+    with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:
+        mock_chat.return_value.model = "gemini-2.5-flash-lite"
+        get_llm("synthesizer")
+
+    mock_chat.assert_called_once()
+    assert "max_retries" not in mock_chat.call_args.kwargs
+
+
 def test_get_llm_graph_rag_defaults_use_gemini_31_flash_lite() -> None:
     clear_llm_cache()
     with patch("core.llm_factory.ChatGoogleGenerativeAI") as mock_chat:

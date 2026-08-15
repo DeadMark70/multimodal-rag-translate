@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import builtins
 import importlib
+import importlib.util
 import json
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -85,6 +87,21 @@ def _version(_package_name: str) -> str:
     return "test-version"
 
 
+def _replace_provider_builder(
+    canary: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    builder: object,
+) -> None:
+    original_loader = canary._load_provider_stack
+
+    def load_with_test_builder() -> object:
+        return original_loader()._replace(
+            build_contract_planning_provider=builder
+        )
+
+    monkeypatch.setattr(canary, "_load_provider_stack", load_with_test_builder)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("schema_name", "content", "expected_schema"),
@@ -110,9 +127,7 @@ async def test_schema_modes_use_shared_boundary_and_one_production_configured_at
         builder_overrides.append(current_llm_runtime_overrides())
         return provider
 
-    monkeypatch.setattr(
-        canary, "build_contract_planning_provider", fake_shared_builder
-    )
+    _replace_provider_builder(canary, monkeypatch, fake_shared_builder)
 
     exit_code, payload = await canary.run_canary(
         schema_name,
@@ -135,6 +150,7 @@ async def test_schema_modes_use_shared_boundary_and_one_production_configured_at
             "setup_max_input_tokens": 777,
             "setup_max_output_tokens": 1000,
             "thinking_enabled": False,
+            "max_retries": 0,
         }
     ]
     assert payload == {
@@ -192,11 +208,9 @@ async def test_invalid_model_config_fails_before_provider_and_is_sanitized(
     config_path = tmp_path / filename
     if body is not None:
         config_path.write_text(body, encoding="utf-8")
-    builder_calls: list[object] = []
+    provider_imports: list[object] = []
     monkeypatch.setattr(
-        canary,
-        "build_contract_planning_provider",
-        lambda **kwargs: builder_calls.append(kwargs),
+        canary, "_load_provider_stack", lambda: provider_imports.append(object())
     )
 
     actual_exit, payload = await canary.run_canary(
@@ -206,7 +220,7 @@ async def test_invalid_model_config_fails_before_provider_and_is_sanitized(
     )
 
     assert actual_exit == exit_code
-    assert builder_calls == []
+    assert provider_imports == []
     assert payload["failure_stage"] == failure_stage
     assert payload["failure_code"] == failure_code
     assert payload["response_received"] is False
@@ -222,11 +236,9 @@ async def test_non_utf8_model_config_is_sanitized_before_provider_setup(
 ) -> None:
     config_path = tmp_path / "invalid-encoding.json"
     config_path.write_bytes(b"\xffapi_key=config-secret")
-    builder_calls: list[object] = []
+    provider_imports: list[object] = []
     monkeypatch.setattr(
-        canary,
-        "build_contract_planning_provider",
-        lambda **kwargs: builder_calls.append(kwargs),
+        canary, "_load_provider_stack", lambda: provider_imports.append(object())
     )
 
     exit_code, payload = await canary.run_canary(
@@ -236,10 +248,89 @@ async def test_non_utf8_model_config_is_sanitized_before_provider_setup(
     )
 
     assert exit_code == 11
-    assert builder_calls == []
+    assert provider_imports == []
     assert payload["failure_stage"] == "model_config_decode"
     assert payload["failure_code"] == "invalid_json"
     assert "config-secret" not in json.dumps(payload)
+
+
+@pytest.mark.asyncio
+async def test_invalid_config_is_rejected_before_provider_stack_import(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "invalid-model.json"
+    config_path.write_text(
+        '{"id":"x","name":"x","model_name":""}', encoding="utf-8"
+    )
+    real_import = builtins.__import__
+    forbidden_imports: list[str] = []
+
+    def guarded_import(
+        name: str,
+        globals: dict[str, Any] | None = None,
+        locals: dict[str, Any] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> object:
+        if name in {
+            "core.llm_factory",
+            "data_base.agentic_v9.contract_planner",
+            "data_base.agentic_v9.phase_policy",
+            "data_base.agentic_v9.provider_boundary",
+            "evaluation.model_capabilities",
+        }:
+            forbidden_imports.append(name)
+            raise AssertionError(f"provider stack imported early: {name}")
+        return real_import(name, globals, locals, fromlist, level)
+
+    script_path = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "agentic_v9_contract_planner_canary.py"
+    )
+    spec = importlib.util.spec_from_file_location("isolated_agentic_v9_canary", script_path)
+    assert spec is not None and spec.loader is not None
+    isolated_canary = importlib.util.module_from_spec(spec)
+
+    with monkeypatch.context() as import_context:
+        import_context.setattr(builtins, "__import__", guarded_import)
+        spec.loader.exec_module(isolated_canary)
+        exit_code, payload = await isolated_canary.run_canary(
+            "current",
+            model_config_path=config_path,
+            version_reader=_version,
+        )
+
+    assert exit_code == 12
+    assert forbidden_imports == []
+    assert payload["failure_stage"] == "model_config_validation"
+
+
+@pytest.mark.asyncio
+async def test_provider_stack_import_failure_is_sanitized(
+    canary: ModuleType,
+    model_config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_to_import() -> object:
+        raise RuntimeError("api_key=import-secret traceback=private-path")
+
+    monkeypatch.setattr(canary, "_load_provider_stack", fail_to_import)
+
+    exit_code, payload = await canary.run_canary(
+        "minimal",
+        model_config_path=model_config_path,
+        version_reader=_version,
+    )
+
+    rendered = json.dumps(payload)
+    assert exit_code == 20
+    assert payload["failure_stage"] == "provider_setup"
+    assert payload["failure_code"] == "provider_import_failed"
+    assert payload["response_received"] is False
+    assert "import-secret" not in rendered
+    assert "private-path" not in rendered
 
 
 @pytest.mark.asyncio
@@ -287,9 +378,9 @@ async def test_provider_failures_are_single_attempt_nonzero_and_sanitized(
     received: bool,
 ) -> None:
     provider = _RecordingProvider(outcome)
-    monkeypatch.setattr(
+    _replace_provider_builder(
         canary,
-        "build_contract_planning_provider",
+        monkeypatch,
         lambda *, response_schema: provider,
     )
 
@@ -335,7 +426,7 @@ async def test_provider_setup_failure_is_sanitized_and_nonzero(
         del response_schema
         raise RuntimeError("api_key=setup-secret")
 
-    monkeypatch.setattr(canary, "build_contract_planning_provider", fail_to_build)
+    _replace_provider_builder(canary, monkeypatch, fail_to_build)
 
     exit_code, payload = await canary.run_canary(
         "minimal",

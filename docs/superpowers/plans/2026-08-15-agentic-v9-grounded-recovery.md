@@ -285,27 +285,29 @@ git commit -m "fix(agentic-v9): budget actual qualification calls"
 **Repository:** `D:\flutterserver\pdftopng`
 
 **Files:**
+- Modify: `core/llm_factory.py`
 - Create: `data_base/agentic_v9/provider_boundary.py`
 - Modify: `evaluation/agentic_v9_campaign_runtime.py`
 - Create: `scripts/agentic_v9_contract_planner_canary.py`
 - Create: `tests/test_agentic_v9_contract_planner_canary.py`
 - Modify: `tests/test_agentic_v9_provider_boundary.py`
+- Modify: `tests/test_llm_factory_override.py`
 - Modify: `docs/agentic-v9-smoke-verification.md`
 - Modify: `docs/superpowers/plans/2026-08-15-agentic-v9-grounded-recovery.md`
 
 **Shared provider boundary:** Create `build_contract_planning_provider(*, response_schema: Mapping[str, Any]) -> Any` in `data_base/agentic_v9/provider_boundary.py`. It is the sole owner of `get_llm("synthesizer")` plus `bind_json_schema(...)`. The campaign `_provider_for_purpose("atomic_contract_planning")` and both canary schema modes must call this helper. No second provider builder is allowed.
 
-**Canary contract:** One command supports `--schema current` and `--schema minimal`, requires `--model-config-json <path>`, makes exactly one provider call per invocation, and prints only JSON containing success, failure stage/code, package versions, model identifier, and response-received boolean. The JSON file must validate through the canonical `evaluation.schemas.ModelConfig`; the canary then applies `normalize_model_config_for_runtime(...)`, `llm_runtime_override(...)`, and the resolved `contract_planning` phase policy before calling the shared provider boundary. It never prints the config body, prompts, response bodies, keys, or raw exceptions.
+**Canary contract:** One command supports `--schema current` and `--schema minimal`, requires `--model-config-json <path>`, makes exactly one wire-level provider attempt per invocation, and prints only JSON containing success, failure stage/code, package versions, model identifier, and response-received boolean. The JSON file must validate through the canonical `evaluation.schemas.ModelConfig` before importing provider-dependent modules; the canary then applies `normalize_model_config_for_runtime(...)`, `llm_runtime_override(..., max_retries=0)`, and the resolved `contract_planning` phase policy before calling the shared provider boundary. Add `max_retries` as an optional task-local runtime override in `core/llm_factory.py`; normal campaign execution does not set it and retains the existing provider default. It never prints the config body, prompts, response bodies, keys, raw exceptions, or import tracebacks.
 
 - [ ] **Step 1: Add RED canary tests with fake providers**
 
-Test exit 0 for valid structured content, nonzero for each classified failure, one invocation exactly, sanitized output, invalid/missing model-config rejection before any provider call, and parity proving runtime/current/minimal modes all use the shared provider boundary.
+Test exit 0 for valid structured content, nonzero for each classified failure, one wrapper invocation, `max_retries=0` at actual provider construction, sanitized output, invalid/missing model-config rejection before importing the provider stack, sanitized import/setup failure, and parity proving runtime/current/minimal modes all use the shared provider boundary.
 
 - [ ] **Step 2: Implement the canary and run local unit GREEN**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_agentic_v9_contract_planner_canary.py tests/test_agentic_v9_provider_boundary.py -q
-.\.venv\Scripts\python.exe -m ruff check data_base/agentic_v9/provider_boundary.py evaluation/agentic_v9_campaign_runtime.py scripts/agentic_v9_contract_planner_canary.py tests/test_agentic_v9_contract_planner_canary.py tests/test_agentic_v9_provider_boundary.py
+.\.venv\Scripts\python.exe -m ruff check core/llm_factory.py data_base/agentic_v9/provider_boundary.py evaluation/agentic_v9_campaign_runtime.py scripts/agentic_v9_contract_planner_canary.py tests/test_agentic_v9_contract_planner_canary.py tests/test_agentic_v9_provider_boundary.py tests/test_llm_factory_override.py
 ```
 
 - [ ] **Step 3: Document the two-call staging checkpoint without running it locally**
@@ -329,7 +331,7 @@ The installed local SDK accepting `t_schema(None, deepcopy(production_schema))` 
 - [ ] **Step 4: Commit Task 4**
 
 ```powershell
-git add data_base/agentic_v9/provider_boundary.py evaluation/agentic_v9_campaign_runtime.py scripts/agentic_v9_contract_planner_canary.py tests/test_agentic_v9_contract_planner_canary.py tests/test_agentic_v9_provider_boundary.py docs/agentic-v9-smoke-verification.md docs/superpowers/plans/2026-08-15-agentic-v9-grounded-recovery.md
+git add core/llm_factory.py data_base/agentic_v9/provider_boundary.py evaluation/agentic_v9_campaign_runtime.py scripts/agentic_v9_contract_planner_canary.py tests/test_agentic_v9_contract_planner_canary.py tests/test_agentic_v9_provider_boundary.py tests/test_llm_factory_override.py docs/agentic-v9-smoke-verification.md docs/superpowers/plans/2026-08-15-agentic-v9-grounded-recovery.md
 git commit -m "feat(agentic-v9): add planner provider canary"
 ```
 

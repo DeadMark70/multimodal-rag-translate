@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import re
 import sys
-from typing import Any, Callable, Literal, Protocol
+from typing import Any, Callable, Literal, NamedTuple, Protocol
 
 from pydantic import ValidationError
 
@@ -19,18 +19,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.llm_factory import llm_runtime_override  # noqa: E402
-from data_base.agentic_v9 import contract_planner as planner_module  # noqa: E402
-from data_base.agentic_v9.phase_policy import (  # noqa: E402
-    agentic_phase_policy_scope,
-    resolve_phase_policy,
-)
-from data_base.agentic_v9.provider_boundary import (  # noqa: E402
-    build_contract_planning_provider,
-)
-from evaluation.model_capabilities import (  # noqa: E402
-    normalize_model_config_for_runtime,
-)
 from evaluation.schemas import ModelConfig  # noqa: E402
 
 
@@ -61,6 +49,37 @@ class AsyncProvider(Protocol):
         """Make one provider attempt."""
 
 
+class _ProviderStack(NamedTuple):
+    llm_runtime_override: Callable[..., Any]
+    planner_module: Any
+    agentic_phase_policy_scope: Callable[..., Any]
+    resolve_phase_policy: Callable[..., Any]
+    build_contract_planning_provider: Callable[..., Any]
+    normalize_model_config_for_runtime: Callable[..., dict[str, Any]]
+
+
+def _load_provider_stack() -> _ProviderStack:
+    from core.llm_factory import llm_runtime_override
+    from data_base.agentic_v9 import contract_planner as planner_module
+    from data_base.agentic_v9.phase_policy import (
+        agentic_phase_policy_scope,
+        resolve_phase_policy,
+    )
+    from data_base.agentic_v9.provider_boundary import (
+        build_contract_planning_provider,
+    )
+    from evaluation.model_capabilities import normalize_model_config_for_runtime
+
+    return _ProviderStack(
+        llm_runtime_override=llm_runtime_override,
+        planner_module=planner_module,
+        agentic_phase_policy_scope=agentic_phase_policy_scope,
+        resolve_phase_policy=resolve_phase_policy,
+        build_contract_planning_provider=build_contract_planning_provider,
+        normalize_model_config_for_runtime=normalize_model_config_for_runtime,
+    )
+
+
 def _safe_identifier(value: object) -> str:
     candidate = value if isinstance(value, str) else ""
     return candidate if _SAFE_IDENTIFIER.fullmatch(candidate) else "unknown"
@@ -73,6 +92,8 @@ def _package_versions(version_reader: VersionReader) -> dict[str, str]:
             versions[package_name] = _safe_identifier(version_reader(package_name))
         except metadata.PackageNotFoundError:
             versions[package_name] = "not-installed"
+        except Exception:
+            versions[package_name] = "unknown"
     return versions
 
 
@@ -143,13 +164,13 @@ def _load_model_config(
         )
 
 
-def _schema_for(schema_name: SchemaName) -> dict[str, Any]:
+def _schema_for(schema_name: SchemaName, planner_module: Any) -> dict[str, Any]:
     if schema_name == "current":
         return planner_module.atomic_contract_planner_response_schema()
     return _MINIMAL_SCHEMA
 
 
-def _response_content(response: object) -> str:
+def _response_content(response: object, planner_module: Any) -> str:
     content: object = None
     if isinstance(response, dict):
         content = response.get("content")
@@ -160,8 +181,10 @@ def _response_content(response: object) -> str:
     return content
 
 
-def _validate_response(schema_name: SchemaName, response: object) -> None:
-    content = _response_content(response)
+def _validate_response(
+    schema_name: SchemaName, response: object, planner_module: Any
+) -> None:
+    content = _response_content(response, planner_module)
     try:
         decoded = json.loads(content)
     except json.JSONDecodeError as error:
@@ -181,8 +204,8 @@ async def run_canary(
     version_reader: VersionReader = metadata.version,
 ) -> tuple[int, dict[str, Any]]:
     """Run one configured provider attempt and return only sanitized metadata."""
-    package_versions = _package_versions(version_reader)
     model_config, config_failure = _load_model_config(model_config_path)
+    package_versions = _package_versions(version_reader)
     if config_failure is not None:
         exit_code, failure_stage, failure_code = config_failure
         return _failure(
@@ -197,52 +220,92 @@ async def run_canary(
     assert model_config is not None
 
     model_identifier = _safe_identifier(model_config.model_name)
-    normalized_config = normalize_model_config_for_runtime(
-        model_config.model_dump(mode="json")
-    )
-    phase_policy = resolve_phase_policy(
-        "contract_planning",
-        setup_output_ceiling=model_config.max_output_tokens,
-        setup_input_ceiling=model_config.max_input_tokens,
-        remaining_input_budget=model_config.max_input_tokens,
-    )
-
-    with (
-        llm_runtime_override(**normalized_config),
-        agentic_phase_policy_scope(phase_policy),
-    ):
-        try:
-            provider: AsyncProvider = build_contract_planning_provider(
-                response_schema=_schema_for(schema_name)
-            )
-        except Exception:
-            return _failure(
-                20,
-                schema_name=schema_name,
-                package_versions=package_versions,
-                model_identifier=model_identifier,
-                response_received=False,
-                failure_stage="provider_setup",
-                failure_code="provider_binding_failed",
-            )
-        try:
-            response = await provider.ainvoke(
-                [{"role": "user", "content": _PROMPT_BY_SCHEMA[schema_name]}]
-            )
-        except Exception:
-            return _failure(
-                30,
-                schema_name=schema_name,
-                package_versions=package_versions,
-                model_identifier=model_identifier,
-                response_received=False,
-                failure_stage="provider_invocation",
-                failure_code="provider_attempt_failed",
-            )
+    try:
+        provider_stack = _load_provider_stack()
+    except Exception:
+        return _failure(
+            20,
+            schema_name=schema_name,
+            package_versions=package_versions,
+            model_identifier=model_identifier,
+            response_received=False,
+            failure_stage="provider_setup",
+            failure_code="provider_import_failed",
+        )
 
     try:
-        _validate_response(schema_name, response)
-    except planner_module.PlannerProviderEmptyResponseError:
+        normalized_config = provider_stack.normalize_model_config_for_runtime(
+            model_config.model_dump(mode="json")
+        )
+        phase_policy = provider_stack.resolve_phase_policy(
+            "contract_planning",
+            setup_output_ceiling=model_config.max_output_tokens,
+            setup_input_ceiling=model_config.max_input_tokens,
+            remaining_input_budget=model_config.max_input_tokens,
+        )
+        response_schema = _schema_for(schema_name, provider_stack.planner_module)
+    except Exception:
+        return _failure(
+            20,
+            schema_name=schema_name,
+            package_versions=package_versions,
+            model_identifier=model_identifier,
+            response_received=False,
+            failure_stage="provider_setup",
+            failure_code="provider_binding_failed",
+        )
+
+    try:
+        with (
+            provider_stack.llm_runtime_override(
+                **normalized_config, max_retries=0
+            ),
+            provider_stack.agentic_phase_policy_scope(phase_policy),
+        ):
+            try:
+                provider: AsyncProvider = (
+                    provider_stack.build_contract_planning_provider(
+                        response_schema=response_schema
+                    )
+                )
+            except Exception:
+                return _failure(
+                    20,
+                    schema_name=schema_name,
+                    package_versions=package_versions,
+                    model_identifier=model_identifier,
+                    response_received=False,
+                    failure_stage="provider_setup",
+                    failure_code="provider_binding_failed",
+                )
+            try:
+                response = await provider.ainvoke(
+                    [{"role": "user", "content": _PROMPT_BY_SCHEMA[schema_name]}]
+                )
+            except Exception:
+                return _failure(
+                    30,
+                    schema_name=schema_name,
+                    package_versions=package_versions,
+                    model_identifier=model_identifier,
+                    response_received=False,
+                    failure_stage="provider_invocation",
+                    failure_code="provider_attempt_failed",
+                )
+    except Exception:
+        return _failure(
+            20,
+            schema_name=schema_name,
+            package_versions=package_versions,
+            model_identifier=model_identifier,
+            response_received=False,
+            failure_stage="provider_setup",
+            failure_code="provider_binding_failed",
+        )
+
+    try:
+        _validate_response(schema_name, response, provider_stack.planner_module)
+    except provider_stack.planner_module.PlannerProviderEmptyResponseError:
         return _failure(
             31,
             schema_name=schema_name,
@@ -252,7 +315,7 @@ async def run_canary(
             failure_stage="provider_empty_response",
             failure_code="empty_response",
         )
-    except planner_module.PlannerResponseDecodeError:
+    except provider_stack.planner_module.PlannerResponseDecodeError:
         return _failure(
             32,
             schema_name=schema_name,
@@ -262,7 +325,7 @@ async def run_canary(
             failure_stage="response_decode",
             failure_code="invalid_json",
         )
-    except planner_module.PlannerSchemaValidationError:
+    except provider_stack.planner_module.PlannerSchemaValidationError:
         return _failure(
             33,
             schema_name=schema_name,
