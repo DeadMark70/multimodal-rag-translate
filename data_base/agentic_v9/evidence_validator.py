@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 import re
@@ -128,10 +129,58 @@ def _high_risk_claim(packet: EvidencePacket, *, premise_evidence_id: str) -> Fin
     )
 
 
+_USABLE_VALIDATION_STATUSES = frozenset(
+    {"deterministic_valid", "quote_bound", "derived_non_evidence"}
+)
+_DIRECT_VALIDATION_STATUSES = frozenset(
+    {"deterministic_valid", "quote_bound"}
+)
+
+
+def is_qualified_evidence(
+    packet: EvidencePacket,
+    packets_by_id: Mapping[str, EvidencePacket] | None = None,
+) -> bool:
+    """Canonical qualification predicate for all Agentic v9 evidence consumers."""
+    if packet.support_type == "contradictory":
+        return False
+    if packet.validation_status not in _USABLE_VALIDATION_STATUSES:
+        return False
+    if not packet.extractor_version or not packet.extractor_version.strip():
+        return False
+    if not packet.slot_ids:
+        return False
+
+    if packet.support_type == "calculated":
+        if not packet.premise_evidence_ids:
+            return False
+        if packets_by_id is not None:
+            for premise_id in packet.premise_evidence_ids:
+                premise = packets_by_id.get(premise_id)
+                if (
+                    premise is None
+                    or premise.support_type != "direct"
+                    or not is_qualified_evidence(premise, packets_by_id)
+                ):
+                    return False
+        return True
+
+    if packet.validation_status not in _DIRECT_VALIDATION_STATUSES:
+        return False
+    if not packet.source.source_span_hash or not packet.source.source_span_hash.strip():
+        return False
+    if not packet.statement or not packet.statement.strip():
+        return False
+
+    return True
+
+
 __all__ = [
     "EvidenceValidationResult",
+    "is_qualified_evidence",
     "normalize_source_span",
     "source_span_hash",
     "validate_deterministic_packet",
     "validate_prose_packet",
 ]
+

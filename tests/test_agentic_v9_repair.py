@@ -71,9 +71,14 @@ def _packet_for_slot(
         slot_ids=[slot_id],
         statement=f"Evidence for {slot_id}.",
         support_type="direct",
-        source=EvidenceSource(doc_id=doc_id, chunk_id=evidence_id),
+        source=EvidenceSource(
+            doc_id=doc_id,
+            chunk_id=evidence_id,
+            source_span_hash=f"hash-{evidence_id}",
+        ),
         scope=EvidenceScope(),
         locator=SourceLocator(section="retrieved_context"),
+        extractor_version="v9-deterministic-1",
         validation_status="deterministic_valid",
     )
 

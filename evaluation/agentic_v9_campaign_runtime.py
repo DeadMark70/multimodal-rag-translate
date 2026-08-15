@@ -44,6 +44,7 @@ from data_base.agentic_v9.comparison_context import (
     select_balanced_comparison_packets,
 )
 from data_base.agentic_v9.evidence_extractor import EvidenceExtractor
+from data_base.agentic_v9.evidence_validator import is_qualified_evidence
 from data_base.agentic_v9.execution_core import (
     ConflictStageResult,
     V9ExecutionCore,
@@ -659,6 +660,9 @@ class AgenticV9CampaignRuntime:
             contract: QueryContract,
             packets: tuple[EvidencePacket, ...],
         ) -> tuple[EvidencePacket, ...]:
+            state["qualification_round_count"] = (
+                state.get("qualification_round_count", 0) + 1
+            )
             controller = state["budget_controller"]
             assert isinstance(controller, RunBudgetController)
             invoker = BudgetedLlmInvoker(
@@ -845,6 +849,25 @@ class AgenticV9CampaignRuntime:
         controller = state["budget_controller"]
         assert isinstance(controller, RunBudgetController)
         budget_snapshot = await controller.snapshot()
+        reservations = await controller.reservations()
+        qualification_provider_call_count = sum(
+            1 for r in reservations if r.phase == "evidence_extract"
+        )
+        candidate_count = len(state["evidence_packets"])
+        final_evidence_packets = state["final_evidence_packets"]
+        if final_evidence_packets is None:
+            final_evidence_packets = tuple(state["evidence_packets"])
+        all_packets = {
+            packet.evidence_id: packet
+            for packet in (*state["evidence_packets"], *final_evidence_packets)
+        }
+        qualified_count = sum(
+            1 for p in all_packets.values() if is_qualified_evidence(p, all_packets)
+        )
+        qualification_round_count = state.get(
+            "qualification_round_count", 1 if candidate_count > 0 else 0
+        )
+        qualification_failure_code = state.get("qualification_failure_code", None)
         metrics = executed.metrics.model_copy(
             update={
                 "provider_attempt_count": budget_snapshot.provider_attempt_count,
@@ -854,6 +877,11 @@ class AgenticV9CampaignRuntime:
                 "comparison_planner_call_count": 0,
                 "slot_binding_method": "task_target_inherited",
                 "semantic_qualification": "not_enabled",
+                "candidate_packet_count": candidate_count,
+                "qualified_packet_count": qualified_count,
+                "qualification_round_count": qualification_round_count,
+                "qualification_provider_call_count": qualification_provider_call_count,
+                "qualification_failure_code": qualification_failure_code,
             }
         )
         final = executed.final_answer or FinalAnswerResult(

@@ -2633,4 +2633,85 @@ async def test_campaign_runtime_qualifies_candidate_evidence_via_batch_prose_cur
     assert result.agent_trace["response_status"] == "complete", str(result.agent_trace)
     assert captured_candidates[0].validation_status == "invalid"
     assert final_provider.ainvoke.await_count == 1
+    metrics = result.agent_trace["agentic_v9"]["metrics"]
+    assert metrics["candidate_packet_count"] >= 1
+    assert metrics["qualified_packet_count"] >= 1
+    assert metrics["qualification_round_count"] >= 1
+    assert metrics["qualification_provider_call_count"] == 1
+    assert metrics["qualification_failure_code"] is None
+
+
+@pytest.mark.asyncio
+async def test_v9_runtime_sufficiency_fails_when_evidence_not_qualified() -> None:
+    statement = "The model uses a ResNet backbone."
+
+    planner_mock = Mock()
+    planner_mock.bind = Mock(return_value=planner_mock)
+    planner_mock.ainvoke = AsyncMock(
+        return_value=SimpleNamespace(
+            content=json.dumps(
+                {
+                    "evidence_requirements": [
+                        {"description": "model architecture"}
+                    ],
+                    "synthesis_obligations": [],
+                    "response_constraints": [],
+                    "comparison": None,
+                    "confidence": 1.0,
+                }
+            ),
+            usage_metadata={"input_tokens": 10, "output_tokens": 5},
+        )
+    )
+
+    curator_provider = Mock()
+    curator_provider.ainvoke = AsyncMock(
+        return_value=SimpleNamespace(
+            content=json.dumps({"packets": []}),
+            usage_metadata={"input_tokens": 10, "output_tokens": 5},
+        )
+    )
+
+    final_provider = Mock()
+    final_provider.ainvoke = AsyncMock(
+        return_value=SimpleNamespace(
+            content="Evidence-backed answer unavailable.",
+            usage_metadata={"input_tokens": 10, "output_tokens": 5},
+        )
+    )
+
+    def provider_factory(purpose: str):
+        if purpose == "atomic_contract_planning":
+            return planner_mock
+        if purpose == "evidence_extraction":
+            return curator_provider
+        return final_provider
+
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content=statement,
+                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+                )
+            ]
+        ),
+        provider_factory=provider_factory,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What architecture is used?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot=_setup(),
+        trace_id="trace-unqualified-test",
+    )
+
+    # When no qualified packets are extracted, sufficiency must not complete the response
+    assert result.agent_trace["response_status"] == "insufficient"
+    metrics = result.agent_trace["agentic_v9"]["metrics"]
+    assert metrics["candidate_packet_count"] >= 1
+    assert metrics["qualified_packet_count"] == 0
+
 

@@ -39,6 +39,7 @@ from evaluation.campaign_schemas import (
     V9EvidencePacket,
     V9ExecutionObservability,
 )
+from data_base.agentic_v9.schemas import V9ExecutionMetrics
 from evaluation.evidence import content_hash
 from evaluation.export_schemas import (
     ExportCampaignRequest as ExportCampaignRequestV2,
@@ -1191,6 +1192,7 @@ def test_export_includes_condition_comparison_and_excludes_unattributed_ragas() 
         assert payload["runs"][0]["observability"]["data"] is None
 
 
+
 def test_user_cannot_export_another_users_campaign() -> None:
     async def runner(**kwargs) -> BenchmarkExecutionResult:
         test_case = kwargs["test_case"]
@@ -1234,3 +1236,30 @@ def test_user_cannot_export_another_users_campaign() -> None:
             f"/api/evaluation/campaigns/{campaign_id}/export", json={}
         )
         assert denied.status_code == 404
+
+
+def test_export_sanitizes_qualification_failure_code_in_observability() -> None:
+    canonical = replace(
+        _canonical_export_run(),
+        agentic_v9=V9ExecutionObservability(
+            schema_version="1",
+            metrics=V9ExecutionMetrics(
+                candidate_packet_count=10,
+                qualified_packet_count=8,
+                qualification_round_count=1,
+                qualification_provider_call_count=1,
+                qualification_failure_code=f"failed_with_{FREE_TEXT_SECRET}",
+            ),
+        ),
+    )
+    request = ExportCampaignRequestV2(include_run_observability=True)
+    projected = _project_export_run_observability(canonical=canonical, request=request)
+
+    assert projected.agentic_v9 is not None
+    assert projected.agentic_v9.metrics.candidate_packet_count == 10
+    assert projected.agentic_v9.metrics.qualified_packet_count == 8
+    assert projected.agentic_v9.metrics.qualification_round_count == 1
+    assert projected.agentic_v9.metrics.qualification_provider_call_count == 1
+    assert FREE_TEXT_SECRET not in str(projected.agentic_v9.metrics.qualification_failure_code)
+    assert "[redacted]" in str(projected.agentic_v9.metrics.qualification_failure_code).lower()
+

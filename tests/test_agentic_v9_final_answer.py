@@ -54,11 +54,16 @@ def _packet(
         slot_ids=[slot_id],
         statement=statement,
         support_type="direct",
-        source=EvidenceSource(doc_id="doc-1", document_name="paper.pdf"),
+        source=EvidenceSource(
+            doc_id="doc-1",
+            document_name="paper.pdf",
+            source_span_hash=f"hash-{evidence_id}",
+        ),
         scope=EvidenceScope(metric="Dice"),
         locator=SourceLocator(pdf_page_index=4, table_id="Table 1"),
         raw_value=Decimal("0.91"),
         normalized_value=Decimal("0.91"),
+        extractor_version="v9-deterministic-1",
     )
 
 

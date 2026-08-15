@@ -6,15 +6,13 @@ from collections.abc import Iterable
 
 from pydantic import BaseModel, Field
 
+from data_base.agentic_v9.evidence_validator import is_qualified_evidence
 from data_base.agentic_v9.schemas import (
     EvidencePacket,
     QueryContract,
     SlotResolution,
     SufficiencyReport,
 )
-
-
-_USABLE_VALIDATION_STATUSES = {"deterministic_valid", "quote_bound"}
 
 
 class SufficiencyEvaluation(BaseModel):
@@ -141,7 +139,7 @@ def _validate_resolution_evidence(
 ) -> None:
     for evidence_id in resolution.evidence_ids:
         packet = packets_by_id.get(evidence_id)
-        if packet is None or not _is_usable_packet(packet):
+        if packet is None or not is_qualified_evidence(packet, packets_by_id):
             raise ValueError(
                 f"persisted resolution references unknown or invalid evidence: {evidence_id}"
             )
@@ -189,15 +187,9 @@ def _usable_evidence_ids_for_slot(
     return tuple(
         evidence_id
         for evidence_id, packet in packets_by_id.items()
-        if slot_id in packet.slot_ids and _is_usable_packet(packet)
+        if slot_id in packet.slot_ids and is_qualified_evidence(packet, packets_by_id)
     )
 
-
-def _is_usable_packet(packet: EvidencePacket) -> bool:
-    return (
-        packet.validation_status in _USABLE_VALIDATION_STATUSES
-        and packet.support_type != "contradictory"
-    )
 
 
 def _slot_ids_with_status(

@@ -1903,6 +1903,23 @@ def _v9_behavior_metrics(
             if isinstance(item, dict)
         ),
         reconciled_tokens=_optional_nonnegative_int(metrics.get("reconciled_tokens")),
+        candidate_packet_count=_optional_nonnegative_int(
+            metrics.get("candidate_packet_count")
+        ),
+        qualified_packet_count=_optional_nonnegative_int(
+            metrics.get("qualified_packet_count")
+        ),
+        qualification_round_count=_optional_nonnegative_int(
+            metrics.get("qualification_round_count")
+        ),
+        qualification_provider_call_count=_optional_nonnegative_int(
+            metrics.get("qualification_provider_call_count")
+        ),
+        qualification_failure_code=(
+            str(metrics.get("qualification_failure_code"))
+            if metrics.get("qualification_failure_code") is not None
+            else None
+        ),
         graph_execution=graph_execution,
         visual_execution=visual_execution,
     )

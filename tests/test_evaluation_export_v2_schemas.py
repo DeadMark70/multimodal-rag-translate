@@ -822,3 +822,28 @@ def test_export_v2_reads_historical_contract_without_additive_fields() -> None:
     assert loaded.metrics.comparison_planner_call_count == 0
     assert loaded.metrics.slot_binding_method == "not_instrumented"
     assert loaded.metrics.semantic_qualification == "not_instrumented"
+    assert loaded.metrics.candidate_packet_count == 0
+    assert loaded.metrics.qualified_packet_count == 0
+    assert loaded.metrics.qualification_round_count == 0
+    assert loaded.metrics.qualification_provider_call_count == 0
+    assert loaded.metrics.qualification_failure_code is None
+
+
+def test_export_v2_metrics_includes_qualification_diagnostics_fields() -> None:
+    payload = {
+        "schema_version": "1",
+        "metrics": {
+            "candidate_packet_count": 5,
+            "qualified_packet_count": 3,
+            "qualification_round_count": 1,
+            "qualification_provider_call_count": 1,
+            "qualification_failure_code": "partial_qualification",
+        },
+    }
+    loaded = ExportV9ExecutionObservabilityV2.model_validate(payload)
+    assert loaded.metrics.candidate_packet_count == 5
+    assert loaded.metrics.qualified_packet_count == 3
+    assert loaded.metrics.qualification_round_count == 1
+    assert loaded.metrics.qualification_provider_call_count == 1
+    assert loaded.metrics.qualification_failure_code == "partial_qualification"
+

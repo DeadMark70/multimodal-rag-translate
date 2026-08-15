@@ -41,7 +41,11 @@ def _packet(
         slot_ids=[slot_id],
         statement=f"The reported score is {value}.",
         support_type="direct",
-        source=EvidenceSource(doc_id=f"doc-{evidence_id}", chunk_id=evidence_id),
+        source=EvidenceSource(
+            doc_id=f"doc-{evidence_id}",
+            chunk_id=evidence_id,
+            source_span_hash=f"hash-{evidence_id}",
+        ),
         scope=EvidenceScope(
             dataset=dataset,
             split=split,
@@ -53,6 +57,7 @@ def _packet(
         locator=SourceLocator(pdf_page_index=1, table_id="table-1"),
         raw_value=Decimal(value),
         normalized_value=Decimal(value),
+        extractor_version="v9-deterministic-1",
     )
 
 

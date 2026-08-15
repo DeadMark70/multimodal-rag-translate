@@ -793,6 +793,11 @@ class V9ExecutionMetrics(BaseModel):
     ] = "not_instrumented"
     reserved_tokens: int = Field(default=0, ge=0)
     reconciled_tokens: int = Field(default=0, ge=0)
+    candidate_packet_count: int = Field(default=0, ge=0)
+    qualified_packet_count: int = Field(default=0, ge=0)
+    qualification_round_count: int = Field(default=0, ge=0)
+    qualification_provider_call_count: int = Field(default=0, ge=0)
+    qualification_failure_code: str | None = Field(default=None, max_length=96)
 
 
 class V9ExecutionResult(BaseModel):

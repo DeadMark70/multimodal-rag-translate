@@ -437,6 +437,11 @@ class V9AgentBehaviorMetrics(BaseModel):
     final_claim_count: int | None = Field(default=None, ge=0)
     reserved_tokens: int | None = Field(default=None, ge=0)
     reconciled_tokens: int | None = Field(default=None, ge=0)
+    candidate_packet_count: int | None = Field(default=None, ge=0)
+    qualified_packet_count: int | None = Field(default=None, ge=0)
+    qualification_round_count: int | None = Field(default=None, ge=0)
+    qualification_provider_call_count: int | None = Field(default=None, ge=0)
+    qualification_failure_code: str | None = None
     graph_execution: BehaviorExecutionState = "not_instrumented"
     visual_execution: BehaviorExecutionState = "not_instrumented"
 

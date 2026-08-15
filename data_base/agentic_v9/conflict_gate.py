@@ -6,6 +6,7 @@ import json
 from collections.abc import Iterable, Sequence
 from typing import Any
 
+from data_base.agentic_v9.evidence_validator import is_qualified_evidence
 from data_base.agentic_v9.schemas import (
     ConflictCandidate,
     EvidencePacket,
@@ -23,7 +24,6 @@ _SCOPE_FIELDS = (
     "training_protocol",
     "prompt_setting",
 )
-_USABLE_VALIDATION_STATUSES = {"deterministic_valid", "quote_bound"}
 
 
 def match_evidence_scope(left: EvidenceScope, right: EvidenceScope) -> ScopeMatch:
@@ -145,12 +145,12 @@ def _validated_usable_packets(
     for packet in evidence_packets:
         if packet.evidence_id in packets_by_id:
             raise ValueError(f"duplicate evidence ID: {packet.evidence_id}")
-        if (
-            packet.validation_status in _USABLE_VALIDATION_STATUSES
-            and packet.support_type != "contradictory"
-        ):
-            packets_by_id[packet.evidence_id] = packet
-    return list(packets_by_id.values())
+        packets_by_id[packet.evidence_id] = packet
+    return [
+        packet
+        for packet in packets_by_id.values()
+        if is_qualified_evidence(packet, packets_by_id)
+    ]
 
 
 def _values_are_incompatible(left: EvidencePacket, right: EvidencePacket) -> bool:

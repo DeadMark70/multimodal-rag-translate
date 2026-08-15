@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from data_base.agentic_v9.evidence_validator import is_qualified_evidence
 from data_base.agentic_v9.schemas import EvidencePacket, FinalClaim, LlmInvoker
 
 
@@ -18,7 +19,6 @@ _HIGH_RISK = re.compile(
     r"state[ -]of[ -]the[ -]art|caus(?:e|es|ed|al|ally)|safe|robust)\b",
     re.IGNORECASE,
 )
-_USABLE_STATUSES = {"deterministic_valid", "quote_bound", "derived_non_evidence"}
 
 
 class ClaimVerdict(BaseModel):
@@ -66,8 +66,7 @@ def verify_claim_deterministically(
         )
     typed_packets = [packet for packet in packets if packet is not None]
     if any(
-        packet.validation_status not in _USABLE_STATUSES
-        or packet.support_type == "contradictory"
+        not is_qualified_evidence(packet, packets_by_id)
         for packet in typed_packets
     ):
         return ClaimVerdict(
