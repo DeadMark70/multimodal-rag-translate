@@ -292,7 +292,7 @@ def bind_json_schema(llm: Any, *, schema: dict[str, Any]) -> Any:
         raise ProviderError("LLM provider does not support native JSON schema binding")
     return binder(
         response_mime_type="application/json",
-        response_schema=schema,
+        response_json_schema=schema,
     )
 
 

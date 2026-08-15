@@ -199,11 +199,12 @@ def test_bind_json_schema_uses_native_json_configuration() -> None:
     assert result == "bound-provider"
     assert captured == {
         "response_mime_type": "application/json",
-        "response_schema": {
+        "response_json_schema": {
             "type": "object",
             "properties": {"answer": {"type": "string"}},
         },
     }
+    assert "response_schema" not in captured
 
 
 def test_bind_json_schema_rejects_provider_without_bind() -> None:

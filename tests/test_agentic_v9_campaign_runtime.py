@@ -177,7 +177,8 @@ async def test_atomic_contract_planner_provider_binds_schema_without_replacing_r
     response = await provider.ainvoke([])
 
     assert captured["response_mime_type"] == "application/json"
-    assert captured["response_schema"] == atomic_contract_planner_response_schema()
+    assert captured["response_json_schema"] == atomic_contract_planner_response_schema()
+    assert "response_schema" not in captured
     assert response is raw
     assert response.usage_metadata["total_tokens"] == 10
 
