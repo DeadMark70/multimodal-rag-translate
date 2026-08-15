@@ -357,6 +357,39 @@ async def test_invalid_curator_packet_is_dropped_without_a_second_repair_call() 
 
 
 @pytest.mark.asyncio
+async def test_invalid_curator_packet_does_not_discard_valid_sibling() -> None:
+    statement = "The decoder has two stages."
+    invoker = _RecordingInvoker(
+        {
+            "packets": [
+                {
+                    "source_evidence_id": "unknown-id",
+                    "slot_ids": ["method"],
+                    "statement": statement,
+                },
+                {
+                    "source_evidence_id": "E1",
+                    "slot_ids": ["method"],
+                    "statement": statement,
+                },
+            ]
+        }
+    )
+
+    outcome = await EvidenceExtractor(invoker).extract_with_outcome(
+        _contract(_slot("method", "Describe the decoder architecture.")),
+        [_item("E1", statement, slot_ids=["method"])],
+        repairs_complete=True,
+        question="What decoder is used?",
+    )
+
+    assert outcome.status == "provider_qualified"
+    assert [packet.evidence_id for packet in outcome.packets] == [
+        "curated:E1:method"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_high_risk_curator_prose_is_handed_to_final_claims_not_evidence() -> None:
     item = _item(
         "E1",

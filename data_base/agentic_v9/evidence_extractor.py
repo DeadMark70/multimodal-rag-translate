@@ -480,7 +480,7 @@ def _parse_curated_packets(
     packets: list[EvidencePacket] = []
     for raw in raw_packets:
         if not isinstance(raw, Mapping) or set(raw) != {"source_evidence_id", "slot_ids", "statement"}:
-            return None
+            continue
         source_id, slot_ids, statement = (
             raw["source_evidence_id"], raw["slot_ids"], raw["statement"]
         )
@@ -498,7 +498,7 @@ def _parse_curated_packets(
                 for slot_id in slot_ids
             )
         ):
-            return None
+            continue
         item = by_id[source_id]
         result = validate_prose_packet(
             _derived_packet(
