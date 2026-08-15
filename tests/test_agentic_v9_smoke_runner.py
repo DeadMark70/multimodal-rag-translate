@@ -54,9 +54,11 @@ def _complete_export() -> dict[str, Any]:
 
 
 def _complete_run(question_id: str) -> dict[str, Any]:
+    question = f"What does {question_id} require?"
     return {
         "id": f"run-{question_id}",
         "question_id": question_id,
+        "question": question,
         "repeat_number": 1,
         "status": "completed",
         "mode": "agentic",
@@ -71,7 +73,7 @@ def _complete_run(question_id: str) -> dict[str, Any]:
                 "query_contract": {
                     "contract_version": "2",
                     "route": "multi_hop",
-                    "required_slots": [{"slot_id": "S1"}],
+                    "required_slots": [{"slot_id": "S1", "description": question}],
                     "route_decision": {
                         "selected_route": "multi_hop",
                         "route_reason": "The question requires two sources.",
@@ -177,9 +179,17 @@ def _retrieval_safe_export() -> dict[str, Any]:
     artifact = _recovery_diagnostics_export()
     for run in artifact["runs"]:
         trace = run["agent_trace"]
+        contract = trace["agentic_v9"]["query_contract"]
         trace["execution_profile"] = (
             "agentic_eval_v9_open_corpus_hybrid8_rerank8_diverse_tail2_top4_"
             "finalpack_r1_active_atomic_contract_v2_retrieval_safe"
+        )
+        contract.update(
+            {
+                "slot_plan_status": "degraded",
+                "slot_plan_source": "safe_fallback",
+                "slot_plan_fallback_reason": "planner_provider_failure",
+            }
         )
         trace["agentic_v9"]["planner_diagnostics"] = {
             "outcome": "degraded",
@@ -420,6 +430,80 @@ def test_retrieval_safe_profile_requires_safe_planner_diagnostics(
 
     assert report.status in {"partial", "fail"}
     assert report.requirements["planner_diagnostics"].status in {"partial", "fail"}
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["atomic_planner_call_count", "comparison_planner_call_count"],
+)
+def test_retrieval_safe_profile_requires_explicit_planner_call_counts(
+    field: str,
+) -> None:
+    """Fails if Wave 1 provider-call bounds are silently absent."""
+    artifact = _retrieval_safe_export()
+    artifact["runs"][0]["agent_trace"]["agentic_v9"]["metrics"].pop(field)
+
+    report = verify_campaign_export(artifact)
+
+    assert report.status in {"partial", "fail"}
+    assert report.requirements["contract_and_route"].status in {"partial", "fail"}
+
+
+def test_historical_profile_allows_missing_wave_1_planner_call_counts() -> None:
+    """Fails if the v2-only metric requirement leaks into historical exports."""
+    artifact = _recovery_diagnostics_export()
+    metrics = artifact["runs"][0]["agent_trace"]["agentic_v9"]["metrics"]
+    metrics.pop("atomic_planner_call_count")
+    metrics.pop("comparison_planner_call_count")
+
+    report = verify_campaign_export(artifact)
+
+    assert report.status == "pass"
+    assert report.requirements["contract_and_route"].status == "pass"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda artifact: artifact["runs"][0]["agent_trace"]["agentic_v9"][
+            "planner_diagnostics"
+        ].__setitem__("failure_stage", "fabricated_stage"),
+        lambda artifact: artifact["runs"][0]["agent_trace"]["agentic_v9"][
+            "planner_diagnostics"
+        ].__setitem__("failure_code", "x" * 97),
+        lambda artifact: artifact["runs"][0]["agent_trace"]["agentic_v9"][
+            "query_contract"
+        ].__setitem__("slot_plan_status", "complete"),
+    ],
+)
+def test_retrieval_safe_profile_rejects_invalid_diagnostics_or_fallback_provenance(
+    mutate: Any,
+) -> None:
+    """Fails if typed planner diagnostics disagree with degraded contract state."""
+    artifact = _retrieval_safe_export()
+    mutate(artifact)
+
+    report = verify_campaign_export(artifact)
+
+    assert report.status == "fail"
+    assert report.requirements["planner_diagnostics"].status == "fail"
+
+
+def test_retrieval_safe_profile_rejects_fallback_slot_unrelated_to_question() -> None:
+    """Fails if fallback retrieval stops preserving the normalized question."""
+    artifact = _retrieval_safe_export()
+    run = artifact["runs"][0]
+    run["question"] = "  What exact values does SegVol Table 3 report?  "
+    slot = run["agent_trace"]["agentic_v9"]["query_contract"]["required_slots"][0]
+    slot["description"] = "What exact values does SegVol Table 3 report?"
+
+    assert verify_campaign_export(artifact).status == "pass"
+
+    slot["description"] = "unrelated generic fallback"
+    report = verify_campaign_export(artifact)
+
+    assert report.status == "fail"
+    assert report.requirements["planner_diagnostics"].status == "fail"
 
 
 def test_recovery_diagnostics_fail_closed_on_task_1_to_3_regressions() -> None:

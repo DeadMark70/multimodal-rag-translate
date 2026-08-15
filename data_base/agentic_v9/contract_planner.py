@@ -559,9 +559,7 @@ def _safe_fallback_outcome(
     )
     slot = RequiredSlot(
         slot_id="S1",
-        description=" ".join(question.split())[
-            :_SAFE_FALLBACK_DESCRIPTION_MAX_LENGTH
-        ],
+        description=normalize_safe_fallback_question(question),
         source_name_hints=[],
         authorized_source_doc_ids=authorized_ids,
         locator_hints=[],
@@ -593,6 +591,11 @@ def _safe_fallback_outcome(
             provider_response_received=provider_response_received,
         ),
     )
+
+
+def normalize_safe_fallback_question(question: str) -> str:
+    """Normalize the exact bounded fallback query shared with release smoke."""
+    return " ".join(question.split())[:_SAFE_FALLBACK_DESCRIPTION_MAX_LENGTH]
 
 
 def _parse_decision(response: Any) -> _PlannerDecision:

@@ -13,6 +13,10 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
 
+from pydantic import ValidationError
+
+from data_base.agentic_v9.contract_planner import normalize_safe_fallback_question
+from data_base.agentic_v9.schemas import AtomicPlannerDiagnostics
 from data_base.agentic_v9.slot_constraints import canonical_locator_set
 from core.sensitive_data import sanitize_credential_value
 
@@ -322,6 +326,38 @@ def _verify_contracts(runs: list[dict[str, Any]]) -> RequirementResult:
         if not route or not route_reason:
             return RequirementResult("fail", "actual route rationale missing")
         metrics = _as_mapping(v9.get("metrics"))
+        if _execution_profile_for_run(run).endswith(RETRIEVAL_SAFE_PROFILE_SUFFIX):
+            if not metrics:
+                return RequirementResult(
+                    "partial", "retrieval-safe profile lacks planner call metrics"
+                )
+            for field in (
+                "atomic_planner_call_count",
+                "comparison_planner_call_count",
+            ):
+                if field not in metrics:
+                    return RequirementResult(
+                        "partial", f"retrieval-safe profile lacks {field}"
+                    )
+            atomic_count = metrics["atomic_planner_call_count"]
+            if (
+                isinstance(atomic_count, bool)
+                or not isinstance(atomic_count, int)
+                or atomic_count < 0
+                or atomic_count > 1
+            ):
+                return RequirementResult(
+                    "fail", "atomic planner call count must be an integer from 0 to 1"
+                )
+            comparison_count = metrics["comparison_planner_call_count"]
+            if (
+                isinstance(comparison_count, bool)
+                or not isinstance(comparison_count, int)
+                or comparison_count != 0
+            ):
+                return RequirementResult(
+                    "fail", "comparison planner call count must be the integer 0"
+                )
         if metrics:
             slot_binding = metrics.get("slot_binding_method")
             if slot_binding is not None and str(slot_binding) not in valid_binding_methods:
@@ -363,8 +399,6 @@ def _verify_planner_diagnostics(runs: list[dict[str, Any]]) -> RequirementResult
         "retrieval_query_strategy",
         "compiled_retrieval_task_count",
     }
-    valid_outcomes = {"deterministic", "planned", "degraded"}
-    valid_strategies = {"atomic_slots", "safe_fallback_original_question"}
     for run in runs:
         if not _execution_profile_for_run(run).endswith(RETRIEVAL_SAFE_PROFILE_SUFFIX):
             continue
@@ -377,34 +411,73 @@ def _verify_planner_diagnostics(runs: list[dict[str, Any]]) -> RequirementResult
             return RequirementResult("fail", "planner diagnostics are malformed")
         if not required_fields.issubset(diagnostics):
             return RequirementResult("partial", "planner diagnostics are incomplete")
-        outcome = str(diagnostics.get("outcome") or "")
-        if outcome not in valid_outcomes:
-            return RequirementResult("fail", "planner diagnostic outcome is unknown")
-        if not isinstance(diagnostics.get("provider_response_received"), bool):
+        if not isinstance(diagnostics["provider_response_received"], bool):
             return RequirementResult(
                 "fail", "planner diagnostic provider-response state is invalid"
             )
-        task_count = diagnostics.get("compiled_retrieval_task_count")
+        task_count = diagnostics["compiled_retrieval_task_count"]
         if isinstance(task_count, bool) or not isinstance(task_count, int) or task_count < 0:
             return RequirementResult(
                 "fail", "planner diagnostic retrieval-task count is invalid"
             )
-        strategy = str(diagnostics.get("retrieval_query_strategy") or "")
-        if strategy not in valid_strategies:
+        try:
+            diagnostic = AtomicPlannerDiagnostics.model_validate(diagnostics)
+        except ValidationError:
             return RequirementResult(
-                "fail", "planner diagnostic retrieval strategy is unknown"
+                "fail", "planner diagnostics violate the typed contract"
             )
-        if outcome == "degraded":
-            if strategy != "safe_fallback_original_question" or task_count != 1:
+        contract = _as_mapping(_v9_payload(run).get("query_contract")) or _as_mapping(
+            _v9_payload(run).get("contract")
+        )
+        if diagnostic.outcome == "degraded":
+            if (
+                diagnostic.retrieval_query_strategy
+                != "safe_fallback_original_question"
+                or diagnostic.compiled_retrieval_task_count != 1
+                or contract.get("slot_plan_status") != "degraded"
+                or contract.get("slot_plan_source") != "safe_fallback"
+                or not str(contract.get("slot_plan_fallback_reason") or "").strip()
+            ):
                 return RequirementResult(
                     "fail",
-                    "degraded planner must use one question-specific safe fallback",
+                    "degraded planner diagnostics do not match safe fallback provenance",
                 )
-        elif strategy != "atomic_slots":
+            slots = _as_list(contract.get("required_slots"))
+            if len(slots) != 1 or str(slots[0].get("slot_id") or "") != "S1":
+                return RequirementResult(
+                    "fail", "degraded planner must declare exactly one S1 fallback slot"
+                )
+            question = _original_question_for_run(run)
+            if question is None:
+                return RequirementResult(
+                    "partial", "retrieval-safe fallback lacks the original question"
+                )
+            description = slots[0].get("description")
+            if description != normalize_safe_fallback_question(question):
+                return RequirementResult(
+                    "fail", "fallback S1 does not preserve the normalized original question"
+                )
+        elif (
+            diagnostic.retrieval_query_strategy != "atomic_slots"
+            or diagnostic.failure_stage is not None
+            or diagnostic.failure_code is not None
+        ):
             return RequirementResult(
-                "fail", "non-degraded planner must use atomic retrieval slots"
+                "fail", "non-degraded planner diagnostics are inconsistent"
             )
     return RequirementResult("pass")
+
+
+def _original_question_for_run(run: Mapping[str, Any]) -> str | None:
+    for payload in (
+        run,
+        _as_mapping(run.get("result")),
+        _as_mapping(run.get("question_snapshot")),
+    ):
+        question = payload.get("question")
+        if isinstance(question, str) and question.strip():
+            return question
+    return None
 
 
 def _resolution_rows(v9: Mapping[str, Any]) -> list[dict[str, Any]]:
