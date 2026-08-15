@@ -55,6 +55,7 @@ class _ProviderStack(NamedTuple):
     agentic_phase_policy_scope: Callable[..., Any]
     resolve_phase_policy: Callable[..., Any]
     build_contract_planning_provider: Callable[..., Any]
+    provider_response_text: Callable[[object], str | None]
     normalize_model_config_for_runtime: Callable[..., dict[str, Any]]
 
 
@@ -67,6 +68,7 @@ def _load_provider_stack() -> _ProviderStack:
     )
     from data_base.agentic_v9.provider_boundary import (
         build_contract_planning_provider,
+        provider_response_text,
     )
     from evaluation.model_capabilities import normalize_model_config_for_runtime
 
@@ -76,6 +78,7 @@ def _load_provider_stack() -> _ProviderStack:
         agentic_phase_policy_scope=agentic_phase_policy_scope,
         resolve_phase_policy=resolve_phase_policy,
         build_contract_planning_provider=build_contract_planning_provider,
+        provider_response_text=provider_response_text,
         normalize_model_config_for_runtime=normalize_model_config_for_runtime,
     )
 
@@ -170,21 +173,24 @@ def _schema_for(schema_name: SchemaName, planner_module: Any) -> dict[str, Any]:
     return _MINIMAL_SCHEMA
 
 
-def _response_content(response: object, planner_module: Any) -> str:
-    content: object = None
-    if isinstance(response, dict):
-        content = response.get("content")
-    else:
-        content = getattr(response, "content", None)
+def _response_content(
+    response: object,
+    planner_module: Any,
+    response_text: Callable[[object], str | None],
+) -> str:
+    content = response_text(response)
     if not isinstance(content, str) or not content.strip():
         raise planner_module.PlannerProviderEmptyResponseError
     return content
 
 
 def _validate_response(
-    schema_name: SchemaName, response: object, planner_module: Any
+    schema_name: SchemaName,
+    response: object,
+    planner_module: Any,
+    response_text: Callable[[object], str | None],
 ) -> None:
-    content = _response_content(response, planner_module)
+    content = _response_content(response, planner_module, response_text)
     try:
         decoded = json.loads(content)
     except json.JSONDecodeError as error:
@@ -304,7 +310,12 @@ async def run_canary(
         )
 
     try:
-        _validate_response(schema_name, response, provider_stack.planner_module)
+        _validate_response(
+            schema_name,
+            response,
+            provider_stack.planner_module,
+            provider_stack.provider_response_text,
+        )
     except provider_stack.planner_module.PlannerProviderEmptyResponseError:
         return _failure(
             31,

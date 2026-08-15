@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import json
 from typing import Any
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from data_base.agentic_v9.evidence_extractor import (
     EvidenceExtractor,
@@ -575,6 +577,42 @@ async def test_malformed_provider_response_has_invalid_response_diagnostics() ->
     assert outcome.status == "invalid_response"
     assert outcome.failure_code == "invalid_provider_response"
     assert outcome.provider_response_received is True
+
+
+@pytest.mark.asyncio
+async def test_content_block_provider_response_qualifies_source_bound_packet() -> None:
+    statement = "The method uses a two-stage decoder for small lesions."
+    response = AIMessage(
+        content=[
+            {
+                "type": "text",
+                "text": json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "source_evidence_id": "E1",
+                                "slot_ids": ["S1"],
+                                "statement": "a two-stage decoder",
+                            }
+                        ]
+                    }
+                ),
+                "extras": {"signature": "provider-signature"},
+            }
+        ]
+    )
+    outcome = await EvidenceExtractor(
+        _RecordingInvoker(response)
+    ).extract_with_outcome(
+        _contract(_slot("S1", "Describe the decoder architecture.")),
+        [_item("E1", statement, slot_ids=["S1"])],
+        repairs_complete=True,
+        question="What decoder architecture is used?",
+    )
+
+    assert outcome.status == "provider_qualified"
+    assert [packet.evidence_id for packet in outcome.packets] == ["curated:E1:S1"]
+    assert outcome.packets[0].validation_status == "quote_bound"
 
 
 @pytest.mark.asyncio

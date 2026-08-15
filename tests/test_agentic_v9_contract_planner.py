@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from langchain_core.messages import AIMessage
 
 import data_base.agentic_v9.contract_planner as contract_planner_module
 from data_base.agentic_v9.contract_planner import (
@@ -509,6 +510,40 @@ async def test_provider_response_promotes_source_name_hints_authoritatively() ->
     assert outcome.contract.slot_plan_status == "complete"
     assert outcome.contract.required_slots[0].source_name_hints == ["nnMamba.pdf"]
     assert outcome.contract.required_slots[0].authorized_source_doc_ids == ["doc-z"]
+
+
+def test_parse_decision_accepts_ai_message_text_content_blocks() -> None:
+    response = AIMessage(
+        content=[
+            {
+                "type": "text",
+                "text": json.dumps(
+                    {
+                        "evidence_requirements": [
+                            {
+                                "description": "Identify the decoder architecture.",
+                                "source_name_hints": [],
+                                "locator_hints": [],
+                                "expected_answer_type": "text",
+                                "depends_on_requirement_indexes": [],
+                                "visual_policy": "never",
+                            }
+                        ],
+                        "synthesis_obligations": [],
+                        "response_constraints": [],
+                        "comparison": None,
+                        "confidence": 1.0,
+                    }
+                ),
+                "extras": {"signature": "provider-signature"},
+            }
+        ]
+    )
+
+    decision = contract_planner_module._parse_decision(response)
+
+    assert decision.confidence == 1.0
+    assert len(decision.evidence_requirements) == 1
 
 
 @pytest.mark.asyncio

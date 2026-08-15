@@ -17,6 +17,7 @@ from data_base.agentic_v9.requirement_decomposition import (
     QuestionDecomposition,
     decompose_question,
 )
+from data_base.agentic_v9.provider_boundary import provider_response_text
 from data_base.agentic_v9.schemas import (
     ATOMIC_SLOT_MATCHING_EXPERIMENTAL,
     AtomicPlannerDiagnostics,
@@ -599,11 +600,7 @@ def normalize_safe_fallback_question(question: str) -> str:
 
 
 def _parse_decision(response: Any) -> _PlannerDecision:
-    content = response
-    if isinstance(response, dict) and "content" in response:
-        content = response["content"]
-    elif hasattr(response, "content"):
-        content = response.content
+    content = provider_response_text(response)
     if not isinstance(content, str) or not content.strip():
         raise PlannerProviderEmptyResponseError
     try:

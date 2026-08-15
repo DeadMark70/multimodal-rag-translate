@@ -1,4 +1,4 @@
-"""Shared production provider construction for Agentic v9 contract planning."""
+"""Shared production provider construction and response normalization for Agentic v9."""
 
 from __future__ import annotations
 
@@ -6,6 +6,20 @@ from collections.abc import Mapping
 from typing import Any
 
 from core.providers import bind_json_schema, get_llm
+
+
+def provider_response_text(response: Any) -> str | None:
+    """Return provider text without serializing non-text content blocks."""
+    if isinstance(response, str):
+        return response
+    if isinstance(response, Mapping):
+        content = response.get("content")
+        return content if isinstance(content, str) else None
+    content = getattr(response, "content", None)
+    if isinstance(content, str):
+        return content
+    text = getattr(response, "text", None)
+    return str(text) if isinstance(text, str) else None
 
 
 def build_contract_planning_provider(

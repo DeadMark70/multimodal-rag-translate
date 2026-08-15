@@ -11,6 +11,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from core.llm_factory import current_llm_runtime_overrides
 from data_base.agentic_v9.contract_planner import (
@@ -166,6 +167,40 @@ async def test_schema_modes_use_shared_boundary_and_one_production_configured_at
         "model_identifier": "gemini-2.5-flash-lite",
         "response_received": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_minimal_schema_accepts_ai_message_text_content_block(
+    canary: ModuleType,
+    model_config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _RecordingProvider(
+        AIMessage(
+            content=[
+                {
+                    "type": "text",
+                    "text": '{"canary":"ok"}',
+                    "extras": {"signature": "provider-signature"},
+                }
+            ]
+        )
+    )
+    _replace_provider_builder(
+        canary,
+        monkeypatch,
+        lambda *, response_schema: provider,
+    )
+
+    exit_code, payload = await canary.run_canary(
+        "minimal",
+        model_config_path=model_config_path,
+        version_reader=_version,
+    )
+
+    assert exit_code == 0
+    assert payload["success"] is True
+    assert payload["response_received"] is True
 
 
 @pytest.mark.asyncio

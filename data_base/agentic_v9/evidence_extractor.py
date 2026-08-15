@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from core.prompt_loader import format_agentic_rag_prompt
 from data_base.agentic_v9.evidence_pool import EvidencePoolEntry, EvidencePoolItem
+from data_base.agentic_v9.provider_boundary import provider_response_text
 from data_base.agentic_v9.schemas import (
     BudgetExceededError,
     EvidencePacket,
@@ -462,6 +463,8 @@ def _parse_curated_packets(
     content = getattr(response, "content", response)
     if isinstance(content, bytes):
         content = content.decode("utf-8", errors="replace")
+    if not isinstance(content, (str, Mapping)):
+        content = provider_response_text(response)
     if isinstance(content, str):
         try:
             content = json.loads(content)

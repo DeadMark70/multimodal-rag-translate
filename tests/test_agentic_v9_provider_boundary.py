@@ -8,8 +8,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import AIMessage
 
 import core.providers as providers_module
+import data_base.agentic_v9.provider_boundary as provider_boundary_module
 import evaluation.agentic_v9_campaign_runtime as runtime_module
 from core.llm_factory import current_llm_runtime_overrides, llm_runtime_override
 from data_base.agentic_v9.budget_controller import RunBudgetController
@@ -93,6 +95,23 @@ def test_shared_contract_planning_provider_owns_model_and_schema_binding(
         "provider": raw_provider,
         "schema": response_schema,
     }
+
+
+def test_provider_response_text_uses_text_blocks_without_signature_metadata() -> None:
+    response = AIMessage(
+        content=[
+            {
+                "type": "text",
+                "text": '{"packets":[]}',
+                "extras": {"signature": "must-not-enter-json"},
+            }
+        ]
+    )
+
+    text = provider_boundary_module.provider_response_text(response)
+
+    assert text == '{"packets":[]}'
+    assert "must-not-enter-json" not in text
 
 
 def test_shared_evidence_qualification_provider_owns_model_and_schema_binding(
