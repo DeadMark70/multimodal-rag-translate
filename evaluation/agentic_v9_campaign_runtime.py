@@ -56,6 +56,8 @@ from data_base.agentic_v9.execution_policy import (
 )
 from data_base.agentic_v9.provider_boundary import (
     build_contract_planning_provider,
+    build_evidence_qualification_provider,
+    evidence_qualification_response_schema,
 )
 from data_base.agentic_v9.repair import build_repair_plan
 from data_base.agentic_v9.requirement_shadow import build_requirement_shadow
@@ -673,12 +675,15 @@ class AgenticV9CampaignRuntime:
                 model_name=str(setup_snapshot.get("model_name") or "unknown"),
             )
             extractor = EvidenceExtractor(budgeted_invoker=invoker)
-            extracted = await extractor.extract(
+            outcome = await extractor.extract_with_outcome(
                 contract,
                 packets,
                 repairs_complete=True,
                 question=curate_question or question,
             )
+            state["semantic_qualification"] = outcome.status
+            state["qualification_failure_code"] = outcome.failure_code
+            extracted = list(outcome.packets)
             for packet in extracted:
                 if packet.evidence_id not in state["quality_by_evidence_id"]:
                     for cand_id, score in list(state["quality_by_evidence_id"].items()):
@@ -876,7 +881,9 @@ class AgenticV9CampaignRuntime:
                 "atomic_planner_call_count": state.get("atomic_planner_call_count", 0),
                 "comparison_planner_call_count": 0,
                 "slot_binding_method": "task_target_inherited",
-                "semantic_qualification": "not_enabled",
+                "semantic_qualification": state.get(
+                    "semantic_qualification", "not_attempted"
+                ),
                 "candidate_packet_count": candidate_count,
                 "qualified_packet_count": qualified_count,
                 "qualification_round_count": qualification_round_count,
@@ -1598,6 +1605,10 @@ def _provider_for_purpose(purpose: str) -> Any:
     if purpose == "atomic_contract_planning":
         return build_contract_planning_provider(
             response_schema=atomic_contract_planner_response_schema()
+        )
+    if purpose == "evidence_extraction":
+        return build_evidence_qualification_provider(
+            response_schema=evidence_qualification_response_schema()
         )
     return get_llm("synthesizer")
 

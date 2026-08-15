@@ -95,6 +95,48 @@ def test_shared_contract_planning_provider_owns_model_and_schema_binding(
     }
 
 
+def test_shared_evidence_qualification_provider_owns_model_and_schema_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boundary = importlib.import_module("data_base.agentic_v9.provider_boundary")
+    assert hasattr(boundary, "build_evidence_qualification_provider")
+    assert hasattr(boundary, "evidence_qualification_response_schema")
+    raw_provider = object()
+    bound_provider = object()
+    observed: dict[str, object] = {}
+
+    def fake_get_llm(purpose: str) -> object:
+        observed["purpose"] = purpose
+        return raw_provider
+
+    def fake_bind(provider: object, *, schema: object) -> object:
+        observed["provider"] = provider
+        observed["schema"] = schema
+        return bound_provider
+
+    monkeypatch.setattr(boundary, "get_llm", fake_get_llm)
+    monkeypatch.setattr(boundary, "bind_json_schema", fake_bind)
+
+    response_schema = boundary.evidence_qualification_response_schema()
+    result = boundary.build_evidence_qualification_provider(
+        response_schema=response_schema
+    )
+
+    assert result is bound_provider
+    assert observed == {
+        "purpose": "synthesizer",
+        "provider": raw_provider,
+        "schema": response_schema,
+    }
+    assert response_schema["additionalProperties"] is False
+    assert response_schema["properties"]["packets"]["items"]["additionalProperties"] is False
+    assert response_schema["properties"]["packets"]["items"]["required"] == [
+        "source_evidence_id",
+        "slot_ids",
+        "statement",
+    ]
+
+
 def test_campaign_contract_planning_uses_shared_provider_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -113,6 +155,31 @@ def test_campaign_contract_planning_uses_shared_provider_boundary(
 
     assert result is shared_provider
     assert observed == [atomic_contract_planner_response_schema()]
+
+
+def test_campaign_evidence_extraction_uses_shared_provider_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boundary = importlib.import_module("data_base.agentic_v9.provider_boundary")
+    assert hasattr(boundary, "evidence_qualification_response_schema")
+    observed: list[object] = []
+    shared_provider = object()
+
+    def fake_build(*, response_schema: object) -> object:
+        observed.append(response_schema)
+        return shared_provider
+
+    monkeypatch.setattr(
+        runtime_module,
+        "build_evidence_qualification_provider",
+        fake_build,
+        raising=False,
+    )
+
+    result = runtime_module._provider_for_purpose("evidence_extraction")
+
+    assert result is shared_provider
+    assert observed == [boundary.evidence_qualification_response_schema()]
 
 
 def test_bind_json_schema_uses_native_json_configuration() -> None:
@@ -466,7 +533,8 @@ async def test_active_atomic_contract_runtime_boundary_never_invokes_independent
     assert v9["metrics"]["atomic_planner_call_count"] <= 1
     assert v9["metrics"]["comparison_planner_call_count"] == 0
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
-    assert v9["metrics"]["semantic_qualification"] == "not_enabled"
+    assert v9["metrics"]["semantic_qualification"] == "invalid_response"
+    assert v9["metrics"]["qualification_failure_code"] == "invalid_provider_response"
     assert not any(
         call.get("phase") == "comparison_plan" for call in recorded_calls
     )

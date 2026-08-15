@@ -539,6 +539,63 @@ async def test_provider_failure_returns_zero_newly_qualified_packets() -> None:
 
 
 @pytest.mark.asyncio
+async def test_provider_failure_is_distinct_from_valid_no_match() -> None:
+    item = _item("E1", "Prose description.", slot_ids=["slot_1"])
+
+    class _ErrorInvoker:
+        async def invoke(self, **_kwargs: Any) -> Any:
+            raise RuntimeError("Provider connection failed")
+
+    extractor = EvidenceExtractor(_ErrorInvoker())
+    outcome = await extractor.extract_with_outcome(
+        _contract(_slot("slot_1", "Describe prose.")),
+        [item],
+        repairs_complete=True,
+        question="Describe prose?",
+    )
+
+    assert outcome.packets == ()
+    assert outcome.status == "provider_failed"
+    assert outcome.failure_code == "provider_attempt_failed"
+    assert outcome.provider_call_attempted is True
+    assert outcome.provider_response_received is False
+
+
+@pytest.mark.asyncio
+async def test_malformed_provider_response_has_invalid_response_diagnostics() -> None:
+    item = _item("E1", "Prose description.", slot_ids=["slot_1"])
+    outcome = await EvidenceExtractor(_RecordingInvoker("not json")).extract_with_outcome(
+        _contract(_slot("slot_1", "Describe prose.")),
+        [item],
+        repairs_complete=True,
+        question="Describe prose?",
+    )
+
+    assert outcome.packets == ()
+    assert outcome.status == "invalid_response"
+    assert outcome.failure_code == "invalid_provider_response"
+    assert outcome.provider_response_received is True
+
+
+@pytest.mark.asyncio
+async def test_valid_empty_provider_response_is_no_match_not_failure() -> None:
+    item = _item("E1", "Prose description.", slot_ids=["slot_1"])
+    outcome = await EvidenceExtractor(
+        _RecordingInvoker({"packets": []})
+    ).extract_with_outcome(
+        _contract(_slot("slot_1", "Describe prose.")),
+        [item],
+        repairs_complete=True,
+        question="Describe prose?",
+    )
+
+    assert outcome.packets == ()
+    assert outcome.status == "no_match"
+    assert outcome.failure_code is None
+    assert outcome.provider_response_received is True
+
+
+@pytest.mark.asyncio
 async def test_q5_positive_fixture_qualifies_miccss_css_prose_architecture() -> None:
     # Q5: nnMamba MICCSS CSS feature fusion description
     statement = (
@@ -575,6 +632,17 @@ async def test_q5_positive_fixture_qualifies_miccss_css_prose_architecture() -> 
     assert result[0].validation_status == "quote_bound"
     assert result[0].source.source_span_hash is not None
     assert result[0].slot_ids == ["miccss_css_fusion"]
+    assert invoker.calls[0]["messages"][0]["role"] == "user"
+
+    from langchain_core.messages import convert_to_messages
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
+    adapter = ChatGoogleGenerativeAI(
+        model="gemini-2.0-flash",
+        google_api_key="not-used",
+    )
+    request = adapter._prepare_request(convert_to_messages(invoker.calls[0]["messages"]))
+    assert len(request["contents"]) == 1
 
 
 @pytest.mark.asyncio

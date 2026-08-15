@@ -582,7 +582,7 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     assert v9["metrics"]["atomic_planner_call_count"] <= 1
     assert v9["metrics"]["comparison_planner_call_count"] == 0
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
-    assert v9["metrics"]["semantic_qualification"] == "not_enabled"
+    assert v9["metrics"]["semantic_qualification"] == "provider_qualified"
     assert v9["query_contract"]["resolved_source_scope"]["authorized_doc_ids"] == [
         "doc-1"
     ]
@@ -738,7 +738,7 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
     assert v9["metrics"]["atomic_planner_call_count"] == 1
     assert v9["metrics"]["comparison_planner_call_count"] == 0
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
-    assert v9["metrics"]["semantic_qualification"] == "not_enabled"
+    assert v9["metrics"]["semantic_qualification"] == "provider_qualified"
     assert v9["comparison"]["planner_status"] == "planned"
     assert v9["comparison"]["coverage_before_repair"] == ["nnmamba", "efficientmednext-l"]
     assert v9["comparison"]["coverage_after_repair"] == ["nnmamba", "efficientmednext-l"]
@@ -822,7 +822,7 @@ async def test_invalid_comparison_subjects_preserve_base_contract_and_retrieval(
     assert v9["metrics"]["atomic_planner_call_count"] == 1
     assert v9["metrics"]["comparison_planner_call_count"] == 0
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
-    assert v9["metrics"]["semantic_qualification"] == "not_enabled"
+    assert v9["metrics"]["semantic_qualification"] == "provider_qualified"
     assert retrieve_documents.await_count == 1
     assert result.documents
     assert provider.ainvoke.await_count == 3
@@ -1128,7 +1128,7 @@ async def test_v9_comparison_planner_failure_safe_fallback_preserves_original_qu
     }
     assert "runtime-planner-secret" not in json.dumps(v9)
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
-    assert v9["metrics"]["semantic_qualification"] == "not_enabled"
+    assert v9["metrics"]["semantic_qualification"] == "provider_qualified"
     assert result.documents
     retrieve_documents.assert_awaited()
     assert (
@@ -1212,7 +1212,7 @@ async def test_atomic_contract_planning_high_confidence_deterministic_zero_plann
     assert v9["metrics"]["atomic_planner_call_count"] == 0
     assert v9["metrics"]["comparison_planner_call_count"] == 0
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
-    assert v9["metrics"]["semantic_qualification"] == "not_enabled"
+    assert v9["metrics"]["semantic_qualification"] == "provider_qualified"
     assert len(observed_calls) == 2
     # Assert final prompt message is strictly Question: ...\n\nEvidence:\n... unchanged
     final_messages = observed_calls[-1]["messages"]
@@ -1323,7 +1323,7 @@ async def test_atomic_contract_planning_low_confidence_comparison_one_planner_ca
     assert v9["metrics"]["atomic_planner_call_count"] == 1
     assert v9["metrics"]["comparison_planner_call_count"] == 0
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
-    assert v9["metrics"]["semantic_qualification"] == "not_enabled"
+    assert v9["metrics"]["semantic_qualification"] == "provider_qualified"
     assert len(recorded_calls) == 3
 
 
@@ -1392,7 +1392,7 @@ async def test_atomic_contract_planning_budget_rejection_degrades_gracefully(
     assert v9["metrics"]["atomic_planner_call_count"] == 0
     assert v9["metrics"]["comparison_planner_call_count"] == 0
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
-    assert v9["metrics"]["semantic_qualification"] == "not_enabled"
+    assert v9["metrics"]["semantic_qualification"] == "provider_qualified"
     assert len(recorded_calls) == 2
 
 
@@ -1443,7 +1443,7 @@ async def test_atomic_contract_planning_malformed_response_degrades_gracefully()
     assert v9["metrics"]["atomic_planner_call_count"] == 1
     assert v9["metrics"]["comparison_planner_call_count"] == 0
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
-    assert v9["metrics"]["semantic_qualification"] == "not_enabled"
+    assert v9["metrics"]["semantic_qualification"] == "provider_qualified"
     assert len(recorded_calls) == 3
 
 
@@ -2639,6 +2639,7 @@ async def test_campaign_runtime_qualifies_candidate_evidence_via_batch_prose_cur
     assert metrics["qualification_round_count"] >= 1
     assert metrics["qualification_provider_call_count"] == 1
     assert metrics["qualification_failure_code"] is None
+    assert metrics["semantic_qualification"] == "provider_qualified"
 
 
 @pytest.mark.asyncio
@@ -2713,5 +2714,7 @@ async def test_v9_runtime_sufficiency_fails_when_evidence_not_qualified() -> Non
     metrics = result.agent_trace["agentic_v9"]["metrics"]
     assert metrics["candidate_packet_count"] >= 1
     assert metrics["qualified_packet_count"] == 0
+    assert metrics["semantic_qualification"] == "no_match"
+    assert metrics["qualification_failure_code"] is None
 
 

@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from decimal import Decimal
 import json
 import re
-from typing import Any
+from typing import Any, Literal
 
 from core.prompt_loader import format_agentic_rag_prompt
 from data_base.agentic_v9.evidence_pool import EvidencePoolEntry, EvidencePoolItem
 from data_base.agentic_v9.schemas import (
+    BudgetExceededError,
     EvidencePacket,
     FinalClaim,
     LlmInvoker,
@@ -29,6 +31,28 @@ _THEOREM_RANGE = re.compile(r"(?:Theorem\s+\d+\s*:\s*)?\b([A-Za-z])\s+(?:in|∈)
 _FORMULA = re.compile(r"\b[A-Za-z][A-Za-z_]*\s*=\s*[^.\n]+")
 _TABLE_ROW = re.compile(r"\bTable\s+\d+\s*\|[^.\n]+", re.IGNORECASE)
 _ENUMERATION = re.compile(r"\(a\)[^.\n]*(?:;\s*\(b\)[^.\n]*)+", re.IGNORECASE)
+
+QualificationStatus = Literal[
+    "not_attempted",
+    "deterministic",
+    "provider_qualified",
+    "no_match",
+    "provider_failed",
+    "invalid_response",
+]
+
+
+@dataclass(frozen=True)
+class EvidenceQualificationOutcome:
+    """Safe result of one deterministic-plus-provider qualification pass."""
+
+    packets: tuple[EvidencePacket, ...]
+    status: QualificationStatus
+    failure_code: str | None = None
+    provider_call_attempted: bool = False
+    provider_response_received: bool = False
+
+
 class EvidenceExtractor:
     """Extract typed packets before one optional, budgeted prose-curation call."""
 
@@ -63,7 +87,24 @@ class EvidenceExtractor:
         repairs_complete: bool,
         question: str = "",
     ) -> list[EvidencePacket]:
-        """Finish deterministic work, then curate the remaining prose slots once."""
+        """Return packets while preserving the historical list-only interface."""
+        outcome = await self.extract_with_outcome(
+            contract,
+            pool,
+            repairs_complete=repairs_complete,
+            question=question,
+        )
+        return list(outcome.packets)
+
+    async def extract_with_outcome(
+        self,
+        contract: QueryContract,
+        pool: Iterable[EvidencePacket | EvidencePoolItem | EvidencePoolEntry],
+        *,
+        repairs_complete: bool,
+        question: str = "",
+    ) -> EvidenceQualificationOutcome:
+        """Finish deterministic work and report one provider pass honestly."""
         self._final_claims.clear()
         items = _as_items(pool)
         accepted = [
@@ -98,16 +139,55 @@ class EvidenceExtractor:
             or not curated_items
             or self._invoker is None
         ):
-            return packets
+            return EvidenceQualificationOutcome(
+                packets=tuple(packets),
+                status="deterministic" if packets else "not_attempted",
+            )
 
         # A malformed batch is terminal: this stage never spends a second repair call.
-        curated = await self._curate_once(
-            question=question or contract.intent,
+        try:
+            response = await self._curate_once(
+                question=question or contract.intent,
+                slots=unresolved,
+                items=curated_items,
+                eligible_ids_by_slot=eligible_ids_by_slot,
+            )
+        except BudgetExceededError:
+            return EvidenceQualificationOutcome(
+                packets=tuple(packets),
+                status="not_attempted",
+                failure_code="budget_not_admitted",
+            )
+        except Exception:
+            return EvidenceQualificationOutcome(
+                packets=tuple(packets),
+                status="provider_failed",
+                failure_code="provider_attempt_failed",
+                provider_call_attempted=True,
+            )
+
+        curated = _parse_curated_packets(
+            response,
             slots=unresolved,
             items=curated_items,
             eligible_ids_by_slot=eligible_ids_by_slot,
+            final_claims=self._final_claims,
         )
-        return _deduplicate_packets([*packets, *curated])
+        if curated is None:
+            return EvidenceQualificationOutcome(
+                packets=tuple(packets),
+                status="invalid_response",
+                failure_code="invalid_provider_response",
+                provider_call_attempted=True,
+                provider_response_received=True,
+            )
+        combined = tuple(_deduplicate_packets([*packets, *curated]))
+        return EvidenceQualificationOutcome(
+            packets=combined,
+            status="provider_qualified" if curated else "no_match",
+            provider_call_attempted=True,
+            provider_response_received=True,
+        )
 
     async def _curate_once(
         self,
@@ -116,11 +196,11 @@ class EvidenceExtractor:
         slots: Sequence[RequiredSlot],
         items: Sequence[EvidencePoolItem],
         eligible_ids_by_slot: Mapping[str, set[str]],
-    ) -> list[EvidencePacket]:
+    ) -> Any:
         source_evidence = _render_source_evidence(items, eligible_ids_by_slot)
         messages = [
             {
-                "role": "system",
+                "role": "user",
                 "content": format_agentic_rag_prompt(
                     "evidence_extract",
                     question=question,
@@ -131,20 +211,10 @@ class EvidenceExtractor:
                 ),
             }
         ]
-        try:
-            response = await self._invoker.invoke(
-                phase="evidence_extract",
-                purpose="evidence_extraction",
-                messages=messages,
-            )
-        except Exception:
-            return []
-        return _parse_curated_packets(
-            response,
-            slots=slots,
-            items=items,
-            eligible_ids_by_slot=eligible_ids_by_slot,
-            final_claims=self._final_claims,
+        return await self._invoker.invoke(
+            phase="evidence_extract",
+            purpose="evidence_extraction",
+            messages=messages,
         )
 
 
@@ -388,7 +458,7 @@ def _parse_curated_packets(
     items: Sequence[EvidencePoolItem],
     eligible_ids_by_slot: Mapping[str, set[str]],
     final_claims: list[FinalClaim] | None = None,
-) -> list[EvidencePacket]:
+) -> list[EvidencePacket] | None:
     content = getattr(response, "content", response)
     if isinstance(content, bytes):
         content = content.decode("utf-8", errors="replace")
@@ -396,18 +466,18 @@ def _parse_curated_packets(
         try:
             content = json.loads(content)
         except json.JSONDecodeError:
-            return []
+            return None
     if not isinstance(content, Mapping) or set(content) != {"packets"}:
-        return []
+        return None
     raw_packets = content.get("packets")
     if not isinstance(raw_packets, list):
-        return []
+        return None
     valid_slots = {slot.slot_id for slot in slots}
     by_id = {item.packet.evidence_id: item for item in items}
     packets: list[EvidencePacket] = []
     for raw in raw_packets:
         if not isinstance(raw, Mapping) or set(raw) != {"source_evidence_id", "slot_ids", "statement"}:
-            continue
+            return None
         source_id, slot_ids, statement = (
             raw["source_evidence_id"], raw["slot_ids"], raw["statement"]
         )
@@ -425,7 +495,7 @@ def _parse_curated_packets(
                 for slot_id in slot_ids
             )
         ):
-            continue
+            return None
         item = by_id[source_id]
         result = validate_prose_packet(
             _derived_packet(
@@ -468,6 +538,7 @@ async def extract_evidence_packets(
 
 
 __all__ = [
+    "EvidenceQualificationOutcome",
     "EvidenceExtractor",
     "calculate_difference",
     "extract_evidence_packets",

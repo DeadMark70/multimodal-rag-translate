@@ -789,7 +789,14 @@ class V9ExecutionMetrics(BaseModel):
         "task_target_inherited", "not_instrumented"
     ] = "not_instrumented"
     semantic_qualification: Literal[
-        "not_enabled", "not_instrumented"
+        "not_attempted",
+        "deterministic",
+        "provider_qualified",
+        "no_match",
+        "provider_failed",
+        "invalid_response",
+        "not_enabled",
+        "not_instrumented",
     ] = "not_instrumented"
     reserved_tokens: int = Field(default=0, ge=0)
     reconciled_tokens: int = Field(default=0, ge=0)
