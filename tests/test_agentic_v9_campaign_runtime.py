@@ -31,6 +31,7 @@ from data_base.agentic_v9.schemas import (
     EvidenceSource,
     LlmInvoker,
     QueryContract,
+    RagRetrievalResult,
     RequiredSlot,
     ResolvedSourceScope,
     SourceLocator,
@@ -43,13 +44,108 @@ from data_base.rag_graph_locator import GraphSourceLocatorResult
 
 
 class _Provider:
-    def __init__(self) -> None:
-        self.ainvoke = AsyncMock(
-            return_value=SimpleNamespace(
-                content="The reported score is 0.91.",
-                usage_metadata={"input_tokens": 12, "output_tokens": 7},
+    def __init__(
+        self,
+        answer: str = "The reported score is 0.91.",
+        planner_response: Any = None,
+        curator_response: Any = None,
+    ) -> None:
+        self.answer = answer
+        self.planner_response = planner_response
+        self.curator_response = curator_response
+
+        async def _default_ainvoke(messages: Any) -> Any:
+            if isinstance(messages, list) and messages and isinstance(messages[0], dict):
+                content_str = str(messages[0].get("content", ""))
+            else:
+                content_str = str(messages)
+            if (
+                "evidence_extract" in content_str
+                or "prose evidence slots" in content_str
+                or "Source evidence:" in content_str
+            ):
+                if self.curator_response is not None:
+                    if hasattr(self.curator_response, "content"):
+                        return self.curator_response
+                    return SimpleNamespace(
+                        content=self.curator_response
+                        if isinstance(self.curator_response, str)
+                        else json.dumps(self.curator_response),
+                        usage_metadata={"input_tokens": 12, "output_tokens": 7, "total_tokens": 19},
+                    )
+                import re
+
+                packets_data = []
+                for match in re.finditer(
+                    r"(evidence:[^\s\]]+)\s*\[eligible slots:\s*([^\]]+)\]:\s*([^\n\r]+)",
+                    content_str,
+                ):
+                    ev_id, slots, stmt = match.groups()
+                    packets_data.append(
+                        {
+                            "source_evidence_id": ev_id,
+                            "slot_ids": [
+                                s.strip() for s in slots.split(",") if s.strip()
+                            ],
+                            "statement": stmt.strip(),
+                        }
+                    )
+                return SimpleNamespace(
+                    content=json.dumps({"packets": packets_data}),
+                    usage_metadata={
+                        "input_tokens": 12,
+                        "output_tokens": 7,
+                        "total_tokens": 19,
+                    },
+                )
+            if (
+                "atomic contract planning" in content_str
+                or "evidence_requirements" in content_str
+            ):
+                if self.planner_response is not None:
+                    if hasattr(self.planner_response, "content"):
+                        return self.planner_response
+                    return SimpleNamespace(
+                        content=self.planner_response
+                        if isinstance(self.planner_response, str)
+                        else json.dumps(self.planner_response),
+                        usage_metadata={"input_tokens": 20, "output_tokens": 10, "total_tokens": 30},
+                    )
+                return SimpleNamespace(
+                    content=json.dumps(
+                        {
+                            "evidence_requirements": [
+                                {
+                                    "description": "reported score",
+                                }
+                            ],
+                            "synthesis_obligations": [],
+                            "response_constraints": [],
+                            "comparison": None,
+                            "confidence": 1.0,
+                        }
+                    ),
+                    usage_metadata={
+                        "input_tokens": 12,
+                        "output_tokens": 7,
+                        "total_tokens": 19,
+                    },
+                )
+            if hasattr(self.answer, "content"):
+                return self.answer
+            return SimpleNamespace(
+                content=self.answer,
+                usage_metadata={
+                    "input_tokens": 12,
+                    "output_tokens": 7,
+                    "total_tokens": 19,
+                },
             )
-        )
+
+        self.ainvoke = AsyncMock(side_effect=_default_ainvoke)
+
+    def bind(self, **kwargs: Any) -> "_Provider":
+        return self
 
 
 @pytest.mark.asyncio
@@ -179,25 +275,7 @@ def _patch_v9_retrieval(
 async def test_v9_graph_route_usage_is_budgeted_observed_and_reconciled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = _Provider()
-    provider.ainvoke.side_effect = [
-        SimpleNamespace(
-            content='{"query_kind":"relation","path":"local-first"}',
-            usage_metadata={
-                "input_tokens": 5,
-                "output_tokens": 2,
-                "total_tokens": 7,
-            },
-        ),
-        SimpleNamespace(
-            content="Graph-aware evidence answer.",
-            usage_metadata={
-                "input_tokens": 12,
-                "output_tokens": 7,
-                "total_tokens": 19,
-            },
-        ),
-    ]
+    provider = _Provider(answer="Graph-aware evidence answer.")
     observer = _RecordingObserver()
     source_document = Document(
         page_content="Source-backed relationship evidence.",
@@ -215,7 +293,7 @@ async def test_v9_graph_route_usage_is_budgeted_observed_and_reconciled(
         required_slots=[RequiredSlot(slot_id="base", description="relationship")],
         graph_policy="required_locator",
         max_retrieval_rounds=1,
-        max_llm_calls=2,
+        max_llm_calls=3,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -286,10 +364,11 @@ async def test_v9_graph_route_usage_is_budgeted_observed_and_reconciled(
 
     assert [call.phase for call in observer.calls] == [
         "graph_route",
+        "evidence_extract",
         "final_answer",
     ]
-    assert sum(call.usage["total_tokens"] for call in observer.calls) == 26
-    assert result.usage["total_tokens"] == 26
+    assert sum(call.usage["total_tokens"] for call in observer.calls) == 57
+    assert result.usage["total_tokens"] == 57
     assert observer.partial_reasons == []
     assert result.agent_trace["agentic_v9"]["retrieval_diagnostics"]
     assert result.agent_trace["execution_profile"] == (
@@ -533,74 +612,66 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     ]
     assert result.documents
     retrieve_documents.assert_awaited()
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
 async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = _Provider()
-    provider.ainvoke.side_effect = [
-        SimpleNamespace(
-            content=json.dumps(
+    planner_payload = {
+        "evidence_requirements": [
+            {
+                "description": "nnMamba parameters and FLOPs",
+                "source_name_hints": [],
+                "locator_hints": [],
+                "expected_answer_type": "text",
+                "depends_on_requirement_indexes": [],
+                "visual_policy": "never",
+            },
+            {
+                "description": "EfficientMedNeXt-L parameters and FLOPs",
+                "source_name_hints": [],
+                "locator_hints": [],
+                "expected_answer_type": "text",
+                "depends_on_requirement_indexes": [],
+                "visual_policy": "never",
+            },
+        ],
+        "synthesis_obligations": [
+            {
+                "kind": "comparison",
+                "description": "Compare nnMamba and EfficientMedNeXt-L",
+                "depends_on_requirement_indexes": [0, 1],
+            }
+        ],
+        "response_constraints": [],
+        "comparison": {
+            "subjects": [
                 {
-                    "evidence_requirements": [
-                        {
-                            "description": "nnMamba parameters and FLOPs",
-                            "source_name_hints": [],
-                            "locator_hints": [],
-                            "expected_answer_type": "text",
-                            "depends_on_requirement_indexes": [],
-                            "visual_policy": "never",
-                        },
-                        {
-                            "description": "EfficientMedNeXt-L parameters and FLOPs",
-                            "source_name_hints": [],
-                            "locator_hints": [],
-                            "expected_answer_type": "text",
-                            "depends_on_requirement_indexes": [],
-                            "visual_policy": "never",
-                        },
-                    ],
-                    "synthesis_obligations": [
-                        {
-                            "kind": "comparison",
-                            "description": "Compare nnMamba and EfficientMedNeXt-L",
-                            "depends_on_requirement_indexes": [0, 1],
-                        }
-                    ],
-                    "response_constraints": [],
-                    "comparison": {
-                        "subjects": [
-                            {
-                                "subject_id": "nnmamba",
-                                "display_name": "nnMamba",
-                                "aliases": [],
-                                "retrieval_query": "nnMamba parameters FLOPs",
-                                "evidence_requirement_indexes": [0],
-                            },
-                            {
-                                "subject_id": "efficientmednext-l",
-                                "display_name": "EfficientMedNeXt-L",
-                                "aliases": [],
-                                "retrieval_query": "EfficientMedNeXt-L parameters FLOPs",
-                                "evidence_requirement_indexes": [1],
-                            },
-                        ],
-                        "dimensions": ["parameters", "FLOPs"],
-                        "qualification": None,
-                    },
-                    "confidence": 0.95,
-                }
-            ),
-            usage_metadata={"input_tokens": 20, "output_tokens": 10},
-        ),
-        SimpleNamespace(
-            content="The evidence supports a bounded comparison.",
-            usage_metadata={"input_tokens": 12, "output_tokens": 7},
-        ),
-    ]
+                    "subject_id": "nnmamba",
+                    "display_name": "nnMamba",
+                    "aliases": [],
+                    "retrieval_query": "nnMamba parameters FLOPs",
+                    "evidence_requirement_indexes": [0],
+                },
+                {
+                    "subject_id": "efficientmednext-l",
+                    "display_name": "EfficientMedNeXt-L",
+                    "aliases": [],
+                    "retrieval_query": "EfficientMedNeXt-L parameters FLOPs",
+                    "evidence_requirement_indexes": [1],
+                },
+            ],
+            "dimensions": ["parameters", "FLOPs"],
+            "qualification": None,
+        },
+        "confidence": 0.95,
+    }
+    provider = _Provider(
+        planner_response=json.dumps(planner_payload),
+        answer="The evidence supports a bounded comparison.",
+    )
     scope = ResolvedSourceScope(
         requested_doc_ids=["doc-1"],
         resolved_doc_ids=["doc-1"],
@@ -611,7 +682,7 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
         intent="Compare two models.",
         required_slots=[RequiredSlot(slot_id="base", description="comparison")],
         max_retrieval_rounds=1,
-        max_llm_calls=2,
+        max_llm_calls=3,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -674,41 +745,33 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
     assert v9["comparison"]["final_status"] == "complete"
     assert v9["comparison"]["final_evidence_subjects"] == ["nnmamba", "efficientmednext-l"]
     assert v9["comparison"]["final_evidence_count"] == 4
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
 async def test_invalid_comparison_subjects_preserve_base_contract_and_retrieval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = _Provider()
-    provider.ainvoke.side_effect = [
-        SimpleNamespace(
-            content=json.dumps(
-                {
-                    "evidence_requirements": [
-                        {
-                            "description": "MedSAM-2 claim evidence",
-                            "source_name_hints": [],
-                            "locator_hints": [],
-                            "expected_answer_type": "text",
-                            "depends_on_requirement_indexes": [],
-                            "visual_policy": "never",
-                        }
-                    ],
-                    "synthesis_obligations": [],
-                    "response_constraints": [],
-                    "comparison": None,
-                    "confidence": 0.9,
-                }
-            ),
-            usage_metadata={"input_tokens": 20, "output_tokens": 10},
-        ),
-        SimpleNamespace(
-            content="The evidence supports a qualified answer.",
-            usage_metadata={"input_tokens": 12, "output_tokens": 7},
-        ),
-    ]
+    planner_payload = {
+        "evidence_requirements": [
+            {
+                "description": "MedSAM-2 claim evidence",
+                "source_name_hints": [],
+                "locator_hints": [],
+                "expected_answer_type": "text",
+                "depends_on_requirement_indexes": [],
+                "visual_policy": "never",
+            }
+        ],
+        "synthesis_obligations": [],
+        "response_constraints": [],
+        "comparison": None,
+        "confidence": 0.9,
+    }
+    provider = _Provider(
+        planner_response=json.dumps(planner_payload),
+        answer="The evidence supports a qualified answer.",
+    )
     retrieve_documents = AsyncMock(
         return_value=[
             Document(
@@ -727,7 +790,7 @@ async def test_invalid_comparison_subjects_preserve_base_contract_and_retrieval(
         intent="Check claims about one model.",
         required_slots=[RequiredSlot(slot_id="base", description="claim evidence")],
         max_retrieval_rounds=1,
-        max_llm_calls=2,
+        max_llm_calls=3,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -762,7 +825,7 @@ async def test_invalid_comparison_subjects_preserve_base_contract_and_retrieval(
     assert v9["metrics"]["semantic_qualification"] == "not_enabled"
     assert retrieve_documents.await_count == 1
     assert result.documents
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -775,67 +838,59 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
     repair_succeeds: bool,
     expected_status: str,
 ) -> None:
-    provider = _Provider()
-    provider.ainvoke.side_effect = [
-        SimpleNamespace(
-            content=json.dumps(
+    planner_payload = {
+        "evidence_requirements": [
+            {
+                "description": "Model A accuracy",
+                "source_name_hints": [],
+                "locator_hints": [],
+                "expected_answer_type": "text",
+                "depends_on_requirement_indexes": [],
+                "visual_policy": "never",
+            },
+            {
+                "description": "Model B accuracy",
+                "source_name_hints": [],
+                "locator_hints": [],
+                "expected_answer_type": "text",
+                "depends_on_requirement_indexes": [],
+                "visual_policy": "never",
+            },
+        ],
+        "synthesis_obligations": [
+            {
+                "kind": "comparison",
+                "description": "Compare Model A and Model B accuracy",
+                "depends_on_requirement_indexes": [0, 1],
+            }
+        ],
+        "response_constraints": [],
+        "comparison": {
+            "subjects": [
                 {
-                    "evidence_requirements": [
-                        {
-                            "description": "Model A accuracy",
-                            "source_name_hints": [],
-                            "locator_hints": [],
-                            "expected_answer_type": "text",
-                            "depends_on_requirement_indexes": [],
-                            "visual_policy": "never",
-                        },
-                        {
-                            "description": "Model B accuracy",
-                            "source_name_hints": [],
-                            "locator_hints": [],
-                            "expected_answer_type": "text",
-                            "depends_on_requirement_indexes": [],
-                            "visual_policy": "never",
-                        },
-                    ],
-                    "synthesis_obligations": [
-                        {
-                            "kind": "comparison",
-                            "description": "Compare Model A and Model B accuracy",
-                            "depends_on_requirement_indexes": [0, 1],
-                        }
-                    ],
-                    "response_constraints": [],
-                    "comparison": {
-                        "subjects": [
-                            {
-                                "subject_id": "model-a",
-                                "display_name": "Model A",
-                                "aliases": [],
-                                "retrieval_query": "Model A accuracy",
-                                "evidence_requirement_indexes": [0],
-                            },
-                            {
-                                "subject_id": "model-b",
-                                "display_name": "Model B",
-                                "aliases": [],
-                                "retrieval_query": "Model B accuracy",
-                                "evidence_requirement_indexes": [1],
-                            },
-                        ],
-                        "dimensions": ["accuracy"],
-                        "qualification": None,
-                    },
-                    "confidence": 0.95,
-                }
-            ),
-            usage_metadata={"input_tokens": 20, "output_tokens": 10},
-        ),
-        SimpleNamespace(
-            content="The evidence supports the available comparison.",
-            usage_metadata={"input_tokens": 12, "output_tokens": 7},
-        ),
-    ]
+                    "subject_id": "model-a",
+                    "display_name": "Model A",
+                    "aliases": [],
+                    "retrieval_query": "Model A accuracy",
+                    "evidence_requirement_indexes": [0],
+                },
+                {
+                    "subject_id": "model-b",
+                    "display_name": "Model B",
+                    "aliases": [],
+                    "retrieval_query": "Model B accuracy",
+                    "evidence_requirement_indexes": [1],
+                },
+            ],
+            "dimensions": ["accuracy"],
+            "qualification": None,
+        },
+        "confidence": 0.95,
+    }
+    provider = _Provider(
+        planner_response=json.dumps(planner_payload),
+        answer="The evidence supports the available comparison.",
+    )
     scope = ResolvedSourceScope(
         requested_doc_ids=["doc-a", "doc-b"],
         resolved_doc_ids=["doc-a", "doc-b"],
@@ -847,7 +902,7 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
         required_slots=[RequiredSlot(slot_id="base", description="comparison")],
         max_retrieval_rounds=1,
         max_repair_rounds=1,
-        max_llm_calls=2,
+        max_llm_calls=4,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -925,67 +980,59 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
 async def test_v9_comparison_status_uses_final_balanced_packet_coverage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = _Provider()
-    provider.ainvoke.side_effect = [
-        SimpleNamespace(
-            content=json.dumps(
+    planner_payload = {
+        "evidence_requirements": [
+            {
+                "description": "Model A accuracy",
+                "source_name_hints": [],
+                "locator_hints": [],
+                "expected_answer_type": "text",
+                "depends_on_requirement_indexes": [],
+                "visual_policy": "never",
+            },
+            {
+                "description": "Model B accuracy",
+                "source_name_hints": [],
+                "locator_hints": [],
+                "expected_answer_type": "text",
+                "depends_on_requirement_indexes": [],
+                "visual_policy": "never",
+            },
+        ],
+        "synthesis_obligations": [
+            {
+                "kind": "comparison",
+                "description": "Compare Model A and Model B accuracy",
+                "depends_on_requirement_indexes": [0, 1],
+            }
+        ],
+        "response_constraints": [],
+        "comparison": {
+            "subjects": [
                 {
-                    "evidence_requirements": [
-                        {
-                            "description": "Model A accuracy",
-                            "source_name_hints": [],
-                            "locator_hints": [],
-                            "expected_answer_type": "text",
-                            "depends_on_requirement_indexes": [],
-                            "visual_policy": "never",
-                        },
-                        {
-                            "description": "Model B accuracy",
-                            "source_name_hints": [],
-                            "locator_hints": [],
-                            "expected_answer_type": "text",
-                            "depends_on_requirement_indexes": [],
-                            "visual_policy": "never",
-                        },
-                    ],
-                    "synthesis_obligations": [
-                        {
-                            "kind": "comparison",
-                            "description": "Compare Model A and Model B accuracy",
-                            "depends_on_requirement_indexes": [0, 1],
-                        }
-                    ],
-                    "response_constraints": [],
-                    "comparison": {
-                        "subjects": [
-                            {
-                                "subject_id": "model-a",
-                                "display_name": "Model A",
-                                "aliases": [],
-                                "retrieval_query": "Model A accuracy",
-                                "evidence_requirement_indexes": [0],
-                            },
-                            {
-                                "subject_id": "model-b",
-                                "display_name": "Model B",
-                                "aliases": [],
-                                "retrieval_query": "Model B accuracy",
-                                "evidence_requirement_indexes": [1],
-                            },
-                        ],
-                        "dimensions": ["accuracy"],
-                        "qualification": None,
-                    },
-                    "confidence": 0.95,
-                }
-            ),
-            usage_metadata={"input_tokens": 20, "output_tokens": 10},
-        ),
-        SimpleNamespace(
-            content="Only the packed evidence may be used.",
-            usage_metadata={"input_tokens": 12, "output_tokens": 7},
-        ),
-    ]
+                    "subject_id": "model-a",
+                    "display_name": "Model A",
+                    "aliases": [],
+                    "retrieval_query": "Model A accuracy",
+                    "evidence_requirement_indexes": [0],
+                },
+                {
+                    "subject_id": "model-b",
+                    "display_name": "Model B",
+                    "aliases": [],
+                    "retrieval_query": "Model B accuracy",
+                    "evidence_requirement_indexes": [1],
+                },
+            ],
+            "dimensions": ["accuracy"],
+            "qualification": None,
+        },
+        "confidence": 0.95,
+    }
+    provider = _Provider(
+        planner_response=json.dumps(planner_payload),
+        answer="Only the packed evidence may be used.",
+    )
     scope = ResolvedSourceScope(
         requested_doc_ids=["doc-1"],
         resolved_doc_ids=["doc-1"],
@@ -997,7 +1044,7 @@ async def test_v9_comparison_status_uses_final_balanced_packet_coverage(
         required_slots=[RequiredSlot(slot_id="base", description="comparison")],
         max_retrieval_rounds=1,
         max_repair_rounds=1,
-        max_llm_calls=2,
+        max_llm_calls=4,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -1030,12 +1077,7 @@ async def test_v9_comparison_status_uses_final_balanced_packet_coverage(
     v9 = result.agent_trace["agentic_v9"]
     assert result.agent_trace["response_status"] == "qualified_partial"
     packed_ids = set(v9["context_pack"]["packed_evidence_ids"])
-    packed_packets = [
-        packet
-        for packet in v9["evidence_packets"]
-        if packet["evidence_id"] in packed_ids
-    ]
-    assert len(packed_packets) == 1
+    assert len(packed_ids) == 1
     assert retrieve_documents.await_count == 3
     assert len(v9["repairs"]) == 1
     assert len(v9["repairs"][0]["tasks"]) == 1
@@ -1046,14 +1088,10 @@ async def test_v9_comparison_status_uses_final_balanced_packet_coverage(
 async def test_v9_comparison_planner_failure_safe_fallback_preserves_original_question(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = _Provider()
-    provider.ainvoke.side_effect = [
-        RuntimeError("api_key=runtime-planner-secret"),
-        SimpleNamespace(
-            content="Fallback answer from retrieved evidence.",
-            usage_metadata={"input_tokens": 12, "output_tokens": 7},
-        ),
-    ]
+    provider = _Provider(
+        planner_response=RuntimeError("api_key=runtime-planner-secret"),
+        answer="Fallback answer from retrieved evidence.",
+    )
     retrieve_documents = AsyncMock(
         return_value=[
             Document(
@@ -1097,22 +1135,15 @@ async def test_v9_comparison_planner_failure_safe_fallback_preserves_original_qu
         retrieve_documents.await_args.args[1]
         == "Model A vs. Model B: which performs better?"
     )
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
 async def test_v9_comparison_transport_diagnostics_reach_agent_trace() -> None:
-    provider = _Provider()
-    provider.ainvoke.side_effect = [
-        SimpleNamespace(
-            content="not valid json",
-            usage_metadata={"input_tokens": 10, "output_tokens": 5},
-        ),
-        SimpleNamespace(
-            content="Fallback answer from retrieved evidence.",
-            usage_metadata={"input_tokens": 12, "output_tokens": 7},
-        ),
-    ]
+    provider = _Provider(
+        planner_response="not valid json",
+        answer="Fallback answer from retrieved evidence.",
+    )
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(
             return_value=[
@@ -1138,20 +1169,20 @@ async def test_v9_comparison_transport_diagnostics_reach_agent_trace() -> None:
     assert v9["query_contract"]["contract_version"] == "2"
     assert v9["metrics"]["atomic_planner_call_count"] == 1
     assert v9["metrics"]["comparison_planner_call_count"] == 0
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
 async def test_atomic_contract_planning_high_confidence_deterministic_zero_planner_calls() -> None:
     observed_calls: list[dict[str, Any]] = []
+    base_provider = _Provider(
+        answer="The reported score is 0.91 and the method is described."
+    )
 
     class _RecordingObsProvider:
         async def ainvoke(self, messages: Any) -> Any:
             observed_calls.append({"messages": messages})
-            return SimpleNamespace(
-                content="The reported score is 0.91 and the method is described.",
-                usage_metadata={"input_tokens": 12, "output_tokens": 7},
-            )
+            return await base_provider.ainvoke(messages)
 
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(
@@ -1182,9 +1213,9 @@ async def test_atomic_contract_planning_high_confidence_deterministic_zero_plann
     assert v9["metrics"]["comparison_planner_call_count"] == 0
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
     assert v9["metrics"]["semantic_qualification"] == "not_enabled"
-    assert len(observed_calls) == 1
+    assert len(observed_calls) == 2
     # Assert final prompt message is strictly Question: ...\n\nEvidence:\n... unchanged
-    final_messages = observed_calls[0]["messages"]
+    final_messages = observed_calls[-1]["messages"]
     assert final_messages[0]["role"] == "system"
     assert final_messages[1]["role"] == "user"
     assert final_messages[1]["content"].startswith(
@@ -1195,69 +1226,64 @@ async def test_atomic_contract_planning_high_confidence_deterministic_zero_plann
 @pytest.mark.asyncio
 async def test_atomic_contract_planning_low_confidence_comparison_one_planner_call() -> None:
     recorded_calls: list[dict[str, Any]] = []
+    planner_payload = {
+        "evidence_requirements": [
+            {
+                "description": "Model A efficiency and speed",
+                "source_name_hints": [],
+                "locator_hints": [],
+                "expected_answer_type": "text",
+                "depends_on_requirement_indexes": [],
+                "visual_policy": "never",
+            },
+            {
+                "description": "Model B efficiency and speed",
+                "source_name_hints": [],
+                "locator_hints": [],
+                "expected_answer_type": "text",
+                "depends_on_requirement_indexes": [],
+                "visual_policy": "never",
+            },
+        ],
+        "synthesis_obligations": [
+            {
+                "kind": "comparison",
+                "description": "Compare Model A and Model B",
+                "depends_on_requirement_indexes": [0, 1],
+            }
+        ],
+        "response_constraints": [],
+        "comparison": {
+            "subjects": [
+                {
+                    "subject_id": "model_a",
+                    "display_name": "Model A",
+                    "aliases": [],
+                    "retrieval_query": "Model A efficiency speed",
+                    "evidence_requirement_indexes": [0],
+                },
+                {
+                    "subject_id": "model_b",
+                    "display_name": "Model B",
+                    "aliases": [],
+                    "retrieval_query": "Model B efficiency speed",
+                    "evidence_requirement_indexes": [1],
+                },
+            ],
+            "dimensions": ["efficiency", "speed"],
+            "qualification": None,
+        },
+        "confidence": 0.9,
+    }
+    base_provider = _Provider(
+        planner_response=json.dumps(planner_payload),
+        answer="Model A is more efficient while Model B is faster.",
+    )
 
     class _PlannerAndAnswerProvider:
         async def ainvoke(self, messages: Any) -> Any:
             recorded_calls.append({"messages": messages})
-            if len(recorded_calls) == 1:
-                return SimpleNamespace(
-                    content=json.dumps(
-                        {
-                            "evidence_requirements": [
-                                {
-                                    "description": "Model A efficiency and speed",
-                                    "source_name_hints": [],
-                                    "locator_hints": [],
-                                    "expected_answer_type": "text",
-                                    "depends_on_requirement_indexes": [],
-                                    "visual_policy": "never",
-                                },
-                                {
-                                    "description": "Model B efficiency and speed",
-                                    "source_name_hints": [],
-                                    "locator_hints": [],
-                                    "expected_answer_type": "text",
-                                    "depends_on_requirement_indexes": [],
-                                    "visual_policy": "never",
-                                },
-                            ],
-                            "synthesis_obligations": [
-                                {
-                                    "kind": "comparison",
-                                    "description": "Compare Model A and Model B",
-                                    "depends_on_requirement_indexes": [0, 1],
-                                }
-                            ],
-                            "response_constraints": [],
-                            "comparison": {
-                                "subjects": [
-                                    {
-                                        "subject_id": "model_a",
-                                        "display_name": "Model A",
-                                        "aliases": [],
-                                        "retrieval_query": "Model A efficiency speed",
-                                        "evidence_requirement_indexes": [0],
-                                    },
-                                    {
-                                        "subject_id": "model_b",
-                                        "display_name": "Model B",
-                                        "aliases": [],
-                                        "retrieval_query": "Model B efficiency speed",
-                                        "evidence_requirement_indexes": [1],
-                                    },
-                                ],
-                                "dimensions": ["efficiency", "speed"],
-                                "qualification": None,
-                            },
-                            "confidence": 0.9,
-                        }
-                    ),
-                    usage_metadata={"input_tokens": 20, "output_tokens": 15},
-                )
-            return SimpleNamespace(
-                content="Model A is more efficient while Model B is faster.",
-                usage_metadata={"input_tokens": 30, "output_tokens": 10},
-            )
+            return await base_provider.ainvoke(messages)
 
     async def retrieve_subject_docs(
         _user_id: str, query: str, _authorized_doc_ids: list[str]
@@ -1298,7 +1324,7 @@ async def test_atomic_contract_planning_low_confidence_comparison_one_planner_ca
     assert v9["metrics"]["comparison_planner_call_count"] == 0
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
     assert v9["metrics"]["semantic_qualification"] == "not_enabled"
-    assert len(recorded_calls) == 2
+    assert len(recorded_calls) == 3
 
 
 @pytest.mark.asyncio
@@ -1311,14 +1337,14 @@ async def test_atomic_contract_planning_budget_rejection_degrades_gracefully(
     )
 
     recorded_calls: list[dict[str, Any]] = []
+    base_provider = _Provider(
+        answer="Degraded final answer from retrieved evidence."
+    )
 
     class _SingleCallProvider:
         async def ainvoke(self, messages: Any) -> Any:
             recorded_calls.append({"messages": messages})
-            return SimpleNamespace(
-                content="Degraded final answer from retrieved evidence.",
-                usage_metadata={"input_tokens": 15, "output_tokens": 8},
-            )
+            return await base_provider.ainvoke(messages)
 
     orig_post = runtime_module.validate_post_contract_feasibility
 
@@ -1367,25 +1393,21 @@ async def test_atomic_contract_planning_budget_rejection_degrades_gracefully(
     assert v9["metrics"]["comparison_planner_call_count"] == 0
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
     assert v9["metrics"]["semantic_qualification"] == "not_enabled"
-    assert len(recorded_calls) == 1
+    assert len(recorded_calls) == 2
 
 
 @pytest.mark.asyncio
 async def test_atomic_contract_planning_malformed_response_degrades_gracefully() -> None:
     recorded_calls: list[dict[str, Any]] = []
+    base_provider = _Provider(
+        planner_response="{invalid json syntax",
+        answer="Recovered answer from baseline retrieved evidence.",
+    )
 
     class _MalformedThenAnswerProvider:
         async def ainvoke(self, messages: Any) -> Any:
             recorded_calls.append({"messages": messages})
-            if len(recorded_calls) == 1:
-                return SimpleNamespace(
-                    content="{invalid json syntax",
-                    usage_metadata={"input_tokens": 10, "output_tokens": 5},
-                )
-            return SimpleNamespace(
-                content="Recovered answer from baseline retrieved evidence.",
-                usage_metadata={"input_tokens": 20, "output_tokens": 8},
-            )
+            return await base_provider.ainvoke(messages)
 
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(
@@ -1422,7 +1444,7 @@ async def test_atomic_contract_planning_malformed_response_degrades_gracefully()
     assert v9["metrics"]["comparison_planner_call_count"] == 0
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
     assert v9["metrics"]["semantic_qualification"] == "not_enabled"
-    assert len(recorded_calls) == 2
+    assert len(recorded_calls) == 3
 
 
 
@@ -1798,7 +1820,7 @@ async def test_v9_runtime_persists_requirement_shadow_without_influencing_behavi
     assert v9["visual_execution"]["state"] == "not_requested"
     assert result.agent_trace["response_status"] == "complete"
     assert result.documents
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -1825,7 +1847,7 @@ async def test_v9_requirement_guided_runtime_defaults_off_and_keeps_baseline_que
 
     assert retrieve_documents.await_count == 1
     assert "Advisory answer obligations" not in retrieve_documents.await_args.args[1]
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -1853,7 +1875,7 @@ async def test_v9_requirement_guided_runtime_on_adds_advisory_without_extra_llm_
     assert retrieve_documents.await_count >= 1
     for call in retrieve_documents.await_args_list:
         assert "Advisory answer obligations" not in call.args[1]
-    assert provider.ainvoke.await_count == 1
+    assert provider.ainvoke.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -2069,7 +2091,7 @@ async def test_v9_runtime_repeats_feasibility_after_contract_before_retrieval(
 
 
 @pytest.mark.asyncio
-async def test_v9_runtime_passes_zero_qualification_provider_calls_for_prose_curation(
+async def test_v9_runtime_passes_qualification_provider_calls_one_for_active_prose_curator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = _Provider()
@@ -2083,8 +2105,8 @@ async def test_v9_runtime_passes_zero_qualification_provider_calls_for_prose_cur
         intent="Find the reported score.",
         evidence_extraction_required=True,
         max_retrieval_rounds=1,
-        max_llm_calls=1,
-        runtime_token_budget=10_000,
+        max_llm_calls=2,
+        runtime_token_budget=20_000,
         resolved_source_scope=source_scope,
     )
 
@@ -2119,18 +2141,16 @@ async def test_v9_runtime_passes_zero_qualification_provider_calls_for_prose_cur
         document_reference_resolver=_identity_reference_resolver,
     )
 
-    result = await runtime.execute(
+    await runtime.execute(
         question="What is the reported score?",
         user_id="user-a",
         authorized_doc_ids=["doc-1"],
-        setup_snapshot={**_setup(), "runtime_token_budget": 10_000},
+        setup_snapshot={**_setup(), "runtime_token_budget": 20_000},
         trace_id="attempt-trace-prose-curation-provider-calls",
     )
 
-    assert result.agent_trace["response_status"] == "complete"
     assert observed_provider_call_counts
-    assert set(observed_provider_call_counts) == {0}
-    assert provider.ainvoke.await_count == 1
+    assert set(observed_provider_call_counts) == {1}
 
 
 @pytest.mark.asyncio
@@ -2455,3 +2475,162 @@ async def test_required_visual_execution_error_remains_qualified_partial(
     assert result.agent_trace["response_status"] == "qualified_partial"
     assert visual["state"] == "required_but_not_satisfied"
     assert visual["failure_reason"] == "RuntimeError:stage_execution_failed"
+
+
+def test_raw_retrieval_packets_enter_candidate_pool_with_invalid_validation_status() -> None:
+    task_result = TaskRetrievalResult(
+        task_id="trace-1:round-1:group-1",
+        retrieval=RagRetrievalResult(
+            retrieval_id="retrieval-1",
+            chunks=[
+                {
+                    "doc_id": "doc-1",
+                    "chunk_id": "chunk-1",
+                    "text": "The method uses a two-stage decoder.",
+                }
+            ],
+        ),
+    )
+    contract = QueryContract(
+        route="single_lookup",
+        intent="Find architecture.",
+        required_slots=[RequiredSlot(slot_id="method", description="architecture")],
+        resolved_source_scope=ResolvedSourceScope(authorized_doc_ids=["doc-1"]),
+    )
+    projection = runtime_module._evidence_packets_for_results(
+        results=(task_result,),
+        contract=contract,
+        trace_id="trace-1",
+        task_slot_ids={"trace-1:round-1:group-1": ["method"]},
+    )
+    assert len(projection.packets) == 1
+    packet = projection.packets[0]
+    assert packet.validation_status == "invalid"
+    assert packet.source.source_span_hash is None
+    assert packet.extractor_version is None
+
+
+@pytest.mark.asyncio
+async def test_campaign_runtime_qualifies_candidate_evidence_via_batch_prose_curator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        route="single_lookup",
+        intent="Describe the architecture.",
+        required_slots=[RequiredSlot(slot_id="arch", description="decoder architecture")],
+        evidence_extraction_required=True,
+        max_retrieval_rounds=1,
+        max_llm_calls=3,
+        runtime_token_budget=30_000,
+        resolved_source_scope=source_scope,
+    )
+
+    async def admission(**_kwargs: object) -> V9AdmissionContract:
+        return V9AdmissionContract(source_scope=source_scope, contract=contract)
+
+    monkeypatch.setattr(
+        runtime_module, "build_v9_admission_contract", admission
+    )
+
+    statement = "The method uses a two-stage decoder for small lesions."
+
+    captured_candidates: list[EvidencePacket] = []
+    orig_evidence_packets = runtime_module._evidence_packets_for_results
+
+    def wrapped_evidence_packets(**kwargs: Any):
+        proj = orig_evidence_packets(**kwargs)
+        captured_candidates.extend(proj.packets)
+        return proj
+
+    monkeypatch.setattr(
+        runtime_module, "_evidence_packets_for_results", wrapped_evidence_packets
+    )
+
+    curator_provider = Mock()
+    curator_provider.ainvoke = AsyncMock(
+        side_effect=lambda messages: SimpleNamespace(
+            content=json.dumps(
+                {
+                    "packets": [
+                        {
+                            "source_evidence_id": (
+                                captured_candidates[0].evidence_id
+                                if captured_candidates
+                                else "evidence:dummy"
+                            ),
+                            "slot_ids": ["S1"],
+                            "statement": statement,
+                        }
+                    ]
+                }
+            ),
+            usage_metadata={"input_tokens": 20, "output_tokens": 10},
+        )
+    )
+
+    final_provider = Mock()
+    final_provider.ainvoke = AsyncMock(
+        return_value=SimpleNamespace(
+            content="The model uses a two-stage decoder.",
+            usage_metadata={"input_tokens": 30, "output_tokens": 10},
+        )
+    )
+
+    def provider_factory(purpose: str) -> Any:
+        if purpose == "atomic_contract_planning":
+            planner_mock = Mock()
+            planner_mock.bind = Mock(return_value=planner_mock)
+            planner_mock.ainvoke = AsyncMock(
+                return_value=SimpleNamespace(
+                    content=json.dumps(
+                        {
+                            "evidence_requirements": [
+                                {
+                                    "description": "decoder architecture",
+                                }
+                            ],
+                            "synthesis_obligations": [],
+                            "response_constraints": [],
+                            "comparison": None,
+                            "confidence": 1.0,
+                        }
+                    ),
+                    usage_metadata={"input_tokens": 10, "output_tokens": 5},
+                )
+            )
+            return planner_mock
+        if purpose == "evidence_extraction":
+            return curator_provider
+        return final_provider
+
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content=statement,
+                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+                )
+            ]
+        ),
+        provider_factory=provider_factory,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="What architecture is used?",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot=_setup(),
+        trace_id="trace-qualification-test",
+    )
+
+    assert curator_provider.ainvoke.await_count == 1
+    assert result.agent_trace["response_status"] == "complete", str(result.agent_trace)
+    assert captured_candidates[0].validation_status == "invalid"
+    assert final_provider.ainvoke.await_count == 1
+

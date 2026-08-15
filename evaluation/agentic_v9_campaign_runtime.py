@@ -43,6 +43,7 @@ from data_base.agentic_v9.contract_planner import (
 from data_base.agentic_v9.comparison_context import (
     select_balanced_comparison_packets,
 )
+from data_base.agentic_v9.evidence_extractor import EvidenceExtractor
 from data_base.agentic_v9.execution_core import (
     ConflictStageResult,
     V9ExecutionCore,
@@ -398,7 +399,7 @@ class AgenticV9CampaignRuntime:
                     remaining_llm_calls=runtime_contract.max_llm_calls,
                     route_plan_used=False,
                     contract_plan_requested=True,
-                    evidence_qualification_provider_calls=0,
+                    evidence_qualification_provider_calls=1,
                 )
                 if post_contract.status is FeasibilityStatus.FEASIBLE:
                     planner_admitted = True
@@ -410,7 +411,7 @@ class AgenticV9CampaignRuntime:
                         remaining_llm_calls=runtime_contract.max_llm_calls,
                         route_plan_used=False,
                         contract_plan_requested=False,
-                        evidence_qualification_provider_calls=0,
+                        evidence_qualification_provider_calls=1,
                     )
             else:
                 post_contract = validate_post_contract_feasibility(
@@ -420,7 +421,7 @@ class AgenticV9CampaignRuntime:
                     remaining_llm_calls=runtime_contract.max_llm_calls,
                     route_plan_used=False,
                     contract_plan_requested=False,
-                    evidence_qualification_provider_calls=0,
+                    evidence_qualification_provider_calls=1,
                 )
 
             state["post_contract"] = post_contract
@@ -654,22 +655,42 @@ class AgenticV9CampaignRuntime:
             return repair.tasks
 
         async def prose_curate(
-            _: str, contract: QueryContract, packets: tuple[EvidencePacket, ...]
+            curate_question: str,
+            contract: QueryContract,
+            packets: tuple[EvidencePacket, ...],
         ) -> tuple[EvidencePacket, ...]:
-            # Candidate extraction is deterministic and provenance-bound.  No
-            # prose model is permitted to invent or promote evidence here.
-            # For comparisons, sufficiency must be evaluated on the same
-            # deduplicated, subject-balanced packet set used by final packing.
+            controller = state["budget_controller"]
+            assert isinstance(controller, RunBudgetController)
+            invoker = BudgetedLlmInvoker(
+                controller=controller,
+                provider_factory=self._provider_factory,
+                observer=llm_call_observer,
+                provider_name=str(setup_snapshot.get("provider") or "unknown"),
+                model_name=str(setup_snapshot.get("model_name") or "unknown"),
+            )
+            extractor = EvidenceExtractor(budgeted_invoker=invoker)
+            extracted = await extractor.extract(
+                contract,
+                packets,
+                repairs_complete=True,
+                question=curate_question or question,
+            )
+            for packet in extracted:
+                if packet.evidence_id not in state["quality_by_evidence_id"]:
+                    for cand_id, score in list(state["quality_by_evidence_id"].items()):
+                        if cand_id in packet.evidence_id:
+                            state["quality_by_evidence_id"][packet.evidence_id] = score
+                            break
             if contract.comparison_plan is not None:
                 selected = select_balanced_comparison_packets(
-                    packets,
+                    extracted,
                     plan=contract.comparison_plan,
                     quality_by_evidence_id=state["quality_by_evidence_id"],
                 )
             else:
-                selected = packets
+                selected = extracted
             state["final_evidence_packets"] = selected
-            return selected
+            return tuple(selected)
 
         async def resolve_conflicts(
             _: QueryContract,
@@ -858,16 +879,20 @@ class AgenticV9CampaignRuntime:
             # No eligible input is a capability gap, not evidence that the
             # text-backed answer itself is incomplete.
             final = final.model_copy(update={"response_status": "qualified_partial"})
+        final_evidence_packets = state["final_evidence_packets"]
+        if final_evidence_packets is None:
+            final_evidence_packets = tuple(state["evidence_packets"])
+        all_packets = {
+            packet.evidence_id: packet
+            for packet in (*state["evidence_packets"], *final_evidence_packets)
+        }
         used_packets = [
-            packet
-            for packet in state["evidence_packets"]
-            if packet.evidence_id in set(final.used_evidence_ids)
+            all_packets[evidence_id]
+            for evidence_id in final.used_evidence_ids
+            if evidence_id in all_packets
         ]
         documents = used_evidence_documents(used_packets, final)
         packed = state["pack"]
-        final_evidence_packets = state["final_evidence_packets"]
-        if not isinstance(final_evidence_packets, tuple):
-            final_evidence_packets = tuple(state["evidence_packets"])
         comparison = _comparison_trace_projection(
             contract=state["contract"],
             retrieval_diagnostics=state["retrieval_diagnostics"],
@@ -1680,7 +1705,7 @@ def _evidence_packets_for_results(
                     source=EvidenceSource(**source_fields),
                     scope=EvidenceScope(),
                     locator=SourceLocator(**locator_fields),
-                    validation_status="deterministic_valid",
+                    validation_status="invalid",
                 )
             )
             quality_by_evidence_id[evidence_id] = _packet_quality(chunk, index)

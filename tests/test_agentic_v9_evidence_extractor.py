@@ -382,3 +382,278 @@ async def test_high_risk_curator_prose_is_handed_to_final_claims_not_evidence() 
 
     assert result == []
     assert extractor.final_claims[0].premise_evidence_ids == ["E1"]
+
+
+@pytest.mark.asyncio
+async def test_unrelated_verbatim_quote_rejected_for_unauthorized_slot() -> None:
+    item = _item(
+        "E1",
+        "The model achieves 0.91 on polyp segmentation. The authors used PyTorch 2.0.",
+        slot_ids=["dice_score"],
+    )
+    invoker = _RecordingInvoker(
+        {
+            "packets": [
+                {
+                    "source_evidence_id": "E1",
+                    "slot_ids": ["unrelated_framework"],
+                    "statement": "The authors used PyTorch 2.0.",
+                }
+            ]
+        }
+    )
+    contract = _contract(
+        _slot("dice_score", "Extract the Dice score."),
+        _slot("unrelated_framework", "Extract framework info."),
+    )
+
+    result = await EvidenceExtractor(invoker).extract(
+        contract,
+        [item],
+        repairs_complete=True,
+        question="What framework was used?",
+    )
+
+    assert result == []
+    assert len(invoker.calls) == 1
+
+
+def test_direct_packets_have_source_span_hash_and_extractor_and_prompt_version() -> None:
+    source = _packet_for_test(
+        "E1",
+        "Table 1 | Seen Dice 0.877",
+        table_id="Table 1",
+    )
+    item = EvidencePoolItem(source, metadata={"text": source.statement})
+
+    # Numeric extraction
+    num_packets = extract_numeric_packets(
+        slot=RequiredSlot(
+            slot_id="dice", description="Extract Dice.", locator_hints=["Table 1"]
+        ),
+        items=[item],
+    )
+    assert len(num_packets) == 1
+    assert num_packets[0].support_type == "direct"
+    assert num_packets[0].validation_status == "deterministic_valid"
+    assert num_packets[0].source.source_span_hash is not None
+    assert num_packets[0].extractor_version == "v9-deterministic-1"
+    assert num_packets[0].prompt_version is None
+
+    # Structured extraction
+    struct_source = _packet_for_test(
+        "E2",
+        "Theorem 1: m in [1, n].",
+        table_id="Table 1",
+    )
+    struct_item = EvidencePoolItem(
+        struct_source, metadata={"text": struct_source.statement}
+    )
+    extractor = EvidenceExtractor()
+    struct_packets = extractor.extract_deterministic(
+        _contract(
+            RequiredSlot(
+                slot_id="theorem",
+                description="Extract theorem range.",
+                locator_hints=["Table 1"],
+            )
+        ),
+        [struct_item],
+    )
+    assert len(struct_packets) >= 1
+    assert struct_packets[0].support_type == "direct"
+    assert struct_packets[0].validation_status == "deterministic_valid"
+    assert struct_packets[0].source.source_span_hash is not None
+    assert struct_packets[0].extractor_version == "v9-deterministic-1"
+    assert struct_packets[0].prompt_version is None
+
+
+@pytest.mark.asyncio
+async def test_one_batch_call_handles_all_unresolved_slots_without_per_slot_calls() -> None:
+    items = [
+        _item("E1", "Alpha architecture detail.", slot_ids=["slot_1"]),
+        _item("E2", "Beta loss formulation.", slot_ids=["slot_2"]),
+        _item("E3", "Gamma dataset partition.", slot_ids=["slot_3"]),
+    ]
+    invoker = _RecordingInvoker(
+        {
+            "packets": [
+                {
+                    "source_evidence_id": "E1",
+                    "slot_ids": ["slot_1"],
+                    "statement": "Alpha architecture detail.",
+                },
+                {
+                    "source_evidence_id": "E2",
+                    "slot_ids": ["slot_2"],
+                    "statement": "Beta loss formulation.",
+                },
+                {
+                    "source_evidence_id": "E3",
+                    "slot_ids": ["slot_3"],
+                    "statement": "Gamma dataset partition.",
+                },
+            ]
+        }
+    )
+    contract = _contract(
+        _slot("slot_1", "Describe Alpha architecture."),
+        _slot("slot_2", "Describe Beta loss."),
+        _slot("slot_3", "Describe Gamma partition."),
+    )
+
+    result = await EvidenceExtractor(invoker).extract(
+        contract,
+        items,
+        repairs_complete=True,
+        question="Describe Alpha, Beta, and Gamma.",
+    )
+
+    assert len(invoker.calls) == 1
+    assert len(result) == 3
+    assert all(p.extractor_version == "v9-prose-curator-1" for p in result)
+    assert all(p.prompt_version == "1" for p in result)
+    assert all(p.validation_status == "quote_bound" for p in result)
+    assert all(p.source.source_span_hash is not None for p in result)
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_returns_zero_newly_qualified_packets() -> None:
+    item = _item("E1", "Prose description.", slot_ids=["slot_1"])
+
+    class _ErrorInvoker:
+        async def invoke(self, **_kwargs: Any) -> Any:
+            raise RuntimeError("Provider connection failed")
+
+    extractor = EvidenceExtractor(_ErrorInvoker())
+    contract = _contract(_slot("slot_1", "Describe prose."))
+
+    result = await extractor.extract(
+        contract,
+        [item],
+        repairs_complete=True,
+        question="Describe prose?",
+    )
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_q5_positive_fixture_qualifies_miccss_css_prose_architecture() -> None:
+    # Q5: nnMamba MICCSS CSS feature fusion description
+    statement = (
+        "In the MICCSS module, the CSS stage applies three flip branches "
+        "along spatial dimensions before feeding into SiamSSM."
+    )
+    item = _item("E-nnmamba-1", statement, slot_ids=["miccss_css_fusion"])
+    invoker = _RecordingInvoker(
+        {
+            "packets": [
+                {
+                    "source_evidence_id": "E-nnmamba-1",
+                    "slot_ids": ["miccss_css_fusion"],
+                    "statement": statement,
+                }
+            ]
+        }
+    )
+    contract = _contract(
+        _slot(
+            "miccss_css_fusion",
+            "Explain MICCSS CSS feature fusion and flip branches with SiamSSM.",
+        )
+    )
+
+    result = await EvidenceExtractor(invoker).extract(
+        contract,
+        [item],
+        repairs_complete=True,
+        question="根據 nnMamba 架構描述，請重建 MICCSS 模塊中 CSS 階段的特徵融合流程",
+    )
+
+    assert len(result) == 1
+    assert result[0].validation_status == "quote_bound"
+    assert result[0].source.source_span_hash is not None
+    assert result[0].slot_ids == ["miccss_css_fusion"]
+
+
+@pytest.mark.asyncio
+async def test_q23_positive_fixture_qualifies_table_1_numeric_evidence() -> None:
+    # Q23: SegFormer3D vs nnFormer Table 1 numeric calculation
+    statement = "Table 1 | SegFormer3D Params 3.4M | GFLOPs 13.2 | nnFormer Params 115.8M | GFLOPs 171.6"
+    item = _item(
+        "E-segformer3d-1",
+        statement,
+        slot_ids=["table_1_metrics"],
+        table_id="Table 1",
+    )
+    contract = _contract(
+        RequiredSlot(
+            slot_id="table_1_metrics",
+            description="Extract Table 1 Params and GFLOPs.",
+            locator_hints=["Table 1"],
+        )
+    )
+
+    extractor = EvidenceExtractor()
+    result = extractor.extract_deterministic(contract, [item])
+
+    assert len(result) >= 2
+    assert all(p.validation_status == "deterministic_valid" for p in result)
+    assert all(p.source.source_span_hash is not None for p in result)
+    assert all(p.extractor_version == "v9-deterministic-1" for p in result)
+
+
+@pytest.mark.asyncio
+async def test_q24_unresolved_fixture_without_table_3_evidence_remains_unresolved() -> None:
+    # Q24: SegVol zoom-out-zoom-in ablation requires Table 3; candidate only has sliding window prose without Table 3
+    statement = "The standard sliding window approach requires 45 seconds per volume."
+    item = _item(
+        "E-segvol-no-table3",
+        statement,
+        slot_ids=["zoom_out_zoom_in_ablation"],
+        table_id="Table 2",  # Mismatched table locator!
+    )
+    contract = _contract(
+        RequiredSlot(
+            slot_id="zoom_out_zoom_in_ablation",
+            description="Table 3 zoom-out-zoom-in ablation results comparing Dice and inference time.",
+            locator_hints=["Table 3"],
+        )
+    )
+
+    invoker = _RecordingInvoker({"packets": []})
+    extractor = EvidenceExtractor(invoker)
+    result = await extractor.extract(
+        contract,
+        [item],
+        repairs_complete=True,
+        question="根據 SegVol 的 zoom-out-zoom-in ablation，請列出 Table 3 的三組 Dice／時間",
+    )
+
+    # Since Table 3 is required by slot locator hints, but candidate has Table 2 (mismatched),
+    # the candidate is not eligible for Table 3 slot, and result remains empty (unresolved).
+    assert result == []
+    assert len(invoker.calls) == 0
+
+
+def _packet_for_test(
+    evidence_id: str,
+    statement: str,
+    *,
+    table_id: str | None = None,
+) -> EvidencePacket:
+    return EvidencePacket(
+        schema_version="1",
+        evidence_id=evidence_id,
+        task_id="task-1",
+        round_id="round-1",
+        query_id="query-1",
+        slot_ids=["dice", "theorem"],
+        statement=statement,
+        support_type="direct",
+        source=EvidenceSource(doc_id="doc-1", chunk_id="chunk-1"),
+        scope=EvidenceScope(),
+        locator=SourceLocator(table_id=table_id, section="Results"),
+        validation_status="invalid",
+    )

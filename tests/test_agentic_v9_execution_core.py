@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -1252,3 +1253,60 @@ async def test_execution_core_uses_contract_planning_phase_when_requested() -> N
     assert len(stage_calls) >= 2
     assert stage_calls[0].phase == "route_plan"
     assert stage_calls[1].phase == "route_plan"
+
+
+@pytest.mark.asyncio
+async def test_execution_core_qualifies_candidates_before_sufficiency_evaluation() -> None:
+    order: list[str] = []
+    raw_candidate = _packet().model_copy(update={"validation_status": "invalid"})
+    qualified_packet = _packet().model_copy(update={"validation_status": "quote_bound"})
+
+    async def candidate_fn(*_: Any) -> tuple[EvidencePacket, ...]:
+        order.append("deterministic_candidates")
+        return (raw_candidate,)
+
+    async def qualify_fn(
+        _: str, __: QueryContract, packets: tuple[EvidencePacket, ...]
+    ) -> tuple[EvidencePacket, ...]:
+        order.append("prose_curate")
+        assert raw_candidate in packets
+        return (qualified_packet,)
+
+    def sufficiency_fn(
+        _: QueryContract, packets: tuple[EvidencePacket, ...]
+    ) -> SufficiencyEvaluation:
+        order.append("evaluate_sufficiency")
+        assert qualified_packet in packets
+        assert raw_candidate not in packets
+        return _complete_sufficiency()
+
+    stages = V9ExecutionStages(
+        resolve_scope=lambda _: ResolvedSourceScope(authorized_doc_ids=["doc-1"]),
+        plan_contract=lambda *_: _contract(),
+        retrieve=lambda tasks: (
+            TaskRetrievalResult(
+                task_id=tasks[0].task_id,
+                retrieval=RagRetrievalResult(retrieval_id="ret-1"),
+            ),
+        ),
+        deterministic_candidates=candidate_fn,
+        evaluate_sufficiency=sufficiency_fn,
+        plan_repair=lambda *_: (),
+        prose_curate=qualify_fn,
+        resolve_conflicts=lambda _c, _p, s: ConflictStageResult(sufficiency=s),
+        pack=lambda *_: SimpleNamespace(packets=(qualified_packet,), is_packable=True),
+        generate_final=lambda *_: FinalAnswerResult(
+            response_status="complete", answer="0.91", final_generation_count=1
+        ),
+        deterministic_partial=lambda _c, s: FinalAnswerResult(
+            response_status=s.report.response_status
+        ),
+    )
+
+    result = await V9ExecutionCore(stages=stages).execute(
+        _request(), runtime_context=_runtime_context()
+    )
+
+    assert order == ["deterministic_candidates", "prose_curate", "evaluate_sufficiency"]
+    assert result.final_answer.response_status == "complete"
+

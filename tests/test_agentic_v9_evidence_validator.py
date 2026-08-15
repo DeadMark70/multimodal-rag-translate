@@ -111,3 +111,35 @@ def test_deterministic_extraction_marks_exact_source_span_valid() -> None:
     assert result.packet is not None
     assert result.packet.validation_status == "deterministic_valid"
     assert result.packet.source.source_span_hash
+
+
+def test_deterministic_statement_not_in_source_text_is_invalid() -> None:
+    packet = _packet("E1", "Dice 0.999").model_copy(
+        update={"validation_status": "deterministic_valid"}
+    )
+    result = validate_deterministic_packet(
+        packet, source_text="Table 1 | Dice 0.877"
+    )
+
+    assert result.status == "invalid"
+    assert result.packet is None
+    assert result.reason == "deterministic_statement_is_not_source_bound"
+
+
+def test_prose_statement_not_verbatim_in_source_text_is_invalid() -> None:
+    source = _packet("E1", "The model achieves 0.91 on polyp segmentation.")
+    candidate = _packet(
+        "curated:E1:method",
+        "The model achieves 0.91 on skin lesion segmentation.",
+    )
+
+    result = validate_prose_packet(
+        candidate,
+        source=source,
+        source_text=source.statement,
+    )
+
+    assert result.status == "invalid"
+    assert result.packet is None
+    assert result.reason == "statement_is_not_a_verbatim_source_span"
+
