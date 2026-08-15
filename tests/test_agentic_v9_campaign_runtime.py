@@ -15,6 +15,7 @@ import evaluation.agentic_v9_campaign_runtime as runtime_module
 from data_base.agentic_v9.contract_planner import (
     atomic_contract_planner_response_schema,
 )
+import data_base.agentic_v9.provider_boundary as provider_boundary_module
 from data_base.rag_pipeline_schemas import RagRetrievalResult as PipelineRetrievalResult
 from data_base.reranker import DocumentReranker
 from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
@@ -70,7 +71,11 @@ async def test_atomic_contract_planner_provider_binds_schema_without_replacing_r
             del messages
             return raw
 
-    monkeypatch.setattr(runtime_module, "get_llm", lambda purpose: _BindableProvider())
+    monkeypatch.setattr(
+        provider_boundary_module,
+        "get_llm",
+        lambda purpose: _BindableProvider(),
+    )
 
     provider = runtime_module._provider_for_purpose("atomic_contract_planning")
     response = await provider.ainvoke([])

@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import ast
+import importlib
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import core.providers as providers_module
+import evaluation.agentic_v9_campaign_runtime as runtime_module
 from core.llm_factory import current_llm_runtime_overrides, llm_runtime_override
 from data_base.agentic_v9.budget_controller import RunBudgetController
 from data_base.agentic_v9.budgeted_llm import BudgetedLlmInvoker
+from data_base.agentic_v9.contract_planner import (
+    atomic_contract_planner_response_schema,
+)
 from data_base.agentic_v9.model_paths import (
     V9ClaimVerifier,
     V9ConflictArbiter,
@@ -55,6 +60,59 @@ class _FailingInvoker:
         del purpose, messages
         self.calls.append(phase)
         raise TimeoutError("graph route unavailable")
+
+
+def test_shared_contract_planning_provider_owns_model_and_schema_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boundary = importlib.import_module("data_base.agentic_v9.provider_boundary")
+    raw_provider = object()
+    bound_provider = object()
+    observed: dict[str, object] = {}
+
+    def fake_get_llm(purpose: str) -> object:
+        observed["purpose"] = purpose
+        return raw_provider
+
+    def fake_bind(provider: object, *, schema: object) -> object:
+        observed["provider"] = provider
+        observed["schema"] = schema
+        return bound_provider
+
+    monkeypatch.setattr(boundary, "get_llm", fake_get_llm)
+    monkeypatch.setattr(boundary, "bind_json_schema", fake_bind)
+    response_schema = {"type": "object", "required": ["answer"]}
+
+    result = boundary.build_contract_planning_provider(
+        response_schema=response_schema
+    )
+
+    assert result is bound_provider
+    assert observed == {
+        "purpose": "synthesizer",
+        "provider": raw_provider,
+        "schema": response_schema,
+    }
+
+
+def test_campaign_contract_planning_uses_shared_provider_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[object] = []
+    shared_provider = object()
+
+    def fake_build(*, response_schema: object) -> object:
+        observed.append(response_schema)
+        return shared_provider
+
+    monkeypatch.setattr(
+        runtime_module, "build_contract_planning_provider", fake_build, raising=False
+    )
+
+    result = runtime_module._provider_for_purpose("atomic_contract_planning")
+
+    assert result is shared_provider
+    assert observed == [atomic_contract_planner_response_schema()]
 
 
 def test_bind_json_schema_uses_native_json_configuration() -> None:
@@ -412,4 +470,3 @@ async def test_active_atomic_contract_runtime_boundary_never_invokes_independent
     assert not any(
         call.get("phase") == "comparison_plan" for call in recorded_calls
     )
-

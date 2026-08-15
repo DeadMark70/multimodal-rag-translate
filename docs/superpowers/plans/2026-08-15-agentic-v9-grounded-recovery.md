@@ -285,28 +285,34 @@ git commit -m "fix(agentic-v9): budget actual qualification calls"
 **Repository:** `D:\flutterserver\pdftopng`
 
 **Files:**
+- Create: `data_base/agentic_v9/provider_boundary.py`
+- Modify: `evaluation/agentic_v9_campaign_runtime.py`
 - Create: `scripts/agentic_v9_contract_planner_canary.py`
 - Create: `tests/test_agentic_v9_contract_planner_canary.py`
+- Modify: `tests/test_agentic_v9_provider_boundary.py`
 - Modify: `docs/agentic-v9-smoke-verification.md`
+- Modify: `docs/superpowers/plans/2026-08-15-agentic-v9-grounded-recovery.md`
 
-**Canary contract:** One command supports `--schema current` and `--schema minimal`, makes exactly one provider call per invocation, uses the same production model/config/binding path, prints only JSON containing success, failure stage/code, package versions, model identifier, and response-received boolean. It never prints prompts, response bodies, keys, or raw exceptions.
+**Shared provider boundary:** Create `build_contract_planning_provider(*, response_schema: Mapping[str, Any]) -> Any` in `data_base/agentic_v9/provider_boundary.py`. It is the sole owner of `get_llm("synthesizer")` plus `bind_json_schema(...)`. The campaign `_provider_for_purpose("atomic_contract_planning")` and both canary schema modes must call this helper. No second provider builder is allowed.
+
+**Canary contract:** One command supports `--schema current` and `--schema minimal`, requires `--model-config-json <path>`, makes exactly one provider call per invocation, and prints only JSON containing success, failure stage/code, package versions, model identifier, and response-received boolean. The JSON file must validate through the canonical `evaluation.schemas.ModelConfig`; the canary then applies `normalize_model_config_for_runtime(...)`, `llm_runtime_override(...)`, and the resolved `contract_planning` phase policy before calling the shared provider boundary. It never prints the config body, prompts, response bodies, keys, or raw exceptions.
 
 - [ ] **Step 1: Add RED canary tests with fake providers**
 
-Test exit 0 for valid structured content, nonzero for each classified failure, one invocation exactly, and sanitized output.
+Test exit 0 for valid structured content, nonzero for each classified failure, one invocation exactly, sanitized output, invalid/missing model-config rejection before any provider call, and parity proving runtime/current/minimal modes all use the shared provider boundary.
 
 - [ ] **Step 2: Implement the canary and run local unit GREEN**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_agentic_v9_contract_planner_canary.py tests/test_agentic_v9_provider_boundary.py -q
-.\.venv\Scripts\python.exe -m ruff check scripts/agentic_v9_contract_planner_canary.py tests/test_agentic_v9_contract_planner_canary.py
+.\.venv\Scripts\python.exe -m ruff check data_base/agentic_v9/provider_boundary.py evaluation/agentic_v9_campaign_runtime.py scripts/agentic_v9_contract_planner_canary.py tests/test_agentic_v9_contract_planner_canary.py tests/test_agentic_v9_provider_boundary.py
 ```
 
 - [ ] **Step 3: Document the two-call staging checkpoint without running it locally**
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/agentic_v9_contract_planner_canary.py --schema current
-.\.venv\Scripts\python.exe scripts/agentic_v9_contract_planner_canary.py --schema minimal
+.\.venv\Scripts\python.exe scripts/agentic_v9_contract_planner_canary.py --schema current --model-config-json <real-server-model-config.json>
+.\.venv\Scripts\python.exe scripts/agentic_v9_contract_planner_canary.py --schema minimal --model-config-json <real-server-model-config.json>
 ```
 
 The user runs these two commands in the real server environment after Wave 1 is pushed. Record both sanitized JSON results in the checkpoint report and select exactly one follow-up branch:
@@ -323,7 +329,7 @@ The installed local SDK accepting `t_schema(None, deepcopy(production_schema))` 
 - [ ] **Step 4: Commit Task 4**
 
 ```powershell
-git add scripts/agentic_v9_contract_planner_canary.py tests/test_agentic_v9_contract_planner_canary.py docs/agentic-v9-smoke-verification.md
+git add data_base/agentic_v9/provider_boundary.py evaluation/agentic_v9_campaign_runtime.py scripts/agentic_v9_contract_planner_canary.py tests/test_agentic_v9_contract_planner_canary.py tests/test_agentic_v9_provider_boundary.py docs/agentic-v9-smoke-verification.md docs/superpowers/plans/2026-08-15-agentic-v9-grounded-recovery.md
 git commit -m "feat(agentic-v9): add planner provider canary"
 ```
 

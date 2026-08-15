@@ -89,3 +89,45 @@ For filesystem safety, `--manifest` refuses both an existing file and a symlink.
 Choose a new output path for every verification run; this CLI intentionally has no
 overwrite flag.
 
+## 5. Run the contract-planner staging checkpoint
+
+Do not run this checkpoint from a developer machine. After the Wave 1 commit is
+pushed to the real server environment, export the exact Evaluation Setup model
+configuration as a JSON object that validates against `evaluation.schemas.ModelConfig`.
+An authorized operator then runs exactly these two commands, once each:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\agentic_v9_contract_planner_canary.py --schema current --model-config-json <real-server-model-config.json>
+.\.venv\Scripts\python.exe scripts\agentic_v9_contract_planner_canary.py --schema minimal --model-config-json <real-server-model-config.json>
+```
+
+The canary validates the file before provider construction, applies the same model
+normalization, runtime override, contract-planning phase policy, and shared schema
+binding boundary as the campaign, and makes one provider attempt. Each invocation
+writes one sanitized JSON document containing only success, schema, failure
+stage/code, relevant package versions, model identifier, and whether a response was
+received. It never includes the model-config body, prompt, response body, key, or
+raw exception. Exit code `0` means the bound response passed local validation; a
+nonzero exit identifies the failed stage. Missing, unreadable, malformed, or
+schema-invalid model configuration fails before any provider construction.
+
+Record the two complete JSON documents here without adding provider output:
+
+```text
+current: <sanitized JSON result>
+minimal: <sanitized JSON result>
+```
+
+Select exactly one correction branch from the observed pair:
+
+| Current schema | Minimal schema | Required correction |
+| --- | --- | --- |
+| fails | succeeds | Replace only unsupported schema constructs with a Google-supported reduced response schema; retain strict local Pydantic validation of the full domain result. |
+| fails | fails | Correct provider/model/config/deployment wiring; do not weaken the schema. |
+| succeeds | succeeds | Treat as deployment/version drift; pin the server package/config combination and add a parity test. |
+| succeeds | fails | Stop: the canary is invalid or its minimal fixture is malformed; repair the canary before production changes. |
+
+The local SDK accepting the production schema is not evidence for any branch.
+Do not change production provider binding or schema configuration until both
+real-server results are recorded and reconciled with official provider support.
+

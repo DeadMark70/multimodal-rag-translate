@@ -21,7 +21,7 @@ from typing import Any
 
 from langchain_core.documents import Document
 
-from core.providers import bind_json_schema, get_llm
+from core.providers import get_llm
 from data_base.RAG_QA_service import RAGResult, get_graph_evidence_bundle
 from data_base.agentic_v9.budget_controller import RunBudgetController
 from data_base.agentic_v9.budget_feasibility import (
@@ -51,6 +51,9 @@ from data_base.agentic_v9.execution_core import (
 from data_base.agentic_v9.execution_policy import (
     ExecutionCancellation,
     V9ExecutionPolicyRuntime,
+)
+from data_base.agentic_v9.provider_boundary import (
+    build_contract_planning_provider,
 )
 from data_base.agentic_v9.repair import build_repair_plan
 from data_base.agentic_v9.requirement_shadow import build_requirement_shadow
@@ -1539,13 +1542,11 @@ async def _list_owned_document_ids(user_id: str) -> list[str]:
 
 
 def _provider_for_purpose(purpose: str) -> Any:
-    provider = get_llm("synthesizer")
     if purpose == "atomic_contract_planning":
-        return bind_json_schema(
-            provider,
-            schema=atomic_contract_planner_response_schema(),
+        return build_contract_planning_provider(
+            response_schema=atomic_contract_planner_response_schema()
         )
-    return provider
+    return get_llm("synthesizer")
 
 
 def _project_chunk_id(
