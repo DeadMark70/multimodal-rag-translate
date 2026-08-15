@@ -71,16 +71,16 @@ def test_execution_profiles_version_changed_modes() -> None:
 def test_agentic_v9_open_corpus_profile_describes_soft_final_context_packing() -> None:
     assert AGENTIC_V9_OPEN_CORPUS_PROFILE == (
         "agentic_eval_v9_open_corpus_hybrid8_rerank8_diverse_tail2_top4_"
-        "finalpack_r1_active_atomic_contract_v2_retrieval_safe"
+        "finalpack_r1_active_atomic_contract_v2_quote_qualified_v1"
     )
 
 
 def test_agentic_v9_profiles_identify_active_atomic_contract() -> None:
     assert AGENTIC_V9_OPEN_CORPUS_PROFILE.endswith(
-        "active_atomic_contract_v2_retrieval_safe"
+        "active_atomic_contract_v2_quote_qualified_v1"
     )
     assert AGENTIC_V9_EXPLICIT_SCOPE_PROFILE.endswith(
-        "active_atomic_contract_v2_retrieval_safe"
+        "active_atomic_contract_v2_quote_qualified_v1"
     )
     assert agentic_v9_execution_profile(open_user_corpus=True) == (
         AGENTIC_V9_OPEN_CORPUS_PROFILE

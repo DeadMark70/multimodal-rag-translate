@@ -83,9 +83,18 @@
   are not restricted to the frozen Q1-Q16 regression corpus; ownership,
   source-scope resolution, and token/call-budget feasibility remain mandatory.
 - Agentic v9 Active Atomic Contract V2 Architecture:
-  - **Wave 1 Retrieval-Safe Execution Profile**: New open-corpus and
+  - **Wave 2 Quote-Qualified Execution Profile**: New open-corpus and
     explicit-scope runs end in
-    `finalpack_r1_active_atomic_contract_v2_retrieval_safe`. This profile
+    `finalpack_r1_active_atomic_contract_v2_quote_qualified_v1`. This profile
+    requires batch evidence extraction and validation before sufficiency gating:
+    every sufficiency-supported slot must resolve to at least one verified
+    `is_qualified_evidence()` packet; raw candidate count may exceed qualified
+    count, but provider failure cannot increase qualified count; qualification
+    provider calls equal actual persisted LLM extraction calls; positive
+    controls Q5/Q23 remain answerable with qualified evidence; and the reverted
+    64/64 `insufficient` pattern fails the smoke fixture.
+  - **Wave 1 Retrieval-Safe Execution Profile (Historical)**: Earlier Wave 1 runs
+    ended in `finalpack_r1_active_atomic_contract_v2_retrieval_safe`. This profile
     requires typed `planner_diagnostics` in canonical observability/export;
     earlier profile values remain historical and are not inferred to have it.
   - **Deterministic Route + Atomic Overlay Ownership**: The deterministic router maintains canonical route admission and feasibility gating, while the atomic contract planner generates an overlay containing sequential evidence slots (`S1..Sn`, $1 \le n \le 8$), synthesis obligations, response constraints, and optional comparison plans.

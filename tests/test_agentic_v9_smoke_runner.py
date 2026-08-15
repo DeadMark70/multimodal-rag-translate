@@ -202,6 +202,75 @@ def _retrieval_safe_export() -> dict[str, Any]:
     return artifact
 
 
+def _quote_qualified_export() -> dict[str, Any]:
+    """Represent a Wave 2 export with verified qualified evidence packets."""
+    artifact = _recovery_diagnostics_export()
+    for run in artifact["runs"]:
+        question_id = run["question_id"]
+        trace = run["agent_trace"]
+        contract = trace["agentic_v9"]["query_contract"]
+        trace["execution_profile"] = (
+            "agentic_eval_v9_open_corpus_hybrid8_rerank8_diverse_tail2_top4_"
+            "finalpack_r1_active_atomic_contract_v2_quote_qualified_v1"
+        )
+        trace["response_status"] = "complete"
+        trace["agentic_v9"]["completion"] = {"status": "complete"}
+        contract.update(
+            {
+                "slot_plan_status": "planned",
+                "slot_plan_source": "deterministic",
+            }
+        )
+        trace["agentic_v9"]["planner_diagnostics"] = {
+            "outcome": "deterministic",
+            "failure_stage": None,
+            "failure_code": None,
+            "provider_response_received": False,
+            "retrieval_query_strategy": "atomic_slots",
+            "compiled_retrieval_task_count": 1,
+        }
+        trace["agentic_v9"]["evidence_packets"] = [
+            {
+                "schema_version": "1",
+                "evidence_id": "evidence-a",
+                "task_id": "task-1",
+                "round_id": "round-1",
+                "query_id": question_id,
+                "slot_ids": ["S1"],
+                "statement": f"Valid evidence statement for {question_id}.",
+                "support_type": "direct",
+                "source": {
+                    "doc_id": "doc-authorized",
+                    "chunk_id": "chunk-1",
+                    "source_span_hash": "hash-span-1",
+                },
+                "scope": {},
+                "locator": {"pdf_page_index": 1},
+                "extractor_version": "v9-deterministic-1",
+                "validation_status": "deterministic_valid",
+            }
+        ]
+        trace["agentic_v9"]["slot_resolutions"] = [
+            {
+                "slot_id": "S1",
+                "status": "supported",
+                "evidence_ids": ["evidence-a"],
+            }
+        ]
+        trace["agentic_v9"]["metrics"].update(
+            {
+                "atomic_planner_call_count": 0,
+                "comparison_planner_call_count": 0,
+                "candidate_packet_count": 2,
+                "qualified_packet_count": 1,
+                "qualification_round_count": 1,
+                "qualification_provider_call_count": 1,
+                "qualification_failure_code": None,
+            }
+        )
+    return artifact
+
+
 def test_dry_run_has_fixed_v9_questions_and_no_paired_naive() -> None:
     plan = build_smoke_plan()
 
@@ -1104,3 +1173,122 @@ def test_smoke_verifier_rejects_falsified_binding_or_qualification_instrumentati
         report.requirements["contract_and_route"].status == "fail"
         or report.requirements["comparison_observability"].status == "fail"
     )
+
+
+def test_quote_qualified_profile_passes_smoke_verification() -> None:
+    """Verifies that a complete Wave 2 export passes all smoke gate requirements."""
+    artifact = _quote_qualified_export()
+    report = verify_campaign_export(artifact)
+    assert report.status == "pass"
+    assert report.requirements["contract_and_route"].status == "pass"
+    assert report.requirements["slots_and_resolutions"].status == "pass"
+    assert report.requirements["retrieval_evidence_recovery"].status == "pass"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "candidate_packet_count",
+        "qualified_packet_count",
+        "qualification_round_count",
+        "qualification_provider_call_count",
+    ],
+)
+def test_quote_qualified_profile_requires_qualification_metrics(field: str) -> None:
+    """Fails if quote-qualified profile omits or invalidates qualification metrics."""
+    artifact = _quote_qualified_export()
+    artifact["runs"][0]["agent_trace"]["agentic_v9"]["metrics"].pop(field)
+    report = verify_campaign_export(artifact)
+    assert report.status in {"partial", "fail"}
+    assert report.requirements["contract_and_route"].status in {"partial", "fail"}
+
+    artifact2 = _quote_qualified_export()
+    artifact2["runs"][0]["agent_trace"]["agentic_v9"]["metrics"][field] = -1
+    report2 = verify_campaign_export(artifact2)
+    assert report2.status == "fail"
+    assert report2.requirements["contract_and_route"].status == "fail"
+
+
+def test_quote_qualified_profile_rejects_candidate_count_less_than_qualified_count() -> None:
+    """Fails if candidate count is less than qualified count."""
+    artifact = _quote_qualified_export()
+    metrics = artifact["runs"][0]["agent_trace"]["agentic_v9"]["metrics"]
+    metrics["candidate_packet_count"] = 0
+    metrics["qualified_packet_count"] = 1
+    report = verify_campaign_export(artifact)
+    assert report.status == "fail"
+    assert report.requirements["contract_and_route"].status == "fail"
+
+
+def test_quote_qualified_profile_rejects_mismatched_qualification_provider_calls() -> None:
+    """Fails if recorded qualification provider calls do not equal persisted LLM calls."""
+    artifact = _quote_qualified_export()
+    metrics = artifact["runs"][0]["agent_trace"]["agentic_v9"]["metrics"]
+    metrics["qualification_provider_call_count"] = 2
+    report = verify_campaign_export(artifact)
+    assert report.status == "fail"
+    assert report.requirements["contract_and_route"].status == "fail"
+
+
+def test_quote_qualified_profile_rejects_supported_slot_without_qualified_evidence() -> None:
+    """Fails if a sufficiency-supported slot lacks any is_qualified_evidence() packet."""
+    artifact = _quote_qualified_export()
+    packet = artifact["runs"][0]["agent_trace"]["agentic_v9"]["evidence_packets"][0]
+    packet["validation_status"] = "invalid"
+    packet["source"]["source_span_hash"] = None
+    report = verify_campaign_export(artifact)
+    assert report.status == "fail"
+    assert report.requirements["slots_and_resolutions"].status == "fail"
+
+
+def test_quote_qualified_profile_rejects_inflated_qualified_count() -> None:
+    """Fails if metrics qualified packet count disagrees with actual verified qualified evidence."""
+    artifact = _quote_qualified_export()
+    metrics = artifact["runs"][0]["agent_trace"]["agentic_v9"]["metrics"]
+    metrics["qualified_packet_count"] = 5
+    metrics["candidate_packet_count"] = 10
+    report = verify_campaign_export(artifact)
+    assert report.status == "fail"
+    assert report.requirements["contract_and_route"].status == "fail"
+
+
+def test_quote_qualified_profile_requires_positive_control_q5_and_q23_qualified_evidence() -> None:
+    """Fails if positive controls Q5/Q23 lack qualified evidence packets."""
+    artifact = _quote_qualified_export()
+    # Invalidate Q5 evidence packet
+    q5_run = artifact["runs"][0]
+    assert q5_run["question_id"] == "Q5"
+    q5_run["agent_trace"]["agentic_v9"]["evidence_packets"] = [
+        {
+            "schema_version": "1",
+            "evidence_id": "evidence-invalid",
+            "task_id": "task-1",
+            "round_id": "round-1",
+            "query_id": "Q5",
+            "slot_ids": ["S1"],
+            "statement": "Invalid unvalidated text",
+            "support_type": "direct",
+            "source": {"doc_id": "doc-authorized", "chunk_id": "c1"},
+            "scope": {},
+            "locator": {"pdf_page_index": 1},
+            "validation_status": "invalid",
+        }
+    ]
+    q5_run["agent_trace"]["agentic_v9"]["metrics"]["qualified_packet_count"] = 0
+    q5_run["agent_trace"]["agentic_v9"]["slot_resolutions"] = [
+        {"slot_id": "S1", "status": "not_found"}
+    ]
+    report = verify_campaign_export(artifact)
+    assert report.status == "fail"
+    assert report.requirements["retrieval_evidence_recovery"].status == "fail"
+
+
+def test_quote_qualified_profile_rejects_all_runs_insufficient_reverted_pattern() -> None:
+    """Fails if all smoke runs collapsed to insufficient (reverted 64/64 pattern)."""
+    artifact = _quote_qualified_export()
+    for run in artifact["runs"]:
+        run["agent_trace"]["response_status"] = "insufficient"
+        run["agent_trace"]["agentic_v9"]["completion"] = {"status": "insufficient"}
+    report = verify_campaign_export(artifact)
+    assert report.status == "fail"
+    assert report.requirements["retrieval_evidence_recovery"].status == "fail"

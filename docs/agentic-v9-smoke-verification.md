@@ -70,24 +70,37 @@ slots and final resolutions, targeted repair traces for missing slots,
 phase-linked provider attempts, exact-or-explicitly-partial token reconciliation,
 capture availability against the recorded setup, and unsupported final claims.
 
-### Active Atomic Contract V2 Invariants
+### Active Atomic Contract V2 and Wave 2 Qualification Invariants
 
-- **Wave 1 Retrieval-Safe Profile**: New open-corpus and explicit-scope runs end
-  in `finalpack_r1_active_atomic_contract_v2_retrieval_safe`. Historical
-  profiles are read under their original contract and are not required to
-  contain Wave 1 diagnostics.
+- **Wave 2 Quote-Qualified Profile**: New open-corpus and explicit-scope runs end
+  in `finalpack_r1_active_atomic_contract_v2_quote_qualified_v1`. Historical
+  profiles (`retrieval_safe` and prior) are read under their respective contracts.
+- **Evidence Qualification Before Sufficiency**: Every sufficiency-supported
+  slot resolution must have at least one packet verified by
+  `is_qualified_evidence()`. Unvalidated or candidate-only packets cannot satisfy
+  slots.
+- **Qualification Metrics Bounds**: The profile requires non-negative integers
+  for `candidate_packet_count`, `qualified_packet_count`,
+  `qualification_round_count`, and `qualification_provider_call_count`. Raw
+  candidate count may exceed qualified count (`candidate_packet_count >= qualified_packet_count`).
+  `qualification_provider_call_count` must equal the count of persisted LLM calls
+  with `phase="evidence_extract"`. Provider failure or error cannot increase
+  qualified count or promote unvalidated candidates.
+- **Positive Control & Insufficient Regressions**: Positive controls Q5/Q23
+  require qualified evidence packets; exports where all runs collapse to
+  `insufficient` fail the smoke verification.
 - **Deterministic Route & Atomic Overlay**: The admission contract retains deterministic router ownership while the atomic overlay decomposes the prompt into sequential evidence slots (`S1..Sn`, $1 \le n \le 8$), synthesis obligations, response constraints, and comparison plans.
 - **Evidence Slots vs Obligations/Constraints**: Slots represent verifiable source-backed units of evidence (`required_slots`). Obligations (`synthesis_obligations`) and constraints (`response_constraints`) govern answer composition and reasoning structure rather than raw retrieval targets.
 - **Provider Call Accounting**: Active atomic execution budgets at most 1 `contract_planning` provider call (`purpose="atomic_contract_planning"`) and 0 active `comparison_plan` provider calls (`atomic_planner_call_count <= 1`, `comparison_planner_call_count == 0`).
 - **Comparison Subject Grounding**: When a comparison plan is present, all comparison subject `evidence_slot_ids` must reference valid slot IDs declared in `required_slots`.
 - **Degraded V2 Behavior**: When the atomic planner encounters a provider failure, schema violation, or unparseable output, runtime gracefully degrades to a deterministic fallback contract (`contract_version="2"`, fallback `route_reason`, and a single catch-all slot `S1`), ensuring fail-closed safety without aborting execution.
-- **Planner Diagnostics**: Every retrieval-safe profile run must export typed
+- **Planner Diagnostics**: Active v2 profile runs must export typed
   `planner_diagnostics`. A `degraded` outcome must declare
   `retrieval_query_strategy="safe_fallback_original_question"` and exactly one
   compiled retrieval task, with matching `slot_plan_status="degraded"` and
   `slot_plan_source="safe_fallback"` contract provenance; its only `S1` query
-  is the normalized, 512-character-bounded original question. The same new
-  profile requires integer planner-call metrics
+  is the normalized, 512-character-bounded original question. The same profile
+  requires integer planner-call metrics
   (`atomic_planner_call_count` in `0..1` and
   `comparison_planner_call_count=0`). `deterministic` and `planned` outcomes
   use `atomic_slots` with no failure stage/code; `deterministic` records no

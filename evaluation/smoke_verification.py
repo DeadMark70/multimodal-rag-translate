@@ -16,7 +16,8 @@ from typing import Any, Callable, Literal, Mapping
 from pydantic import ValidationError
 
 from data_base.agentic_v9.contract_planner import normalize_safe_fallback_question
-from data_base.agentic_v9.schemas import AtomicPlannerDiagnostics
+from data_base.agentic_v9.evidence_validator import is_qualified_evidence
+from data_base.agentic_v9.schemas import AtomicPlannerDiagnostics, EvidencePacket
 from data_base.agentic_v9.slot_constraints import canonical_locator_set
 from core.sensitive_data import sanitize_credential_value
 
@@ -24,6 +25,13 @@ from core.sensitive_data import sanitize_credential_value
 DEFAULT_SMOKE_QUESTION_IDS = ("Q5", "Q7", "Q11", "Q14", "Q16")
 EXECUTION_CONFIRMATION = "I_UNDERSTAND_EXECUTE"
 RETRIEVAL_SAFE_PROFILE_SUFFIX = "active_atomic_contract_v2_retrieval_safe"
+QUOTE_QUALIFIED_PROFILE_SUFFIX = (
+    "active_atomic_contract_v2_quote_qualified_v1"
+)
+ACTIVE_V2_PROFILE_SUFFIXES = (
+    RETRIEVAL_SAFE_PROFILE_SUFFIX,
+    QUOTE_QUALIFIED_PROFILE_SUFFIX,
+)
 VerificationStatus = Literal["pass", "fail", "partial", "not_executed"]
 Transport = Callable[[str, str, dict[str, str], object | None], object]
 
@@ -145,7 +153,7 @@ def verify_campaign_export(artifact: Mapping[str, Any] | None) -> VerificationRe
     requirements: dict[str, RequirementResult] = {
         "campaign_export": RequirementResult("pass"),
         "plan_coverage": _verify_plan_coverage(v9_runs),
-        "contract_and_route": _verify_contracts(v9_runs),
+        "contract_and_route": _verify_contracts(v9_runs, llm_calls),
         "planner_diagnostics": _verify_planner_diagnostics(v9_runs),
         "slots_and_resolutions": _verify_slots(v9_runs),
         "repair_for_missing_slots": _verify_repairs(v9_runs),
@@ -310,7 +318,10 @@ def _execution_profile_for_run(run: Mapping[str, Any]) -> str:
     )
 
 
-def _verify_contracts(runs: list[dict[str, Any]]) -> RequirementResult:
+def _verify_contracts(
+    runs: list[dict[str, Any]],
+    llm_calls: list[dict[str, Any]] | None = None,
+) -> RequirementResult:
     valid_binding_methods = {"task_target_inherited", "not_instrumented"}
     valid_semantic_qualifications = {"not_enabled", "not_instrumented"}
     for run in runs:
@@ -326,10 +337,11 @@ def _verify_contracts(runs: list[dict[str, Any]]) -> RequirementResult:
         if not route or not route_reason:
             return RequirementResult("fail", "actual route rationale missing")
         metrics = _as_mapping(v9.get("metrics"))
-        if _execution_profile_for_run(run).endswith(RETRIEVAL_SAFE_PROFILE_SUFFIX):
+        profile = _execution_profile_for_run(run)
+        if profile.endswith(ACTIVE_V2_PROFILE_SUFFIXES):
             if not metrics:
                 return RequirementResult(
-                    "partial", "retrieval-safe profile lacks planner call metrics"
+                    "partial", "active v2 profile lacks planner call metrics"
                 )
             for field in (
                 "atomic_planner_call_count",
@@ -337,7 +349,7 @@ def _verify_contracts(runs: list[dict[str, Any]]) -> RequirementResult:
             ):
                 if field not in metrics:
                     return RequirementResult(
-                        "partial", f"retrieval-safe profile lacks {field}"
+                        "partial", f"active v2 profile lacks {field}"
                     )
             atomic_count = metrics["atomic_planner_call_count"]
             if (
@@ -358,6 +370,53 @@ def _verify_contracts(runs: list[dict[str, Any]]) -> RequirementResult:
                 return RequirementResult(
                     "fail", "comparison planner call count must be the integer 0"
                 )
+        if profile.endswith(QUOTE_QUALIFIED_PROFILE_SUFFIX):
+            for field in (
+                "candidate_packet_count",
+                "qualified_packet_count",
+                "qualification_round_count",
+                "qualification_provider_call_count",
+            ):
+                if field not in metrics:
+                    return RequirementResult(
+                        "partial", f"quote-qualified profile lacks {field}"
+                    )
+                val = metrics[field]
+                if isinstance(val, bool) or not isinstance(val, int) or val < 0:
+                    return RequirementResult(
+                        "fail", f"{field} must be a non-negative integer"
+                    )
+            candidate_count = metrics["candidate_packet_count"]
+            qualified_count = metrics["qualified_packet_count"]
+            if candidate_count < qualified_count:
+                return RequirementResult(
+                    "fail",
+                    "candidate packet count cannot be less than qualified packet count",
+                )
+            raw_packets = _as_list(v9.get("evidence_packets"))
+            parsed_packets = _parse_evidence_packets(raw_packets)
+            actual_qualified_count = sum(
+                1
+                for p in parsed_packets.values()
+                if is_qualified_evidence(p, parsed_packets)
+            )
+            if qualified_count != actual_qualified_count:
+                return RequirementResult(
+                    "fail",
+                    "metrics qualified packet count disagrees with verified qualified packet count",
+                )
+            if llm_calls is not None:
+                calls = _calls_for_run(llm_calls, run)
+                extract_calls = [
+                    c
+                    for c in calls
+                    if str(c.get("phase") or "") == "evidence_extract"
+                ]
+                if metrics["qualification_provider_call_count"] != len(extract_calls):
+                    return RequirementResult(
+                        "fail",
+                        "qualification provider calls do not equal persisted evidence extraction calls",
+                    )
         if metrics:
             slot_binding = metrics.get("slot_binding_method")
             if slot_binding is not None and str(slot_binding) not in valid_binding_methods:
@@ -390,7 +449,7 @@ def _verify_contracts(runs: list[dict[str, Any]]) -> RequirementResult:
 
 
 def _verify_planner_diagnostics(runs: list[dict[str, Any]]) -> RequirementResult:
-    """Require complete degraded-planner evidence only for the Wave 1 profile."""
+    """Require complete degraded-planner evidence for active v2 profiles."""
     required_fields = {
         "outcome",
         "failure_stage",
@@ -400,7 +459,7 @@ def _verify_planner_diagnostics(runs: list[dict[str, Any]]) -> RequirementResult
         "compiled_retrieval_task_count",
     }
     for run in runs:
-        if not _execution_profile_for_run(run).endswith(RETRIEVAL_SAFE_PROFILE_SUFFIX):
+        if not _execution_profile_for_run(run).endswith(ACTIVE_V2_PROFILE_SUFFIXES):
             continue
         diagnostics = _v9_payload(run).get("planner_diagnostics")
         if diagnostics is None:
@@ -503,6 +562,21 @@ def _original_question_for_run(run: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _parse_evidence_packets(
+    raw_packets: list[dict[str, Any]],
+) -> dict[str, EvidencePacket]:
+    packets: dict[str, EvidencePacket] = {}
+    for raw in raw_packets:
+        if not isinstance(raw, Mapping):
+            continue
+        try:
+            packet = EvidencePacket.model_validate(raw)
+            packets[packet.evidence_id] = packet
+        except Exception:
+            continue
+    return packets
+
+
 def _resolution_rows(v9: Mapping[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for raw in _as_list(v9.get("slot_resolutions")):
@@ -538,6 +612,30 @@ def _verify_slots(runs: list[dict[str, Any]]) -> RequirementResult:
         resolved_ids = {str(row.get("slot_id") or "") for row in resolutions if row.get("slot_id")}
         if not expected_ids.issubset(resolved_ids):
             return RequirementResult("fail", "not every required atomic slot has a final resolution")
+
+        profile = _execution_profile_for_run(run)
+        if profile.endswith(QUOTE_QUALIFIED_PROFILE_SUFFIX):
+            raw_packets = _as_list(v9.get("evidence_packets"))
+            parsed_packets = _parse_evidence_packets(raw_packets)
+            for row in resolutions:
+                if str(row.get("status") or "") == "supported":
+                    evidence_ids = _as_strings(row.get("evidence_ids"))
+                    slot_id = str(row.get("slot_id") or "")
+                    has_qualified = False
+                    for eid in evidence_ids:
+                        packet = parsed_packets.get(eid)
+                        if (
+                            packet is not None
+                            and is_qualified_evidence(packet, parsed_packets)
+                            and slot_id in packet.slot_ids
+                        ):
+                            has_qualified = True
+                            break
+                    if not has_qualified:
+                        return RequirementResult(
+                            "fail",
+                            f"supported slot {slot_id} lacks any qualified evidence packet",
+                        )
     return RequirementResult("pass")
 
 
@@ -990,6 +1088,18 @@ def _verify_retrieval_evidence_recovery(
         question_id = str(run.get("question_id") or "")
         if question_id in {"Q5", "Q7", "Q11"} and not packets:
             return RequirementResult("fail", "required recovery question has no evidence packets")
+        profile = _execution_profile_for_run(run)
+        if profile.endswith(QUOTE_QUALIFIED_PROFILE_SUFFIX) and question_id in {"Q5", "Q23"}:
+            parsed_packets = _parse_evidence_packets(packets)
+            has_qualified = any(
+                is_qualified_evidence(p, parsed_packets)
+                for p in parsed_packets.values()
+            )
+            if not has_qualified:
+                return RequirementResult(
+                    "fail",
+                    f"positive control {question_id} has no qualified evidence packets",
+                )
         source_error = _verify_packet_source_scope(v9, packets)
         if source_error is not None:
             return source_error
@@ -1030,6 +1140,23 @@ def _verify_retrieval_evidence_recovery(
 
     if empty_context_runs == len(runs):
         return RequirementResult("fail", "all smoke runs have zero packed evidence contexts")
+    all_insufficient = all(
+        str(
+            _as_mapping(_v9_payload(r).get("completion")).get("status")
+            or _as_mapping(r.get("agent_trace")).get("response_status")
+            or ""
+        )
+        == "insufficient"
+        for r in runs
+    )
+    has_quote_qualified = any(
+        _execution_profile_for_run(r).endswith(QUOTE_QUALIFIED_PROFILE_SUFFIX)
+        for r in runs
+    )
+    if has_quote_qualified and all_insufficient:
+        return RequirementResult(
+            "fail", "all smoke runs collapsed to insufficient"
+        )
     return RequirementResult("pass")
 
 

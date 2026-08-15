@@ -18496,6 +18496,65 @@
             ],
             "title": "Reconciled Tokens"
           },
+          "candidate_packet_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Packet Count"
+          },
+          "qualified_packet_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualified Packet Count"
+          },
+          "qualification_round_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualification Round Count"
+          },
+          "qualification_provider_call_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualification Provider Call Count"
+          },
+          "qualification_failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualification Failure Code"
+          },
           "graph_execution": {
             "type": "string",
             "enum": [
@@ -26070,6 +26129,65 @@
             ],
             "title": "Reconciled Tokens"
           },
+          "candidate_packet_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Packet Count"
+          },
+          "qualified_packet_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualified Packet Count"
+          },
+          "qualification_round_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualification Round Count"
+          },
+          "qualification_provider_call_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualification Provider Call Count"
+          },
+          "qualification_failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualification Failure Code"
+          },
           "graph_execution": {
             "type": "string",
             "enum": [
@@ -26320,6 +26438,42 @@
             "minimum": 0.0,
             "title": "Reconciled Tokens",
             "default": 0
+          },
+          "candidate_packet_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Candidate Packet Count",
+            "default": 0
+          },
+          "qualified_packet_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Qualified Packet Count",
+            "default": 0
+          },
+          "qualification_round_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Qualification Round Count",
+            "default": 0
+          },
+          "qualification_provider_call_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Qualification Provider Call Count",
+            "default": 0
+          },
+          "qualification_failure_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 96
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualification Failure Code"
           }
         },
         "type": "object",
