@@ -439,7 +439,7 @@ Run a fresh Q1-Q32 Agentic campaign and export full observability. Do not begin 
 
 **Design:** `V9ExecutionCore` already separates `candidate_packets` and `qualified_packets` and calls qualification before sufficiency. Replace the campaign adapter's deterministic/no-op `prose_curate` with one `EvidenceExtractor` batch. Keep the core ordering and repair loop unchanged.
 
-- [ ] **Step 1: Add RED candidate-vs-qualified tests**
+- [x] **Step 1: Add RED candidate-vs-qualified tests**
 
 Assert:
 
@@ -451,17 +451,17 @@ Assert:
 - provider failure returns zero newly qualified packets;
 - Q5/Q23 positive fixtures remain qualified; Q24 without Table 3 evidence remains unresolved.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_agentic_v9_evidence_extractor.py tests/test_agentic_v9_evidence_validator.py tests/test_agentic_v9_execution_core.py tests/test_agentic_v9_campaign_runtime.py -k "qualification or candidate or q5 or q23 or q24 or unrelated" -q
 ```
 
-- [ ] **Step 3: Stop stamping raw chunks as `deterministic_valid`**
+- [x] **Step 3: Stop stamping raw chunks as `deterministic_valid`**
 
 At the retrieval-to-packet adapter, construct candidates without usable status/provenance. Preserve document ID, chunk locator, raw statement/excerpt, task-derived candidate slot IDs, and ranking metadata. Candidate slot IDs authorize which slot may be proposed; they do not prove support.
 
-- [ ] **Step 4: Wire one batch `EvidenceExtractor.extract()` call**
+- [x] **Step 4: Wire one batch `EvidenceExtractor.extract()` call**
 
 Create one `BudgetedLlmInvoker` for `phase="evidence_extract"`, `purpose="evidence_extraction"`. Pass the whole candidate pool and all unresolved slots to the existing extractor. Deterministic exact extraction runs first; the optional prose curator receives all remaining eligible candidates in one request.
 
@@ -473,18 +473,18 @@ Use the existing extractor/validator allow-list rules:
 - validator creates `source_span_hash`;
 - unsupported, contradictory, malformed, or unbound proposals are dropped.
 
-- [ ] **Step 5: Budget the initial batch honestly**
+- [x] **Step 5: Budget the initial batch honestly**
 
 Pass `evidence_qualification_provider_calls=1` only when the active adapter can actually invoke the prose curator. The repair loop may qualify again only after it retrieves new candidates and only while the existing controller preserves final-answer reserve. Do not raise the route's call/token limit.
 
-- [ ] **Step 6: Run GREEN and focused no-regression tests**
+- [x] **Step 6: Run GREEN and focused no-regression tests**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_agentic_v9_evidence_extractor.py tests/test_agentic_v9_evidence_validator.py tests/test_agentic_v9_execution_core.py tests/test_agentic_v9_campaign_runtime.py tests/test_agentic_v9_budget_feasibility.py tests/test_agentic_v9_repair.py -q
 .\.venv\Scripts\python.exe -m ruff check data_base/agentic_v9/evidence_extractor.py data_base/agentic_v9/evidence_validator.py data_base/agentic_v9/budget_feasibility.py evaluation/agentic_v9_campaign_runtime.py tests/test_agentic_v9_evidence_extractor.py tests/test_agentic_v9_evidence_validator.py
 ```
 
-- [ ] **Step 7: Commit Task 7**
+- [x] **Step 7: Commit Task 7**
 
 ```powershell
 git add evaluation/agentic_v9_campaign_runtime.py data_base/agentic_v9/evidence_extractor.py data_base/agentic_v9/evidence_validator.py data_base/agentic_v9/budget_feasibility.py tests/test_agentic_v9_campaign_runtime.py tests/test_agentic_v9_evidence_extractor.py tests/test_agentic_v9_evidence_validator.py tests/test_agentic_v9_budget_feasibility.py tests/test_agentic_v9_execution_core.py
@@ -508,11 +508,11 @@ git commit -m "feat(agentic-v9): qualify evidence before sufficiency"
 - Modify: `tests/test_evaluation_export_v2_schemas.py`
 - Modify: `tests/test_evaluation_export_redaction.py`
 
-- [ ] **Step 1: Add RED gate tests**
+- [x] **Step 1: Add RED gate tests**
 
 Assert that a packet cannot satisfy a slot when it has only task-inherited slot IDs, lacks `source_span_hash`, lacks extractor provenance, is contradictory, or contains a non-matching span. Assert `quote_bound` and validated deterministic structured packets can satisfy slots. Assert calculated packets are usable only when every premise is qualified direct evidence.
 
-- [ ] **Step 2: Replace status-name trust with one shared predicate**
+- [x] **Step 2: Replace status-name trust with one shared predicate**
 
 Create one canonical function in `evidence_validator.py`:
 
@@ -523,7 +523,7 @@ def is_qualified_evidence(packet: EvidencePacket) -> bool:
 
 Use it from sufficiency, conflict handling, context packing eligibility, and claim verification. Remove duplicated local sets that currently treat any `deterministic_valid` label as sufficient.
 
-- [ ] **Step 3: Add exact qualification diagnostics**
+- [x] **Step 3: Add exact qualification diagnostics**
 
 Extend metrics/export with fixed fields:
 
@@ -537,14 +537,14 @@ qualification_failure_code: str | None
 
 Historical rows may omit the nested/new fields; new profile rows must populate them. Keep failure code sanitized.
 
-- [ ] **Step 4: Run GREEN and export tests**
+- [x] **Step 4: Run GREEN and export tests**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_agentic_v9_sufficiency_gate.py tests/test_agentic_v9_campaign_runtime.py tests/test_evaluation_export_v2_schemas.py tests/test_evaluation_export_redaction.py -q
 .\.venv\Scripts\python.exe -m ruff check data_base/agentic_v9/sufficiency_gate.py data_base/agentic_v9/conflict_gate.py data_base/agentic_v9/claim_verifier.py data_base/agentic_v9/evidence_validator.py evaluation/agentic_v9_campaign_runtime.py evaluation/export_schemas.py evaluation/export_service.py
 ```
 
-- [ ] **Step 5: Commit Task 8**
+- [x] **Step 5: Commit Task 8**
 
 ```powershell
 git add data_base/agentic_v9/sufficiency_gate.py data_base/agentic_v9/conflict_gate.py data_base/agentic_v9/claim_verifier.py data_base/agentic_v9/evidence_validator.py data_base/agentic_v9/schemas.py evaluation/agentic_v9_campaign_runtime.py evaluation/export_schemas.py evaluation/export_service.py tests/test_agentic_v9_sufficiency_gate.py tests/test_agentic_v9_campaign_runtime.py tests/test_evaluation_export_v2_schemas.py tests/test_evaluation_export_redaction.py
@@ -563,7 +563,7 @@ git commit -m "fix(agentic-v9): make sufficiency qualification-authoritative"
 - Generate: `openapi.json`
 - Generate: `contracts/openapi-contract.json`
 
-- [ ] **Step 1: Version the backend profile as `finalpack_r1_active_atomic_contract_v2_quote_qualified_v1`**
+- [x] **Step 1: Version the backend profile as `finalpack_r1_active_atomic_contract_v2_quote_qualified_v1`**
 
 Smoke requirements for new runs:
 
@@ -574,7 +574,7 @@ Smoke requirements for new runs:
 - Q5/Q23 positive-control fixtures are answerable in local integration tests;
 - the old 64/64 `insufficient` pattern fails the smoke fixture.
 
-- [ ] **Step 2: Generate backend artifacts, run backend gate, and commit**
+- [x] **Step 2: Generate backend artifacts, run backend gate, and commit**
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/sync_openapi_artifacts.py --write
@@ -598,7 +598,7 @@ git commit -m "docs(agentic-v9): publish qualified evidence profile"
 - Modify: `src/components/evaluation/AblationDashboardTab.test.tsx`
 - Generate: `src/test/fixtures/agenticV9ApiContract.ts`
 
-- [ ] **Step 1: Pin and synchronize the frontend strict decoder**
+- [x] **Step 1: Pin and synchronize the frontend strict decoder**
 
 Add valid/invalid full-observability fixtures for the five qualification fields. Include one download regression with non-null planner, comparison, and qualification data.
 
@@ -611,7 +611,7 @@ npm run lint:ci
 npm run build
 ```
 
-- [ ] **Step 2: Commit Task 10**
+- [x] **Step 2: Commit Task 10**
 
 ```powershell
 git add src/types/evaluation.ts src/services/evaluationExportSchema.ts src/services/evaluationExportSchema.test.ts src/types/evaluation.contract.test.ts src/components/evaluation/AblationDashboardTab.test.tsx src/test/fixtures/agenticV9ApiContract.ts
