@@ -506,6 +506,38 @@ def test_retrieval_safe_profile_rejects_fallback_slot_unrelated_to_question() ->
     assert report.requirements["planner_diagnostics"].status == "fail"
 
 
+@pytest.mark.parametrize(
+    ("outcome", "provider_response_received", "atomic_planner_call_count"),
+    [
+        ("planned", False, 0),
+        ("deterministic", True, 1),
+    ],
+)
+def test_retrieval_safe_profile_rejects_contradictory_non_degraded_diagnostics(
+    outcome: str,
+    provider_response_received: bool,
+    atomic_planner_call_count: int,
+) -> None:
+    """Fails if a v2 planner outcome contradicts its provider-call evidence."""
+    artifact = _retrieval_safe_export()
+    v9 = artifact["runs"][0]["agent_trace"]["agentic_v9"]
+    v9["planner_diagnostics"].update(
+        {
+            "outcome": outcome,
+            "provider_response_received": provider_response_received,
+            "retrieval_query_strategy": "atomic_slots",
+            "failure_stage": None,
+            "failure_code": None,
+        }
+    )
+    v9["metrics"]["atomic_planner_call_count"] = atomic_planner_call_count
+
+    report = verify_campaign_export(artifact)
+
+    assert report.status == "fail"
+    assert report.requirements["planner_diagnostics"].status == "fail"
+
+
 def test_recovery_diagnostics_fail_closed_on_task_1_to_3_regressions() -> None:
     artifact = _recovery_diagnostics_export()
 

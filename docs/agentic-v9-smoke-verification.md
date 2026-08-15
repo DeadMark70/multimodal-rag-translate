@@ -90,9 +90,11 @@ capture availability against the recorded setup, and unsupported final claims.
   profile requires integer planner-call metrics
   (`atomic_planner_call_count` in `0..1` and
   `comparison_planner_call_count=0`). `deterministic` and `planned` outcomes
-  use `atomic_slots`. The smoke gate does not require `planned`: a correctly
-  diagnosed degraded fallback remains valid until the real-server canary
-  establishes provider behavior.
+  use `atomic_slots` with no failure stage/code; `deterministic` records no
+  provider response and zero atomic calls, while `planned` records a provider
+  response and one atomic call. The smoke gate does not require `planned`: a
+  correctly diagnosed degraded fallback remains valid until the real-server
+  canary establishes provider behavior.
 - **Instrumentation Bounds**: Runtime strictly records `slot_binding_method="task_target_inherited"` and `semantic_qualification="not_enabled"`. Falsified or uninstrumented values are rejected during verification.
 
 The manifest records supplied backend/frontend commit IDs, the setup snapshot and

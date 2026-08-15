@@ -99,8 +99,10 @@
     normalized, 512-character-bounded original question. New-profile smoke
     requires `atomic_planner_call_count` in `0..1` and
     `comparison_planner_call_count=0`; historical profiles remain tolerant of
-    their absence. Offline smoke accepts safe degradation and does not claim
-    planner success before the current/minimal real-server canary pair succeeds.
+    their absence. New-profile `deterministic` diagnostics record zero planner
+    calls and no provider response; `planned` records one call and a provider
+    response. Offline smoke accepts safe degradation and does not claim planner
+    success before the current/minimal real-server canary pair succeeds.
   - **Explicit Instrumentation Boundaries**: Slot binding is inherited from task targets (`slot_binding_method="task_target_inherited"`), and semantic qualification is recorded as `semantic_qualification="not_enabled"`. Falsified or uninstrumented values fail offline release verification.
   - **Comparison Subject Evidence Grounding**: Comparison subjects bind to evidence slot IDs declared in `required_slots`, ensuring relational and multi-subject queries maintain grounded provenance across rounds.
 - Campaign trace-list reads use the migrated `agent_traces.summary_json` projection and its campaign/user/created index; full `trace_json` is reserved for trace-detail reads. Existing rows with no usable summary remain readable as a minimal `not_instrumented` summary rather than forcing the list path to deserialize a complete trace.

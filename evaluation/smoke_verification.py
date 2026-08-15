@@ -457,11 +457,34 @@ def _verify_planner_diagnostics(runs: list[dict[str, Any]]) -> RequirementResult
                 return RequirementResult(
                     "fail", "fallback S1 does not preserve the normalized original question"
                 )
-        elif (
-            diagnostic.retrieval_query_strategy != "atomic_slots"
-            or diagnostic.failure_stage is not None
-            or diagnostic.failure_code is not None
-        ):
+        elif diagnostic.outcome == "planned":
+            if (
+                not diagnostic.provider_response_received
+                or _as_mapping(_v9_payload(run).get("metrics")).get(
+                    "atomic_planner_call_count"
+                )
+                != 1
+                or diagnostic.retrieval_query_strategy != "atomic_slots"
+                or diagnostic.failure_stage is not None
+                or diagnostic.failure_code is not None
+            ):
+                return RequirementResult(
+                    "fail", "planned planner diagnostics are inconsistent"
+                )
+        elif diagnostic.outcome == "deterministic":
+            if (
+                diagnostic.provider_response_received
+                or _as_mapping(_v9_payload(run).get("metrics")).get(
+                    "atomic_planner_call_count"
+                )
+                != 0
+                or diagnostic.retrieval_query_strategy != "atomic_slots"
+                or diagnostic.failure_stage is not None
+                or diagnostic.failure_code is not None
+            ):
+                return RequirementResult(
+                    "fail", "deterministic planner diagnostics are inconsistent")
+        else:
             return RequirementResult(
                 "fail", "non-degraded planner diagnostics are inconsistent"
             )
