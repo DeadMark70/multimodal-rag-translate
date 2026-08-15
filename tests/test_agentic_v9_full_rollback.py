@@ -21,13 +21,32 @@ from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
 
 
 class _LegacyTextProvider:
-    def __init__(self) -> None:
-        self.ainvoke = AsyncMock(
-            return_value=SimpleNamespace(
-                content="The authorized source reports a score of 0.91.",
+    def __init__(self, purpose: str) -> None:
+        async def invoke(messages: list[dict[str, object]]) -> SimpleNamespace:
+            content: object = "The authorized source reports a score of 0.91."
+            if purpose == "evidence_extraction":
+                prompt = str(messages[0]["content"])
+                evidence_line = next(
+                    line for line in prompt.splitlines() if " [eligible slots: S1]: " in line
+                )
+                source_evidence_id, statement = evidence_line.split(
+                    " [eligible slots: S1]: ", 1
+                )
+                content = {
+                    "packets": [
+                        {
+                            "source_evidence_id": source_evidence_id,
+                            "slot_ids": ["S1"],
+                            "statement": statement,
+                        }
+                    ]
+                }
+            return SimpleNamespace(
+                content=content,
                 usage_metadata={"input_tokens": 12, "output_tokens": 9},
             )
-        )
+
+        self.ainvoke = AsyncMock(side_effect=invoke)
 
 
 @pytest.mark.asyncio
@@ -62,7 +81,6 @@ async def test_missing_visual_capability_preserves_authorized_text_answer(
         "evaluation.agentic_v9_campaign_runtime.build_v9_admission_contract",
         admission,
     )
-    provider = _LegacyTextProvider()
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(
             return_value=[
@@ -79,7 +97,7 @@ async def test_missing_visual_capability_preserves_authorized_text_answer(
         visual_extractor=AsyncMock(
             return_value=VisualEvidenceExtractionResult()
         ),
-        provider_factory=lambda _purpose: provider,
+        provider_factory=_LegacyTextProvider,
     )
 
     result = await runtime.execute(
@@ -107,7 +125,7 @@ async def test_missing_visual_capability_preserves_authorized_text_answer(
     assert v9["metrics"]["atomic_planner_call_count"] <= 1
     assert v9["metrics"]["comparison_planner_call_count"] == 0
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
-    assert v9["metrics"]["semantic_qualification"] == "not_enabled"
+    assert v9["metrics"]["semantic_qualification"] == "provider_qualified"
     assert (
         v9["visual_execution"]["state"]
         == "required_but_not_satisfied"
