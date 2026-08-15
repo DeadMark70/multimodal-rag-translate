@@ -6285,6 +6285,77 @@
         "title": "AtomicFact",
         "description": "Structured atomic fact extracted from a sub-task answer.\n\nAttributes:\n    claim: Single concrete factual statement.\n    source_doc_ids: Supporting document IDs for the claim."
       },
+      "AtomicPlannerDiagnostics": {
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "deterministic",
+              "planned",
+              "degraded"
+            ],
+            "title": "Outcome"
+          },
+          "failure_stage": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "budget_rejected",
+                  "provider_invocation",
+                  "provider_empty_response",
+                  "response_decode",
+                  "schema_validation",
+                  "semantic_validation"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Stage"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 96
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "provider_response_received": {
+            "type": "boolean",
+            "title": "Provider Response Received"
+          },
+          "retrieval_query_strategy": {
+            "type": "string",
+            "enum": [
+              "atomic_slots",
+              "safe_fallback_original_question"
+            ],
+            "title": "Retrieval Query Strategy"
+          },
+          "compiled_retrieval_task_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Compiled Retrieval Task Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "outcome",
+          "provider_response_received",
+          "retrieval_query_strategy",
+          "compiled_retrieval_task_count"
+        ],
+        "title": "AtomicPlannerDiagnostics",
+        "description": "Sanitized terminal diagnostic for atomic contract planning."
+      },
       "AvailableModel": {
         "properties": {
           "name": {
@@ -19123,6 +19194,16 @@
           "metrics": {
             "$ref": "#/components/schemas/V9ExecutionMetrics"
           },
+          "planner_diagnostics": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AtomicPlannerDiagnostics"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "comparison": {
             "anyOf": [
               {
@@ -26326,6 +26407,16 @@
           },
           "metrics": {
             "$ref": "#/components/schemas/V9ExecutionMetrics"
+          },
+          "planner_diagnostics": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AtomicPlannerDiagnostics"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "comparison": {
             "anyOf": [

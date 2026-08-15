@@ -172,6 +172,26 @@ def _recovery_diagnostics_export() -> dict[str, Any]:
     return artifact
 
 
+def _retrieval_safe_export() -> dict[str, Any]:
+    """Represent a Wave 1 export whose planner fell back safely per question."""
+    artifact = _recovery_diagnostics_export()
+    for run in artifact["runs"]:
+        trace = run["agent_trace"]
+        trace["execution_profile"] = (
+            "agentic_eval_v9_open_corpus_hybrid8_rerank8_diverse_tail2_top4_"
+            "finalpack_r1_active_atomic_contract_v2_retrieval_safe"
+        )
+        trace["agentic_v9"]["planner_diagnostics"] = {
+            "outcome": "degraded",
+            "failure_stage": "provider_invocation",
+            "failure_code": "provider_attempt_failed",
+            "provider_response_received": False,
+            "retrieval_query_strategy": "safe_fallback_original_question",
+            "compiled_retrieval_task_count": 1,
+        }
+    return artifact
+
+
 def test_dry_run_has_fixed_v9_questions_and_no_paired_naive() -> None:
     plan = build_smoke_plan()
 
@@ -370,6 +390,36 @@ def test_complete_v9_export_passes_and_writes_a_reproducible_manifest(tmp_path: 
     }
     assert manifest["input_hashes"]["campaign_export"].startswith("sha256:")
     assert manifest["release_gate_results"]["overall_status"] == "pass"
+
+
+def test_retrieval_safe_profile_accepts_degraded_question_specific_fallback() -> None:
+    """Fails if safe planner degradation is mistaken for an unverified success."""
+    report = verify_campaign_export(_retrieval_safe_export())
+
+    assert report.status == "pass"
+    assert report.requirements["planner_diagnostics"].status == "pass"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda v9: v9.pop("planner_diagnostics"),
+        lambda v9: v9["planner_diagnostics"].__setitem__(
+            "retrieval_query_strategy", "atomic_slots"
+        ),
+    ],
+)
+def test_retrieval_safe_profile_requires_safe_planner_diagnostics(
+    mutate: Any,
+) -> None:
+    """Fails if a Wave 1 profile omits diagnostics or loses its safe fallback."""
+    artifact = _retrieval_safe_export()
+    mutate(artifact["runs"][0]["agent_trace"]["agentic_v9"])
+
+    report = verify_campaign_export(artifact)
+
+    assert report.status in {"partial", "fail"}
+    assert report.requirements["planner_diagnostics"].status in {"partial", "fail"}
 
 
 def test_recovery_diagnostics_fail_closed_on_task_1_to_3_regressions() -> None:
@@ -870,7 +920,7 @@ def test_smoke_verifier_rejects_comparison_subject_referencing_unknown_slot() ->
 
 
 def test_smoke_verifier_rejects_excessive_atomic_planner_calls() -> None:
-    artifact = _complete_export()
+    artifact = _retrieval_safe_export()
     run = artifact["runs"][0]
     v9 = run["agent_trace"]["agentic_v9"]
     v9["metrics"]["atomic_planner_call_count"] = 2
@@ -883,7 +933,7 @@ def test_smoke_verifier_rejects_excessive_atomic_planner_calls() -> None:
 
 
 def test_smoke_verifier_rejects_non_zero_comparison_planner_calls() -> None:
-    artifact = _complete_export()
+    artifact = _retrieval_safe_export()
     run = artifact["runs"][0]
     v9 = run["agent_trace"]["agentic_v9"]
     v9["metrics"]["comparison_planner_call_count"] = 1
@@ -896,7 +946,7 @@ def test_smoke_verifier_rejects_non_zero_comparison_planner_calls() -> None:
 
 
 def test_smoke_verifier_rejects_active_llm_call_with_comparison_plan_phase() -> None:
-    artifact = _complete_export()
+    artifact = _retrieval_safe_export()
     run = artifact["runs"][0]
     artifact["llm_calls"].append(
         {

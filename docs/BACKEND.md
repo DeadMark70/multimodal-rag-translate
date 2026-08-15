@@ -83,10 +83,21 @@
   are not restricted to the frozen Q1-Q16 regression corpus; ownership,
   source-scope resolution, and token/call-budget feasibility remain mandatory.
 - Agentic v9 Active Atomic Contract V2 Architecture:
+  - **Wave 1 Retrieval-Safe Execution Profile**: New open-corpus and
+    explicit-scope runs end in
+    `finalpack_r1_active_atomic_contract_v2_retrieval_safe`. This profile
+    requires typed `planner_diagnostics` in canonical observability/export;
+    earlier profile values remain historical and are not inferred to have it.
   - **Deterministic Route + Atomic Overlay Ownership**: The deterministic router maintains canonical route admission and feasibility gating, while the atomic contract planner generates an overlay containing sequential evidence slots (`S1..Sn`, $1 \le n \le 8$), synthesis obligations, response constraints, and optional comparison plans.
   - **Evidence Slots vs Synthesis Obligations/Constraints**: `required_slots` define verifiable source-backed retrieval goals. `synthesis_obligations` and `response_constraints` dictate answer reasoning, formatting, and structural constraints rather than raw retrieval tasks.
   - **Single Planning Seam & Zero Active Comparison Calls**: Active atomic execution unifies contract planning into at most one provider call (`atomic_planner_call_count <= 1`, `phase="contract_planning"`, `purpose="atomic_contract_planning"`), entirely replacing separate comparison planning calls (`comparison_planner_call_count == 0`, 0 active `comparison_plan` calls).
   - **Degraded V2 Contract Fallback**: Provider errors, timeouts, or schema violations during atomic planning gracefully degrade to a deterministic fallback contract (`contract_version="2"`, fallback rationale, single catch-all slot `S1`) without disrupting pipeline execution.
+  - **Question-Specific Fallback Diagnostics**: A degraded Wave 1 planner
+    outcome records `retrieval_query_strategy="safe_fallback_original_question"`
+    and one compiled retrieval task, whose fallback query is the normalized
+    original question. Offline smoke accepts this safe degradation; it does not
+    claim planner success before the current/minimal real-server canary pair
+    succeeds.
   - **Explicit Instrumentation Boundaries**: Slot binding is inherited from task targets (`slot_binding_method="task_target_inherited"`), and semantic qualification is recorded as `semantic_qualification="not_enabled"`. Falsified or uninstrumented values fail offline release verification.
   - **Comparison Subject Evidence Grounding**: Comparison subjects bind to evidence slot IDs declared in `required_slots`, ensuring relational and multi-subject queries maintain grounded provenance across rounds.
 - Campaign trace-list reads use the migrated `agent_traces.summary_json` projection and its campaign/user/created index; full `trace_json` is reserved for trace-detail reads. Existing rows with no usable summary remain readable as a minimal `not_instrumented` summary rather than forcing the list path to deserialize a complete trace.

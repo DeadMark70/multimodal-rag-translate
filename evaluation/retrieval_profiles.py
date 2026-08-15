@@ -20,11 +20,11 @@ AGENTIC_EVAL_PROFILE = (
 )
 AGENTIC_V9_OPEN_CORPUS_PROFILE = (
     "agentic_eval_v9_open_corpus_hybrid8_rerank8_diverse_tail2_top4_"
-    "finalpack_r1_active_atomic_contract_v1"
+    "finalpack_r1_active_atomic_contract_v2_retrieval_safe"
 )
 AGENTIC_V9_EXPLICIT_SCOPE_PROFILE = (
     "agentic_eval_v9_explicit_scope_hybrid8_rerank8_diverse_tail2_top4_"
-    "finalpack_r1_active_atomic_contract_v1"
+    "finalpack_r1_active_atomic_contract_v2_retrieval_safe"
 )
 AGENTIC_V9_CONTEXT_POLICY_VERSION = "v5_final_context_soft_pack_r1"
 AGENTIC_LEGACY_CHAT_PROFILE = (

@@ -19,6 +19,7 @@ from core.sensitive_data import sanitize_credential_value
 
 DEFAULT_SMOKE_QUESTION_IDS = ("Q5", "Q7", "Q11", "Q14", "Q16")
 EXECUTION_CONFIRMATION = "I_UNDERSTAND_EXECUTE"
+RETRIEVAL_SAFE_PROFILE_SUFFIX = "active_atomic_contract_v2_retrieval_safe"
 VerificationStatus = Literal["pass", "fail", "partial", "not_executed"]
 Transport = Callable[[str, str, dict[str, str], object | None], object]
 
@@ -141,6 +142,7 @@ def verify_campaign_export(artifact: Mapping[str, Any] | None) -> VerificationRe
         "campaign_export": RequirementResult("pass"),
         "plan_coverage": _verify_plan_coverage(v9_runs),
         "contract_and_route": _verify_contracts(v9_runs),
+        "planner_diagnostics": _verify_planner_diagnostics(v9_runs),
         "slots_and_resolutions": _verify_slots(v9_runs),
         "repair_for_missing_slots": _verify_repairs(v9_runs),
         "phase_linked_provider_attempts": _verify_provider_attempts(v9_runs, llm_calls),
@@ -348,6 +350,60 @@ def _verify_contracts(runs: list[dict[str, Any]]) -> RequirementResult:
                 return RequirementResult(
                     "fail", "comparison planner call count must be 0"
                 )
+    return RequirementResult("pass")
+
+
+def _verify_planner_diagnostics(runs: list[dict[str, Any]]) -> RequirementResult:
+    """Require complete degraded-planner evidence only for the Wave 1 profile."""
+    required_fields = {
+        "outcome",
+        "failure_stage",
+        "failure_code",
+        "provider_response_received",
+        "retrieval_query_strategy",
+        "compiled_retrieval_task_count",
+    }
+    valid_outcomes = {"deterministic", "planned", "degraded"}
+    valid_strategies = {"atomic_slots", "safe_fallback_original_question"}
+    for run in runs:
+        if not _execution_profile_for_run(run).endswith(RETRIEVAL_SAFE_PROFILE_SUFFIX):
+            continue
+        diagnostics = _v9_payload(run).get("planner_diagnostics")
+        if diagnostics is None:
+            return RequirementResult(
+                "partial", "retrieval-safe profile lacks planner diagnostics"
+            )
+        if not isinstance(diagnostics, Mapping):
+            return RequirementResult("fail", "planner diagnostics are malformed")
+        if not required_fields.issubset(diagnostics):
+            return RequirementResult("partial", "planner diagnostics are incomplete")
+        outcome = str(diagnostics.get("outcome") or "")
+        if outcome not in valid_outcomes:
+            return RequirementResult("fail", "planner diagnostic outcome is unknown")
+        if not isinstance(diagnostics.get("provider_response_received"), bool):
+            return RequirementResult(
+                "fail", "planner diagnostic provider-response state is invalid"
+            )
+        task_count = diagnostics.get("compiled_retrieval_task_count")
+        if isinstance(task_count, bool) or not isinstance(task_count, int) or task_count < 0:
+            return RequirementResult(
+                "fail", "planner diagnostic retrieval-task count is invalid"
+            )
+        strategy = str(diagnostics.get("retrieval_query_strategy") or "")
+        if strategy not in valid_strategies:
+            return RequirementResult(
+                "fail", "planner diagnostic retrieval strategy is unknown"
+            )
+        if outcome == "degraded":
+            if strategy != "safe_fallback_original_question" or task_count != 1:
+                return RequirementResult(
+                    "fail",
+                    "degraded planner must use one question-specific safe fallback",
+                )
+        elif strategy != "atomic_slots":
+            return RequirementResult(
+                "fail", "non-degraded planner must use atomic retrieval slots"
+            )
     return RequirementResult("pass")
 
 

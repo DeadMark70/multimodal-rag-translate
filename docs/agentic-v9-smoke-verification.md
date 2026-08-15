@@ -72,11 +72,22 @@ capture availability against the recorded setup, and unsupported final claims.
 
 ### Active Atomic Contract V2 Invariants
 
+- **Wave 1 Retrieval-Safe Profile**: New open-corpus and explicit-scope runs end
+  in `finalpack_r1_active_atomic_contract_v2_retrieval_safe`. Historical
+  profiles are read under their original contract and are not required to
+  contain Wave 1 diagnostics.
 - **Deterministic Route & Atomic Overlay**: The admission contract retains deterministic router ownership while the atomic overlay decomposes the prompt into sequential evidence slots (`S1..Sn`, $1 \le n \le 8$), synthesis obligations, response constraints, and comparison plans.
 - **Evidence Slots vs Obligations/Constraints**: Slots represent verifiable source-backed units of evidence (`required_slots`). Obligations (`synthesis_obligations`) and constraints (`response_constraints`) govern answer composition and reasoning structure rather than raw retrieval targets.
 - **Provider Call Accounting**: Active atomic execution budgets at most 1 `contract_planning` provider call (`purpose="atomic_contract_planning"`) and 0 active `comparison_plan` provider calls (`atomic_planner_call_count <= 1`, `comparison_planner_call_count == 0`).
 - **Comparison Subject Grounding**: When a comparison plan is present, all comparison subject `evidence_slot_ids` must reference valid slot IDs declared in `required_slots`.
 - **Degraded V2 Behavior**: When the atomic planner encounters a provider failure, schema violation, or unparseable output, runtime gracefully degrades to a deterministic fallback contract (`contract_version="2"`, fallback `route_reason`, and a single catch-all slot `S1`), ensuring fail-closed safety without aborting execution.
+- **Planner Diagnostics**: Every retrieval-safe profile run must export typed
+  `planner_diagnostics`. A `degraded` outcome must declare
+  `retrieval_query_strategy="safe_fallback_original_question"` and exactly one
+  compiled retrieval task; its `S1` query is the normalized original question.
+  `deterministic` and `planned` outcomes use `atomic_slots`. The smoke gate does
+  not require `planned`: a correctly diagnosed degraded fallback remains valid
+  until the real-server canary establishes provider behavior.
 - **Instrumentation Bounds**: Runtime strictly records `slot_binding_method="task_target_inherited"` and `semantic_qualification="not_enabled"`. Falsified or uninstrumented values are rejected during verification.
 
 The manifest records supplied backend/frontend commit IDs, the setup snapshot and
