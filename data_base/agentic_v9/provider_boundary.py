@@ -8,6 +8,40 @@ from typing import Any
 from core.providers import bind_json_schema, get_llm
 
 
+_CONTRACT_PROVIDER_OMITTED_SCHEMA_KEYS = frozenset(
+    {
+        "additionalProperties",
+        "title",
+        "default",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "minimum",
+        "maximum",
+    }
+)
+
+
+def _project_contract_schema_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _project_contract_schema_value(item)
+            for key, item in value.items()
+            if key not in _CONTRACT_PROVIDER_OMITTED_SCHEMA_KEYS
+        }
+    if isinstance(value, list):
+        return [_project_contract_schema_value(item) for item in value]
+    return value
+
+
+def project_contract_planner_provider_schema(
+    schema: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return Gemini-compatible generation guidance without weakening validation."""
+    return _project_contract_schema_value(schema)
+
+
 def provider_response_text(response: Any) -> str | None:
     """Return provider text without serializing non-text content blocks."""
     if isinstance(response, str):
@@ -28,7 +62,7 @@ def build_contract_planning_provider(
     """Build the production planner model and bind its selected JSON schema."""
     return bind_json_schema(
         get_llm("synthesizer"),
-        schema=dict(response_schema),
+        schema=project_contract_planner_provider_schema(response_schema),
     )
 
 

@@ -160,6 +160,13 @@ includes the model-config body, prompt, response body, key, or raw exception.
 Exit code `0` means the bound response passed local validation; a nonzero exit
 identifies a sanitized failure.
 
+The campaign and `current` planner canary share a compact provider-generation
+projection of the canonical planner schema so Gemini does not receive redundant
+Pydantic validation metadata. The canonical `_PlannerDecision` model and the
+planner's semantic checks remain the authoritative post-response acceptance
+boundary; compaction does not relax extra-field, enum, length, count, numeric,
+route, source-scope, or dependency validation.
+
 Record the two complete JSON documents here without adding provider output:
 
 ```text

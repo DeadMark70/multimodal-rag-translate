@@ -546,6 +546,37 @@ def test_parse_decision_accepts_ai_message_text_content_blocks() -> None:
     assert len(decision.evidence_requirements) == 1
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.update({"extra_field": "forbidden"}),
+        lambda payload: payload["evidence_requirements"][0].update(
+            {"description": "x" * 513}
+        ),
+        lambda payload: payload.update(
+            {"evidence_requirements": payload["evidence_requirements"] * 9}
+        ),
+        lambda payload: payload.update({"confidence": 1.1}),
+    ],
+)
+def test_canonical_planner_validation_remains_strict_after_provider_projection(
+    mutate: Any,
+) -> None:
+    payload = {
+        "evidence_requirements": [{"description": "Find the answer."}],
+        "synthesis_obligations": [],
+        "response_constraints": [],
+        "comparison": None,
+        "confidence": 1.0,
+    }
+    mutate(payload)
+
+    with pytest.raises(contract_planner_module.PlannerSchemaValidationError):
+        contract_planner_module._parse_decision(
+            {"content": json.dumps(payload)}
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mutate_fn", "expected_fallback_reason", "call_count"),

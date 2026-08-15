@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -83,7 +84,18 @@ def test_shared_contract_planning_provider_owns_model_and_schema_binding(
 
     monkeypatch.setattr(boundary, "get_llm", fake_get_llm)
     monkeypatch.setattr(boundary, "bind_json_schema", fake_bind)
-    response_schema = {"type": "object", "required": ["answer"]}
+    response_schema = {
+        "type": "object",
+        "title": "Planner response",
+        "properties": {
+            "answer": {
+                "type": "string",
+                "minLength": 1,
+            }
+        },
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
 
     result = boundary.build_contract_planning_provider(
         response_schema=response_schema
@@ -93,8 +105,42 @@ def test_shared_contract_planning_provider_owns_model_and_schema_binding(
     assert observed == {
         "purpose": "synthesizer",
         "provider": raw_provider,
-        "schema": response_schema,
+        "schema": {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
     }
+
+
+def test_contract_planner_provider_schema_removes_only_generation_limits() -> None:
+    canonical = atomic_contract_planner_response_schema()
+
+    projected = provider_boundary_module.project_contract_planner_provider_schema(
+        canonical
+    )
+
+    serialized = json.dumps(projected, sort_keys=True)
+    for keyword in (
+        "additionalProperties",
+        "title",
+        "default",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "minimum",
+        "maximum",
+    ):
+        assert f'"{keyword}"' not in serialized
+
+    assert projected["properties"].keys() == canonical["properties"].keys()
+    assert projected["required"] == canonical["required"]
+    assert projected["properties"]["comparison"]["anyOf"][0]["$ref"] == (
+        canonical["properties"]["comparison"]["anyOf"][0]["$ref"]
+    )
+    assert canonical["additionalProperties"] is False
+    assert canonical["properties"]["confidence"]["maximum"] == 1.0
 
 
 def test_provider_response_text_uses_text_blocks_without_signature_metadata() -> None:
