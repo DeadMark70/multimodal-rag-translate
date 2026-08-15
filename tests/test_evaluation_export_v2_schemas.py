@@ -738,7 +738,7 @@ def test_export_v2_round_trips_active_atomic_contract_and_new_metrics() -> None:
         atomic_planner_call_count=1,
         comparison_planner_call_count=0,
         slot_binding_method="task_target_inherited",
-        semantic_qualification="not_enabled",
+        semantic_qualification="provider_qualified",
         reserved_tokens=500,
         reconciled_tokens=500,
     )
@@ -774,7 +774,7 @@ def test_export_v2_round_trips_active_atomic_contract_and_new_metrics() -> None:
     assert loaded.metrics.atomic_planner_call_count == 1
     assert loaded.metrics.comparison_planner_call_count == 0
     assert loaded.metrics.slot_binding_method == "task_target_inherited"
-    assert loaded.metrics.semantic_qualification == "not_enabled"
+    assert loaded.metrics.semantic_qualification == "provider_qualified"
     assert loaded.planner_diagnostics is not None
     assert loaded.planner_diagnostics.model_dump() == {
         "outcome": "planned",
@@ -829,6 +829,17 @@ def test_export_v2_reads_historical_contract_without_additive_fields() -> None:
     assert loaded.metrics.qualification_failure_code is None
 
 
+def test_export_v2_preserves_legacy_not_enabled_qualification_status() -> None:
+    loaded = ExportV9ExecutionObservabilityV2.model_validate(
+        {
+            "schema_version": "1",
+            "metrics": {"semantic_qualification": "not_enabled"},
+        }
+    )
+
+    assert loaded.metrics.semantic_qualification == "not_enabled"
+
+
 def test_export_v2_metrics_includes_qualification_diagnostics_fields() -> None:
     payload = {
         "schema_version": "1",
@@ -846,4 +857,3 @@ def test_export_v2_metrics_includes_qualification_diagnostics_fields() -> None:
     assert loaded.metrics.qualification_round_count == 1
     assert loaded.metrics.qualification_provider_call_count == 1
     assert loaded.metrics.qualification_failure_code == "partial_qualification"
-

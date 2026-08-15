@@ -246,8 +246,9 @@ def _quote_qualified_export() -> dict[str, Any]:
                 },
                 "scope": {},
                 "locator": {"pdf_page_index": 1},
-                "extractor_version": "v9-deterministic-1",
-                "validation_status": "deterministic_valid",
+                "extractor_version": "v9-prose-curator-1",
+                "prompt_version": "1",
+                "validation_status": "quote_bound",
             }
         ]
         trace["agentic_v9"]["slot_resolutions"] = [
@@ -266,6 +267,7 @@ def _quote_qualified_export() -> dict[str, Any]:
                 "qualification_round_count": 1,
                 "qualification_provider_call_count": 1,
                 "qualification_failure_code": None,
+                "semantic_qualification": "provider_qualified",
             }
         )
     return artifact
@@ -1192,6 +1194,7 @@ def test_quote_qualified_profile_passes_smoke_verification() -> None:
         "qualified_packet_count",
         "qualification_round_count",
         "qualification_provider_call_count",
+        "qualification_failure_code",
     ],
 )
 def test_quote_qualified_profile_requires_qualification_metrics(field: str) -> None:
@@ -1226,6 +1229,41 @@ def test_quote_qualified_profile_rejects_mismatched_qualification_provider_calls
     metrics = artifact["runs"][0]["agent_trace"]["agentic_v9"]["metrics"]
     metrics["qualification_provider_call_count"] = 2
     report = verify_campaign_export(artifact)
+    assert report.status == "fail"
+    assert report.requirements["contract_and_route"].status == "fail"
+
+
+def test_quote_qualified_profile_rejects_legacy_not_enabled_status() -> None:
+    artifact = _quote_qualified_export()
+    metrics = artifact["runs"][0]["agent_trace"]["agentic_v9"]["metrics"]
+    metrics["semantic_qualification"] = "not_enabled"
+
+    report = verify_campaign_export(artifact)
+
+    assert report.status == "fail"
+    assert report.requirements["contract_and_route"].status == "fail"
+
+
+@pytest.mark.parametrize(
+    ("status", "failure_code"),
+    [
+        ("provider_failed", None),
+        ("invalid_response", "provider_attempt_failed"),
+        ("provider_qualified", "provider_attempt_failed"),
+        ("not_attempted", "invalid_provider_response"),
+    ],
+)
+def test_quote_qualified_profile_rejects_contradictory_failure_diagnostics(
+    status: str,
+    failure_code: str | None,
+) -> None:
+    artifact = _quote_qualified_export()
+    metrics = artifact["runs"][0]["agent_trace"]["agentic_v9"]["metrics"]
+    metrics["semantic_qualification"] = status
+    metrics["qualification_failure_code"] = failure_code
+
+    report = verify_campaign_export(artifact)
+
     assert report.status == "fail"
     assert report.requirements["contract_and_route"].status == "fail"
 

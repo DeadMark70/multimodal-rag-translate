@@ -86,6 +86,14 @@ capture availability against the recorded setup, and unsupported final claims.
   `qualification_provider_call_count` must equal the count of persisted LLM calls
   with `phase="evidence_extract"`. Provider failure or error cannot increase
   qualified count or promote unvalidated candidates.
+- **Qualification Outcome Integrity**: Current Wave 2 runs use
+  `not_attempted`, `deterministic`, `provider_qualified`, `no_match`,
+  `provider_failed`, or `invalid_response`. Provider failures require
+  `provider_attempt_failed`; invalid responses require
+  `invalid_provider_response`; budget rejection is
+  `not_attempted/budget_not_admitted`. Successful and valid no-match outcomes
+  carry no failure code. Historical `not_enabled` remains readable but is not
+  valid for the current quote-qualified profile.
 - **Positive Control & Insufficient Regressions**: Positive controls Q5/Q23
   require qualified evidence packets; exports where all runs collapse to
   `insufficient` fail the smoke verification.
@@ -108,7 +116,10 @@ capture availability against the recorded setup, and unsupported final claims.
   response and one atomic call. The smoke gate does not require `planned`: a
   correctly diagnosed degraded fallback remains valid until the real-server
   canary establishes provider behavior.
-- **Instrumentation Bounds**: Runtime strictly records `slot_binding_method="task_target_inherited"` and `semantic_qualification="not_enabled"`. Falsified or uninstrumented values are rejected during verification.
+- **Instrumentation Bounds**: Runtime strictly records
+  `slot_binding_method="task_target_inherited"` and one explicit qualification
+  outcome. Falsified, contradictory, obsolete, or uninstrumented values are
+  rejected during current-profile verification.
 
 The manifest records supplied backend/frontend commit IDs, the setup snapshot and
 hash, dataset identity, SHA-256 input artifact hashes, requirement statuses, and
@@ -125,25 +136,29 @@ overwrite flag.
 Do not run this checkpoint from a developer machine. After the Wave 1 commit is
 pushed to the real server environment, export the exact Evaluation Setup model
 configuration as a JSON object that validates against `evaluation.schemas.ModelConfig`.
-An authorized operator then runs exactly these two commands, once each:
+An authorized operator runs the two planner commands and the evidence
+qualification construction check first. Only the final command performs the
+single evidence provider request:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\agentic_v9_contract_planner_canary.py --schema current --model-config-json <real-server-model-config.json>
 .\.venv\Scripts\python.exe scripts\agentic_v9_contract_planner_canary.py --schema minimal --model-config-json <real-server-model-config.json>
+.\.venv\Scripts\python.exe scripts\agentic_v9_evidence_qualification_canary.py --model-config-json <real-server-model-config.json>
+.\.venv\Scripts\python.exe scripts\agentic_v9_evidence_qualification_canary.py --model-config-json <real-server-model-config.json> --invoke
 ```
 
-The canary validates the file before provider construction, applies the same model
-normalization, runtime override, contract-planning phase policy, and shared schema
-binding boundary as the campaign. Its task-local `max_retries=0` override disables
-provider retries, so its single wrapper invocation is also exactly one wire-level
-attempt; normal campaign calls retain the provider default. Each invocation writes
-one sanitized JSON document containing only success, schema, failure
-stage/code, relevant package versions, model identifier, and whether a response was
-received. It never includes the model-config body, prompt, response body, key, or
-raw exception or import traceback. Exit code `0` means the bound response passed
-local validation; a nonzero exit identifies the failed stage. Missing, unreadable,
-malformed, non-UTF-8, or schema-invalid model configuration fails before the
-provider-dependent stack is imported.
+Each canary validates the file before provider construction and applies the same
+model normalization, runtime override, phase policy, and shared schema binding
+boundary as its campaign stage. The evidence construction command binds the
+provider but never invokes it; `--invoke` uses the campaign's budgeted extractor
+and parser. Its task-local `max_retries=0` override disables provider retries,
+so one invocation is one wire-level attempt; normal campaign calls retain the
+provider default. Each command writes one sanitized JSON
+document containing only success, safe failure information, relevant package
+versions, model identifier, and response availability/count metadata. It never
+includes the model-config body, prompt, response body, key, or raw exception.
+Exit code `0` means the bound response passed local validation; a nonzero exit
+identifies a sanitized failure.
 
 Record the two complete JSON documents here without adding provider output:
 

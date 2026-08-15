@@ -26421,6 +26421,12 @@
           "semantic_qualification": {
             "type": "string",
             "enum": [
+              "not_attempted",
+              "deterministic",
+              "provider_qualified",
+              "no_match",
+              "provider_failed",
+              "invalid_response",
               "not_enabled",
               "not_instrumented"
             ],

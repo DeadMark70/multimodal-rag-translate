@@ -112,7 +112,13 @@
     calls and no provider response; `planned` records one call and a provider
     response. Offline smoke accepts safe degradation and does not claim planner
     success before the current/minimal real-server canary pair succeeds.
-  - **Explicit Instrumentation Boundaries**: Slot binding is inherited from task targets (`slot_binding_method="task_target_inherited"`), and semantic qualification is recorded as `semantic_qualification="not_enabled"`. Falsified or uninstrumented values fail offline release verification.
+  - **Explicit Qualification Outcomes**: Slot binding is inherited from task
+    targets (`slot_binding_method="task_target_inherited"`). Current Wave 2 runs
+    record `not_attempted`, `deterministic`, `provider_qualified`, `no_match`,
+    `provider_failed`, or `invalid_response`; provider and response failures
+    carry only the safe codes `provider_attempt_failed`,
+    `budget_not_admitted`, or `invalid_provider_response`. Historical
+    `not_enabled` remains readable but fails the current-profile smoke gate.
   - **Comparison Subject Evidence Grounding**: Comparison subjects bind to evidence slot IDs declared in `required_slots`, ensuring relational and multi-subject queries maintain grounded provenance across rounds.
 - Campaign trace-list reads use the migrated `agent_traces.summary_json` projection and its campaign/user/created index; full `trace_json` is reserved for trace-detail reads. Existing rows with no usable summary remain readable as a minimal `not_instrumented` summary rather than forcing the list path to deserialize a complete trace.
 - Evaluation answers are capped at 1,048,576 UTF-8 bytes. Oversize answers are recorded as failed work with the stable error code `EVALUATION_ANSWER_TOO_LARGE`; callers must not retry by silently truncating or substituting the answer.

@@ -32,6 +32,20 @@ ACTIVE_V2_PROFILE_SUFFIXES = (
     RETRIEVAL_SAFE_PROFILE_SUFFIX,
     QUOTE_QUALIFIED_PROFILE_SUFFIX,
 )
+SEMANTIC_QUALIFICATION_STATUSES = {
+    "not_attempted",
+    "deterministic",
+    "provider_qualified",
+    "no_match",
+    "provider_failed",
+    "invalid_response",
+    "not_enabled",
+    "not_instrumented",
+}
+CURRENT_QUALIFICATION_STATUSES = SEMANTIC_QUALIFICATION_STATUSES - {
+    "not_enabled",
+    "not_instrumented",
+}
 VerificationStatus = Literal["pass", "fail", "partial", "not_executed"]
 Transport = Callable[[str, str, dict[str, str], object | None], object]
 
@@ -318,12 +332,33 @@ def _execution_profile_for_run(run: Mapping[str, Any]) -> str:
     )
 
 
+def _qualification_diagnostics_error(metrics: Mapping[str, Any]) -> str | None:
+    status = str(metrics.get("semantic_qualification") or "")
+    failure_code = metrics.get("qualification_failure_code")
+    if status not in CURRENT_QUALIFICATION_STATUSES:
+        return "quote-qualified profile has obsolete semantic qualification"
+    if status == "provider_failed":
+        if failure_code != "provider_attempt_failed":
+            return "provider_failed requires provider_attempt_failed"
+        return None
+    if status == "invalid_response":
+        if failure_code != "invalid_provider_response":
+            return "invalid_response requires invalid_provider_response"
+        return None
+    if status == "not_attempted":
+        if failure_code not in {None, "budget_not_admitted"}:
+            return "not_attempted has an invalid failure code"
+        return None
+    if failure_code is not None:
+        return "successful qualification status must not carry a failure code"
+    return None
+
+
 def _verify_contracts(
     runs: list[dict[str, Any]],
     llm_calls: list[dict[str, Any]] | None = None,
 ) -> RequirementResult:
     valid_binding_methods = {"task_target_inherited", "not_instrumented"}
-    valid_semantic_qualifications = {"not_enabled", "not_instrumented"}
     for run in runs:
         v9 = _v9_payload(run)
         contract = _as_mapping(v9.get("query_contract")) or _as_mapping(v9.get("contract"))
@@ -386,6 +421,14 @@ def _verify_contracts(
                     return RequirementResult(
                         "fail", f"{field} must be a non-negative integer"
                     )
+            if "qualification_failure_code" not in metrics:
+                return RequirementResult(
+                    "partial",
+                    "quote-qualified profile lacks qualification_failure_code",
+                )
+            qualification_error = _qualification_diagnostics_error(metrics)
+            if qualification_error is not None:
+                return RequirementResult("fail", qualification_error)
             candidate_count = metrics["candidate_packet_count"]
             qualified_count = metrics["qualified_packet_count"]
             if candidate_count < qualified_count:
@@ -426,7 +469,7 @@ def _verify_contracts(
             semantic_qual = metrics.get("semantic_qualification")
             if (
                 semantic_qual is not None
-                and str(semantic_qual) not in valid_semantic_qualifications
+                and str(semantic_qual) not in SEMANTIC_QUALIFICATION_STATUSES
             ):
                 return RequirementResult(
                     "fail", "semantic qualification is unknown or invalid"
@@ -838,7 +881,6 @@ def _verify_comparison_observability(
     }
     final_statuses = {"complete", "qualified_partial", "insufficient"}
     valid_binding_methods = {"task_target_inherited", "not_instrumented"}
-    valid_semantic_qualifications = {"not_enabled", "not_instrumented"}
     observed = False
     for run in runs:
         v9 = _v9_payload(run)
@@ -894,7 +936,7 @@ def _verify_comparison_observability(
                 semantic_qual = metrics.get("semantic_qualification")
                 if (
                     semantic_qual is not None
-                    and str(semantic_qual) not in valid_semantic_qualifications
+                    and str(semantic_qual) not in SEMANTIC_QUALIFICATION_STATUSES
                 ):
                     return RequirementResult(
                         "fail", "semantic qualification is unknown or invalid"
