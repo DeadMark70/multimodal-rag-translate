@@ -369,6 +369,16 @@ async def test_invalid_curator_packet_does_not_discard_valid_sibling() -> None:
                 },
                 {
                     "source_evidence_id": "E1",
+                    "slot_ids": ["other"],
+                    "statement": statement,
+                },
+                {
+                    "source_evidence_id": "E1",
+                    "slot_ids": ["method"],
+                    "statement": "The decoder has three stages.",
+                },
+                {
+                    "source_evidence_id": "E1",
                     "slot_ids": ["method"],
                     "statement": statement,
                 },
@@ -377,7 +387,10 @@ async def test_invalid_curator_packet_does_not_discard_valid_sibling() -> None:
     )
 
     outcome = await EvidenceExtractor(invoker).extract_with_outcome(
-        _contract(_slot("method", "Describe the decoder architecture.")),
+        _contract(
+            _slot("method", "Describe the decoder architecture."),
+            _slot("other", "Describe another source fact."),
+        ),
         [_item("E1", statement, slot_ids=["method"])],
         repairs_complete=True,
         question="What decoder is used?",
@@ -387,6 +400,9 @@ async def test_invalid_curator_packet_does_not_discard_valid_sibling() -> None:
     assert [packet.evidence_id for packet in outcome.packets] == [
         "curated:E1:method"
     ]
+    assert outcome.qualification_unknown_source_id_count == 1
+    assert outcome.qualification_unauthorized_source_slot_count == 1
+    assert outcome.qualification_statement_not_verbatim_count == 1
 
 
 @pytest.mark.asyncio

@@ -52,6 +52,16 @@ class EvidenceQualificationOutcome:
     failure_code: str | None = None
     provider_call_attempted: bool = False
     provider_response_received: bool = False
+    qualification_unknown_source_id_count: int = 0
+    qualification_unauthorized_source_slot_count: int = 0
+    qualification_statement_not_verbatim_count: int = 0
+
+
+@dataclass
+class _QualificationRejectionCounts:
+    unknown_source_id: int = 0
+    unauthorized_source_slot: int = 0
+    statement_not_verbatim: int = 0
 
 
 class EvidenceExtractor:
@@ -167,12 +177,14 @@ class EvidenceExtractor:
                 provider_call_attempted=True,
             )
 
+        rejection_counts = _QualificationRejectionCounts()
         curated = _parse_curated_packets(
             response,
             slots=unresolved,
             items=curated_items,
             eligible_ids_by_slot=eligible_ids_by_slot,
             final_claims=self._final_claims,
+            rejection_counts=rejection_counts,
         )
         if curated is None:
             return EvidenceQualificationOutcome(
@@ -181,6 +193,15 @@ class EvidenceExtractor:
                 failure_code="invalid_provider_response",
                 provider_call_attempted=True,
                 provider_response_received=True,
+                qualification_unknown_source_id_count=(
+                    rejection_counts.unknown_source_id
+                ),
+                qualification_unauthorized_source_slot_count=(
+                    rejection_counts.unauthorized_source_slot
+                ),
+                qualification_statement_not_verbatim_count=(
+                    rejection_counts.statement_not_verbatim
+                ),
             )
         combined = tuple(_deduplicate_packets([*packets, *curated]))
         return EvidenceQualificationOutcome(
@@ -188,6 +209,15 @@ class EvidenceExtractor:
             status="provider_qualified" if curated else "no_match",
             provider_call_attempted=True,
             provider_response_received=True,
+            qualification_unknown_source_id_count=(
+                rejection_counts.unknown_source_id
+            ),
+            qualification_unauthorized_source_slot_count=(
+                rejection_counts.unauthorized_source_slot
+            ),
+            qualification_statement_not_verbatim_count=(
+                rejection_counts.statement_not_verbatim
+            ),
         )
 
     async def _curate_once(
@@ -458,6 +488,7 @@ def _parse_curated_packets(
     slots: Sequence[RequiredSlot],
     items: Sequence[EvidencePoolItem],
     eligible_ids_by_slot: Mapping[str, set[str]],
+    rejection_counts: _QualificationRejectionCounts,
     final_claims: list[FinalClaim] | None = None,
 ) -> list[EvidencePacket] | None:
     content = getattr(response, "content", response)
@@ -491,13 +522,16 @@ def _parse_curated_packets(
             or not isinstance(slot_ids, list)
             or not all(isinstance(slot_id, str) for slot_id in slot_ids)
             or not slot_ids
-            or not set(slot_ids).issubset(valid_slots)
-            or source_id not in by_id
-            or any(
-                source_id not in eligible_ids_by_slot.get(slot_id, set())
-                for slot_id in slot_ids
-            )
         ):
+            continue
+        if source_id not in by_id:
+            rejection_counts.unknown_source_id += 1
+            continue
+        if not set(slot_ids).issubset(valid_slots) or any(
+            source_id not in eligible_ids_by_slot.get(slot_id, set())
+            for slot_id in slot_ids
+        ):
+            rejection_counts.unauthorized_source_slot += 1
             continue
         item = by_id[source_id]
         result = validate_prose_packet(
@@ -516,6 +550,8 @@ def _parse_curated_packets(
             packets.append(result.packet)
         elif result.final_claim is not None and final_claims is not None:
             final_claims.append(result.final_claim)
+        elif result.reason == "statement_is_not_a_verbatim_source_span":
+            rejection_counts.statement_not_verbatim += 1
     return packets
 
 

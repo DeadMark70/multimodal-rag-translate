@@ -442,6 +442,13 @@ class V9AgentBehaviorMetrics(BaseModel):
     qualification_round_count: int | None = Field(default=None, ge=0)
     qualification_provider_call_count: int | None = Field(default=None, ge=0)
     qualification_failure_code: str | None = None
+    qualification_unknown_source_id_count: int | None = Field(default=None, ge=0)
+    qualification_unauthorized_source_slot_count: int | None = Field(
+        default=None, ge=0
+    )
+    qualification_statement_not_verbatim_count: int | None = Field(
+        default=None, ge=0
+    )
     graph_execution: BehaviorExecutionState = "not_instrumented"
     visual_execution: BehaviorExecutionState = "not_instrumented"
 

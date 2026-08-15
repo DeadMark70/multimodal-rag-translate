@@ -1920,6 +1920,15 @@ def _v9_behavior_metrics(
             if metrics.get("qualification_failure_code") is not None
             else None
         ),
+        qualification_unknown_source_id_count=_optional_nonnegative_int(
+            metrics.get("qualification_unknown_source_id_count")
+        ),
+        qualification_unauthorized_source_slot_count=_optional_nonnegative_int(
+            metrics.get("qualification_unauthorized_source_slot_count")
+        ),
+        qualification_statement_not_verbatim_count=_optional_nonnegative_int(
+            metrics.get("qualification_statement_not_verbatim_count")
+        ),
         graph_execution=graph_execution,
         visual_execution=visual_execution,
     )

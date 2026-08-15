@@ -805,6 +805,9 @@ class V9ExecutionMetrics(BaseModel):
     qualification_round_count: int = Field(default=0, ge=0)
     qualification_provider_call_count: int = Field(default=0, ge=0)
     qualification_failure_code: str | None = Field(default=None, max_length=96)
+    qualification_unknown_source_id_count: int = Field(default=0, ge=0)
+    qualification_unauthorized_source_slot_count: int = Field(default=0, ge=0)
+    qualification_statement_not_verbatim_count: int = Field(default=0, ge=0)
 
 
 class V9ExecutionResult(BaseModel):

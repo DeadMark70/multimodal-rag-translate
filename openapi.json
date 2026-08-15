@@ -18555,6 +18555,42 @@
             ],
             "title": "Qualification Failure Code"
           },
+          "qualification_unknown_source_id_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualification Unknown Source Id Count"
+          },
+          "qualification_unauthorized_source_slot_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualification Unauthorized Source Slot Count"
+          },
+          "qualification_statement_not_verbatim_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualification Statement Not Verbatim Count"
+          },
           "graph_execution": {
             "type": "string",
             "enum": [
@@ -26188,6 +26224,42 @@
             ],
             "title": "Qualification Failure Code"
           },
+          "qualification_unknown_source_id_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualification Unknown Source Id Count"
+          },
+          "qualification_unauthorized_source_slot_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualification Unauthorized Source Slot Count"
+          },
+          "qualification_statement_not_verbatim_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualification Statement Not Verbatim Count"
+          },
           "graph_execution": {
             "type": "string",
             "enum": [
@@ -26480,6 +26552,24 @@
               }
             ],
             "title": "Qualification Failure Code"
+          },
+          "qualification_unknown_source_id_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Qualification Unknown Source Id Count",
+            "default": 0
+          },
+          "qualification_unauthorized_source_slot_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Qualification Unauthorized Source Slot Count",
+            "default": 0
+          },
+          "qualification_statement_not_verbatim_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Qualification Statement Not Verbatim Count",
+            "default": 0
           }
         },
         "type": "object",

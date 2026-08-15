@@ -2564,6 +2564,29 @@ async def test_campaign_runtime_qualifies_candidate_evidence_via_batch_prose_cur
                 {
                     "packets": [
                         {
+                            "source_evidence_id": "unknown-id",
+                            "slot_ids": ["S1"],
+                            "statement": statement,
+                        },
+                        {
+                            "source_evidence_id": (
+                                captured_candidates[0].evidence_id
+                                if captured_candidates
+                                else "evidence:dummy"
+                            ),
+                            "slot_ids": ["unknown-slot"],
+                            "statement": statement,
+                        },
+                        {
+                            "source_evidence_id": (
+                                captured_candidates[0].evidence_id
+                                if captured_candidates
+                                else "evidence:dummy"
+                            ),
+                            "slot_ids": ["S1"],
+                            "statement": "The method uses a three-stage decoder.",
+                        },
+                        {
                             "source_evidence_id": (
                                 captured_candidates[0].evidence_id
                                 if captured_candidates
@@ -2646,6 +2669,9 @@ async def test_campaign_runtime_qualifies_candidate_evidence_via_batch_prose_cur
     assert metrics["qualification_provider_call_count"] == 1
     assert metrics["qualification_failure_code"] is None
     assert metrics["semantic_qualification"] == "provider_qualified"
+    assert metrics["qualification_unknown_source_id_count"] == 1
+    assert metrics["qualification_unauthorized_source_slot_count"] == 1
+    assert metrics["qualification_statement_not_verbatim_count"] == 1
 
 
 @pytest.mark.asyncio

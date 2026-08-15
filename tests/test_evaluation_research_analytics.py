@@ -1158,6 +1158,9 @@ async def test_agent_behavior_projects_materialized_v9_evidence_not_legacy_step_
                             "provider_attempt_count": 1,
                             "final_generation_count": 1,
                             "reconciled_tokens": 15,
+                            "qualification_unknown_source_id_count": 2,
+                            "qualification_unauthorized_source_slot_count": 3,
+                            "qualification_statement_not_verbatim_count": 4,
                         },
                         "sufficiency": {
                             "evidence_complete": True,
@@ -1204,6 +1207,9 @@ async def test_agent_behavior_projects_materialized_v9_evidence_not_legacy_step_
     assert row.v9.visual_requested is True
     assert row.v9.visual_required is False
     assert row.v9.visual_execution == "attempted_without_evidence"
+    assert row.v9.qualification_unknown_source_id_count == 2
+    assert row.v9.qualification_unauthorized_source_slot_count == 3
+    assert row.v9.qualification_statement_not_verbatim_count == 4
 
 
 @pytest.mark.asyncio

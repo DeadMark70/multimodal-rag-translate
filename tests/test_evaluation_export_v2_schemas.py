@@ -827,6 +827,9 @@ def test_export_v2_reads_historical_contract_without_additive_fields() -> None:
     assert loaded.metrics.qualification_round_count == 0
     assert loaded.metrics.qualification_provider_call_count == 0
     assert loaded.metrics.qualification_failure_code is None
+    assert loaded.metrics.qualification_unknown_source_id_count == 0
+    assert loaded.metrics.qualification_unauthorized_source_slot_count == 0
+    assert loaded.metrics.qualification_statement_not_verbatim_count == 0
 
 
 def test_export_v2_preserves_legacy_not_enabled_qualification_status() -> None:
@@ -849,6 +852,9 @@ def test_export_v2_metrics_includes_qualification_diagnostics_fields() -> None:
             "qualification_round_count": 1,
             "qualification_provider_call_count": 1,
             "qualification_failure_code": "partial_qualification",
+            "qualification_unknown_source_id_count": 2,
+            "qualification_unauthorized_source_slot_count": 3,
+            "qualification_statement_not_verbatim_count": 4,
         },
     }
     loaded = ExportV9ExecutionObservabilityV2.model_validate(payload)
@@ -857,3 +863,6 @@ def test_export_v2_metrics_includes_qualification_diagnostics_fields() -> None:
     assert loaded.metrics.qualification_round_count == 1
     assert loaded.metrics.qualification_provider_call_count == 1
     assert loaded.metrics.qualification_failure_code == "partial_qualification"
+    assert loaded.metrics.qualification_unknown_source_id_count == 2
+    assert loaded.metrics.qualification_unauthorized_source_slot_count == 3
+    assert loaded.metrics.qualification_statement_not_verbatim_count == 4

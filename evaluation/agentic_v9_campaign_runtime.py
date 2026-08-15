@@ -385,6 +385,9 @@ class AgenticV9CampaignRuntime:
             "visual_packets_emitted": False,
             "retrieval_diagnostics": [],
             "requirement_shadow_documents": [],
+            "qualification_unknown_source_id_count": 0,
+            "qualification_unauthorized_source_slot_count": 0,
+            "qualification_statement_not_verbatim_count": 0,
         }
 
         async def resolve_scope(_: V9ExecutionRequest) -> ResolvedSourceScope:
@@ -683,6 +686,15 @@ class AgenticV9CampaignRuntime:
             )
             state["semantic_qualification"] = outcome.status
             state["qualification_failure_code"] = outcome.failure_code
+            state["qualification_unknown_source_id_count"] += (
+                outcome.qualification_unknown_source_id_count
+            )
+            state["qualification_unauthorized_source_slot_count"] += (
+                outcome.qualification_unauthorized_source_slot_count
+            )
+            state["qualification_statement_not_verbatim_count"] += (
+                outcome.qualification_statement_not_verbatim_count
+            )
             extracted = list(outcome.packets)
             for packet in extracted:
                 if packet.evidence_id not in state["quality_by_evidence_id"]:
@@ -889,6 +901,15 @@ class AgenticV9CampaignRuntime:
                 "qualification_round_count": qualification_round_count,
                 "qualification_provider_call_count": qualification_provider_call_count,
                 "qualification_failure_code": qualification_failure_code,
+                "qualification_unknown_source_id_count": state[
+                    "qualification_unknown_source_id_count"
+                ],
+                "qualification_unauthorized_source_slot_count": state[
+                    "qualification_unauthorized_source_slot_count"
+                ],
+                "qualification_statement_not_verbatim_count": state[
+                    "qualification_statement_not_verbatim_count"
+                ],
             }
         )
         final = executed.final_answer or FinalAnswerResult(
