@@ -57,6 +57,51 @@ def test_structured_question_locator_is_inherited_when_slot_has_none() -> None:
     assert anchors.locators == ("algorithm 2",)
 
 
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("According to algorithm aa, explain the update flow.", "algorithm aa"),
+        ("According to Fig a, explain the update flow.", "figure a"),
+        ("According to Section methods, explain the update flow.", "section methods"),
+    ],
+)
+def test_lowercase_locator_identifiers_are_normalized(
+    question: str, expected: str
+) -> None:
+    anchors = derive_slot_hard_anchors(
+        question=question,
+        slot=RequiredSlot(slot_id="S1", description="Explain the final update step"),
+    )
+
+    assert anchors.locators == (expected,)
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "Explain the Algorithm Update prose.",
+        "Extract the Table Results prose.",
+        "Summarize the Figure Overview prose.",
+    ],
+)
+def test_non_code_like_locator_words_are_not_hard_locators(description: str) -> None:
+    anchors = derive_slot_hard_anchors(
+        question="Summarize the source.",
+        slot=RequiredSlot(slot_id="S1", description=description),
+    )
+
+    assert anchors.locators == ()
+
+
+def test_mixed_case_locator_identifier_is_code_like() -> None:
+    anchors = derive_slot_hard_anchors(
+        question="Summarize the source.",
+        slot=RequiredSlot(slot_id="S1", description="Extract Algorithm ResNet."),
+    )
+
+    assert anchors.locators == ("algorithm resnet",)
+
+
 def test_slot_local_locator_prevents_question_locator_inheritance() -> None:
     anchors = derive_slot_hard_anchors(
         question="According to Algorithm 2, explain the update flow.",
@@ -134,6 +179,45 @@ def test_locator_anchor_matching_is_case_insensitive_for_lettered_ids() -> None:
 
     assert candidate_satisfies_hard_anchors(
         question="Extract the result.", slot=slot, packet=packet
+    )
+
+
+def test_fig_and_figure_aliases_share_the_same_locator_anchor() -> None:
+    slot = RequiredSlot(slot_id="S1", description="Extract the Fig a result.")
+    mismatched = _packet_for_anchor_test(
+        "Figure b reports the result.", section="Results"
+    )
+    exact = _packet_for_anchor_test("Figure a reports the result.", section="Results")
+
+    assert not candidate_satisfies_hard_anchors(
+        question="Extract the result.", slot=slot, packet=mismatched
+    )
+    assert candidate_satisfies_hard_anchors(
+        question="Extract the result.", slot=slot, packet=exact
+    )
+
+
+@pytest.mark.parametrize(
+    "candidate_statement",
+    [
+        "modela_v2 is reported in the source.",
+        "modela-v2 is reported in the source.",
+        "modela.v2 is reported in the source.",
+    ],
+)
+def test_technical_identifier_matching_does_not_use_fuzzy_boundaries(
+    candidate_statement: str,
+) -> None:
+    slot = RequiredSlot(slot_id="S1", description="Report the ModelA result.")
+    candidate = _packet_for_anchor_test(candidate_statement, section="Results")
+
+    assert not candidate_satisfies_hard_anchors(
+        question="Report the result.", slot=slot, packet=candidate
+    )
+
+    exact = _packet_for_anchor_test("modela is reported in the source.", section="Results")
+    assert candidate_satisfies_hard_anchors(
+        question="Report the result.", slot=slot, packet=exact
     )
 
 

@@ -3560,6 +3560,111 @@ async def test_runtime_preserves_arithmetic_and_unresolved_rounding_obligations(
     assert by_obligation["O2"]["qualified_reason"] == "rounding_method_not_stated"
 
 
+@pytest.mark.asyncio
+async def test_runtime_provider_row_missing_table_value_anchor_keeps_dependency_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        route="exact_structured",
+        intent="Read both exact Table 4 premises and compute their difference.",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Extract the Table 4 base value 12.5.",
+            ),
+            RequiredSlot(
+                slot_id="S2",
+                description="Extract the Table 4 reference value 7.5.",
+            ),
+        ],
+        synthesis_obligations=[
+            {
+                "obligation_id": "O1",
+                "kind": "aggregation",
+                "description": "Compute the difference from both Table 4 premises.",
+                "depends_on_slot_ids": ["S1", "S2"],
+            }
+        ],
+        evidence_extraction_required=True,
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=5,
+        runtime_token_budget=50_000,
+        resolved_source_scope=source_scope,
+    )
+
+    async def admission(**_kwargs: object) -> V9AdmissionContract:
+        return V9AdmissionContract(source_scope=source_scope, contract=contract)
+
+    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
+    planner_provider = _Provider(
+        planner_response={
+            "evidence_requirements": [
+                {"description": "Extract the Table 4 base value 12.5."},
+                {"description": "Extract the Table 4 reference value 7.5."},
+            ],
+            "synthesis_obligations": [
+                {
+                    "kind": "aggregation",
+                    "description": "Compute the difference from both Table 4 premises.",
+                    "depends_on_requirement_indexes": [0, 1],
+                }
+            ],
+            "response_constraints": [],
+            "comparison": None,
+            "confidence": 1.0,
+        }
+    )
+    curator_provider = _Provider(
+        curator_response={
+            "packets": [{"source_evidence_id": "E1", "slot_ids": ["S1", "S2"]}]
+        }
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content=(
+                        "Table 4 reports the base value 12.5 but omits the "
+                        "reference value."
+                    ),
+                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+                )
+            ]
+        ),
+        provider_factory=lambda purpose: (
+            planner_provider
+            if purpose == "atomic_contract_planning"
+            else curator_provider
+            if purpose == "evidence_extraction"
+            else _Provider(answer="The available premise is source-backed.")
+        ),
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question=(
+            "Read Table 4 values 12.5 and 7.5, then compute their difference."
+        ),
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "max_output_tokens": 2048},
+        trace_id="trace-table-anchor-gap",
+    )
+
+    v9 = result.agent_trace["agentic_v9"]
+    assert result.agent_trace["response_status"] == "qualified_partial"
+    assert v9["sufficiency"]["supported_slot_ids"] == ["S1"]
+    assert "S2" in v9["sufficiency"]["not_found_slot_ids"]
+    assert v9["metrics"]["unresolved_requirement_count"] >= 2
+    assert all(claim.get("obligation_id") != "O1" for claim in v9["final_claims"])
+
+
 def test_chunk_projection_infers_markdown_table_id_without_overwriting_existing() -> None:
     from evaluation.agentic_v9_campaign_runtime import _chunk_projection
 

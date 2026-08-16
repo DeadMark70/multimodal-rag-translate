@@ -327,6 +327,37 @@ async def test_provider_rows_keep_matching_slot_and_skip_missing_hard_anchor() -
 
 
 @pytest.mark.asyncio
+async def test_provider_rows_apply_case_insensitive_fig_alias_per_slot() -> None:
+    item = _item(
+        "evidence:figure-source",
+        "Figure b reports the result.",
+        slot_ids=["S1", "S2"],
+        table_id=None,
+    )
+    invoker = _RecordingInvoker(
+        {
+            "packets": [
+                {"source_evidence_id": "E1", "slot_ids": ["S1", "S2"]},
+            ]
+        }
+    )
+
+    outcome = await EvidenceExtractor(invoker).extract_with_outcome(
+        _contract(
+            _slot("S1", "Extract the Fig a result."),
+            _slot("S2", "Extract the Figure b result."),
+        ),
+        [item],
+        repairs_complete=True,
+        question="Compare the figure results.",
+    )
+
+    assert outcome.status == "provider_qualified"
+    assert len(outcome.packets) == 1
+    assert outcome.packets[0].slot_ids == ["S2"]
+
+
+@pytest.mark.asyncio
 async def test_missing_algorithm_locator_leaves_curated_slot_unresolved() -> None:
     item = _item(
         "evidence:related-update",

@@ -31,19 +31,18 @@ _TABLE_CAPTION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _HARD_LOCATOR_PATTERN = re.compile(
-    r"(?P<kind>(?i:algorithm|table|figure|fig\.|section))\s*[-:#.]?\s*"
-    r"(?P<identifier>\(?\d+[A-Za-z]{0,3}\)?"
-    r"(?:\.\d+[A-Za-z]{0,3}){0,4}(?:\([A-Za-z0-9]{1,3}\))?"
-    r"|[A-Z][A-Za-z0-9]*)",
+    r"(?P<kind>(?i:algorithm|table|figure|fig\.?|section))\s*[-:#.]?\s*"
+    r"(?P<identifier>\(?[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*\)?"
+    r"(?:\([A-Za-z0-9]{1,3}\))?)(?![A-Za-z0-9_-]|\.(?=[A-Za-z0-9_.-]))",
 )
 _HARD_LOCATOR_FULL_PATTERN = re.compile(
     rf"^{_HARD_LOCATOR_PATTERN.pattern}$"
 )
 _HARD_REGION_PATTERN = re.compile(r"\b(Abstract|Contribution|Method)\b", re.IGNORECASE)
 _TECHNICAL_IDENTIFIER_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9])(?P<identifier>[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*)(?![A-Za-z0-9])"
+    r"(?<![A-Za-z0-9_.-])(?P<identifier>[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*)(?![A-Za-z0-9_-]|\.(?=[A-Za-z0-9_.-]))"
 )
-_HARD_LOCATOR_ALIASES = {"fig.": "figure"}
+_HARD_LOCATOR_ALIASES = {"fig": "figure", "fig.": "figure"}
 _NON_TECHNICAL_IDENTIFIERS = frozenset(
     {
         "abstract",
@@ -159,7 +158,7 @@ def candidate_satisfies_hard_anchors(
         return False
 
     return all(
-        _contains_text_token(projection, identifier)
+        _contains_text_token(projection, identifier, identifier_token=True)
         for identifier in anchors.identifiers
     )
 
@@ -191,19 +190,50 @@ def _hard_locators_from_text(text: str) -> list[str]:
 def _hard_locator_key(value: object) -> tuple[str, str] | None:
     if not isinstance(value, str):
         return None
-    normalized = " ".join(value.split()).strip()
+    normalized = " ".join(value.split()).strip().rstrip(".,;:!?")
     if not normalized:
         return None
     match = _HARD_LOCATOR_FULL_PATTERN.fullmatch(normalized)
     if match is None:
         return None
-    kind = _HARD_LOCATOR_ALIASES.get(match.group("kind").casefold(), match.group("kind").casefold())
-    identifier = match.group("identifier").casefold()
+    kind = _HARD_LOCATOR_ALIASES.get(
+        match.group("kind").casefold(), match.group("kind").casefold()
+    )
+    raw_identifier = match.group("identifier")
+    identifier = raw_identifier.casefold()
+    if kind in {"algorithm", "table", "figure"} and not _is_code_like_locator_identifier(
+        raw_identifier
+    ):
+        return None
     return kind, identifier
 
 
 def _format_hard_locator(value: tuple[str, str]) -> str:
     return f"{value[0]} {value[1]}"
+
+
+def _is_code_like_locator_identifier(identifier: str) -> bool:
+    """Accept compact locator IDs while excluding ordinary title-case prose."""
+    normalized = identifier.strip().strip("()")
+    if not normalized:
+        return False
+    if re.fullmatch(
+        r"\d+[a-z]{0,3}(?:\.\d+[a-z]{0,3}){0,4}(?:\([a-z0-9]{1,3}\))?",
+        normalized,
+        re.IGNORECASE,
+    ):
+        return True
+    if not re.fullmatch(r"[a-z]+[0-9]*", normalized, re.IGNORECASE):
+        return False
+    if len(normalized) <= 3:
+        return True
+    letters = [character for character in normalized if character.isalpha()]
+    title_case = letters[0].isupper() and all(
+        character.islower() for character in letters[1:]
+    )
+    return not title_case and any(character.isupper() for character in letters) and any(
+        character.islower() for character in letters
+    )
 
 
 def _technical_identifiers(text: str) -> list[str]:
@@ -298,11 +328,19 @@ def _candidate_locators(packet: Any, projection: str) -> set[tuple[str, str]]:
     return values  # type: ignore[return-value]
 
 
-def _contains_text_token(projection: str, value: str) -> bool:
+def _contains_text_token(
+    projection: str, value: str, *, identifier_token: bool = False
+) -> bool:
     normalized = " ".join(value.split()).casefold()
     if not normalized:
         return False
-    pattern = rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])"
+    boundary = "a-z0-9_.-" if identifier_token else "a-z0-9"
+    right_boundary = (
+        "[a-z0-9_-]|\\.(?=[a-z0-9_.-])"
+        if identifier_token
+        else "[a-z0-9]"
+    )
+    pattern = rf"(?<![{boundary}]){re.escape(normalized)}(?!{right_boundary})"
     return re.search(pattern, projection.casefold()) is not None
 
 StructuredLocatorState = Literal[
