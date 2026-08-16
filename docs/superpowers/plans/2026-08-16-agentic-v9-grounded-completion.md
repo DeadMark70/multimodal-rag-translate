@@ -354,7 +354,9 @@ Cover:
 4. unknown obligation, unknown evidence, missing premise closure, or direct finding with derived support type is rejected;
 5. accepted claims alone determine ordered `used_evidence_ids`;
 6. packed but unreferenced evidence is not used;
-7. all high-risk claims are passed in one verifier batch; low-risk direct claims skip it.
+7. all high-risk claims are passed in one verifier batch; low-risk direct claims skip it;
+8. a Q18-style rationale is rejected when evidence mentions the same entities but does not support the stated reason;
+9. complete answers remain ordinary natural language without JSON or forced status headings, while partial answers add only a concise unresolved section.
 
 - [ ] **Step 3: Add RED provider-boundary tests**
 
@@ -391,7 +393,7 @@ Prove the campaign runtime:
 - [ ] **Step 7: Run GREEN and full final-path regression**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/test_agentic_v9_final_synthesis_context.py tests/test_agentic_v9_final_answer.py tests/test_agentic_v9_claim_verifier.py tests/test_agentic_v9_provider_boundary.py tests/test_agentic_v9_campaign_runtime.py tests/test_agentic_v9_execution_core.py tests/test_agentic_v9_budgeted_llm.py tests/test_agentic_rag_prompts.py -q
+.\.venv\Scripts\python.exe -m pytest tests/test_agentic_v9_final_synthesis_context.py tests/test_agentic_v9_final_answer.py tests/test_agentic_v9_provider_boundary.py tests/test_agentic_v9_campaign_runtime.py tests/test_agentic_v9_execution_core.py tests/test_agentic_v9_budgeted_llm.py tests/test_agentic_rag_prompts.py -q
 .\.venv\Scripts\python.exe -m ruff check data_base/agentic_v9/final_synthesis_context.py data_base/agentic_v9/schemas.py data_base/agentic_v9/provider_boundary.py data_base/agentic_v9/final_answer.py data_base/agentic_v9/claim_verifier.py data_base/agentic_v9/citation_renderer.py evaluation/agentic_v9_campaign_runtime.py tests/test_agentic_v9_final_synthesis_context.py tests/test_agentic_v9_final_answer.py tests/test_agentic_v9_provider_boundary.py tests/test_agentic_v9_campaign_runtime.py
 git diff --check
 ```
@@ -452,7 +454,7 @@ def reduce_terminal_status(
 Rules:
 
 - `insufficient`: no accepted claim remains.
-- `qualified_partial`: at least one accepted claim remains, but any required direct slot lacks a supported resolution/direct claim, any obligation lacks an accepted synthesized claim, any unresolved row remains, or any accepted claim has failed qualification.
+- `qualified_partial`: at least one renderable accepted claim remains, but any required direct slot lacks a supported resolution/direct claim, any obligation lacks an accepted synthesized claim, or any unresolved row remains. A rejected/qualified-reason candidate never satisfies coverage.
 - `complete`: every direct slot has supported qualified evidence and an accepted slot claim; every obligation has an accepted obligation claim; all premise references are packed/qualified and closed; no unresolved rows remain.
 
 `execution_core._prevent_response_status_upgrade()` may continue to cap a result against direct sufficiency, but it must not create `complete`; only the reducer can return `complete`.
