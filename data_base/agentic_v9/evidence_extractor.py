@@ -144,6 +144,13 @@ class EvidenceExtractor:
                 for evidence_id in evidence_ids
             },
         )
+        evidence_id_by_alias = {
+            f"E{index}": item.packet.evidence_id
+            for index, item in enumerate(curated_items, start=1)
+        }
+        alias_by_evidence_id = {
+            evidence_id: alias for alias, evidence_id in evidence_id_by_alias.items()
+        }
         if (
             not repairs_complete
             or not unresolved
@@ -162,6 +169,7 @@ class EvidenceExtractor:
                 slots=unresolved,
                 items=curated_items,
                 eligible_ids_by_slot=eligible_ids_by_slot,
+                alias_by_evidence_id=alias_by_evidence_id,
             )
         except BudgetExceededError:
             return EvidenceQualificationOutcome(
@@ -183,6 +191,7 @@ class EvidenceExtractor:
             slots=unresolved,
             items=curated_items,
             eligible_ids_by_slot=eligible_ids_by_slot,
+            evidence_id_by_alias=evidence_id_by_alias,
             final_claims=self._final_claims,
             rejection_counts=rejection_counts,
         )
@@ -227,8 +236,13 @@ class EvidenceExtractor:
         slots: Sequence[RequiredSlot],
         items: Sequence[EvidencePoolItem],
         eligible_ids_by_slot: Mapping[str, set[str]],
+        alias_by_evidence_id: Mapping[str, str],
     ) -> Any:
-        source_evidence = _render_source_evidence(items, eligible_ids_by_slot)
+        source_evidence = _render_source_evidence(
+            items,
+            eligible_ids_by_slot,
+            alias_by_evidence_id,
+        )
         messages = [
             {
                 "role": "user",
@@ -453,11 +467,13 @@ def _covered_slots(packets: Iterable[EvidencePacket]) -> set[str]:
 def _render_source_evidence(
     items: Sequence[EvidencePoolItem],
     eligible_ids_by_slot: Mapping[str, set[str]],
+    alias_by_evidence_id: Mapping[str, str],
 ) -> str:
     """Render source spans with their slot-specific authorization boundary."""
     return "\n".join(
         (
-            f"{item.packet.evidence_id} [eligible slots: {','.join(slot_ids)}]: "
+            f"{alias_by_evidence_id[item.packet.evidence_id]} "
+            f"[eligible slots: {','.join(slot_ids)}]: "
             f"{_source_text(item)}"
         )
         for item in items
@@ -488,6 +504,7 @@ def _parse_curated_packets(
     slots: Sequence[RequiredSlot],
     items: Sequence[EvidencePoolItem],
     eligible_ids_by_slot: Mapping[str, set[str]],
+    evidence_id_by_alias: Mapping[str, str],
     rejection_counts: _QualificationRejectionCounts,
     final_claims: list[FinalClaim] | None = None,
 ) -> list[EvidencePacket] | None:
@@ -524,20 +541,21 @@ def _parse_curated_packets(
             or not slot_ids
         ):
             continue
-        if source_id not in by_id:
+        actual_source_id = evidence_id_by_alias.get(source_id, source_id)
+        if actual_source_id not in by_id:
             rejection_counts.unknown_source_id += 1
             continue
         if not set(slot_ids).issubset(valid_slots) or any(
-            source_id not in eligible_ids_by_slot.get(slot_id, set())
+            actual_source_id not in eligible_ids_by_slot.get(slot_id, set())
             for slot_id in slot_ids
         ):
             rejection_counts.unauthorized_source_slot += 1
             continue
-        item = by_id[source_id]
+        item = by_id[actual_source_id]
         result = validate_prose_packet(
             _derived_packet(
                 item.packet,
-                evidence_id=f"curated:{source_id}:{':'.join(slot_ids)}",
+                evidence_id=f"curated:{actual_source_id}:{':'.join(slot_ids)}",
                 slot_ids=list(dict.fromkeys(slot_ids)),
                 statement=statement,
                 extractor_version="v9-prose-curator-1",

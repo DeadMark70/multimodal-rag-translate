@@ -262,7 +262,7 @@ async def test_structured_locator_unavailable_falls_back_to_batch_without_mismat
         {
             "packets": [
                 {
-                    "source_evidence_id": "E-unavailable",
+                    "source_evidence_id": "E1",
                     "slot_ids": ["S1"],
                     "statement": unavailable.packet.statement,
                 }
@@ -283,7 +283,8 @@ async def test_structured_locator_unavailable_falls_back_to_batch_without_mismat
     )
 
     assert [packet.evidence_id for packet in result] == ["curated:E-unavailable:S1"]
-    assert "E-unavailable" in invoker.calls[0]["messages"][0]["content"]
+    assert "E1 [eligible slots: S1]" in invoker.calls[0]["messages"][0]["content"]
+    assert "E-unavailable" not in invoker.calls[0]["messages"][0]["content"]
     assert "E-mismatched" not in invoker.calls[0]["messages"][0]["content"]
 
 
@@ -359,6 +360,7 @@ async def test_invalid_curator_packet_is_dropped_without_a_second_repair_call() 
 @pytest.mark.asyncio
 async def test_invalid_curator_packet_does_not_discard_valid_sibling() -> None:
     statement = "The decoder has two stages."
+    source_evidence_id = "evidence:0123456789abcdef01234567"
     invoker = _RecordingInvoker(
         {
             "packets": [
@@ -391,15 +393,18 @@ async def test_invalid_curator_packet_does_not_discard_valid_sibling() -> None:
             _slot("method", "Describe the decoder architecture."),
             _slot("other", "Describe another source fact."),
         ),
-        [_item("E1", statement, slot_ids=["method"])],
+        [_item(source_evidence_id, statement, slot_ids=["method"])],
         repairs_complete=True,
         question="What decoder is used?",
     )
 
     assert outcome.status == "provider_qualified"
     assert [packet.evidence_id for packet in outcome.packets] == [
-        "curated:E1:method"
+        f"curated:{source_evidence_id}:method"
     ]
+    prompt = invoker.calls[0]["messages"][0]["content"]
+    assert "E1 [eligible slots: method]" in prompt
+    assert source_evidence_id not in prompt
     assert outcome.qualification_unknown_source_id_count == 1
     assert outcome.qualification_unauthorized_source_slot_count == 1
     assert outcome.qualification_statement_not_verbatim_count == 1

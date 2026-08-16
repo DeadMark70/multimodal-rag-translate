@@ -77,7 +77,7 @@ class _Provider:
 
                 packets_data = []
                 for match in re.finditer(
-                    r"(evidence:[^\s\]]+)\s*\[eligible slots:\s*([^\]]+)\]:\s*([^\n\r]+)",
+                    r"(E\d+)\s*\[eligible slots:\s*([^\]]+)\]:\s*([^\n\r]+)",
                     content_str,
                 ):
                     ev_id, slots, stmt = match.groups()
