@@ -9,9 +9,9 @@ from typing import Any, Protocol
 from data_base.agentic_v9.citation_renderer import render_verified_answer
 from data_base.agentic_v9.claim_verifier import (
     ClaimVerifier,
+    gate_as_verdict,
+    gate_claim_deterministically,
     qualify_failed_claim,
-    requires_prose_verification,
-    verify_claim_deterministically,
 )
 from data_base.agentic_v9.final_synthesis_context import (
     build_final_synthesis_context,
@@ -117,23 +117,23 @@ class FinalAnswerRenderer:
         for claim in _claims_from_findings(
             draft, contract=contract, packets_by_id=packets_by_id
         ):
-            verdict = verify_claim_deterministically(claim, packets_by_id)
-            if verdict.reason in {
-                "claim_has_no_evidence_ids",
-                "claim_references_unpacked_or_unknown_evidence",
-                "invalid_evidence",
-                "missing_premise_closure",
-            }:
-                continue
-            if not verdict.supported:
-                accepted.append(qualify_failed_claim(claim, verdict))
-            elif requires_prose_verification(claim):
+            gate = gate_claim_deterministically(claim, packets_by_id)
+            if gate.status == "accepted":
+                accepted.append(claim)
+            elif gate.status == "verify":
                 pending_verification.append(claim)
             else:
-                accepted.append(claim)
+                accepted.append(
+                    qualify_failed_claim(
+                        claim,
+                        gate_as_verdict(gate),
+                    )
+                )
 
         verifier_verdicts = await ClaimVerifier(self._invoker).verify(
-            pending_verification, packets_by_id
+            pending_verification,
+            packets_by_id,
+            contract=contract,
         )
         for claim in pending_verification:
             verdict = verifier_verdicts[claim.claim_id]
@@ -248,8 +248,6 @@ def _claims_from_findings(
         packets = [packets_by_id.get(evidence_id) for evidence_id in evidence_ids]
         if (
             finding.slot_id not in valid_slots
-            or not evidence_ids
-            or any(packet is None for packet in packets)
             or any(
                 finding.slot_id not in packet.slot_ids
                 for packet in packets
@@ -276,18 +274,17 @@ def _claims_from_findings(
         if obligation is None:
             continue
         premise_ids = list(dict.fromkeys(finding.premise_evidence_ids))
-        if not premise_ids:
-            continue
         premise_packets = [packets_by_id.get(eid) for eid in premise_ids]
-        if any(p is None for p in premise_packets):
-            continue
         typed_premise_packets = [p for p in premise_packets if p is not None]
 
         # Validate that every dependency slot of this obligation contributes at least one premise evidence ID
         has_full_dependency_closure = True
         for dep_slot_id in obligation.depends_on_slot_ids:
             if not any(dep_slot_id in p.slot_ids for p in typed_premise_packets):
-                has_full_dependency_closure = False
+                # Leave unknown packet IDs for the deterministic gate so the
+                # rejected candidate keeps its provenance in the final result.
+                if not any(p is None for p in premise_packets):
+                    has_full_dependency_closure = False
                 break
         if not has_full_dependency_closure:
             continue

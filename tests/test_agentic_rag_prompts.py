@@ -132,3 +132,16 @@ def test_agentic_prompt_format_smoke():
     assert comparison_user == "Question: Compare Model A and Model B."
     assert "source" not in comparison_user.casefold()
     assert "What is X?" in final_synth
+
+
+def test_final_synthesis_prompt_separates_unresolved_and_derived_content():
+    template = get_agentic_rag_prompt_registry().get("final_synthesis").template
+    required_phrases = (
+        "Evidence insufficiency belongs in unresolved",
+        "Do not infer a rounding method",
+        "Distinguish source-stated facts from derived conclusions",
+        "all direct premise evidence IDs",
+    )
+
+    for phrase in required_phrases:
+        assert phrase.casefold() in template.casefold()

@@ -91,7 +91,7 @@ async def test_final_answer_uses_only_packed_evidence_and_renders_versioned_cita
                 "supported_findings": [
                     {
                         "slot_id": "score",
-                        "statement": "The score is 0.91.",
+                        "statement": "reported score is 0.91.",
                         "support_type": "direct",
                         "evidence_ids": ["E1"],
                         "premise_evidence_ids": [],
@@ -226,7 +226,9 @@ async def test_unpacked_evidence_cannot_support_a_final_claim() -> None:
         llm_invoker=invoker,
     )
 
-    assert result.claims == []
+    assert result.claims[0].qualified_reason == (
+        "claim_references_unpacked_or_unknown_evidence"
+    )
     assert result.used_evidence_ids == []
     assert result.response_status == "insufficient"
 
@@ -238,7 +240,7 @@ async def test_final_answer_accepts_the_typed_packer_packet_projection() -> None
             "supported_findings": [
                 {
                     "slot_id": "score",
-                    "statement": "The score is 0.91.",
+                    "statement": "reported score is 0.91.",
                     "support_type": "direct",
                     "evidence_ids": ["E1"],
                     "premise_evidence_ids": [],
@@ -628,3 +630,139 @@ async def test_synthesized_finding_with_missing_premise_closure_is_rejected() ->
     # O1 is rejected because it does not cover premise for S2
     assert len([c for c in result.claims if c.obligation_id == "O1"]) == 0
     assert result.response_status == "qualified_partial"
+
+
+@pytest.mark.asyncio
+async def test_final_answer_batches_paraphrase_and_obligation_verification_once() -> None:
+    contract = QueryContract(
+        route="bounded_compare",
+        intent="Compare scores and decoder structure.",
+        required_slots=[
+            RequiredSlot(slot_id="S1", description="Method A score"),
+            RequiredSlot(slot_id="S2", description="Method B score"),
+            RequiredSlot(slot_id="S3", description="Decoder structure"),
+        ],
+        synthesis_obligations=[
+            SynthesisObligation(
+                obligation_id="O1",
+                kind="aggregation",
+                description="Arithmetic score difference",
+                depends_on_slot_ids=["S1", "S2"],
+            ),
+            SynthesisObligation(
+                obligation_id="O2",
+                kind="qualification",
+                description="Rounded decoder metric",
+                depends_on_slot_ids=["S3"],
+            ),
+        ],
+    )
+    packets = [
+        _packet("E1", "S1", "Method A score is 85."),
+        _packet("E2", "S2", "Method B score is 80."),
+        _packet("E3", "S3", "The decoder consists of two stages."),
+    ]
+    invoker = _RecordingInvoker(
+        {
+            "supported_findings": [
+                {
+                    "slot_id": "S1",
+                    "statement": "Method A score is 85.",
+                    "evidence_ids": ["E1"],
+                    "premise_evidence_ids": [],
+                },
+                {
+                    "slot_id": "S3",
+                    "statement": "The decoder has two stages.",
+                    "evidence_ids": ["E3"],
+                    "premise_evidence_ids": [],
+                },
+            ],
+            "synthesized_findings": [
+                {
+                    "obligation_id": "O1",
+                    "statement": "Method A exceeds Method B by 5 points.",
+                    "premise_evidence_ids": ["E1", "E2"],
+                },
+                {
+                    "obligation_id": "O2",
+                    "statement": "The decoder rounds to two stages.",
+                    "premise_evidence_ids": ["E3"],
+                },
+            ],
+            "unresolved_requirements": [],
+            "unresolved_obligations": [],
+        },
+        {
+            "verdicts": [
+                {"claim_id": "claim-2", "supported": True, "reason": None},
+                {"claim_id": "claim-3", "supported": True, "reason": None},
+                {
+                    "claim_id": "claim-4",
+                    "supported": False,
+                    "reason": "rounding_method_not_stated",
+                },
+            ]
+        },
+    )
+
+    result = await generate_final_answer(
+        question="Compare the reported scores and decoder structure.",
+        contract=contract,
+        packed_packets=packets,
+        slot_resolutions=[
+            SlotResolution(slot_id="S1", status="supported", evidence_ids=["E1"]),
+            SlotResolution(slot_id="S2", status="supported", evidence_ids=["E2"]),
+            SlotResolution(slot_id="S3", status="supported", evidence_ids=["E3"]),
+        ],
+        llm_invoker=invoker,
+    )
+
+    accepted_ids = {
+        claim.claim_id
+        for claim in result.claims
+        if claim.qualified_reason is None
+    }
+    rounding_claim = next(
+        claim for claim in result.claims if claim.obligation_id == "O2"
+    )
+    assert [call["purpose"] for call in invoker.calls] == [
+        "final_answer",
+        "claim_verifier",
+    ]
+    assert result.claim_verifier_call_count == 1
+    assert accepted_ids == {"claim-1", "claim-2", "claim-3"}
+    assert rounding_claim.qualified_reason == "rounding_method_not_stated"
+    assert result.response_status == "qualified_partial"
+
+
+@pytest.mark.asyncio
+async def test_verifier_unavailable_leaves_all_pending_claims_unresolved() -> None:
+    invoker = _RecordingInvoker(
+        {
+            "supported_findings": [
+                {
+                    "slot_id": "score",
+                    "statement": "The decoder has two stages.",
+                    "evidence_ids": ["E1"],
+                    "premise_evidence_ids": [],
+                }
+            ],
+            "unresolved_requirements": [],
+        }
+    )
+
+    result = await generate_final_answer(
+        question="What is the decoder structure?",
+        contract=_contract(),
+        packed_packets=[_packet(statement="The decoder consists of two stages.")],
+        slot_resolutions=[
+            SlotResolution(slot_id="score", status="supported", evidence_ids=["E1"])
+        ],
+        llm_invoker=invoker,
+    )
+
+    assert result.claim_verifier_call_count == 1
+    assert result.claims[0].qualified_reason == "claim_verifier_unavailable_or_invalid"
+    assert result.used_evidence_ids == []
+    assert result.response_status == "insufficient"
