@@ -194,12 +194,13 @@ def test_shared_evidence_qualification_provider_owns_model_and_schema_binding(
         "schema": response_schema,
     }
     assert response_schema["additionalProperties"] is False
-    assert response_schema["properties"]["packets"]["items"]["additionalProperties"] is False
-    assert response_schema["properties"]["packets"]["items"]["required"] == [
+    packet_item_schema = response_schema["properties"]["packets"]["items"]
+    assert packet_item_schema["additionalProperties"] is False
+    assert packet_item_schema["required"] == [
         "source_evidence_id",
         "slot_ids",
-        "statement",
     ]
+    assert "statement" not in packet_item_schema["properties"]
 
 
 def test_campaign_contract_planning_uses_shared_provider_boundary(

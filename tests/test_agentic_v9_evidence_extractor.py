@@ -175,7 +175,6 @@ async def test_prose_curator_runs_once_only_after_repair_and_derives_source_boun
                 {
                     "source_evidence_id": "E1",
                     "slot_ids": ["method"],
-                    "statement": "The method uses a two-stage decoder for small lesions.",
                 }
             ]
         }
@@ -217,12 +216,10 @@ async def test_prose_curator_batches_two_generic_slots_in_one_evidence_extract_c
                 {
                     "source_evidence_id": "E1",
                     "slot_ids": ["S1"],
-                    "statement": first.packet.statement,
                 },
                 {
                     "source_evidence_id": "E2",
                     "slot_ids": ["S2"],
-                    "statement": second.packet.statement,
                 },
             ]
         }
@@ -264,7 +261,6 @@ async def test_structured_locator_unavailable_falls_back_to_batch_without_mismat
                 {
                     "source_evidence_id": "E1",
                     "slot_ids": ["S1"],
-                    "statement": unavailable.packet.statement,
                 }
             ]
         }
@@ -340,7 +336,6 @@ async def test_invalid_curator_packet_is_dropped_without_a_second_repair_call() 
                 {
                     "source_evidence_id": "unknown-id",
                     "slot_ids": ["method"],
-                    "statement": "The decoder has three stages.",
                 }
             ]
         }
@@ -367,22 +362,14 @@ async def test_invalid_curator_packet_does_not_discard_valid_sibling() -> None:
                 {
                     "source_evidence_id": "unknown-id",
                     "slot_ids": ["method"],
-                    "statement": statement,
                 },
                 {
                     "source_evidence_id": "E1",
                     "slot_ids": ["other"],
-                    "statement": statement,
                 },
                 {
                     "source_evidence_id": "E1",
                     "slot_ids": ["method"],
-                    "statement": "The decoder has three stages.",
-                },
-                {
-                    "source_evidence_id": "E1",
-                    "slot_ids": ["method"],
-                    "statement": statement,
                 },
             ]
         }
@@ -407,7 +394,7 @@ async def test_invalid_curator_packet_does_not_discard_valid_sibling() -> None:
     assert source_evidence_id not in prompt
     assert outcome.qualification_unknown_source_id_count == 1
     assert outcome.qualification_unauthorized_source_slot_count == 1
-    assert outcome.qualification_statement_not_verbatim_count == 1
+    assert outcome.qualification_statement_not_verbatim_count == 0
 
 
 @pytest.mark.asyncio
@@ -423,7 +410,6 @@ async def test_high_risk_curator_prose_is_handed_to_final_claims_not_evidence() 
                 {
                     "source_evidence_id": "E1",
                     "slot_ids": ["method"],
-                    "statement": "Model A outperforms Model B on the held-out dataset.",
                 }
             ]
         }
@@ -453,7 +439,6 @@ async def test_unrelated_verbatim_quote_rejected_for_unauthorized_slot() -> None
                 {
                     "source_evidence_id": "E1",
                     "slot_ids": ["unrelated_framework"],
-                    "statement": "The authors used PyTorch 2.0.",
                 }
             ]
         }
@@ -537,17 +522,14 @@ async def test_one_batch_call_handles_all_unresolved_slots_without_per_slot_call
                 {
                     "source_evidence_id": "E1",
                     "slot_ids": ["slot_1"],
-                    "statement": "Alpha architecture detail.",
                 },
                 {
                     "source_evidence_id": "E2",
                     "slot_ids": ["slot_2"],
-                    "statement": "Beta loss formulation.",
                 },
                 {
                     "source_evidence_id": "E3",
                     "slot_ids": ["slot_3"],
-                    "statement": "Gamma dataset partition.",
                 },
             ]
         }
@@ -567,8 +549,8 @@ async def test_one_batch_call_handles_all_unresolved_slots_without_per_slot_call
 
     assert len(invoker.calls) == 1
     assert len(result) == 3
-    assert all(p.extractor_version == "v9-prose-curator-1" for p in result)
-    assert all(p.prompt_version == "1" for p in result)
+    assert all(p.extractor_version == "v9-id-qualification-1" for p in result)
+    assert all(p.prompt_version == "2" for p in result)
     assert all(p.validation_status == "quote_bound" for p in result)
     assert all(p.source.source_span_hash is not None for p in result)
 
@@ -646,7 +628,6 @@ async def test_content_block_provider_response_qualifies_source_bound_packet() -
                             {
                                 "source_evidence_id": "E1",
                                 "slot_ids": ["S1"],
-                                "statement": "a two-stage decoder",
                             }
                         ]
                     }
@@ -701,7 +682,6 @@ async def test_q5_positive_fixture_qualifies_miccss_css_prose_architecture() -> 
                 {
                     "source_evidence_id": "E-nnmamba-1",
                     "slot_ids": ["miccss_css_fusion"],
-                    "statement": statement,
                 }
             ]
         }

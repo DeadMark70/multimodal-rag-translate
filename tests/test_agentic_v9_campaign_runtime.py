@@ -80,14 +80,13 @@ class _Provider:
                     r"(E\d+)\s*\[eligible slots:\s*([^\]]+)\]:\s*([^\n\r]+)",
                     content_str,
                 ):
-                    ev_id, slots, stmt = match.groups()
+                    ev_id, slots, _ = match.groups()
                     packets_data.append(
                         {
                             "source_evidence_id": ev_id,
                             "slot_ids": [
                                 s.strip() for s in slots.split(",") if s.strip()
                             ],
-                            "statement": stmt.strip(),
                         }
                     )
                 return SimpleNamespace(
@@ -2566,7 +2565,6 @@ async def test_campaign_runtime_qualifies_candidate_evidence_via_batch_prose_cur
                         {
                             "source_evidence_id": "unknown-id",
                             "slot_ids": ["S1"],
-                            "statement": statement,
                         },
                         {
                             "source_evidence_id": (
@@ -2575,7 +2573,6 @@ async def test_campaign_runtime_qualifies_candidate_evidence_via_batch_prose_cur
                                 else "evidence:dummy"
                             ),
                             "slot_ids": ["unknown-slot"],
-                            "statement": statement,
                         },
                         {
                             "source_evidence_id": (
@@ -2584,17 +2581,7 @@ async def test_campaign_runtime_qualifies_candidate_evidence_via_batch_prose_cur
                                 else "evidence:dummy"
                             ),
                             "slot_ids": ["S1"],
-                            "statement": "The method uses a three-stage decoder.",
                         },
-                        {
-                            "source_evidence_id": (
-                                captured_candidates[0].evidence_id
-                                if captured_candidates
-                                else "evidence:dummy"
-                            ),
-                            "slot_ids": ["S1"],
-                            "statement": statement,
-                        }
                     ]
                 }
             ),
@@ -2671,7 +2658,7 @@ async def test_campaign_runtime_qualifies_candidate_evidence_via_batch_prose_cur
     assert metrics["semantic_qualification"] == "provider_qualified"
     assert metrics["qualification_unknown_source_id_count"] == 1
     assert metrics["qualification_unauthorized_source_slot_count"] == 1
-    assert metrics["qualification_statement_not_verbatim_count"] == 1
+    assert metrics["qualification_statement_not_verbatim_count"] == 0
 
 
 @pytest.mark.asyncio

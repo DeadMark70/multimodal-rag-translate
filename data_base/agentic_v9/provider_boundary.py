@@ -84,12 +84,10 @@ def evidence_qualification_response_schema() -> dict[str, Any]:
                             "minItems": 1,
                             "items": {"type": "string", "minLength": 1},
                         },
-                        "statement": {"type": "string", "minLength": 1},
                     },
                     "required": [
                         "source_evidence_id",
                         "slot_ids",
-                        "statement",
                     ],
                 },
             }

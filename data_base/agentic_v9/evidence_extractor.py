@@ -527,40 +527,46 @@ def _parse_curated_packets(
     by_id = {item.packet.evidence_id: item for item in items}
     packets: list[EvidencePacket] = []
     for raw in raw_packets:
-        if not isinstance(raw, Mapping) or set(raw) != {"source_evidence_id", "slot_ids", "statement"}:
+        if not isinstance(raw, Mapping) or set(raw) != {"source_evidence_id", "slot_ids"}:
             continue
-        source_id, slot_ids, statement = (
-            raw["source_evidence_id"], raw["slot_ids"], raw["statement"]
-        )
+        source_id, slot_ids = raw.get("source_evidence_id"), raw.get("slot_ids")
         if (
             not isinstance(source_id, str)
-            or not isinstance(statement, str)
-            or not statement.strip()
+            or not source_id.strip()
             or not isinstance(slot_ids, list)
-            or not all(isinstance(slot_id, str) for slot_id in slot_ids)
             or not slot_ids
+            or not all(isinstance(slot_id, str) and slot_id.strip() for slot_id in slot_ids)
         ):
             continue
         actual_source_id = evidence_id_by_alias.get(source_id, source_id)
         if actual_source_id not in by_id:
             rejection_counts.unknown_source_id += 1
             continue
-        if not set(slot_ids).issubset(valid_slots) or any(
+        deduped_slot_ids = list(dict.fromkeys(slot_ids))
+        if not set(deduped_slot_ids).issubset(valid_slots) or any(
             actual_source_id not in eligible_ids_by_slot.get(slot_id, set())
-            for slot_id in slot_ids
+            for slot_id in deduped_slot_ids
         ):
             rejection_counts.unauthorized_source_slot += 1
             continue
         item = by_id[actual_source_id]
+        accepted = _derived_packet(
+            item.packet,
+            evidence_id=f"curated:{actual_source_id}:{':'.join(deduped_slot_ids)}",
+            slot_ids=deduped_slot_ids,
+            statement=item.packet.statement,
+            raw_value=item.packet.raw_value,
+            normalized_value=item.packet.normalized_value,
+            unit=item.packet.unit,
+            calculation_operation=item.packet.calculation_operation,
+            premise_evidence_ids=list(item.packet.premise_evidence_ids),
+            display_precision=item.packet.display_precision,
+            rounding_mode=item.packet.rounding_mode,
+            extractor_version="v9-id-qualification-1",
+            prompt_version="2",
+        )
         result = validate_prose_packet(
-            _derived_packet(
-                item.packet,
-                evidence_id=f"curated:{actual_source_id}:{':'.join(slot_ids)}",
-                slot_ids=list(dict.fromkeys(slot_ids)),
-                statement=statement,
-                extractor_version="v9-prose-curator-1",
-                prompt_version="1",
-            ),
+            accepted,
             source=item.packet,
             source_text=_source_text(item),
         )

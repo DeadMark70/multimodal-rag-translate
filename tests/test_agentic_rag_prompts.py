@@ -115,7 +115,12 @@ def test_agentic_prompt_format_smoke():
     assert "[Task 1] A" in conflict
     assert "[1] doc text" in retrieval
     assert "doc-1, doc-2" in fact_state
+    assert "What is X?" in evidence_extract
+    assert "slot-1" in evidence_extract
     assert "E1: source text" in evidence_extract
+    assert "identifiers only" in evidence_extract.casefold()
+    assert "do not return, copy, or rephrase source text" in evidence_extract.casefold()
+    assert get_agentic_rag_prompt_registry().get("evidence_extract").version == 2
     assert "independent comparison subjects" in comparison_system
     assert "only comparison dimensions explicitly requested by the question" in (
         comparison_system
