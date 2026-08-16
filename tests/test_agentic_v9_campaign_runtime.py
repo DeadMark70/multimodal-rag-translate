@@ -55,8 +55,11 @@ class _Provider:
         self.curator_response = curator_response
 
         async def _default_ainvoke(messages: Any) -> Any:
-            if isinstance(messages, list) and messages and isinstance(messages[0], dict):
-                content_str = str(messages[0].get("content", ""))
+            if isinstance(messages, list):
+                content_str = " ".join(
+                    str(m.get("content", "")) if isinstance(m, dict) else str(m)
+                    for m in messages
+                )
             else:
                 content_str = str(messages)
             if (
@@ -130,6 +133,167 @@ class _Provider:
                         "total_tokens": 19,
                     },
                 )
+            if (
+                "verdicts" in content_str
+                or "ClaimVerificationResponse" in content_str
+                or "Verify only the listed claims" in content_str
+            ):
+                import re
+
+                claim_ids = re.findall(r'"claim_id":\s*"([^"]+)"', content_str) or ["claim-1"]
+                return SimpleNamespace(
+                    content=json.dumps(
+                        {
+                            "verdicts": [
+                                {"claim_id": cid, "supported": True, "reason": None}
+                                for cid in claim_ids
+                            ]
+                        }
+                    ),
+                    usage_metadata={
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "total_tokens": 15,
+                    },
+                )
+            if (
+                "supported_findings" in content_str
+                or "synthesized_findings" in content_str
+                or "Use only supplied evidence" in content_str
+            ):
+                if isinstance(self.answer, (dict, list)):
+                    return SimpleNamespace(
+                        content=json.dumps(self.answer)
+                        if not isinstance(self.answer, str)
+                        else self.answer,
+                        usage_metadata={
+                            "input_tokens": 12,
+                            "output_tokens": 7,
+                            "total_tokens": 19,
+                        },
+                    )
+                if hasattr(self.answer, "content"):
+                    return self.answer
+
+                final_context = {}
+                for m in messages if isinstance(messages, list) else []:
+                    c = m.get("content", "") if isinstance(m, dict) else ""
+                    if isinstance(c, str) and c.strip().startswith("{") and "required_slots" in c:
+                        try:
+                            final_context = json.loads(c)
+                            break
+                        except Exception:
+                            pass
+
+                statement = (
+                    self.answer
+                    if isinstance(self.answer, str)
+                    else "The reported score is 0.91."
+                )
+
+                supported_findings = []
+                synthesized_findings = []
+                unresolved_reqs = []
+                unresolved_obs = []
+
+                if final_context:
+                    packed_evs = final_context.get("packed_evidence", [])
+                    slot_to_evs: dict[str, list[str]] = {}
+                    for ev in packed_evs:
+                        for sid in ev.get("slot_ids", []):
+                            slot_to_evs.setdefault(sid, []).append(ev.get("evidence_id"))
+
+                    for slot in final_context.get("required_slots", []):
+                        sid = slot.get("slot_id")
+                        ev_ids = slot_to_evs.get(sid, [])
+                        if ev_ids:
+                            packet_stmt = next(
+                                (
+                                    ev.get("statement")
+                                    for ev in packed_evs
+                                    if ev.get("evidence_id") in ev_ids
+                                    and ev.get("statement")
+                                ),
+                                statement,
+                            )
+                            supported_findings.append(
+                                {
+                                    "slot_id": sid,
+                                    "statement": packet_stmt,
+                                    "evidence_ids": ev_ids,
+                                    "premise_evidence_ids": [],
+                                }
+                            )
+                        else:
+                            unresolved_reqs.append(
+                                {
+                                    "slot_id": sid,
+                                    "reason": "No evidence",
+                                }
+                            )
+
+                    for ob in final_context.get("synthesis_obligations", []):
+                        oid = ob.get("obligation_id")
+                        deps = ob.get("depends_on_slot_ids", [])
+                        dep_evs = []
+                        all_deps_met = True
+                        for dep_sid in deps:
+                            evs = slot_to_evs.get(dep_sid, [])
+                            if not evs:
+                                all_deps_met = False
+                                break
+                            dep_evs.extend(evs)
+                        if all_deps_met and dep_evs:
+                            synthesized_findings.append(
+                                {
+                                    "obligation_id": oid,
+                                    "statement": f"{statement} ({ob.get('description', oid)})",
+                                    "premise_evidence_ids": list(dict.fromkeys(dep_evs)),
+                                }
+                            )
+                        else:
+                            unresolved_obs.append(
+                                {
+                                    "obligation_id": oid,
+                                    "reason": "Missing dependency premises",
+                                }
+                            )
+                else:
+                    import re
+
+                    ev_ids = (
+                        re.findall(r'"evidence_id":\s*"([^"]+)"', content_str)
+                        or ["E1"]
+                    )
+                    slot_ids = (
+                        re.findall(r'"slot_id":\s*"([^"]+)"', content_str)
+                        or ["S1"]
+                    )
+                    first_slot = slot_ids[0] if slot_ids else "S1"
+                    supported_findings.append(
+                        {
+                            "slot_id": first_slot,
+                            "statement": statement,
+                            "evidence_ids": ev_ids[:1],
+                            "premise_evidence_ids": [],
+                        }
+                    )
+
+                return SimpleNamespace(
+                    content=json.dumps(
+                        {
+                            "supported_findings": supported_findings,
+                            "synthesized_findings": synthesized_findings,
+                            "unresolved_requirements": unresolved_reqs,
+                            "unresolved_obligations": unresolved_obs,
+                        }
+                    ),
+                    usage_metadata={
+                        "input_tokens": 12,
+                        "output_tokens": 7,
+                        "total_tokens": 19,
+                    },
+                )
             if hasattr(self.answer, "content"):
                 return self.answer
             return SimpleNamespace(
@@ -187,7 +351,7 @@ async def test_atomic_contract_planner_provider_binds_schema_without_replacing_r
     assert response.usage_metadata["total_tokens"] == 10
 
 
-def test_noncomparison_provider_is_not_schema_bound(
+def test_generic_provider_is_not_schema_bound(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _UnboundProvider:
@@ -197,7 +361,44 @@ def test_noncomparison_provider_is_not_schema_bound(
     provider = _UnboundProvider()
     monkeypatch.setattr(runtime_module, "get_llm", lambda purpose: provider)
 
-    assert runtime_module._provider_for_purpose("final_answer") is provider
+    assert runtime_module._provider_for_purpose("synthesizer") is provider
+
+
+@pytest.mark.asyncio
+async def test_final_synthesis_provider_binds_schema_without_replacing_raw_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = SimpleNamespace(
+        content='{"supported_findings":[],"synthesized_findings":[],"unresolved_requirements":[],"unresolved_obligations":[]}',
+        usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+    )
+    captured: dict[str, object] = {}
+
+    class _BindableProvider:
+        def bind(self, **kwargs: object) -> "_BindableProvider":
+            captured.update(kwargs)
+            return self
+
+        async def ainvoke(self, messages: object) -> object:
+            del messages
+            return raw
+
+    monkeypatch.setattr(
+        provider_boundary_module,
+        "get_llm",
+        lambda purpose: _BindableProvider(),
+    )
+
+    provider = runtime_module._provider_for_purpose("final_answer")
+    response = await provider.ainvoke([])
+
+    assert captured["response_mime_type"] == "application/json"
+    assert captured["response_json_schema"] == (
+        provider_boundary_module.project_final_synthesis_provider_schema(
+            provider_boundary_module.final_synthesis_response_schema()
+        )
+    )
+    assert response is raw
 
 
 class _RecordingObserver:
@@ -1219,13 +1420,12 @@ async def test_atomic_contract_planning_high_confidence_deterministic_zero_plann
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
     assert v9["metrics"]["semantic_qualification"] == "provider_qualified"
     assert len(observed_calls) == 2
-    # Assert final prompt message is strictly Question: ...\n\nEvidence:\n... unchanged
+    # Assert final prompt message is the structured final synthesis payload
     final_messages = observed_calls[-1]["messages"]
     assert final_messages[0]["role"] == "system"
     assert final_messages[1]["role"] == "user"
-    assert final_messages[1]["content"].startswith(
-        "Question: 1. What is the reported score in Table 1? 2. What is the method?\n\nEvidence:\n"
-    )
+    assert '"question":"1. What is the reported score in Table 1? 2. What is the method?"' in final_messages[1]["content"]
+    assert '"packed_evidence"' in final_messages[1]["content"]
 
 
 @pytest.mark.asyncio
@@ -2590,9 +2790,28 @@ async def test_campaign_runtime_qualifies_candidate_evidence_via_batch_prose_cur
     )
 
     final_provider = Mock()
+    final_provider.bind = Mock(return_value=final_provider)
     final_provider.ainvoke = AsyncMock(
-        return_value=SimpleNamespace(
-            content="The model uses a two-stage decoder.",
+        side_effect=lambda messages: SimpleNamespace(
+            content=json.dumps(
+                {
+                    "supported_findings": [
+                        {
+                            "slot_id": "S1",
+                            "statement": statement,
+                            "evidence_ids": [
+                                f"curated:{captured_candidates[0].evidence_id}:S1"
+                                if captured_candidates
+                                else "curated:evidence:dummy:S1"
+                            ],
+                            "premise_evidence_ids": [],
+                        }
+                    ],
+                    "synthesized_findings": [],
+                    "unresolved_requirements": [],
+                    "unresolved_obligations": [],
+                }
+            ),
             usage_metadata={"input_tokens": 30, "output_tokens": 10},
         )
     )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -22,8 +23,22 @@ from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
 
 class _LegacyTextProvider:
     def __init__(self, purpose: str) -> None:
+        self.bind = lambda **_kwargs: self
+
         async def invoke(messages: list[dict[str, object]]) -> SimpleNamespace:
-            content: object = "The authorized source reports a score of 0.91."
+            content: object = {
+                "supported_findings": [
+                    {
+                        "slot_id": "S1",
+                        "statement": "Table 1 reports a score of 0.91.",
+                        "evidence_ids": ["curated:evidence:ec6fb45f1873130d249d8213:S1"],
+                        "premise_evidence_ids": [],
+                    }
+                ],
+                "synthesized_findings": [],
+                "unresolved_requirements": [],
+                "unresolved_obligations": [],
+            }
             if purpose == "evidence_extraction":
                 content = {
                     "packets": [
@@ -33,6 +48,28 @@ class _LegacyTextProvider:
                         }
                     ]
                 }
+            elif purpose in {"final_answer", "agentic_v9_final_answer"}:
+                for m in messages if isinstance(messages, list) else []:
+                    c = m.get("content", "") if isinstance(m, dict) else ""
+                    if isinstance(c, str) and '"packed_evidence"' in c:
+                        try:
+                            ctx = json.loads(c)
+                            ev_ids = [ev["evidence_id"] for ev in ctx.get("packed_evidence", [])]
+                            content = {
+                                "supported_findings": [
+                                    {
+                                        "slot_id": "S1",
+                                        "statement": "Table 1 reports a score of 0.91.",
+                                        "evidence_ids": ev_ids,
+                                        "premise_evidence_ids": [],
+                                    }
+                                ],
+                                "synthesized_findings": [],
+                                "unresolved_requirements": [],
+                                "unresolved_obligations": [],
+                            }
+                        except Exception:
+                            pass
             return SimpleNamespace(
                 content=content,
                 usage_metadata={"input_tokens": 12, "output_tokens": 9},
@@ -107,7 +144,7 @@ async def test_missing_visual_capability_preserves_authorized_text_answer(
     )
 
     assert result.agent_trace["response_status"] == "complete"
-    assert result.answer == "The authorized source reports a score of 0.91."
+    assert "Table 1 reports a score of 0.91." in result.answer
     assert result.documents
     assert result.source_doc_ids == ["doc-1"]
     v9 = result.agent_trace["agentic_v9"]
@@ -122,4 +159,3 @@ async def test_missing_visual_capability_preserves_authorized_text_answer(
         v9["visual_execution"]["state"]
         == "required_but_not_satisfied"
     )
-

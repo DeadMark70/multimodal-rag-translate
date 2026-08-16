@@ -41,6 +41,8 @@ class ClaimVerificationResponse(BaseModel):
 
 def requires_prose_verification(claim: FinalClaim) -> bool:
     """Identify claims deterministic checks cannot establish exactly."""
+    if claim.obligation_id is not None:
+        return False
     return claim.support_type in {"comparative_inference", "qualified"} or bool(
         _HIGH_RISK.search(claim.statement)
     )
@@ -86,7 +88,10 @@ def verify_claim_deterministically(
             supported=False,
             reason="calculated_claim_lacks_calculated_evidence",
         )
-    if not _exact_numbers_are_supported(claim.statement, typed_packets):
+    is_synthesis = claim.obligation_id is not None or claim.support_type != "direct"
+    if not _exact_numbers_are_supported(
+        claim.statement, typed_packets, is_synthesis=is_synthesis
+    ):
         return ClaimVerdict(
             claim_id=claim.claim_id,
             supported=False,
@@ -201,10 +206,15 @@ def _has_premise_closure(
 
 
 def _exact_numbers_are_supported(
-    statement: str, packets: Iterable[EvidencePacket]
+    statement: str,
+    packets: Iterable[EvidencePacket],
+    *,
+    is_synthesis: bool = False,
 ) -> bool:
     claim_numbers = {_normalize_number(value) for value in _NUMBERS.findall(statement)}
     if not claim_numbers:
+        if is_synthesis:
+            return True
         return any(statement.strip() == packet.statement.strip() for packet in packets)
     evidence_numbers = {
         _normalize_number(value)

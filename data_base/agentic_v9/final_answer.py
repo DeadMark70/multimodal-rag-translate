@@ -13,8 +13,11 @@ from data_base.agentic_v9.claim_verifier import (
     requires_prose_verification,
     verify_claim_deterministically,
 )
+from data_base.agentic_v9.final_synthesis_context import (
+    build_final_synthesis_context,
+)
 from data_base.agentic_v9.schemas import (
-    ConflictCandidate,
+    ClaimSupportType,
     EvidencePacket,
     FinalAnswerDraft,
     FinalAnswerResult,
@@ -24,6 +27,7 @@ from data_base.agentic_v9.schemas import (
     ResponseStatus,
     SlotResolution,
     SufficiencyReport,
+    UnresolvedObligation,
     UnresolvedRequirement,
 )
 
@@ -31,6 +35,14 @@ from data_base.agentic_v9.schemas import (
 _FINAL_GENERATION_UNAVAILABLE_ANSWER = (
     "Final generation was unavailable; evidence is returned as a qualified partial."
 )
+
+_OBLIGATION_SUPPORT_TYPE: dict[str, ClaimSupportType] = {
+    "aggregation": "calculated",
+    "comparison": "comparative_inference",
+    "selection": "comparative_inference",
+    "causal": "comparative_inference",
+    "qualification": "qualified",
+}
 
 
 class PackedEvidenceProjection(Protocol):
@@ -70,9 +82,11 @@ class FinalAnswerRenderer:
                         "role": "system",
                         "content": (
                             "Use only supplied evidence. Return JSON with exactly "
-                            "supported_findings and unresolved_requirements. Every finding "
-                            "must name one required slot and list only packed evidence_ids "
-                            "or premise_evidence_ids. Do not return prose outside the JSON."
+                            "supported_findings, synthesized_findings, unresolved_requirements, "
+                            "and unresolved_obligations. Every supported finding must name one "
+                            "required slot (S#) and list only packed evidence_ids. Every synthesized "
+                            "finding must name one obligation (O#) and list all required premise_evidence_ids. "
+                            "Do not return prose outside the JSON."
                         ),
                     },
                     {
@@ -137,21 +151,26 @@ class FinalAnswerRenderer:
                 for evidence_id in [*claim.evidence_ids, *claim.premise_evidence_ids]
             )
         )
-        unresolved_requirements = _unresolved_requirements(
+        unresolved_requirements, unresolved_obligations = _unresolved_items(
             draft=draft,
             contract=contract,
             slot_resolutions=slot_resolutions,
             supported_claims=supported_claims,
         )
         response_status = _response_status(
-            supported_claims, contract, slot_resolutions
+            supported_claims,
+            contract,
+            slot_resolutions,
+            unresolved_requirements=unresolved_requirements,
+            unresolved_obligations=unresolved_obligations,
         )
+        all_unresolved = list(unresolved_requirements) + list(unresolved_obligations)
         return FinalAnswerResult(
             response_status=response_status,
             answer=render_verified_answer(
                 supported_claims,
                 packets,
-                unresolved_requirements=unresolved_requirements,
+                unresolved_requirements=all_unresolved,
                 citation_format_version=self._citation_format_version,
             ),
             claims=accepted,
@@ -193,42 +212,15 @@ def _final_payload(
     sufficiency_report: SufficiencyReport | None,
     arbitration: Any | None,
 ) -> str:
-    return json.dumps(
-        {
-            "question": question,
-            "contract": contract.model_dump(mode="json"),
-            "packed_evidence_packets": [
-                packet.model_dump(mode="json") for packet in packets
-            ],
-            "slot_resolutions": [
-                resolution.model_dump(mode="json") for resolution in slot_resolutions
-            ],
-            "sufficiency_report": (
-                sufficiency_report.model_dump(mode="json")
-                if sufficiency_report is not None
-                else None
-            ),
-            "arbitration": _serialize_arbitration(arbitration),
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        default=str,
+    context = build_final_synthesis_context(
+        question=question,
+        contract=contract,
+        packets=packets,
+        slot_resolutions=slot_resolutions,
+        sufficiency_report=sufficiency_report,
+        arbitration=arbitration,
     )
-
-
-def _serialize_arbitration(arbitration: Any | None) -> Any | None:
-    if arbitration is None:
-        return None
-    if isinstance(arbitration, ConflictCandidate):
-        return arbitration.model_dump(mode="json")
-    if isinstance(arbitration, Sequence) and not isinstance(arbitration, (str, bytes)):
-        return [
-            value.model_dump(mode="json")
-            if isinstance(value, ConflictCandidate)
-            else value
-            for value in arbitration
-        ]
-    return arbitration
+    return context.model_dump_json()
 
 
 def _claims_from_findings(
@@ -238,8 +230,15 @@ def _claims_from_findings(
     packets_by_id: Mapping[str, EvidencePacket],
 ) -> list[FinalClaim]:
     valid_slots = {slot.slot_id for slot in contract.required_slots}
+    obligation_by_id = {
+        obligation.obligation_id: obligation
+        for obligation in contract.synthesis_obligations
+    }
     claims: list[FinalClaim] = []
-    for index, finding in enumerate(draft.supported_findings, start=1):
+    claim_counter = 1
+
+    # 1. Direct findings
+    for finding in draft.supported_findings:
         evidence_ids = list(
             dict.fromkeys([*finding.evidence_ids, *finding.premise_evidence_ids])
         )
@@ -257,30 +256,76 @@ def _claims_from_findings(
             continue
         claims.append(
             FinalClaim(
-                claim_id=f"claim-{index}",
+                claim_id=f"claim-{claim_counter}",
                 slot_id=finding.slot_id,
+                obligation_id=None,
                 statement=finding.statement,
-                support_type=finding.support_type,
+                support_type="direct",
                 evidence_ids=finding.evidence_ids,
                 premise_evidence_ids=finding.premise_evidence_ids,
             )
         )
+        claim_counter += 1
+
+    # 2. Synthesized findings
+    for finding in draft.synthesized_findings:
+        obligation = obligation_by_id.get(finding.obligation_id)
+        if obligation is None:
+            continue
+        premise_ids = list(dict.fromkeys(finding.premise_evidence_ids))
+        if not premise_ids:
+            continue
+        premise_packets = [packets_by_id.get(eid) for eid in premise_ids]
+        if any(p is None for p in premise_packets):
+            continue
+        typed_premise_packets = [p for p in premise_packets if p is not None]
+
+        # Validate that every dependency slot of this obligation contributes at least one premise evidence ID
+        has_full_dependency_closure = True
+        for dep_slot_id in obligation.depends_on_slot_ids:
+            if not any(dep_slot_id in p.slot_ids for p in typed_premise_packets):
+                has_full_dependency_closure = False
+                break
+        if not has_full_dependency_closure:
+            continue
+
+        derived_support_type = _OBLIGATION_SUPPORT_TYPE.get(
+            obligation.kind, "comparative_inference"
+        )
+        claims.append(
+            FinalClaim(
+                claim_id=f"claim-{claim_counter}",
+                slot_id=None,
+                obligation_id=finding.obligation_id,
+                statement=finding.statement,
+                support_type=derived_support_type,
+                evidence_ids=[],
+                premise_evidence_ids=premise_ids,
+            )
+        )
+        claim_counter += 1
+
     return claims
 
 
-def _unresolved_requirements(
+def _unresolved_items(
     *,
     draft: FinalAnswerDraft,
     contract: QueryContract,
     slot_resolutions: Sequence[SlotResolution],
     supported_claims: Sequence[FinalClaim],
-) -> tuple[UnresolvedRequirement, ...]:
+) -> tuple[tuple[UnresolvedRequirement, ...], tuple[UnresolvedObligation, ...]]:
     supported_slots = _supported_claim_slot_ids(supported_claims)
+    supported_obs = _supported_claim_obligation_ids(supported_claims)
     resolution_by_slot = {item.slot_id: item for item in slot_resolutions}
-    provider_reasons = {
+    provider_slot_reasons = {
         item.slot_id: item.reason for item in draft.unresolved_requirements
     }
-    unresolved: list[UnresolvedRequirement] = []
+    provider_ob_reasons = {
+        item.obligation_id: item.reason for item in draft.unresolved_obligations
+    }
+
+    unresolved_slots: list[UnresolvedRequirement] = []
     for slot in contract.required_slots:
         resolution = resolution_by_slot.get(slot.slot_id)
         if (
@@ -289,7 +334,7 @@ def _unresolved_requirements(
             and resolution.status == "supported"
         ):
             continue
-        reason = provider_reasons.get(slot.slot_id)
+        reason = provider_slot_reasons.get(slot.slot_id)
         if not reason and resolution is not None:
             reason = resolution.reason
         if not reason:
@@ -298,10 +343,24 @@ def _unresolved_requirements(
                 if resolution is not None and resolution.status == "supported"
                 else "No qualified evidence was found for this required slot."
             )
-        unresolved.append(
+        unresolved_slots.append(
             UnresolvedRequirement(slot_id=slot.slot_id, reason=reason)
         )
-    return tuple(unresolved)
+
+    unresolved_obs: list[UnresolvedObligation] = []
+    for obligation in contract.synthesis_obligations:
+        if obligation.obligation_id in supported_obs:
+            continue
+        reason = provider_ob_reasons.get(obligation.obligation_id)
+        if not reason:
+            reason = f"Obligation {obligation.obligation_id} ({obligation.description}) was not synthesized from verified premises."
+        unresolved_obs.append(
+            UnresolvedObligation(
+                obligation_id=obligation.obligation_id, reason=reason
+            )
+        )
+
+    return tuple(unresolved_slots), tuple(unresolved_obs)
 
 
 def _packets_by_id(packets: Iterable[EvidencePacket]) -> dict[str, EvidencePacket]:
@@ -347,21 +406,48 @@ def _supported_claim_slot_ids(claims: Sequence[FinalClaim]) -> set[str]:
     }
 
 
+def _supported_claim_obligation_ids(claims: Sequence[FinalClaim]) -> set[str]:
+    return {
+        claim.obligation_id
+        for claim in claims
+        if claim.obligation_id is not None and claim.qualified_reason is None
+    }
+
+
 def _response_status(
     claims: Sequence[FinalClaim],
     contract: QueryContract,
     slot_resolutions: Sequence[SlotResolution],
+    *,
+    unresolved_requirements: Sequence[UnresolvedRequirement] = (),
+    unresolved_obligations: Sequence[UnresolvedObligation] = (),
 ) -> ResponseStatus:
     supported_claim_slots = _supported_claim_slot_ids(claims)
-    if not supported_claim_slots:
+    supported_claim_obs = _supported_claim_obligation_ids(claims)
+
+    if not supported_claim_slots and not supported_claim_obs:
         return "insufficient"
+
+    if unresolved_requirements or unresolved_obligations:
+        return "qualified_partial"
+
     required_slots = {slot.slot_id for slot in contract.required_slots}
     resolution_by_slot = {item.slot_id: item for item in slot_resolutions}
-    if required_slots and required_slots.issubset(supported_claim_slots) and all(
-        resolution_by_slot.get(slot_id) is not None
-        and resolution_by_slot[slot_id].status == "supported"
-        for slot_id in required_slots
-    ):
+    all_slots_supported = (
+        required_slots
+        and required_slots.issubset(supported_claim_slots)
+        and all(
+            resolution_by_slot.get(slot_id) is not None
+            and resolution_by_slot[slot_id].status == "supported"
+            for slot_id in required_slots
+        )
+    )
+    required_obligations = {ob.obligation_id for ob in contract.synthesis_obligations}
+    all_obs_supported = (
+        not required_obligations or required_obligations.issubset(supported_claim_obs)
+    )
+
+    if all_slots_supported and all_obs_supported:
         return "complete"
     return "qualified_partial"
 

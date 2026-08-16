@@ -54,10 +54,13 @@ from data_base.agentic_v9.execution_policy import (
     ExecutionCancellation,
     V9ExecutionPolicyRuntime,
 )
+from data_base.agentic_v9.final_answer import FinalAnswerRenderer
 from data_base.agentic_v9.provider_boundary import (
     build_contract_planning_provider,
     build_evidence_qualification_provider,
+    build_final_synthesis_provider,
     evidence_qualification_response_schema,
+    final_synthesis_response_schema,
 )
 from data_base.agentic_v9.repair import build_repair_plan
 from data_base.agentic_v9.requirement_shadow import build_requirement_shadow
@@ -67,13 +70,13 @@ from data_base.agentic_v9.schemas import (
     EvidenceScope,
     EvidenceSource,
     FinalAnswerResult,
-    FinalClaim,
     LlmInvoker,
     QueryContract,
     RagRetrievalResult,
     ResolvedSourceScope,
     SlotResolution,
     SourceLocator,
+    SufficiencyReport,
     TaskRetrievalResult,
     V9ExecutionEvent,
     V9ExecutionRequest,
@@ -771,53 +774,30 @@ class AgenticV9CampaignRuntime:
             return packed
 
         async def generate_final(
-            _: str,
-            __: QueryContract,
+            final_question: str,
+            final_contract: QueryContract,
             packed: PackedEvidenceContext,
             resolutions: tuple[SlotResolution, ...],
-            ___: Any | None,
-            ____: Any,
+            sufficiency: Any | None,
+            arbitration: Any,
         ) -> FinalAnswerResult:
             controller = state["budget_controller"]
             assert isinstance(controller, RunBudgetController)
-            response = await BudgetedLlmInvoker(
+            invoker = BudgetedLlmInvoker(
                 controller=controller,
                 provider_factory=self._provider_factory,
                 observer=llm_call_observer,
                 provider_name=str(setup_snapshot.get("provider") or "unknown"),
                 model_name=str(setup_snapshot.get("model_name") or "unknown"),
-            ).invoke(
-                phase="final_answer",
-                purpose="agentic_v9_final_answer",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Use only supplied evidence. Cite no source not present.",
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Question: {question}\n\nEvidence:\n{packed.rendered_text}",
-                    },
-                ],
             )
-            if isinstance(response, FinalAnswerResult):
-                return response
-            answer = _response_text(response)
-            used_ids = [packet.evidence_id for packet in packed.packets]
-            claims = [
-                FinalClaim(
-                    claim_id=f"claim:{trace_id}",
-                    statement=answer or "Evidence-backed answer unavailable.",
-                    support_type="direct",
-                    evidence_ids=used_ids,
-                )
-            ]
-            return FinalAnswerResult(
-                response_status="complete",
-                answer=answer,
-                claims=claims,
-                used_evidence_ids=used_ids,
-                final_generation_count=1,
+            renderer = FinalAnswerRenderer(invoker, citation_format_version="1")
+            return await renderer.render(
+                question=final_question or question,
+                contract=final_contract,
+                packed_packets=packed,
+                slot_resolutions=resolutions,
+                sufficiency_report=sufficiency if isinstance(sufficiency, SufficiencyReport) else None,
+                arbitration=arbitration,
             )
 
         def deterministic_partial(
@@ -1631,6 +1611,10 @@ def _provider_for_purpose(purpose: str) -> Any:
     if purpose == "evidence_extraction":
         return build_evidence_qualification_provider(
             response_schema=evidence_qualification_response_schema()
+        )
+    if purpose in {"final_answer", "agentic_v9_final_answer"}:
+        return build_final_synthesis_provider(
+            response_schema=final_synthesis_response_schema()
         )
     return get_llm("synthesizer")
 

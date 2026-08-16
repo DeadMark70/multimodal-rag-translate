@@ -19,6 +19,7 @@ EXPECTED_KEYS = {
     "evidence_extract",
     "comparison_planner_system",
     "comparison_planner_user",
+    "final_synthesis",
 }
 
 EXPECTED_REQUIRED_VARIABLES = {
@@ -38,6 +39,7 @@ EXPECTED_REQUIRED_VARIABLES = {
     "evidence_extract": ["question", "unresolved_slots", "source_evidence"],
     "comparison_planner_system": [],
     "comparison_planner_user": ["question"],
+    "final_synthesis": ["context"],
 }
 
 SOURCE_FILES = [
@@ -109,6 +111,7 @@ def test_agentic_prompt_format_smoke():
     comparison_user = format_agentic_rag_prompt(
         "comparison_planner_user", question="Compare Model A and Model B."
     )
+    final_synth = format_agentic_rag_prompt("final_synthesis", context='{"question": "What is X?"}')
 
     assert "What is X?" in planner
     assert "What is X?" in followup
@@ -128,3 +131,4 @@ def test_agentic_prompt_format_smoke():
     assert "Compare Model A and Model B." in comparison_user
     assert comparison_user == "Question: Compare Model A and Model B."
     assert "source" not in comparison_user.casefold()
+    assert "What is X?" in final_synth

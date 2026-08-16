@@ -605,3 +605,37 @@ async def test_active_atomic_contract_runtime_boundary_never_invokes_independent
     assert not any(
         call.get("phase") == "comparison_plan" for call in recorded_calls
     )
+
+
+def test_final_synthesis_response_schema_and_provider_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boundary = importlib.import_module("data_base.agentic_v9.provider_boundary")
+    raw_provider = object()
+    bound_provider = object()
+    observed: dict[str, object] = {}
+
+    def fake_get_llm(purpose: str) -> object:
+        observed["purpose"] = purpose
+        return raw_provider
+
+    def fake_bind(provider: object, *, schema: object) -> object:
+        observed["provider"] = provider
+        observed["schema"] = schema
+        return bound_provider
+
+    monkeypatch.setattr(boundary, "get_llm", fake_get_llm)
+    monkeypatch.setattr(boundary, "bind_json_schema", fake_bind)
+
+    schema = boundary.final_synthesis_response_schema()
+    assert schema["type"] == "object"
+    assert "supported_findings" in schema["properties"]
+    assert "synthesized_findings" in schema["properties"]
+    assert "unresolved_requirements" in schema["properties"]
+    assert "unresolved_obligations" in schema["properties"]
+
+    result = boundary.build_final_synthesis_provider(response_schema=schema)
+    assert result is bound_provider
+    assert observed["purpose"] == "synthesizer"
+    assert observed["provider"] is raw_provider
+    assert isinstance(observed["schema"], dict)

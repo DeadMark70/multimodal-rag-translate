@@ -143,6 +143,14 @@
         "answer"
       ],
       "template": "你是研究助理。請把下列子任務結果轉成 1-3 條可驗證的原子事實。\n僅輸出 JSON 陣列，不要額外文字。\n\n格式:\n[\n  {{\"claim\": \"具體事實\", \"source_doc_ids\": [\"doc-1\"]}}\n]\n\n規則:\n1. claim 必須是單一、可被文獻支持的陳述。\n2. source_doc_ids 只能使用已提供的來源 doc id；若無法判定可留空陣列。\n3. 不要輸出推測語句。\n\n問題:\n{question}\n\n已知來源:\n{source_doc_ids}\n\n回答內容:\n{answer}\n"
+    },
+    "final_synthesis": {
+      "version": 1,
+      "description": "v9 compact structured final synthesis",
+      "required_variables": [
+        "context"
+      ],
+      "template": "You are a precise grounded final synthesis engine. Use only the supplied synthesis context.\nReturn JSON with exactly four keys: supported_findings, synthesized_findings, unresolved_requirements, and unresolved_obligations.\n- supported_findings: for each direct required slot (S#) supported by evidence, provide the slot_id, concise natural-language statement, and evidence_ids used.\n- synthesized_findings: for each synthesis obligation (O#) satisfied by premises, provide the obligation_id, concise natural-language statement, and all premise_evidence_ids required by its dependencies.\n- unresolved_requirements: for each direct slot (S#) lacking sufficient evidence, provide slot_id and concise reason.\n- unresolved_obligations: for each synthesis obligation (O#) lacking required premises or unsupported by evidence, provide obligation_id and concise reason.\nDo not output text outside the JSON. Never invent facts or cite evidence IDs not present in the context.\n\nSynthesis Context:\n{context}"
     }
   }
 }

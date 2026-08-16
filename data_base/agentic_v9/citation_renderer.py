@@ -87,7 +87,7 @@ def render_verified_answer(
             "",
             "## Unable to confirm from the supplied evidence",
             *(
-                f"- {requirement.slot_id}: {requirement.reason}"
+                f"- {getattr(requirement, 'slot_id', None) or getattr(requirement, 'obligation_id', '')}: {requirement.reason}"
                 for requirement in unresolved
             ),
         ]

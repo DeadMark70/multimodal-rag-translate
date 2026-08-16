@@ -14,10 +14,12 @@ from data_base.agentic_v9.schemas import (
     EvidenceScope,
     EvidenceSource,
     FinalAnswerResult,
+    FinalClaim,
     QueryContract,
     RequiredSlot,
     SlotResolution,
     SourceLocator,
+    SynthesisObligation,
 )
 
 
@@ -269,12 +271,13 @@ async def test_direct_final_result_is_rejected_as_an_untrusted_legacy_envelope()
             response_status="complete",
             answer="The score is 0.99.",
             claims=[
-                {
-                    "claim_id": "claim-1",
-                    "statement": "The score is 0.99.",
-                    "support_type": "direct",
-                    "evidence_ids": ["E1"],
-                }
+                FinalClaim(
+                    claim_id="claim-1",
+                    slot_id="score",
+                    statement="The score is 0.99.",
+                    support_type="direct",
+                    evidence_ids=["E1"],
+                )
             ],
             used_evidence_ids=["E1"],
             final_generation_count=1,
@@ -298,9 +301,7 @@ async def test_direct_final_result_is_rejected_as_an_untrusted_legacy_envelope()
 
 
 @pytest.mark.asyncio
-async def test_untrusted_no_claim_final_result_does_not_bypass_draft_validation() -> (
-    None
-):
+async def test_untrusted_no_claim_final_result_does_not_bypass_draft_validation() -> None:
     invoker = _RecordingInvoker(
         FinalAnswerResult(
             response_status="qualified_partial",
@@ -322,7 +323,6 @@ async def test_untrusted_no_claim_final_result_does_not_bypass_draft_validation(
     assert result.final_generation_count == 0
     assert result.response_status == "insufficient"
     assert result.answer == "Final generation was unavailable; no verified answer was produced."
-
 
 @pytest.mark.asyncio
 async def test_fixed_no_claim_final_fallback_remains_a_qualified_partial() -> None:
@@ -472,3 +472,159 @@ async def test_invalid_final_json_fails_closed_without_retrying_generation() -> 
     assert result.response_status == "insufficient"
     assert result.final_generation_count == 0
     assert len(invoker.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_synthesized_finding_creates_obligation_bound_claim_with_derived_support_type() -> None:
+    contract = QueryContract(
+        route="bounded_compare",
+        intent="Compare Method A and B DSC",
+        required_slots=[
+            RequiredSlot(slot_id="S1", description="Method A DSC"),
+            RequiredSlot(slot_id="S2", description="Method B DSC"),
+        ],
+        synthesis_obligations=[
+            SynthesisObligation(
+                obligation_id="O1",
+                kind="comparison",
+                description="Compare Method A vs B DSC",
+                depends_on_slot_ids=["S1", "S2"],
+            )
+        ],
+    )
+    p1 = _packet("E1", "S1", "Method A achieved 85.5% DSC.")
+    p2 = _packet("E2", "S2", "Method B achieved 82.0% DSC.")
+    resolutions = [
+        SlotResolution(slot_id="S1", status="supported", evidence_ids=["E1"]),
+        SlotResolution(slot_id="S2", status="supported", evidence_ids=["E2"]),
+    ]
+
+    invoker = _RecordingInvoker(
+        {
+            "supported_findings": [
+                {
+                    "slot_id": "S1",
+                    "statement": "Method A achieved 85.5% DSC.",
+                    "evidence_ids": ["E1"],
+                    "premise_evidence_ids": [],
+                },
+                {
+                    "slot_id": "S2",
+                    "statement": "Method B achieved 82.0% DSC.",
+                    "evidence_ids": ["E2"],
+                    "premise_evidence_ids": [],
+                },
+            ],
+            "synthesized_findings": [
+                {
+                    "obligation_id": "O1",
+                    "statement": "Method A achieved higher DSC than Method B (85.5% vs 82.0%).",
+                    "premise_evidence_ids": ["E1", "E2"],
+                }
+            ],
+            "unresolved_requirements": [],
+            "unresolved_obligations": [],
+        },
+        # verifier response for O1 comparative_inference claim
+        {
+            "verdicts": [
+                {
+                    "claim_id": "claim-3",
+                    "supported": True,
+                    "reason": None,
+                }
+            ]
+        },
+    )
+
+    result = await generate_final_answer(
+        question="Which method has higher DSC?",
+        contract=contract,
+        packed_packets=[p1, p2],
+        slot_resolutions=resolutions,
+        llm_invoker=invoker,
+    )
+
+    assert result.final_generation_count == 1
+    assert result.response_status == "complete"
+    assert len(result.claims) == 3
+    # Check direct claims
+    direct_claims = [c for c in result.claims if c.slot_id is not None]
+    assert len(direct_claims) == 2
+    assert {c.slot_id for c in direct_claims} == {"S1", "S2"}
+    assert all(c.obligation_id is None for c in direct_claims)
+    assert all(c.support_type == "direct" for c in direct_claims)
+
+    # Check synthesized claim
+    syn_claims = [c for c in result.claims if c.obligation_id is not None]
+    assert len(syn_claims) == 1
+    assert syn_claims[0].obligation_id == "O1"
+    assert syn_claims[0].slot_id is None
+    assert syn_claims[0].support_type == "comparative_inference"
+    assert set(syn_claims[0].premise_evidence_ids) == {"E1", "E2"}
+
+    assert set(result.used_evidence_ids) == {"E1", "E2"}
+
+
+@pytest.mark.asyncio
+async def test_synthesized_finding_with_missing_premise_closure_is_rejected() -> None:
+    contract = QueryContract(
+        route="bounded_compare",
+        intent="Compare Method A and B DSC",
+        required_slots=[
+            RequiredSlot(slot_id="S1", description="Method A DSC"),
+            RequiredSlot(slot_id="S2", description="Method B DSC"),
+        ],
+        synthesis_obligations=[
+            SynthesisObligation(
+                obligation_id="O1",
+                kind="comparison",
+                description="Compare Method A vs B DSC",
+                depends_on_slot_ids=["S1", "S2"],
+            )
+        ],
+    )
+    p1 = _packet("E1", "S1", "Method A achieved 85.5% DSC.")
+    resolutions = [
+        SlotResolution(slot_id="S1", status="supported", evidence_ids=["E1"]),
+        SlotResolution(slot_id="S2", status="not_found"),
+    ]
+
+    # Model tries to synthesize O1 using only E1 (missing S2 dependency premise)
+    invoker = _RecordingInvoker(
+        {
+            "supported_findings": [
+                {
+                    "slot_id": "S1",
+                    "statement": "Method A achieved 85.5% DSC.",
+                    "evidence_ids": ["E1"],
+                    "premise_evidence_ids": [],
+                },
+            ],
+            "synthesized_findings": [
+                {
+                    "obligation_id": "O1",
+                    "statement": "Method A achieved higher DSC.",
+                    "premise_evidence_ids": ["E1"],
+                }
+            ],
+            "unresolved_requirements": [
+                {"slot_id": "S2", "reason": "No evidence found for S2"}
+            ],
+            "unresolved_obligations": [
+                {"obligation_id": "O1", "reason": "Cannot compare without Method B DSC"}
+            ],
+        }
+    )
+
+    result = await generate_final_answer(
+        question="Which method has higher DSC?",
+        contract=contract,
+        packed_packets=[p1],
+        slot_resolutions=resolutions,
+        llm_invoker=invoker,
+    )
+
+    # O1 is rejected because it does not cover premise for S2
+    assert len([c for c in result.claims if c.obligation_id == "O1"]) == 0
+    assert result.response_status == "qualified_partial"
