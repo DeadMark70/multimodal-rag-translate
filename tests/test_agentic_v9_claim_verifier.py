@@ -317,6 +317,37 @@ async def test_verifier_accepts_gemini_text_content_block_response() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response_payload",
+    [
+        {
+            "verdicts": [
+                {"claim_id": "claim-1", "supported": 1, "reason": None}
+            ]
+        },
+        {
+            "verdicts": [
+                {"claim_id": "claim-1", "supported": True}
+            ]
+        },
+    ],
+)
+async def test_verifier_rejects_non_strict_or_incomplete_verdict_rows(
+    response_payload: dict[str, Any],
+) -> None:
+    invoker = _RecordingInvoker(SimpleNamespace(content=response_payload))
+
+    verdicts = await ClaimVerifier(invoker).verify(
+        [_direct_claim("the decoder has two stages")],
+        {"E1": _packet(statement="The decoder consists of two stages.")},
+        contract=_contract(),
+    )
+
+    assert verdicts["claim-1"].supported is False
+    assert verdicts["claim-1"].reason == "claim_verifier_invalid_response"
+
+
+@pytest.mark.asyncio
 async def test_verifier_reports_bounded_provider_failure_without_exception_text() -> None:
     class _FailingInvoker(_RecordingInvoker):
         async def invoke(self, *, phase: str, purpose: str, messages: list[dict[str, Any]]) -> Any:

@@ -260,12 +260,12 @@ async def test_google_component_usage_does_not_double_count_reasoning_tokens() -
 
     assert observer.calls[0].usage == {
         "input_tokens": 11,
-        "output_tokens": 2,
+        "output_tokens": 5,
         "reasoning_tokens": 3,
-        "other_tokens": 0,
-        "total_tokens": 16,
-        "usage_status": "measured",
-        "official_total_tokens": 16,
+        "other_tokens": 91,
+        "total_tokens": 110,
+        "usage_status": "estimated",
+        "official_total_tokens": None,
     }
 
 

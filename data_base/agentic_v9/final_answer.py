@@ -118,6 +118,9 @@ class FinalAnswerRenderer:
             packets_by_id=packets_by_id,
             evidence_aliases=evidence_aliases,
         ):
+            if claim.qualified_reason is not None:
+                accepted.append(claim)
+                continue
             gate = gate_claim_deterministically(
                 claim, packets_by_id, contract=contract
             )
@@ -241,12 +244,21 @@ def _claims_from_findings(
     provider_alias_mode = evidence_aliases is not None
     evidence_aliases = evidence_aliases or {}
 
-    def map_provider_evidence_id(evidence_id: str) -> str:
-        if not provider_alias_mode:
-            return evidence_id
-        return evidence_aliases.get(
-            evidence_id, f"__unknown_evidence_alias__:{evidence_id}"
-        )
+    def map_provider_evidence_ids(
+        evidence_ids: Iterable[str],
+    ) -> tuple[list[str], bool]:
+        mapped: list[str] = []
+        unknown = False
+        for evidence_id in evidence_ids:
+            if provider_alias_mode:
+                canonical_id = evidence_aliases.get(evidence_id)
+                if canonical_id is None:
+                    unknown = True
+                    continue
+                mapped.append(canonical_id)
+            else:
+                mapped.append(evidence_id)
+        return list(dict.fromkeys(mapped)), unknown
     valid_slots = {slot.slot_id for slot in contract.required_slots}
     obligation_by_id = {
         obligation.obligation_id: obligation
@@ -257,11 +269,16 @@ def _claims_from_findings(
 
     # 1. Direct findings
     for finding in draft.supported_findings:
-        mapped_evidence_ids = [
-            map_provider_evidence_id(evidence_id)
-            for evidence_id in [*finding.evidence_ids, *finding.premise_evidence_ids]
-        ]
-        evidence_ids = list(dict.fromkeys(mapped_evidence_ids))
+        evidence_ids, has_unknown_evidence = map_provider_evidence_ids(
+            [*finding.evidence_ids, *finding.premise_evidence_ids]
+        )
+        mapped_direct_ids, direct_unknown = map_provider_evidence_ids(
+            finding.evidence_ids
+        )
+        mapped_premise_ids, premise_unknown = map_provider_evidence_ids(
+            finding.premise_evidence_ids
+        )
+        has_unknown_evidence = has_unknown_evidence or direct_unknown or premise_unknown
         packets = [packets_by_id.get(evidence_id) for evidence_id in evidence_ids]
         if (
             finding.slot_id not in valid_slots
@@ -278,15 +295,14 @@ def _claims_from_findings(
                 slot_id=finding.slot_id,
                 obligation_id=None,
                 statement=finding.statement,
-                support_type="direct",
-                evidence_ids=[
-                    map_provider_evidence_id(evidence_id)
-                    for evidence_id in finding.evidence_ids
-                ],
-                premise_evidence_ids=[
-                    map_provider_evidence_id(evidence_id)
-                    for evidence_id in finding.premise_evidence_ids
-                ],
+                support_type="qualified" if has_unknown_evidence else "direct",
+                evidence_ids=mapped_direct_ids,
+                premise_evidence_ids=mapped_premise_ids,
+                qualified_reason=(
+                    "claim_references_unpacked_or_unknown_evidence"
+                    if has_unknown_evidence
+                    else None
+                ),
             )
         )
         claim_counter += 1
@@ -296,11 +312,8 @@ def _claims_from_findings(
         obligation = obligation_by_id.get(finding.obligation_id)
         if obligation is None:
             continue
-        premise_ids = list(
-            dict.fromkeys(
-                map_provider_evidence_id(evidence_id)
-                for evidence_id in finding.premise_evidence_ids
-            )
+        premise_ids, has_unknown_evidence = map_provider_evidence_ids(
+            finding.premise_evidence_ids
         )
 
         derived_support_type = _OBLIGATION_SUPPORT_TYPE.get(
@@ -312,9 +325,16 @@ def _claims_from_findings(
                 slot_id=None,
                 obligation_id=finding.obligation_id,
                 statement=finding.statement,
-                support_type=derived_support_type,
+                support_type=(
+                    "qualified" if has_unknown_evidence else derived_support_type
+                ),
                 evidence_ids=[],
                 premise_evidence_ids=premise_ids,
+                qualified_reason=(
+                    "claim_references_unpacked_or_unknown_evidence"
+                    if has_unknown_evidence
+                    else None
+                ),
             )
         )
         claim_counter += 1

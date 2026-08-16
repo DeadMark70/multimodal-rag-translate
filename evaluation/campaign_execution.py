@@ -522,7 +522,7 @@ def _v9_rerank_diagnostics_by_context(
             "retrieval_task_id": diagnostic.get("task_id"),
             "rerank_candidate_count": diagnostic.get("candidate_count"),
             "rerank_selected_count": diagnostic.get("selected_count"),
-            "candidate_stage": _safe_candidate_stage_projection(
+            "candidate_diversification": _safe_candidate_stage_projection(
                 diagnostic.get("candidate_diversification")
             ),
         }
@@ -1190,9 +1190,13 @@ async def _record_unit_research_observability(
                         else None
                     ),
                     **(
-                        {"candidate_stage": rerank_diagnostic["candidate_stage"]}
+                        {
+                            "candidate_diversification": rerank_diagnostic[
+                                "candidate_diversification"
+                            ]
+                        }
                         if rerank_diagnostic is not None
-                        and rerank_diagnostic["candidate_stage"] is not None
+                        and rerank_diagnostic["candidate_diversification"] is not None
                         else {}
                     ),
                 },
@@ -1224,7 +1228,9 @@ async def _record_unit_research_observability(
                 "retrieval_confidence": None,
                 "required_doc_hit_rate": hit_rate,
                 "expected_evidence_hit_rate": hit_rate,
-                "instrumentation_depth": "result_level",
+                "instrumentation_depth": (
+                    "trace_level" if v9_raw_rows else "result_level"
+                ),
                 **(
                     {
                         "instrumentation_depth": "trace_level",
@@ -1282,7 +1288,9 @@ async def _record_unit_research_observability(
                 ),
                 "packing_policy": "agentic_v9_trace_evidence" if v9_raw_rows else "result_level_contexts",
                 "drop_reasons": {},
-                "instrumentation_depth": "result_level",
+                "instrumentation_depth": (
+                    "trace_level" if v9_raw_rows else "result_level"
+                ),
             },
             created_at=created_at,
         )

@@ -521,7 +521,7 @@ async def test_v9_graph_route_usage_is_budgeted_observed_and_reconciled(
         required_slots=[RequiredSlot(slot_id="base", description="relationship")],
         graph_policy="required_locator",
         max_retrieval_rounds=1,
-        max_llm_calls=4,
+        max_llm_calls=5,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -841,7 +841,7 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     ]
     assert result.documents
     retrieve_documents.assert_awaited()
-    assert provider.ainvoke.await_count == 3
+    assert provider.ainvoke.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -1821,7 +1821,7 @@ async def test_atomic_contract_planning_low_confidence_reserves_claim_verifier_p
     assert v9["metrics"]["comparison_planner_call_count"] == 0
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
     assert v9["metrics"]["semantic_qualification"] == "provider_qualified"
-    assert len(recorded_calls) == 3
+    assert len(recorded_calls) == 4
     assert any(
         call.get("contract_plan_requested") is True
         for call in observed_feasibility
@@ -1829,7 +1829,7 @@ async def test_atomic_contract_planning_low_confidence_reserves_claim_verifier_p
     assert observed_feasibility
     assert all(
             call.get("evidence_qualification_provider_calls") == 1
-            and call.get("claim_verifier_provider_calls") == 0
+            and call.get("claim_verifier_provider_calls") == 1
         for call in observed_feasibility
     )
 
@@ -1906,7 +1906,7 @@ async def test_atomic_contract_planning_budget_rejection_preserves_claim_verifie
     assert len(observed_feasibility) == 2
     assert all(
             call.get("evidence_qualification_provider_calls") == 1
-            and call.get("claim_verifier_provider_calls") == 0
+            and call.get("claim_verifier_provider_calls") == 1
         for call in observed_feasibility
     )
 
@@ -2355,7 +2355,7 @@ async def test_v9_runtime_persists_requirement_shadow_without_influencing_behavi
     assert v9["visual_execution"]["state"] == "not_requested"
     assert result.agent_trace["response_status"] == "complete"
     assert result.documents
-    assert provider.ainvoke.await_count == 3
+    assert provider.ainvoke.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -2382,7 +2382,7 @@ async def test_v9_requirement_guided_runtime_defaults_off_and_keeps_baseline_que
 
     assert retrieve_documents.await_count == 1
     assert "Advisory answer obligations" not in retrieve_documents.await_args.args[1]
-    assert provider.ainvoke.await_count == 3
+    assert provider.ainvoke.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -2640,7 +2640,7 @@ async def test_v9_runtime_passes_qualification_and_claim_verifier_provider_calls
         intent="Find the reported score.",
         evidence_extraction_required=True,
         max_retrieval_rounds=1,
-        max_llm_calls=2,
+        max_llm_calls=3,
         runtime_token_budget=20_000,
         resolved_source_scope=source_scope,
     )
@@ -2688,7 +2688,7 @@ async def test_v9_runtime_passes_qualification_and_claim_verifier_provider_calls
     )
 
     assert observed_provider_call_counts
-    assert set(observed_provider_call_counts) == {(1, 0)}
+    assert set(observed_provider_call_counts) == {(1, 1)}
 
 
 @pytest.mark.asyncio

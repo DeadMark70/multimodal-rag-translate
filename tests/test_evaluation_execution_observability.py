@@ -699,7 +699,33 @@ async def test_v9_raw_retrieval_stages_export_when_final_claim_is_rejected(
                     "qualified_evidence_ids": ["E1"],
                     "used_evidence_ids": [],
                     "context_pack": {"packed_evidence_ids": ["E1"]},
-                    "retrieval_diagnostics": [],
+                    "retrieval_diagnostics": [
+                        {
+                            "task_id": "task-1",
+                            "status": "executed",
+                            "candidate_count": 2,
+                            "selected_count": 1,
+                            "candidate_diversification": {
+                                "policy": "tail_source_diversity_r1",
+                                "enabled": True,
+                                "applied": True,
+                                "retrieved_doc_ids": ["doc-a"],
+                                "candidate_doc_ids": ["doc-a"],
+                                "represented_doc_ids_before_tail": [],
+                                "admitted_doc_ids": ["doc-a"],
+                            },
+                            "selected": [
+                                {
+                                    "doc_id": "doc-a",
+                                    "chunk_id": "chunk-1",
+                                    "content_hash": content_hash("The source reports 42."),
+                                    "pre_rerank_rank": 1,
+                                    "post_rerank_rank": 1,
+                                    "rerank_score": 0.9,
+                                }
+                            ],
+                        }
+                    ],
                     "final_claims": [
                         {
                             "claim_id": "claim-1",
@@ -736,10 +762,14 @@ async def test_v9_raw_retrieval_stages_export_when_final_claim_is_rejected(
     assert chunks[0].payload["qualified_stage"] is True
     assert chunks[0].payload["packed_stage"] is True
     assert chunks[0].payload["used_stage"] is False
+    assert chunks[0].payload["candidate_diversification"]["policy"] == (
+        "tail_source_diversity_r1"
+    )
     assert chunks[0].used_in_context is True
     assert chunks[0].used_in_answer is False
     assert packs[0].input_chunk_count == 1
     assert packs[0].packed_chunk_count == 1
+    assert packs[0].payload["instrumentation_depth"] == "trace_level"
 
 
 @pytest.mark.asyncio
@@ -1011,7 +1041,7 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks(
             "retrieval_task_id": "task-source-a",
             "rerank_candidate_count": 8,
             "rerank_selected_count": 4,
-            "candidate_stage": {
+            "candidate_diversification": {
                 "policy": "tail_source_diversity_r1",
                 "enabled": False,
                 "applied": False,
@@ -1033,7 +1063,7 @@ async def test_campaign_result_joins_v9_rerank_diagnostics_to_retrieval_chunks(
             "retrieval_task_id": "task-source-a",
             "rerank_candidate_count": 8,
             "rerank_selected_count": 4,
-            "candidate_stage": {
+            "candidate_diversification": {
                 "policy": "tail_source_diversity_r1",
                 "enabled": False,
                 "applied": False,
@@ -1233,7 +1263,7 @@ async def test_campaign_result_marks_unresolved_expected_source_identity_without
         "retrieval_task_id",
         "rerank_candidate_count",
         "rerank_selected_count",
-        "candidate_stage",
+        "candidate_diversification",
     }
 
 

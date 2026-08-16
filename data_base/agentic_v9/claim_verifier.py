@@ -8,7 +8,7 @@ import json
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from data_base.agentic_v9.evidence_validator import (
     is_qualified_evidence,
@@ -52,8 +52,8 @@ class ClaimVerdict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     claim_id: str = Field(min_length=1)
-    supported: bool
-    reason: str | None = None
+    supported: StrictBool
+    reason: str | None = Field(max_length=96)
 
 
 class ClaimVerificationResponse(BaseModel):

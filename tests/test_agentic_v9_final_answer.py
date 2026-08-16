@@ -21,6 +21,7 @@ from data_base.agentic_v9.schemas import (
     SourceLocator,
     SynthesisObligation,
 )
+from evaluation.export_schemas import ExportV9FinalClaimV2
 
 
 def _contract() -> QueryContract:
@@ -187,6 +188,10 @@ async def test_final_answer_rejects_fabricated_provider_evidence_alias() -> None
     assert result.used_evidence_ids == []
     assert result.response_status == "insufficient"
     assert result.claims[0].qualified_reason == "claim_references_unpacked_or_unknown_evidence"
+    assert "__unknown_evidence_alias__" not in result.model_dump_json()
+    exported_claim = ExportV9FinalClaimV2.model_validate(result.claims[0].model_dump())
+    assert "__unknown_evidence_alias__" not in exported_claim.model_dump_json()
+    assert exported_claim.evidence_ids == []
 
 
 @pytest.mark.asyncio

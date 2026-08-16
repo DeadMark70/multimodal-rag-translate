@@ -26629,6 +26629,24 @@
               }
             ],
             "title": "Claim Verifier Call Count"
+          },
+          "claim_verifier_diagnostic_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "budget_rejected",
+                  "provider_failure",
+                  "invalid_provider_response",
+                  "claim_rejected",
+                  "accepted"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Verifier Diagnostic Code"
           }
         },
         "type": "object",

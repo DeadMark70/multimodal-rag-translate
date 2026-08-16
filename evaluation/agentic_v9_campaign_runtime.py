@@ -414,7 +414,7 @@ class AgenticV9CampaignRuntime:
                     route_plan_used=False,
                     contract_plan_requested=True,
                     evidence_qualification_provider_calls=1,
-                    claim_verifier_provider_calls=0,
+                    claim_verifier_provider_calls=1,
                 )
                 if post_contract.status is FeasibilityStatus.FEASIBLE:
                     planner_admitted = True
@@ -427,7 +427,7 @@ class AgenticV9CampaignRuntime:
                         route_plan_used=False,
                         contract_plan_requested=False,
                         evidence_qualification_provider_calls=1,
-                        claim_verifier_provider_calls=0,
+                        claim_verifier_provider_calls=1,
                     )
             else:
                 post_contract = validate_post_contract_feasibility(
@@ -438,7 +438,7 @@ class AgenticV9CampaignRuntime:
                     route_plan_used=False,
                     contract_plan_requested=False,
                     evidence_qualification_provider_calls=1,
-                    claim_verifier_provider_calls=0,
+                    claim_verifier_provider_calls=1,
                 )
 
             state["post_contract"] = post_contract
