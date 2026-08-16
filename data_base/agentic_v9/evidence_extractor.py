@@ -525,7 +525,9 @@ def _parse_curated_packets(
         return None
     valid_slots = {slot.slot_id for slot in slots}
     by_id = {item.packet.evidence_id: item for item in items}
-    packets: list[EvidencePacket] = []
+    coalesced_source_order: list[str] = []
+    coalesced_slots_by_source: dict[str, set[str]] = {}
+
     for raw in raw_packets:
         if not isinstance(raw, Mapping) or set(raw) != {"source_evidence_id", "slot_ids"}:
             continue
@@ -549,11 +551,25 @@ def _parse_curated_packets(
         ):
             rejection_counts.unauthorized_source_slot += 1
             continue
+        if actual_source_id not in coalesced_slots_by_source:
+            coalesced_source_order.append(actual_source_id)
+            coalesced_slots_by_source[actual_source_id] = set()
+        coalesced_slots_by_source[actual_source_id].update(deduped_slot_ids)
+
+    packets: list[EvidencePacket] = []
+    for actual_source_id in coalesced_source_order:
         item = by_id[actual_source_id]
+        ordered_slot_ids = [
+            slot.slot_id
+            for slot in slots
+            if slot.slot_id in coalesced_slots_by_source[actual_source_id]
+        ]
+        if not ordered_slot_ids:
+            continue
         accepted = _derived_packet(
             item.packet,
-            evidence_id=f"curated:{actual_source_id}:{':'.join(deduped_slot_ids)}",
-            slot_ids=deduped_slot_ids,
+            evidence_id=f"curated:{actual_source_id}:{':'.join(ordered_slot_ids)}",
+            slot_ids=ordered_slot_ids,
             statement=item.packet.statement,
             raw_value=item.packet.raw_value,
             normalized_value=item.packet.normalized_value,

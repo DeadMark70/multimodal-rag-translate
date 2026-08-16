@@ -797,3 +797,66 @@ def _packet_for_test(
         locator=SourceLocator(table_id=table_id, section="Results"),
         validation_status="invalid",
     )
+
+
+@pytest.mark.asyncio
+async def test_qualification_coalesces_multiple_rows_for_same_source() -> None:
+    item = _item(
+        "evidence:source-1",
+        "MICCSS incorporates channel-spatial Siamese architecture with SiamSSM branches.",
+        slot_ids=["S1", "S2", "S3", "S4", "S5"],
+    )
+    invoker = _RecordingInvoker(
+        {
+            "packets": [
+                {"source_evidence_id": "E1", "slot_ids": ["S1"]},
+                {"source_evidence_id": "E1", "slot_ids": ["S2", "S4", "S5"]},
+            ]
+        }
+    )
+    extractor = EvidenceExtractor(invoker)
+    contract = _contract(
+        _slot("S1", "Slot 1"),
+        _slot("S2", "Slot 2"),
+        _slot("S3", "Slot 3"),
+        _slot("S4", "Slot 4"),
+        _slot("S5", "Slot 5"),
+    )
+    outcome = await extractor.extract_with_outcome(
+        contract, [item], repairs_complete=True, question="What is MICCSS?"
+    )
+
+    assert len(outcome.packets) == 1
+    assert outcome.packets[0].evidence_id == "curated:evidence:source-1:S1:S2:S4:S5"
+    assert outcome.packets[0].slot_ids == ["S1", "S2", "S4", "S5"]
+    assert outcome.status == "provider_qualified"
+
+
+@pytest.mark.asyncio
+async def test_qualification_unauthorized_row_does_not_pollute_valid_coalesced_source() -> None:
+    item = _item(
+        "evidence:source-1",
+        "MICCSS architecture details.",
+        slot_ids=["S1", "S2"],
+    )
+    invoker = _RecordingInvoker(
+        {
+            "packets": [
+                {"source_evidence_id": "E1", "slot_ids": ["S1"]},
+                {"source_evidence_id": "E1", "slot_ids": ["S99_unauthorized"]},
+            ]
+        }
+    )
+    extractor = EvidenceExtractor(invoker)
+    contract = _contract(
+        _slot("S1", "Slot 1"),
+        _slot("S2", "Slot 2"),
+    )
+    outcome = await extractor.extract_with_outcome(
+        contract, [item], repairs_complete=True, question="What is MICCSS?"
+    )
+
+    assert len(outcome.packets) == 1
+    assert outcome.packets[0].evidence_id == "curated:evidence:source-1:S1"
+    assert outcome.packets[0].slot_ids == ["S1"]
+    assert outcome.qualification_unauthorized_source_slot_count == 1
