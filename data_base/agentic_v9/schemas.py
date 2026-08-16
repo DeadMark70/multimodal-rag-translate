@@ -727,6 +727,9 @@ class FinalAnswerResult(BaseModel):
     claims: list[FinalClaim] = Field(default_factory=list)
     used_evidence_ids: list[str] = Field(default_factory=list)
     final_generation_count: int = Field(default=0, ge=0, le=1)
+    unresolved_requirements: list[UnresolvedRequirement] = Field(default_factory=list)
+    unresolved_obligations: list[UnresolvedObligation] = Field(default_factory=list)
+    claim_verifier_call_count: int = Field(default=0, ge=0, le=1)
 
 
 class RetrievalPolicy(BaseModel):
@@ -851,6 +854,9 @@ class V9ExecutionMetrics(BaseModel):
     qualification_unknown_source_id_count: int = Field(default=0, ge=0)
     qualification_unauthorized_source_slot_count: int = Field(default=0, ge=0)
     qualification_statement_not_verbatim_count: int = Field(default=0, ge=0)
+    used_evidence_count: int | None = Field(default=None, ge=0)
+    unresolved_requirement_count: int | None = Field(default=None, ge=0)
+    claim_verifier_call_count: int | None = Field(default=None, ge=0, le=1)
 
 
 class V9ExecutionResult(BaseModel):

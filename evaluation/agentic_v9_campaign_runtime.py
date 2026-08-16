@@ -866,6 +866,12 @@ class AgenticV9CampaignRuntime:
             "qualification_round_count", 1 if candidate_count > 0 else 0
         )
         qualification_failure_code = state.get("qualification_failure_code", None)
+        final = executed.final_answer or FinalAnswerResult(
+            response_status="insufficient"
+        )
+        unresolved_req_count = len(final.unresolved_requirements) + len(
+            final.unresolved_obligations
+        )
         metrics = executed.metrics.model_copy(
             update={
                 "provider_attempt_count": budget_snapshot.provider_attempt_count,
@@ -891,10 +897,10 @@ class AgenticV9CampaignRuntime:
                 "qualification_statement_not_verbatim_count": state[
                     "qualification_statement_not_verbatim_count"
                 ],
+                "used_evidence_count": len(final.used_evidence_ids),
+                "unresolved_requirement_count": unresolved_req_count,
+                "claim_verifier_call_count": final.claim_verifier_call_count,
             }
-        )
-        final = executed.final_answer or FinalAnswerResult(
-            response_status="insufficient"
         )
         graph_execution = state["graph_execution"] or _initial_graph_execution(
             state["contract"]

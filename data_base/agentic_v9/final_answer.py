@@ -176,6 +176,9 @@ class FinalAnswerRenderer:
             claims=accepted,
             used_evidence_ids=used_evidence_ids,
             final_generation_count=1,
+            unresolved_requirements=list(unresolved_requirements),
+            unresolved_obligations=list(unresolved_obligations),
+            claim_verifier_call_count=1 if pending_verification else 0,
         )
 
 
@@ -414,16 +417,17 @@ def _supported_claim_obligation_ids(claims: Sequence[FinalClaim]) -> set[str]:
     }
 
 
-def _response_status(
-    claims: Sequence[FinalClaim],
+def reduce_terminal_status(
+    *,
     contract: QueryContract,
     slot_resolutions: Sequence[SlotResolution],
-    *,
+    accepted_claims: Sequence[FinalClaim],
     unresolved_requirements: Sequence[UnresolvedRequirement] = (),
     unresolved_obligations: Sequence[UnresolvedObligation] = (),
 ) -> ResponseStatus:
-    supported_claim_slots = _supported_claim_slot_ids(claims)
-    supported_claim_obs = _supported_claim_obligation_ids(claims)
+    """Return complete, qualified_partial, or insufficient from verified output."""
+    supported_claim_slots = _supported_claim_slot_ids(accepted_claims)
+    supported_claim_obs = _supported_claim_obligation_ids(accepted_claims)
 
     if not supported_claim_slots and not supported_claim_obs:
         return "insufficient"
@@ -452,4 +456,26 @@ def _response_status(
     return "qualified_partial"
 
 
-__all__ = ["FinalAnswerDraft", "FinalAnswerRenderer", "generate_final_answer"]
+def _response_status(
+    claims: Sequence[FinalClaim],
+    contract: QueryContract,
+    slot_resolutions: Sequence[SlotResolution],
+    *,
+    unresolved_requirements: Sequence[UnresolvedRequirement] = (),
+    unresolved_obligations: Sequence[UnresolvedObligation] = (),
+) -> ResponseStatus:
+    return reduce_terminal_status(
+        contract=contract,
+        slot_resolutions=slot_resolutions,
+        accepted_claims=claims,
+        unresolved_requirements=unresolved_requirements,
+        unresolved_obligations=unresolved_obligations,
+    )
+
+
+__all__ = [
+    "FinalAnswerDraft",
+    "FinalAnswerRenderer",
+    "generate_final_answer",
+    "reduce_terminal_status",
+]
