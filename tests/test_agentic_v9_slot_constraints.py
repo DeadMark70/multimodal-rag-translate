@@ -76,12 +76,33 @@ def test_lowercase_locator_identifiers_are_normalized(
     assert anchors.locators == (expected,)
 
 
+def test_ascii_locator_boundaries_allow_cjk_adjacency() -> None:
+    anchors = derive_slot_hard_anchors(
+        question="根據Algorithm 2，請說明更新流程。",
+        slot=RequiredSlot(slot_id="S1", description="說明最後更新步驟"),
+    )
+
+    assert anchors.locators == ("algorithm 2",)
+
+
+def test_ascii_region_boundaries_allow_cjk_adjacency() -> None:
+    anchors = derive_slot_hard_anchors(
+        question="整理來源內容。",
+        slot=RequiredSlot(slot_id="S1", description="抽取Abstract段落。"),
+    )
+
+    assert anchors.regions == ("abstract",)
+
+
 @pytest.mark.parametrize(
     "description",
     [
         "Explain the Algorithm Update prose.",
         "Extract the Table Results prose.",
         "Summarize the Figure Overview prose.",
+        "Explain Algorithm the prose.",
+        "Extract Table row prose.",
+        "Summarize Figure abc prose.",
     ],
 )
 def test_non_code_like_locator_words_are_not_hard_locators(description: str) -> None:
@@ -138,23 +159,40 @@ def test_subfigure_and_subtable_locators_preserve_suffix_and_match_exact(
         locator_hints=[locator],
     )
     expected = f"{canonical_kind} 1(a)"
+    spaced_locator = locator.replace("1(a)", "1 (a)")
     exact = _packet_for_anchor_test(
         f"{locator} reports the requested result.", section="Results"
+    )
+    spaced = _packet_for_anchor_test(
+        f"{spaced_locator} reports the requested result.", section="Results"
     )
     mismatched = _packet_for_anchor_test(
         locator.replace("1(a)", "2(a)")
         + " reports the requested result.",
         section="Results",
     )
+    multiple_suffix = _packet_for_anchor_test(
+        f"{locator}(b) reports the requested result.", section="Results"
+    )
 
     assert derive_slot_hard_anchors(
         question="Extract the requested result.", slot=slot
     ).locators == (expected,)
+    spaced_slot = slot.model_copy(update={"locator_hints": [spaced_locator]})
+    assert derive_slot_hard_anchors(
+        question="Extract the requested result.", slot=spaced_slot
+    ).locators == (expected,)
     assert candidate_satisfies_hard_anchors(
         question="Extract the requested result.", slot=slot, packet=exact
     )
+    assert candidate_satisfies_hard_anchors(
+        question="Extract the requested result.", slot=slot, packet=spaced
+    )
     assert not candidate_satisfies_hard_anchors(
         question="Extract the requested result.", slot=slot, packet=mismatched
+    )
+    assert not candidate_satisfies_hard_anchors(
+        question="Extract the requested result.", slot=slot, packet=multiple_suffix
     )
 
 
