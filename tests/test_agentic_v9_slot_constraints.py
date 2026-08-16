@@ -102,6 +102,62 @@ def test_mixed_case_locator_identifier_is_code_like() -> None:
     assert anchors.locators == ("algorithm resnet",)
 
 
+@pytest.mark.parametrize(
+    "description",
+    [
+        "Explain Algorithmic behavior.",
+        "Extract Tabletop results.",
+        "Summarize Sectional design.",
+    ],
+)
+def test_locator_kind_requires_word_boundary_and_explicit_separator(
+    description: str,
+) -> None:
+    anchors = derive_slot_hard_anchors(
+        question="Summarize the source.",
+        slot=RequiredSlot(slot_id="S1", description=description),
+    )
+
+    assert anchors.locators == ()
+
+
+@pytest.mark.parametrize(
+    ("locator", "canonical_kind"),
+    [
+        ("Figure 1(a)", "figure"),
+        ("Table 1(a)", "table"),
+        ("Algorithm 1(a)", "algorithm"),
+    ],
+)
+def test_subfigure_and_subtable_locators_preserve_suffix_and_match_exact(
+    locator: str, canonical_kind: str
+) -> None:
+    slot = RequiredSlot(
+        slot_id="S1",
+        description="Extract the requested result.",
+        locator_hints=[locator],
+    )
+    expected = f"{canonical_kind} 1(a)"
+    exact = _packet_for_anchor_test(
+        f"{locator} reports the requested result.", section="Results"
+    )
+    mismatched = _packet_for_anchor_test(
+        locator.replace("1(a)", "2(a)")
+        + " reports the requested result.",
+        section="Results",
+    )
+
+    assert derive_slot_hard_anchors(
+        question="Extract the requested result.", slot=slot
+    ).locators == (expected,)
+    assert candidate_satisfies_hard_anchors(
+        question="Extract the requested result.", slot=slot, packet=exact
+    )
+    assert not candidate_satisfies_hard_anchors(
+        question="Extract the requested result.", slot=slot, packet=mismatched
+    )
+
+
 def test_slot_local_locator_prevents_question_locator_inheritance() -> None:
     anchors = derive_slot_hard_anchors(
         question="According to Algorithm 2, explain the update flow.",

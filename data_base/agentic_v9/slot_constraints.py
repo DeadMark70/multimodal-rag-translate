@@ -31,7 +31,8 @@ _TABLE_CAPTION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _HARD_LOCATOR_PATTERN = re.compile(
-    r"(?P<kind>(?i:algorithm|table|figure|fig\.?|section))\s*[-:#.]?\s*"
+    r"\b(?P<kind>(?i:algorithm|table|figure|fig\.?|section))"
+    r"(?:\s+|[-:#.]\s*)"
     r"(?P<identifier>\(?[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*\)?"
     r"(?:\([A-Za-z0-9]{1,3}\))?)(?![A-Za-z0-9_-]|\.(?=[A-Za-z0-9_.-]))",
 )
@@ -214,11 +215,15 @@ def _format_hard_locator(value: tuple[str, str]) -> str:
 
 def _is_code_like_locator_identifier(identifier: str) -> bool:
     """Accept compact locator IDs while excluding ordinary title-case prose."""
-    normalized = identifier.strip().strip("()")
+    normalized = identifier.strip()
+    whole_parenthesized = re.fullmatch(r"\(([^()]*)\)", normalized)
+    if whole_parenthesized is not None:
+        normalized = whole_parenthesized.group(1).strip()
     if not normalized:
         return False
     if re.fullmatch(
-        r"\d+[a-z]{0,3}(?:\.\d+[a-z]{0,3}){0,4}(?:\([a-z0-9]{1,3}\))?",
+        r"\(?\d+[a-z]{0,3}(?:\.\d+[a-z]{0,3}){0,4}\)?"
+        r"(?:\([a-z0-9]{1,3}\))?",
         normalized,
         re.IGNORECASE,
     ):
