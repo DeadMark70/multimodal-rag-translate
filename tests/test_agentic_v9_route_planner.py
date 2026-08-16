@@ -125,7 +125,7 @@ async def test_q1_q2_shape_as_multi_hop_slot_contracts(
     assert contract.graph_policy == "locator_fallback"
     assert contract.max_retrieval_rounds == 2
     assert contract.max_repair_rounds == 1
-    assert contract.max_llm_calls == 3
+    assert contract.max_llm_calls == 4
 
 
 @pytest.mark.asyncio
@@ -155,6 +155,16 @@ async def test_visual_and_graph_routes_reserve_their_required_provider_phases() 
     [
         ("What is the table score?", "exact_structured", 4),
         ("What is the graph path in Figure 2?", "graph_relational", 5),
+        (
+            "Find ModelA in Figure 1 and ModelB in Table 2.",
+            "multi_document_exact",
+            4,
+        ),
+        (
+            "Compare ModelA, ModelB, and ModelC in Figure 2.",
+            "multi_hop",
+            4,
+        ),
     ],
 )
 async def test_visual_route_budgets_admit_grounded_completion(

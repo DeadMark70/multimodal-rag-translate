@@ -111,3 +111,45 @@ route planner + feasibility + campaign runtime: 84 passed
 
 Ruff and `git diff --check` remain clean. The existing 23 dependency-level
 Pydantic deprecation warnings are unchanged.
+
+## Corrective round 2 — remaining visual-capable routes
+
+### RED
+
+Extended the same real `RoutePlanner` → post-contract feasibility regression to
+visual `multi_document_exact` and visual `multi_hop` contracts:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_agentic_v9_route_planner.py::test_visual_route_budgets_admit_grounded_completion -q --disable-warnings
+```
+
+RED was precise: the two new cases failed with
+`required_provider_calls_exceed_call_budget`:
+
+- visual `multi_document_exact`: required 4 provider calls, route cap 3;
+- visual `multi_hop`: required 4 provider calls, route cap 3.
+
+### Minimal GREEN change and complete route matrix
+
+Only `multi_document_exact` and `multi_hop` route caps were raised from 3 to 4.
+All retrieval rounds, repair rounds, token budgets, and other route caps remain
+unchanged.
+
+| Route | Nonvisual required calls | Visual required calls | Route cap |
+| --- | ---: | ---: | ---: |
+| `single_lookup` | 3 | n/a | 3 |
+| `bounded_compare` | 3 | n/a | 3 |
+| `exact_structured` | 3 | 4 | 4 |
+| `multi_document_exact` | 3 | 4 | 4 |
+| `multi_hop` | 3 | 4 | 4 |
+| `graph_relational` | 4 | 5 | 5 |
+
+### Corrective verification
+
+```text
+visual route regression: 4 passed
+route planner + feasibility + budget controller + budgeted llm + campaign runtime: 113 passed
+```
+
+Ruff and `git diff --check` remain clean. The existing 23 dependency-level
+Pydantic deprecation warnings are unchanged.
