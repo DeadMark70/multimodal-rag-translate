@@ -53,10 +53,10 @@ _ROUTE_BUDGETS: dict[AgenticV9Route, _RouteBudget] = {
     # post-contract admission gate validates the actual requirements.
     "single_lookup": _RouteBudget(1, 0, 3, 30_000),
     "bounded_compare": _RouteBudget(2, 1, 3, 40_000),
-    "exact_structured": _RouteBudget(1, 1, 3, 40_000),
+    "exact_structured": _RouteBudget(1, 1, 4, 40_000),
     "multi_document_exact": _RouteBudget(2, 1, 3, 50_000),
     "multi_hop": _RouteBudget(2, 1, 3, 50_000),
-    "graph_relational": _RouteBudget(1, 1, 4, 50_000),
+    "graph_relational": _RouteBudget(1, 1, 5, 50_000),
 }
 
 

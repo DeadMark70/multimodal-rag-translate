@@ -68,3 +68,46 @@ changed.
 - Preserved fail-closed behavior and the existing one-batch verifier contract.
 - No Task 3 anchors or unrelated UI/export paths were changed.
 - Remaining warnings are dependency-level Pydantic deprecations from `storage3`.
+
+## Corrective round 1 — route-budget regression
+
+### RED
+
+Added a real `RoutePlanner` → `validate_post_contract_feasibility()` regression
+for visual `exact_structured` and visual `graph_relational` contracts, including
+the active runtime reservations (`evidence_qualification_provider_calls=1` and
+`claim_verifier_provider_calls=1`). Before the production change:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_agentic_v9_route_planner.py::test_visual_route_budgets_admit_grounded_completion -q --disable-warnings
+```
+
+RED was precise: both cases failed with
+`required_provider_calls_exceed_call_budget`:
+
+- visual `exact_structured`: required 4 provider calls, route cap 3;
+- visual `graph_relational`: required 5 provider calls, route cap 4.
+
+### Minimal GREEN change
+
+Only the two affected production route caps were raised; retrieval rounds,
+repair rounds, token budgets, and all other route caps were unchanged.
+
+| Route | Visual path required calls | Nonvisual required calls | Correct route cap |
+| --- | ---: | ---: | ---: |
+| `exact_structured` | 4 | 3 | 4 |
+| `graph_relational` | 5 | 4 | 5 |
+
+The production matrix now uses `max_llm_calls=4` for `exact_structured` and
+`max_llm_calls=5` for `graph_relational`; the caps cover their visual and
+nonvisual phase sets without a global increase.
+
+### Corrective verification
+
+```text
+tests/test_agentic_v9_route_planner.py: 10 passed
+route planner + feasibility + campaign runtime: 84 passed
+```
+
+Ruff and `git diff --check` remain clean. The existing 23 dependency-level
+Pydantic deprecation warnings are unchanged.

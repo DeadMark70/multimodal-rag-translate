@@ -143,10 +143,48 @@ async def test_visual_and_graph_routes_reserve_their_required_provider_phases() 
 
     assert visual_contract.route == "exact_structured"
     assert visual_contract.visual_required is True
-    assert visual_contract.max_llm_calls == 3
+    assert visual_contract.max_llm_calls == 4
     assert graph_visual_contract.route == "graph_relational"
     assert graph_visual_contract.visual_required is True
-    assert graph_visual_contract.max_llm_calls == 4
+    assert graph_visual_contract.max_llm_calls == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("question", "expected_route", "expected_required_provider_calls"),
+    [
+        ("What is the table score?", "exact_structured", 4),
+        ("What is the graph path in Figure 2?", "graph_relational", 5),
+    ],
+)
+async def test_visual_route_budgets_admit_grounded_completion(
+    question: str,
+    expected_route: str,
+    expected_required_provider_calls: int,
+) -> None:
+    """Visual route contracts must admit evidence, visual, final, and verifier phases."""
+    contract = await RoutePlanner(llm_invoker=_NeverInvoker()).plan(
+        question=question,
+        resolved_source_scope=_scope(),
+    )
+
+    result = validate_post_contract_feasibility(
+        contract=contract,
+        setup_snapshot={"max_output_tokens": 8192, "thinking_mode": False},
+        remaining_token_budget=50_000,
+        remaining_llm_calls=contract.max_llm_calls,
+        evidence_qualification_provider_calls=1,
+        claim_verifier_provider_calls=1,
+    )
+
+    assert contract.route == expected_route
+    assert contract.visual_required is True
+    assert result.status is FeasibilityStatus.FEASIBLE, (
+        f"{expected_route}: {result.reason}"
+    )
+    assert sum(result.required_provider_calls.values()) == (
+        expected_required_provider_calls
+    )
 
 
 @pytest.mark.asyncio
