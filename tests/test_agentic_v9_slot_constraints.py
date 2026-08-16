@@ -98,11 +98,40 @@ def test_ascii_region_boundaries_allow_cjk_adjacency() -> None:
 
 
 @pytest.mark.parametrize(
+    ("description", "expected_region"),
+    [
+        ("Extract the Abstract.", "abstract"),
+        ("Extract the Method.", "method"),
+        ("Extract the Contribution.", "contribution"),
+    ],
+)
+def test_terminal_period_is_a_region_boundary(
+    description: str, expected_region: str
+) -> None:
+    anchors = derive_slot_hard_anchors(
+        question="Summarize the source.",
+        slot=RequiredSlot(slot_id="S1", description=description),
+    )
+
+    assert anchors.regions == (expected_region,)
+    packet = _packet_for_anchor_test(
+        f"{expected_region.capitalize()}. The requested statement follows.",
+        section="Results",
+    )
+    assert candidate_satisfies_hard_anchors(
+        question="Summarize the source.",
+        slot=RequiredSlot(slot_id="S1", description=description),
+        packet=packet,
+    )
+
+
+@pytest.mark.parametrize(
     "description",
     [
         "Summarize foo_Algorithm 2.",
         "Extract the Abstract_foo paragraph.",
         "Explain the Method-v2 variant.",
+        "Explain the Method.v2 variant.",
     ],
 )
 def test_ascii_punctuation_is_internal_to_locator_and_region_tokens(
@@ -115,6 +144,27 @@ def test_ascii_punctuation_is_internal_to_locator_and_region_tokens(
 
     assert anchors.locators == ()
     assert anchors.regions == ()
+
+
+@pytest.mark.parametrize(
+    ("suffix", "expected"),
+    [
+        ("(see)", ("figure 1(a)",)),
+        ("(ref)", ("figure 1(a)",)),
+        ("(b)", ()),
+    ],
+)
+def test_locator_secondary_parenthetical_uses_compact_sublocator_rules(
+    suffix: str, expected: tuple[str, ...]
+) -> None:
+    anchors = derive_slot_hard_anchors(
+        question="Summarize the source.",
+        slot=RequiredSlot(
+            slot_id="S1", description=f"Extract Figure 1(a) {suffix} result."
+        ),
+    )
+
+    assert anchors.locators == expected
 
 
 @pytest.mark.parametrize(

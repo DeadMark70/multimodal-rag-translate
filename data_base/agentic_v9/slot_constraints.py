@@ -41,10 +41,13 @@ _HARD_LOCATOR_FULL_PATTERN = re.compile(
     rf"^{_HARD_LOCATOR_PATTERN.pattern}$"
 )
 _HARD_REGION_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_.-])(Abstract|Contribution|Method)(?![A-Za-z0-9_.-])",
+    r"(?<![A-Za-z0-9_.-])(Abstract|Contribution|Method)"
+    r"(?![A-Za-z0-9_-]|\.(?=[A-Za-z0-9]))",
     re.IGNORECASE,
 )
-_SECONDARY_SUBLOCATOR_PATTERN = re.compile(r"\s*\([A-Za-z0-9]{1,3}\)")
+_SECONDARY_SUBLOCATOR_PATTERN = re.compile(
+    r"\s*(?P<sublocator>\([A-Za-z0-9]{1,3}\))"
+)
 _TECHNICAL_IDENTIFIER_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_.-])(?P<identifier>[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*)(?![A-Za-z0-9_-]|\.(?=[A-Za-z0-9_.-]))"
 )
@@ -368,7 +371,10 @@ def _metadata_locator_key(
 
 def _has_secondary_sublocator(text: str, end: int) -> bool:
     """Reject only a following compact parenthetical sublocator."""
-    return _SECONDARY_SUBLOCATOR_PATTERN.match(text, end) is not None
+    match = _SECONDARY_SUBLOCATOR_PATTERN.match(text, end)
+    return match is not None and _is_code_like_locator_identifier(
+        match.group("sublocator")
+    )
 
 
 def _contains_text_token(
@@ -391,7 +397,7 @@ def _contains_text_token(
     right_boundary = (
         "[a-z0-9_-]|\\.(?=[a-z0-9_.-])"
         if identifier_token
-        else "[a-z0-9_.-]"
+        else "[a-z0-9_-]|\\.(?=[a-z0-9])"
     )
     pattern = rf"(?<![{boundary}]){re.escape(normalized)}(?!{right_boundary})"
     return re.search(pattern, projection.casefold()) is not None
