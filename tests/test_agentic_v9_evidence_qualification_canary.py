@@ -58,9 +58,6 @@ async def test_canary_uses_shared_schema_bound_provider_once(
                                 {
                                     "source_evidence_id": "E1",
                                     "slot_ids": ["S1"],
-                                    "statement": (
-                                        "The method uses a two-stage decoder for small lesions."
-                                    ),
                                 }
                         ]
                     }

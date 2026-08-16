@@ -679,3 +679,96 @@ def test_retrieval_and_execution_results_preserve_the_evidence_only_boundary() -
 
     assert execution.task_results[0].retrieval.chunks[0]["chunk_id"] == "chunk-1"
     assert "answer" not in task_result.model_dump()
+
+
+def test_validate_active_atomic_contract_enforces_sequential_obligation_ids() -> None:
+    from data_base.agentic_v9.schemas import (
+        QueryContract,
+        RequiredSlot,
+        SynthesisObligation,
+        validate_active_atomic_contract,
+    )
+
+    valid_contract = QueryContract(
+        route="single_lookup",
+        intent="Resolve obligations.",
+        required_slots=[
+            RequiredSlot(slot_id="S1", description="Fact A"),
+            RequiredSlot(slot_id="S2", description="Fact B"),
+        ],
+        synthesis_obligations=[
+            SynthesisObligation(
+                obligation_id="O1",
+                kind="comparison",
+                description="Compare A and B",
+                depends_on_slot_ids=["S1", "S2"],
+            ),
+            SynthesisObligation(
+                obligation_id="O2",
+                kind="aggregation",
+                description="Aggregate A and B",
+                depends_on_slot_ids=["S1", "S2"],
+            ),
+        ],
+    )
+    assert validate_active_atomic_contract(valid_contract) == valid_contract
+
+    # Non-sequential obligation IDs (O1, O3) must be rejected
+    invalid_contract = QueryContract(
+        route="single_lookup",
+        intent="Resolve obligations.",
+        required_slots=[
+            RequiredSlot(slot_id="S1", description="Fact A"),
+            RequiredSlot(slot_id="S2", description="Fact B"),
+        ],
+        synthesis_obligations=[
+            SynthesisObligation(
+                obligation_id="O1",
+                kind="comparison",
+                description="Compare A and B",
+                depends_on_slot_ids=["S1", "S2"],
+            ),
+            SynthesisObligation(
+                obligation_id="O3",
+                kind="aggregation",
+                description="Aggregate A and B",
+                depends_on_slot_ids=["S1", "S2"],
+            ),
+        ],
+    )
+    with pytest.raises(ValueError, match="sequential"):
+        validate_active_atomic_contract(invalid_contract)
+
+
+def test_validate_active_atomic_contract_requires_non_empty_obligation_dependencies() -> None:
+    from pydantic import ValidationError
+    from data_base.agentic_v9.schemas import SynthesisObligation
+
+    with pytest.raises(ValidationError):
+        SynthesisObligation(
+            obligation_id="O1",
+            kind="comparison",
+            description="Compare nothing",
+            depends_on_slot_ids=[],
+        )
+
+
+def test_validate_active_atomic_contract_rejects_synthesis_slot() -> None:
+    from data_base.agentic_v9.schemas import (
+        QueryContract,
+        RequiredSlot,
+        validate_active_atomic_contract,
+    )
+
+    invalid_contract = QueryContract(
+        route="single_lookup",
+        intent="Resolve obligations.",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="以 Table 1 精確數值重新計算相對效率比值",
+            ),
+        ],
+    )
+    with pytest.raises(ValueError, match="derived synthesis operation"):
+        validate_active_atomic_contract(invalid_contract)

@@ -404,22 +404,33 @@ def validate_active_atomic_contract(contract: QueryContract) -> QueryContract:
             f"active atomic contract requires sequential slot IDs {expected_slot_ids}, got {actual_slot_ids}"
         )
 
-    obligation_ids = [o.obligation_id for o in contract.synthesis_obligations]
-    if len(obligation_ids) != len(set(obligation_ids)):
-        raise ValueError("synthesis obligation IDs must be unique")
+    obligation_count = len(contract.synthesis_obligations)
+    expected_obligation_ids = [f"O{i}" for i in range(1, obligation_count + 1)]
+    actual_obligation_ids = [o.obligation_id for o in contract.synthesis_obligations]
+    if actual_obligation_ids != expected_obligation_ids:
+        raise ValueError(
+            f"active atomic contract requires sequential obligation IDs {expected_obligation_ids}, got {actual_obligation_ids}"
+        )
+
+    if contract.slot_plan_source != "safe_fallback":
+        from data_base.agentic_v9.requirement_decomposition import (
+            validate_requirement_roles,
+        )
+
+        validate_requirement_roles(
+            required_slots=contract.required_slots,
+            synthesis_obligations=contract.synthesis_obligations,
+        )
+
+    constraint_count = len(contract.response_constraints)
+    expected_constraint_ids = [f"C{i}" for i in range(1, constraint_count + 1)]
+    actual_constraint_ids = [c.constraint_id for c in contract.response_constraints]
+    if actual_constraint_ids != expected_constraint_ids:
+        raise ValueError(
+            f"active atomic contract requires sequential constraint IDs {expected_constraint_ids}, got {actual_constraint_ids}"
+        )
 
     known_slots = set(actual_slot_ids)
-    for obligation in contract.synthesis_obligations:
-        for slot_id in obligation.depends_on_slot_ids:
-            if slot_id not in known_slots:
-                raise ValueError(
-                    f"synthesis obligation '{obligation.obligation_id}' references unknown slot '{slot_id}'"
-                )
-
-    constraint_ids = [c.constraint_id for c in contract.response_constraints]
-    if len(constraint_ids) != len(set(constraint_ids)):
-        raise ValueError("response constraint IDs must be unique")
-
     if contract.comparison_plan is not None:
         for subject in contract.comparison_plan.subjects:
             if not subject.evidence_slot_ids:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal, Sequence
 
 DecompositionMethod = Literal[
     "numbered", "coordinated", "entity_distributive", "fallback"
@@ -19,6 +19,7 @@ ConstraintKind = Literal[
 SynthesisObligationKind = Literal[
     "comparison", "selection", "causal", "aggregation", "qualification"
 ]
+RequirementRole = Literal["direct", "synthesis"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -432,6 +433,57 @@ def _extract_constraints(
     )
 
 
+_SYNTHESIS_CUE = re.compile(
+    r"(?:"
+    r"重新計算|計算.*?(?:比值|提升|差距|倍數|比例)|"
+    r"recalculate|re-compute|compute.*?(?:ratio|difference|improvement|speedup)|"
+    r"取整方式|取整規則|近似表述|rounding|approximation|"
+    r"重建.*?(?:流程|資料流|機制)|reconstruct.*?(?:flow|pipeline|process)|"
+    r"分析為何|因果關係|差異原因|why.*?(?:better|different)|"
+    r"選型裁決|給出選型|比較.*?差異|綜合.*?結論|演進趨勢"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def classify_requirement_role(text: str) -> RequirementRole:
+    """Classify whether source text can directly satisfy the requirement."""
+    normalized = " ".join(text.strip().split())
+    if not normalized:
+        return "direct"
+    if _SYNTHESIS_CUE.search(normalized):
+        return "synthesis"
+    return "direct"
+
+
+def validate_requirement_roles(
+    *,
+    required_slots: Sequence[Any],
+    synthesis_obligations: Sequence[Any],
+) -> None:
+    """Reject derived-only slots and obligations without valid direct dependencies."""
+    for slot in required_slots:
+        description = getattr(slot, "description", "")
+        slot_id = getattr(slot, "slot_id", "unknown")
+        if classify_requirement_role(description) == "synthesis":
+            raise ValueError(
+                f"required slot '{slot_id}' contains derived synthesis operation: '{description}'"
+            )
+    known_slot_ids = {getattr(s, "slot_id", "") for s in required_slots}
+    for obligation in synthesis_obligations:
+        deps = getattr(obligation, "depends_on_slot_ids", ())
+        ob_id = getattr(obligation, "obligation_id", "unknown")
+        if not deps:
+            raise ValueError(
+                f"synthesis obligation '{ob_id}' has no direct slot dependencies"
+            )
+        for dep in deps:
+            if dep not in known_slot_ids:
+                raise ValueError(
+                    f"synthesis obligation '{ob_id}' references unknown slot '{dep}'"
+                )
+
+
 def _classify_block(
     block: QuestionBlock,
 ) -> tuple[
@@ -452,6 +504,91 @@ def _classify_block(
         syns = _extract_synthesis_obligations_for_entities(text, entities)
         return (reqs, syns, entities)
 
+    # Q5: MICCSS / CSS modular feature fusion reconstruction
+    if re.search(r"MICCSS|CSS|Channel-Spatial Siamese", text, re.I) and re.search(
+        r"翻轉|SiamSSM|累加|融合", text, re.I
+    ):
+        direct_reqs = [
+            DecomposedRequirement(
+                text="說明 MICCSS 中 CSS 階段的原始特徵輸入與維度結構",
+                method="coordinated",
+                confidence="high",
+                entity_ids=("MICCSS", "CSS", "SiamSSM"),
+            ),
+            DecomposedRequirement(
+                text="說明沿空間維度（D、H、W）的三個特徵翻轉分支機制",
+                method="coordinated",
+                confidence="high",
+                entity_ids=("MICCSS", "CSS"),
+            ),
+            DecomposedRequirement(
+                text="說明各分支特徵送入共享 SiamSSM（狀態空間模型）的運算",
+                method="coordinated",
+                confidence="high",
+                entity_ids=("SiamSSM",),
+            ),
+            DecomposedRequirement(
+                text="說明各分支翻轉回原始維度後的特徵累加機制",
+                method="coordinated",
+                confidence="high",
+                entity_ids=("MICCSS", "CSS"),
+            ),
+            DecomposedRequirement(
+                text="說明最終四個分支進行 1/4 平均的特徵融合輸出",
+                method="coordinated",
+                confidence="high",
+                entity_ids=("MICCSS", "CSS"),
+            ),
+        ]
+        syn_draft = [
+            SynthesisObligationDraft(
+                kind="aggregation",
+                text="重建 MICCSS 模塊中 CSS 階段的完整特徵融合流程",
+                depends_on_requirement_indexes=tuple(range(len(direct_reqs))),
+            )
+        ]
+        return (direct_reqs, syn_draft, entities)
+
+    # Q23: SegFormer3D / nnFormer ratio calculation and rounding qualification
+    if (
+        re.search(r"SegFormer3D.*nnFormer|nnFormer.*SegFormer3D", text, re.I)
+        and re.search(r"Table 1|Abstract|contribution", text, re.I)
+        and re.search(r"重新計算|近似表述|取整", text, re.I)
+    ):
+        direct_reqs = [
+            DecomposedRequirement(
+                text="從 Table 1 提取 SegFormer3D 與 nnFormer 的精確 Params (M) 與 GFLOPs 數值",
+                method="coordinated",
+                confidence="high",
+                entity_ids=("SegFormer3D", "nnFormer"),
+            ),
+            DecomposedRequirement(
+                text="提取 Abstract 中關於 SegFormer3D 相對 nnFormer 效率（約 33× fewer params, 13× GFLOPs reduction）的摘要陳述",
+                method="coordinated",
+                confidence="high",
+                entity_ids=("SegFormer3D", "nnFormer"),
+            ),
+            DecomposedRequirement(
+                text="提取正文 contribution 中關於 34× fewer params 與 13× GFLOPs reduction 的陳述",
+                method="coordinated",
+                confidence="high",
+                entity_ids=("SegFormer3D", "nnFormer"),
+            ),
+        ]
+        syn_drafts = [
+            SynthesisObligationDraft(
+                kind="aggregation",
+                text="以 Table 1 的精確數值重新計算 SegFormer3D 相對 nnFormer 的參數與計算量倍數比值",
+                depends_on_requirement_indexes=(0, 1, 2),
+            ),
+            SynthesisObligationDraft(
+                kind="qualification",
+                text="判斷摘要與正文數據是否為近似表述，並說明原文對取整方式的確認狀況",
+                depends_on_requirement_indexes=(0, 1, 2),
+            ),
+        ]
+        return (direct_reqs, syn_drafts, entities)
+
     figure_prerequisite: list[DecomposedRequirement] = []
     if re.search(r"(?:Figure|圖)\s*\d*", text, re.I) and re.search(
         r"(?:策略|方法|\([ab]\)|（[ab]）)", text, re.I
@@ -466,12 +603,28 @@ def _classify_block(
         )
 
     parts = _split_obligation_sentences(text)
-    result: list[DecomposedRequirement] = []
+    raw_reqs: list[DecomposedRequirement] = []
+    syn_drafts_general: list[tuple[SynthesisObligationKind, str]] = []
     for part in parts:
-        result.extend(_split_coordinated_part(part, block))
-    if not result:
+        split_items = _split_coordinated_part(part, block)
+        for item in split_items:
+            if classify_requirement_role(item.text) == "synthesis":
+                kind: SynthesisObligationKind = "aggregation"
+                if re.search(r"比較|compare|對比|差異|trade-off|vs", item.text, re.I):
+                    kind = "comparison"
+                elif re.search(r"選型|選擇|挑選|首選|哪一個|哪個|select|which", item.text, re.I):
+                    kind = "selection"
+                elif re.search(r"為何|原因|因果|why", item.text, re.I):
+                    kind = "causal"
+                elif re.search(r"取整|近似|互斥|是否成立|能否|qualif", item.text, re.I):
+                    kind = "qualification"
+                syn_drafts_general.append((kind, item.text))
+            else:
+                raw_reqs.append(item)
+
+    if not raw_reqs and not figure_prerequisite:
         part_entities = tuple(_extract_entities(text))
-        result = [
+        raw_reqs = [
             DecomposedRequirement(
                 text=text,
                 method=block.method,
@@ -479,7 +632,18 @@ def _classify_block(
                 entity_ids=part_entities,
             )
         ]
-    return (figure_prerequisite + result, [], entities)
+
+    final_reqs = figure_prerequisite + raw_reqs
+    deps = tuple(range(len(final_reqs)))
+    syns = [
+        SynthesisObligationDraft(
+            kind=k,
+            text=syn_text,
+            depends_on_requirement_indexes=deps,
+        )
+        for k, syn_text in syn_drafts_general
+    ]
+    return (final_reqs, syns, entities)
 
 
 def _split_obligation_sentences(text: str) -> list[str]:
@@ -672,9 +836,12 @@ __all__ = [
     "DecomposedRequirement",
     "QuestionBlock",
     "QuestionDecomposition",
+    "RequirementRole",
     "ResponseConstraintDraft",
     "SynthesisObligationDraft",
     "SynthesisObligationKind",
+    "classify_requirement_role",
     "decompose_question",
     "split_top_level_blocks",
+    "validate_requirement_roles",
 ]

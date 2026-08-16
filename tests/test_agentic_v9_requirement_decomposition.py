@@ -67,16 +67,18 @@ def test_classification_labels_are_constraints() -> None:
     )
 
 
-def test_css_question_yields_four_generic_obligations() -> None:
+def test_css_question_yields_five_direct_slots_and_reconstruction_obligation() -> None:
     result = decompose_question(
         "根據架構描述，請重建 CSS 的特徵融合流程，並說明三個翻轉分支"
         "與 SiamSSM 的運算/累加機制。"
     )
 
-    assert len(result.requirements) == 4
+    assert len(result.requirements) == 5
     joined = "\n".join(item.text for item in result.requirements)
-    for anchor in ("融合流程", "翻轉分支", "SiamSSM", "累加機制"):
+    for anchor in ("翻轉分支", "SiamSSM", "累加機制", "平均"):
         assert anchor in joined
+    assert len(result.synthesis_obligations) == 1
+    assert "融合流程" in result.synthesis_obligations[0].text
 
 
 def test_explicit_other_entities_use_bounded_distribution() -> None:
@@ -91,17 +93,19 @@ def test_explicit_other_entities_use_bounded_distribution() -> None:
         assert entity in joined
 
 
-def test_q15_like_question_yields_four_obligations() -> None:
+def test_q15_like_question_yields_direct_requirements_and_calculation_obligation() -> None:
     result = decompose_question(
         "根據 Figure 1 的策略 (a) 與 (b)，若採用圖 1(b) 的策略，"
         "Table 1 中的 mIoU 為何？請計算它比 (a) 提升多少？"
         "此外，effective batch size 是多少？"
     )
 
-    assert len(result.requirements) == 4
+    assert len(result.requirements) == 3
     joined = "\n".join(item.text for item in result.requirements)
-    for anchor in ("Figure", "mIoU", "提升", "batch size"):
+    for anchor in ("Figure", "mIoU", "batch size"):
         assert anchor in joined
+    assert len(result.synthesis_obligations) == 1
+    assert "提升" in result.synthesis_obligations[0].text
 
 
 def test_q16_like_question_yields_six_obligations_without_numeric_corruption() -> None:
@@ -345,3 +349,70 @@ def test_regression_q1_to_q32_fixture_structural_invariants() -> None:
             assert set(result.semantic_planning_reasons).issubset(
                 known_reasons
             ), f"{item['id']} unknown semantic planning reasons: {result.semantic_planning_reasons}"
+
+
+def test_q5_decomposition_produces_direct_child_slots_and_reconstruction_obligation() -> None:
+    question = (
+        "根據 nnMamba 架構描述，請重建 MICCSS 模塊中 CSS（Channel-Spatial Siamese）"
+        "階段的特徵融合流程，並說明三個翻轉分支與 SiamSSM 的運算/累加機制。"
+    )
+    result = decompose_question(question)
+
+    assert len(result.requirements) >= 3
+    assert len(result.synthesis_obligations) == 1
+    assert result.synthesis_obligations[0].kind == "aggregation"
+    assert "融合流程" in result.synthesis_obligations[0].text or "重建" in result.synthesis_obligations[0].text
+    # Direct slots must not contain the derived parent reconstruction
+    assert all("重建" not in r.text for r in result.requirements)
+    # The synthesis obligation depends on all direct requirements
+    assert result.synthesis_obligations[0].depends_on_requirement_indexes == tuple(
+        range(len(result.requirements))
+    )
+
+
+def test_q23_decomposition_produces_table_abstract_contribution_slots_and_ratio_rounding_obligations() -> None:
+    question = (
+        "SegFormer3D 對相對 nnFormer 的效率有兩種摘要說法：Abstract 寫約 33× fewer parameters、"
+        "13× GFLOPs reduction，正文 contribution 則寫 34×、13×。請以 Table 1 的精確數值重新計算，"
+        "判斷哪些數字只能視為近似表述，並說明可由原文確認或不能確認的取整方式。"
+    )
+    result = decompose_question(question)
+
+    assert len(result.requirements) >= 3
+    # Check direct slots cover Table 1, Abstract, and contribution
+    joined_reqs = "\n".join(r.text for r in result.requirements)
+    assert "Table 1" in joined_reqs or "數值" in joined_reqs
+    assert "Abstract" in joined_reqs or "33×" in joined_reqs
+    assert "contribution" in joined_reqs or "34×" in joined_reqs
+    # Direct slots must not be derived calculations/rounding judgments
+    assert all("重新計算" not in r.text and "取整" not in r.text for r in result.requirements)
+
+    assert len(result.synthesis_obligations) == 2
+    kinds = [syn.kind for syn in result.synthesis_obligations]
+    assert "aggregation" in kinds
+    assert "qualification" in kinds
+    for syn in result.synthesis_obligations:
+        assert len(syn.depends_on_requirement_indexes) >= 1
+
+
+def test_single_fact_control_produces_one_direct_slot_and_zero_obligations() -> None:
+    question = "What is the Dice score of nnUNet reported in Table 1 on the BraTS dataset?"
+    result = decompose_question(question)
+
+    assert len(result.requirements) == 1
+    assert len(result.synthesis_obligations) == 0
+    assert len(result.response_constraints) == 0
+
+
+def test_classify_requirement_role_distinguishes_direct_facts_from_derived_synthesis() -> None:
+    from data_base.agentic_v9.requirement_decomposition import classify_requirement_role
+
+    assert classify_requirement_role("從 Table 1 提取 SegFormer3D 與 nnFormer 的 Params 數值") == "direct"
+    assert classify_requirement_role("提取 Abstract 中關於 33× fewer params 的敘述") == "direct"
+    assert classify_requirement_role("說明 MICCSS 模塊中三個翻轉分支的維度操作") == "direct"
+    assert classify_requirement_role("What is the parameter count of Model-A?") == "direct"
+
+    assert classify_requirement_role("以 Table 1 精確數值重新計算相對效率比值") == "synthesis"
+    assert classify_requirement_role("判斷哪些數字只能視為近似表述，並說明取整方式") == "synthesis"
+    assert classify_requirement_role("重建 MICCSS 模塊中 CSS 階段的特徵融合流程") == "synthesis"
+    assert classify_requirement_role("比較 Model-A 與 Model-B 的延遲並給出選型裁決") == "synthesis"

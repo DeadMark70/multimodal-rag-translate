@@ -347,6 +347,7 @@ class QuestionContractPlanner:
                         allowed_source_names=set(requested_source_names),
                     )
                     _validate_decision_indexes(decision)
+                    _validate_decision_roles(decision)
                     _validate_answer_free(
                         decision,
                         question=question,
@@ -453,16 +454,60 @@ class QuestionContractPlanner:
                     provider_response_received=True,
                 )
             except PlannerSemanticValidationError:
-                return _safe_fallback_outcome(
-                    question=question,
-                    base_contract=base_contract,
-                    fallback_reason="invalid_planner_output",
-                    planner_call_count=1,
-                    latency_ms=(time.perf_counter() - start_time) * 1000,
-                    failure_stage="semantic_validation",
-                    failure_code="planner_semantic_rejection",
-                    provider_response_received=True,
-                )
+                try:
+                    slots = _build_slots_from_decomposition(
+                        prep.decomposition.requirements,
+                        scope=base_contract.resolved_source_scope,
+                    )
+                    obligations = _build_obligations_from_decomposition(
+                        prep.decomposition.synthesis_obligations,
+                        slot_count=len(slots),
+                    )
+                    constraints = _build_constraints_from_decomposition(
+                        prep.decomposition.response_constraints
+                    )
+                    comparison_plan = (
+                        _build_deterministic_comparison_plan(
+                            prep.decomposition,
+                            slots=slots,
+                        )
+                        if prep.comparison_candidate
+                        else None
+                    )
+                    contract = apply_atomic_contract_overlay(
+                        base_contract,
+                        required_slots=slots,
+                        synthesis_obligations=obligations,
+                        response_constraints=constraints,
+                        comparison_plan=comparison_plan,
+                        slot_plan_status="degraded",
+                        slot_plan_source="deterministic",
+                        slot_plan_confidence=prep.decomposition.confidence,
+                        slot_plan_fallback_reason="planner_semantic_rejection",
+                    )
+                    return AtomicContractPlanningOutcome(
+                        contract=contract,
+                        planner_call_count=1,
+                        latency_ms=(time.perf_counter() - start_time) * 1000,
+                        planner_diagnostics=_planner_diagnostics(
+                            contract=contract,
+                            outcome="degraded",
+                            failure_stage="semantic_validation",
+                            failure_code="planner_semantic_rejection",
+                            provider_response_received=True,
+                        ),
+                    )
+                except Exception:
+                    return _safe_fallback_outcome(
+                        question=question,
+                        base_contract=base_contract,
+                        fallback_reason="invalid_planner_output",
+                        planner_call_count=1,
+                        latency_ms=(time.perf_counter() - start_time) * 1000,
+                        failure_stage="semantic_validation",
+                        failure_code="planner_semantic_rejection",
+                        provider_response_received=True,
+                    )
             except _UnauthorizedSourceExpansion:
                 return _safe_fallback_outcome(
                     question=question,
@@ -629,7 +674,7 @@ def _planner_diagnostics(
         provider_response_received=provider_response_received,
         retrieval_query_strategy=(
             "safe_fallback_original_question"
-            if outcome == "degraded"
+            if contract.slot_plan_source == "safe_fallback"
             else "atomic_slots"
         ),
         compiled_retrieval_task_count=_compiled_retrieval_task_count(contract),
@@ -701,6 +746,26 @@ def _validate_decision_indexes(decision: _PlannerDecision) -> None:
                     raise ValueError(
                         f"comparison subject {sub.subject_id} references invalid requirement index {dep}"
                     )
+
+
+def _validate_decision_roles(decision: _PlannerDecision) -> None:
+    from data_base.agentic_v9.requirement_decomposition import classify_requirement_role
+
+    for idx, req in enumerate(decision.evidence_requirements, 1):
+        if classify_requirement_role(req.description) == "synthesis":
+            raise PlannerSemanticValidationError(
+                f"evidence requirement {idx} contains derived synthesis operation: {req.description}"
+            )
+    for idx, ob in enumerate(decision.synthesis_obligations, 1):
+        if not ob.depends_on_requirement_indexes:
+            raise PlannerSemanticValidationError(
+                f"synthesis obligation {idx} has no requirement dependencies"
+            )
+        for dep in ob.depends_on_requirement_indexes:
+            if not (0 <= dep < len(decision.evidence_requirements)):
+                raise PlannerSemanticValidationError(
+                    f"synthesis obligation {idx} references out-of-range requirement index {dep}"
+                )
 
 
 def _validate_answer_free(

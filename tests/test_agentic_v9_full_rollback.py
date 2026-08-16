@@ -25,19 +25,11 @@ class _LegacyTextProvider:
         async def invoke(messages: list[dict[str, object]]) -> SimpleNamespace:
             content: object = "The authorized source reports a score of 0.91."
             if purpose == "evidence_extraction":
-                prompt = str(messages[0]["content"])
-                evidence_line = next(
-                    line for line in prompt.splitlines() if " [eligible slots: S1]: " in line
-                )
-                source_evidence_id, statement = evidence_line.split(
-                    " [eligible slots: S1]: ", 1
-                )
                 content = {
                     "packets": [
                         {
-                            "source_evidence_id": source_evidence_id,
+                            "source_evidence_id": "E1",
                             "slot_ids": ["S1"],
-                            "statement": statement,
                         }
                     ]
                 }

@@ -596,21 +596,21 @@ def test_canonical_planner_validation_remains_strict_after_provider_projection(
             lambda p: p["evidence_requirements"][0].update(
                 {"description": "The score is 0.9079."}
             ),
-            "invalid_planner_output",
+            "planner_semantic_rejection",
             1,
         ),
         (
             lambda p: p["evidence_requirements"][0].update(
                 {"depends_on_requirement_indexes": [99]}
             ),
-            "invalid_planner_output",
+            "planner_semantic_rejection",
             1,
         ),
         (
             lambda p: p["evidence_requirements"][0].update(
                 {"locator_hints": ["invalid_prose_locator"]}
             ),
-            "invalid_planner_output",
+            "planner_semantic_rejection",
             1,
         ),
         (
@@ -710,7 +710,12 @@ async def test_degraded_fallbacks_for_all_failure_modes(
 
     assert outcome.planner_call_count == call_count
     assert outcome.contract.slot_plan_status == "degraded"
-    assert outcome.contract.slot_plan_source == "safe_fallback"
+    expected_source = (
+        "deterministic"
+        if expected_fallback_reason == "planner_semantic_rejection"
+        else "safe_fallback"
+    )
+    assert outcome.contract.slot_plan_source == expected_source
     assert outcome.contract.slot_plan_confidence == "low"
     assert outcome.contract.slot_plan_fallback_reason == expected_fallback_reason
     assert outcome.contract.route == base_contract.route
@@ -724,7 +729,12 @@ async def test_degraded_fallbacks_for_all_failure_modes(
     assert outcome.contract.runtime_token_budget == base_contract.runtime_token_budget
     assert len(outcome.contract.required_slots) == 1
     assert outcome.contract.required_slots[0].slot_id == "S1"
-    assert outcome.contract.required_slots[0].description == "Unclear question."
+    expected_description = (
+        "Unclear."
+        if expected_fallback_reason == "planner_semantic_rejection"
+        else "Unclear question."
+    )
+    assert outcome.contract.required_slots[0].description == expected_description
     assert outcome.contract.required_slots[0].authorized_source_doc_ids == ["doc-1"]
     assert outcome.contract.synthesis_obligations == []
     assert outcome.contract.response_constraints == []
@@ -973,12 +983,17 @@ async def test_planner_diagnostic_classifies_each_provider_failure_boundary(
         ),
     )
 
+    expected_strategy = (
+        "atomic_slots"
+        if expected_code == "planner_semantic_rejection"
+        else "safe_fallback_original_question"
+    )
     assert outcome.planner_diagnostics.model_dump() == {
         "outcome": "degraded",
         "failure_stage": expected_stage,
         "failure_code": expected_code,
         "provider_response_received": received,
-        "retrieval_query_strategy": "safe_fallback_original_question",
+        "retrieval_query_strategy": expected_strategy,
         "compiled_retrieval_task_count": 1,
     }
     assert "planner-provider-secret" not in outcome.planner_diagnostics.model_dump_json()
@@ -1254,3 +1269,119 @@ async def test_q16_uses_generic_experimental_planning_without_benchmark_bundle()
         "|A^c(x,y)|",
     ):
         assert forbidden not in serialized
+
+
+@pytest.mark.asyncio
+async def test_planner_decision_with_valid_direct_slots_and_synthesis_retains_llm_planner_source() -> None:
+    question = "分別找出 Model-A 與 Model-B 的 latency，然後比較哪個較低；不要宣稱為通用排名。"
+    payload = {
+        "evidence_requirements": [
+            {
+                "description": "提取 Model-A 的 latency 數值",
+                "source_name_hints": [],
+                "locator_hints": [],
+                "expected_answer_type": "number",
+                "depends_on_requirement_indexes": [],
+                "visual_policy": "never",
+            },
+            {
+                "description": "提取 Model-B 的 latency 數值",
+                "source_name_hints": [],
+                "locator_hints": [],
+                "expected_answer_type": "number",
+                "depends_on_requirement_indexes": [],
+                "visual_policy": "never",
+            },
+        ],
+        "synthesis_obligations": [
+            {
+                "kind": "comparison",
+                "description": "比較 Model-A 與 Model-B 的 latency 大小給出裁決",
+                "depends_on_requirement_indexes": [0, 1],
+            }
+        ],
+        "response_constraints": [
+            {
+                "kind": "prohibition",
+                "description": "不要宣稱為通用排名",
+            }
+        ],
+        "comparison": None,
+        "confidence": 0.9,
+    }
+    invoker = _MockInvoker(response={"content": json.dumps(payload)})
+    base_contract = _make_base_contract(question=question)
+    preparation = AtomicContractPreparation(
+        decomposition=QuestionDecomposition(
+            requirements=(
+                DecomposedRequirement(text=question, method="fallback", confidence="low"),
+            ),
+            confidence="low",
+            semantic_planning_reasons=("low_confidence",),
+        ),
+        semantic_planning_requested=True,
+        comparison_candidate=False,
+    )
+    outcome = await QuestionContractPlanner(llm_invoker=invoker).plan(
+        question=question,
+        base_contract=base_contract,
+        preparation=preparation,
+    )
+
+    assert outcome.contract.slot_plan_source == "llm_planner"
+    assert outcome.contract.slot_plan_status == "complete"
+    assert len(outcome.contract.required_slots) == 2
+    assert outcome.contract.required_slots[0].slot_id == "S1"
+    assert outcome.contract.required_slots[1].slot_id == "S2"
+    assert len(outcome.contract.synthesis_obligations) == 1
+    assert outcome.contract.synthesis_obligations[0].obligation_id == "O1"
+    assert outcome.contract.synthesis_obligations[0].depends_on_slot_ids == ["S1", "S2"]
+
+
+@pytest.mark.asyncio
+async def test_planner_decision_with_derived_slot_fails_semantic_validation_and_uses_deterministic_decomposition() -> None:
+    question = (
+        "SegFormer3D 對相對 nnFormer 的效率有兩種摘要說法：Abstract 寫約 33× fewer parameters、"
+        "13× GFLOPs reduction，正文 contribution 則寫 34×、13×。請以 Table 1 的精確數值重新計算，"
+        "判斷哪些數字只能視為近似表述，並說明可由原文確認或不能確認的取整方式。"
+    )
+    # The provider incorrectly returns a derived ratio calculation directly as an evidence_requirement
+    invalid_payload = {
+        "evidence_requirements": [
+            {
+                "description": "以 Table 1 的精確數值重新計算 SegFormer3D 相對 nnFormer 的參數與計算量倍數比值",
+                "source_name_hints": [],
+                "locator_hints": [],
+                "expected_answer_type": "number",
+                "depends_on_requirement_indexes": [],
+                "visual_policy": "never",
+            }
+        ],
+        "synthesis_obligations": [],
+        "response_constraints": [],
+        "comparison": None,
+        "confidence": 0.8,
+    }
+    invoker = _MockInvoker(response={"content": json.dumps(invalid_payload)})
+    base_contract = _make_base_contract(question=question)
+    preparation = AtomicContractPreparation(
+        decomposition=QuestionContractPlanner().prepare(
+            question=question, base_contract=base_contract
+        ).decomposition,
+        semantic_planning_requested=True,
+        comparison_candidate=False,
+    )
+    outcome = await QuestionContractPlanner(llm_invoker=invoker).plan(
+        question=question,
+        base_contract=base_contract,
+        preparation=preparation,
+    )
+
+    # Must be rejected by semantic validation and use the deterministic decomposition as degraded atomic contract
+    assert outcome.contract.slot_plan_source == "deterministic"
+    assert outcome.contract.slot_plan_status == "degraded"
+    assert outcome.contract.slot_plan_fallback_reason == "planner_semantic_rejection"
+    assert len(outcome.contract.required_slots) >= 3
+    # The direct slots must not be the derived calculation
+    assert all("重新計算" not in slot.description for slot in outcome.contract.required_slots)
+    assert len(outcome.contract.synthesis_obligations) >= 1
