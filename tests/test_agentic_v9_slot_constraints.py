@@ -24,6 +24,7 @@ def _packet_for_anchor_test(
     *,
     section: str | None = None,
     table_id: str | None = None,
+    figure_id: str | None = None,
 ) -> EvidencePacket:
     return EvidencePacket(
         schema_version="1",
@@ -36,7 +37,9 @@ def _packet_for_anchor_test(
         support_type="direct",
         source=EvidenceSource(doc_id="document-anchor", chunk_id="chunk-anchor"),
         scope=EvidenceScope(),
-        locator=SourceLocator(section=section, table_id=table_id),
+        locator=SourceLocator(
+            section=section, table_id=table_id, figure_id=figure_id
+        ),
     )
 
 
@@ -92,6 +95,26 @@ def test_ascii_region_boundaries_allow_cjk_adjacency() -> None:
     )
 
     assert anchors.regions == ("abstract",)
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "Summarize foo_Algorithm 2.",
+        "Extract the Abstract_foo paragraph.",
+        "Explain the Method-v2 variant.",
+    ],
+)
+def test_ascii_punctuation_is_internal_to_locator_and_region_tokens(
+    description: str,
+) -> None:
+    anchors = derive_slot_hard_anchors(
+        question="Summarize the source.",
+        slot=RequiredSlot(slot_id="S1", description=description),
+    )
+
+    assert anchors.locators == ()
+    assert anchors.regions == ()
 
 
 @pytest.mark.parametrize(
@@ -174,6 +197,9 @@ def test_subfigure_and_subtable_locators_preserve_suffix_and_match_exact(
     multiple_suffix = _packet_for_anchor_test(
         f"{locator}(b) reports the requested result.", section="Results"
     )
+    parenthetical_prose = _packet_for_anchor_test(
+        f"{locator} (left panel) reports the requested result.", section="Results"
+    )
 
     assert derive_slot_hard_anchors(
         question="Extract the requested result.", slot=slot
@@ -193,6 +219,27 @@ def test_subfigure_and_subtable_locators_preserve_suffix_and_match_exact(
     )
     assert not candidate_satisfies_hard_anchors(
         question="Extract the requested result.", slot=slot, packet=multiple_suffix
+    )
+    assert candidate_satisfies_hard_anchors(
+        question="Extract the requested result.",
+        slot=slot,
+        packet=parenthetical_prose,
+    )
+
+
+def test_metadata_only_subfigure_id_is_canonicalized_like_text_locator() -> None:
+    slot = RequiredSlot(
+        slot_id="S1",
+        description="Extract the Figure 1(a) result.",
+    )
+    packet = _packet_for_anchor_test(
+        "The panel reports the requested result.",
+        section="Results",
+        figure_id="1 (a)",
+    )
+
+    assert candidate_satisfies_hard_anchors(
+        question="Extract the requested result.", slot=slot, packet=packet
     )
 
 

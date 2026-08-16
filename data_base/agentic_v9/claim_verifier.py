@@ -23,8 +23,8 @@ from data_base.agentic_v9.schemas import (
 
 
 _NUMERIC_TOKEN = re.compile(
-    r"(?<![\w.])(?P<value>[+-]?(?:\d+(?:\.\d+)?|\.\d+))"
-    r"\s*(?P<suffix>%|percent|x|×|-?fold)?(?![\w])",
+    r"(?<![A-Za-z0-9_.-])(?P<value>[+-]?(?:\d+(?:\.\d+)?|\.\d+))"
+    r"\s*(?P<suffix>%|percent|x|×|-?fold)?(?![A-Za-z0-9_-])",
     re.IGNORECASE,
 )
 

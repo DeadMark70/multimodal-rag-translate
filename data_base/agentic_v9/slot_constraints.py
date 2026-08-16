@@ -31,19 +31,20 @@ _TABLE_CAPTION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _HARD_LOCATOR_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9])(?P<kind>(?i:algorithm|table|figure|fig\.?|section))"
+    r"(?<![A-Za-z0-9_.-])(?P<kind>(?i:algorithm|table|figure|fig\.?|section))"
     r"(?:\s+|[-:#.]\s*)"
     r"(?P<identifier>\(?[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*\)?"
     r"(?:\s*\([A-Za-z0-9]{1,3}\))?)"
-    r"(?![A-Za-z0-9_-]|\.(?=[A-Za-z0-9_.-])|\s*\()",
+    r"(?![A-Za-z0-9_-]|\.(?=[A-Za-z0-9_.-]))",
 )
 _HARD_LOCATOR_FULL_PATTERN = re.compile(
     rf"^{_HARD_LOCATOR_PATTERN.pattern}$"
 )
 _HARD_REGION_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9])(Abstract|Contribution|Method)(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9_.-])(Abstract|Contribution|Method)(?![A-Za-z0-9_.-])",
     re.IGNORECASE,
 )
+_SECONDARY_SUBLOCATOR_PATTERN = re.compile(r"\s*\([A-Za-z0-9]{1,3}\)")
 _TECHNICAL_IDENTIFIER_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_.-])(?P<identifier>[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*)(?![A-Za-z0-9_-]|\.(?=[A-Za-z0-9_.-]))"
 )
@@ -188,6 +189,8 @@ def _hard_locators_from_text(text: str) -> list[str]:
         return []
     locators: list[str] = []
     for match in _HARD_LOCATOR_PATTERN.finditer(text):
+        if _has_secondary_sublocator(text, match.end()):
+            continue
         value = _hard_locator_key(
             f"{match.group('kind')} {match.group('identifier')}"
         )
@@ -323,14 +326,16 @@ def _candidate_projection(packet: Any) -> str:
 
 
 def _candidate_locators(packet: Any, projection: str) -> set[tuple[str, str]]:
-    values = set(
-        _hard_locator_key(match.group(0))
-        for match in _HARD_LOCATOR_PATTERN.finditer(projection)
-    )
-    values.discard(None)
+    values: set[tuple[str, str]] = set()
+    for match in _HARD_LOCATOR_PATTERN.finditer(projection):
+        if _has_secondary_sublocator(projection, match.end()):
+            continue
+        parsed = _hard_locator_key(match.group(0))
+        if parsed is not None:
+            values.add(parsed)
     locator = getattr(packet, "locator", None)
     if locator is None:
-        return values  # type: ignore[return-value]
+        return values
     for field, kind in (
         ("table_id", "table"),
         ("figure_id", "figure"),
@@ -339,9 +344,31 @@ def _candidate_locators(packet: Any, projection: str) -> set[tuple[str, str]]:
         field_value = getattr(locator, field, None)
         if not isinstance(field_value, str) or not field_value.strip():
             continue
-        parsed = _hard_locator_key(field_value)
-        values.add(parsed if parsed is not None else (kind, " ".join(field_value.split()).casefold()))
-    return values  # type: ignore[return-value]
+        parsed = _metadata_locator_key(kind, field_value)
+        if parsed is not None:
+            values.add(parsed)
+    return values
+
+
+def _metadata_locator_key(
+    kind: str, value: str
+) -> tuple[str, str] | None:
+    """Canonicalize typed metadata IDs, including bare sublocator IDs."""
+    normalized = " ".join(value.split()).strip()
+    if not normalized:
+        return None
+    parsed = _hard_locator_key(normalized)
+    if parsed is not None and parsed[0] == kind:
+        return parsed
+    parsed = _hard_locator_key(f"{kind} {normalized}")
+    if parsed is not None:
+        return parsed
+    return (kind, normalized.casefold())
+
+
+def _has_secondary_sublocator(text: str, end: int) -> bool:
+    """Reject only a following compact parenthetical sublocator."""
+    return _SECONDARY_SUBLOCATOR_PATTERN.match(text, end) is not None
 
 
 def _contains_text_token(
@@ -354,13 +381,18 @@ def _contains_text_token(
     normalized = " ".join(value.split()).casefold()
     if not normalized:
         return False
-    boundary = "a-z0-9_.-" if identifier_token else "a-z0-9"
     if locator_token:
-        right_boundary = "[a-z0-9_-]|\\.(?=[a-z0-9_.-])|\\s*\\("
-    elif identifier_token:
-        right_boundary = "[a-z0-9_-]|\\.(?=[a-z0-9_.-])"
-    else:
-        right_boundary = "[a-z0-9]"
+        pattern = rf"(?<![a-z0-9_.-]){re.escape(normalized)}(?![a-z0-9_-]|\\.(?=[a-z0-9_.-]))"
+        return any(
+            not _has_secondary_sublocator(projection, match.end())
+            for match in re.finditer(pattern, projection.casefold())
+        )
+    boundary = "a-z0-9_.-"
+    right_boundary = (
+        "[a-z0-9_-]|\\.(?=[a-z0-9_.-])"
+        if identifier_token
+        else "[a-z0-9_.-]"
+    )
     pattern = rf"(?<![{boundary}]){re.escape(normalized)}(?!{right_boundary})"
     return re.search(pattern, projection.casefold()) is not None
 

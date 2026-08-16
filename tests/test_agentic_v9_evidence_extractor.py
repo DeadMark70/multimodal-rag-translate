@@ -934,6 +934,43 @@ async def test_qualification_coalesces_multiple_rows_for_same_source() -> None:
 
 
 @pytest.mark.asyncio
+async def test_qualification_keeps_matching_subfigure_sibling_and_skips_mismatch() -> None:
+    item = _item(
+        "evidence:figure-source",
+        "Figure 1(a) (left panel) reports the requested result.",
+        slot_ids=["S1", "S2"],
+        table_id=None,
+    )
+    invoker = _RecordingInvoker(
+        {
+            "packets": [
+                {"source_evidence_id": "E1", "slot_ids": ["S1", "S2"]},
+            ]
+        }
+    )
+    contract = _contract(
+        RequiredSlot(
+            slot_id="S1",
+            description="Extract the Figure 1(a) result.",
+        ),
+        RequiredSlot(
+            slot_id="S2",
+            description="Extract the Figure 1(b) result.",
+        ),
+    )
+
+    outcome = await EvidenceExtractor(invoker).extract_with_outcome(
+        contract,
+        [item],
+        repairs_complete=True,
+        question="Summarize the requested figure results.",
+    )
+
+    assert len(outcome.packets) == 1
+    assert outcome.packets[0].slot_ids == ["S1"]
+
+
+@pytest.mark.asyncio
 async def test_qualification_unauthorized_row_does_not_pollute_valid_coalesced_source() -> None:
     item = _item(
         "evidence:source-1",

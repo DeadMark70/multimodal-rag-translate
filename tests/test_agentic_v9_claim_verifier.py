@@ -103,6 +103,11 @@ def _contract() -> QueryContract:
         ("33-fold fewer parameters", {("33", "ratio")}),
         ("12.50% reduction", {("12.5", "percent")}),
         ("Table 1", {("1", "scalar")}),
+        ("Algorithm 2結果", {("2", "scalar")}),
+        ("提升12.5%結果", {("12.5", "percent")}),
+        ("Model2", set()),
+        ("foo_12", set()),
+        ("Method-v2", set()),
     ],
 )
 def test_numeric_tokens_preserve_ratio_and_percent_semantics(
