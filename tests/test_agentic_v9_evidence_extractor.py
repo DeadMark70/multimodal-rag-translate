@@ -860,3 +860,63 @@ async def test_qualification_unauthorized_row_does_not_pollute_valid_coalesced_s
     assert outcome.packets[0].evidence_id == "curated:evidence:source-1:S1"
     assert outcome.packets[0].slot_ids == ["S1"]
     assert outcome.qualification_unauthorized_source_slot_count == 1
+
+
+@pytest.mark.asyncio
+async def test_q23_markdown_table_candidate_qualifies_deterministically_for_table_1_slot() -> None:
+    table_text = (
+        "| Architecture | Params | GFLOPs |\n"
+        "|---|---|---|\n"
+        "| nnFormer[32] | 150.5 | 213.4 |\n"
+        "| Segformer3D (ours) | 4.51 | 17.5 |\n"
+        "Table 1. Segformer3D vs SOTA comparison on Synapse."
+    )
+    item = _item(
+        "evidence:segformer-table1",
+        table_text,
+        slot_ids=["S1"],
+        table_id="Table 1",
+    )
+    contract = _contract(
+        RequiredSlot(
+            slot_id="S1",
+            description="Table 1 parameter and GFLOP metrics for SegFormer3D and nnFormer.",
+            locator_hints=["Table 1"],
+        )
+    )
+    extractor = EvidenceExtractor()
+    deterministic_packets = extractor.extract_deterministic(contract, [item])
+
+    assert len(deterministic_packets) == 1
+    table_packet = deterministic_packets[0]
+    assert table_packet.slot_ids == ["S1"]
+    assert table_packet.statement == table_text
+    assert table_packet.raw_value is None
+    assert table_packet.validation_status == "deterministic_valid"
+    assert table_packet.extractor_version == "v9-deterministic-table-1"
+
+
+@pytest.mark.asyncio
+async def test_markdown_table_2_candidate_cannot_satisfy_table_1_slot() -> None:
+    table_text = (
+        "| Architecture | Dice |\n"
+        "|---|---|\n"
+        "| nnFormer | 88.9 |\n"
+        "Table 2. Dice scores."
+    )
+    item = _item(
+        "evidence:segformer-table2",
+        table_text,
+        slot_ids=["S1"],
+        table_id="Table 2",
+    )
+    contract = _contract(
+        RequiredSlot(
+            slot_id="S1",
+            description="Table 1 parameter metrics.",
+            locator_hints=["Table 1"],
+        )
+    )
+    extractor = EvidenceExtractor()
+    deterministic_packets = extractor.extract_deterministic(contract, [item])
+    assert deterministic_packets == []

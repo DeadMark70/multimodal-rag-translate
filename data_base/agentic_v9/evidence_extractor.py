@@ -24,7 +24,10 @@ from data_base.agentic_v9.evidence_validator import (
     validate_deterministic_packet,
     validate_prose_packet,
 )
-from data_base.agentic_v9.slot_constraints import structured_locator_state
+from data_base.agentic_v9.slot_constraints import (
+    _MARKDOWN_TABLE_SEPARATOR,
+    structured_locator_state,
+)
 
 
 _NUMBER = re.compile(r"(?<![\w.])([+-]?(?:\d+(?:\.\d+)?|\.\d+))(?:\s*([A-Za-z%µ]+))?(?![\w.])")
@@ -86,6 +89,7 @@ class EvidenceExtractor:
         packets: list[EvidencePacket] = []
         for slot in contract.required_slots:
             matching = _matched_items_for_slot(slot, items)
+            packets.extend(_extract_markdown_table_packets(slot=slot, items=matching))
             packets.extend(extract_numeric_packets(slot=slot, items=matching))
             packets.extend(_extract_structured_packets(slot, matching))
         return _deduplicate_packets(packets)
@@ -263,6 +267,37 @@ class EvidenceExtractor:
         )
 
 
+def _is_markdown_pipe_table(text: str) -> bool:
+    return bool(text and "|" in text and _MARKDOWN_TABLE_SEPARATOR.search(text))
+
+
+def _extract_markdown_table_packets(
+    *, slot: RequiredSlot, items: Sequence[EvidencePoolItem]
+) -> list[EvidencePacket]:
+    """Extract full verbatim source-span packets for matched markdown pipe tables."""
+    packets: list[EvidencePacket] = []
+    for item in items:
+        source_text = _source_text(item)
+        if not _is_markdown_pipe_table(source_text):
+            continue
+        result = validate_deterministic_packet(
+            _derived_packet(
+                item.packet,
+                evidence_id=f"det:{item.packet.evidence_id}:table",
+                slot_ids=[slot.slot_id],
+                statement=source_text,
+                raw_value=None,
+                normalized_value=None,
+                unit=None,
+                extractor_version="v9-deterministic-table-1",
+            ),
+            source_text=source_text,
+        )
+        if result.packet is not None:
+            packets.append(result.packet)
+    return packets
+
+
 def extract_numeric_packets(
     *, slot: RequiredSlot, items: Iterable[EvidencePacket | EvidencePoolItem | EvidencePoolEntry]
 ) -> list[EvidencePacket]:
@@ -270,6 +305,8 @@ def extract_numeric_packets(
     packets: list[EvidencePacket] = []
     for item in _items_for_slot(slot, _as_items(items)):
         source_text = _source_text(item)
+        if _is_markdown_pipe_table(source_text):
+            continue
         for index, match in enumerate(_NUMBER.finditer(source_text)):
             if source_text[max(0, match.start() - 8) : match.start()].casefold().endswith("table "):
                 continue
@@ -331,6 +368,8 @@ def _extract_structured_packets(
     patterns = (_THEOREM_RANGE, _FORMULA, _TABLE_ROW, _ENUMERATION)
     for item in items:
         source_text = _source_text(item)
+        if _is_markdown_pipe_table(source_text):
+            continue
         for pattern_index, pattern in enumerate(patterns):
             for match_index, match in enumerate(pattern.finditer(source_text)):
                 result = validate_deterministic_packet(

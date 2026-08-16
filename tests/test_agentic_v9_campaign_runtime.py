@@ -2737,3 +2737,35 @@ async def test_v9_runtime_sufficiency_fails_when_evidence_not_qualified() -> Non
     assert metrics["qualification_failure_code"] is None
 
 
+def test_chunk_projection_infers_markdown_table_id_without_overwriting_existing() -> None:
+    from evaluation.agentic_v9_campaign_runtime import _chunk_projection
+
+    table_text = (
+        "| Architecture | Params | GFLOPs |\n"
+        "|---|---|---|\n"
+        "| nnFormer[32] | 150.5 | 213.4 |\n"
+        "| Segformer3D (ours) | 4.51 | 17.5 |\n"
+        "Table 1. Segformer3D vs SOTA comparison on Synapse."
+    )
+    doc_without_table_id = Document(
+        page_content=table_text,
+        metadata={"doc_id": "doc-segformer", "chunk_id": "c-1"},
+    )
+    proj = _chunk_projection(doc_without_table_id, index=0)
+    assert proj.get("table_id") == "Table 1"
+
+    doc_with_existing = Document(
+        page_content=table_text,
+        metadata={"doc_id": "doc-segformer", "chunk_id": "c-1", "table_id": "Table 99"},
+    )
+    proj_existing = _chunk_projection(doc_with_existing, index=0)
+    assert proj_existing.get("table_id") == "Table 99"
+
+    prose_doc = Document(
+        page_content="In Table 1, the authors demonstrate SegFormer3D speed.",
+        metadata={"doc_id": "doc-segformer", "chunk_id": "c-2"},
+    )
+    proj_prose = _chunk_projection(prose_doc, index=1)
+    assert "table_id" not in proj_prose
+
+

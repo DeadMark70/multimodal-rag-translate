@@ -22,12 +22,27 @@ _LOCATOR_TYPE_ALIASES = {
     "eq.": "formula",
     "equation": "formula",
 }
+_MARKDOWN_TABLE_SEPARATOR = re.compile(r"^\s*\|(?:\s*:?-+:?\s*\|)+\s*$", re.MULTILINE)
+_TABLE_CAPTION_PATTERN = re.compile(
+    r"\bTable\s+([0-9]+[A-Za-z]{0,3}(?:\.[0-9]+[A-Za-z]{0,3})*)\b",
+    re.IGNORECASE,
+)
+
+
+def infer_markdown_table_id(text: str | None) -> str | None:
+    """Conservatively infer a table identifier only from an explicit markdown pipe table with caption."""
+    if not isinstance(text, str) or "|" not in text:
+        return None
+    if not _MARKDOWN_TABLE_SEPARATOR.search(text):
+        return None
+    caption_match = _TABLE_CAPTION_PATTERN.search(text)
+    if caption_match is None:
+        return None
+    return f"Table {caption_match.group(1)}"
 
 StructuredLocatorState = Literal[
     "not_requested", "matched", "mismatched", "unavailable"
 ]
-
-
 def authorized_doc_ids_for_slot(
     slot: RequiredSlot, scope: ResolvedSourceScope
 ) -> list[str]:

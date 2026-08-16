@@ -61,6 +61,7 @@ from data_base.agentic_v9.provider_boundary import (
 )
 from data_base.agentic_v9.repair import build_repair_plan
 from data_base.agentic_v9.requirement_shadow import build_requirement_shadow
+from data_base.agentic_v9.slot_constraints import infer_markdown_table_id
 from data_base.agentic_v9.schemas import (
     EvidencePacket,
     EvidenceScope,
@@ -1689,6 +1690,10 @@ def _chunk_projection(
         value = metadata.get(field)
         if isinstance(value, str) and value:
             projection[field] = value
+    if "table_id" not in projection:
+        inferred_table = infer_markdown_table_id(projection["text"])
+        if inferred_table is not None:
+            projection["table_id"] = inferred_table
     return projection
 
 
