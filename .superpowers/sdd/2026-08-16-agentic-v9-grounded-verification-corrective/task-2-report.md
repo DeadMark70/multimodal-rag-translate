@@ -1,0 +1,70 @@
+# Agentic v9 Grounded Verification Corrective — Task 2 Report
+
+## Scope
+
+- Base commit: `613da11ffa410807f31acf5e80f55e5e1bd98772`
+- Scope limited to post-contract feasibility and runtime claim-verifier reservation.
+- No Q5/Q23 dependency, model pinning, frontend/export work, or Task 3 anchor changes.
+
+## RED
+
+Ran the brief's focused RED command before production changes:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_agentic_v9_budget_feasibility.py tests/test_agentic_v9_campaign_runtime.py -k "claim_verifier and (feasibility or budget or provider_calls or at_most_once)" -q
+```
+
+RED was observed as expected: the new feasibility keyword was not accepted and
+the runtime ledger assertions had no `claim_verifier` entry (8 failures).
+
+## Implementation
+
+1. Extended `validate_post_contract_feasibility()` with the exact keyword-only
+   input `claim_verifier_provider_calls: int = 0`.
+2. Applied strict integer/boolean validation for values outside `{0, 1}` and
+   returned `CONFIGURATION_INCOMPATIBLE` with reason
+   `invalid_claim_verifier_provider_calls`.
+3. Added one pending `claim_verifier` provider call to the required/pending
+   ledger when the value is `1`, so call and token reservations include it.
+4. Passed `claim_verifier_provider_calls=1` in all three active runtime
+   feasibility attempts: planner-admitted, planner-fallback, and deterministic.
+5. Added feasibility, invalid-input, two-call rejection, runtime wiring, and
+   two-pending-claims-at-most-once coverage. Runtime still performs zero
+   verifier calls when Task 1 produces no pending claims.
+
+## GREEN and verification
+
+Focused Task 2 filter after implementation:
+
+```text
+9 passed, 65 deselected, 23 warnings
+```
+
+Affected suites from the brief:
+
+```text
+101 passed, 23 warnings
+```
+
+Ruff on all four modified source/test files:
+
+```text
+All checks passed!
+```
+
+`git diff --check` passed. It emitted only Git's existing LF/CRLF conversion
+warnings for the four modified files.
+
+The end-to-end fixture confirms two pending claims produce exactly one
+`purpose="claim_verifier"` observer attempt and one runtime claim-verifier
+metric. Its test contract uses `max_llm_calls=5` to accommodate the controller's
+planner/evidence/final/verifier sequence; production controller behavior was not
+changed.
+
+## Self-audit
+
+- Modified only the four brief-listed implementation/test files; this report is
+  the required Task 2 artifact.
+- Preserved fail-closed behavior and the existing one-batch verifier contract.
+- No Task 3 anchors or unrelated UI/export paths were changed.
+- Remaining warnings are dependency-level Pydantic deprecations from `storage3`.

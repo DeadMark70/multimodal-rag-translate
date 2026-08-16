@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -506,7 +507,7 @@ async def test_v9_graph_route_usage_is_budgeted_observed_and_reconciled(
         required_slots=[RequiredSlot(slot_id="base", description="relationship")],
         graph_policy="required_locator",
         max_retrieval_rounds=1,
-        max_llm_calls=3,
+        max_llm_calls=4,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -825,7 +826,7 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     ]
     assert result.documents
     retrieve_documents.assert_awaited()
-    assert provider.ainvoke.await_count == 3
+    assert provider.ainvoke.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -1003,7 +1004,7 @@ async def test_invalid_comparison_subjects_preserve_base_contract_and_retrieval(
         intent="Check claims about one model.",
         required_slots=[RequiredSlot(slot_id="base", description="claim evidence")],
         max_retrieval_rounds=1,
-        max_llm_calls=3,
+        max_llm_calls=4,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -1313,6 +1314,24 @@ async def test_v9_comparison_planner_failure_safe_fallback_preserves_original_qu
             )
         ]
     )
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        route="single_lookup",
+        intent="Compare two source-bound models.",
+        max_retrieval_rounds=1,
+        max_llm_calls=4,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+
+    async def admission(**_kwargs: object) -> V9AdmissionContract:
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=retrieve_documents,
         provider_factory=lambda _purpose: provider,
@@ -1352,11 +1371,31 @@ async def test_v9_comparison_planner_failure_safe_fallback_preserves_original_qu
 
 
 @pytest.mark.asyncio
-async def test_v9_comparison_transport_diagnostics_reach_agent_trace() -> None:
+async def test_v9_comparison_transport_diagnostics_reach_agent_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     provider = _Provider(
         planner_response="not valid json",
         answer="Fallback answer from retrieved evidence.",
     )
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        route="single_lookup",
+        intent="Compare two source-bound models.",
+        max_retrieval_rounds=1,
+        max_llm_calls=4,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+
+    async def admission(**_kwargs: object) -> V9AdmissionContract:
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(
             return_value=[
@@ -1386,7 +1425,9 @@ async def test_v9_comparison_transport_diagnostics_reach_agent_trace() -> None:
 
 
 @pytest.mark.asyncio
-async def test_atomic_contract_planning_high_confidence_deterministic_zero_planner_calls() -> None:
+async def test_atomic_contract_planning_high_confidence_deterministic_zero_planner_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     observed_calls: list[dict[str, Any]] = []
     base_provider = _Provider(
         answer="The reported score is 0.91 and the method is described."
@@ -1397,6 +1438,24 @@ async def test_atomic_contract_planning_high_confidence_deterministic_zero_plann
             observed_calls.append({"messages": messages})
             return await base_provider.ainvoke(messages)
 
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        route="single_lookup",
+        intent="Extract source-bound values.",
+        max_retrieval_rounds=1,
+        max_llm_calls=4,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+
+    async def admission(**_kwargs: object) -> V9AdmissionContract:
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(
             return_value=[
@@ -1436,8 +1495,188 @@ async def test_atomic_contract_planning_high_confidence_deterministic_zero_plann
 
 
 @pytest.mark.asyncio
-async def test_atomic_contract_planning_low_confidence_comparison_one_planner_call() -> None:
+async def test_v9_runtime_claim_verifier_verifies_two_pending_claims_at_most_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planner_payload = {
+        "evidence_requirements": [
+            {"description": "first reported score"},
+            {"description": "second reported score"},
+        ],
+        "synthesis_obligations": [],
+        "response_constraints": [],
+        "comparison": None,
+        "confidence": 1.0,
+    }
+
+    class _TwoPendingClaimsProvider:
+        def __init__(self) -> None:
+            self.verifier_batch_sizes: list[int] = []
+
+        @staticmethod
+        def _contents(messages: Any) -> list[str]:
+            if not isinstance(messages, list):
+                return [str(messages)]
+            return [
+                str(message.get("content", ""))
+                for message in messages
+                if isinstance(message, dict)
+            ]
+
+        async def ainvoke(self, messages: Any) -> Any:
+            contents = self._contents(messages)
+            combined = " ".join(contents)
+            context: dict[str, Any] | None = None
+            for content in contents:
+                try:
+                    decoded = json.loads(content)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(decoded, dict) and {
+                    "required_slots",
+                    "packed_evidence",
+                }.issubset(decoded):
+                    context = decoded
+                    break
+            if context is not None:
+                packed_evidence = context["packed_evidence"]
+                required_slots = context["required_slots"]
+                packet_id = packed_evidence[0]["evidence_id"]
+                findings = [
+                    {
+                        "slot_id": slot["slot_id"],
+                        "statement": "The measured quantity is 0.91.",
+                        "evidence_ids": [packet_id],
+                        "premise_evidence_ids": [],
+                    }
+                    for slot in required_slots
+                ]
+                return SimpleNamespace(
+                    content=json.dumps(
+                        {
+                            "supported_findings": findings,
+                            "synthesized_findings": [],
+                            "unresolved_requirements": [],
+                            "unresolved_obligations": [],
+                        }
+                    ),
+                    usage_metadata={"input_tokens": 10, "output_tokens": 5},
+                )
+
+            for content in contents:
+                try:
+                    decoded = json.loads(content)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(decoded, dict) and isinstance(decoded.get("claims"), list):
+                    claim_ids = [
+                        row["claim"]["claim_id"]
+                        for row in decoded["claims"]
+                        if isinstance(row, dict)
+                        and isinstance(row.get("claim"), dict)
+                        and isinstance(row["claim"].get("claim_id"), str)
+                    ]
+                    self.verifier_batch_sizes.append(len(claim_ids))
+                    return SimpleNamespace(
+                        content=json.dumps(
+                            {
+                                "verdicts": [
+                                    {
+                                        "claim_id": claim_id,
+                                        "supported": True,
+                                        "reason": None,
+                                    }
+                                    for claim_id in claim_ids
+                                ]
+                            }
+                        ),
+                        usage_metadata={"input_tokens": 10, "output_tokens": 5},
+                    )
+
+            if "evidence_requirements" in combined:
+                return SimpleNamespace(
+                    content=json.dumps(planner_payload),
+                    usage_metadata={"input_tokens": 10, "output_tokens": 5},
+                )
+
+            packets = [
+                {
+                    "source_evidence_id": alias,
+                    "slot_ids": [slot.strip() for slot in slots.split(",")],
+                }
+                for alias, slots, _statement in re.findall(
+                    r"(E\d+)\s*\[eligible slots:\s*([^\]]+)\]:\s*([^\n\r]+)",
+                    combined,
+                )
+            ]
+            return SimpleNamespace(
+                content=json.dumps({"packets": packets}),
+                usage_metadata={"input_tokens": 10, "output_tokens": 5},
+            )
+
+    provider = _TwoPendingClaimsProvider()
+    observer = _RecordingObserver()
+    source_scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    base_contract = QueryContract(
+        route="single_lookup",
+        intent="Resolve two reported scores.",
+        evidence_extraction_required=True,
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=5,
+        runtime_token_budget=50_000,
+        resolved_source_scope=source_scope,
+    )
+
+    async def admission(**_kwargs: object) -> V9AdmissionContract:
+        return V9AdmissionContract(
+            source_scope=source_scope,
+            contract=base_contract,
+        )
+
+    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="The source reports a score of 0.91.",
+                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+                )
+            ]
+        ),
+        provider_factory=lambda _purpose: provider,
+        llm_call_observer=observer,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question=(
+            "1. What is the first reported score? 2. What is the second reported score? "
+            "3. What is the third reported score? 4. What is the fourth reported score? "
+            "5. What is the fifth reported score? 6. What is the sixth reported score? "
+            "7. What is the seventh reported score? 8. What is the eighth reported score? "
+            "9. What is the ninth reported score?"
+        ),
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "max_output_tokens": 8192},
+        trace_id="two-pending-claims",
+    )
+    assert provider.verifier_batch_sizes == [2]
+    assert [call.purpose for call in observer.calls].count("claim_verifier") == 1
+    assert result.agent_trace["agentic_v9"]["metrics"]["claim_verifier_call_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_atomic_contract_planning_low_confidence_reserves_claim_verifier_provider_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     recorded_calls: list[dict[str, Any]] = []
+    observed_feasibility: list[dict[str, object]] = []
     planner_payload = {
         "evidence_requirements": [
             {
@@ -1508,6 +1747,33 @@ async def test_atomic_contract_planning_low_confidence_comparison_one_planner_ca
             )
         ]
 
+    source_scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    base_contract = QueryContract(
+        route="single_lookup",
+        intent="Compare two source-bound models.",
+        max_retrieval_rounds=1,
+        max_llm_calls=4,
+        runtime_token_budget=50_000,
+        resolved_source_scope=source_scope,
+    )
+
+    async def admission(**_kwargs: object) -> V9AdmissionContract:
+        return V9AdmissionContract(source_scope=source_scope, contract=base_contract)
+
+    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
+    original_feasibility = runtime_module.validate_post_contract_feasibility
+
+    def observe_feasibility(**kwargs: object) -> Any:
+        observed_feasibility.append(kwargs)
+        return original_feasibility(**kwargs)
+
+    monkeypatch.setattr(
+        runtime_module, "validate_post_contract_feasibility", observe_feasibility
+    )
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(side_effect=retrieve_subject_docs),
         provider_factory=lambda _purpose: _PlannerAndAnswerProvider(),
@@ -1537,10 +1803,20 @@ async def test_atomic_contract_planning_low_confidence_comparison_one_planner_ca
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
     assert v9["metrics"]["semantic_qualification"] == "provider_qualified"
     assert len(recorded_calls) == 3
+    assert any(
+        call.get("contract_plan_requested") is True
+        for call in observed_feasibility
+    )
+    assert observed_feasibility
+    assert all(
+        call.get("evidence_qualification_provider_calls") == 1
+        and call.get("claim_verifier_provider_calls") == 1
+        for call in observed_feasibility
+    )
 
 
 @pytest.mark.asyncio
-async def test_atomic_contract_planning_budget_rejection_degrades_gracefully(
+async def test_atomic_contract_planning_budget_rejection_preserves_claim_verifier_provider_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from data_base.agentic_v9.budget_feasibility import (
@@ -1549,6 +1825,7 @@ async def test_atomic_contract_planning_budget_rejection_degrades_gracefully(
     )
 
     recorded_calls: list[dict[str, Any]] = []
+    observed_feasibility: list[dict[str, object]] = []
     base_provider = _Provider(
         answer="Degraded final answer from retrieved evidence."
     )
@@ -1561,6 +1838,7 @@ async def test_atomic_contract_planning_budget_rejection_degrades_gracefully(
     orig_post = runtime_module.validate_post_contract_feasibility
 
     def mock_post(*args: Any, **kwargs: Any) -> FeasibilityResult:
+        observed_feasibility.append(kwargs)
         if kwargs.get("contract_plan_requested"):
             return FeasibilityResult(
                 status=FeasibilityStatus.CONFIGURATION_INCOMPATIBLE,
@@ -1606,10 +1884,18 @@ async def test_atomic_contract_planning_budget_rejection_degrades_gracefully(
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
     assert v9["metrics"]["semantic_qualification"] == "provider_qualified"
     assert len(recorded_calls) == 2
+    assert len(observed_feasibility) == 2
+    assert all(
+        call.get("evidence_qualification_provider_calls") == 1
+        and call.get("claim_verifier_provider_calls") == 1
+        for call in observed_feasibility
+    )
 
 
 @pytest.mark.asyncio
-async def test_atomic_contract_planning_malformed_response_degrades_gracefully() -> None:
+async def test_atomic_contract_planning_malformed_response_degrades_gracefully(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     recorded_calls: list[dict[str, Any]] = []
     base_provider = _Provider(
         planner_response="{invalid json syntax",
@@ -1621,6 +1907,24 @@ async def test_atomic_contract_planning_malformed_response_degrades_gracefully()
             recorded_calls.append({"messages": messages})
             return await base_provider.ainvoke(messages)
 
+    scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        route="single_lookup",
+        intent="Compare two source-bound models.",
+        max_retrieval_rounds=1,
+        max_llm_calls=4,
+        runtime_token_budget=50_000,
+        resolved_source_scope=scope,
+    )
+
+    async def admission(**_kwargs: object) -> V9AdmissionContract:
+        return V9AdmissionContract(source_scope=scope, contract=contract)
+
+    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(
             return_value=[
@@ -2032,7 +2336,7 @@ async def test_v9_runtime_persists_requirement_shadow_without_influencing_behavi
     assert v9["visual_execution"]["state"] == "not_requested"
     assert result.agent_trace["response_status"] == "complete"
     assert result.documents
-    assert provider.ainvoke.await_count == 3
+    assert provider.ainvoke.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -2059,7 +2363,7 @@ async def test_v9_requirement_guided_runtime_defaults_off_and_keeps_baseline_que
 
     assert retrieve_documents.await_count == 1
     assert "Advisory answer obligations" not in retrieve_documents.await_args.args[1]
-    assert provider.ainvoke.await_count == 3
+    assert provider.ainvoke.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -2303,7 +2607,7 @@ async def test_v9_runtime_repeats_feasibility_after_contract_before_retrieval(
 
 
 @pytest.mark.asyncio
-async def test_v9_runtime_passes_qualification_provider_calls_one_for_active_prose_curator(
+async def test_v9_runtime_passes_qualification_and_claim_verifier_provider_calls_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = _Provider()
@@ -2325,12 +2629,15 @@ async def test_v9_runtime_passes_qualification_provider_calls_one_for_active_pro
     async def admission(**_kwargs: object) -> V9AdmissionContract:
         return V9AdmissionContract(source_scope=source_scope, contract=contract)
 
-    observed_provider_call_counts: list[object] = []
+    observed_provider_call_counts: list[tuple[object, object]] = []
     original_feasibility = runtime_module.validate_post_contract_feasibility
 
     def observe_feasibility(**kwargs: object):
         observed_provider_call_counts.append(
-            kwargs.get("evidence_qualification_provider_calls")
+            (
+                kwargs.get("evidence_qualification_provider_calls"),
+                kwargs.get("claim_verifier_provider_calls"),
+            )
         )
         return original_feasibility(**kwargs)
 
@@ -2362,7 +2669,7 @@ async def test_v9_runtime_passes_qualification_provider_calls_one_for_active_pro
     )
 
     assert observed_provider_call_counts
-    assert set(observed_provider_call_counts) == {1}
+    assert set(observed_provider_call_counts) == {(1, 1)}
 
 
 @pytest.mark.asyncio
@@ -2526,7 +2833,7 @@ async def test_required_visual_evidence_is_recorded_before_complete_answer(
         evidence_extraction_required=True,
         max_retrieval_rounds=1,
         max_repair_rounds=0,
-        max_llm_calls=3,
+        max_llm_calls=4,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -2600,7 +2907,7 @@ async def test_missing_required_visual_evidence_keeps_text_complete(
         evidence_extraction_required=True,
         max_retrieval_rounds=1,
         max_repair_rounds=0,
-        max_llm_calls=3,
+        max_llm_calls=4,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -2654,7 +2961,7 @@ async def test_required_visual_execution_error_remains_qualified_partial(
         evidence_extraction_required=True,
         max_retrieval_rounds=1,
         max_repair_rounds=0,
-        max_llm_calls=3,
+        max_llm_calls=4,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
