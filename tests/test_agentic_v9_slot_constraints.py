@@ -5,9 +5,39 @@ from __future__ import annotations
 import pytest
 
 from data_base.agentic_v9.slot_constraints import (
+    candidate_satisfies_hard_anchors,
     canonical_structured_locator,
+    derive_slot_hard_anchors,
     structured_locator_state,
 )
+from data_base.agentic_v9.schemas import (
+    EvidencePacket,
+    EvidenceScope,
+    EvidenceSource,
+    RequiredSlot,
+    SourceLocator,
+)
+
+
+def _packet_for_anchor_test(
+    statement: str,
+    *,
+    section: str | None = None,
+    table_id: str | None = None,
+) -> EvidencePacket:
+    return EvidencePacket(
+        schema_version="1",
+        evidence_id="evidence-anchor",
+        task_id="task-anchor",
+        round_id="round-anchor",
+        query_id="query-anchor",
+        slot_ids=["S1"],
+        statement=statement,
+        support_type="direct",
+        source=EvidenceSource(doc_id="document-anchor", chunk_id="chunk-anchor"),
+        scope=EvidenceScope(),
+        locator=SourceLocator(section=section, table_id=table_id),
+    )
 
 
 def test_ordinary_text_is_not_a_structured_locator() -> None:
@@ -15,6 +45,96 @@ def test_ordinary_text_is_not_a_structured_locator() -> None:
     assert structured_locator_state(
         ["Gemini 2.5 Flash"], {"table_id": "Table 3"}
     ) == "not_requested"
+
+
+def test_structured_question_locator_is_inherited_when_slot_has_none() -> None:
+    anchors = derive_slot_hard_anchors(
+        question="According to Algorithm 2, explain the update flow.",
+        slot=RequiredSlot(
+            slot_id="S1", description="Explain the final update step"
+        ),
+    )
+    assert anchors.locators == ("algorithm 2",)
+
+
+def test_slot_local_locator_prevents_question_locator_inheritance() -> None:
+    anchors = derive_slot_hard_anchors(
+        question="According to Algorithm 2, explain the update flow.",
+        slot=RequiredSlot(
+            slot_id="S1",
+            description="Extract the Table 4 update result.",
+        ),
+    )
+
+    assert anchors.locators == ("table 4",)
+
+
+def test_slot_local_region_and_ratio_anchors_are_preserved() -> None:
+    anchors = derive_slot_hard_anchors(
+        question="Compare the efficiency statements.",
+        slot=RequiredSlot(
+            slot_id="S1",
+            description=(
+                "Extract the Abstract statement reporting 33x and 13× reductions"
+            ),
+        ),
+    )
+    assert anchors.regions == ("abstract",)
+    assert set(anchors.numeric_tokens) == {("33", "ratio"), ("13", "ratio")}
+
+
+def test_hard_anchors_require_each_region_and_numeric_token() -> None:
+    slot = RequiredSlot(
+        slot_id="S1",
+        description="Extract the Abstract statement reporting 33x and 13× reductions",
+    )
+    mismatched = _packet_for_anchor_test(
+        "The Contribution reports 34× and 13× reductions.",
+        section="Contribution",
+    )
+    exact = _packet_for_anchor_test(
+        "The Abstract reports 33× and 13× reductions.",
+        section="Abstract",
+    )
+
+    assert not candidate_satisfies_hard_anchors(
+        question="Compare the efficiency statements.", slot=slot, packet=mismatched
+    )
+    assert candidate_satisfies_hard_anchors(
+        question="Compare the efficiency statements.", slot=slot, packet=exact
+    )
+
+
+def test_numeric_anchor_ignores_unrelated_page_and_schema_metadata() -> None:
+    slot = RequiredSlot(slot_id="S1", description="Report the scalar value 7.")
+    packet = _packet_for_anchor_test(
+        "The source reports a scalar value.",
+        section="Results",
+    ).model_copy(
+        update={
+            "locator": SourceLocator(
+                pdf_page_index=7,
+                section="Results",
+                citation_format_version="7",
+            )
+        }
+    )
+
+    assert not candidate_satisfies_hard_anchors(
+        question="Report the scalar value.", slot=slot, packet=packet
+    )
+
+
+def test_locator_anchor_matching_is_case_insensitive_for_lettered_ids() -> None:
+    slot = RequiredSlot(slot_id="S1", description="Extract the Table S1 result.")
+    packet = _packet_for_anchor_test(
+        "table s1 reports the requested result.",
+        table_id="table s1",
+    )
+
+    assert candidate_satisfies_hard_anchors(
+        question="Extract the result.", slot=slot, packet=packet
+    )
 
 
 @pytest.mark.parametrize(

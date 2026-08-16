@@ -242,7 +242,7 @@ async def test_prose_curator_batches_two_generic_slots_in_one_evidence_extract_c
 
 
 @pytest.mark.asyncio
-async def test_structured_locator_unavailable_falls_back_to_batch_without_mismatched_candidate() -> None:
+async def test_structured_locator_unavailable_is_not_curated_without_explicit_anchor() -> None:
     unavailable = _item(
         "E-unavailable",
         "The requested result is stated in ordinary retrieved prose.",
@@ -278,10 +278,80 @@ async def test_structured_locator_unavailable_falls_back_to_batch_without_mismat
         repairs_complete=True,
     )
 
-    assert [packet.evidence_id for packet in result] == ["curated:E-unavailable:S1"]
+    assert result == []
     assert "E1 [eligible slots: S1]" in invoker.calls[0]["messages"][0]["content"]
     assert "E-unavailable" not in invoker.calls[0]["messages"][0]["content"]
     assert "E-mismatched" not in invoker.calls[0]["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_provider_rows_keep_matching_slot_and_skip_missing_hard_anchor() -> None:
+    item = _item(
+        "evidence:shared-source",
+        "The Abstract reports 33× and 13× reductions.",
+        slot_ids=["S1", "S2"],
+        table_id=None,
+    )
+    invoker = _RecordingInvoker(
+        {
+            "packets": [
+                {"source_evidence_id": "E1", "slot_ids": ["S1"]},
+                {"source_evidence_id": "E1", "slot_ids": ["S2"]},
+            ]
+        }
+    )
+
+    outcome = await EvidenceExtractor(invoker).extract_with_outcome(
+        _contract(
+            RequiredSlot(
+                slot_id="S1",
+                description=(
+                    "Extract the Abstract statement reporting 33x and 13× reductions"
+                ),
+            ),
+            RequiredSlot(
+                slot_id="S2",
+                description=(
+                    "Extract the Contribution statement reporting 34x and 13× reductions"
+                ),
+            ),
+        ),
+        [item],
+        repairs_complete=True,
+        question="Compare the efficiency statements.",
+    )
+
+    assert outcome.status == "provider_qualified"
+    assert len(outcome.packets) == 1
+    assert outcome.packets[0].slot_ids == ["S1"]
+
+
+@pytest.mark.asyncio
+async def test_missing_algorithm_locator_leaves_curated_slot_unresolved() -> None:
+    item = _item(
+        "evidence:related-update",
+        "The update flow combines branch outputs before the final step.",
+        slot_ids=["S1"],
+        table_id=None,
+    )
+    invoker = _RecordingInvoker(
+        {"packets": [{"source_evidence_id": "E1", "slot_ids": ["S1"]}]}
+    )
+
+    outcome = await EvidenceExtractor(invoker).extract_with_outcome(
+        _contract(
+            RequiredSlot(
+                slot_id="S1",
+                description="Explain the update flow described in Algorithm 2.",
+            )
+        ),
+        [item],
+        repairs_complete=True,
+        question="According to Algorithm 2, explain the update flow.",
+    )
+
+    assert outcome.packets == ()
+    assert outcome.status == "no_match"
 
 
 class _FailingInvoker:

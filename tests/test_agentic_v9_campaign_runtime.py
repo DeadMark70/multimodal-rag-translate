@@ -492,7 +492,7 @@ async def test_v9_graph_route_usage_is_budgeted_observed_and_reconciled(
     provider = _Provider(answer="Graph-aware evidence answer.")
     observer = _RecordingObserver()
     source_document = Document(
-        page_content="Source-backed relationship evidence.",
+        page_content="ModelA connects to ModelB through source-backed relationship evidence.",
         metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
     )
     retrieve_documents = AsyncMock(return_value=[source_document])
@@ -917,7 +917,9 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
         )
         return [
             Document(
-                page_content=f"{subject} evidence chunk {index}.",
+                page_content=(
+                    f"{subject} evidence chunk {index}; parameters and FLOPs."
+                ),
                 metadata={
                     "doc_id": "doc-1",
                     "chunk_id": f"{subject}-chunk-{index}",
@@ -3268,6 +3270,294 @@ async def test_v9_runtime_sufficiency_fails_when_evidence_not_qualified() -> Non
     assert metrics["qualified_packet_count"] == 0
     assert metrics["semantic_qualification"] == "no_match"
     assert metrics["qualification_failure_code"] is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_missing_algorithm_anchor_keeps_mechanism_slots_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        route="single_lookup",
+        intent="Reconstruct the update mechanism and aggregate its steps.",
+        required_slots=[
+            RequiredSlot(slot_id="S1", description="State the high-level mechanism."),
+            RequiredSlot(slot_id="S2", description="Explain the Algorithm 2 branch split."),
+            RequiredSlot(slot_id="S3", description="Explain the Algorithm 2 update flow."),
+            RequiredSlot(slot_id="S4", description="Explain the Algorithm 2 fusion step."),
+            RequiredSlot(slot_id="S5", description="Explain the Algorithm 2 output step."),
+        ],
+        synthesis_obligations=[
+            {
+                "obligation_id": "O1",
+                "kind": "aggregation",
+                "description": "Aggregate the five mechanism steps.",
+                "depends_on_slot_ids": ["S1", "S2", "S3", "S4", "S5"],
+            }
+        ],
+        evidence_extraction_required=True,
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=4,
+        runtime_token_budget=40_000,
+        resolved_source_scope=source_scope,
+    )
+
+    async def admission(**_kwargs: object) -> V9AdmissionContract:
+        return V9AdmissionContract(source_scope=source_scope, contract=contract)
+
+    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
+    planner_provider = _Provider(
+        planner_response={
+            "evidence_requirements": [
+                {"description": "State the high-level mechanism."},
+                {"description": "Explain the Algorithm 2 branch split."},
+                {"description": "Explain the Algorithm 2 update flow."},
+                {"description": "Explain the Algorithm 2 fusion step."},
+                {"description": "Explain the Algorithm 2 output step."},
+            ],
+            "synthesis_obligations": [
+                {
+                    "kind": "aggregation",
+                    "description": "Aggregate the five mechanism steps.",
+                    "depends_on_requirement_indexes": [0, 1, 2, 3, 4],
+                }
+            ],
+            "response_constraints": [],
+            "comparison": None,
+            "confidence": 1.0,
+        },
+        curator_response={
+            "packets": [
+                {
+                    "source_evidence_id": "E1",
+                    "slot_ids": ["S1", "S2", "S3", "S4", "S5"],
+                }
+            ]
+        }
+    )
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content=(
+                        "The update mechanism combines branch outputs before the final step."
+                    ),
+                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+                )
+            ]
+        ),
+        provider_factory=lambda purpose: planner_provider,
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question="According to Algorithm 2, reconstruct the update mechanism.",
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "max_output_tokens": 1024},
+        trace_id="trace-generic-mechanism",
+    )
+
+    v9 = result.agent_trace["agentic_v9"]
+    assert result.agent_trace["response_status"] != "complete"
+    supported = set(v9["sufficiency"]["supported_slot_ids"])
+    assert not {"S2", "S3", "S4", "S5"}.issubset(supported)
+
+
+@pytest.mark.asyncio
+async def test_runtime_preserves_arithmetic_and_unresolved_rounding_obligations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_scope = ResolvedSourceScope(
+        requested_doc_ids=["doc-1"],
+        resolved_doc_ids=["doc-1"],
+        authorized_doc_ids=["doc-1"],
+    )
+    contract = QueryContract(
+        route="exact_structured",
+        intent="Read the exact table premises and compute the requested difference.",
+        required_slots=[
+            RequiredSlot(
+                slot_id="S1",
+                description="Extract the Table 4 base value 12.5.",
+            ),
+            RequiredSlot(
+                slot_id="S2",
+                description="Extract the Table 4 reference value 7.5.",
+            ),
+        ],
+        synthesis_obligations=[
+            {
+                "obligation_id": "O1",
+                "kind": "aggregation",
+                "description": "Compute the difference from the two table premises.",
+                "depends_on_slot_ids": ["S1", "S2"],
+            },
+            {
+                "obligation_id": "O2",
+                "kind": "qualification",
+                "description": "State the rounding method used for that difference.",
+                "depends_on_slot_ids": ["S1", "S2"],
+            },
+        ],
+        evidence_extraction_required=True,
+        max_retrieval_rounds=1,
+        max_repair_rounds=0,
+        max_llm_calls=5,
+        runtime_token_budget=50_000,
+        resolved_source_scope=source_scope,
+    )
+
+    async def admission(**_kwargs: object) -> V9AdmissionContract:
+        return V9AdmissionContract(source_scope=source_scope, contract=contract)
+
+    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
+    planner_provider = _Provider(
+        planner_response={
+            "evidence_requirements": [
+                {"description": "Extract the Table 4 base value 12.5."},
+                {"description": "Extract the Table 4 reference value 7.5."},
+            ],
+            "synthesis_obligations": [
+                {
+                    "kind": "aggregation",
+                    "description": "Compute the difference from the two table premises.",
+                    "depends_on_requirement_indexes": [0, 1],
+                },
+                {
+                    "kind": "qualification",
+                    "description": "State the rounding method used for that difference.",
+                    "depends_on_requirement_indexes": [0, 1],
+                },
+            ],
+            "response_constraints": [],
+            "comparison": None,
+            "confidence": 1.0,
+        }
+    )
+    curator = _Provider(
+        curator_response={
+            "packets": [{"source_evidence_id": "E1", "slot_ids": ["S1", "S2"]}]
+        }
+    )
+    fallback_provider = _Provider()
+
+    class _TableVerifierProvider(_Provider):
+        async def _invoke(self, messages: Any) -> Any:
+            contents = [
+                str(message.get("content", ""))
+                for message in messages
+                if isinstance(message, dict)
+            ]
+            for content in contents:
+                try:
+                    payload = json.loads(content)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict) and isinstance(payload.get("claims"), list):
+                    verdicts = []
+                    for row in payload["claims"]:
+                        claim = row.get("claim", {}) if isinstance(row, dict) else {}
+                        obligation_id = claim.get("obligation_id")
+                        verdicts.append(
+                            {
+                                "claim_id": claim.get("claim_id"),
+                                "supported": obligation_id == "O1",
+                                "reason": (
+                                    None
+                                    if obligation_id == "O1"
+                                    else "rounding_method_not_stated"
+                                ),
+                            }
+                        )
+                    return SimpleNamespace(
+                        content=json.dumps({"verdicts": verdicts}),
+                        usage_metadata={"input_tokens": 10, "output_tokens": 5},
+                    )
+                if isinstance(payload, dict) and {
+                    "required_slots",
+                    "packed_evidence",
+                }.issubset(payload):
+                    packet_ids = [
+                        row["evidence_id"]
+                        for row in payload["packed_evidence"]
+                        if isinstance(row, dict) and row.get("evidence_id")
+                    ]
+                    premise_ids = list(dict.fromkeys(packet_ids))
+                    return SimpleNamespace(
+                        content=json.dumps(
+                            {
+                                "supported_findings": [
+                                    {
+                                        "slot_id": slot["slot_id"],
+                                        "statement": "Table 4 reports the exact premise.",
+                                        "evidence_ids": premise_ids,
+                                        "premise_evidence_ids": [],
+                                    }
+                                    for slot in payload["required_slots"]
+                                ],
+                                "synthesized_findings": [
+                                    {
+                                        "obligation_id": "O1",
+                                        "statement": "The difference is 5.0.",
+                                        "premise_evidence_ids": premise_ids,
+                                    },
+                                    {
+                                        "obligation_id": "O2",
+                                        "statement": "The difference uses the usual rounding method.",
+                                        "premise_evidence_ids": premise_ids,
+                                    },
+                                ],
+                                "unresolved_requirements": [],
+                                "unresolved_obligations": [],
+                            }
+                        ),
+                        usage_metadata={"input_tokens": 12, "output_tokens": 7},
+                    )
+            return await fallback_provider.ainvoke(messages)
+
+    final_provider = _TableVerifierProvider()
+    final_provider.ainvoke = AsyncMock(side_effect=final_provider._invoke)
+    runtime = AgenticV9CampaignRuntime(
+        retrieve_documents=AsyncMock(
+            return_value=[
+                Document(
+                    page_content="Table 4 reports base value 12.5 and reference value 7.5.",
+                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
+                )
+            ]
+        ),
+        provider_factory=lambda purpose: (
+            planner_provider
+            if purpose == "atomic_contract_planning"
+            else curator
+            if purpose == "evidence_extraction"
+            else final_provider
+        ),
+        document_reference_resolver=_identity_reference_resolver,
+    )
+
+    result = await runtime.execute(
+        question=(
+            "Read Table 4 values 12.5 and 7.5, compute the difference, "
+            "including its rounding method."
+        ),
+        user_id="user-a",
+        authorized_doc_ids=["doc-1"],
+        setup_snapshot={**_setup(), "max_output_tokens": 2048},
+        trace_id="trace-table-obligations",
+    )
+
+    assert result.agent_trace["response_status"] == "qualified_partial"
+    claims = result.agent_trace["agentic_v9"]["final_claims"]
+    by_obligation = {claim.get("obligation_id"): claim for claim in claims}
+    assert by_obligation["O1"]["qualified_reason"] is None
+    assert by_obligation["O2"]["qualified_reason"] == "rounding_method_not_stated"
 
 
 def test_chunk_projection_infers_markdown_table_id_without_overwriting_existing() -> None:
