@@ -122,6 +122,51 @@ async def test_final_answer_uses_only_packed_evidence_and_renders_versioned_cita
 
 
 @pytest.mark.asyncio
+async def test_final_answer_sends_registered_v2_synthesis_prompt_to_provider() -> None:
+    invoker = _RecordingInvoker(
+        SimpleNamespace(
+            content={
+                "supported_findings": [
+                    {
+                        "slot_id": "score",
+                        "statement": "reported score is 0.91.",
+                        "support_type": "direct",
+                        "evidence_ids": ["E1"],
+                        "premise_evidence_ids": [],
+                    }
+                ],
+                "synthesized_findings": [],
+                "unresolved_requirements": [],
+                "unresolved_obligations": [],
+            }
+        )
+    )
+
+    await generate_final_answer(
+        question="What is the reported score?",
+        contract=_contract(),
+        packed_packets=[_packet()],
+        slot_resolutions=[
+            SlotResolution(slot_id="score", status="supported", evidence_ids=["E1"])
+        ],
+        llm_invoker=invoker,
+    )
+
+    system_message = next(
+        message["content"]
+        for message in invoker.calls[0]["messages"]
+        if message["role"] == "system"
+    )
+    assert "Do not infer a rounding method or precision" in system_message
+    assert "Distinguish source-stated facts from derived conclusions" in system_message
+    assert (
+        "Evidence insufficiency belongs in unresolved_requirements or "
+        "unresolved_obligations" in system_message
+    )
+    assert "all direct premise evidence IDs required by its dependencies" in system_message
+
+
+@pytest.mark.asyncio
 async def test_invalid_claim_is_qualified_without_a_second_final_generation() -> None:
     invoker = _RecordingInvoker(
         {
@@ -627,8 +672,14 @@ async def test_synthesized_finding_with_missing_premise_closure_is_rejected() ->
         llm_invoker=invoker,
     )
 
-    # O1 is rejected because it does not cover premise for S2
-    assert len([c for c in result.claims if c.obligation_id == "O1"]) == 0
+    # Keep the candidate and qualify it so the missing dependency is visible.
+    obligation_claim = next(
+        c for c in result.claims if c.obligation_id == "O1"
+    )
+    assert obligation_claim.qualified_reason == (
+        "missing_obligation_dependency_closure"
+    )
+    assert result.unresolved_obligations[0].obligation_id == "O1"
     assert result.response_status == "qualified_partial"
 
 

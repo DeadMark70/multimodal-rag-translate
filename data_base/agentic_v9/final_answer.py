@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 import json
 from typing import Any, Protocol
 
+from core.prompt_loader import format_agentic_rag_prompt
 from data_base.agentic_v9.citation_renderer import render_verified_answer
 from data_base.agentic_v9.claim_verifier import (
     ClaimVerifier,
@@ -74,32 +75,25 @@ class FinalAnswerRenderer:
         packets = _coerce_packed_packets(packed_packets)
         packets_by_id = _packets_by_id(packets)
         try:
+            final_context = _final_payload(
+                question=question,
+                contract=contract,
+                packets=packets,
+                slot_resolutions=slot_resolutions,
+                sufficiency_report=sufficiency_report,
+                arbitration=arbitration,
+            )
             response = await self._invoker.invoke(
                 phase="final_answer",
                 purpose="final_answer",
                 messages=[
                     {
                         "role": "system",
-                        "content": (
-                            "Use only supplied evidence. Return JSON with exactly "
-                            "supported_findings, synthesized_findings, unresolved_requirements, "
-                            "and unresolved_obligations. Every supported finding must name one "
-                            "required slot (S#) and list only packed evidence_ids. Every synthesized "
-                            "finding must name one obligation (O#) and list all required premise_evidence_ids. "
-                            "Do not return prose outside the JSON."
+                        "content": format_agentic_rag_prompt(
+                            "final_synthesis", context=final_context
                         ),
                     },
-                    {
-                        "role": "user",
-                        "content": _final_payload(
-                            question=question,
-                            contract=contract,
-                            packets=packets,
-                            slot_resolutions=slot_resolutions,
-                            sufficiency_report=sufficiency_report,
-                            arbitration=arbitration,
-                        ),
-                    },
+                    {"role": "user", "content": final_context},
                 ],
             )
             if _is_fixed_no_claim_fallback(response):
@@ -117,7 +111,9 @@ class FinalAnswerRenderer:
         for claim in _claims_from_findings(
             draft, contract=contract, packets_by_id=packets_by_id
         ):
-            gate = gate_claim_deterministically(claim, packets_by_id)
+            gate = gate_claim_deterministically(
+                claim, packets_by_id, contract=contract
+            )
             if gate.status == "accepted":
                 accepted.append(claim)
             elif gate.status == "verify":
@@ -274,20 +270,6 @@ def _claims_from_findings(
         if obligation is None:
             continue
         premise_ids = list(dict.fromkeys(finding.premise_evidence_ids))
-        premise_packets = [packets_by_id.get(eid) for eid in premise_ids]
-        typed_premise_packets = [p for p in premise_packets if p is not None]
-
-        # Validate that every dependency slot of this obligation contributes at least one premise evidence ID
-        has_full_dependency_closure = True
-        for dep_slot_id in obligation.depends_on_slot_ids:
-            if not any(dep_slot_id in p.slot_ids for p in typed_premise_packets):
-                # Leave unknown packet IDs for the deterministic gate so the
-                # rejected candidate keeps its provenance in the final result.
-                if not any(p is None for p in premise_packets):
-                    has_full_dependency_closure = False
-                break
-        if not has_full_dependency_closure:
-            continue
 
         derived_support_type = _OBLIGATION_SUPPORT_TYPE.get(
             obligation.kind, "comparative_inference"

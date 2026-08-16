@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from data_base.agentic_v9.final_answer import (
@@ -33,7 +35,34 @@ class _DummyInvoker:
     def __init__(self, draft: FinalAnswerDraft) -> None:
         self.draft = draft
 
-    async def invoke(self, **_kwargs: object) -> object:
+    async def invoke(self, **kwargs: object) -> object:
+        if kwargs.get("phase") == "claim_verifier":
+            claim_ids: list[str] = []
+            messages = kwargs.get("messages")
+            if isinstance(messages, list):
+                for message in messages:
+                    if not isinstance(message, dict):
+                        continue
+                    content = message.get("content")
+                    if not isinstance(content, str):
+                        continue
+                    try:
+                        payload = json.loads(content)
+                    except json.JSONDecodeError:
+                        continue
+                    for row in payload.get("claims", []):
+                        claim = row.get("claim", {})
+                        claim_id = claim.get("claim_id")
+                        if isinstance(claim_id, str) and claim_id not in claim_ids:
+                            claim_ids.append(claim_id)
+            return SimpleNamespace(
+                content={
+                    "verdicts": [
+                        {"claim_id": claim_id, "supported": True, "reason": None}
+                        for claim_id in claim_ids
+                    ]
+                }
+            )
         return SimpleNamespace(content=self.draft.model_dump_json())
 
 
@@ -121,6 +150,7 @@ async def test_terminal_status_all_slots_and_obligations_supported_is_complete()
     )
 
     assert result.response_status == "complete"
+    assert result.claim_verifier_call_count == 1
     assert result.used_evidence_ids == ["E1", "E2"]
     assert len(result.claims) == 3
     assert all(claim.qualified_reason is None for claim in result.claims)

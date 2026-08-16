@@ -63,7 +63,10 @@ class _Provider:
             else:
                 content_str = str(messages)
             if (
-                "evidence_extract" in content_str
+                (
+                    "evidence_extract" in content_str
+                    and "evidence_extraction_required" not in content_str
+                )
                 or "prose evidence slots" in content_str
                 or "Source evidence:" in content_str
             ):
@@ -140,7 +143,11 @@ class _Provider:
             ):
                 import re
 
-                claim_ids = re.findall(r'"claim_id":\s*"([^"]+)"', content_str) or ["claim-1"]
+                claim_ids = list(
+                    dict.fromkeys(
+                        re.findall(r'"claim_id":\s*"([^"]+)"', content_str)
+                    )
+                )
                 return SimpleNamespace(
                     content=json.dumps(
                         {
@@ -888,7 +895,7 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
         intent="Compare two models.",
         required_slots=[RequiredSlot(slot_id="base", description="comparison")],
         max_retrieval_rounds=1,
-        max_llm_calls=3,
+        max_llm_calls=5,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -951,7 +958,7 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
     assert v9["comparison"]["final_status"] == "complete"
     assert v9["comparison"]["final_evidence_subjects"] == ["nnmamba", "efficientmednext-l"]
     assert v9["comparison"]["final_evidence_count"] == 4
-    assert provider.ainvoke.await_count == 3
+    assert provider.ainvoke.await_count == 4
 
 
 @pytest.mark.asyncio
@@ -1108,7 +1115,7 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
         required_slots=[RequiredSlot(slot_id="base", description="comparison")],
         max_retrieval_rounds=1,
         max_repair_rounds=1,
-        max_llm_calls=4,
+        max_llm_calls=6,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )

@@ -172,6 +172,16 @@ def test_unknown_or_unqualified_evidence_is_rejected_before_verifier() -> None:
     assert unqualified.status == "rejected"
 
 
+def test_whitespace_only_claim_is_rejected_before_verifier() -> None:
+    result = gate_claim_deterministically(
+        _direct_claim("   \t\n"),
+        {"E1": _packet()},
+    )
+
+    assert result.status == "rejected"
+    assert result.reason == "claim_statement_empty"
+
+
 class _RecordingInvoker:
     def __init__(self, response: Any) -> None:
         self.response = response

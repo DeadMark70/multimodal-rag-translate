@@ -78,7 +78,10 @@ def numeric_tokens(text: str) -> set[tuple[str, str]]:
 
 
 def gate_claim_deterministically(
-    claim: FinalClaim, packets_by_id: Mapping[str, EvidencePacket]
+    claim: FinalClaim,
+    packets_by_id: Mapping[str, EvidencePacket],
+    *,
+    contract: QueryContract | None = None,
 ) -> ClaimGateResult:
     """Apply structural, numeric, and exact-span checks before semantic review."""
     evidence_ids = list(
@@ -116,10 +119,44 @@ def gate_claim_deterministically(
             reason="missing_premise_closure",
         )
 
+    normalized_claim = normalize_source_span(claim.statement)
+    if not normalized_claim:
+        return ClaimGateResult(
+            claim_id=claim.claim_id,
+            status="rejected",
+            reason="claim_statement_empty",
+        )
+
     # Obligation claims always need semantic checking once their direct premises
     # are complete.  In particular, an aggregation obligation does not require
     # a pre-computed ``calculated`` packet.
     if claim.obligation_id is not None:
+        if contract is not None:
+            obligation = next(
+                (
+                    item
+                    for item in contract.synthesis_obligations
+                    if item.obligation_id == claim.obligation_id
+                ),
+                None,
+            )
+            if obligation is None:
+                return ClaimGateResult(
+                    claim_id=claim.claim_id,
+                    status="rejected",
+                    reason="unknown_obligation",
+                )
+            covered_slot_ids = {
+                slot_id
+                for packet in typed_packets
+                for slot_id in packet.slot_ids
+            }
+            if not set(obligation.depends_on_slot_ids).issubset(covered_slot_ids):
+                return ClaimGateResult(
+                    claim_id=claim.claim_id,
+                    status="rejected",
+                    reason="missing_obligation_dependency_closure",
+                )
         return ClaimGateResult(
             claim_id=claim.claim_id,
             status="verify",
@@ -140,7 +177,6 @@ def gate_claim_deterministically(
             reason="claim does not match cited exact evidence",
         )
 
-    normalized_claim = normalize_source_span(claim.statement)
     if any(
         normalized_claim in normalize_source_span(packet.statement)
         for packet in cited_packets
