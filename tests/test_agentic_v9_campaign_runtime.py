@@ -591,12 +591,13 @@ async def test_v9_graph_route_usage_is_budgeted_observed_and_reconciled(
     )
 
     assert [call.phase for call in observer.calls] == [
+        "contract_planning",
         "graph_route",
         "evidence_extract",
         "final_answer",
     ]
-    assert sum(call.usage["total_tokens"] for call in observer.calls) == 57
-    assert result.usage["total_tokens"] == 57
+    assert sum(call.usage["total_tokens"] for call in observer.calls) == 76
+    assert result.usage["total_tokens"] == 76
     assert observer.partial_reasons == []
     assert result.agent_trace["agentic_v9"]["retrieval_diagnostics"]
     assert result.agent_trace["execution_profile"] == (
@@ -840,7 +841,7 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     ]
     assert result.documents
     retrieve_documents.assert_awaited()
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -1201,9 +1202,11 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
             "model-b",
         ]
         assert v9["comparison"]["missing_after_repair"] == []
+        assert v9["repairs"][0]["resulting_evidence_ids"]
     else:
         assert v9["comparison"]["coverage_after_repair"] == ["model-a"]
         assert v9["comparison"]["missing_after_repair"] == ["model-b"]
+        assert v9["repairs"][0]["resulting_evidence_ids"] == []
 
 
 @pytest.mark.asyncio
@@ -1825,8 +1828,8 @@ async def test_atomic_contract_planning_low_confidence_reserves_claim_verifier_p
     )
     assert observed_feasibility
     assert all(
-        call.get("evidence_qualification_provider_calls") == 1
-        and call.get("claim_verifier_provider_calls") == 1
+            call.get("evidence_qualification_provider_calls") == 1
+            and call.get("claim_verifier_provider_calls") == 0
         for call in observed_feasibility
     )
 
@@ -1902,8 +1905,8 @@ async def test_atomic_contract_planning_budget_rejection_preserves_claim_verifie
     assert len(recorded_calls) == 2
     assert len(observed_feasibility) == 2
     assert all(
-        call.get("evidence_qualification_provider_calls") == 1
-        and call.get("claim_verifier_provider_calls") == 1
+            call.get("evidence_qualification_provider_calls") == 1
+            and call.get("claim_verifier_provider_calls") == 0
         for call in observed_feasibility
     )
 
@@ -2352,7 +2355,7 @@ async def test_v9_runtime_persists_requirement_shadow_without_influencing_behavi
     assert v9["visual_execution"]["state"] == "not_requested"
     assert result.agent_trace["response_status"] == "complete"
     assert result.documents
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -2379,7 +2382,7 @@ async def test_v9_requirement_guided_runtime_defaults_off_and_keeps_baseline_que
 
     assert retrieve_documents.await_count == 1
     assert "Advisory answer obligations" not in retrieve_documents.await_args.args[1]
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -2685,7 +2688,7 @@ async def test_v9_runtime_passes_qualification_and_claim_verifier_provider_calls
     )
 
     assert observed_provider_call_counts
-    assert set(observed_provider_call_counts) == {(1, 1)}
+    assert set(observed_provider_call_counts) == {(1, 0)}
 
 
 @pytest.mark.asyncio
@@ -3129,11 +3132,9 @@ async def test_campaign_runtime_qualifies_candidate_evidence_via_batch_prose_cur
                         {
                             "slot_id": "S1",
                             "statement": statement,
-                            "evidence_ids": [
-                                f"curated:{captured_candidates[0].evidence_id}:S1"
-                                if captured_candidates
-                                else "curated:evidence:dummy:S1"
-                            ],
+                                "evidence_ids": [
+                                    "E1"
+                                ],
                             "premise_evidence_ids": [],
                         }
                     ],

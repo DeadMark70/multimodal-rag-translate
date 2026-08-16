@@ -76,6 +76,13 @@ ComparisonPlannerDiagnosticStage = Literal[
     "trusted_plan_validation",
     "numeric_guard",
 ]
+ClaimVerifierDiagnosticCode = Literal[
+    "budget_rejected",
+    "provider_failure",
+    "invalid_provider_response",
+    "claim_rejected",
+    "accepted",
+]
 
 ROUTE_GRAPH_POLICIES: dict[AgenticV9Route, GraphPolicy] = {
     "single_lookup": "never",
@@ -730,6 +737,7 @@ class FinalAnswerResult(BaseModel):
     unresolved_requirements: list[UnresolvedRequirement] = Field(default_factory=list)
     unresolved_obligations: list[UnresolvedObligation] = Field(default_factory=list)
     claim_verifier_call_count: int = Field(default=0, ge=0, le=1)
+    claim_verifier_diagnostic_code: ClaimVerifierDiagnosticCode | None = None
 
 
 class RetrievalPolicy(BaseModel):
@@ -857,6 +865,7 @@ class V9ExecutionMetrics(BaseModel):
     used_evidence_count: int | None = Field(default=None, ge=0)
     unresolved_requirement_count: int | None = Field(default=None, ge=0)
     claim_verifier_call_count: int | None = Field(default=None, ge=0, le=1)
+    claim_verifier_diagnostic_code: ClaimVerifierDiagnosticCode | None = None
 
 
 class V9ExecutionResult(BaseModel):

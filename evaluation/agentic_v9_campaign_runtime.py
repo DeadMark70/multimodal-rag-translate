@@ -56,11 +56,13 @@ from data_base.agentic_v9.execution_policy import (
 )
 from data_base.agentic_v9.final_answer import FinalAnswerRenderer
 from data_base.agentic_v9.provider_boundary import (
+    build_claim_verifier_provider,
     build_contract_planning_provider,
     build_evidence_qualification_provider,
     build_final_synthesis_provider,
     evidence_qualification_response_schema,
     final_synthesis_response_schema,
+    claim_verification_response_schema,
 )
 from data_base.agentic_v9.repair import build_repair_plan
 from data_base.agentic_v9.requirement_shadow import build_requirement_shadow
@@ -371,6 +373,8 @@ class AgenticV9CampaignRuntime:
             "contract": None,
             "pack": None,
             "repairs": [],
+            "active_repair_round_index": None,
+            "active_repair_task_ids": set(),
             "evidence_packets": [],
             "quality_by_evidence_id": {},
             "post_contract": None,
@@ -410,7 +414,7 @@ class AgenticV9CampaignRuntime:
                     route_plan_used=False,
                     contract_plan_requested=True,
                     evidence_qualification_provider_calls=1,
-                    claim_verifier_provider_calls=1,
+                    claim_verifier_provider_calls=0,
                 )
                 if post_contract.status is FeasibilityStatus.FEASIBLE:
                     planner_admitted = True
@@ -423,7 +427,7 @@ class AgenticV9CampaignRuntime:
                         route_plan_used=False,
                         contract_plan_requested=False,
                         evidence_qualification_provider_calls=1,
-                        claim_verifier_provider_calls=1,
+                        claim_verifier_provider_calls=0,
                     )
             else:
                 post_contract = validate_post_contract_feasibility(
@@ -434,7 +438,7 @@ class AgenticV9CampaignRuntime:
                     route_plan_used=False,
                     contract_plan_requested=False,
                     evidence_qualification_provider_calls=1,
-                    claim_verifier_provider_calls=1,
+                    claim_verifier_provider_calls=0,
                 )
 
             state["post_contract"] = post_contract
@@ -665,6 +669,10 @@ class AgenticV9CampaignRuntime:
                 final_budget_available=self._policy_runtime.has_final_reserve(deadline),
             )
             state["repairs"].append(repair)
+            state["active_repair_round_index"] = (
+                repair.repair_round_index if repair.tasks else None
+            )
+            state["active_repair_task_ids"] = {task.task_id for task in repair.tasks}
             return repair.tasks
 
         async def prose_curate(
@@ -717,6 +725,16 @@ class AgenticV9CampaignRuntime:
                 )
             else:
                 selected = extracted
+            active_repair_round = state.get("active_repair_round_index")
+            if active_repair_round is not None and state["repairs"]:
+                repair = state["repairs"][-1]
+                repair.resulting_evidence_ids = [
+                    packet.evidence_id
+                    for packet in selected
+                    if packet.task_id in state.get("active_repair_task_ids", set())
+                ]
+                state["active_repair_round_index"] = None
+                state["active_repair_task_ids"] = set()
             state["final_evidence_packets"] = selected
             return tuple(selected)
 
@@ -903,6 +921,7 @@ class AgenticV9CampaignRuntime:
                 "used_evidence_count": len(final.used_evidence_ids),
                 "unresolved_requirement_count": unresolved_req_count,
                 "claim_verifier_call_count": final.claim_verifier_call_count,
+                "claim_verifier_diagnostic_code": final.claim_verifier_diagnostic_code,
             }
         )
         graph_execution = state["graph_execution"] or _initial_graph_execution(
@@ -981,6 +1000,16 @@ class AgenticV9CampaignRuntime:
                 packet.model_dump(mode="json")
                 for packet in state["evidence_packets"]
             ],
+            "candidate_evidence_ids": [
+                packet.evidence_id for packet in state["evidence_packets"]
+            ],
+            "qualified_evidence_ids": [
+                packet.evidence_id for packet in final_evidence_packets
+            ],
+            "qualified_evidence_packets": [
+                packet.model_dump(mode="json") for packet in final_evidence_packets
+            ],
+            "used_evidence_ids": list(final.used_evidence_ids),
             "slot_resolutions": [
                 resolution.model_dump(mode="json")
                 for resolution in (
@@ -1624,6 +1653,10 @@ def _provider_for_purpose(purpose: str) -> Any:
     if purpose in {"final_answer", "agentic_v9_final_answer"}:
         return build_final_synthesis_provider(
             response_schema=final_synthesis_response_schema()
+        )
+    if purpose == "claim_verifier":
+        return build_claim_verifier_provider(
+            response_schema=claim_verification_response_schema()
         )
     return get_llm("synthesizer")
 

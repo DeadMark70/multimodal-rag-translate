@@ -669,6 +669,80 @@ async def test_v9_actual_route_is_persisted_separately_from_retrospective_route(
 
 
 @pytest.mark.asyncio
+async def test_v9_raw_retrieval_stages_export_when_final_claim_is_rejected(
+    store: EvaluationJobStore,
+) -> None:
+    async def runner(**kwargs) -> BenchmarkExecutionResult:  # noqa: ANN003
+        test_case = kwargs["test_case"]
+        return BenchmarkExecutionResult(
+            question_id=test_case.id,
+            question=test_case.question,
+            ground_truth=test_case.ground_truth,
+            mode=kwargs["mode"],
+            answer="No accepted claim.",
+            contexts=[],
+            source_doc_ids=[],
+            expected_sources=["doc-a"],
+            agentic_execution_version="v9",
+            execution_profile="agentic-v9-eval",
+            agent_trace={
+                "agentic_v9": {
+                    "evidence_packets": [
+                        {
+                            "evidence_id": "E1",
+                            "statement": "The source reports 42.",
+                            "task_id": "task-1",
+                            "source": {"doc_id": "doc-a", "chunk_id": "chunk-1"},
+                        }
+                    ],
+                    "candidate_evidence_ids": ["E1"],
+                    "qualified_evidence_ids": ["E1"],
+                    "used_evidence_ids": [],
+                    "context_pack": {"packed_evidence_ids": ["E1"]},
+                    "retrieval_diagnostics": [],
+                    "final_claims": [
+                        {
+                            "claim_id": "claim-1",
+                            "qualified_reason": "claim_verifier_provider_failure",
+                            "evidence_ids": ["E1"],
+                        }
+                    ],
+                }
+            },
+        )
+
+    claim = await _claim_execution(
+        store,
+        mode="agentic",
+        source_docs=["doc-a"],
+        test_case_overrides={
+            "expected_evidence": [{"evidence_id": "E1", "doc_id": "doc-a"}]
+        },
+    )
+    await DatasetExecutionWorker(store=store, runner=runner).execute(claim)
+    result = (
+        await evaluation_db.CampaignResultRepository().list_for_campaign(
+            user_id="user-a", campaign_id="cmp-1"
+        )
+    )[0]
+    repo = EvaluationObservabilityRepository()
+    events = await repo.list_retrieval_events_for_run(result.id)
+    chunks = await repo.list_retrieval_chunks_for_run(result.id)
+    packs = await repo.list_context_packs_for_run(result.id)
+    assert len(events) == 1
+    assert events[0].payload["instrumentation_depth"] == "trace_level"
+    assert len(chunks) == 1
+    assert chunks[0].payload["candidate_stage"] is True
+    assert chunks[0].payload["qualified_stage"] is True
+    assert chunks[0].payload["packed_stage"] is True
+    assert chunks[0].payload["used_stage"] is False
+    assert chunks[0].used_in_context is True
+    assert chunks[0].used_in_answer is False
+    assert packs[0].input_chunk_count == 1
+    assert packs[0].packed_chunk_count == 1
+
+
+@pytest.mark.asyncio
 async def test_campaign_result_records_retrieval_context_and_evidence_flow(
     store: EvaluationJobStore,
 ) -> None:

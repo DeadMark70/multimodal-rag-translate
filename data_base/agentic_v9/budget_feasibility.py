@@ -203,9 +203,12 @@ def validate_post_contract_feasibility(
     contract_plan_requested: bool = False,
     evidence_qualification_provider_calls: int = 0,
     claim_verifier_provider_calls: int = 0,
+    final_answer_already_consumed: bool = False,
 ) -> FeasibilityResult:
     """Validate a resolved route against the current non-mutating ledger view."""
-    pending_provider_calls: dict[str, int] = {"final_answer": 1}
+    pending_provider_calls: dict[str, int] = (
+        {} if final_answer_already_consumed else {"final_answer": 1}
+    )
     charged_provider_calls: dict[str, int] = (
         {"contract_planning": 1} if route_plan_used else {}
     )

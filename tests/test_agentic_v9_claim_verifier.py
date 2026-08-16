@@ -290,6 +290,53 @@ async def test_verifier_sends_one_claim_scoped_batch_with_contract_targets() -> 
 
 
 @pytest.mark.asyncio
+async def test_verifier_accepts_gemini_text_content_block_response() -> None:
+    invoker = _RecordingInvoker(
+        SimpleNamespace(
+            content=[
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "verdicts": [
+                                {"claim_id": "claim-1", "supported": True, "reason": None}
+                            ]
+                        }
+                    ),
+                }
+            ]
+        )
+    )
+    verdicts = await ClaimVerifier(invoker).verify(
+        [_direct_claim("the decoder has two stages")],
+        {"E1": _packet(statement="The decoder consists of two stages.")},
+        contract=_contract(),
+    )
+
+    assert verdicts["claim-1"].supported is True
+
+
+@pytest.mark.asyncio
+async def test_verifier_reports_bounded_provider_failure_without_exception_text() -> None:
+    class _FailingInvoker(_RecordingInvoker):
+        async def invoke(self, *, phase: str, purpose: str, messages: list[dict[str, Any]]) -> Any:
+            self.calls.append({"phase": phase, "purpose": purpose, "messages": messages})
+            raise RuntimeError("secret provider response and api_key=leak")
+
+    verifier = ClaimVerifier(_FailingInvoker(None))
+    verdicts = await verifier.verify(
+        [_direct_claim("the decoder has two stages")],
+        {"E1": _packet(statement="The decoder consists of two stages.")},
+        contract=_contract(),
+    )
+
+    assert verdicts["claim-1"].reason == "claim_verifier_provider_failure"
+    assert verifier.last_call_count == 1
+    assert verifier.last_diagnostic_code == "provider_failure"
+    assert "secret" not in verdicts["claim-1"].reason
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "verdicts",
     [
@@ -323,6 +370,6 @@ async def test_verifier_rejects_any_non_bijective_verdict_batch(
     assert set(result) == {"claim-1", "claim-2"}
     assert all(not verdict.supported for verdict in result.values())
     assert all(
-        verdict.reason == "claim_verifier_unavailable_or_invalid"
+        verdict.reason == "claim_verifier_invalid_response"
         for verdict in result.values()
     )

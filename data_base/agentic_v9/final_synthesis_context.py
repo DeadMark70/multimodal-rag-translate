@@ -81,15 +81,23 @@ def build_final_synthesis_context(
         for slot in contract.required_slots
     ]
 
+    evidence_aliases = {
+        packet.evidence_id: f"E{index}"
+        for index, packet in enumerate(packets, start=1)
+    }
     projected_evidence = [
         FinalSynthesisEvidence(
-            evidence_id=packet.evidence_id,
+            evidence_id=evidence_aliases[packet.evidence_id],
             slot_ids=list(packet.slot_ids),
             statement=packet.statement,
             doc_id=packet.source.doc_id,
             locator=packet.locator,
             support_type=packet.support_type,
-            premise_evidence_ids=list(packet.premise_evidence_ids),
+            premise_evidence_ids=[
+                evidence_aliases[premise_id]
+                for premise_id in packet.premise_evidence_ids
+                if premise_id in evidence_aliases
+            ],
         )
         for packet in packets
     ]
@@ -111,7 +119,18 @@ def build_final_synthesis_context(
     return FinalSynthesisContext(
         question=question,
         required_slots=slots,
-        slot_resolutions=list(slot_resolutions),
+        slot_resolutions=[
+            resolution.model_copy(
+                update={
+                    "evidence_ids": [
+                        evidence_aliases[evidence_id]
+                        for evidence_id in resolution.evidence_ids
+                        if evidence_id in evidence_aliases
+                    ]
+                }
+            )
+            for resolution in slot_resolutions
+        ],
         synthesis_obligations=list(contract.synthesis_obligations),
         response_constraints=list(contract.response_constraints),
         unresolved_requirements=unresolved,

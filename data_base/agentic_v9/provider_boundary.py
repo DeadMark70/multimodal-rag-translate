@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
 from typing import Any
 
 from core.providers import bind_json_schema, get_llm
@@ -54,6 +55,66 @@ def provider_response_text(response: Any) -> str | None:
         return content
     text = getattr(response, "text", None)
     return str(text) if isinstance(text, str) else None
+
+
+def provider_response_content(response: Any) -> Any:
+    """Normalize ordinary and block-based provider JSON responses."""
+    content = response
+    if isinstance(response, Mapping):
+        content = response.get("content", response)
+    else:
+        content = getattr(response, "content", response)
+    if isinstance(content, bytes):
+        content = content.decode("utf-8", errors="replace")
+    if isinstance(content, str):
+        return json.loads(content)
+    if isinstance(content, Mapping):
+        return content
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                text_parts.append(block)
+            elif isinstance(block, Mapping):
+                if isinstance(block.get("json"), Mapping):
+                    return block["json"]
+                for key in ("text", "content"):
+                    value = block.get(key)
+                    if isinstance(value, str):
+                        text_parts.append(value)
+                        break
+        if text_parts:
+            return json.loads("".join(text_parts))
+    return content
+
+
+def claim_verification_response_schema() -> dict[str, Any]:
+    """Return the strict, bounded schema for one verifier batch."""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "verdicts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "claim_id": {"type": "string", "minLength": 1},
+                        "supported": {"type": "boolean"},
+                        "reason": {"type": ["string", "null"], "maxLength": 96},
+                    },
+                    "required": ["claim_id", "supported", "reason"],
+                },
+            }
+        },
+        "required": ["verdicts"],
+    }
+
+
+def build_claim_verifier_provider(*, response_schema: Mapping[str, Any]) -> Any:
+    """Build the verifier through the structured-output provider boundary."""
+    return bind_json_schema(get_llm("synthesizer"), schema=dict(response_schema))
 
 
 def build_contract_planning_provider(

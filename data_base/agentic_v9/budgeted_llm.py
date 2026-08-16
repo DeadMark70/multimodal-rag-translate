@@ -229,6 +229,23 @@ async def invoke_budgeted_llm(
         + flat_usage.get("output_tokens", 0)
         + flat_usage.get("reasoning_tokens", 0)
     )
+    if provider_total_reported and flat_usage.get("total_tokens") is not None:
+        reported_total = flat_usage["total_tokens"]
+        if known_tokens > reported_total:
+            # Some provider adapters expose reasoning inside output_tokens as
+            # well as a separate component.  Preserve the authoritative total
+            # and make visible output the non-overlapping remainder.
+            flat_usage["output_tokens"] = max(
+                reported_total
+                - flat_usage.get("input_tokens", 0)
+                - flat_usage.get("reasoning_tokens", 0),
+                0,
+            )
+            known_tokens = (
+                flat_usage.get("input_tokens", 0)
+                + flat_usage.get("output_tokens", 0)
+                + flat_usage.get("reasoning_tokens", 0)
+            )
     flat_usage["other_tokens"] = max(
         flat_usage.get("total_tokens", known_tokens) - known_tokens,
         0,

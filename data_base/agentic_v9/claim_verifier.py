@@ -14,7 +14,9 @@ from data_base.agentic_v9.evidence_validator import (
     is_qualified_evidence,
     normalize_source_span,
 )
+from data_base.agentic_v9.provider_boundary import provider_response_content
 from data_base.agentic_v9.schemas import (
+    BudgetExceededError,
     EvidencePacket,
     FinalClaim,
     LlmInvoker,
@@ -26,6 +28,21 @@ _NUMERIC_TOKEN = re.compile(
     r"(?<![A-Za-z0-9_.-])(?P<value>[+-]?(?:\d+(?:\.\d+)?|\.\d+))"
     r"\s*(?P<suffix>%|percent|x|×|-?fold)?(?![A-Za-z0-9_-])",
     re.IGNORECASE,
+)
+_SAFE_GATE_REASONS = frozenset(
+    {
+        "claim_has_no_evidence_ids",
+        "claim_references_unpacked_or_unknown_evidence",
+        "invalid_evidence",
+        "missing_premise_closure",
+        "claim_statement_empty",
+        "unknown_obligation",
+        "missing_obligation_dependency_closure",
+        "direct_claim_requires_direct_evidence",
+        "claim does not match cited exact evidence",
+        "claim_requires_semantic_verification",
+        "obligation_requires_semantic_verification",
+    }
 )
 
 
@@ -203,6 +220,16 @@ class ClaimVerifier:
 
     def __init__(self, llm_invoker: LlmInvoker) -> None:
         self._invoker = llm_invoker
+        self._last_call_count = 0
+        self._last_diagnostic_code: str | None = None
+
+    @property
+    def last_call_count(self) -> int:
+        return self._last_call_count
+
+    @property
+    def last_diagnostic_code(self) -> str | None:
+        return self._last_diagnostic_code
 
     async def verify(
         self,
@@ -212,6 +239,8 @@ class ClaimVerifier:
         contract: QueryContract,
     ) -> dict[str, ClaimVerdict]:
         """Verify all pending claims in one typed batch response."""
+        self._last_call_count = 0
+        self._last_diagnostic_code = None
         if not claims:
             return {}
 
@@ -291,8 +320,18 @@ class ClaimVerifier:
             parsed = ClaimVerificationResponse.model_validate(
                 _response_content(response)
             )
+        except BudgetExceededError:
+            self._last_diagnostic_code = "budget_rejected"
+            return _fail_closed_verdicts(claims, reason="claim_verifier_budget_rejected")
+        except (json.JSONDecodeError, ValueError, TypeError):
+            self._last_call_count = 1
+            self._last_diagnostic_code = "invalid_provider_response"
+            return _fail_closed_verdicts(claims, reason="claim_verifier_invalid_response")
         except Exception:
-            return _fail_closed_verdicts(claims)
+            self._last_call_count = 1
+            self._last_diagnostic_code = "provider_failure"
+            return _fail_closed_verdicts(claims, reason="claim_verifier_provider_failure")
+        self._last_call_count = 1
         pending_ids = [claim.claim_id for claim in claims]
         verdict_ids = [verdict.claim_id for verdict in parsed.verdicts]
         if (
@@ -301,16 +340,29 @@ class ClaimVerifier:
             or len(pending_ids) != len(verdict_ids)
             or set(pending_ids) != set(verdict_ids)
         ):
-            return _fail_closed_verdicts(claims)
+            self._last_diagnostic_code = "invalid_provider_response"
+            return _fail_closed_verdicts(claims, reason="claim_verifier_invalid_response")
+        self._last_diagnostic_code = (
+            "accepted" if all(verdict.supported for verdict in parsed.verdicts) else "claim_rejected"
+        )
         return {verdict.claim_id: verdict for verdict in parsed.verdicts}
 
 
 def qualify_failed_claim(claim: FinalClaim, verdict: ClaimVerdict) -> FinalClaim:
     """Keep provenance but make failed content visibly non-assertive."""
+    reason = verdict.reason or "claim_not_verified"
+    if (
+        len(reason) > 96
+        or (
+            reason not in _SAFE_GATE_REASONS
+            and not re.fullmatch(r"[A-Za-z0-9_.:-]+", reason)
+        )
+    ):
+        reason = "claim_rejected"
     return claim.model_copy(
         update={
             "support_type": "qualified",
-            "qualified_reason": verdict.reason or "claim_not_verified",
+            "qualified_reason": reason,
         }
     )
 
@@ -352,12 +404,14 @@ def _normalize_decimal(value: str) -> str:
 
 def _fail_closed_verdicts(
     claims: Sequence[FinalClaim],
+    *,
+    reason: str = "claim_verifier_unavailable_or_invalid",
 ) -> dict[str, ClaimVerdict]:
     return {
         claim.claim_id: ClaimVerdict(
             claim_id=claim.claim_id,
             supported=False,
-            reason="claim_verifier_unavailable_or_invalid",
+            reason=reason,
         )
         for claim in claims
     }
@@ -379,12 +433,7 @@ def gate_as_verdict(gate: ClaimGateResult) -> ClaimVerdict:
 
 
 def _response_content(response: Any) -> Any:
-    content = getattr(response, "content", response)
-    if isinstance(content, bytes):
-        content = content.decode("utf-8", errors="replace")
-    if isinstance(content, str):
-        return json.loads(content)
-    return content
+    return provider_response_content(response)
 
 
 __all__ = [

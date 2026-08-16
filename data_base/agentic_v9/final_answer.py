@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-import json
 from typing import Any, Protocol
 
 from core.prompt_loader import format_agentic_rag_prompt
@@ -14,6 +13,7 @@ from data_base.agentic_v9.claim_verifier import (
     gate_claim_deterministically,
     qualify_failed_claim,
 )
+from data_base.agentic_v9.provider_boundary import provider_response_content
 from data_base.agentic_v9.final_synthesis_context import (
     build_final_synthesis_context,
 )
@@ -74,6 +74,10 @@ class FinalAnswerRenderer:
         """Use only packed evidence, with one final call and at most one verifier call."""
         packets = _coerce_packed_packets(packed_packets)
         packets_by_id = _packets_by_id(packets)
+        evidence_aliases = {
+            f"E{index}": packet.evidence_id
+            for index, packet in enumerate(packets, start=1)
+        }
         try:
             final_context = _final_payload(
                 question=question,
@@ -109,7 +113,10 @@ class FinalAnswerRenderer:
         accepted: list[FinalClaim] = []
         pending_verification: list[FinalClaim] = []
         for claim in _claims_from_findings(
-            draft, contract=contract, packets_by_id=packets_by_id
+            draft,
+            contract=contract,
+            packets_by_id=packets_by_id,
+            evidence_aliases=evidence_aliases,
         ):
             gate = gate_claim_deterministically(
                 claim, packets_by_id, contract=contract
@@ -126,7 +133,8 @@ class FinalAnswerRenderer:
                     )
                 )
 
-        verifier_verdicts = await ClaimVerifier(self._invoker).verify(
+        verifier = ClaimVerifier(self._invoker)
+        verifier_verdicts = await verifier.verify(
             pending_verification,
             packets_by_id,
             contract=contract,
@@ -174,7 +182,8 @@ class FinalAnswerRenderer:
             final_generation_count=1,
             unresolved_requirements=list(unresolved_requirements),
             unresolved_obligations=list(unresolved_obligations),
-            claim_verifier_call_count=1 if pending_verification else 0,
+            claim_verifier_call_count=verifier.last_call_count,
+            claim_verifier_diagnostic_code=verifier.last_diagnostic_code,
         )
 
 
@@ -227,7 +236,17 @@ def _claims_from_findings(
     *,
     contract: QueryContract,
     packets_by_id: Mapping[str, EvidencePacket],
+    evidence_aliases: Mapping[str, str] | None = None,
 ) -> list[FinalClaim]:
+    provider_alias_mode = evidence_aliases is not None
+    evidence_aliases = evidence_aliases or {}
+
+    def map_provider_evidence_id(evidence_id: str) -> str:
+        if not provider_alias_mode:
+            return evidence_id
+        return evidence_aliases.get(
+            evidence_id, f"__unknown_evidence_alias__:{evidence_id}"
+        )
     valid_slots = {slot.slot_id for slot in contract.required_slots}
     obligation_by_id = {
         obligation.obligation_id: obligation
@@ -238,9 +257,11 @@ def _claims_from_findings(
 
     # 1. Direct findings
     for finding in draft.supported_findings:
-        evidence_ids = list(
-            dict.fromkeys([*finding.evidence_ids, *finding.premise_evidence_ids])
-        )
+        mapped_evidence_ids = [
+            map_provider_evidence_id(evidence_id)
+            for evidence_id in [*finding.evidence_ids, *finding.premise_evidence_ids]
+        ]
+        evidence_ids = list(dict.fromkeys(mapped_evidence_ids))
         packets = [packets_by_id.get(evidence_id) for evidence_id in evidence_ids]
         if (
             finding.slot_id not in valid_slots
@@ -258,8 +279,14 @@ def _claims_from_findings(
                 obligation_id=None,
                 statement=finding.statement,
                 support_type="direct",
-                evidence_ids=finding.evidence_ids,
-                premise_evidence_ids=finding.premise_evidence_ids,
+                evidence_ids=[
+                    map_provider_evidence_id(evidence_id)
+                    for evidence_id in finding.evidence_ids
+                ],
+                premise_evidence_ids=[
+                    map_provider_evidence_id(evidence_id)
+                    for evidence_id in finding.premise_evidence_ids
+                ],
             )
         )
         claim_counter += 1
@@ -269,7 +296,12 @@ def _claims_from_findings(
         obligation = obligation_by_id.get(finding.obligation_id)
         if obligation is None:
             continue
-        premise_ids = list(dict.fromkeys(finding.premise_evidence_ids))
+        premise_ids = list(
+            dict.fromkeys(
+                map_provider_evidence_id(evidence_id)
+                for evidence_id in finding.premise_evidence_ids
+            )
+        )
 
         derived_support_type = _OBLIGATION_SUPPORT_TYPE.get(
             obligation.kind, "comparative_inference"
@@ -362,10 +394,7 @@ def _coerce_packed_packets(
 
 
 def _response_content(response: Any) -> Any:
-    content = getattr(response, "content", response)
-    if isinstance(content, bytes):
-        content = content.decode("utf-8", errors="replace")
-    return json.loads(content) if isinstance(content, str) else content
+    return provider_response_content(response)
 
 
 def _is_fixed_no_claim_fallback(response: Any) -> bool:

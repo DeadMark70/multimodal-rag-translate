@@ -122,6 +122,74 @@ async def test_final_answer_uses_only_packed_evidence_and_renders_versioned_cita
 
 
 @pytest.mark.asyncio
+async def test_final_answer_maps_bounded_provider_alias_to_canonical_evidence_id() -> None:
+    canonical_id = "evidence:very-long-canonical-id-that-provider-must-not-see"
+    invoker = _RecordingInvoker(
+        {
+            "supported_findings": [
+                {
+                    "slot_id": "score",
+                    "statement": "The reported score is 0.91.",
+                    "evidence_ids": ["E1"],
+                    "premise_evidence_ids": [],
+                }
+            ],
+            "synthesized_findings": [],
+            "unresolved_requirements": [],
+            "unresolved_obligations": [],
+        }
+    )
+
+    result = await generate_final_answer(
+        question="What is the reported score?",
+        contract=_contract(),
+        packed_packets=[_packet(canonical_id)],
+        slot_resolutions=[
+            SlotResolution(slot_id="score", status="supported", evidence_ids=[canonical_id])
+        ],
+        llm_invoker=invoker,
+    )
+
+    final_payload = invoker.calls[0]["messages"][1]["content"]
+    assert canonical_id not in final_payload
+    assert '"evidence_id":"E1"' in final_payload
+    assert result.used_evidence_ids == [canonical_id]
+
+
+@pytest.mark.asyncio
+async def test_final_answer_rejects_fabricated_provider_evidence_alias() -> None:
+    invoker = _RecordingInvoker(
+        {
+            "supported_findings": [
+                {
+                    "slot_id": "score",
+                    "statement": "The reported score is 0.91.",
+                    "evidence_ids": ["E999"],
+                    "premise_evidence_ids": [],
+                }
+            ],
+            "synthesized_findings": [],
+            "unresolved_requirements": [],
+            "unresolved_obligations": [],
+        }
+    )
+
+    result = await generate_final_answer(
+        question="What is the reported score?",
+        contract=_contract(),
+        packed_packets=[_packet("canonical-E1")],
+        slot_resolutions=[
+            SlotResolution(slot_id="score", status="supported", evidence_ids=["canonical-E1"])
+        ],
+        llm_invoker=invoker,
+    )
+
+    assert result.used_evidence_ids == []
+    assert result.response_status == "insufficient"
+    assert result.claims[0].qualified_reason == "claim_references_unpacked_or_unknown_evidence"
+
+
+@pytest.mark.asyncio
 async def test_final_answer_sends_registered_v2_synthesis_prompt_to_provider() -> None:
     invoker = _RecordingInvoker(
         SimpleNamespace(
@@ -235,7 +303,7 @@ async def test_high_risk_prose_uses_one_batched_verifier_and_qualifies_rejected_
 
     assert result.final_generation_count == 1
     assert result.claims[0].support_type == "qualified"
-    assert result.claims[0].qualified_reason == "not established"
+    assert result.claims[0].qualified_reason == "claim_rejected"
     assert result.response_status == "insufficient"
     assert result.used_evidence_ids == []
     assert [(call["phase"], call["purpose"]) for call in invoker.calls] == [
@@ -814,6 +882,6 @@ async def test_verifier_unavailable_leaves_all_pending_claims_unresolved() -> No
     )
 
     assert result.claim_verifier_call_count == 1
-    assert result.claims[0].qualified_reason == "claim_verifier_unavailable_or_invalid"
+    assert result.claims[0].qualified_reason == "claim_verifier_provider_failure"
     assert result.used_evidence_ids == []
     assert result.response_status == "insufficient"
