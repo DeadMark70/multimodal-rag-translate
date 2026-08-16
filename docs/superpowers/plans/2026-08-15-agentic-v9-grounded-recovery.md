@@ -634,6 +634,12 @@ Before Wave 3, deploy and run Q1-Q32 with full observability. Required evidence:
 
 # Wave 3 — Compact Structured Final Synthesis
 
+> **Superseded (2026-08-16):** Pending Tasks 11–14 below are replaced by
+> `docs/superpowers/plans/2026-08-16-agentic-v9-grounded-completion.md`.
+> Completed Wave 1 and Wave 2 work remains authoritative. Do not execute the
+> older Wave 3 tasks or combine their final-answer adapter with the replacement
+> plan.
+
 ## Task 11: Define a compact final-synthesis projection
 
 **Repository:** `D:\flutterserver\pdftopng`
