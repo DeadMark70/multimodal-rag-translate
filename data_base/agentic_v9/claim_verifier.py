@@ -131,6 +131,9 @@ def gate_claim_deterministically(
     # are complete.  In particular, an aggregation obligation does not require
     # a pre-computed ``calculated`` packet.
     if claim.obligation_id is not None:
+        direct_packets = [
+            packet for packet in typed_packets if packet.support_type == "direct"
+        ]
         if contract is not None:
             obligation = next(
                 (
@@ -148,7 +151,7 @@ def gate_claim_deterministically(
                 )
             covered_slot_ids = {
                 slot_id
-                for packet in typed_packets
+                for packet in direct_packets
                 for slot_id in packet.slot_ids
             }
             if not set(obligation.depends_on_slot_ids).issubset(covered_slot_ids):
@@ -164,6 +167,12 @@ def gate_claim_deterministically(
         )
 
     cited_packets = [packets_by_id[evidence_id] for evidence_id in evidence_ids]
+    if any(packet.support_type != "direct" for packet in cited_packets):
+        return ClaimGateResult(
+            claim_id=claim.claim_id,
+            status="rejected",
+            reason="direct_claim_requires_direct_evidence",
+        )
     claim_numbers = numeric_tokens(claim.statement)
     evidence_numbers = {
         token
@@ -283,31 +292,17 @@ class ClaimVerifier:
                 _response_content(response)
             )
         except Exception:
-            return {
-                claim.claim_id: ClaimVerdict(
-                    claim_id=claim.claim_id,
-                    supported=False,
-                    reason="claim_verifier_unavailable_or_invalid",
-                )
-                for claim in claims
-            }
-        allowed_ids = {claim.claim_id for claim in claims}
-        verdicts = {
-            verdict.claim_id: verdict
-            for verdict in parsed.verdicts
-            if verdict.claim_id in allowed_ids
-        }
-        return {
-            claim.claim_id: verdicts.get(
-                claim.claim_id,
-                ClaimVerdict(
-                    claim_id=claim.claim_id,
-                    supported=False,
-                    reason="claim_verifier_omitted_verdict",
-                ),
-            )
-            for claim in claims
-        }
+            return _fail_closed_verdicts(claims)
+        pending_ids = [claim.claim_id for claim in claims]
+        verdict_ids = [verdict.claim_id for verdict in parsed.verdicts]
+        if (
+            len(pending_ids) != len(set(pending_ids))
+            or len(verdict_ids) != len(set(verdict_ids))
+            or len(pending_ids) != len(verdict_ids)
+            or set(pending_ids) != set(verdict_ids)
+        ):
+            return _fail_closed_verdicts(claims)
+        return {verdict.claim_id: verdict for verdict in parsed.verdicts}
 
 
 def qualify_failed_claim(claim: FinalClaim, verdict: ClaimVerdict) -> FinalClaim:
@@ -353,6 +348,19 @@ def _normalize_decimal(value: str) -> str:
     if normalized == 0:
         return "0"
     return format(normalized, "f")
+
+
+def _fail_closed_verdicts(
+    claims: Sequence[FinalClaim],
+) -> dict[str, ClaimVerdict]:
+    return {
+        claim.claim_id: ClaimVerdict(
+            claim_id=claim.claim_id,
+            supported=False,
+            reason="claim_verifier_unavailable_or_invalid",
+        )
+        for claim in claims
+    }
 
 
 def _gate_as_verdict(gate: ClaimGateResult) -> ClaimVerdict:

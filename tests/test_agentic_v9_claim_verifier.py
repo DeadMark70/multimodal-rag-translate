@@ -163,6 +163,63 @@ def test_obligation_with_complete_direct_premises_is_sent_to_verifier() -> None:
     assert result.reason != "calculated_claim_lacks_calculated_evidence"
 
 
+def test_obligation_dependency_coverage_ignores_calculated_packets() -> None:
+    contract = QueryContract(
+        route="exact_structured",
+        intent="Combine two direct premises.",
+        required_slots=[
+            RequiredSlot(slot_id="S1", description="First premise"),
+            RequiredSlot(slot_id="S2", description="Second premise"),
+        ],
+        synthesis_obligations=[
+            SynthesisObligation(
+                obligation_id="O1",
+                kind="aggregation",
+                description="Combine both premises.",
+                depends_on_slot_ids=["S1", "S2"],
+            )
+        ],
+    )
+    result = gate_claim_deterministically(
+        _obligation_claim(),
+        {
+            "E1": _packet(statement="The first premise is present.", slot_ids=["S1"]),
+            "E2": _packet(
+                "E2",
+                statement="A derived second premise.",
+                support_type="calculated",
+                slot_ids=["S2"],
+                premise_evidence_ids=["E3"],
+            ),
+            "E3": _packet(
+                "E3",
+                statement="An unrelated direct premise.",
+                slot_ids=["S3"],
+            ),
+        },
+        contract=contract,
+    )
+
+    assert result.status == "rejected"
+    assert result.reason == "missing_obligation_dependency_closure"
+
+
+def test_direct_claim_cannot_use_a_calculated_packet_as_evidence() -> None:
+    result = gate_claim_deterministically(
+        _direct_claim("reported score is 91%"),
+        {
+            "E1": _packet(
+                support_type="calculated",
+                premise_evidence_ids=["E2"],
+            ),
+            "E2": _packet("E2", statement="The source reports a direct score."),
+        },
+    )
+
+    assert result.status == "rejected"
+    assert result.reason == "direct_claim_requires_direct_evidence"
+
+
 def test_unknown_or_unqualified_evidence_is_rejected_before_verifier() -> None:
     unknown = gate_claim_deterministically(
         _direct_claim("reported score is 91%", evidence_ids=["missing"]),
@@ -230,3 +287,42 @@ async def test_verifier_sends_one_claim_scoped_batch_with_contract_targets() -> 
     assert "rounding" in system_message
     assert "direct paraphrase" in system_message
     assert "ambiguous" in system_message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "verdicts",
+    [
+        [
+            {"claim_id": "claim-1", "supported": True, "reason": None},
+            {"claim_id": "claim-1", "supported": True, "reason": None},
+        ],
+        [
+            {"claim_id": "claim-1", "supported": True, "reason": None},
+            {"claim_id": "claim-2", "supported": True, "reason": None},
+            {"claim_id": "claim-extra", "supported": True, "reason": None},
+        ],
+        [{"claim_id": "claim-1", "supported": True, "reason": None}],
+    ],
+)
+async def test_verifier_rejects_any_non_bijective_verdict_batch(
+    verdicts: list[dict[str, Any]],
+) -> None:
+    invoker = _RecordingInvoker(SimpleNamespace(content={"verdicts": verdicts}))
+    claims = [
+        _direct_claim("reported score is 91%"),
+        _direct_claim("reported score is 91%").model_copy(update={"claim_id": "claim-2"}),
+    ]
+
+    result = await ClaimVerifier(invoker).verify(
+        claims,
+        {"E1": _packet()},
+        contract=_contract(),
+    )
+
+    assert set(result) == {"claim-1", "claim-2"}
+    assert all(not verdict.supported for verdict in result.values())
+    assert all(
+        verdict.reason == "claim_verifier_unavailable_or_invalid"
+        for verdict in result.values()
+    )

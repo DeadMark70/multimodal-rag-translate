@@ -142,13 +142,27 @@ class _Provider:
                 or "ClaimVerificationResponse" in content_str
                 or "Verify only the listed claims" in content_str
             ):
-                import re
-
-                claim_ids = list(
-                    dict.fromkeys(
-                        re.findall(r'"claim_id":\s*"([^"]+)"', content_str)
-                    )
-                )
+                claim_ids: list[str] = []
+                for message in messages if isinstance(messages, list) else []:
+                    content = message.get("content", "") if isinstance(message, dict) else ""
+                    if not isinstance(content, str):
+                        continue
+                    try:
+                        payload = json.loads(content)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(payload, dict) or not isinstance(
+                        payload.get("claims"), list
+                    ):
+                        continue
+                    claim_ids = [
+                        claim.get("claim_id")
+                        for row in payload["claims"]
+                        if isinstance(row, dict)
+                        and isinstance(claim := row.get("claim"), dict)
+                        and isinstance(claim.get("claim_id"), str)
+                    ]
+                    break
                 return SimpleNamespace(
                     content=json.dumps(
                         {
