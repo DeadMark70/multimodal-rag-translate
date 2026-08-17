@@ -1386,7 +1386,7 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
         else None,
         agentic_execution_version=(
             system_version_snapshot.get("agentic_execution_version", "v8")
-            if system_version_snapshot.get("agentic_execution_version") in {"v8", "v9", "v10"}
+            if system_version_snapshot.get("agentic_execution_version") in {"v8", "v9"}
             else "v8"
         ),
         execution_identity=(
@@ -1464,7 +1464,7 @@ class CampaignAnalyticsResult:
     @property
     def agentic_execution_version(self) -> str:
         version = self.system_version_snapshot.get("agentic_execution_version", "v8")
-        return version if version in {"v8", "v9", "v10"} else "v8"
+        return version if version in {"v8", "v9"} else "v8"
 
     @property
     def response_status(self) -> Optional[str]:
@@ -1501,7 +1501,7 @@ class CampaignResearchResult:
     @property
     def agentic_execution_version(self) -> str:
         version = self.system_version_snapshot.get("agentic_execution_version", "v8")
-        return version if version in {"v8", "v9", "v10"} else "v8"
+        return version if version in {"v8", "v9"} else "v8"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1533,7 +1533,7 @@ class CampaignReleaseResult:
     @property
     def agentic_execution_version(self) -> str:
         version = self.system_version_snapshot.get("agentic_execution_version", "v8")
-        return version if version in {"v8", "v9", "v10"} else "v8"
+        return version if version in {"v8", "v9"} else "v8"
 
     @property
     def shadow_evaluation_policy(self) -> Optional[str]:

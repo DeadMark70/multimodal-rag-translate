@@ -461,7 +461,7 @@ class DatasetExecutionWorker:
                     str(snapshot["mode"]),
                     (
                         str(snapshot.get("agentic_execution_version", "v8"))
-                        if snapshot.get("agentic_execution_version") in {"v8", "v9", "v10"}
+                        if snapshot.get("agentic_execution_version") in {"v8", "v9"}
                         else "v8"
                     ),
                 ),

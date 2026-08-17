@@ -131,7 +131,7 @@ class ExportResultV2(ExportModel):
     condition_id: str | None
     execution_profile: str | None
     context_policy_version: str | None
-    agentic_execution_version: Literal["v8", "v9", "v10"]
+    agentic_execution_version: Literal["v8", "v9"]
     execution_identity: str | None
     response_status: str | None
     status: CampaignResultStatus

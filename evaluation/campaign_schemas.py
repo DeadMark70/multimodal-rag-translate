@@ -32,8 +32,6 @@ CampaignMode = Literal[
     "v8",
     "agentic-v9",
     "v9",
-    "agentic-v10",
-    "v10",
     "agentic-v9-shadow",
     "router",
     "graph_raw_current",
@@ -51,7 +49,7 @@ CampaignMode = Literal[
     "graph_planning_only",
 ]
 CampaignEvaluationPhase = Literal["execution", "evaluation"]
-AgenticExecutionVersion = Literal["v8", "v9", "v10"]
+AgenticExecutionVersion = Literal["v8", "v9"]
 ShadowEvaluationPolicy = Literal["operational", "research"]
 
 
@@ -112,7 +110,7 @@ class CampaignConfig(BaseModel):
     actual_router_execution_enabled: bool = False
     # The environment may choose a creation default upstream, but a campaign
     # snapshot always records the selected execution version explicitly.
-    agentic_execution_version: AgenticExecutionVersion = "v10"
+    agentic_execution_version: AgenticExecutionVersion = "v9"
     shadow_evaluation_policy: ShadowEvaluationPolicy | None = None
     # A benchmark run can span separate immutable campaigns because v8/v9 and
     # shadow configuration are intentionally incompatible in one campaign.
@@ -158,9 +156,6 @@ class CampaignConfig(BaseModel):
         elif self.shadow_evaluation_policy is not None:
             raise ValueError("shadow_evaluation_policy requires agentic-v9-shadow")
 
-        v10_modes = {"agentic-v10", "v10"}
-        if any(mode in v10_modes for mode in self.modes) and self.agentic_execution_version != "v10":
-            raise ValueError("v10 identity requires agentic_execution_version='v10'")
         v9_modes = {"agentic-v9", "v9"}
         v8_modes = {"agentic-v8", "v8"}
         if (
@@ -193,7 +188,7 @@ class CampaignCreateRequest(BaseModel):
     ragas_parallel_batches: int = Field(default=8, ge=1, le=8)
     ragas_rpm_limit: int = Field(default=1000, ge=1, le=1000)
     actual_router_execution_enabled: bool = False
-    agentic_execution_version: AgenticExecutionVersion = "v10"
+    agentic_execution_version: AgenticExecutionVersion = "v9"
     shadow_evaluation_policy: ShadowEvaluationPolicy | None = None
     benchmark_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     prompt_capture_policy: PromptCapturePolicy = Field(

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from scripts.check_complexity_ratchet import (

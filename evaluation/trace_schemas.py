@@ -548,7 +548,7 @@ class AgentTraceDetail(BaseModel):
     question: str = Field(min_length=1)
     mode: CampaignMode
     execution_profile: Optional[str] = None
-    agentic_execution_version: Literal["v8", "v9", "v10"] = "v8"
+    agentic_execution_version: Literal["v8", "v9"] = "v8"
     question_intent: Optional[str] = None
     strategy_tier: Optional[str] = None
     route_profile: Optional[str] = None
@@ -586,7 +586,7 @@ class AgentTraceSummary(BaseModel):
     question: str = ""
     mode: CampaignMode | None = None
     execution_profile: Optional[str] = None
-    agentic_execution_version: Literal["v8", "v9", "v10"] = "v8"
+    agentic_execution_version: Literal["v8", "v9"] = "v8"
     question_intent: Optional[str] = None
     strategy_tier: Optional[str] = None
     route_profile: Optional[str] = None
