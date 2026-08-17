@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import logging
 import time
-from typing import Any, List, Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 from langchain_core.documents import Document

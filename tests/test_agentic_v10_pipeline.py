@@ -12,8 +12,6 @@ from data_base.agentic_v10.subquery_decomposer import (
 )
 from data_base.agentic_v10.subquery_pipeline_service import (
     AgenticV10PipelineService,
-    _extract_doc_title,
-    _doc_hash,
 )
 from evaluation.agentic_campaign_adapter import (
     effective_agentic_execution_version,
