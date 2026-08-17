@@ -108,6 +108,11 @@ def get_rag_pipeline_prompt_registry() -> PromptRegistry:
 
 
 @lru_cache(maxsize=1)
+def get_agentic_v10_prompt_registry() -> PromptRegistry:
+    return _prompt_registry("agentic_v10_prompts.json")
+
+
+@lru_cache(maxsize=1)
 def get_default_prompt_registry() -> PromptRegistry:
     return get_rag_qa_prompt_registry()
 
@@ -121,12 +126,17 @@ def format_agentic_rag_prompt(key: str, **variables: Any) -> str:
     return get_agentic_rag_prompt_registry().format(key, **variables)
 
 
+def format_agentic_v10_prompt(key: str, **variables: Any) -> str:
+    return get_agentic_v10_prompt_registry().format(key, **variables)
+
+
 def format_graph_rag_prompt(key: str, **variables: Any) -> str:
     return get_graph_rag_prompt_registry().format(key, **variables)
 
 
 def format_rag_pipeline_prompt(key: str, **variables: Any) -> str:
     return get_rag_pipeline_prompt_registry().format(key, **variables)
+
 
 
 def _parse_prompt(key: str, value: dict[str, Any]) -> PromptDefinition:
