@@ -35,12 +35,12 @@ def _extract_doc_title(doc: Document) -> str:
             # return only basename if it's a filepath
             clean = val.replace("\\", "/").split("/")[-1]
             return clean
-    return f"Doc_{str(get_document_id(doc))[:8]}"
+    return f"Doc_{str(get_document_id(meta) or '')[:8]}"
 
 
 def _doc_hash(doc: Document) -> str:
     """Unique content fingerprint for deduplication."""
-    doc_id = str(get_document_id(doc) or "")
+    doc_id = str(get_document_id(doc.metadata) or "")
     content = doc.page_content.strip()
     return hashlib.sha256(f"{doc_id}:{content}".encode("utf-8")).hexdigest()
 
@@ -105,7 +105,7 @@ class AgenticV10PipelineService:
                 docs = list(raw_res.documents)
                 if authorized_doc_ids:
                     auth_set = set(authorized_doc_ids)
-                    docs = [d for d in docs if str(get_document_id(d)) in auth_set]
+                    docs = [d for d in docs if str(get_document_id(d.metadata) or "") in auth_set]
                 return sq, docs[:4]
             except Exception as ret_err:
                 logger.warning(
@@ -175,7 +175,7 @@ class AgenticV10PipelineService:
 
         for doc, score, sq in selected_candidates:
             h = _doc_hash(doc)
-            doc_id = str(get_document_id(doc) or "")
+            doc_id = str(get_document_id(doc.metadata) or "")
             if doc_id:
                 doc_ids_seen.add(doc_id)
 
