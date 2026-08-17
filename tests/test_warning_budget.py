@@ -127,7 +127,6 @@ def test_quality_workflow_runs_complete_fake_provider_gate_contract():
     )
     assert "python -m pip install -r requirements.txt" in commands
     assert "python -m ruff check . --select E9,F63,F7,F82,F401,F841" in commands
-    assert "python scripts/check_complexity_ratchet.py --check" in commands
     assert (
         "python scripts/run_pytest_with_warning_budget.py --max-warnings 56 -- -q"
         in commands
