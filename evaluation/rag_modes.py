@@ -16,6 +16,7 @@ from data_base.indexing_service import DEFAULT_PRODUCTION_INDEXING_PROFILE
 from data_base.RAG_QA_service import RAGResult, rag_answer_question
 from evaluation.agentic_evaluation_service import AgenticEvaluationService
 from evaluation.agentic_v9_campaign_runtime import AgenticV9CampaignRuntime
+from data_base.agentic_v10.subquery_pipeline_service import AgenticV10PipelineService
 from evaluation.agentic_campaign_adapter import (
     campaign_execution_identity,
     effective_agentic_execution_version,
@@ -23,6 +24,7 @@ from evaluation.agentic_campaign_adapter import (
 from evaluation.model_capabilities import normalize_model_config_for_runtime
 from evaluation.retrieval_profiles import (
     AGENTIC_V9_CONTEXT_POLICY_VERSION,
+    AGENTIC_V10_CONTEXT_POLICY_VERSION,
     apply_no_hyde_policy,
     evaluation_execution_profile,
     locator_to_chunk_graph_hints,
@@ -348,7 +350,7 @@ class BenchmarkExecutionResult:
     execution_profile: Optional[str] = None
     context_policy_version: Optional[str] = None
     agent_trace: Optional[dict[str, Any]] = None
-    agentic_execution_version: Literal["v8", "v9"] = "v8"
+    agentic_execution_version: Literal["v8", "v9", "v10"] = "v10"
     execution_identity: Optional[str] = None
     shadow_evaluation_policy: Literal["operational", "research"] | None = None
     response_status: Optional[str] = None
@@ -367,7 +369,7 @@ async def run_campaign_case(
     run_number: int = 1,
     ablation_flags: dict[str, Any] | None = None,
     budget: dict[str, Any] | None = None,
-    agentic_execution_version: Literal["v8", "v9"] = "v8",
+    agentic_execution_version: Literal["v8", "v9", "v10"] = "v10",
     shadow_evaluation_policy: Literal["operational", "research"] | None = None,
 ) -> BenchmarkExecutionResult:
     """Execute one test case under one RAG mode."""
@@ -375,7 +377,7 @@ async def run_campaign_case(
     agentic_execution_version = effective_agentic_execution_version(
         execution_identity, agentic_execution_version
     )
-    if mode in {"naive-baseline", "agentic-v8", "v8", "agentic-v9", "v9", "agentic-v9-shadow"}:
+    if mode in {"naive-baseline", "agentic-v8", "v8", "agentic-v9", "v9", "agentic-v9-shadow", "agentic-v10", "v10"}:
         _, mode, agentic_execution_version = campaign_execution_identity(
             execution_identity, agentic_execution_version
         )
@@ -473,12 +475,16 @@ async def run_campaign_case(
         difficulty=test_case.difficulty,
         execution_profile=execution_profile,
         context_policy_version=(
-            AGENTIC_V9_CONTEXT_POLICY_VERSION
-            if mode == "agentic" and agentic_execution_version == "v9"
+            AGENTIC_V10_CONTEXT_POLICY_VERSION
+            if mode == "agentic" and agentic_execution_version == "v10"
             else (
-                AGENTIC_CONTEXT_POLICY_VERSION
-                if mode == "agentic"
-                else CONTEXT_POLICY_VERSION
+                AGENTIC_V9_CONTEXT_POLICY_VERSION
+                if mode == "agentic" and agentic_execution_version == "v9"
+                else (
+                    AGENTIC_CONTEXT_POLICY_VERSION
+                    if mode == "agentic"
+                    else CONTEXT_POLICY_VERSION
+                )
             )
         ),
         agent_trace=result.agent_trace,
@@ -495,10 +501,22 @@ async def _run_agentic_case(
     question: str,
     user_id: str,
     run_number: int,
-    agentic_execution_version: Literal["v8", "v9"] = "v8",
+    agentic_execution_version: Literal["v8", "v9", "v10"] = "v10",
     authorized_doc_ids: list[str] | None = None,
     setup_snapshot: dict[str, Any] | None = None,
 ) -> RAGResult:
+    if agentic_execution_version == "v10":
+        return await AgenticV10PipelineService().execute(
+            question=question,
+            user_id=user_id,
+            authorized_doc_ids=(
+                list(authorized_doc_ids)
+                if authorized_doc_ids is not None
+                else None
+            ),
+            setup_snapshot=dict(setup_snapshot or {}),
+            trace_id=f"campaign:{question_id}:{run_number}:{uuid4()}",
+        )
     if agentic_execution_version == "v9":
         return await AgenticV9CampaignRuntime().execute(
             question=question,

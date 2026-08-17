@@ -14,48 +14,48 @@ from langchain_core.documents import Document
 
 from data_base.agentic_v9.schemas import EvidencePacket, FinalAnswerResult
 
-AgenticExecutionVersion = Literal["v8", "v9"]
+AgenticExecutionVersion = Literal["v8", "v9", "v10"]
 
 
 def effective_agentic_execution_version(
-    identity: str, configured_version: AgenticExecutionVersion
+    identity: str, configured_version: AgenticExecutionVersion = "v10"
 ) -> AgenticExecutionVersion:
-    """Return the version owned by one public execution identity.
-
-    Campaign setup supplies a default only for the unversioned ``agentic``
-    identity.  Baselines must retain their v8/non-v9 projection even when they
-    are compared beside ``agentic-v9`` in the same campaign.
-    """
+    """Return the version owned by one public execution identity."""
     normalized = str(identity).strip().lower()
+    if normalized in {"agentic-v10", "v10"}:
+        return "v10"
     if normalized in {"agentic-v9", "v9", "agentic-v9-shadow"}:
         return "v9"
     if normalized in {"agentic-v8", "v8"}:
         return "v8"
     if normalized == "agentic":
-        return configured_version
-    return "v8"
+        return configured_version or "v10"
+    return "v10"
 
 
 def campaign_execution_identity(
-    identity: str, agentic_execution_version: AgenticExecutionVersion
+    identity: str, configured_version: AgenticExecutionVersion = "v10"
 ) -> tuple[str, str, AgenticExecutionVersion]:
     """Map a public campaign identity to a core mode and explicit version."""
     normalized = str(identity).strip().lower()
+    version = effective_agentic_execution_version(normalized, configured_version)
     aliases: dict[str, tuple[str, AgenticExecutionVersion]] = {
         "naive": ("naive", "v8"),
         "naive-baseline": ("naive", "v8"),
-        "agentic": ("agentic", agentic_execution_version),
+        "agentic": ("agentic", version),
         "agentic-v8": ("agentic", "v8"),
         "v8": ("agentic", "v8"),
         "agentic-v9": ("agentic", "v9"),
         "v9": ("agentic", "v9"),
         "agentic-v9-shadow": ("agentic", "v9"),
+        "agentic-v10": ("agentic", "v10"),
+        "v10": ("agentic", "v10"),
     }
     try:
-        core_mode, version = aliases[normalized]
+        core_mode, mapped_version = aliases[normalized]
     except KeyError as exc:
         raise ValueError(f"Unsupported campaign execution identity: {identity}") from exc
-    return normalized, core_mode, version
+    return normalized, core_mode, mapped_version
 
 
 def used_evidence_documents(
