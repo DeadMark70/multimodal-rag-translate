@@ -122,4 +122,3 @@ async def test_missing_visual_capability_preserves_authorized_text_answer(
         v9["visual_execution"]["state"]
         == "required_but_not_satisfied"
     )
-
