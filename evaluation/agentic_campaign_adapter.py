@@ -30,7 +30,7 @@ def effective_agentic_execution_version(
         return "v8"
     if normalized == "agentic":
         return configured_version or "v10"
-    return "v10"
+    return "v8"
 
 
 def campaign_execution_identity(

@@ -332,6 +332,7 @@ async def test_run_campaign_case_agentic_uses_evaluation_service_and_profile() -
             test_case=test_case,
             user_id="user-1",
             mode="agentic",
+            agentic_execution_version="v8",
             model_config={
                 "model_name": "gemini-2.5-flash",
                 "temperature": 0.7,
@@ -390,6 +391,48 @@ async def test_v9_campaign_case_uses_the_typed_v9_runtime_not_the_v8_service() -
     assert result.agentic_execution_version == "v9"
     assert result.expected_sources == ["doc-1"]
     assert result.context_policy_version == "v5_final_context_soft_pack_r1"
+
+
+@pytest.mark.asyncio
+async def test_v10_campaign_case_uses_the_typed_v10_pipeline_service() -> None:
+    test_case = EvaluationCase(
+        id="Q-v10",
+        question="What is the reported metric?",
+        ground_truth="0.95",
+        source_docs=["doc-1"],
+        requires_multi_doc_reasoning=False,
+    )
+    v10_result = RAGResult(
+        answer="0.95",
+        source_doc_ids=["doc-1"],
+        documents=[Document(page_content="0.95", metadata={"doc_id": "doc-1"})],
+        usage={},
+        agent_trace={
+            "agentic_execution_version": "v10",
+            "execution_profile": "agentic_eval_v10_subquery_sequential_rerank_top2",
+            "context_policy_version": "v10_grounded_structured_pack",
+            "response_status": "complete",
+        },
+    )
+
+    with patch(
+        "evaluation.rag_modes.AgenticV10PipelineService.execute",
+        new=AsyncMock(return_value=v10_result),
+    ) as mock_v10_exec:
+        result = await run_campaign_case(
+            test_case=test_case,
+            user_id="user-1",
+            mode="agentic",
+            agentic_execution_version="v10",
+            model_config={"model_name": "gemini-2.5-flash"},
+            run_number=1,
+        )
+
+    mock_v10_exec.assert_awaited_once()
+    assert result.answer == "0.95"
+    assert result.contexts == ["0.95"]
+    assert result.agentic_execution_version == "v10"
+    assert result.context_policy_version == "v10_grounded_structured_pack"
 
 
 @pytest.mark.asyncio

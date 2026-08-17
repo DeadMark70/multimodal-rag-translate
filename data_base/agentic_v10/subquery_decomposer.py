@@ -175,10 +175,15 @@ class SubQueryDecomposer:
         """Extract JSON object from string."""
         text = text.strip()
         # Look for code block ```json ... ```
-        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
         if match:
+            block = match.group(1).strip()
             try:
-                return json.loads(match.group(1))
+                data = json.loads(block)
+                if isinstance(data, dict):
+                    return data
+                if isinstance(data, list):
+                    return {"sub_queries": data}
             except json.JSONDecodeError:
                 pass
 
@@ -186,7 +191,9 @@ class SubQueryDecomposer:
         match = re.search(r"(\{.*\})", text, re.DOTALL)
         if match:
             try:
-                return json.loads(match.group(1))
+                data = json.loads(match.group(1))
+                if isinstance(data, dict):
+                    return data
             except json.JSONDecodeError:
                 pass
 

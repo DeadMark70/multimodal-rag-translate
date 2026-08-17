@@ -51,7 +51,7 @@ class CampaignUnit:
     condition_label: str | None = None
     ablation_flags: dict[str, Any] | None = None
     budget: dict[str, Any] | None = None
-    agentic_execution_version: Literal["v8", "v9"] = "v8"
+    agentic_execution_version: Literal["v8", "v9", "v10"] = "v8"
     shadow_evaluation_policy: Literal["operational", "research"] | None = None
 
 

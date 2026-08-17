@@ -228,13 +228,33 @@ class AgenticV10PipelineService:
         ]
 
         synth_llm = get_llm(purpose="synthesizer")
+        usage_dict: dict[str, Any] = {}
         try:
             if hasattr(synth_llm, "ainvoke"):
                 synth_resp = await synth_llm.ainvoke(messages)
             else:
                 synth_resp = synth_llm.invoke(messages)
 
-            answer_text = getattr(synth_resp, "content", str(synth_resp)).strip()
+            raw_content = getattr(synth_resp, "content", synth_resp)
+            if isinstance(raw_content, str):
+                answer_text = raw_content.strip()
+            elif isinstance(raw_content, list):
+                answer_text = "".join(
+                    part.get("text", str(part)) if isinstance(part, dict) else str(part)
+                    for part in raw_content
+                ).strip()
+            else:
+                answer_text = str(raw_content).strip()
+
+            # Capture token usage if available from LangChain metadata
+            usage_meta = getattr(synth_resp, "usage_metadata", None)
+            if isinstance(usage_meta, dict):
+                usage_dict = usage_meta
+            else:
+                resp_meta = getattr(synth_resp, "response_metadata", {})
+                if isinstance(resp_meta, dict) and "token_usage" in resp_meta:
+                    usage_dict = resp_meta["token_usage"]
+
         except Exception as synth_err:
             logger.error("Final synthesis LLM invocation failed: %s", synth_err)
             answer_text = (
@@ -274,6 +294,6 @@ class AgenticV10PipelineService:
             answer=answer_text,
             source_doc_ids=final_doc_ids,
             documents=final_docs,
-            usage={},
+            usage=usage_dict,
             agent_trace=agent_trace,
         )

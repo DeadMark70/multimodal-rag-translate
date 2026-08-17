@@ -44,6 +44,8 @@ class ArmIdentity:
             return "naive"
         if self.agentic_execution_version == "v8":
             return "agentic-v8"
+        if self.agentic_execution_version == "v10":
+            return "agentic-v10"
         if self.agentic_execution_version == "v9":
             return "agentic-v9"
         return None

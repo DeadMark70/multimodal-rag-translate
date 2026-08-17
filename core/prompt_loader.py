@@ -138,7 +138,6 @@ def format_rag_pipeline_prompt(key: str, **variables: Any) -> str:
     return get_rag_pipeline_prompt_registry().format(key, **variables)
 
 
-
 def _parse_prompt(key: str, value: dict[str, Any]) -> PromptDefinition:
     version = value.get("version")
     description = value.get("description")
