@@ -119,11 +119,11 @@ def _with_source_span(
 
 
 def _high_risk_claim(packet: EvidencePacket, *, premise_evidence_id: str) -> FinalClaim:
+    support_type = "comparative_inference" if _COMPARATIVE.search(packet.statement) else "qualified"
     return FinalClaim(
         claim_id=f"claim:{packet.evidence_id}",
-        slot_id=packet.slot_ids[0] if packet.slot_ids else "S1",
         statement=packet.statement,
-        support_type="qualified",
+        support_type=support_type,
         premise_evidence_ids=[premise_evidence_id],
         qualified_reason="high_risk_abstraction_requires_claim_verification",
     )

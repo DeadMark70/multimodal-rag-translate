@@ -66,19 +66,6 @@ class _ComponentUsageWithoutOfficialTotalProvider:
         }
 
 
-class _GoogleComponentUsageProvider:
-    async def ainvoke(self, messages: object) -> object:
-        return {
-            "content": "provider answer",
-            "usage_metadata": {
-                "input_tokens": 11,
-                "output_tokens": 5,
-                "reasoning_tokens": 3,
-                "total_tokens": 16,
-            },
-        }
-
-
 class _ResponseWithoutUsageProvider:
     async def ainvoke(self, messages: object) -> object:
         return {"content": "provider answer"}
@@ -240,32 +227,6 @@ async def test_successful_admitted_attempt_emits_complete_terminal_observation()
         "total_tokens": 21,
         "usage_status": "measured",
         "official_total_tokens": 21,
-    }
-
-
-@pytest.mark.asyncio
-async def test_google_component_usage_does_not_double_count_reasoning_tokens() -> None:
-    observer = _RecordingObserver()
-    await invoke_budgeted_llm(
-        controller=_controller(),
-        provider=_GoogleComponentUsageProvider(),
-        observer=observer,
-        provider_name="google",
-        model_name="gemini-2.5-flash",
-        phase="evidence_extract",
-        purpose="extract_evidence",
-        messages=[{"role": "user", "content": "Extract this evidence."}],
-        estimated_input_tokens=10,
-    )
-
-    assert observer.calls[0].usage == {
-        "input_tokens": 11,
-        "output_tokens": 5,
-        "reasoning_tokens": 3,
-        "other_tokens": 91,
-        "total_tokens": 110,
-        "usage_status": "estimated",
-        "official_total_tokens": None,
     }
 
 

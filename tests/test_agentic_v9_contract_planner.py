@@ -1030,10 +1030,10 @@ async def test_planner_diagnostic_reports_budget_rejection_without_provider_resp
 
 
 @pytest.mark.asyncio
-async def test_planner_diagnostic_bounds_unexpected_semantic_failure(
+async def test_planner_diagnostic_leaves_unexpected_failure_unclassified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Provider-response processing failures retain a bounded semantic code."""
+    """Fails if unknown defects are mislabeled as semantic planner rejection."""
     def raise_unexpected(_: object) -> object:
         raise RuntimeError("unrelated implementation failure")
 
@@ -1079,8 +1079,8 @@ async def test_planner_diagnostic_bounds_unexpected_semantic_failure(
     assert outcome.contract.slot_plan_fallback_reason == "invalid_planner_output"
     assert outcome.planner_diagnostics.model_dump() == {
         "outcome": "degraded",
-        "failure_stage": "semantic_validation",
-        "failure_code": "planner_semantic_rejection",
+        "failure_stage": None,
+        "failure_code": None,
         "provider_response_received": True,
         "retrieval_query_strategy": "safe_fallback_original_question",
         "compiled_retrieval_task_count": 1,

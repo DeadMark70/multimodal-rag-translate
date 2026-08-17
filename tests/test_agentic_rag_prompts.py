@@ -19,7 +19,6 @@ EXPECTED_KEYS = {
     "evidence_extract",
     "comparison_planner_system",
     "comparison_planner_user",
-    "final_synthesis",
 }
 
 EXPECTED_REQUIRED_VARIABLES = {
@@ -39,7 +38,6 @@ EXPECTED_REQUIRED_VARIABLES = {
     "evidence_extract": ["question", "unresolved_slots", "source_evidence"],
     "comparison_planner_system": [],
     "comparison_planner_user": ["question"],
-    "final_synthesis": ["context"],
 }
 
 SOURCE_FILES = [
@@ -111,7 +109,6 @@ def test_agentic_prompt_format_smoke():
     comparison_user = format_agentic_rag_prompt(
         "comparison_planner_user", question="Compare Model A and Model B."
     )
-    final_synth = format_agentic_rag_prompt("final_synthesis", context='{"question": "What is X?"}')
 
     assert "What is X?" in planner
     assert "What is X?" in followup
@@ -131,17 +128,3 @@ def test_agentic_prompt_format_smoke():
     assert "Compare Model A and Model B." in comparison_user
     assert comparison_user == "Question: Compare Model A and Model B."
     assert "source" not in comparison_user.casefold()
-    assert "What is X?" in final_synth
-
-
-def test_final_synthesis_prompt_separates_unresolved_and_derived_content():
-    template = get_agentic_rag_prompt_registry().get("final_synthesis").template
-    required_phrases = (
-        "Evidence insufficiency belongs in unresolved",
-        "Do not infer a rounding method",
-        "Distinguish source-stated facts from derived conclusions",
-        "all direct premise evidence IDs",
-    )
-
-    for phrase in required_phrases:
-        assert phrase.casefold() in template.casefold()

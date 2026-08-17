@@ -522,7 +522,7 @@ def _v9_rerank_diagnostics_by_context(
             "retrieval_task_id": diagnostic.get("task_id"),
             "rerank_candidate_count": diagnostic.get("candidate_count"),
             "rerank_selected_count": diagnostic.get("selected_count"),
-            "candidate_diversification": _safe_candidate_stage_projection(
+            "candidate_stage": _safe_candidate_stage_projection(
                 diagnostic.get("candidate_diversification")
             ),
         }
@@ -1008,76 +1008,18 @@ async def _record_unit_research_observability(
             expected_sources=list(execution.payload.source_doc_ids),
         )
     ]
-    v9_candidate_packet_rows = (
-        v9_payload.get("evidence_packets")
-        if isinstance(v9_payload, dict)
-        else None
-    )
-    v9_qualified_packet_rows = (
-        v9_payload.get("qualified_evidence_packets")
-        if isinstance(v9_payload, dict)
-        else None
-    )
-    v9_raw_rows: list[dict[str, Any]] = []
-    seen_v9_evidence_ids: set[str] = set()
-    for packet_rows in (v9_candidate_packet_rows, v9_qualified_packet_rows):
-        if not isinstance(packet_rows, list):
-            continue
-        for row in packet_rows:
-            if not isinstance(row, dict):
-                continue
-            evidence_id = str(row.get("evidence_id") or "")
-            if not evidence_id or evidence_id in seen_v9_evidence_ids:
-                continue
-            seen_v9_evidence_ids.add(evidence_id)
-            v9_raw_rows.append(row)
-    v9_packed_ids = set(
-        (v9_payload.get("context_pack") or {}).get("packed_evidence_ids") or []
-    ) if isinstance(v9_payload, dict) and isinstance(v9_payload.get("context_pack"), dict) else set()
-    v9_qualified_ids = set(
-        v9_payload.get("qualified_evidence_ids") or []
-    ) if isinstance(v9_payload, dict) else set()
-    v9_candidate_ids = set(
-        v9_payload.get("candidate_evidence_ids") or []
-    ) if isinstance(v9_payload, dict) else {
-        str(row.get("evidence_id")) for row in v9_raw_rows if row.get("evidence_id")
-    }
-    v9_used_ids = set(
-        v9_payload.get("used_evidence_ids") or []
-    ) if isinstance(v9_payload, dict) else set()
-    v9_stage_by_id = {
-        str(row.get("evidence_id")): {
-            "candidate": str(row.get("evidence_id")) in v9_candidate_ids,
-            "qualified": str(row.get("evidence_id")) in v9_qualified_ids,
-            "packed": str(row.get("evidence_id")) in v9_packed_ids,
-            "used": str(row.get("evidence_id")) in v9_used_ids,
-        }
-        for row in v9_raw_rows
-        if row.get("evidence_id")
-    }
-    observability_contexts = list(execution.payload.contexts)
-    observability_source_doc_ids = list(execution.payload.source_doc_ids)
-    observability_source_chunk_ids = list(execution.payload.source_chunk_ids)
-    if v9_raw_rows:
-        observability_contexts = [str(row.get("statement") or "") for row in v9_raw_rows]
-        observability_source_doc_ids = [
-            str((row.get("source") or {}).get("doc_id") or "") for row in v9_raw_rows
-        ]
-        observability_source_chunk_ids = [
-            (row.get("source") or {}).get("chunk_id") for row in v9_raw_rows
-        ]
     chunks: list[EvaluationRetrievalChunk] = []
     rerank_diagnostics_by_context = _v9_rerank_diagnostics_by_context(trace_payload)
-    for index, context in enumerate(observability_contexts, start=1):
+    for index, context in enumerate(execution.payload.contexts, start=1):
         doc_id = (
-            observability_source_doc_ids[index - 1]
-            if index - 1 < len(observability_source_doc_ids)
+            execution.payload.source_doc_ids[index - 1]
+            if index - 1 < len(execution.payload.source_doc_ids)
             else None
         )
         durable_chunk_id = f"{run_id}:chunk:{index}"
         source_chunk_id = (
-            observability_source_chunk_ids[index - 1]
-            if index - 1 < len(observability_source_chunk_ids)
+            execution.payload.source_chunk_ids[index - 1]
+            if index - 1 < len(execution.payload.source_chunk_ids)
             else None
         )
         selected_content_hash = content_hash(context)
@@ -1102,11 +1044,6 @@ async def _record_unit_research_observability(
             else "matched"
             if expected_match
             else "not_matched"
-        )
-        stage = (
-            v9_stage_by_id.get(v9_raw_rows[index - 1].get("evidence_id"), {})
-            if index - 1 < len(v9_raw_rows)
-            else {}
         )
         chunks.append(
             EvaluationRetrievalChunk(
@@ -1133,36 +1070,18 @@ async def _record_unit_research_observability(
                     and rerank_diagnostic["reranker_status"] == "executed"
                     else None
                 ),
-                used_in_context=stage.get("packed", True),
-                used_in_answer=(
-                    stage.get("used", False)
-                    if stage
-                    else expected_match or text_mentions_fact(execution.payload.answer, context)
-                ),
+                used_in_context=True,
+                used_in_answer=expected_match
+                or text_mentions_fact(execution.payload.answer, context),
                 expected_evidence_match=expected_match,
                 excerpt=context[:500],
                 content_hash=selected_content_hash,
                 payload={
-                    "instrumentation_depth": "trace_level" if stage else "result_level",
-                    "observation_provenance": "agentic_v9_trace" if stage else "derived",
+                    "instrumentation_depth": "result_level",
+                    "observation_provenance": "derived",
                     "availability_status": "partial",
-                    "availability_reasons": (
-                        ["agentic_v9_trace_evidence"]
-                        if stage
-                        else ["result_context_reconstruction"]
-                    ),
-                    "used_in_answer_provenance": "trace_claim_projection" if stage else "heuristic",
-                    **(
-                        {
-                            "evidence_id": v9_raw_rows[index - 1].get("evidence_id"),
-                            "candidate_stage": stage.get("candidate", False),
-                            "qualified_stage": stage.get("qualified", False),
-                            "packed_stage": stage.get("packed", False),
-                            "used_stage": stage.get("used", False),
-                        }
-                        if stage and index - 1 < len(v9_raw_rows)
-                        else {}
-                    ),
+                    "availability_reasons": ["result_context_reconstruction"],
+                    "used_in_answer_provenance": "heuristic",
                     "expected_evidence_match_status": expected_evidence_match_status,
                     "reranker_status": (
                         rerank_diagnostic["reranker_status"]
@@ -1190,13 +1109,9 @@ async def _record_unit_research_observability(
                         else None
                     ),
                     **(
-                        {
-                            "candidate_diversification": rerank_diagnostic[
-                                "candidate_diversification"
-                            ]
-                        }
+                        {"candidate_stage": rerank_diagnostic["candidate_stage"]}
                         if rerank_diagnostic is not None
-                        and rerank_diagnostic["candidate_diversification"] is not None
+                        and rerank_diagnostic["candidate_stage"] is not None
                         else {}
                     ),
                 },
@@ -1214,34 +1129,21 @@ async def _record_unit_research_observability(
             span_id=root_span_id,
             query=execution.unit.test_case.question,
             retriever_name=f"{execution.unit.mode}_result_level",
-            top_k=len(observability_contexts),
-            result_count=len(observability_contexts),
+            top_k=len(execution.payload.contexts),
+            result_count=len(execution.payload.contexts),
             latency_ms=execution.payload.latency_ms,
             payload={
                 "query_type": "campaign_question",
                 "retriever_type": execution.unit.mode,
-                "top_k_requested": len(observability_contexts),
-                "top_k_returned": len(observability_contexts),
+                "top_k_requested": len(execution.payload.contexts),
+                "top_k_returned": len(execution.payload.contexts),
                 "filters": {},
-                "candidate_count": len(observability_contexts),
-                "empty_retrieval": len(observability_contexts) == 0,
+                "candidate_count": len(execution.payload.contexts),
+                "empty_retrieval": len(execution.payload.contexts) == 0,
                 "retrieval_confidence": None,
                 "required_doc_hit_rate": hit_rate,
                 "expected_evidence_hit_rate": hit_rate,
-                "instrumentation_depth": (
-                    "trace_level" if v9_raw_rows else "result_level"
-                ),
-                **(
-                    {
-                        "instrumentation_depth": "trace_level",
-                        "candidate_stage_count": len(v9_candidate_ids),
-                        "qualified_stage_count": len(v9_qualified_ids),
-                        "packed_stage_count": len(v9_packed_ids),
-                        "used_stage_count": len(v9_used_ids),
-                    }
-                    if v9_raw_rows
-                    else {}
-                ),
+                "instrumentation_depth": "result_level",
             },
             created_at=created_at,
         )
@@ -1249,24 +1151,13 @@ async def _record_unit_research_observability(
     for chunk in chunks:
         await recorder.record_retrieval_chunk(chunk)
 
-    selected_chunk_ids = [chunk.chunk_id for chunk in chunks if chunk.used_in_context]
-    retrieved_but_not_packed = (
-        [
-            {
-                "doc_id": row.get("source", {}).get("doc_id"),
-                "evidence_id": row.get("evidence_id"),
-            }
-            for row in v9_raw_rows
-            if row.get("evidence_id") not in v9_packed_ids
-        ]
-        if v9_raw_rows
-        else [
+    selected_chunk_ids = [chunk.chunk_id for chunk in chunks]
+    retrieved_but_not_packed = [
         {"doc_id": item.get("doc_id"), "evidence_id": item.get("evidence_id")}
         for item in expected_evidence
         if str(item.get("doc_id") or "")
         not in {chunk.doc_id for chunk in chunks if chunk.expected_evidence_match}
-        ]
-    )
+    ]
     await recorder.record_context_pack(
         EvaluationContextPack(
             context_pack_id=str(uuid4()),
@@ -1276,7 +1167,7 @@ async def _record_unit_research_observability(
             input_chunk_count=len(chunks),
             packed_chunk_count=len(selected_chunk_ids),
             token_count=sum(
-                estimate_tokens(context) for context in observability_contexts
+                estimate_tokens(context) for context in execution.payload.contexts
             ),
             retrieved_but_not_packed_evidence=retrieved_but_not_packed,
             payload={
@@ -1284,13 +1175,11 @@ async def _record_unit_research_observability(
                 "dropped_chunk_ids": [],
                 "token_budget": execution.model_config.get("max_input_tokens"),
                 "estimated_tokens": sum(
-                    estimate_tokens(context) for context in observability_contexts
+                    estimate_tokens(context) for context in execution.payload.contexts
                 ),
-                "packing_policy": "agentic_v9_trace_evidence" if v9_raw_rows else "result_level_contexts",
+                "packing_policy": "result_level_contexts",
                 "drop_reasons": {},
-                "instrumentation_depth": (
-                    "trace_level" if v9_raw_rows else "result_level"
-                ),
+                "instrumentation_depth": "result_level",
             },
             created_at=created_at,
         )

@@ -264,7 +264,6 @@ def _canonical_export_run() -> CanonicalRunObservability:
             final_claims=[
                 FinalClaim(
                     claim_id="final-claim-1",
-                    slot_id="slot-1",
                     statement=f"Final claim statement {FREE_TEXT_SECRET}",
                     support_type="direct",
                     evidence_ids=["evidence-1"],

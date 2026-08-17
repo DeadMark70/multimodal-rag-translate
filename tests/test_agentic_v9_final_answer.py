@@ -14,14 +14,11 @@ from data_base.agentic_v9.schemas import (
     EvidenceScope,
     EvidenceSource,
     FinalAnswerResult,
-    FinalClaim,
     QueryContract,
     RequiredSlot,
     SlotResolution,
     SourceLocator,
-    SynthesisObligation,
 )
-from evaluation.export_schemas import ExportV9FinalClaimV2
 
 
 def _contract() -> QueryContract:
@@ -92,7 +89,7 @@ async def test_final_answer_uses_only_packed_evidence_and_renders_versioned_cita
                 "supported_findings": [
                     {
                         "slot_id": "score",
-                        "statement": "reported score is 0.91.",
+                        "statement": "The score is 0.91.",
                         "support_type": "direct",
                         "evidence_ids": ["E1"],
                         "premise_evidence_ids": [],
@@ -120,123 +117,6 @@ async def test_final_answer_uses_only_packed_evidence_and_renders_versioned_cita
         ("final_answer", "final_answer")
     ]
     assert "E1" in str(invoker.calls[0]["messages"])
-
-
-@pytest.mark.asyncio
-async def test_final_answer_maps_bounded_provider_alias_to_canonical_evidence_id() -> None:
-    canonical_id = "evidence:very-long-canonical-id-that-provider-must-not-see"
-    invoker = _RecordingInvoker(
-        {
-            "supported_findings": [
-                {
-                    "slot_id": "score",
-                    "statement": "The reported score is 0.91.",
-                    "evidence_ids": ["E1"],
-                    "premise_evidence_ids": [],
-                }
-            ],
-            "synthesized_findings": [],
-            "unresolved_requirements": [],
-            "unresolved_obligations": [],
-        }
-    )
-
-    result = await generate_final_answer(
-        question="What is the reported score?",
-        contract=_contract(),
-        packed_packets=[_packet(canonical_id)],
-        slot_resolutions=[
-            SlotResolution(slot_id="score", status="supported", evidence_ids=[canonical_id])
-        ],
-        llm_invoker=invoker,
-    )
-
-    final_payload = invoker.calls[0]["messages"][1]["content"]
-    assert canonical_id not in final_payload
-    assert '"evidence_id":"E1"' in final_payload
-    assert result.used_evidence_ids == [canonical_id]
-
-
-@pytest.mark.asyncio
-async def test_final_answer_rejects_fabricated_provider_evidence_alias() -> None:
-    invoker = _RecordingInvoker(
-        {
-            "supported_findings": [
-                {
-                    "slot_id": "score",
-                    "statement": "The reported score is 0.91.",
-                    "evidence_ids": ["E999"],
-                    "premise_evidence_ids": [],
-                }
-            ],
-            "synthesized_findings": [],
-            "unresolved_requirements": [],
-            "unresolved_obligations": [],
-        }
-    )
-
-    result = await generate_final_answer(
-        question="What is the reported score?",
-        contract=_contract(),
-        packed_packets=[_packet("canonical-E1")],
-        slot_resolutions=[
-            SlotResolution(slot_id="score", status="supported", evidence_ids=["canonical-E1"])
-        ],
-        llm_invoker=invoker,
-    )
-
-    assert result.used_evidence_ids == []
-    assert result.response_status == "insufficient"
-    assert result.claims[0].qualified_reason == "claim_references_unpacked_or_unknown_evidence"
-    assert "__unknown_evidence_alias__" not in result.model_dump_json()
-    exported_claim = ExportV9FinalClaimV2.model_validate(result.claims[0].model_dump())
-    assert "__unknown_evidence_alias__" not in exported_claim.model_dump_json()
-    assert exported_claim.evidence_ids == []
-
-
-@pytest.mark.asyncio
-async def test_final_answer_sends_registered_v2_synthesis_prompt_to_provider() -> None:
-    invoker = _RecordingInvoker(
-        SimpleNamespace(
-            content={
-                "supported_findings": [
-                    {
-                        "slot_id": "score",
-                        "statement": "reported score is 0.91.",
-                        "support_type": "direct",
-                        "evidence_ids": ["E1"],
-                        "premise_evidence_ids": [],
-                    }
-                ],
-                "synthesized_findings": [],
-                "unresolved_requirements": [],
-                "unresolved_obligations": [],
-            }
-        )
-    )
-
-    await generate_final_answer(
-        question="What is the reported score?",
-        contract=_contract(),
-        packed_packets=[_packet()],
-        slot_resolutions=[
-            SlotResolution(slot_id="score", status="supported", evidence_ids=["E1"])
-        ],
-        llm_invoker=invoker,
-    )
-
-    system_message = next(
-        message["content"]
-        for message in invoker.calls[0]["messages"]
-        if message["role"] == "system"
-    )
-    assert "Do not infer a rounding method or precision" in system_message
-    assert "Distinguish source-stated facts from derived conclusions" in system_message
-    assert (
-        "Evidence insufficiency belongs in unresolved_requirements or "
-        "unresolved_obligations" in system_message
-    )
-    assert "all direct premise evidence IDs required by its dependencies" in system_message
 
 
 @pytest.mark.asyncio
@@ -308,7 +188,7 @@ async def test_high_risk_prose_uses_one_batched_verifier_and_qualifies_rejected_
 
     assert result.final_generation_count == 1
     assert result.claims[0].support_type == "qualified"
-    assert result.claims[0].qualified_reason == "claim_rejected"
+    assert result.claims[0].qualified_reason == "not established"
     assert result.response_status == "insufficient"
     assert result.used_evidence_ids == []
     assert [(call["phase"], call["purpose"]) for call in invoker.calls] == [
@@ -344,9 +224,7 @@ async def test_unpacked_evidence_cannot_support_a_final_claim() -> None:
         llm_invoker=invoker,
     )
 
-    assert result.claims[0].qualified_reason == (
-        "claim_references_unpacked_or_unknown_evidence"
-    )
+    assert result.claims == []
     assert result.used_evidence_ids == []
     assert result.response_status == "insufficient"
 
@@ -358,7 +236,7 @@ async def test_final_answer_accepts_the_typed_packer_packet_projection() -> None
             "supported_findings": [
                 {
                     "slot_id": "score",
-                    "statement": "reported score is 0.91.",
+                    "statement": "The score is 0.91.",
                     "support_type": "direct",
                     "evidence_ids": ["E1"],
                     "premise_evidence_ids": [],
@@ -391,13 +269,12 @@ async def test_direct_final_result_is_rejected_as_an_untrusted_legacy_envelope()
             response_status="complete",
             answer="The score is 0.99.",
             claims=[
-                FinalClaim(
-                    claim_id="claim-1",
-                    slot_id="score",
-                    statement="The score is 0.99.",
-                    support_type="direct",
-                    evidence_ids=["E1"],
-                )
+                {
+                    "claim_id": "claim-1",
+                    "statement": "The score is 0.99.",
+                    "support_type": "direct",
+                    "evidence_ids": ["E1"],
+                }
             ],
             used_evidence_ids=["E1"],
             final_generation_count=1,
@@ -421,7 +298,9 @@ async def test_direct_final_result_is_rejected_as_an_untrusted_legacy_envelope()
 
 
 @pytest.mark.asyncio
-async def test_untrusted_no_claim_final_result_does_not_bypass_draft_validation() -> None:
+async def test_untrusted_no_claim_final_result_does_not_bypass_draft_validation() -> (
+    None
+):
     invoker = _RecordingInvoker(
         FinalAnswerResult(
             response_status="qualified_partial",
@@ -443,6 +322,7 @@ async def test_untrusted_no_claim_final_result_does_not_bypass_draft_validation(
     assert result.final_generation_count == 0
     assert result.response_status == "insufficient"
     assert result.answer == "Final generation was unavailable; no verified answer was produced."
+
 
 @pytest.mark.asyncio
 async def test_fixed_no_claim_final_fallback_remains_a_qualified_partial() -> None:
@@ -592,301 +472,3 @@ async def test_invalid_final_json_fails_closed_without_retrying_generation() -> 
     assert result.response_status == "insufficient"
     assert result.final_generation_count == 0
     assert len(invoker.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_synthesized_finding_creates_obligation_bound_claim_with_derived_support_type() -> None:
-    contract = QueryContract(
-        route="bounded_compare",
-        intent="Compare Method A and B DSC",
-        required_slots=[
-            RequiredSlot(slot_id="S1", description="Method A DSC"),
-            RequiredSlot(slot_id="S2", description="Method B DSC"),
-        ],
-        synthesis_obligations=[
-            SynthesisObligation(
-                obligation_id="O1",
-                kind="comparison",
-                description="Compare Method A vs B DSC",
-                depends_on_slot_ids=["S1", "S2"],
-            )
-        ],
-    )
-    p1 = _packet("E1", "S1", "Method A achieved 85.5% DSC.")
-    p2 = _packet("E2", "S2", "Method B achieved 82.0% DSC.")
-    resolutions = [
-        SlotResolution(slot_id="S1", status="supported", evidence_ids=["E1"]),
-        SlotResolution(slot_id="S2", status="supported", evidence_ids=["E2"]),
-    ]
-
-    invoker = _RecordingInvoker(
-        {
-            "supported_findings": [
-                {
-                    "slot_id": "S1",
-                    "statement": "Method A achieved 85.5% DSC.",
-                    "evidence_ids": ["E1"],
-                    "premise_evidence_ids": [],
-                },
-                {
-                    "slot_id": "S2",
-                    "statement": "Method B achieved 82.0% DSC.",
-                    "evidence_ids": ["E2"],
-                    "premise_evidence_ids": [],
-                },
-            ],
-            "synthesized_findings": [
-                {
-                    "obligation_id": "O1",
-                    "statement": "Method A achieved higher DSC than Method B (85.5% vs 82.0%).",
-                    "premise_evidence_ids": ["E1", "E2"],
-                }
-            ],
-            "unresolved_requirements": [],
-            "unresolved_obligations": [],
-        },
-        # verifier response for O1 comparative_inference claim
-        {
-            "verdicts": [
-                {
-                    "claim_id": "claim-3",
-                    "supported": True,
-                    "reason": None,
-                }
-            ]
-        },
-    )
-
-    result = await generate_final_answer(
-        question="Which method has higher DSC?",
-        contract=contract,
-        packed_packets=[p1, p2],
-        slot_resolutions=resolutions,
-        llm_invoker=invoker,
-    )
-
-    assert result.final_generation_count == 1
-    assert result.response_status == "complete"
-    assert len(result.claims) == 3
-    # Check direct claims
-    direct_claims = [c for c in result.claims if c.slot_id is not None]
-    assert len(direct_claims) == 2
-    assert {c.slot_id for c in direct_claims} == {"S1", "S2"}
-    assert all(c.obligation_id is None for c in direct_claims)
-    assert all(c.support_type == "direct" for c in direct_claims)
-
-    # Check synthesized claim
-    syn_claims = [c for c in result.claims if c.obligation_id is not None]
-    assert len(syn_claims) == 1
-    assert syn_claims[0].obligation_id == "O1"
-    assert syn_claims[0].slot_id is None
-    assert syn_claims[0].support_type == "comparative_inference"
-    assert set(syn_claims[0].premise_evidence_ids) == {"E1", "E2"}
-
-    assert set(result.used_evidence_ids) == {"E1", "E2"}
-
-
-@pytest.mark.asyncio
-async def test_synthesized_finding_with_missing_premise_closure_is_rejected() -> None:
-    contract = QueryContract(
-        route="bounded_compare",
-        intent="Compare Method A and B DSC",
-        required_slots=[
-            RequiredSlot(slot_id="S1", description="Method A DSC"),
-            RequiredSlot(slot_id="S2", description="Method B DSC"),
-        ],
-        synthesis_obligations=[
-            SynthesisObligation(
-                obligation_id="O1",
-                kind="comparison",
-                description="Compare Method A vs B DSC",
-                depends_on_slot_ids=["S1", "S2"],
-            )
-        ],
-    )
-    p1 = _packet("E1", "S1", "Method A achieved 85.5% DSC.")
-    resolutions = [
-        SlotResolution(slot_id="S1", status="supported", evidence_ids=["E1"]),
-        SlotResolution(slot_id="S2", status="not_found"),
-    ]
-
-    # Model tries to synthesize O1 using only E1 (missing S2 dependency premise)
-    invoker = _RecordingInvoker(
-        {
-            "supported_findings": [
-                {
-                    "slot_id": "S1",
-                    "statement": "Method A achieved 85.5% DSC.",
-                    "evidence_ids": ["E1"],
-                    "premise_evidence_ids": [],
-                },
-            ],
-            "synthesized_findings": [
-                {
-                    "obligation_id": "O1",
-                    "statement": "Method A achieved higher DSC.",
-                    "premise_evidence_ids": ["E1"],
-                }
-            ],
-            "unresolved_requirements": [
-                {"slot_id": "S2", "reason": "No evidence found for S2"}
-            ],
-            "unresolved_obligations": [
-                {"obligation_id": "O1", "reason": "Cannot compare without Method B DSC"}
-            ],
-        }
-    )
-
-    result = await generate_final_answer(
-        question="Which method has higher DSC?",
-        contract=contract,
-        packed_packets=[p1],
-        slot_resolutions=resolutions,
-        llm_invoker=invoker,
-    )
-
-    # Keep the candidate and qualify it so the missing dependency is visible.
-    obligation_claim = next(
-        c for c in result.claims if c.obligation_id == "O1"
-    )
-    assert obligation_claim.qualified_reason == (
-        "missing_obligation_dependency_closure"
-    )
-    assert result.unresolved_obligations[0].obligation_id == "O1"
-    assert result.response_status == "qualified_partial"
-
-
-@pytest.mark.asyncio
-async def test_final_answer_batches_paraphrase_and_obligation_verification_once() -> None:
-    contract = QueryContract(
-        route="bounded_compare",
-        intent="Compare scores and decoder structure.",
-        required_slots=[
-            RequiredSlot(slot_id="S1", description="Method A score"),
-            RequiredSlot(slot_id="S2", description="Method B score"),
-            RequiredSlot(slot_id="S3", description="Decoder structure"),
-        ],
-        synthesis_obligations=[
-            SynthesisObligation(
-                obligation_id="O1",
-                kind="aggregation",
-                description="Arithmetic score difference",
-                depends_on_slot_ids=["S1", "S2"],
-            ),
-            SynthesisObligation(
-                obligation_id="O2",
-                kind="qualification",
-                description="Rounded decoder metric",
-                depends_on_slot_ids=["S3"],
-            ),
-        ],
-    )
-    packets = [
-        _packet("E1", "S1", "Method A score is 85."),
-        _packet("E2", "S2", "Method B score is 80."),
-        _packet("E3", "S3", "The decoder consists of two stages."),
-    ]
-    invoker = _RecordingInvoker(
-        {
-            "supported_findings": [
-                {
-                    "slot_id": "S1",
-                    "statement": "Method A score is 85.",
-                    "evidence_ids": ["E1"],
-                    "premise_evidence_ids": [],
-                },
-                {
-                    "slot_id": "S3",
-                    "statement": "The decoder has two stages.",
-                    "evidence_ids": ["E3"],
-                    "premise_evidence_ids": [],
-                },
-            ],
-            "synthesized_findings": [
-                {
-                    "obligation_id": "O1",
-                    "statement": "Method A exceeds Method B by 5 points.",
-                    "premise_evidence_ids": ["E1", "E2"],
-                },
-                {
-                    "obligation_id": "O2",
-                    "statement": "The decoder rounds to two stages.",
-                    "premise_evidence_ids": ["E3"],
-                },
-            ],
-            "unresolved_requirements": [],
-            "unresolved_obligations": [],
-        },
-        {
-            "verdicts": [
-                {"claim_id": "claim-2", "supported": True, "reason": None},
-                {"claim_id": "claim-3", "supported": True, "reason": None},
-                {
-                    "claim_id": "claim-4",
-                    "supported": False,
-                    "reason": "rounding_method_not_stated",
-                },
-            ]
-        },
-    )
-
-    result = await generate_final_answer(
-        question="Compare the reported scores and decoder structure.",
-        contract=contract,
-        packed_packets=packets,
-        slot_resolutions=[
-            SlotResolution(slot_id="S1", status="supported", evidence_ids=["E1"]),
-            SlotResolution(slot_id="S2", status="supported", evidence_ids=["E2"]),
-            SlotResolution(slot_id="S3", status="supported", evidence_ids=["E3"]),
-        ],
-        llm_invoker=invoker,
-    )
-
-    accepted_ids = {
-        claim.claim_id
-        for claim in result.claims
-        if claim.qualified_reason is None
-    }
-    rounding_claim = next(
-        claim for claim in result.claims if claim.obligation_id == "O2"
-    )
-    assert [call["purpose"] for call in invoker.calls] == [
-        "final_answer",
-        "claim_verifier",
-    ]
-    assert result.claim_verifier_call_count == 1
-    assert accepted_ids == {"claim-1", "claim-2", "claim-3"}
-    assert rounding_claim.qualified_reason == "rounding_method_not_stated"
-    assert result.response_status == "qualified_partial"
-
-
-@pytest.mark.asyncio
-async def test_verifier_unavailable_leaves_all_pending_claims_unresolved() -> None:
-    invoker = _RecordingInvoker(
-        {
-            "supported_findings": [
-                {
-                    "slot_id": "score",
-                    "statement": "The decoder has two stages.",
-                    "evidence_ids": ["E1"],
-                    "premise_evidence_ids": [],
-                }
-            ],
-            "unresolved_requirements": [],
-        }
-    )
-
-    result = await generate_final_answer(
-        question="What is the decoder structure?",
-        contract=_contract(),
-        packed_packets=[_packet(statement="The decoder consists of two stages.")],
-        slot_resolutions=[
-            SlotResolution(slot_id="score", status="supported", evidence_ids=["E1"])
-        ],
-        llm_invoker=invoker,
-    )
-
-    assert result.claim_verifier_call_count == 1
-    assert result.claims[0].qualified_reason == "claim_verifier_provider_failure"
-    assert result.used_evidence_ids == []
-    assert result.response_status == "insufficient"

@@ -152,20 +152,12 @@ class RunBudgetController:
                 - self._reasoning_reserve
             )
             candidate_tokens = input_tokens + output_tokens + self._reasoning_reserve
-            if self._final_reservation_id is None:
-                if len(self._reservations) + 1 >= self._max_llm_calls:
-                    raise BudgetExceededError("final_envelope_protected")
-            elif len(self._reservations) + 1 > self._max_llm_calls:
-                raise BudgetExceededError("llm_call_budget_exhausted")
-            protected_final_tokens = (
-                0
-                if self._final_reservation_id is not None
-                else self._protected_final_tokens
-            )
+            if len(self._reservations) + 1 >= self._max_llm_calls:
+                raise BudgetExceededError("final_envelope_protected")
             if (
                 self._reserved_tokens()
                 + candidate_tokens
-                + protected_final_tokens
+                + self._protected_final_tokens
                 > (self._runtime_token_budget)
             ):
                 raise BudgetExceededError("final_envelope_protected")

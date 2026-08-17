@@ -76,13 +76,6 @@ ComparisonPlannerDiagnosticStage = Literal[
     "trusted_plan_validation",
     "numeric_guard",
 ]
-ClaimVerifierDiagnosticCode = Literal[
-    "budget_rejected",
-    "provider_failure",
-    "invalid_provider_response",
-    "claim_rejected",
-    "accepted",
-]
 
 ROUTE_GRAPH_POLICIES: dict[AgenticV9Route, GraphPolicy] = {
     "single_lookup": "never",
@@ -664,16 +657,6 @@ class SupportedFinding(BaseModel):
     premise_evidence_ids: list[str] = Field(default_factory=list)
 
 
-class SynthesizedFinding(BaseModel):
-    """Provider-proposed synthesized finding bound to an obligation and its premise evidence."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    obligation_id: str = Field(pattern=r"^O[1-8]$")
-    statement: str = Field(min_length=1)
-    premise_evidence_ids: list[str] = Field(min_length=1)
-
-
 class UnresolvedRequirement(BaseModel):
     """Provider acknowledgement that a required slot remains unresolved."""
 
@@ -683,24 +666,13 @@ class UnresolvedRequirement(BaseModel):
     reason: str = Field(min_length=1)
 
 
-class UnresolvedObligation(BaseModel):
-    """Provider acknowledgement that a synthesis obligation remains unresolved."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    obligation_id: str = Field(pattern=r"^O[1-8]$")
-    reason: str = Field(min_length=1)
-
-
 class FinalAnswerDraft(BaseModel):
     """Strict provider output; deterministic code owns final prose and status."""
 
     model_config = ConfigDict(extra="forbid")
 
     supported_findings: list[SupportedFinding] = Field(default_factory=list)
-    synthesized_findings: list[SynthesizedFinding] = Field(default_factory=list)
     unresolved_requirements: list[UnresolvedRequirement] = Field(default_factory=list)
-    unresolved_obligations: list[UnresolvedObligation] = Field(default_factory=list)
 
 
 class FinalClaim(BaseModel):
@@ -708,22 +680,11 @@ class FinalClaim(BaseModel):
 
     claim_id: str = Field(min_length=1)
     slot_id: str | None = None
-    obligation_id: str | None = None
     statement: str = Field(min_length=1)
     support_type: ClaimSupportType
     evidence_ids: list[str] = Field(default_factory=list)
     premise_evidence_ids: list[str] = Field(default_factory=list)
     qualified_reason: str | None = None
-
-    @model_validator(mode="after")
-    def require_single_target(self) -> FinalClaim:
-        has_slot = bool(self.slot_id)
-        has_ob = bool(self.obligation_id)
-        if has_slot == has_ob:
-            raise ValueError(
-                "FinalClaim must target exactly one of slot_id or obligation_id"
-            )
-        return self
 
 
 class FinalAnswerResult(BaseModel):
@@ -734,10 +695,6 @@ class FinalAnswerResult(BaseModel):
     claims: list[FinalClaim] = Field(default_factory=list)
     used_evidence_ids: list[str] = Field(default_factory=list)
     final_generation_count: int = Field(default=0, ge=0, le=1)
-    unresolved_requirements: list[UnresolvedRequirement] = Field(default_factory=list)
-    unresolved_obligations: list[UnresolvedObligation] = Field(default_factory=list)
-    claim_verifier_call_count: int = Field(default=0, ge=0, le=1)
-    claim_verifier_diagnostic_code: ClaimVerifierDiagnosticCode | None = None
 
 
 class RetrievalPolicy(BaseModel):
@@ -862,10 +819,6 @@ class V9ExecutionMetrics(BaseModel):
     qualification_unknown_source_id_count: int = Field(default=0, ge=0)
     qualification_unauthorized_source_slot_count: int = Field(default=0, ge=0)
     qualification_statement_not_verbatim_count: int = Field(default=0, ge=0)
-    used_evidence_count: int | None = Field(default=None, ge=0)
-    unresolved_requirement_count: int | None = Field(default=None, ge=0)
-    claim_verifier_call_count: int | None = Field(default=None, ge=0, le=1)
-    claim_verifier_diagnostic_code: ClaimVerifierDiagnosticCode | None = None
 
 
 class V9ExecutionResult(BaseModel):

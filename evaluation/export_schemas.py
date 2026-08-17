@@ -434,7 +434,6 @@ class ExportV9EvidencePacketV2(ExportModel):
 class ExportV9FinalClaimV2(ExportModel):
     claim_id: str
     slot_id: str | None = None
-    obligation_id: str | None = None
     statement: str | None
     support_type: ClaimSupportType
     evidence_ids: list[str] = Field(default_factory=list)

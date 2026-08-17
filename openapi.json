@@ -19331,17 +19331,6 @@
             ],
             "title": "Slot Id"
           },
-          "obligation_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Obligation Id"
-          },
           "statement": {
             "anyOf": [
               {
@@ -19466,17 +19455,6 @@
               }
             ],
             "title": "Slot Id"
-          },
-          "obligation_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Obligation Id"
           },
           "statement": {
             "type": "string",
@@ -26592,61 +26570,6 @@
             "minimum": 0.0,
             "title": "Qualification Statement Not Verbatim Count",
             "default": 0
-          },
-          "used_evidence_count": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Used Evidence Count"
-          },
-          "unresolved_requirement_count": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Unresolved Requirement Count"
-          },
-          "claim_verifier_call_count": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 1.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Claim Verifier Call Count"
-          },
-          "claim_verifier_diagnostic_code": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": [
-                  "budget_rejected",
-                  "provider_failure",
-                  "invalid_provider_response",
-                  "claim_rejected",
-                  "accepted"
-                ]
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Claim Verifier Diagnostic Code"
           }
         },
         "type": "object",

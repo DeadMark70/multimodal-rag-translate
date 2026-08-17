@@ -32,28 +32,6 @@ async def test_optional_call_cannot_consume_the_protected_final_envelope() -> No
 
 
 @pytest.mark.asyncio
-async def test_post_final_verifier_uses_existing_final_reservation_once() -> None:
-    controller = RunBudgetController(
-        max_llm_calls=2,
-        runtime_token_budget=400,
-        setup_snapshot={"max_output_tokens": 100, "thinking_mode": False},
-        final_input_tokens=100,
-    )
-
-    await controller.reserve_call(
-        phase="final_answer", purpose="synthesizer", estimated_input_tokens=100
-    )
-    verifier = await controller.reserve_call(
-        phase="claim_verifier", purpose="claim_verifier", estimated_input_tokens=1
-    )
-
-    assert verifier.phase == "claim_verifier"
-    snapshot = await controller.snapshot()
-    assert snapshot.provider_attempt_count == 2
-    assert snapshot.reserved_tokens <= 400
-
-
-@pytest.mark.asyncio
 async def test_reconciliation_uses_provider_total_once_without_double_counting_reasoning() -> (
     None
 ):

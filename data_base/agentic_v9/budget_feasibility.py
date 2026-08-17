@@ -202,13 +202,9 @@ def validate_post_contract_feasibility(
     route_plan_used: bool = False,
     contract_plan_requested: bool = False,
     evidence_qualification_provider_calls: int = 0,
-    claim_verifier_provider_calls: int = 0,
-    final_answer_already_consumed: bool = False,
 ) -> FeasibilityResult:
     """Validate a resolved route against the current non-mutating ledger view."""
-    pending_provider_calls: dict[str, int] = (
-        {} if final_answer_already_consumed else {"final_answer": 1}
-    )
+    pending_provider_calls: dict[str, int] = {"final_answer": 1}
     charged_provider_calls: dict[str, int] = (
         {"contract_planning": 1} if route_plan_used else {}
     )
@@ -236,26 +232,6 @@ def validate_post_contract_feasibility(
         )
     if evidence_qualification_provider_calls:
         pending_provider_calls["evidence_extract"] = 1
-    if (
-        not isinstance(claim_verifier_provider_calls, int)
-        or isinstance(claim_verifier_provider_calls, bool)
-        or claim_verifier_provider_calls not in (0, 1)
-    ):
-        required = {**charged_provider_calls, **pending_provider_calls}
-        return _result(
-            status=FeasibilityStatus.CONFIGURATION_INCOMPATIBLE,
-            reason="invalid_claim_verifier_provider_calls",
-            required_provider_calls=required,
-            max_tool_operations=(
-                contract.max_retrieval_rounds
-                + contract.max_repair_rounds
-                + int(contract.graph_policy != "never")
-                + int(contract.visual_requested)
-            ),
-            reserved_tokens=0,
-        )
-    if claim_verifier_provider_calls:
-        pending_provider_calls["claim_verifier"] = 1
     if contract_plan_requested:
         pending_provider_calls["contract_planning"] = 1
     required = {**charged_provider_calls, **pending_provider_calls}

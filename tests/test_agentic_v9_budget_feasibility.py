@@ -8,7 +8,6 @@ from data_base.agentic_v9.budget_feasibility import (
     validate_post_contract_feasibility,
     validate_pre_route_feasibility,
 )
-from data_base.agentic_v9.phase_policy import provider_reservation_tokens
 from data_base.agentic_v9.schemas import QueryContract
 
 
@@ -282,76 +281,6 @@ def test_post_contract_qualification_provider_calls_reserve_only_actual_work() -
     }
 
 
-def test_post_contract_feasibility_reserves_one_claim_verifier_provider_calls_with_qualification() -> None:
-    contract = QueryContract(
-        route="single_lookup",
-        intent="Find the reported score.",
-        max_llm_calls=3,
-        runtime_token_budget=27_264,
-    )
-
-    result = validate_post_contract_feasibility(
-        contract=contract,
-        setup_snapshot=_setup(),
-        remaining_token_budget=27_264,
-        remaining_llm_calls=3,
-        evidence_qualification_provider_calls=1,
-        claim_verifier_provider_calls=1,
-    )
-
-    assert result.status is FeasibilityStatus.FEASIBLE
-    assert result.required_provider_calls == {
-        "evidence_extract": 1,
-        "final_answer": 1,
-        "claim_verifier": 1,
-    }
-
-
-@pytest.mark.parametrize("provider_calls", [-1, 2, True])
-def test_post_contract_rejects_invalid_claim_verifier_provider_calls(
-    provider_calls: object,
-) -> None:
-    contract = QueryContract(
-        route="single_lookup",
-        intent="Find the reported score.",
-        max_llm_calls=3,
-        runtime_token_budget=27_264,
-    )
-
-    result = validate_post_contract_feasibility(
-        contract=contract,
-        setup_snapshot=_setup(),
-        remaining_token_budget=27_264,
-        remaining_llm_calls=3,
-        evidence_qualification_provider_calls=1,
-        claim_verifier_provider_calls=provider_calls,
-    )
-
-    assert result.status is FeasibilityStatus.CONFIGURATION_INCOMPATIBLE
-    assert result.reason == "invalid_claim_verifier_provider_calls"
-
-
-def test_post_contract_budget_rejects_two_calls_for_qualification_final_and_claim_verifier_provider_calls() -> None:
-    contract = QueryContract(
-        route="single_lookup",
-        intent="Find the reported score.",
-        max_llm_calls=3,
-        runtime_token_budget=27_264,
-    )
-
-    result = validate_post_contract_feasibility(
-        contract=contract,
-        setup_snapshot=_setup(),
-        remaining_token_budget=27_264,
-        remaining_llm_calls=2,
-        evidence_qualification_provider_calls=1,
-        claim_verifier_provider_calls=1,
-    )
-
-    assert result.status is FeasibilityStatus.CONFIGURATION_INCOMPATIBLE
-    assert result.reason == "required_provider_calls_exceed_remaining_calls"
-
-
 @pytest.mark.parametrize("provider_calls", [-1, 2])
 def test_post_contract_rejects_invalid_initial_qualification_provider_calls(
     provider_calls: int,
@@ -373,33 +302,6 @@ def test_post_contract_rejects_invalid_initial_qualification_provider_calls(
 
     assert result.status is FeasibilityStatus.CONFIGURATION_INCOMPATIBLE
     assert result.reason == "invalid_initial_evidence_qualification_provider_calls"
-
-
-def test_post_final_claim_verification_does_not_reserve_final_envelope_twice() -> None:
-    contract = QueryContract(
-        route="single_lookup",
-        intent="Find the reported score.",
-        max_llm_calls=1,
-        runtime_token_budget=10_000,
-    )
-    result = validate_post_contract_feasibility(
-        contract=contract,
-        setup_snapshot={
-            "max_input_tokens": 4096,
-            "max_output_tokens": 2048,
-            "thinking_mode": False,
-        },
-        remaining_token_budget=10_000,
-        remaining_llm_calls=1,
-        claim_verifier_provider_calls=1,
-        final_answer_already_consumed=True,
-    )
-
-    assert result.status is FeasibilityStatus.FEASIBLE
-    assert result.required_provider_calls == {"claim_verifier": 1}
-    assert result.reserved_tokens < provider_reservation_tokens(
-        "final_answer", setup_output_ceiling=2048, setup_reasoning_reserve=0
-    )
 
 
 def test_post_contract_rejects_route_call_budget_below_required_admission() -> None:

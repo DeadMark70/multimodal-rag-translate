@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -56,18 +55,12 @@ class _Provider:
         self.curator_response = curator_response
 
         async def _default_ainvoke(messages: Any) -> Any:
-            if isinstance(messages, list):
-                content_str = " ".join(
-                    str(m.get("content", "")) if isinstance(m, dict) else str(m)
-                    for m in messages
-                )
+            if isinstance(messages, list) and messages and isinstance(messages[0], dict):
+                content_str = str(messages[0].get("content", ""))
             else:
                 content_str = str(messages)
             if (
-                (
-                    "evidence_extract" in content_str
-                    and "evidence_extraction_required" not in content_str
-                )
+                "evidence_extract" in content_str
                 or "prose evidence slots" in content_str
                 or "Source evidence:" in content_str
             ):
@@ -137,185 +130,6 @@ class _Provider:
                         "total_tokens": 19,
                     },
                 )
-            if (
-                "verdicts" in content_str
-                or "ClaimVerificationResponse" in content_str
-                or "Verify only the listed claims" in content_str
-            ):
-                claim_ids: list[str] = []
-                for message in messages if isinstance(messages, list) else []:
-                    content = message.get("content", "") if isinstance(message, dict) else ""
-                    if not isinstance(content, str):
-                        continue
-                    try:
-                        payload = json.loads(content)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(payload, dict) or not isinstance(
-                        payload.get("claims"), list
-                    ):
-                        continue
-                    claim_ids = [
-                        claim.get("claim_id")
-                        for row in payload["claims"]
-                        if isinstance(row, dict)
-                        and isinstance(claim := row.get("claim"), dict)
-                        and isinstance(claim.get("claim_id"), str)
-                    ]
-                    break
-                return SimpleNamespace(
-                    content=json.dumps(
-                        {
-                            "verdicts": [
-                                {"claim_id": cid, "supported": True, "reason": None}
-                                for cid in claim_ids
-                            ]
-                        }
-                    ),
-                    usage_metadata={
-                        "input_tokens": 10,
-                        "output_tokens": 5,
-                        "total_tokens": 15,
-                    },
-                )
-            if (
-                "supported_findings" in content_str
-                or "synthesized_findings" in content_str
-                or "Use only supplied evidence" in content_str
-            ):
-                if isinstance(self.answer, (dict, list)):
-                    return SimpleNamespace(
-                        content=json.dumps(self.answer)
-                        if not isinstance(self.answer, str)
-                        else self.answer,
-                        usage_metadata={
-                            "input_tokens": 12,
-                            "output_tokens": 7,
-                            "total_tokens": 19,
-                        },
-                    )
-                if hasattr(self.answer, "content"):
-                    return self.answer
-
-                final_context = {}
-                for m in messages if isinstance(messages, list) else []:
-                    c = m.get("content", "") if isinstance(m, dict) else ""
-                    if isinstance(c, str) and c.strip().startswith("{") and "required_slots" in c:
-                        try:
-                            final_context = json.loads(c)
-                            break
-                        except Exception:
-                            pass
-
-                statement = (
-                    self.answer
-                    if isinstance(self.answer, str)
-                    else "The reported score is 0.91."
-                )
-
-                supported_findings = []
-                synthesized_findings = []
-                unresolved_reqs = []
-                unresolved_obs = []
-
-                if final_context:
-                    packed_evs = final_context.get("packed_evidence", [])
-                    slot_to_evs: dict[str, list[str]] = {}
-                    for ev in packed_evs:
-                        for sid in ev.get("slot_ids", []):
-                            slot_to_evs.setdefault(sid, []).append(ev.get("evidence_id"))
-
-                    for slot in final_context.get("required_slots", []):
-                        sid = slot.get("slot_id")
-                        ev_ids = slot_to_evs.get(sid, [])
-                        if ev_ids:
-                            packet_stmt = next(
-                                (
-                                    ev.get("statement")
-                                    for ev in packed_evs
-                                    if ev.get("evidence_id") in ev_ids
-                                    and ev.get("statement")
-                                ),
-                                statement,
-                            )
-                            supported_findings.append(
-                                {
-                                    "slot_id": sid,
-                                    "statement": packet_stmt,
-                                    "evidence_ids": ev_ids,
-                                    "premise_evidence_ids": [],
-                                }
-                            )
-                        else:
-                            unresolved_reqs.append(
-                                {
-                                    "slot_id": sid,
-                                    "reason": "No evidence",
-                                }
-                            )
-
-                    for ob in final_context.get("synthesis_obligations", []):
-                        oid = ob.get("obligation_id")
-                        deps = ob.get("depends_on_slot_ids", [])
-                        dep_evs = []
-                        all_deps_met = True
-                        for dep_sid in deps:
-                            evs = slot_to_evs.get(dep_sid, [])
-                            if not evs:
-                                all_deps_met = False
-                                break
-                            dep_evs.extend(evs)
-                        if all_deps_met and dep_evs:
-                            synthesized_findings.append(
-                                {
-                                    "obligation_id": oid,
-                                    "statement": f"{statement} ({ob.get('description', oid)})",
-                                    "premise_evidence_ids": list(dict.fromkeys(dep_evs)),
-                                }
-                            )
-                        else:
-                            unresolved_obs.append(
-                                {
-                                    "obligation_id": oid,
-                                    "reason": "Missing dependency premises",
-                                }
-                            )
-                else:
-                    import re
-
-                    ev_ids = (
-                        re.findall(r'"evidence_id":\s*"([^"]+)"', content_str)
-                        or ["E1"]
-                    )
-                    slot_ids = (
-                        re.findall(r'"slot_id":\s*"([^"]+)"', content_str)
-                        or ["S1"]
-                    )
-                    first_slot = slot_ids[0] if slot_ids else "S1"
-                    supported_findings.append(
-                        {
-                            "slot_id": first_slot,
-                            "statement": statement,
-                            "evidence_ids": ev_ids[:1],
-                            "premise_evidence_ids": [],
-                        }
-                    )
-
-                return SimpleNamespace(
-                    content=json.dumps(
-                        {
-                            "supported_findings": supported_findings,
-                            "synthesized_findings": synthesized_findings,
-                            "unresolved_requirements": unresolved_reqs,
-                            "unresolved_obligations": unresolved_obs,
-                        }
-                    ),
-                    usage_metadata={
-                        "input_tokens": 12,
-                        "output_tokens": 7,
-                        "total_tokens": 19,
-                    },
-                )
             if hasattr(self.answer, "content"):
                 return self.answer
             return SimpleNamespace(
@@ -373,7 +187,7 @@ async def test_atomic_contract_planner_provider_binds_schema_without_replacing_r
     assert response.usage_metadata["total_tokens"] == 10
 
 
-def test_generic_provider_is_not_schema_bound(
+def test_noncomparison_provider_is_not_schema_bound(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _UnboundProvider:
@@ -383,44 +197,7 @@ def test_generic_provider_is_not_schema_bound(
     provider = _UnboundProvider()
     monkeypatch.setattr(runtime_module, "get_llm", lambda purpose: provider)
 
-    assert runtime_module._provider_for_purpose("synthesizer") is provider
-
-
-@pytest.mark.asyncio
-async def test_final_synthesis_provider_binds_schema_without_replacing_raw_response(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    raw = SimpleNamespace(
-        content='{"supported_findings":[],"synthesized_findings":[],"unresolved_requirements":[],"unresolved_obligations":[]}',
-        usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
-    )
-    captured: dict[str, object] = {}
-
-    class _BindableProvider:
-        def bind(self, **kwargs: object) -> "_BindableProvider":
-            captured.update(kwargs)
-            return self
-
-        async def ainvoke(self, messages: object) -> object:
-            del messages
-            return raw
-
-    monkeypatch.setattr(
-        provider_boundary_module,
-        "get_llm",
-        lambda purpose: _BindableProvider(),
-    )
-
-    provider = runtime_module._provider_for_purpose("final_answer")
-    response = await provider.ainvoke([])
-
-    assert captured["response_mime_type"] == "application/json"
-    assert captured["response_json_schema"] == (
-        provider_boundary_module.project_final_synthesis_provider_schema(
-            provider_boundary_module.final_synthesis_response_schema()
-        )
-    )
-    assert response is raw
+    assert runtime_module._provider_for_purpose("final_answer") is provider
 
 
 class _RecordingObserver:
@@ -506,7 +283,7 @@ async def test_v9_graph_route_usage_is_budgeted_observed_and_reconciled(
     provider = _Provider(answer="Graph-aware evidence answer.")
     observer = _RecordingObserver()
     source_document = Document(
-        page_content="ModelA connects to ModelB through source-backed relationship evidence.",
+        page_content="Source-backed relationship evidence.",
         metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
     )
     retrieve_documents = AsyncMock(return_value=[source_document])
@@ -521,7 +298,7 @@ async def test_v9_graph_route_usage_is_budgeted_observed_and_reconciled(
         required_slots=[RequiredSlot(slot_id="base", description="relationship")],
         graph_policy="required_locator",
         max_retrieval_rounds=1,
-        max_llm_calls=5,
+        max_llm_calls=3,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -591,13 +368,12 @@ async def test_v9_graph_route_usage_is_budgeted_observed_and_reconciled(
     )
 
     assert [call.phase for call in observer.calls] == [
-        "contract_planning",
         "graph_route",
         "evidence_extract",
         "final_answer",
     ]
-    assert sum(call.usage["total_tokens"] for call in observer.calls) == 76
-    assert result.usage["total_tokens"] == 76
+    assert sum(call.usage["total_tokens"] for call in observer.calls) == 57
+    assert result.usage["total_tokens"] == 57
     assert observer.partial_reasons == []
     assert result.agent_trace["agentic_v9"]["retrieval_diagnostics"]
     assert result.agent_trace["execution_profile"] == (
@@ -841,7 +617,7 @@ async def test_v9_campaign_runtime_runs_core_and_emits_real_evidence_trace() -> 
     ]
     assert result.documents
     retrieve_documents.assert_awaited()
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -911,7 +687,7 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
         intent="Compare two models.",
         required_slots=[RequiredSlot(slot_id="base", description="comparison")],
         max_retrieval_rounds=1,
-        max_llm_calls=5,
+        max_llm_calls=3,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -932,9 +708,7 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
         )
         return [
             Document(
-                page_content=(
-                    f"{subject} evidence chunk {index}; parameters and FLOPs."
-                ),
+                page_content=f"{subject} evidence chunk {index}.",
                 metadata={
                     "doc_id": "doc-1",
                     "chunk_id": f"{subject}-chunk-{index}",
@@ -976,7 +750,7 @@ async def test_v9_comparison_planner_overlays_subject_tasks_and_caps_each_at_two
     assert v9["comparison"]["final_status"] == "complete"
     assert v9["comparison"]["final_evidence_subjects"] == ["nnmamba", "efficientmednext-l"]
     assert v9["comparison"]["final_evidence_count"] == 4
-    assert provider.ainvoke.await_count == 4
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -1021,7 +795,7 @@ async def test_invalid_comparison_subjects_preserve_base_contract_and_retrieval(
         intent="Check claims about one model.",
         required_slots=[RequiredSlot(slot_id="base", description="claim evidence")],
         max_retrieval_rounds=1,
-        max_llm_calls=4,
+        max_llm_calls=3,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -1133,7 +907,7 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
         required_slots=[RequiredSlot(slot_id="base", description="comparison")],
         max_retrieval_rounds=1,
         max_repair_rounds=1,
-        max_llm_calls=6,
+        max_llm_calls=4,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -1202,11 +976,9 @@ async def test_v9_comparison_repairs_a_missing_subject_once_and_caps_status(
             "model-b",
         ]
         assert v9["comparison"]["missing_after_repair"] == []
-        assert v9["repairs"][0]["resulting_evidence_ids"]
     else:
         assert v9["comparison"]["coverage_after_repair"] == ["model-a"]
         assert v9["comparison"]["missing_after_repair"] == ["model-b"]
-        assert v9["repairs"][0]["resulting_evidence_ids"] == []
 
 
 @pytest.mark.asyncio
@@ -1333,24 +1105,6 @@ async def test_v9_comparison_planner_failure_safe_fallback_preserves_original_qu
             )
         ]
     )
-    scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"],
-        resolved_doc_ids=["doc-1"],
-        authorized_doc_ids=["doc-1"],
-    )
-    contract = QueryContract(
-        route="single_lookup",
-        intent="Compare two source-bound models.",
-        max_retrieval_rounds=1,
-        max_llm_calls=4,
-        runtime_token_budget=50_000,
-        resolved_source_scope=scope,
-    )
-
-    async def admission(**_kwargs: object) -> V9AdmissionContract:
-        return V9AdmissionContract(source_scope=scope, contract=contract)
-
-    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=retrieve_documents,
         provider_factory=lambda _purpose: provider,
@@ -1390,31 +1144,11 @@ async def test_v9_comparison_planner_failure_safe_fallback_preserves_original_qu
 
 
 @pytest.mark.asyncio
-async def test_v9_comparison_transport_diagnostics_reach_agent_trace(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_v9_comparison_transport_diagnostics_reach_agent_trace() -> None:
     provider = _Provider(
         planner_response="not valid json",
         answer="Fallback answer from retrieved evidence.",
     )
-    scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"],
-        resolved_doc_ids=["doc-1"],
-        authorized_doc_ids=["doc-1"],
-    )
-    contract = QueryContract(
-        route="single_lookup",
-        intent="Compare two source-bound models.",
-        max_retrieval_rounds=1,
-        max_llm_calls=4,
-        runtime_token_budget=50_000,
-        resolved_source_scope=scope,
-    )
-
-    async def admission(**_kwargs: object) -> V9AdmissionContract:
-        return V9AdmissionContract(source_scope=scope, contract=contract)
-
-    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(
             return_value=[
@@ -1444,9 +1178,7 @@ async def test_v9_comparison_transport_diagnostics_reach_agent_trace(
 
 
 @pytest.mark.asyncio
-async def test_atomic_contract_planning_high_confidence_deterministic_zero_planner_calls(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_atomic_contract_planning_high_confidence_deterministic_zero_planner_calls() -> None:
     observed_calls: list[dict[str, Any]] = []
     base_provider = _Provider(
         answer="The reported score is 0.91 and the method is described."
@@ -1457,24 +1189,6 @@ async def test_atomic_contract_planning_high_confidence_deterministic_zero_plann
             observed_calls.append({"messages": messages})
             return await base_provider.ainvoke(messages)
 
-    scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"],
-        resolved_doc_ids=["doc-1"],
-        authorized_doc_ids=["doc-1"],
-    )
-    contract = QueryContract(
-        route="single_lookup",
-        intent="Extract source-bound values.",
-        max_retrieval_rounds=1,
-        max_llm_calls=4,
-        runtime_token_budget=50_000,
-        resolved_source_scope=scope,
-    )
-
-    async def admission(**_kwargs: object) -> V9AdmissionContract:
-        return V9AdmissionContract(source_scope=scope, contract=contract)
-
-    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(
             return_value=[
@@ -1505,197 +1219,18 @@ async def test_atomic_contract_planning_high_confidence_deterministic_zero_plann
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
     assert v9["metrics"]["semantic_qualification"] == "provider_qualified"
     assert len(observed_calls) == 2
-    # Assert final prompt message is the structured final synthesis payload
+    # Assert final prompt message is strictly Question: ...\n\nEvidence:\n... unchanged
     final_messages = observed_calls[-1]["messages"]
     assert final_messages[0]["role"] == "system"
     assert final_messages[1]["role"] == "user"
-    assert '"question":"1. What is the reported score in Table 1? 2. What is the method?"' in final_messages[1]["content"]
-    assert '"packed_evidence"' in final_messages[1]["content"]
+    assert final_messages[1]["content"].startswith(
+        "Question: 1. What is the reported score in Table 1? 2. What is the method?\n\nEvidence:\n"
+    )
 
 
 @pytest.mark.asyncio
-async def test_v9_runtime_claim_verifier_verifies_two_pending_claims_at_most_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    planner_payload = {
-        "evidence_requirements": [
-            {"description": "first reported score"},
-            {"description": "second reported score"},
-        ],
-        "synthesis_obligations": [],
-        "response_constraints": [],
-        "comparison": None,
-        "confidence": 1.0,
-    }
-
-    class _TwoPendingClaimsProvider:
-        def __init__(self) -> None:
-            self.verifier_batch_sizes: list[int] = []
-
-        @staticmethod
-        def _contents(messages: Any) -> list[str]:
-            if not isinstance(messages, list):
-                return [str(messages)]
-            return [
-                str(message.get("content", ""))
-                for message in messages
-                if isinstance(message, dict)
-            ]
-
-        async def ainvoke(self, messages: Any) -> Any:
-            contents = self._contents(messages)
-            combined = " ".join(contents)
-            context: dict[str, Any] | None = None
-            for content in contents:
-                try:
-                    decoded = json.loads(content)
-                except (TypeError, json.JSONDecodeError):
-                    continue
-                if isinstance(decoded, dict) and {
-                    "required_slots",
-                    "packed_evidence",
-                }.issubset(decoded):
-                    context = decoded
-                    break
-            if context is not None:
-                packed_evidence = context["packed_evidence"]
-                required_slots = context["required_slots"]
-                packet_id = packed_evidence[0]["evidence_id"]
-                findings = [
-                    {
-                        "slot_id": slot["slot_id"],
-                        "statement": "The measured quantity is 0.91.",
-                        "evidence_ids": [packet_id],
-                        "premise_evidence_ids": [],
-                    }
-                    for slot in required_slots
-                ]
-                return SimpleNamespace(
-                    content=json.dumps(
-                        {
-                            "supported_findings": findings,
-                            "synthesized_findings": [],
-                            "unresolved_requirements": [],
-                            "unresolved_obligations": [],
-                        }
-                    ),
-                    usage_metadata={"input_tokens": 10, "output_tokens": 5},
-                )
-
-            for content in contents:
-                try:
-                    decoded = json.loads(content)
-                except (TypeError, json.JSONDecodeError):
-                    continue
-                if isinstance(decoded, dict) and isinstance(decoded.get("claims"), list):
-                    claim_ids = [
-                        row["claim"]["claim_id"]
-                        for row in decoded["claims"]
-                        if isinstance(row, dict)
-                        and isinstance(row.get("claim"), dict)
-                        and isinstance(row["claim"].get("claim_id"), str)
-                    ]
-                    self.verifier_batch_sizes.append(len(claim_ids))
-                    return SimpleNamespace(
-                        content=json.dumps(
-                            {
-                                "verdicts": [
-                                    {
-                                        "claim_id": claim_id,
-                                        "supported": True,
-                                        "reason": None,
-                                    }
-                                    for claim_id in claim_ids
-                                ]
-                            }
-                        ),
-                        usage_metadata={"input_tokens": 10, "output_tokens": 5},
-                    )
-
-            if "evidence_requirements" in combined:
-                return SimpleNamespace(
-                    content=json.dumps(planner_payload),
-                    usage_metadata={"input_tokens": 10, "output_tokens": 5},
-                )
-
-            packets = [
-                {
-                    "source_evidence_id": alias,
-                    "slot_ids": [slot.strip() for slot in slots.split(",")],
-                }
-                for alias, slots, _statement in re.findall(
-                    r"(E\d+)\s*\[eligible slots:\s*([^\]]+)\]:\s*([^\n\r]+)",
-                    combined,
-                )
-            ]
-            return SimpleNamespace(
-                content=json.dumps({"packets": packets}),
-                usage_metadata={"input_tokens": 10, "output_tokens": 5},
-            )
-
-    provider = _TwoPendingClaimsProvider()
-    observer = _RecordingObserver()
-    source_scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"],
-        resolved_doc_ids=["doc-1"],
-        authorized_doc_ids=["doc-1"],
-    )
-    base_contract = QueryContract(
-        route="single_lookup",
-        intent="Resolve two reported scores.",
-        evidence_extraction_required=True,
-        max_retrieval_rounds=1,
-        max_repair_rounds=0,
-        max_llm_calls=5,
-        runtime_token_budget=50_000,
-        resolved_source_scope=source_scope,
-    )
-
-    async def admission(**_kwargs: object) -> V9AdmissionContract:
-        return V9AdmissionContract(
-            source_scope=source_scope,
-            contract=base_contract,
-        )
-
-    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
-    runtime = AgenticV9CampaignRuntime(
-        retrieve_documents=AsyncMock(
-            return_value=[
-                Document(
-                    page_content="The source reports a score of 0.91.",
-                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
-                )
-            ]
-        ),
-        provider_factory=lambda _purpose: provider,
-        llm_call_observer=observer,
-        document_reference_resolver=_identity_reference_resolver,
-    )
-
-    result = await runtime.execute(
-        question=(
-            "1. What is the first reported score? 2. What is the second reported score? "
-            "3. What is the third reported score? 4. What is the fourth reported score? "
-            "5. What is the fifth reported score? 6. What is the sixth reported score? "
-            "7. What is the seventh reported score? 8. What is the eighth reported score? "
-            "9. What is the ninth reported score?"
-        ),
-        user_id="user-a",
-        authorized_doc_ids=["doc-1"],
-        setup_snapshot={**_setup(), "max_output_tokens": 8192},
-        trace_id="two-pending-claims",
-    )
-    assert provider.verifier_batch_sizes == [2]
-    assert [call.purpose for call in observer.calls].count("claim_verifier") == 1
-    assert result.agent_trace["agentic_v9"]["metrics"]["claim_verifier_call_count"] == 1
-
-
-@pytest.mark.asyncio
-async def test_atomic_contract_planning_low_confidence_reserves_claim_verifier_provider_calls(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_atomic_contract_planning_low_confidence_comparison_one_planner_call() -> None:
     recorded_calls: list[dict[str, Any]] = []
-    observed_feasibility: list[dict[str, object]] = []
     planner_payload = {
         "evidence_requirements": [
             {
@@ -1766,33 +1301,6 @@ async def test_atomic_contract_planning_low_confidence_reserves_claim_verifier_p
             )
         ]
 
-    source_scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"],
-        resolved_doc_ids=["doc-1"],
-        authorized_doc_ids=["doc-1"],
-    )
-    base_contract = QueryContract(
-        route="single_lookup",
-        intent="Compare two source-bound models.",
-        max_retrieval_rounds=1,
-        max_llm_calls=4,
-        runtime_token_budget=50_000,
-        resolved_source_scope=source_scope,
-    )
-
-    async def admission(**_kwargs: object) -> V9AdmissionContract:
-        return V9AdmissionContract(source_scope=source_scope, contract=base_contract)
-
-    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
-    original_feasibility = runtime_module.validate_post_contract_feasibility
-
-    def observe_feasibility(**kwargs: object) -> Any:
-        observed_feasibility.append(kwargs)
-        return original_feasibility(**kwargs)
-
-    monkeypatch.setattr(
-        runtime_module, "validate_post_contract_feasibility", observe_feasibility
-    )
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(side_effect=retrieve_subject_docs),
         provider_factory=lambda _purpose: _PlannerAndAnswerProvider(),
@@ -1821,21 +1329,11 @@ async def test_atomic_contract_planning_low_confidence_reserves_claim_verifier_p
     assert v9["metrics"]["comparison_planner_call_count"] == 0
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
     assert v9["metrics"]["semantic_qualification"] == "provider_qualified"
-    assert len(recorded_calls) == 4
-    assert any(
-        call.get("contract_plan_requested") is True
-        for call in observed_feasibility
-    )
-    assert observed_feasibility
-    assert all(
-            call.get("evidence_qualification_provider_calls") == 1
-            and call.get("claim_verifier_provider_calls") == 1
-        for call in observed_feasibility
-    )
+    assert len(recorded_calls) == 3
 
 
 @pytest.mark.asyncio
-async def test_atomic_contract_planning_budget_rejection_preserves_claim_verifier_provider_calls(
+async def test_atomic_contract_planning_budget_rejection_degrades_gracefully(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from data_base.agentic_v9.budget_feasibility import (
@@ -1844,7 +1342,6 @@ async def test_atomic_contract_planning_budget_rejection_preserves_claim_verifie
     )
 
     recorded_calls: list[dict[str, Any]] = []
-    observed_feasibility: list[dict[str, object]] = []
     base_provider = _Provider(
         answer="Degraded final answer from retrieved evidence."
     )
@@ -1857,7 +1354,6 @@ async def test_atomic_contract_planning_budget_rejection_preserves_claim_verifie
     orig_post = runtime_module.validate_post_contract_feasibility
 
     def mock_post(*args: Any, **kwargs: Any) -> FeasibilityResult:
-        observed_feasibility.append(kwargs)
         if kwargs.get("contract_plan_requested"):
             return FeasibilityResult(
                 status=FeasibilityStatus.CONFIGURATION_INCOMPATIBLE,
@@ -1903,18 +1399,10 @@ async def test_atomic_contract_planning_budget_rejection_preserves_claim_verifie
     assert v9["metrics"]["slot_binding_method"] == "task_target_inherited"
     assert v9["metrics"]["semantic_qualification"] == "provider_qualified"
     assert len(recorded_calls) == 2
-    assert len(observed_feasibility) == 2
-    assert all(
-            call.get("evidence_qualification_provider_calls") == 1
-            and call.get("claim_verifier_provider_calls") == 1
-        for call in observed_feasibility
-    )
 
 
 @pytest.mark.asyncio
-async def test_atomic_contract_planning_malformed_response_degrades_gracefully(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_atomic_contract_planning_malformed_response_degrades_gracefully() -> None:
     recorded_calls: list[dict[str, Any]] = []
     base_provider = _Provider(
         planner_response="{invalid json syntax",
@@ -1926,24 +1414,6 @@ async def test_atomic_contract_planning_malformed_response_degrades_gracefully(
             recorded_calls.append({"messages": messages})
             return await base_provider.ainvoke(messages)
 
-    scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"],
-        resolved_doc_ids=["doc-1"],
-        authorized_doc_ids=["doc-1"],
-    )
-    contract = QueryContract(
-        route="single_lookup",
-        intent="Compare two source-bound models.",
-        max_retrieval_rounds=1,
-        max_llm_calls=4,
-        runtime_token_budget=50_000,
-        resolved_source_scope=scope,
-    )
-
-    async def admission(**_kwargs: object) -> V9AdmissionContract:
-        return V9AdmissionContract(source_scope=scope, contract=contract)
-
-    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
     runtime = AgenticV9CampaignRuntime(
         retrieve_documents=AsyncMock(
             return_value=[
@@ -2355,7 +1825,7 @@ async def test_v9_runtime_persists_requirement_shadow_without_influencing_behavi
     assert v9["visual_execution"]["state"] == "not_requested"
     assert result.agent_trace["response_status"] == "complete"
     assert result.documents
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -2382,7 +1852,7 @@ async def test_v9_requirement_guided_runtime_defaults_off_and_keeps_baseline_que
 
     assert retrieve_documents.await_count == 1
     assert "Advisory answer obligations" not in retrieve_documents.await_args.args[1]
-    assert provider.ainvoke.await_count == 2
+    assert provider.ainvoke.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -2626,7 +2096,7 @@ async def test_v9_runtime_repeats_feasibility_after_contract_before_retrieval(
 
 
 @pytest.mark.asyncio
-async def test_v9_runtime_passes_qualification_and_claim_verifier_provider_calls_one(
+async def test_v9_runtime_passes_qualification_provider_calls_one_for_active_prose_curator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = _Provider()
@@ -2640,7 +2110,7 @@ async def test_v9_runtime_passes_qualification_and_claim_verifier_provider_calls
         intent="Find the reported score.",
         evidence_extraction_required=True,
         max_retrieval_rounds=1,
-        max_llm_calls=3,
+        max_llm_calls=2,
         runtime_token_budget=20_000,
         resolved_source_scope=source_scope,
     )
@@ -2648,15 +2118,12 @@ async def test_v9_runtime_passes_qualification_and_claim_verifier_provider_calls
     async def admission(**_kwargs: object) -> V9AdmissionContract:
         return V9AdmissionContract(source_scope=source_scope, contract=contract)
 
-    observed_provider_call_counts: list[tuple[object, object]] = []
+    observed_provider_call_counts: list[object] = []
     original_feasibility = runtime_module.validate_post_contract_feasibility
 
     def observe_feasibility(**kwargs: object):
         observed_provider_call_counts.append(
-            (
-                kwargs.get("evidence_qualification_provider_calls"),
-                kwargs.get("claim_verifier_provider_calls"),
-            )
+            kwargs.get("evidence_qualification_provider_calls")
         )
         return original_feasibility(**kwargs)
 
@@ -2688,7 +2155,7 @@ async def test_v9_runtime_passes_qualification_and_claim_verifier_provider_calls
     )
 
     assert observed_provider_call_counts
-    assert set(observed_provider_call_counts) == {(1, 1)}
+    assert set(observed_provider_call_counts) == {1}
 
 
 @pytest.mark.asyncio
@@ -2852,7 +2319,7 @@ async def test_required_visual_evidence_is_recorded_before_complete_answer(
         evidence_extraction_required=True,
         max_retrieval_rounds=1,
         max_repair_rounds=0,
-        max_llm_calls=4,
+        max_llm_calls=3,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -2926,7 +2393,7 @@ async def test_missing_required_visual_evidence_keeps_text_complete(
         evidence_extraction_required=True,
         max_retrieval_rounds=1,
         max_repair_rounds=0,
-        max_llm_calls=4,
+        max_llm_calls=3,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -2980,7 +2447,7 @@ async def test_required_visual_execution_error_remains_qualified_partial(
         evidence_extraction_required=True,
         max_retrieval_rounds=1,
         max_repair_rounds=0,
-        max_llm_calls=4,
+        max_llm_calls=3,
         runtime_token_budget=50_000,
         resolved_source_scope=scope,
     )
@@ -3123,26 +2590,9 @@ async def test_campaign_runtime_qualifies_candidate_evidence_via_batch_prose_cur
     )
 
     final_provider = Mock()
-    final_provider.bind = Mock(return_value=final_provider)
     final_provider.ainvoke = AsyncMock(
-        side_effect=lambda messages: SimpleNamespace(
-            content=json.dumps(
-                {
-                    "supported_findings": [
-                        {
-                            "slot_id": "S1",
-                            "statement": statement,
-                                "evidence_ids": [
-                                    "E1"
-                                ],
-                            "premise_evidence_ids": [],
-                        }
-                    ],
-                    "synthesized_findings": [],
-                    "unresolved_requirements": [],
-                    "unresolved_obligations": [],
-                }
-            ),
+        return_value=SimpleNamespace(
+            content="The model uses a two-stage decoder.",
             usage_metadata={"input_tokens": 30, "output_tokens": 10},
         )
     )
@@ -3285,399 +2735,6 @@ async def test_v9_runtime_sufficiency_fails_when_evidence_not_qualified() -> Non
     assert metrics["qualified_packet_count"] == 0
     assert metrics["semantic_qualification"] == "no_match"
     assert metrics["qualification_failure_code"] is None
-
-
-@pytest.mark.asyncio
-async def test_runtime_missing_algorithm_anchor_keeps_mechanism_slots_unresolved(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source_scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"],
-        resolved_doc_ids=["doc-1"],
-        authorized_doc_ids=["doc-1"],
-    )
-    contract = QueryContract(
-        route="single_lookup",
-        intent="Reconstruct the update mechanism and aggregate its steps.",
-        required_slots=[
-            RequiredSlot(slot_id="S1", description="State the high-level mechanism."),
-            RequiredSlot(slot_id="S2", description="Explain the Algorithm 2 branch split."),
-            RequiredSlot(slot_id="S3", description="Explain the Algorithm 2 update flow."),
-            RequiredSlot(slot_id="S4", description="Explain the Algorithm 2 fusion step."),
-            RequiredSlot(slot_id="S5", description="Explain the Algorithm 2 output step."),
-        ],
-        synthesis_obligations=[
-            {
-                "obligation_id": "O1",
-                "kind": "aggregation",
-                "description": "Aggregate the five mechanism steps.",
-                "depends_on_slot_ids": ["S1", "S2", "S3", "S4", "S5"],
-            }
-        ],
-        evidence_extraction_required=True,
-        max_retrieval_rounds=1,
-        max_repair_rounds=0,
-        max_llm_calls=4,
-        runtime_token_budget=40_000,
-        resolved_source_scope=source_scope,
-    )
-
-    async def admission(**_kwargs: object) -> V9AdmissionContract:
-        return V9AdmissionContract(source_scope=source_scope, contract=contract)
-
-    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
-    planner_provider = _Provider(
-        planner_response={
-            "evidence_requirements": [
-                {"description": "State the high-level mechanism."},
-                {"description": "Explain the Algorithm 2 branch split."},
-                {"description": "Explain the Algorithm 2 update flow."},
-                {"description": "Explain the Algorithm 2 fusion step."},
-                {"description": "Explain the Algorithm 2 output step."},
-            ],
-            "synthesis_obligations": [
-                {
-                    "kind": "aggregation",
-                    "description": "Aggregate the five mechanism steps.",
-                    "depends_on_requirement_indexes": [0, 1, 2, 3, 4],
-                }
-            ],
-            "response_constraints": [],
-            "comparison": None,
-            "confidence": 1.0,
-        },
-        curator_response={
-            "packets": [
-                {
-                    "source_evidence_id": "E1",
-                    "slot_ids": ["S1", "S2", "S3", "S4", "S5"],
-                }
-            ]
-        }
-    )
-    runtime = AgenticV9CampaignRuntime(
-        retrieve_documents=AsyncMock(
-            return_value=[
-                Document(
-                    page_content=(
-                        "The update mechanism combines branch outputs before the final step."
-                    ),
-                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
-                )
-            ]
-        ),
-        provider_factory=lambda purpose: planner_provider,
-        document_reference_resolver=_identity_reference_resolver,
-    )
-
-    result = await runtime.execute(
-        question="According to Algorithm 2, reconstruct the update mechanism.",
-        user_id="user-a",
-        authorized_doc_ids=["doc-1"],
-        setup_snapshot={**_setup(), "max_output_tokens": 1024},
-        trace_id="trace-generic-mechanism",
-    )
-
-    v9 = result.agent_trace["agentic_v9"]
-    assert result.agent_trace["response_status"] != "complete"
-    supported = set(v9["sufficiency"]["supported_slot_ids"])
-    assert not {"S2", "S3", "S4", "S5"}.issubset(supported)
-
-
-@pytest.mark.asyncio
-async def test_runtime_preserves_arithmetic_and_unresolved_rounding_obligations(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source_scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"],
-        resolved_doc_ids=["doc-1"],
-        authorized_doc_ids=["doc-1"],
-    )
-    contract = QueryContract(
-        route="exact_structured",
-        intent="Read the exact table premises and compute the requested difference.",
-        required_slots=[
-            RequiredSlot(
-                slot_id="S1",
-                description="Extract the Table 4 base value 12.5.",
-            ),
-            RequiredSlot(
-                slot_id="S2",
-                description="Extract the Table 4 reference value 7.5.",
-            ),
-        ],
-        synthesis_obligations=[
-            {
-                "obligation_id": "O1",
-                "kind": "aggregation",
-                "description": "Compute the difference from the two table premises.",
-                "depends_on_slot_ids": ["S1", "S2"],
-            },
-            {
-                "obligation_id": "O2",
-                "kind": "qualification",
-                "description": "State the rounding method used for that difference.",
-                "depends_on_slot_ids": ["S1", "S2"],
-            },
-        ],
-        evidence_extraction_required=True,
-        max_retrieval_rounds=1,
-        max_repair_rounds=0,
-        max_llm_calls=5,
-        runtime_token_budget=50_000,
-        resolved_source_scope=source_scope,
-    )
-
-    async def admission(**_kwargs: object) -> V9AdmissionContract:
-        return V9AdmissionContract(source_scope=source_scope, contract=contract)
-
-    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
-    planner_provider = _Provider(
-        planner_response={
-            "evidence_requirements": [
-                {"description": "Extract the Table 4 base value 12.5."},
-                {"description": "Extract the Table 4 reference value 7.5."},
-            ],
-            "synthesis_obligations": [
-                {
-                    "kind": "aggregation",
-                    "description": "Compute the difference from the two table premises.",
-                    "depends_on_requirement_indexes": [0, 1],
-                },
-                {
-                    "kind": "qualification",
-                    "description": "State the rounding method used for that difference.",
-                    "depends_on_requirement_indexes": [0, 1],
-                },
-            ],
-            "response_constraints": [],
-            "comparison": None,
-            "confidence": 1.0,
-        }
-    )
-    curator = _Provider(
-        curator_response={
-            "packets": [{"source_evidence_id": "E1", "slot_ids": ["S1", "S2"]}]
-        }
-    )
-    fallback_provider = _Provider()
-
-    class _TableVerifierProvider(_Provider):
-        async def _invoke(self, messages: Any) -> Any:
-            contents = [
-                str(message.get("content", ""))
-                for message in messages
-                if isinstance(message, dict)
-            ]
-            for content in contents:
-                try:
-                    payload = json.loads(content)
-                except (TypeError, json.JSONDecodeError):
-                    continue
-                if isinstance(payload, dict) and isinstance(payload.get("claims"), list):
-                    verdicts = []
-                    for row in payload["claims"]:
-                        claim = row.get("claim", {}) if isinstance(row, dict) else {}
-                        obligation_id = claim.get("obligation_id")
-                        verdicts.append(
-                            {
-                                "claim_id": claim.get("claim_id"),
-                                "supported": obligation_id == "O1",
-                                "reason": (
-                                    None
-                                    if obligation_id == "O1"
-                                    else "rounding_method_not_stated"
-                                ),
-                            }
-                        )
-                    return SimpleNamespace(
-                        content=json.dumps({"verdicts": verdicts}),
-                        usage_metadata={"input_tokens": 10, "output_tokens": 5},
-                    )
-                if isinstance(payload, dict) and {
-                    "required_slots",
-                    "packed_evidence",
-                }.issubset(payload):
-                    packet_ids = [
-                        row["evidence_id"]
-                        for row in payload["packed_evidence"]
-                        if isinstance(row, dict) and row.get("evidence_id")
-                    ]
-                    premise_ids = list(dict.fromkeys(packet_ids))
-                    return SimpleNamespace(
-                        content=json.dumps(
-                            {
-                                "supported_findings": [
-                                    {
-                                        "slot_id": slot["slot_id"],
-                                        "statement": "Table 4 reports the exact premise.",
-                                        "evidence_ids": premise_ids,
-                                        "premise_evidence_ids": [],
-                                    }
-                                    for slot in payload["required_slots"]
-                                ],
-                                "synthesized_findings": [
-                                    {
-                                        "obligation_id": "O1",
-                                        "statement": "The difference is 5.0.",
-                                        "premise_evidence_ids": premise_ids,
-                                    },
-                                    {
-                                        "obligation_id": "O2",
-                                        "statement": "The difference uses the usual rounding method.",
-                                        "premise_evidence_ids": premise_ids,
-                                    },
-                                ],
-                                "unresolved_requirements": [],
-                                "unresolved_obligations": [],
-                            }
-                        ),
-                        usage_metadata={"input_tokens": 12, "output_tokens": 7},
-                    )
-            return await fallback_provider.ainvoke(messages)
-
-    final_provider = _TableVerifierProvider()
-    final_provider.ainvoke = AsyncMock(side_effect=final_provider._invoke)
-    runtime = AgenticV9CampaignRuntime(
-        retrieve_documents=AsyncMock(
-            return_value=[
-                Document(
-                    page_content="Table 4 reports base value 12.5 and reference value 7.5.",
-                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
-                )
-            ]
-        ),
-        provider_factory=lambda purpose: (
-            planner_provider
-            if purpose == "atomic_contract_planning"
-            else curator
-            if purpose == "evidence_extraction"
-            else final_provider
-        ),
-        document_reference_resolver=_identity_reference_resolver,
-    )
-
-    result = await runtime.execute(
-        question=(
-            "Read Table 4 values 12.5 and 7.5, compute the difference, "
-            "including its rounding method."
-        ),
-        user_id="user-a",
-        authorized_doc_ids=["doc-1"],
-        setup_snapshot={**_setup(), "max_output_tokens": 2048},
-        trace_id="trace-table-obligations",
-    )
-
-    assert result.agent_trace["response_status"] == "qualified_partial"
-    claims = result.agent_trace["agentic_v9"]["final_claims"]
-    by_obligation = {claim.get("obligation_id"): claim for claim in claims}
-    assert by_obligation["O1"]["qualified_reason"] is None
-    assert by_obligation["O2"]["qualified_reason"] == "rounding_method_not_stated"
-
-
-@pytest.mark.asyncio
-async def test_runtime_provider_row_missing_table_value_anchor_keeps_dependency_unresolved(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source_scope = ResolvedSourceScope(
-        requested_doc_ids=["doc-1"],
-        resolved_doc_ids=["doc-1"],
-        authorized_doc_ids=["doc-1"],
-    )
-    contract = QueryContract(
-        route="exact_structured",
-        intent="Read both exact Table 4 premises and compute their difference.",
-        required_slots=[
-            RequiredSlot(
-                slot_id="S1",
-                description="Extract the Table 4 base value 12.5.",
-            ),
-            RequiredSlot(
-                slot_id="S2",
-                description="Extract the Table 4 reference value 7.5.",
-            ),
-        ],
-        synthesis_obligations=[
-            {
-                "obligation_id": "O1",
-                "kind": "aggregation",
-                "description": "Compute the difference from both Table 4 premises.",
-                "depends_on_slot_ids": ["S1", "S2"],
-            }
-        ],
-        evidence_extraction_required=True,
-        max_retrieval_rounds=1,
-        max_repair_rounds=0,
-        max_llm_calls=5,
-        runtime_token_budget=50_000,
-        resolved_source_scope=source_scope,
-    )
-
-    async def admission(**_kwargs: object) -> V9AdmissionContract:
-        return V9AdmissionContract(source_scope=source_scope, contract=contract)
-
-    monkeypatch.setattr(runtime_module, "build_v9_admission_contract", admission)
-    planner_provider = _Provider(
-        planner_response={
-            "evidence_requirements": [
-                {"description": "Extract the Table 4 base value 12.5."},
-                {"description": "Extract the Table 4 reference value 7.5."},
-            ],
-            "synthesis_obligations": [
-                {
-                    "kind": "aggregation",
-                    "description": "Compute the difference from both Table 4 premises.",
-                    "depends_on_requirement_indexes": [0, 1],
-                }
-            ],
-            "response_constraints": [],
-            "comparison": None,
-            "confidence": 1.0,
-        }
-    )
-    curator_provider = _Provider(
-        curator_response={
-            "packets": [{"source_evidence_id": "E1", "slot_ids": ["S1", "S2"]}]
-        }
-    )
-    runtime = AgenticV9CampaignRuntime(
-        retrieve_documents=AsyncMock(
-            return_value=[
-                Document(
-                    page_content=(
-                        "Table 4 reports the base value 12.5 but omits the "
-                        "reference value."
-                    ),
-                    metadata={"doc_id": "doc-1", "chunk_id": "chunk-1"},
-                )
-            ]
-        ),
-        provider_factory=lambda purpose: (
-            planner_provider
-            if purpose == "atomic_contract_planning"
-            else curator_provider
-            if purpose == "evidence_extraction"
-            else _Provider(answer="The available premise is source-backed.")
-        ),
-        document_reference_resolver=_identity_reference_resolver,
-    )
-
-    result = await runtime.execute(
-        question=(
-            "Read Table 4 values 12.5 and 7.5, then compute their difference."
-        ),
-        user_id="user-a",
-        authorized_doc_ids=["doc-1"],
-        setup_snapshot={**_setup(), "max_output_tokens": 2048},
-        trace_id="trace-table-anchor-gap",
-    )
-
-    v9 = result.agent_trace["agentic_v9"]
-    assert result.agent_trace["response_status"] == "qualified_partial"
-    assert v9["sufficiency"]["supported_slot_ids"] == ["S1"]
-    assert "S2" in v9["sufficiency"]["not_found_slot_ids"]
-    assert v9["metrics"]["unresolved_requirement_count"] >= 2
-    assert all(claim.get("obligation_id") != "O1" for claim in v9["final_claims"])
 
 
 def test_chunk_projection_infers_markdown_table_id_without_overwriting_existing() -> None:

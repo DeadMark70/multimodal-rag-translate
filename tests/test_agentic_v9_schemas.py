@@ -627,7 +627,6 @@ def test_existing_final_claim_and_result_payloads_remain_compatible() -> None:
     claim = FinalClaim.model_validate(
         {
             "claim_id": "claim-1",
-            "slot_id": "S1",
             "statement": "The score is 0.91.",
             "support_type": "direct",
             "evidence_ids": ["E1"],
@@ -643,7 +642,7 @@ def test_existing_final_claim_and_result_payloads_remain_compatible() -> None:
         }
     )
 
-    assert claim.slot_id == "S1"
+    assert claim.slot_id is None
     assert result.claims == [claim]
 
 

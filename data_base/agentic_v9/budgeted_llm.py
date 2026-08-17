@@ -229,13 +229,6 @@ async def invoke_budgeted_llm(
         + flat_usage.get("output_tokens", 0)
         + flat_usage.get("reasoning_tokens", 0)
     )
-    if provider_total_reported and flat_usage.get("total_tokens") is not None:
-        reported_total = flat_usage["total_tokens"]
-        if known_tokens > reported_total:
-            # An overlapping or otherwise incompatible provider total cannot
-            # be persisted as measured. Preserve all reported components and
-            # let the controller conservatively reconcile an estimated total.
-            provider_total_reported = False
     flat_usage["other_tokens"] = max(
         flat_usage.get("total_tokens", known_tokens) - known_tokens,
         0,

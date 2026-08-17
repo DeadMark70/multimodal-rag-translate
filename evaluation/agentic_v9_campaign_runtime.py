@@ -54,15 +54,10 @@ from data_base.agentic_v9.execution_policy import (
     ExecutionCancellation,
     V9ExecutionPolicyRuntime,
 )
-from data_base.agentic_v9.final_answer import FinalAnswerRenderer
 from data_base.agentic_v9.provider_boundary import (
-    build_claim_verifier_provider,
     build_contract_planning_provider,
     build_evidence_qualification_provider,
-    build_final_synthesis_provider,
     evidence_qualification_response_schema,
-    final_synthesis_response_schema,
-    claim_verification_response_schema,
 )
 from data_base.agentic_v9.repair import build_repair_plan
 from data_base.agentic_v9.requirement_shadow import build_requirement_shadow
@@ -72,13 +67,13 @@ from data_base.agentic_v9.schemas import (
     EvidenceScope,
     EvidenceSource,
     FinalAnswerResult,
+    FinalClaim,
     LlmInvoker,
     QueryContract,
     RagRetrievalResult,
     ResolvedSourceScope,
     SlotResolution,
     SourceLocator,
-    SufficiencyReport,
     TaskRetrievalResult,
     V9ExecutionEvent,
     V9ExecutionRequest,
@@ -373,8 +368,6 @@ class AgenticV9CampaignRuntime:
             "contract": None,
             "pack": None,
             "repairs": [],
-            "active_repair_round_index": None,
-            "active_repair_task_ids": set(),
             "evidence_packets": [],
             "quality_by_evidence_id": {},
             "post_contract": None,
@@ -414,7 +407,6 @@ class AgenticV9CampaignRuntime:
                     route_plan_used=False,
                     contract_plan_requested=True,
                     evidence_qualification_provider_calls=1,
-                    claim_verifier_provider_calls=1,
                 )
                 if post_contract.status is FeasibilityStatus.FEASIBLE:
                     planner_admitted = True
@@ -427,7 +419,6 @@ class AgenticV9CampaignRuntime:
                         route_plan_used=False,
                         contract_plan_requested=False,
                         evidence_qualification_provider_calls=1,
-                        claim_verifier_provider_calls=1,
                     )
             else:
                 post_contract = validate_post_contract_feasibility(
@@ -438,7 +429,6 @@ class AgenticV9CampaignRuntime:
                     route_plan_used=False,
                     contract_plan_requested=False,
                     evidence_qualification_provider_calls=1,
-                    claim_verifier_provider_calls=1,
                 )
 
             state["post_contract"] = post_contract
@@ -669,10 +659,6 @@ class AgenticV9CampaignRuntime:
                 final_budget_available=self._policy_runtime.has_final_reserve(deadline),
             )
             state["repairs"].append(repair)
-            state["active_repair_round_index"] = (
-                repair.repair_round_index if repair.tasks else None
-            )
-            state["active_repair_task_ids"] = {task.task_id for task in repair.tasks}
             return repair.tasks
 
         async def prose_curate(
@@ -725,16 +711,6 @@ class AgenticV9CampaignRuntime:
                 )
             else:
                 selected = extracted
-            active_repair_round = state.get("active_repair_round_index")
-            if active_repair_round is not None and state["repairs"]:
-                repair = state["repairs"][-1]
-                repair.resulting_evidence_ids = [
-                    packet.evidence_id
-                    for packet in selected
-                    if packet.task_id in state.get("active_repair_task_ids", set())
-                ]
-                state["active_repair_round_index"] = None
-                state["active_repair_task_ids"] = set()
             state["final_evidence_packets"] = selected
             return tuple(selected)
 
@@ -795,30 +771,53 @@ class AgenticV9CampaignRuntime:
             return packed
 
         async def generate_final(
-            final_question: str,
-            final_contract: QueryContract,
+            _: str,
+            __: QueryContract,
             packed: PackedEvidenceContext,
             resolutions: tuple[SlotResolution, ...],
-            sufficiency: Any | None,
-            arbitration: Any,
+            ___: Any | None,
+            ____: Any,
         ) -> FinalAnswerResult:
             controller = state["budget_controller"]
             assert isinstance(controller, RunBudgetController)
-            invoker = BudgetedLlmInvoker(
+            response = await BudgetedLlmInvoker(
                 controller=controller,
                 provider_factory=self._provider_factory,
                 observer=llm_call_observer,
                 provider_name=str(setup_snapshot.get("provider") or "unknown"),
                 model_name=str(setup_snapshot.get("model_name") or "unknown"),
+            ).invoke(
+                phase="final_answer",
+                purpose="agentic_v9_final_answer",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Use only supplied evidence. Cite no source not present.",
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Question: {question}\n\nEvidence:\n{packed.rendered_text}",
+                    },
+                ],
             )
-            renderer = FinalAnswerRenderer(invoker, citation_format_version="1")
-            return await renderer.render(
-                question=final_question or question,
-                contract=final_contract,
-                packed_packets=packed,
-                slot_resolutions=resolutions,
-                sufficiency_report=sufficiency if isinstance(sufficiency, SufficiencyReport) else None,
-                arbitration=arbitration,
+            if isinstance(response, FinalAnswerResult):
+                return response
+            answer = _response_text(response)
+            used_ids = [packet.evidence_id for packet in packed.packets]
+            claims = [
+                FinalClaim(
+                    claim_id=f"claim:{trace_id}",
+                    statement=answer or "Evidence-backed answer unavailable.",
+                    support_type="direct",
+                    evidence_ids=used_ids,
+                )
+            ]
+            return FinalAnswerResult(
+                response_status="complete",
+                answer=answer,
+                claims=claims,
+                used_evidence_ids=used_ids,
+                final_generation_count=1,
             )
 
         def deterministic_partial(
@@ -887,12 +886,6 @@ class AgenticV9CampaignRuntime:
             "qualification_round_count", 1 if candidate_count > 0 else 0
         )
         qualification_failure_code = state.get("qualification_failure_code", None)
-        final = executed.final_answer or FinalAnswerResult(
-            response_status="insufficient"
-        )
-        unresolved_req_count = len(final.unresolved_requirements) + len(
-            final.unresolved_obligations
-        )
         metrics = executed.metrics.model_copy(
             update={
                 "provider_attempt_count": budget_snapshot.provider_attempt_count,
@@ -918,11 +911,10 @@ class AgenticV9CampaignRuntime:
                 "qualification_statement_not_verbatim_count": state[
                     "qualification_statement_not_verbatim_count"
                 ],
-                "used_evidence_count": len(final.used_evidence_ids),
-                "unresolved_requirement_count": unresolved_req_count,
-                "claim_verifier_call_count": final.claim_verifier_call_count,
-                "claim_verifier_diagnostic_code": final.claim_verifier_diagnostic_code,
             }
+        )
+        final = executed.final_answer or FinalAnswerResult(
+            response_status="insufficient"
         )
         graph_execution = state["graph_execution"] or _initial_graph_execution(
             state["contract"]
@@ -1000,16 +992,6 @@ class AgenticV9CampaignRuntime:
                 packet.model_dump(mode="json")
                 for packet in state["evidence_packets"]
             ],
-            "candidate_evidence_ids": [
-                packet.evidence_id for packet in state["evidence_packets"]
-            ],
-            "qualified_evidence_ids": [
-                packet.evidence_id for packet in final_evidence_packets
-            ],
-            "qualified_evidence_packets": [
-                packet.model_dump(mode="json") for packet in final_evidence_packets
-            ],
-            "used_evidence_ids": list(final.used_evidence_ids),
             "slot_resolutions": [
                 resolution.model_dump(mode="json")
                 for resolution in (
@@ -1649,14 +1631,6 @@ def _provider_for_purpose(purpose: str) -> Any:
     if purpose == "evidence_extraction":
         return build_evidence_qualification_provider(
             response_schema=evidence_qualification_response_schema()
-        )
-    if purpose in {"final_answer", "agentic_v9_final_answer"}:
-        return build_final_synthesis_provider(
-            response_schema=final_synthesis_response_schema()
-        )
-    if purpose == "claim_verifier":
-        return build_claim_verifier_provider(
-            response_schema=claim_verification_response_schema()
         )
     return get_llm("synthesizer")
 

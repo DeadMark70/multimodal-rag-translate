@@ -26,7 +26,6 @@ from data_base.agentic_v9.evidence_validator import (
 )
 from data_base.agentic_v9.slot_constraints import (
     _MARKDOWN_TABLE_SEPARATOR,
-    candidate_satisfies_hard_anchors,
     structured_locator_state,
 )
 
@@ -193,7 +192,6 @@ class EvidenceExtractor:
         rejection_counts = _QualificationRejectionCounts()
         curated = _parse_curated_packets(
             response,
-            question=question or contract.intent,
             slots=unresolved,
             items=curated_items,
             eligible_ids_by_slot=eligible_ids_by_slot,
@@ -542,7 +540,6 @@ def _is_prevalidated_packet(packet: EvidencePacket) -> bool:
 def _parse_curated_packets(
     response: Any,
     *,
-    question: str,
     slots: Sequence[RequiredSlot],
     items: Sequence[EvidencePoolItem],
     eligible_ids_by_slot: Mapping[str, set[str]],
@@ -566,23 +563,7 @@ def _parse_curated_packets(
     if not isinstance(raw_packets, list):
         return None
     valid_slots = {slot.slot_id for slot in slots}
-    slot_by_id = {slot.slot_id: slot for slot in slots}
     by_id = {item.packet.evidence_id: item for item in items}
-    candidate_packets = {
-        evidence_id: item.packet.model_copy(
-            update={
-                "locator": item.packet.locator.model_copy(
-                    update={
-                        key: value
-                        for key, value in item.metadata.items()
-                        if key in {"section", "table_id", "figure_id", "formula_id"}
-                        and value is not None
-                    }
-                )
-            }
-        )
-        for evidence_id, item in by_id.items()
-    }
     coalesced_source_order: list[str] = []
     coalesced_slots_by_source: dict[str, set[str]] = {}
 
@@ -609,21 +590,10 @@ def _parse_curated_packets(
         ):
             rejection_counts.unauthorized_source_slot += 1
             continue
-        anchored_slot_ids = [
-            slot_id
-            for slot_id in deduped_slot_ids
-            if candidate_satisfies_hard_anchors(
-                question=question,
-                slot=slot_by_id[slot_id],
-                packet=candidate_packets[actual_source_id],
-            )
-        ]
-        if not anchored_slot_ids:
-            continue
         if actual_source_id not in coalesced_slots_by_source:
             coalesced_source_order.append(actual_source_id)
             coalesced_slots_by_source[actual_source_id] = set()
-        coalesced_slots_by_source[actual_source_id].update(anchored_slot_ids)
+        coalesced_slots_by_source[actual_source_id].update(deduped_slot_ids)
 
     packets: list[EvidencePacket] = []
     for actual_source_id in coalesced_source_order:
