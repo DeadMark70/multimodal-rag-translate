@@ -1251,6 +1251,14 @@ def _json_loads(payload: str | None, fallback: Any) -> Any:
 
 def _row_to_campaign_status(row: aiosqlite.Row) -> CampaignStatus:
     config_payload = _json_loads(row["config_json"], {})
+    if isinstance(config_payload, dict):
+        if config_payload.get("agentic_execution_version") not in {"v8", "v9"}:
+            config_payload["agentic_execution_version"] = "v9"
+        if "modes" in config_payload and isinstance(config_payload["modes"], list):
+            config_payload["modes"] = [
+                "agentic" if m in {"agentic-v10", "v10"} else m
+                for m in config_payload["modes"]
+            ]
     return CampaignStatus(
         id=row["id"],
         name=row["name"],

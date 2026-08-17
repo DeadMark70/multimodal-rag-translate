@@ -360,6 +360,7 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
         id="run-1",
         campaign_id="cmp-1",
         question_id="q-1",
+        status=CampaignResultStatus.COMPLETED,
         mode="agentic",
         repeat_number=1,
         answer="safe answer",

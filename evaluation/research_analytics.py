@@ -71,6 +71,7 @@ from evaluation.job_store import (
 from evaluation.observability_storage import (
     CampaignObservabilitySnapshot,
     EvaluationObservabilityRepository,
+    redact_sensitive_text,
     redact_sensitive_value,
     safe_comparison_projection,
     safe_plain_text_excerpt,
@@ -156,6 +157,20 @@ def _safe_optional_text(value: str | None) -> str | None:
 def _safe_required_text(value: str) -> str:
     """Bound required display text while preserving a non-empty model value."""
     return safe_plain_text_excerpt(value) or "[redacted]"
+
+
+def _safe_optional_identifier(value: str | None) -> str | None:
+    """Bound optional identifier while preserving underscores and redacting secrets."""
+    if value is None:
+        return None
+    text = redact_sensitive_text(value).strip()
+    return text or None
+
+
+def _safe_required_identifier(value: str) -> str:
+    """Bound required identifier while preserving underscores and redacting secrets."""
+    text = redact_sensitive_text(value).strip()
+    return text or "[redacted]"
 
 
 def _safe_text_list(values: list[str]) -> list[str]:
@@ -291,14 +306,14 @@ def _project_graph_event(
         {
             **event.model_dump(),
             "graph_query": _safe_required_text(event.graph_query),
-            "graph_search_mode": _safe_required_text(event.graph_search_mode),
-            "graph_evidence_mode": _safe_required_text(event.graph_evidence_mode),
-            "graph_route": _safe_required_text(event.graph_route),
+            "graph_search_mode": _safe_required_identifier(event.graph_search_mode),
+            "graph_evidence_mode": _safe_required_identifier(event.graph_evidence_mode),
+            "graph_route": _safe_required_identifier(event.graph_route),
             "router_reason": _safe_optional_text(event.router_reason),
             "graph_feature_flags": {},
-            "graph_snapshot_version": _safe_optional_text(event.graph_snapshot_version),
-            "graph_schema_version": _safe_optional_text(event.graph_schema_version),
-            "graph_extraction_prompt_version": _safe_optional_text(
+            "graph_snapshot_version": _safe_optional_identifier(event.graph_snapshot_version),
+            "graph_schema_version": _safe_optional_identifier(event.graph_schema_version),
+            "graph_extraction_prompt_version": _safe_optional_identifier(
                 event.graph_extraction_prompt_version
             ),
             "matched_entity_ids": _safe_text_list(event.matched_entity_ids),
@@ -411,9 +426,10 @@ def _v9_observability_from_snapshot(
         ),
         None,
     )
+    if materialization is None:
+        return None
     if (
-        materialization is None
-        or materialization.run_id != result.id
+        materialization.run_id != result.id
         or materialization.campaign_id != result.campaign_id
     ):
         raise _observability_error("Current v9 materialization could not be assembled")

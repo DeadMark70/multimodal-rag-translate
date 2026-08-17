@@ -170,6 +170,7 @@ def test_comparison_projection_is_bounded_and_allowlisted() -> None:
             "subject_id": "model_a",
             "display_name": "Model A",
             "aliases": ["A"],
+            "evidence_slot_ids": [],
         }
     ]
     assert len(projected["task_diagnostics"][0]["query_preview"]) == 160
@@ -342,6 +343,7 @@ async def test_materializing_a_v9_attempt_is_atomic_and_idempotent(
             "subject_id": "model_a",
             "display_name": "Model A",
             "aliases": ["A"],
+            "evidence_slot_ids": [],
         }
     ]
     assert comparison["task_diagnostics"][0]["selected"] == [
