@@ -56,7 +56,7 @@ def _fallback_subqueries(question: str) -> list[SubQueryItem]:
     )
     unique_entities = list(
         dict.fromkeys(
-            e for e in entities if len(e) >= 3 and e.lower() not in {"and", "the", "for", "with", "table", "figure"}
+            e for e in entities if len(e) >= 3 and not e.lower() in {"and", "the", "for", "with", "table", "figure"}
         )
     )
 
