@@ -137,7 +137,11 @@ class AgenticV10PipelineService:
             rerank_error: str | None = None
             rerank_started = time.perf_counter()
             try:
-                ranked = reranker.rerank(item.query, candidates, top_k=2) if candidates else []
+                ranked = (
+                    reranker.rerank_with_scores(item.query, candidates, top_k=2)
+                    if candidates
+                    else []
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("v10 rerank failed for %s: %s", item.id, exc)
                 ranked = [(document, 0.5) for document in candidates[:2]]

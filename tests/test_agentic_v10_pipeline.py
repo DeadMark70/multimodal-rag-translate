@@ -27,7 +27,7 @@ async def test_v10_pipeline_records_full_branch_trace() -> None:
     reranker = MagicMock()
     first = Document(page_content="Architecture evidence", metadata={"doc_id": "doc-1", "page": 2})
     second = Document(page_content="Benchmark evidence", metadata={"doc_id": "doc-2", "page": 4})
-    reranker.rerank.side_effect = [[(first, 0.9)], [(second, 0.8)]]
+    reranker.rerank_with_scores.side_effect = [[(first, 0.9)], [(second, 0.8)]]
     service = AgenticV10PipelineService(decomposer=decomposer, reranker=reranker)
     with (
         patch("data_base.agentic_v10.subquery_pipeline_service.get_user_retriever_async", new=AsyncMock(return_value=MagicMock())),
@@ -44,6 +44,8 @@ async def test_v10_pipeline_records_full_branch_trace() -> None:
     assert v10["branches"][0]["raw_candidates"][0]["content"] == "Architecture evidence"
     assert v10["synthesis"]["prompt_messages"]
     assert result.usage["total_tokens"] == 10
+    assert reranker.rerank_with_scores.call_count == 2
+    assert reranker.rerank.call_count == 0
 
 
 @pytest.mark.asyncio
