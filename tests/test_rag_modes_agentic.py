@@ -286,7 +286,7 @@ async def test_graph_evaluation_modes_pass_explicit_execution_snapshots(
 
 
 @pytest.mark.asyncio
-async def test_run_campaign_case_agentic_uses_evaluation_service_and_profile() -> None:
+async def test_v8_campaign_case_uses_evaluation_service_and_profile() -> None:
     test_case = EvaluationCase(
         id="Q1",
         question="What changed?",
@@ -340,6 +340,7 @@ async def test_run_campaign_case_agentic_uses_evaluation_service_and_profile() -
                 "max_output_tokens": 2048,
             },
             run_number=1,
+            agentic_execution_version="v8",
         )
 
     mock_service_cls.assert_called_once_with(max_concurrent_tasks=3)
@@ -348,6 +349,41 @@ async def test_run_campaign_case_agentic_uses_evaluation_service_and_profile() -
     assert result.contexts == ["ctx-1"]
     assert result.execution_profile == AGENTIC_EVAL_PROFILE
     assert result.context_policy_version == AGENTIC_CONTEXT_POLICY_VERSION
+
+
+@pytest.mark.asyncio
+async def test_unversioned_agentic_campaign_uses_v10_service() -> None:
+    test_case = EvaluationCase(
+        id="Q-v10",
+        question="What changed?",
+        ground_truth="A v10 answer",
+        source_docs=[],
+        requires_multi_doc_reasoning=False,
+    )
+    v10_result = RAGResult(
+        answer="v10 answer",
+        source_doc_ids=[],
+        documents=[],
+        agent_trace={
+            "agentic_execution_version": "v10",
+            "execution_profile": "agentic_v10_subquery_sequential_rerank_top2",
+            "context_policy_version": "v10_grounded_structured_pack",
+            "response_status": "qualified_partial",
+        },
+    )
+    with patch("evaluation.rag_modes.AgenticV10PipelineService") as service_cls:
+        service_cls.return_value.execute = AsyncMock(return_value=v10_result)
+        result = await run_campaign_case(
+            test_case=test_case,
+            user_id="user-1",
+            mode="agentic",
+            model_config={"max_output_tokens": 256},
+            run_number=1,
+        )
+
+    service_cls.return_value.execute.assert_awaited_once()
+    assert result.agentic_execution_version == "v10"
+    assert result.context_policy_version == "v10_grounded_structured_pack"
 
 
 @pytest.mark.asyncio

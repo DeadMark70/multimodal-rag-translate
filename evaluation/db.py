@@ -1252,13 +1252,10 @@ def _json_loads(payload: str | None, fallback: Any) -> Any:
 def _row_to_campaign_status(row: aiosqlite.Row) -> CampaignStatus:
     config_payload = _json_loads(row["config_json"], {})
     if isinstance(config_payload, dict):
-        if config_payload.get("agentic_execution_version") not in {"v8", "v9"}:
+        # Saved campaigns created before v10 must retain their historical v9
+        # behavior when they did not persist an explicit execution version.
+        if config_payload.get("agentic_execution_version") not in {"v8", "v9", "v10"}:
             config_payload["agentic_execution_version"] = "v9"
-        if "modes" in config_payload and isinstance(config_payload["modes"], list):
-            config_payload["modes"] = [
-                "agentic" if m in {"agentic-v10", "v10"} else m
-                for m in config_payload["modes"]
-            ]
     return CampaignStatus(
         id=row["id"],
         name=row["name"],
@@ -1394,7 +1391,7 @@ def _row_to_campaign_result(row: aiosqlite.Row) -> CampaignResult:
         else None,
         agentic_execution_version=(
             system_version_snapshot.get("agentic_execution_version", "v8")
-            if system_version_snapshot.get("agentic_execution_version") in {"v8", "v9"}
+            if system_version_snapshot.get("agentic_execution_version") in {"v8", "v9", "v10"}
             else "v8"
         ),
         execution_identity=(
@@ -1472,7 +1469,7 @@ class CampaignAnalyticsResult:
     @property
     def agentic_execution_version(self) -> str:
         version = self.system_version_snapshot.get("agentic_execution_version", "v8")
-        return version if version in {"v8", "v9"} else "v8"
+        return version if version in {"v8", "v9", "v10"} else "v8"
 
     @property
     def response_status(self) -> Optional[str]:
@@ -1509,7 +1506,7 @@ class CampaignResearchResult:
     @property
     def agentic_execution_version(self) -> str:
         version = self.system_version_snapshot.get("agentic_execution_version", "v8")
-        return version if version in {"v8", "v9"} else "v8"
+        return version if version in {"v8", "v9", "v10"} else "v8"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1541,7 +1538,7 @@ class CampaignReleaseResult:
     @property
     def agentic_execution_version(self) -> str:
         version = self.system_version_snapshot.get("agentic_execution_version", "v8")
-        return version if version in {"v8", "v9"} else "v8"
+        return version if version in {"v8", "v9", "v10"} else "v8"
 
     @property
     def shadow_evaluation_policy(self) -> Optional[str]:
@@ -2579,6 +2576,7 @@ class AgentTraceRepository:
                 "created_at": normalized_payload.get("created_at") or _utc_now_iso(),
                 "steps": steps,
                 "agentic_v9": normalized_payload.get("agentic_v9"),
+                "agentic_v10": normalized_payload.get("agentic_v10"),
             }
         )
         serialized_trace = _json_dumps(detail.model_dump(mode="json"))

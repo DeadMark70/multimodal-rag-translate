@@ -6,10 +6,11 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
+from core.errors import AppError
 from core.sensitive_data import is_sensitive_credential_key
 from evaluation.analytics import EvaluationAnalyticsService
 from evaluation.campaign_schemas import CampaignResult, CampaignResultStatus
-from evaluation.db import CampaignRepository, CampaignResultRepository
+from evaluation.db import AgentTraceRepository, CampaignRepository, CampaignResultRepository
 from evaluation.export_schemas import (
     ExportAvailability,
     ExportCampaignIdentityV2,
@@ -76,7 +77,10 @@ _EXCERPT_CONTENT_KEYS = {
     "fact_text",
     "retrieved_excerpt",
     "statement",
+    "content",
+    "rendered_context",
 }
+_PROMPT_CONTENT_KEYS = {"prompt_messages", "prompt", "template"}
 _PERMANENTLY_EXCLUDED_KEYS = {
     "error",
     "errors",
@@ -128,6 +132,8 @@ def _project_trace_payload(
     if field_name in _ANSWER_CONTENT_KEYS and not request.include_answers:
         return None
     if field_name in _EXCERPT_CONTENT_KEYS and not request.include_retrieved_excerpts:
+        return None
+    if field_name in _PROMPT_CONTENT_KEYS and not request.include_full_prompts:
         return None
     if isinstance(value, dict):
         projected: dict[str, Any] = {}
@@ -201,8 +207,31 @@ def _project_agentic_v9(
     )
 
 
+def _project_agentic_v10(trace: Any, request: ExportCampaignRequest) -> dict[str, Any] | None:
+    """Keep v10's stable summary available without freezing its raw payload."""
+    raw = getattr(trace, "agentic_v10", None)
+    if not isinstance(raw, dict):
+        return None
+    decomposition = raw.get("decomposition")
+    branches = raw.get("branches")
+    evidence = raw.get("deduplicated_evidence")
+    result: dict[str, Any] = {
+        "schema_version": str(raw.get("schema_version") or "1"),
+        "execution_profile": getattr(trace, "execution_profile", None),
+        "response_status": raw.get("response_status"),
+        "summary": {
+            "subquery_count": len(decomposition.get("sub_queries", [])) if isinstance(decomposition, dict) else 0,
+            "branch_count": len(branches) if isinstance(branches, list) else 0,
+            "deduplicated_evidence_count": len(evidence) if isinstance(evidence, list) else 0,
+        },
+    }
+    if request.include_raw_trace_payloads:
+        result["raw_payload"] = _project_trace_payload(raw, request=request)
+    return _sanitize_export_value(result)
+
+
 def _project_export_run_observability(
-    *, canonical: CanonicalRunObservability, request: ExportCampaignRequest
+    *, canonical: CanonicalRunObservability, request: ExportCampaignRequest, v10_trace: Any = None
 ) -> ExportRunObservabilityDataV2:
     """Project one canonical run through the sole detailed content boundary."""
     interactive = _project_interactive_run_observability(canonical)
@@ -330,6 +359,7 @@ def _project_export_run_observability(
         evidence_coverage=coverage,
         evidence_coverage_status=interactive.evidence_coverage_status,
         agentic_v9=_project_agentic_v9(canonical, request),
+        agentic_v10=_project_agentic_v10(v10_trace, request),
     )
 
 
@@ -344,12 +374,14 @@ class EvaluationExportService:
         analytics: Any | None = None,
         research: Any | None = None,
         release: Any | None = None,
+        traces: Any | None = None,
     ) -> None:
         self._campaigns = campaigns or CampaignRepository()
         self._results = results or CampaignResultRepository()
         self._analytics = analytics or EvaluationAnalyticsService()
         self._research = research or ResearchAnalyticsService()
         self._release = release or ReleaseMetricsService()
+        self._traces = traces or AgentTraceRepository()
 
     async def export_campaign(
         self,
@@ -386,6 +418,21 @@ class EvaluationExportService:
             if request.include_run_observability
             else {}
         )
+        v10_traces: dict[str, Any] = {}
+        if request.include_run_observability:
+            for result in results:
+                if result.agentic_execution_version != "v10":
+                    continue
+                try:
+                    v10_traces[result.id] = await self._traces.get_for_result(
+                        user_id=user_id,
+                        campaign_id=campaign_id,
+                        campaign_result_id=result.id,
+                    )
+                except AppError:
+                    # A run can be promoted before observability persistence; the
+                    # standard availability envelope remains authoritative.
+                    continue
         accounting_by_run = (
             {run_id: item.token_breakdown for run_id, item in canonical.items()}
             if request.include_run_observability
@@ -413,7 +460,7 @@ class EvaluationExportService:
         for result in results:
             detail = (
                 _project_export_run_observability(
-                    canonical=canonical[result.id], request=request
+                    canonical=canonical[result.id], request=request, v10_trace=v10_traces.get(result.id)
                 )
                 if request.include_run_observability
                 else None

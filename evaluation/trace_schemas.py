@@ -502,6 +502,7 @@ class EvaluationRunObservabilityDetail(BaseModel):
     claim_extraction_status: Literal["recorded", "empty", "not_instrumented"] = "not_instrumented"
     human_ratings: list[EvaluationHumanRatingProjection] = Field(default_factory=list)
     agentic_v9: V9ExecutionObservability | None = None
+    agentic_v10: dict[str, Any] | None = None
     evidence_coverage: Optional[list[dict[str, Any]]] = None
     evidence_coverage_status: Literal[
         "complete", "partial", "not_available", "not_instrumented"
@@ -548,7 +549,7 @@ class AgentTraceDetail(BaseModel):
     question: str = Field(min_length=1)
     mode: CampaignMode
     execution_profile: Optional[str] = None
-    agentic_execution_version: Literal["v8", "v9"] = "v8"
+    agentic_execution_version: Literal["v8", "v9", "v10"] = "v8"
     question_intent: Optional[str] = None
     strategy_tier: Optional[str] = None
     route_profile: Optional[str] = None
@@ -575,6 +576,7 @@ class AgentTraceDetail(BaseModel):
     created_at: datetime
     steps: list[AgentTraceStep] = Field(default_factory=list)
     agentic_v9: AgenticV9TracePayload | None = None
+    agentic_v10: dict[str, Any] | None = None
 
 
 class AgentTraceSummary(BaseModel):
@@ -586,7 +588,7 @@ class AgentTraceSummary(BaseModel):
     question: str = ""
     mode: CampaignMode | None = None
     execution_profile: Optional[str] = None
-    agentic_execution_version: Literal["v8", "v9"] = "v8"
+    agentic_execution_version: Literal["v8", "v9", "v10"] = "v8"
     question_intent: Optional[str] = None
     strategy_tier: Optional[str] = None
     route_profile: Optional[str] = None

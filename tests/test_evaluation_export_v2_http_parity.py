@@ -184,6 +184,8 @@ def test_authenticated_http_panel_and_export_v2_objects_are_identical() -> None:
         assert created_case.status_code == 200
         campaign_payload = _campaign_payload()
         campaign_payload["modes"] = ["naive", "agentic"]
+        # This parity fixture deliberately exercises the legacy v9 envelope.
+        campaign_payload["agentic_execution_version"] = "v9"
         created = client.post("/api/evaluation/campaigns", json=campaign_payload)
         assert created.status_code == 200
         campaign_id = created.json()["campaign_id"]

@@ -27,6 +27,8 @@ AGENTIC_V9_EXPLICIT_SCOPE_PROFILE = (
     "finalpack_r1_active_atomic_contract_v2_quote_qualified_v1"
 )
 AGENTIC_V9_CONTEXT_POLICY_VERSION = "v5_final_context_soft_pack_r1"
+AGENTIC_V10_PROFILE = "agentic_eval_v10_subquery_sequential_rerank_top2"
+AGENTIC_V10_CONTEXT_POLICY_VERSION = "v10_grounded_structured_pack"
 AGENTIC_LEGACY_CHAT_PROFILE = (
     f"agentic_eval_v7_semantic_router_{DEFAULT_PRODUCTION_INDEXING_PROFILE}"
 )

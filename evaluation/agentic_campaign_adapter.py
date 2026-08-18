@@ -14,11 +14,11 @@ from langchain_core.documents import Document
 
 from data_base.agentic_v9.schemas import EvidencePacket, FinalAnswerResult
 
-AgenticExecutionVersion = Literal["v8", "v9"]
+AgenticExecutionVersion = Literal["v8", "v9", "v10"]
 
 
 def effective_agentic_execution_version(
-    identity: str, configured_version: AgenticExecutionVersion
+    identity: str, configured_version: AgenticExecutionVersion = "v10"
 ) -> AgenticExecutionVersion:
     """Return the version owned by one public execution identity.
 
@@ -27,6 +27,8 @@ def effective_agentic_execution_version(
     are compared beside ``agentic-v9`` in the same campaign.
     """
     normalized = str(identity).strip().lower()
+    if normalized in {"agentic-v10", "v10"}:
+        return "v10"
     if normalized in {"agentic-v9", "v9", "agentic-v9-shadow"}:
         return "v9"
     if normalized in {"agentic-v8", "v8"}:
@@ -50,6 +52,8 @@ def campaign_execution_identity(
         "agentic-v9": ("agentic", "v9"),
         "v9": ("agentic", "v9"),
         "agentic-v9-shadow": ("agentic", "v9"),
+        "agentic-v10": ("agentic", "v10"),
+        "v10": ("agentic", "v10"),
     }
     try:
         core_mode, version = aliases[normalized]

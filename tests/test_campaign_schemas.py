@@ -92,7 +92,7 @@ def test_router_analysis_response_uses_typed_retrospective_rows() -> None:
         )
 
 
-def test_new_evaluation_campaign_contracts_default_to_agentic_v9() -> None:
+def test_new_evaluation_campaign_contracts_default_to_agentic_v10() -> None:
     config = CampaignConfig(
         test_case_ids=["Q1"],
         modes=["agentic"],
@@ -104,9 +104,9 @@ def test_new_evaluation_campaign_contracts_default_to_agentic_v9() -> None:
         model_config=_model_config(),
     )
 
-    assert config.agentic_execution_version == "v9"
-    assert request.agentic_execution_version == "v9"
-    assert request.to_config().agentic_execution_version == "v9"
+    assert config.agentic_execution_version == "v10"
+    assert request.agentic_execution_version == "v10"
+    assert request.to_config().agentic_execution_version == "v10"
 
 
 def test_new_evaluation_campaign_contracts_preserve_explicit_agentic_v8() -> None:

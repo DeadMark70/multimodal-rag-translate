@@ -131,7 +131,7 @@ class ExportResultV2(ExportModel):
     condition_id: str | None
     execution_profile: str | None
     context_policy_version: str | None
-    agentic_execution_version: Literal["v8", "v9"]
+    agentic_execution_version: Literal["v8", "v9", "v10"]
     execution_identity: str | None
     response_status: str | None
     status: CampaignResultStatus
@@ -573,6 +573,7 @@ class ExportRunObservabilityDataV2(ExportModel):
         "complete", "partial", "not_available", "not_instrumented"
     ]
     agentic_v9: ExportV9ExecutionObservabilityV2 | None
+    agentic_v10: dict[str, JsonValue] | None = None
 
 
 class ExportRunObservabilityV2(ExportModel):

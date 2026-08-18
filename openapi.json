@@ -4885,6 +4885,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -5095,6 +5097,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -5356,6 +5360,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -5389,7 +5395,8 @@
             "type": "string",
             "enum": [
               "v8",
-              "v9"
+              "v9",
+              "v10"
             ],
             "title": "Agentic Execution Version",
             "default": "v8"
@@ -5586,6 +5593,18 @@
                 "type": "null"
               }
             ]
+          },
+          "agentic_v10": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agentic V10"
           }
         },
         "type": "object",
@@ -5762,6 +5781,8 @@
                   "v8",
                   "agentic-v9",
                   "v9",
+                  "agentic-v10",
+                  "v10",
                   "agentic-v9-shadow",
                   "router",
                   "graph_raw_current",
@@ -5800,7 +5821,8 @@
             "type": "string",
             "enum": [
               "v8",
-              "v9"
+              "v9",
+              "v10"
             ],
             "title": "Agentic Execution Version",
             "default": "v8"
@@ -6602,6 +6624,8 @@
                 "v8",
                 "agentic-v9",
                 "v9",
+                "agentic-v10",
+                "v10",
                 "agentic-v9-shadow",
                 "router",
                 "graph_raw_current",
@@ -6696,10 +6720,11 @@
             "type": "string",
             "enum": [
               "v8",
-              "v9"
+              "v9",
+              "v10"
             ],
             "title": "Agentic Execution Version",
-            "default": "v9"
+            "default": "v10"
           },
           "shadow_evaluation_policy": {
             "anyOf": [
@@ -6775,6 +6800,8 @@
                 "v8",
                 "agentic-v9",
                 "v9",
+                "agentic-v10",
+                "v10",
                 "agentic-v9-shadow",
                 "router",
                 "graph_raw_current",
@@ -6869,10 +6896,11 @@
             "type": "string",
             "enum": [
               "v8",
-              "v9"
+              "v9",
+              "v10"
             ],
             "title": "Agentic Execution Version",
-            "default": "v9"
+            "default": "v10"
           },
           "shadow_evaluation_policy": {
             "anyOf": [
@@ -7013,6 +7041,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -7181,6 +7211,8 @@
                 "v8",
                 "agentic-v9",
                 "v9",
+                "agentic-v10",
+                "v10",
                 "agentic-v9-shadow",
                 "router",
                 "graph_raw_current",
@@ -7667,6 +7699,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -7733,7 +7767,8 @@
             "type": "string",
             "enum": [
               "v8",
-              "v9"
+              "v9",
+              "v10"
             ],
             "title": "Agentic Execution Version",
             "default": "v8"
@@ -8117,6 +8152,8 @@
                   "v8",
                   "agentic-v9",
                   "v9",
+                  "agentic-v10",
+                  "v10",
                   "agentic-v9-shadow",
                   "router",
                   "graph_raw_current",
@@ -9002,6 +9039,8 @@
                 "v8",
                 "agentic-v9",
                 "v9",
+                "agentic-v10",
+                "v10",
                 "agentic-v9-shadow",
                 "router",
                 "graph_raw_current",
@@ -9044,6 +9083,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -11311,6 +11352,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -11453,6 +11496,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -11508,7 +11553,8 @@
             "type": "string",
             "enum": [
               "v8",
-              "v9"
+              "v9",
+              "v10"
             ],
             "title": "Agentic Execution Version",
             "default": "v8"
@@ -11711,6 +11757,18 @@
               }
             ]
           },
+          "agentic_v10": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agentic V10"
+          },
           "evidence_coverage": {
             "anyOf": [
               {
@@ -11789,6 +11847,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -12832,6 +12892,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -13227,6 +13289,8 @@
                 "v8",
                 "agentic-v9",
                 "v9",
+                "agentic-v10",
+                "v10",
                 "agentic-v9-shadow",
                 "router",
                 "graph_raw_current",
@@ -14401,6 +14465,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -14638,6 +14704,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -15430,6 +15498,8 @@
                   "v8",
                   "agentic-v9",
                   "v9",
+                  "agentic-v10",
+                  "v10",
                   "agentic-v9-shadow",
                   "router",
                   "graph_raw_current",
@@ -15513,6 +15583,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -16289,6 +16361,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -16354,7 +16428,8 @@
             "type": "string",
             "enum": [
               "v8",
-              "v9"
+              "v9",
+              "v10"
             ],
             "title": "Agentic Execution Version"
           },
@@ -16881,6 +16956,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -17116,6 +17193,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -17431,6 +17510,20 @@
                 "type": "null"
               }
             ]
+          },
+          "agentic_v10": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agentic V10"
           }
         },
         "additionalProperties": false,
@@ -17514,6 +17607,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -17945,6 +18040,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -20974,6 +21071,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -21684,6 +21783,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -22781,6 +22882,8 @@
                   "v8",
                   "agentic-v9",
                   "v9",
+                  "agentic-v10",
+                  "v10",
                   "agentic-v9-shadow",
                   "router",
                   "graph_raw_current",
@@ -22863,6 +22966,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -24055,6 +24160,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",
@@ -24895,6 +25002,8 @@
               "v8",
               "agentic-v9",
               "v9",
+              "agentic-v10",
+              "v10",
               "agentic-v9-shadow",
               "router",
               "graph_raw_current",

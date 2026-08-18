@@ -284,10 +284,10 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
         assert runs.status_code == 200
         run_list_item = runs.json()["runs"][0]
         assert run_list_item["run_id"] == run_id
-        # The seeded campaign explicitly records the v9 execution version, and
+        # A newly created campaign records the evaluation-default v10 version,
         # the analytics projection preserves that durable identity.
         assert run_list_item["condition_id"] is None
-        assert run_list_item["agentic_execution_version"] == "v9"
+        assert run_list_item["agentic_execution_version"] == "v10"
 
         aggregate_endpoint_expectations = {
             "mode-comparison": ("execution", 1),
