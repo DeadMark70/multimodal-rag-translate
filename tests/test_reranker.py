@@ -77,7 +77,7 @@ class TestDocumentRerankerUnit:
         assert not DocumentReranker.is_initialized()
         assert DocumentReranker.runtime_metadata(reason="test") == {
             "reranker_active": False,
-            "reranker_model": "jinaai/jina-reranker-v3",
+            "reranker_model": "jinaai/jina-reranker-v3.5",
             "reranker_device": None,
             "reranker_reason": "test",
         }
@@ -293,7 +293,7 @@ class TestRerankerSingleton:
 
         assert DocumentReranker.runtime_metadata() == {
             "reranker_active": True,
-            "reranker_model": "jinaai/jina-reranker-v3",
+            "reranker_model": "jinaai/jina-reranker-v3.5",
             "reranker_device": "cpu",
             "reranker_reason": "low_vram_7.0gb",
         }
@@ -318,7 +318,7 @@ class TestRerankerSingleton:
 
         assert DocumentReranker.runtime_metadata() == {
             "reranker_active": True,
-            "reranker_model": "jinaai/jina-reranker-v3",
+            "reranker_model": "jinaai/jina-reranker-v3.5",
             "reranker_device": "cpu",
             "reranker_reason": "cuda_unavailable",
         }
@@ -346,7 +346,7 @@ class TestRerankerSingleton:
 
         assert DocumentReranker.runtime_metadata() == {
             "reranker_active": True,
-            "reranker_model": "jinaai/jina-reranker-v3",
+            "reranker_model": "jinaai/jina-reranker-v3.5",
             "reranker_device": "cpu",
             "reranker_reason": "cuda_masked_by_env",
         }
@@ -367,7 +367,7 @@ class TestRerankerSingleton:
 
         assert DocumentReranker.runtime_metadata() == {
             "reranker_active": True,
-            "reranker_model": "jinaai/jina-reranker-v3",
+            "reranker_model": "jinaai/jina-reranker-v3.5",
             "reranker_device": "cpu",
             "reranker_reason": "cuda_oom_fallback",
         }

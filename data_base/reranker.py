@@ -1,5 +1,5 @@
 """
-Document reranker module backed by Jina Reranker v3.
+Document reranker module backed by Jina Reranker v3.5.
 
 Provides local document reranking for retrieval precision improvements while
 keeping a stable wrapper API for the rest of the application.
@@ -21,7 +21,7 @@ from transformers import AutoModel
 logger = logging.getLogger(__name__)
 
 # Default reranker model
-_DEFAULT_RERANKER_MODEL = os.getenv("RERANKER_MODEL", "jinaai/jina-reranker-v3")
+_DEFAULT_RERANKER_MODEL = os.getenv("RERANKER_MODEL", "jinaai/jina-reranker-v3.5")
 _DEFAULT_RERANKER_DEVICE_POLICY = os.getenv("RERANKER_DEVICE", "auto").strip().lower()
 _DEFAULT_MIN_GPU_MEMORY_GB = float(os.getenv("RERANKER_MIN_GPU_GB", "7.5"))
 _MASKED_CUDA_VISIBLE_VALUES = {"", "-1", "none", "null"}

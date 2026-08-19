@@ -411,8 +411,19 @@ class AgenticV10PipelineService:
             if parsing_error:
                 raise ValueError(f"StructuredOutputInvalid: {type(parsing_error).__name__}")
             map_card = MapSubqueryEvidenceCard.model_validate(parsed)
+            has_supported_findings = bool(map_card.supported_findings)
+            status: Literal["summarized", "no_evidence"] = (
+                "summarized"
+                if map_card.status == "summarized" and has_supported_findings
+                else "no_evidence"
+            )
+            missing_or_unsupported = list(map_card.missing_or_unsupported)
+            if status == "no_evidence" and not missing_or_unsupported:
+                missing_or_unsupported = [
+                    "The selected source does not directly support this subquery."
+                ]
             card = SubqueryEvidenceCard(
-                status=map_card.status,
+                status=status,
                 subquery_id=item.id,
                 target_entity=item.target_entity,
                 focus=item.focus,
@@ -423,7 +434,7 @@ class AgenticV10PipelineService:
                     )
                     for finding in map_card.supported_findings
                 ],
-                missing_or_unsupported=map_card.missing_or_unsupported,
+                missing_or_unsupported=missing_or_unsupported,
             )
             return card.model_dump(mode="json"), {
                 "status": card.status,

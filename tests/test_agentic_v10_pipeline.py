@@ -125,6 +125,45 @@ async def test_v10_map_failure_preserves_raw_chunk_for_final() -> None:
 
 
 @pytest.mark.asyncio
+async def test_v10_adds_an_explicit_gap_when_map_returns_empty_no_evidence() -> None:
+    decomposer = MagicMock()
+    decomposer.decompose = AsyncMock(return_value=[
+        SubQueryItem(id="SQ1", query="query", focus="focus", target_entity="entity")
+    ])
+    evidence = Document(page_content="Unlabeled values", metadata={"doc_id": "doc-1"})
+    reranker = MagicMock()
+    reranker.rerank_with_scores.return_value = [(evidence, 0.9)]
+    service = AgenticV10PipelineService(decomposer=decomposer, reranker=reranker)
+    map_llm = MagicMock()
+    map_llm.ainvoke = AsyncMock(return_value={
+        "parsed": {
+            "status": "no_evidence",
+            "supported_findings": [],
+            "missing_or_unsupported": [],
+        },
+        "raw": MagicMock(usage_metadata={}),
+        "parsing_error": None,
+    })
+    summary_llm = MagicMock()
+    summary_llm.with_structured_output.return_value = map_llm
+    synthesis_llm = MagicMock()
+    synthesis_llm.ainvoke = AsyncMock(return_value=MagicMock(content="Answer", usage_metadata={}))
+
+    with (
+        patch("data_base.agentic_v10.subquery_pipeline_service.get_user_retriever_async", new=AsyncMock(return_value=MagicMock())),
+        patch("data_base.agentic_v10.subquery_pipeline_service.retrieve_hybrid_documents", new=AsyncMock(return_value=MagicMock(documents=[evidence]))),
+        patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", side_effect=[summary_llm, synthesis_llm]),
+    ):
+        result = await service.execute(question="Question", user_id="user-1")
+
+    card = result.agent_trace["agentic_v10"]["context_pack"]["evidence_cards"][0]
+    assert card["status"] == "no_evidence"
+    assert card["missing_or_unsupported"] == [
+        "The selected source does not directly support this subquery."
+    ]
+
+
+@pytest.mark.asyncio
 async def test_v10_returns_transparent_partial_when_no_evidence_exists() -> None:
     decomposer = MagicMock()
     decomposer.decompose = AsyncMock(return_value=[
