@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import time
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from langchain_core.documents import Document
+from pydantic import BaseModel, Field
 
 from core.prompt_loader import (
     format_agentic_v10_prompt,
@@ -29,9 +31,9 @@ from data_base.vector_store_manager import get_user_retriever_async
 
 logger = logging.getLogger(__name__)
 
-AGENTIC_V10_EXECUTION_PROFILE = "agentic_v10_subquery_sequential_rerank_top1"
-AGENTIC_V10_CONTEXT_POLICY_VERSION = "v10_grounded_structured_pack"
-AGENTIC_V10_TRACE_SCHEMA_VERSION = "1"
+AGENTIC_V10_EXECUTION_PROFILE = "agentic_v10_top1_map_reduce_evidence_cards"
+AGENTIC_V10_CONTEXT_POLICY_VERSION = "v10_map_reduce_evidence_cards"
+AGENTIC_V10_TRACE_SCHEMA_VERSION = "2"
 
 
 def _document_title(document: Document) -> str:
@@ -85,6 +87,30 @@ def _normalize_usage(response: Any) -> dict[str, int]:
     if reasoning:
         usage["reasoning_tokens"] = reasoning
     return usage
+
+
+def _merge_usage(*usage_rows: dict[str, int]) -> dict[str, int]:
+    """Aggregate normalized per-call usage without assuming provider-specific keys."""
+    merged: dict[str, int] = {}
+    for row in usage_rows:
+        for key, value in row.items():
+            if isinstance(value, int) and value >= 0:
+                merged[key] = merged.get(key, 0) + value
+    return merged
+
+
+class EvidenceFinding(BaseModel):
+    statement: str
+    reference_ids: list[str] = Field(min_length=1)
+
+
+class SubqueryEvidenceCard(BaseModel):
+    status: Literal["summarized", "no_evidence", "raw_fallback"]
+    subquery_id: str
+    target_entity: str
+    focus: str
+    supported_findings: list[EvidenceFinding] = Field(default_factory=list)
+    missing_or_unsupported: list[str] = Field(default_factory=list)
 
 
 class AgenticV10PipelineService:
@@ -159,23 +185,90 @@ class AgenticV10PipelineService:
                 "rerank_latency_ms": (time.perf_counter() - rerank_started) * 1000,
             })
 
+        selected_by_subquery = {
+            item.id: (document, score, item)
+            for document, score, item in selected
+        }
         unique: dict[str, tuple[Document, float, SubQueryItem]] = {}
         for document, score, item in selected:
             unique.setdefault(_document_key(document), (document, score, item))
         final_documents = [value[0] for value in unique.values()]
-        source_doc_ids = list(dict.fromkeys(str(get_document_id(document.metadata) or "") for document in final_documents if get_document_id(document.metadata)))
-        context_blocks = [self._context_block(index, document, score, item) for index, (document, score, item) in enumerate(unique.values(), start=1)]
-        context_text = "\n\n".join(context_blocks)
+        source_doc_ids = list(
+            dict.fromkeys(
+                str(get_document_id(document.metadata) or "")
+                for document in final_documents
+                if get_document_id(document.metadata)
+            )
+        )
+        reference_by_document_key = {
+            _document_key(document): index
+            for index, (document, _, _) in enumerate(unique.values(), start=1)
+        }
+        source_document_mapping = [
+            {
+                "reference_id": f"[Ref {index}]",
+                "document": _trace_document(document, score),
+                "selected_by_subquery_ids": [
+                    item.id
+                    for candidate, _, item in selected
+                    if _document_key(candidate) == _document_key(document)
+                ],
+            }
+            for index, (document, score, _) in enumerate(unique.values(), start=1)
+        ]
+        for branch in branches:
+            selection = selected_by_subquery.get(branch["subquery_id"])
+            branch["selected_reference_id"] = (
+                f"[Ref {reference_by_document_key[_document_key(selection[0])]}]"
+                if selection is not None
+                else None
+            )
+
+        map_llm: Any | None = None
+        map_llm_error: str | None = None
+        if selected_by_subquery:
+            try:
+                base_llm = get_llm(purpose="summary")
+                map_llm = base_llm.with_structured_output(
+                    SubqueryEvidenceCard,
+                    method="json_schema",
+                    include_raw=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("v10 map-stage initialization failed: %s", exc)
+                map_llm_error = type(exc).__name__
+
+        mapped = await asyncio.gather(
+            *(
+                self._map_evidence_card(
+                    item=item,
+                    selection=selected_by_subquery.get(item.id),
+                    reference_by_document_key=reference_by_document_key,
+                    map_llm=map_llm,
+                    initialization_error=map_llm_error,
+                )
+                for item in decomposition.sub_queries
+            )
+        )
+        evidence_cards: list[dict[str, Any]] = []
+        map_usage: dict[str, int] = {}
+        for branch, (card, map_trace) in zip(branches, mapped, strict=True):
+            branch["map"] = map_trace
+            evidence_cards.append(card)
+            map_usage = _merge_usage(map_usage, map_trace["token_usage"])
+
         overview = "\n".join(f"{item.id}. [{item.target_entity}] {item.focus} (查詢: {item.query})" for item in decomposition.sub_queries)
-        synthesis_messages = self._synthesis_messages(question, overview, context_text)
-        usage: dict[str, int] = {}
+        evidence_cards_text = json.dumps(evidence_cards, ensure_ascii=False, indent=2)
+        synthesis_messages = self._synthesis_messages(question, overview, evidence_cards_text)
+        synthesis_usage: dict[str, int] = {}
         synthesis_error: str | None = None
         if final_documents:
-            answer, usage, synthesis_error = await self._synthesize(synthesis_messages)
+            answer, synthesis_usage, synthesis_error = await self._synthesize(synthesis_messages)
             response_status = "qualified_partial" if synthesis_error else "complete"
         else:
             answer = "目前知識庫沒有可用的相關證據，因此無法根據文件回答此問題。請補充或上傳相關文獻後再試。"
             response_status = "qualified_partial"
+        usage = _merge_usage(map_usage, synthesis_usage)
         duration_ms = (time.perf_counter() - start) * 1000
         trace = {
             "trace_id": trace_id,
@@ -191,11 +284,32 @@ class AgenticV10PipelineService:
                 "setup_snapshot": dict(setup_snapshot or {}),
                 "decomposition": decomposition.model_dump(mode="json"),
                 "branches": branches,
-                "deduplicated_evidence": [_trace_document(document, score) for document, score, _ in unique.values()],
-                "context_pack": {"rendered_context": context_text, "source_doc_ids": source_doc_ids},
+                "deduplicated_evidence": [
+                    {
+                        "reference_id": f"[Ref {index}]",
+                        **_trace_document(document, score),
+                    }
+                    for index, (document, score, _) in enumerate(unique.values(), start=1)
+                ],
+                "source_document_mapping": source_document_mapping,
+                "map_stage": {
+                    "structured_output_method": "json_schema",
+                    "token_usage": map_usage,
+                    "card_count": len(evidence_cards),
+                    "fallback_count": sum(card["status"] == "raw_fallback" for card in evidence_cards),
+                    "failure_count": sum(
+                        bool(branch["map"].get("failure_diagnostic"))
+                        for branch in branches
+                    ),
+                },
+                "context_pack": {
+                    "rendered_evidence_cards": evidence_cards_text,
+                    "evidence_cards": evidence_cards,
+                    "source_doc_ids": source_doc_ids,
+                },
                 "synthesis": {
                     "prompt_messages": synthesis_messages,
-                    "token_usage": usage,
+                    "token_usage": synthesis_usage,
                     "failure_diagnostic": synthesis_error,
                 },
             },
@@ -224,11 +338,149 @@ class AgenticV10PipelineService:
         )
 
     @staticmethod
-    def _synthesis_messages(question: str, overview: str, context_text: str) -> list[dict[str, str]]:
+    def _no_evidence_card(item: SubQueryItem) -> dict[str, Any]:
+        return SubqueryEvidenceCard(
+            status="no_evidence",
+            subquery_id=item.id,
+            target_entity=item.target_entity,
+            focus=item.focus,
+            missing_or_unsupported=["此子問題沒有 rerank 後的可用來源證據。"],
+        ).model_dump(mode="json")
+
+    @classmethod
+    async def _map_evidence_card(
+        cls,
+        *,
+        item: SubQueryItem,
+        selection: tuple[Document, float, SubQueryItem] | None,
+        reference_by_document_key: dict[str, int],
+        map_llm: Any | None,
+        initialization_error: str | None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if selection is None:
+            return cls._no_evidence_card(item), {
+                "status": "no_evidence",
+                "prompt_messages": [],
+                "token_usage": {},
+                "latency_ms": 0.0,
+                "failure_diagnostic": None,
+            }
+
+        document, score, _ = selection
+        reference_number = reference_by_document_key[_document_key(document)]
+        reference_id = f"[Ref {reference_number}]"
+        evidence_block = cls._context_block(reference_number, document, score, item)
+        messages = cls._evidence_card_messages(item, evidence_block)
+        started = time.perf_counter()
+        if map_llm is None:
+            return cls._raw_fallback_card(item, reference_id, evidence_block), {
+                "status": "raw_fallback",
+                "prompt_messages": messages,
+                "token_usage": {},
+                "latency_ms": (time.perf_counter() - started) * 1000,
+                "failure_diagnostic": initialization_error or "StructuredOutputUnavailable",
+            }
+
+        call_usage: dict[str, int] = {}
+        try:
+            response = await (
+                map_llm.ainvoke(messages)
+                if hasattr(map_llm, "ainvoke")
+                else map_llm.invoke(messages)
+            )
+            parsed, raw_response, parsing_error = cls._structured_output_parts(response)
+            call_usage = _normalize_usage(raw_response)
+            if parsing_error:
+                raise ValueError(f"StructuredOutputInvalid: {type(parsing_error).__name__}")
+            card = SubqueryEvidenceCard.model_validate(parsed)
+            if card.status == "raw_fallback":
+                raise ValueError("StructuredOutputInvalid: raw_fallback is pipeline-owned")
+            for finding in card.supported_findings:
+                if set(finding.reference_ids) != {reference_id}:
+                    raise ValueError("StructuredOutputInvalid: reference_ids do not match source")
+            card = card.model_copy(
+                update={
+                    "subquery_id": item.id,
+                    "target_entity": item.target_entity,
+                    "focus": item.focus,
+                }
+            )
+            return card.model_dump(mode="json"), {
+                "status": card.status,
+                "prompt_messages": messages,
+                "token_usage": call_usage,
+                "latency_ms": (time.perf_counter() - started) * 1000,
+                "failure_diagnostic": None,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("v10 map-stage failed for %s: %s", item.id, exc)
+            return cls._raw_fallback_card(item, reference_id, evidence_block), {
+                "status": "raw_fallback",
+                "prompt_messages": messages,
+                "token_usage": call_usage,
+                "latency_ms": (time.perf_counter() - started) * 1000,
+                "failure_diagnostic": type(exc).__name__,
+            }
+
+    @staticmethod
+    def _structured_output_parts(response: Any) -> tuple[Any, Any, Any | None]:
+        if isinstance(response, dict) and {"parsed", "raw"}.issubset(response):
+            return response.get("parsed"), response.get("raw"), response.get("parsing_error")
+        return response, response, None
+
+    @staticmethod
+    def _raw_fallback_card(
+        item: SubQueryItem, reference_id: str, evidence_block: str
+    ) -> dict[str, Any]:
+        card = SubqueryEvidenceCard(
+            status="raw_fallback",
+            subquery_id=item.id,
+            target_entity=item.target_entity,
+            focus=item.focus,
+            missing_or_unsupported=[
+                "Evidence card structured output failed; use the marked raw source only."
+            ],
+        ).model_dump(mode="json")
+        card["reference_ids"] = [reference_id]
+        card["raw_evidence_block"] = evidence_block
+        return card
+
+    @staticmethod
+    def _evidence_card_messages(
+        item: SubQueryItem, evidence_block: str
+    ) -> list[dict[str, str]]:
+        registry = get_agentic_v10_prompt_registry()
+        return [
+            {"role": "system", "content": registry.get("subquery_evidence_card_system").template},
+            {
+                "role": "user",
+                "content": format_agentic_v10_prompt(
+                    "subquery_evidence_card_user",
+                    subquery_id=item.id,
+                    target_entity=item.target_entity,
+                    focus=item.focus,
+                    query=item.query,
+                    evidence_block=evidence_block,
+                ),
+            },
+        ]
+
+    @staticmethod
+    def _synthesis_messages(
+        question: str, overview: str, evidence_cards: str
+    ) -> list[dict[str, str]]:
         registry = get_agentic_v10_prompt_registry()
         return [
             {"role": "system", "content": registry.get("grounded_synthesis_system").template},
-            {"role": "user", "content": format_agentic_v10_prompt("grounded_synthesis_user", question=question, subqueries_overview=overview, context_text=context_text)},
+            {
+                "role": "user",
+                "content": format_agentic_v10_prompt(
+                    "grounded_synthesis_user",
+                    question=question,
+                    subqueries_overview=overview,
+                    evidence_cards=evidence_cards,
+                ),
+            },
         ]
 
     @staticmethod
