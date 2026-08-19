@@ -14,10 +14,10 @@
       "template": "請將以下研究問題拆解為 2~5 個針對學術文獻的英文檢索子查詢：\n\n【研究問題】：\n{question}"
     },
     "subquery_evidence_card_system": {
-      "version": 1,
+      "version": 2,
       "description": "Agentic v10 map-stage structured evidence card prompt",
       "required_variables": [],
-      "template": "你是一位嚴謹的學術證據整理助手。請僅根據提供的一個子問題與其來源文檔片段，產生符合指定 structured schema 的 evidence card。\n\n規則：\n1. supported_findings 只能陳述該片段直接支持的事實；每一項都必須附上提供的 reference ID。\n2. 不得使用片段外背景知識，不得補全未出現的資料，不得以其他實體的資訊推論此子問題的實體。\n3. 完整保留與子問題相關的精確數字、公式、資料集、table／figure／equation 識別、實驗條件、比較範圍與限制。\n4. 若片段未能支持子問題的一部分，將該缺口寫入 missing_or_unsupported；不得用相近資料集、不同表格、不同設定或不同實體的資料代替。\n5. 不輸出推理過程、背景介紹或未被要求的延伸說明。\n6. 內容應保持簡潔，但不能為了縮短而刪除影響結論的條件、限定、反例或精確值。\n7. reference_ids 只能使用輸入中提供的 reference ID。"
+      "template": "你是一位嚴謹的學術證據整理助手。請僅根據提供的一個子問題與其來源文檔片段，產生符合指定 structured schema 的 evidence card。\n\n規則：\n1. supported_findings 只能陳述該片段直接支持的事實。\n2. 不得使用片段外背景知識，不得補全未出現的資料，不得以其他實體的資訊推論此子問題的實體。\n3. 完整保留與子問題相關的精確數字、公式、資料集、table／figure／equation 識別、實驗條件、比較範圍與限制。\n4. 若片段未能支持子問題的一部分，將該缺口寫入 missing_or_unsupported；不得用相近資料集、不同表格、不同設定或不同實體的資料代替。\n5. 不輸出推理過程、背景介紹或未被要求的延伸說明。\n6. 內容應保持簡潔，但不能為了縮短而刪除影響結論的條件、限定、反例或精確值。\n7. 來源引用、子問題 ID、target entity 與 focus 由後端依唯一輸入來源附加；不要輸出或猜測這些欄位。"
     },
     "subquery_evidence_card_user": {
       "version": 1,

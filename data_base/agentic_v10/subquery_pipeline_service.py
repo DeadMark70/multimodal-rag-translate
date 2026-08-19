@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import re
 import time
 from typing import Any, Literal
 from uuid import uuid4
@@ -32,9 +31,9 @@ from data_base.vector_store_manager import get_user_retriever_async
 
 logger = logging.getLogger(__name__)
 
-AGENTIC_V10_EXECUTION_PROFILE = "agentic_v10_top1_map_reduce_evidence_cards"
+AGENTIC_V10_EXECUTION_PROFILE = "agentic_v10_top1_map_reduce_backend_refs"
 AGENTIC_V10_CONTEXT_POLICY_VERSION = "v10_map_reduce_evidence_cards"
-AGENTIC_V10_TRACE_SCHEMA_VERSION = "2"
+AGENTIC_V10_TRACE_SCHEMA_VERSION = "3"
 
 
 def _document_title(document: Document) -> str:
@@ -105,11 +104,6 @@ def _failure_diagnostic(exc: Exception) -> str:
     return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
 
-def _reference_number(value: str) -> int | None:
-    match = re.fullmatch(r"\s*\[?\s*ref\s*(\d+)\s*\]?\s*", value, re.IGNORECASE)
-    return int(match.group(1)) if match else None
-
-
 class EvidenceFinding(BaseModel):
     statement: str
     reference_ids: list[str] = Field(min_length=1)
@@ -121,6 +115,20 @@ class SubqueryEvidenceCard(BaseModel):
     target_entity: str
     focus: str
     supported_findings: list[EvidenceFinding] = Field(default_factory=list)
+    missing_or_unsupported: list[str] = Field(default_factory=list)
+
+
+class MapEvidenceFinding(BaseModel):
+    """LLM-owned content; source identity is attached deterministically."""
+
+    statement: str
+
+
+class MapSubqueryEvidenceCard(BaseModel):
+    """Small Gemini schema for evidence extraction from exactly one source."""
+
+    status: Literal["summarized", "no_evidence"]
+    supported_findings: list[MapEvidenceFinding] = Field(default_factory=list)
     missing_or_unsupported: list[str] = Field(default_factory=list)
 
 
@@ -241,7 +249,7 @@ class AgenticV10PipelineService:
             try:
                 base_llm = get_llm(purpose="summary")
                 map_llm = base_llm.with_structured_output(
-                    SubqueryEvidenceCard,
+                    MapSubqueryEvidenceCard,
                     method="json_schema",
                     include_raw=True,
                 )
@@ -402,26 +410,20 @@ class AgenticV10PipelineService:
             call_usage = _normalize_usage(raw_response)
             if parsing_error:
                 raise ValueError(f"StructuredOutputInvalid: {type(parsing_error).__name__}")
-            card = SubqueryEvidenceCard.model_validate(parsed)
-            if card.status == "raw_fallback":
-                raise ValueError("StructuredOutputInvalid: raw_fallback is pipeline-owned")
-            canonical_findings: list[EvidenceFinding] = []
-            for finding in card.supported_findings:
-                reference_numbers = {
-                    _reference_number(value) for value in finding.reference_ids
-                }
-                if reference_numbers != {reference_number}:
-                    raise ValueError("StructuredOutputInvalid: reference_ids do not match source")
-                canonical_findings.append(
-                    finding.model_copy(update={"reference_ids": [reference_id]})
-                )
-            card = card.model_copy(
-                update={
-                    "subquery_id": item.id,
-                    "target_entity": item.target_entity,
-                    "focus": item.focus,
-                    "supported_findings": canonical_findings,
-                }
+            map_card = MapSubqueryEvidenceCard.model_validate(parsed)
+            card = SubqueryEvidenceCard(
+                status=map_card.status,
+                subquery_id=item.id,
+                target_entity=item.target_entity,
+                focus=item.focus,
+                supported_findings=[
+                    EvidenceFinding(
+                        statement=finding.statement,
+                        reference_ids=[reference_id],
+                    )
+                    for finding in map_card.supported_findings
+                ],
+                missing_or_unsupported=map_card.missing_or_unsupported,
             )
             return card.model_dump(mode="json"), {
                 "status": card.status,

@@ -40,15 +40,11 @@ async def test_v10_pipeline_maps_cards_in_parallel_and_final_uses_cards_only() -
         peak_active = max(peak_active, active)
         await asyncio.sleep(0.01)
         active -= 1
-        reference_id = "Ref 1" if "SQ1" in messages[1]["content"] else "Ref 2"
         return {
             "parsed": {
                 "status": "summarized",
-                "subquery_id": "model",
-                "target_entity": "model",
-                "focus": "model",
                 "supported_findings": [
-                    {"statement": "Directly supported finding", "reference_ids": [reference_id]}
+                    {"statement": "Directly supported finding"}
                 ],
                 "missing_or_unsupported": [],
             },
@@ -78,6 +74,9 @@ async def test_v10_pipeline_maps_cards_in_parallel_and_final_uses_cards_only() -
     assert v10["branches"][0]["raw_candidates"][0]["content"] == "Architecture evidence"
     assert peak_active == 2
     assert summary_llm.with_structured_output.call_args.kwargs["method"] == "json_schema"
+    map_schema = summary_llm.with_structured_output.call_args.args[0]
+    assert map_schema.__name__ == "MapSubqueryEvidenceCard"
+    assert "reference_ids" not in json.dumps(map_schema.model_json_schema())
     assert v10["branches"][0]["map"]["status"] == "summarized"
     assert v10["context_pack"]["evidence_cards"][0]["supported_findings"][0]["reference_ids"] == ["[Ref 1]"]
     synthesis_prompt = v10["synthesis"]["prompt_messages"][1]["content"]
@@ -166,9 +165,9 @@ async def test_v10_keeps_failed_retrieval_branches_in_partial_trace() -> None:
 
 def test_v10_export_keeps_raw_trace_behind_existing_export_switches() -> None:
     trace = MagicMock(
-        execution_profile="agentic_v10_top1_map_reduce_evidence_cards",
+        execution_profile="agentic_v10_top1_map_reduce_backend_refs",
         agentic_v10={
-            "schema_version": "2",
+            "schema_version": "3",
             "response_status": "complete",
             "decomposition": {"sub_queries": [{"id": "SQ1"}]},
             "branches": [{"subquery_id": "SQ1"}],
