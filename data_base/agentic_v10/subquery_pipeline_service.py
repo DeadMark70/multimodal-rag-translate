@@ -27,14 +27,13 @@ from data_base.rag_retrieval import retrieve_hybrid_documents
 from data_base.reranker import DocumentReranker
 from data_base.vector_store_manager import (
     get_user_retriever_async,
-    load_user_vector_documents_async,
 )
 
 logger = logging.getLogger(__name__)
 
-AGENTIC_V10_EXECUTION_PROFILE = "agentic_eval_v10_top1_raw_same_document_neighbors"
-AGENTIC_V10_CONTEXT_POLICY_VERSION = "v10_raw_top1_same_document_neighbors"
-AGENTIC_V10_TRACE_SCHEMA_VERSION = "4"
+AGENTIC_V10_EXECUTION_PROFILE = "agentic_eval_v10_top1_raw"
+AGENTIC_V10_CONTEXT_POLICY_VERSION = "v10_raw_top1"
+AGENTIC_V10_TRACE_SCHEMA_VERSION = "5"
 
 
 def _document_title(document: Document) -> str:
@@ -166,23 +165,7 @@ class AgenticV10PipelineService:
         for document, score, item in selected:
             unique.setdefault(_document_key(document), (document, score, item))
         top1_records = list(unique.values())
-        neighbors, neighbor_lookup_error = await self._same_document_neighbors(
-            user_id=user_id,
-            selected_documents=[document for document, _, _ in top1_records],
-            authorized_doc_ids=allowed,
-        )
-        context_records: list[tuple[Document, float | None, str]] = [
-            (document, score, "reranked_top1")
-            for document, score, _ in top1_records
-        ]
-        known_context_keys = {_document_key(document) for document, _, _ in context_records}
-        for document, neighbor_of in neighbors:
-            key = _document_key(document)
-            if key in known_context_keys:
-                continue
-            known_context_keys.add(key)
-            context_records.append((document, None, "same_document_neighbor"))
-        final_documents = [document for document, _, _ in context_records]
+        final_documents = [document for document, _, _ in top1_records]
         source_doc_ids = list(
             dict.fromkeys(
                 str(get_document_id(document.metadata) or "")
@@ -192,28 +175,19 @@ class AgenticV10PipelineService:
         )
         reference_by_document_key = {
             _document_key(document): index
-            for index, (document, _, _) in enumerate(context_records, start=1)
+            for index, (document, _, _) in enumerate(top1_records, start=1)
         }
-        neighbor_parent_keys: dict[str, list[str]] = {}
-        for document, parent_key in neighbors:
-            neighbor_parent_keys.setdefault(_document_key(document), []).append(parent_key)
         source_document_mapping = [
             {
                 "reference_id": f"[Ref {index}]",
-                "context_origin": origin,
                 "document": _trace_document(document, score),
                 "selected_by_subquery_ids": [
                     item.id
                     for candidate, _, item in selected
                     if _document_key(candidate) == _document_key(document)
                 ],
-                "neighbor_of_reference_ids": [
-                    f"[Ref {reference_by_document_key[parent_key]}]"
-                    for parent_key in neighbor_parent_keys.get(_document_key(document), [])
-                    if parent_key in reference_by_document_key
-                ],
             }
-            for index, (document, score, origin) in enumerate(context_records, start=1)
+            for index, (document, score, _) in enumerate(top1_records, start=1)
         ]
         for branch in branches:
             matching = next(
@@ -229,20 +203,14 @@ class AgenticV10PipelineService:
                 if matching is not None
                 else None
             )
-            branch["same_document_neighbors"] = [
-                _trace_document(document)
-                for document, neighbor_of in neighbors
-                if neighbor_of == _document_key(matching)
-            ] if matching is not None else []
 
         context_blocks = [
             self._context_block(
                 index=index,
                 document=document,
                 score=score,
-                origin=origin,
             )
-            for index, (document, score, origin) in enumerate(context_records, start=1)
+            for index, (document, score, _) in enumerate(top1_records, start=1)
         ]
         context_text = "\n\n".join(context_blocks)
         overview = "\n".join(
@@ -276,18 +244,15 @@ class AgenticV10PipelineService:
                 "deduplicated_evidence": [
                     {
                         "reference_id": f"[Ref {index}]",
-                        "context_origin": origin,
                         **_trace_document(document, score),
                     }
-                    for index, (document, score, origin) in enumerate(context_records, start=1)
+                    for index, (document, score, _) in enumerate(top1_records, start=1)
                 ],
                 "source_document_mapping": source_document_mapping,
                 "context_pack": {
-                    "strategy": "top1_raw_same_document_neighbors",
+                    "strategy": "top1_raw",
                     "rendered_context": context_text,
                     "top1_evidence_count": len(top1_records),
-                    "neighbor_evidence_count": len(context_records) - len(top1_records),
-                    "neighbor_lookup_error": neighbor_lookup_error,
                     "source_doc_ids": source_doc_ids,
                 },
                 "synthesis": {
@@ -312,83 +277,18 @@ class AgenticV10PipelineService:
         return SubQueryDecompositionTrace(sub_queries=items)
 
     @staticmethod
-    def _chunk_position(document: Document) -> tuple[int, int] | None:
-        metadata = document.metadata or {}
-        page = metadata.get("page_number", metadata.get("page"))
-        chunk_index = metadata.get("chunk_index_in_page")
-        if isinstance(page, bool) or isinstance(chunk_index, bool):
-            return None
-        try:
-            return int(page), int(chunk_index)
-        except (TypeError, ValueError):
-            return None
-
-    @classmethod
-    async def _same_document_neighbors(
-        cls,
-        *,
-        user_id: str,
-        selected_documents: list[Document],
-        authorized_doc_ids: set[str],
-    ) -> tuple[list[tuple[Document, str]], str | None]:
-        if not selected_documents:
-            return [], None
-        try:
-            all_documents = await load_user_vector_documents_async(user_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("v10 neighbor lookup failed: %s", exc)
-            return [], type(exc).__name__
-
-        selected_doc_ids = {
-            str(get_document_id(document.metadata) or "")
-            for document in selected_documents
-        }
-        grouped: dict[str, list[Document]] = {}
-        for document in all_documents:
-            document_id = str(get_document_id(document.metadata) or "")
-            if document_id not in selected_doc_ids:
-                continue
-            if authorized_doc_ids and document_id not in authorized_doc_ids:
-                continue
-            if cls._chunk_position(document) is None:
-                continue
-            grouped.setdefault(document_id, []).append(document)
-        for documents in grouped.values():
-            documents.sort(key=lambda document: (cls._chunk_position(document), _document_key(document)))
-
-        neighbors: list[tuple[Document, str]] = []
-        for selected in selected_documents:
-            document_id = str(get_document_id(selected.metadata) or "")
-            siblings = grouped.get(document_id, [])
-            selected_key = _document_key(selected)
-            try:
-                selected_index = next(
-                    index
-                    for index, candidate in enumerate(siblings)
-                    if _document_key(candidate) == selected_key
-                )
-            except StopIteration:
-                continue
-            for neighbor_index in (selected_index - 1, selected_index + 1):
-                if 0 <= neighbor_index < len(siblings):
-                    neighbors.append((siblings[neighbor_index], selected_key))
-        return neighbors, None
-
-    @staticmethod
     def _context_block(
         *,
         index: int,
         document: Document,
-        score: float | None,
-        origin: str,
+        score: float,
     ) -> str:
         metadata = document.metadata or {}
-        score_line = f"- Rerank Score: {score:.4f}\n" if score is not None else ""
         return (
             f"### 檢索來源證據 [Ref {index}]\n- 文檔名稱: {_document_title(document)}\n"
             f"- 文檔 ID: {get_document_id(metadata) or ''}\n"
             f"- 頁碼: {metadata.get('page_number', metadata.get('page', 'N/A'))}\n"
-            f"- Context role: {origin}\n{score_line}"
+            f"- Rerank Score: {score:.4f}\n"
             f"- 內容:\n\"\"\"\n{document.page_content.strip()}\n\"\"\""
         )
 
