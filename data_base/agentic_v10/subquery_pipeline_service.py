@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from typing import Any, Literal
 from uuid import uuid4
@@ -97,6 +98,16 @@ def _merge_usage(*usage_rows: dict[str, int]) -> dict[str, int]:
             if isinstance(value, int) and value >= 0:
                 merged[key] = merged.get(key, 0) + value
     return merged
+
+
+def _failure_diagnostic(exc: Exception) -> str:
+    detail = str(exc).strip()
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
+def _reference_number(value: str) -> int | None:
+    match = re.fullmatch(r"\s*\[?\s*ref\s*(\d+)\s*\]?\s*", value, re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 
 class EvidenceFinding(BaseModel):
@@ -236,7 +247,7 @@ class AgenticV10PipelineService:
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("v10 map-stage initialization failed: %s", exc)
-                map_llm_error = type(exc).__name__
+                map_llm_error = _failure_diagnostic(exc)
 
         mapped = await asyncio.gather(
             *(
@@ -303,7 +314,6 @@ class AgenticV10PipelineService:
                     ),
                 },
                 "context_pack": {
-                    "rendered_evidence_cards": evidence_cards_text,
                     "evidence_cards": evidence_cards,
                     "source_doc_ids": source_doc_ids,
                 },
@@ -395,14 +405,22 @@ class AgenticV10PipelineService:
             card = SubqueryEvidenceCard.model_validate(parsed)
             if card.status == "raw_fallback":
                 raise ValueError("StructuredOutputInvalid: raw_fallback is pipeline-owned")
+            canonical_findings: list[EvidenceFinding] = []
             for finding in card.supported_findings:
-                if set(finding.reference_ids) != {reference_id}:
+                reference_numbers = {
+                    _reference_number(value) for value in finding.reference_ids
+                }
+                if reference_numbers != {reference_number}:
                     raise ValueError("StructuredOutputInvalid: reference_ids do not match source")
+                canonical_findings.append(
+                    finding.model_copy(update={"reference_ids": [reference_id]})
+                )
             card = card.model_copy(
                 update={
                     "subquery_id": item.id,
                     "target_entity": item.target_entity,
                     "focus": item.focus,
+                    "supported_findings": canonical_findings,
                 }
             )
             return card.model_dump(mode="json"), {
@@ -419,7 +437,7 @@ class AgenticV10PipelineService:
                 "prompt_messages": messages,
                 "token_usage": call_usage,
                 "latency_ms": (time.perf_counter() - started) * 1000,
-                "failure_diagnostic": type(exc).__name__,
+                "failure_diagnostic": _failure_diagnostic(exc),
             }
 
     @staticmethod

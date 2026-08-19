@@ -1,6 +1,7 @@
 """Focused coverage for the evaluation-only Agentic RAG v10 path."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -39,7 +40,7 @@ async def test_v10_pipeline_maps_cards_in_parallel_and_final_uses_cards_only() -
         peak_active = max(peak_active, active)
         await asyncio.sleep(0.01)
         active -= 1
-        reference_id = "[Ref 1]" if "SQ1" in messages[1]["content"] else "[Ref 2]"
+        reference_id = "Ref 1" if "SQ1" in messages[1]["content"] else "Ref 2"
         return {
             "parsed": {
                 "status": "summarized",
@@ -78,6 +79,7 @@ async def test_v10_pipeline_maps_cards_in_parallel_and_final_uses_cards_only() -
     assert peak_active == 2
     assert summary_llm.with_structured_output.call_args.kwargs["method"] == "json_schema"
     assert v10["branches"][0]["map"]["status"] == "summarized"
+    assert v10["context_pack"]["evidence_cards"][0]["supported_findings"][0]["reference_ids"] == ["[Ref 1]"]
     synthesis_prompt = v10["synthesis"]["prompt_messages"][1]["content"]
     assert "Directly supported finding" in synthesis_prompt
     assert "Architecture evidence" not in synthesis_prompt
@@ -119,6 +121,7 @@ async def test_v10_map_failure_preserves_raw_chunk_for_final() -> None:
     assert card["reference_ids"] == ["[Ref 1]"]
     assert "Only raw fallback evidence" in card["raw_evidence_block"]
     assert v10["map_stage"]["fallback_count"] == 1
+    assert v10["branches"][0]["map"]["failure_diagnostic"] == "RuntimeError: bad schema"
     assert "Only raw fallback evidence" in v10["synthesis"]["prompt_messages"][1]["content"]
 
 
@@ -190,3 +193,5 @@ def test_v10_export_keeps_raw_trace_behind_existing_export_switches() -> None:
     )
     assert raw is not None
     assert raw["raw_payload"]["synthesis"]["prompt_messages"][0]["content"] == "full prompt"
+    assert "rendered_evidence_cards" not in raw["raw_payload"].get("context_pack", {})
+    assert json.loads(json.dumps(raw)) == raw
