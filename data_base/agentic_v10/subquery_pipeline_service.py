@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 import time
-from typing import Any, Literal
+from typing import Any
 from uuid import uuid4
 
 from langchain_core.documents import Document
-from pydantic import BaseModel, Field
 
 from core.prompt_loader import (
     format_agentic_v10_prompt,
@@ -27,13 +25,16 @@ from data_base.document_metadata import get_document_id
 from data_base.rag_pipeline_schemas import RAGResult
 from data_base.rag_retrieval import retrieve_hybrid_documents
 from data_base.reranker import DocumentReranker
-from data_base.vector_store_manager import get_user_retriever_async
+from data_base.vector_store_manager import (
+    get_user_retriever_async,
+    load_user_vector_documents_async,
+)
 
 logger = logging.getLogger(__name__)
 
-AGENTIC_V10_EXECUTION_PROFILE = "agentic_v10_top1_map_reduce_backend_refs"
-AGENTIC_V10_CONTEXT_POLICY_VERSION = "v10_map_reduce_evidence_cards"
-AGENTIC_V10_TRACE_SCHEMA_VERSION = "3"
+AGENTIC_V10_EXECUTION_PROFILE = "agentic_eval_v10_top1_raw_same_document_neighbors"
+AGENTIC_V10_CONTEXT_POLICY_VERSION = "v10_raw_top1_same_document_neighbors"
+AGENTIC_V10_TRACE_SCHEMA_VERSION = "4"
 
 
 def _document_title(document: Document) -> str:
@@ -87,49 +88,6 @@ def _normalize_usage(response: Any) -> dict[str, int]:
     if reasoning:
         usage["reasoning_tokens"] = reasoning
     return usage
-
-
-def _merge_usage(*usage_rows: dict[str, int]) -> dict[str, int]:
-    """Aggregate normalized per-call usage without assuming provider-specific keys."""
-    merged: dict[str, int] = {}
-    for row in usage_rows:
-        for key, value in row.items():
-            if isinstance(value, int) and value >= 0:
-                merged[key] = merged.get(key, 0) + value
-    return merged
-
-
-def _failure_diagnostic(exc: Exception) -> str:
-    detail = str(exc).strip()
-    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
-
-
-class EvidenceFinding(BaseModel):
-    statement: str
-    reference_ids: list[str] = Field(min_length=1)
-
-
-class SubqueryEvidenceCard(BaseModel):
-    status: Literal["summarized", "no_evidence", "raw_fallback"]
-    subquery_id: str
-    target_entity: str
-    focus: str
-    supported_findings: list[EvidenceFinding] = Field(default_factory=list)
-    missing_or_unsupported: list[str] = Field(default_factory=list)
-
-
-class MapEvidenceFinding(BaseModel):
-    """LLM-owned content; source identity is attached deterministically."""
-
-    statement: str
-
-
-class MapSubqueryEvidenceCard(BaseModel):
-    """Small Gemini schema for evidence extraction from exactly one source."""
-
-    status: Literal["summarized", "no_evidence"]
-    supported_findings: list[MapEvidenceFinding] = Field(default_factory=list)
-    missing_or_unsupported: list[str] = Field(default_factory=list)
 
 
 class AgenticV10PipelineService:
@@ -189,7 +147,7 @@ class AgenticV10PipelineService:
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("v10 rerank failed for %s: %s", item.id, exc)
-                ranked = [(document, 0.5) for document in candidates[:2]]
+                ranked = [(document, 0.5) for document in candidates[:1]]
                 rerank_error = type(exc).__name__
             selected.extend((document, float(score), item) for document, score in ranked)
             branches.append({
@@ -204,14 +162,27 @@ class AgenticV10PipelineService:
                 "rerank_latency_ms": (time.perf_counter() - rerank_started) * 1000,
             })
 
-        selected_by_subquery = {
-            item.id: (document, score, item)
-            for document, score, item in selected
-        }
         unique: dict[str, tuple[Document, float, SubQueryItem]] = {}
         for document, score, item in selected:
             unique.setdefault(_document_key(document), (document, score, item))
-        final_documents = [value[0] for value in unique.values()]
+        top1_records = list(unique.values())
+        neighbors, neighbor_lookup_error = await self._same_document_neighbors(
+            user_id=user_id,
+            selected_documents=[document for document, _, _ in top1_records],
+            authorized_doc_ids=allowed,
+        )
+        context_records: list[tuple[Document, float | None, str]] = [
+            (document, score, "reranked_top1")
+            for document, score, _ in top1_records
+        ]
+        known_context_keys = {_document_key(document) for document, _, _ in context_records}
+        for document, neighbor_of in neighbors:
+            key = _document_key(document)
+            if key in known_context_keys:
+                continue
+            known_context_keys.add(key)
+            context_records.append((document, None, "same_document_neighbor"))
+        final_documents = [document for document, _, _ in context_records]
         source_doc_ids = list(
             dict.fromkeys(
                 str(get_document_id(document.metadata) or "")
@@ -221,64 +192,64 @@ class AgenticV10PipelineService:
         )
         reference_by_document_key = {
             _document_key(document): index
-            for index, (document, _, _) in enumerate(unique.values(), start=1)
+            for index, (document, _, _) in enumerate(context_records, start=1)
         }
+        neighbor_parent_keys: dict[str, list[str]] = {}
+        for document, parent_key in neighbors:
+            neighbor_parent_keys.setdefault(_document_key(document), []).append(parent_key)
         source_document_mapping = [
             {
                 "reference_id": f"[Ref {index}]",
+                "context_origin": origin,
                 "document": _trace_document(document, score),
                 "selected_by_subquery_ids": [
                     item.id
                     for candidate, _, item in selected
                     if _document_key(candidate) == _document_key(document)
                 ],
+                "neighbor_of_reference_ids": [
+                    f"[Ref {reference_by_document_key[parent_key]}]"
+                    for parent_key in neighbor_parent_keys.get(_document_key(document), [])
+                    if parent_key in reference_by_document_key
+                ],
             }
-            for index, (document, score, _) in enumerate(unique.values(), start=1)
+            for index, (document, score, origin) in enumerate(context_records, start=1)
         ]
         for branch in branches:
-            selection = selected_by_subquery.get(branch["subquery_id"])
+            matching = next(
+                (
+                    document
+                    for document, _, item in selected
+                    if item.id == branch["subquery_id"]
+                ),
+                None,
+            )
             branch["selected_reference_id"] = (
-                f"[Ref {reference_by_document_key[_document_key(selection[0])]}]"
-                if selection is not None
+                f"[Ref {reference_by_document_key[_document_key(matching)]}]"
+                if matching is not None
                 else None
             )
+            branch["same_document_neighbors"] = [
+                _trace_document(document)
+                for document, neighbor_of in neighbors
+                if neighbor_of == _document_key(matching)
+            ] if matching is not None else []
 
-        map_llm: Any | None = None
-        map_llm_error: str | None = None
-        if selected_by_subquery:
-            try:
-                base_llm = get_llm(purpose="summary")
-                map_llm = base_llm.with_structured_output(
-                    MapSubqueryEvidenceCard,
-                    method="json_schema",
-                    include_raw=True,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("v10 map-stage initialization failed: %s", exc)
-                map_llm_error = _failure_diagnostic(exc)
-
-        mapped = await asyncio.gather(
-            *(
-                self._map_evidence_card(
-                    item=item,
-                    selection=selected_by_subquery.get(item.id),
-                    reference_by_document_key=reference_by_document_key,
-                    map_llm=map_llm,
-                    initialization_error=map_llm_error,
-                )
-                for item in decomposition.sub_queries
+        context_blocks = [
+            self._context_block(
+                index=index,
+                document=document,
+                score=score,
+                origin=origin,
             )
+            for index, (document, score, origin) in enumerate(context_records, start=1)
+        ]
+        context_text = "\n\n".join(context_blocks)
+        overview = "\n".join(
+            f"{item.id}. [{item.target_entity}] {item.focus} (查詢: {item.query})"
+            for item in decomposition.sub_queries
         )
-        evidence_cards: list[dict[str, Any]] = []
-        map_usage: dict[str, int] = {}
-        for branch, (card, map_trace) in zip(branches, mapped, strict=True):
-            branch["map"] = map_trace
-            evidence_cards.append(card)
-            map_usage = _merge_usage(map_usage, map_trace["token_usage"])
-
-        overview = "\n".join(f"{item.id}. [{item.target_entity}] {item.focus} (查詢: {item.query})" for item in decomposition.sub_queries)
-        evidence_cards_text = json.dumps(evidence_cards, ensure_ascii=False, indent=2)
-        synthesis_messages = self._synthesis_messages(question, overview, evidence_cards_text)
+        synthesis_messages = self._synthesis_messages(question, overview, context_text)
         synthesis_usage: dict[str, int] = {}
         synthesis_error: str | None = None
         if final_documents:
@@ -287,7 +258,6 @@ class AgenticV10PipelineService:
         else:
             answer = "目前知識庫沒有可用的相關證據，因此無法根據文件回答此問題。請補充或上傳相關文獻後再試。"
             response_status = "qualified_partial"
-        usage = _merge_usage(map_usage, synthesis_usage)
         duration_ms = (time.perf_counter() - start) * 1000
         trace = {
             "trace_id": trace_id,
@@ -306,23 +276,18 @@ class AgenticV10PipelineService:
                 "deduplicated_evidence": [
                     {
                         "reference_id": f"[Ref {index}]",
+                        "context_origin": origin,
                         **_trace_document(document, score),
                     }
-                    for index, (document, score, _) in enumerate(unique.values(), start=1)
+                    for index, (document, score, origin) in enumerate(context_records, start=1)
                 ],
                 "source_document_mapping": source_document_mapping,
-                "map_stage": {
-                    "structured_output_method": "json_schema",
-                    "token_usage": map_usage,
-                    "card_count": len(evidence_cards),
-                    "fallback_count": sum(card["status"] == "raw_fallback" for card in evidence_cards),
-                    "failure_count": sum(
-                        bool(branch["map"].get("failure_diagnostic"))
-                        for branch in branches
-                    ),
-                },
                 "context_pack": {
-                    "evidence_cards": evidence_cards,
+                    "strategy": "top1_raw_same_document_neighbors",
+                    "rendered_context": context_text,
+                    "top1_evidence_count": len(top1_records),
+                    "neighbor_evidence_count": len(context_records) - len(top1_records),
+                    "neighbor_lookup_error": neighbor_lookup_error,
                     "source_doc_ids": source_doc_ids,
                 },
                 "synthesis": {
@@ -336,7 +301,7 @@ class AgenticV10PipelineService:
             answer=answer,
             source_doc_ids=source_doc_ids,
             documents=final_documents,
-            usage=usage,
+            usage=synthesis_usage,
             agent_trace=trace,
         )
 
@@ -347,158 +312,89 @@ class AgenticV10PipelineService:
         return SubQueryDecompositionTrace(sub_queries=items)
 
     @staticmethod
-    def _context_block(index: int, document: Document, score: float, item: SubQueryItem) -> str:
+    def _chunk_position(document: Document) -> tuple[int, int] | None:
         metadata = document.metadata or {}
+        page = metadata.get("page_number", metadata.get("page"))
+        chunk_index = metadata.get("chunk_index_in_page")
+        if isinstance(page, bool) or isinstance(chunk_index, bool):
+            return None
+        try:
+            return int(page), int(chunk_index)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    async def _same_document_neighbors(
+        cls,
+        *,
+        user_id: str,
+        selected_documents: list[Document],
+        authorized_doc_ids: set[str],
+    ) -> tuple[list[tuple[Document, str]], str | None]:
+        if not selected_documents:
+            return [], None
+        try:
+            all_documents = await load_user_vector_documents_async(user_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("v10 neighbor lookup failed: %s", exc)
+            return [], type(exc).__name__
+
+        selected_doc_ids = {
+            str(get_document_id(document.metadata) or "")
+            for document in selected_documents
+        }
+        grouped: dict[str, list[Document]] = {}
+        for document in all_documents:
+            document_id = str(get_document_id(document.metadata) or "")
+            if document_id not in selected_doc_ids:
+                continue
+            if authorized_doc_ids and document_id not in authorized_doc_ids:
+                continue
+            if cls._chunk_position(document) is None:
+                continue
+            grouped.setdefault(document_id, []).append(document)
+        for documents in grouped.values():
+            documents.sort(key=lambda document: (cls._chunk_position(document), _document_key(document)))
+
+        neighbors: list[tuple[Document, str]] = []
+        for selected in selected_documents:
+            document_id = str(get_document_id(selected.metadata) or "")
+            siblings = grouped.get(document_id, [])
+            selected_key = _document_key(selected)
+            try:
+                selected_index = next(
+                    index
+                    for index, candidate in enumerate(siblings)
+                    if _document_key(candidate) == selected_key
+                )
+            except StopIteration:
+                continue
+            for neighbor_index in (selected_index - 1, selected_index + 1):
+                if 0 <= neighbor_index < len(siblings):
+                    neighbors.append((siblings[neighbor_index], selected_key))
+        return neighbors, None
+
+    @staticmethod
+    def _context_block(
+        *,
+        index: int,
+        document: Document,
+        score: float | None,
+        origin: str,
+    ) -> str:
+        metadata = document.metadata or {}
+        score_line = f"- Rerank Score: {score:.4f}\n" if score is not None else ""
         return (
             f"### 檢索來源證據 [Ref {index}]\n- 文檔名稱: {_document_title(document)}\n"
-            f"- 文檔 ID: {get_document_id(metadata) or ''}\n- 頁碼: {metadata.get('page', 'N/A')}\n"
-            f"- 子查詢焦點: {item.focus}\n- Rerank Score: {score:.4f}\n- 內容:\n\"\"\"\n{document.page_content.strip()}\n\"\"\""
+            f"- 文檔 ID: {get_document_id(metadata) or ''}\n"
+            f"- 頁碼: {metadata.get('page_number', metadata.get('page', 'N/A'))}\n"
+            f"- Context role: {origin}\n{score_line}"
+            f"- 內容:\n\"\"\"\n{document.page_content.strip()}\n\"\"\""
         )
 
     @staticmethod
-    def _no_evidence_card(item: SubQueryItem) -> dict[str, Any]:
-        return SubqueryEvidenceCard(
-            status="no_evidence",
-            subquery_id=item.id,
-            target_entity=item.target_entity,
-            focus=item.focus,
-            missing_or_unsupported=["此子問題沒有 rerank 後的可用來源證據。"],
-        ).model_dump(mode="json")
-
-    @classmethod
-    async def _map_evidence_card(
-        cls,
-        *,
-        item: SubQueryItem,
-        selection: tuple[Document, float, SubQueryItem] | None,
-        reference_by_document_key: dict[str, int],
-        map_llm: Any | None,
-        initialization_error: str | None,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        if selection is None:
-            return cls._no_evidence_card(item), {
-                "status": "no_evidence",
-                "prompt_messages": [],
-                "token_usage": {},
-                "latency_ms": 0.0,
-                "failure_diagnostic": None,
-            }
-
-        document, score, _ = selection
-        reference_number = reference_by_document_key[_document_key(document)]
-        reference_id = f"[Ref {reference_number}]"
-        evidence_block = cls._context_block(reference_number, document, score, item)
-        messages = cls._evidence_card_messages(item, evidence_block)
-        started = time.perf_counter()
-        if map_llm is None:
-            return cls._raw_fallback_card(item, reference_id, evidence_block), {
-                "status": "raw_fallback",
-                "prompt_messages": messages,
-                "token_usage": {},
-                "latency_ms": (time.perf_counter() - started) * 1000,
-                "failure_diagnostic": initialization_error or "StructuredOutputUnavailable",
-            }
-
-        call_usage: dict[str, int] = {}
-        try:
-            response = await (
-                map_llm.ainvoke(messages)
-                if hasattr(map_llm, "ainvoke")
-                else map_llm.invoke(messages)
-            )
-            parsed, raw_response, parsing_error = cls._structured_output_parts(response)
-            call_usage = _normalize_usage(raw_response)
-            if parsing_error:
-                raise ValueError(f"StructuredOutputInvalid: {type(parsing_error).__name__}")
-            map_card = MapSubqueryEvidenceCard.model_validate(parsed)
-            has_supported_findings = bool(map_card.supported_findings)
-            status: Literal["summarized", "no_evidence"] = (
-                "summarized"
-                if map_card.status == "summarized" and has_supported_findings
-                else "no_evidence"
-            )
-            missing_or_unsupported = list(map_card.missing_or_unsupported)
-            if status == "no_evidence" and not missing_or_unsupported:
-                missing_or_unsupported = [
-                    "The selected source does not directly support this subquery."
-                ]
-            card = SubqueryEvidenceCard(
-                status=status,
-                subquery_id=item.id,
-                target_entity=item.target_entity,
-                focus=item.focus,
-                supported_findings=[
-                    EvidenceFinding(
-                        statement=finding.statement,
-                        reference_ids=[reference_id],
-                    )
-                    for finding in map_card.supported_findings
-                ],
-                missing_or_unsupported=missing_or_unsupported,
-            )
-            return card.model_dump(mode="json"), {
-                "status": card.status,
-                "prompt_messages": messages,
-                "token_usage": call_usage,
-                "latency_ms": (time.perf_counter() - started) * 1000,
-                "failure_diagnostic": None,
-            }
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("v10 map-stage failed for %s: %s", item.id, exc)
-            return cls._raw_fallback_card(item, reference_id, evidence_block), {
-                "status": "raw_fallback",
-                "prompt_messages": messages,
-                "token_usage": call_usage,
-                "latency_ms": (time.perf_counter() - started) * 1000,
-                "failure_diagnostic": _failure_diagnostic(exc),
-            }
-
-    @staticmethod
-    def _structured_output_parts(response: Any) -> tuple[Any, Any, Any | None]:
-        if isinstance(response, dict) and {"parsed", "raw"}.issubset(response):
-            return response.get("parsed"), response.get("raw"), response.get("parsing_error")
-        return response, response, None
-
-    @staticmethod
-    def _raw_fallback_card(
-        item: SubQueryItem, reference_id: str, evidence_block: str
-    ) -> dict[str, Any]:
-        card = SubqueryEvidenceCard(
-            status="raw_fallback",
-            subquery_id=item.id,
-            target_entity=item.target_entity,
-            focus=item.focus,
-            missing_or_unsupported=[
-                "Evidence card structured output failed; use the marked raw source only."
-            ],
-        ).model_dump(mode="json")
-        card["reference_ids"] = [reference_id]
-        card["raw_evidence_block"] = evidence_block
-        return card
-
-    @staticmethod
-    def _evidence_card_messages(
-        item: SubQueryItem, evidence_block: str
-    ) -> list[dict[str, str]]:
-        registry = get_agentic_v10_prompt_registry()
-        return [
-            {"role": "system", "content": registry.get("subquery_evidence_card_system").template},
-            {
-                "role": "user",
-                "content": format_agentic_v10_prompt(
-                    "subquery_evidence_card_user",
-                    subquery_id=item.id,
-                    target_entity=item.target_entity,
-                    focus=item.focus,
-                    query=item.query,
-                    evidence_block=evidence_block,
-                ),
-            },
-        ]
-
-    @staticmethod
     def _synthesis_messages(
-        question: str, overview: str, evidence_cards: str
+        question: str, overview: str, context_text: str
     ) -> list[dict[str, str]]:
         registry = get_agentic_v10_prompt_registry()
         return [
@@ -509,7 +405,7 @@ class AgenticV10PipelineService:
                     "grounded_synthesis_user",
                     question=question,
                     subqueries_overview=overview,
-                    evidence_cards=evidence_cards,
+                    context_text=context_text,
                 ),
             },
         ]

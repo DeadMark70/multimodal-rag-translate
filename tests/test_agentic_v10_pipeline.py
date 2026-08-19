@@ -1,6 +1,5 @@
 """Focused coverage for the evaluation-only Agentic RAG v10 path."""
 
-import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,42 +19,21 @@ def test_v10_fallback_produces_multiple_queries() -> None:
 
 
 @pytest.mark.asyncio
-async def test_v10_pipeline_maps_cards_in_parallel_and_final_uses_cards_only() -> None:
+async def test_v10_pipeline_packs_raw_top1_and_same_document_neighbors() -> None:
     decomposer = MagicMock()
     decomposer.decompose = AsyncMock(return_value=[
         SubQueryItem(id="SQ1", query="model architecture", focus="架構", target_entity="Model"),
         SubQueryItem(id="SQ2", query="model benchmark", focus="實驗", target_entity="Benchmark"),
     ])
     reranker = MagicMock()
-    first = Document(page_content="Architecture evidence", metadata={"doc_id": "doc-1", "page": 2})
-    second = Document(page_content="Benchmark evidence", metadata={"doc_id": "doc-2", "page": 4})
+    first = Document(page_content="Architecture evidence", metadata={"doc_id": "doc-1", "page_number": 2, "chunk_index_in_page": 1})
+    second = Document(page_content="Benchmark evidence", metadata={"doc_id": "doc-2", "page_number": 4, "chunk_index_in_page": 1})
+    first_previous = Document(page_content="Architecture preceding context", metadata={"doc_id": "doc-1", "page_number": 2, "chunk_index_in_page": 0})
+    first_next = Document(page_content="Architecture following context", metadata={"doc_id": "doc-1", "page_number": 2, "chunk_index_in_page": 2})
+    second_previous = Document(page_content="Benchmark preceding context", metadata={"doc_id": "doc-2", "page_number": 4, "chunk_index_in_page": 0})
+    second_next = Document(page_content="Benchmark following context", metadata={"doc_id": "doc-2", "page_number": 4, "chunk_index_in_page": 2})
     reranker.rerank_with_scores.side_effect = [[(first, 0.9)], [(second, 0.8)]]
     service = AgenticV10PipelineService(decomposer=decomposer, reranker=reranker)
-    active = 0
-    peak_active = 0
-
-    async def map_invoke(messages: list[dict[str, str]]) -> dict[str, object]:
-        nonlocal active, peak_active
-        active += 1
-        peak_active = max(peak_active, active)
-        await asyncio.sleep(0.01)
-        active -= 1
-        return {
-            "parsed": {
-                "status": "summarized",
-                "supported_findings": [
-                    {"statement": "Directly supported finding"}
-                ],
-                "missing_or_unsupported": [],
-            },
-            "raw": MagicMock(usage_metadata={"input_tokens": 5, "output_tokens": 2, "total_tokens": 7}),
-            "parsing_error": None,
-        }
-
-    map_llm = MagicMock()
-    map_llm.ainvoke = AsyncMock(side_effect=map_invoke)
-    summary_llm = MagicMock()
-    summary_llm.with_structured_output.return_value = map_llm
     synthesis_llm = MagicMock()
     synthesis_llm.ainvoke = AsyncMock(return_value=MagicMock(
         content="Grounded answer",
@@ -64,7 +42,8 @@ async def test_v10_pipeline_maps_cards_in_parallel_and_final_uses_cards_only() -
     with (
         patch("data_base.agentic_v10.subquery_pipeline_service.get_user_retriever_async", new=AsyncMock(return_value=MagicMock())),
         patch("data_base.agentic_v10.subquery_pipeline_service.retrieve_hybrid_documents", new=AsyncMock(side_effect=[MagicMock(documents=[first]), MagicMock(documents=[second])])),
-        patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", side_effect=[summary_llm, synthesis_llm]) as get_llm,
+        patch("data_base.agentic_v10.subquery_pipeline_service.load_user_vector_documents_async", new=AsyncMock(return_value=[first_previous, first, first_next, second_previous, second, second_next])),
+        patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", return_value=synthesis_llm) as get_llm,
     ):
         result = await service.execute(question="Compare the models", user_id="user-1")
     trace = result.agent_trace or {}
@@ -72,95 +51,81 @@ async def test_v10_pipeline_maps_cards_in_parallel_and_final_uses_cards_only() -
     assert trace["agentic_execution_version"] == "v10"
     assert len(v10["branches"]) == 2
     assert v10["branches"][0]["raw_candidates"][0]["content"] == "Architecture evidence"
-    assert peak_active == 2
-    assert summary_llm.with_structured_output.call_args.kwargs["method"] == "json_schema"
-    map_schema = summary_llm.with_structured_output.call_args.args[0]
-    assert map_schema.__name__ == "MapSubqueryEvidenceCard"
-    assert "reference_ids" not in json.dumps(map_schema.model_json_schema())
-    assert v10["branches"][0]["map"]["status"] == "summarized"
-    assert v10["context_pack"]["evidence_cards"][0]["supported_findings"][0]["reference_ids"] == ["[Ref 1]"]
     synthesis_prompt = v10["synthesis"]["prompt_messages"][1]["content"]
-    assert "Directly supported finding" in synthesis_prompt
-    assert "Architecture evidence" not in synthesis_prompt
-    assert result.usage["total_tokens"] == 24
-    assert get_llm.call_args_list[0].kwargs == {"purpose": "summary"}
-    assert get_llm.call_args_list[1].kwargs == {"purpose": "synthesizer"}
+    assert "Architecture evidence" in synthesis_prompt
+    assert "Architecture preceding context" in synthesis_prompt
+    assert "Architecture following context" in synthesis_prompt
+    assert "Benchmark evidence" in synthesis_prompt
+    assert "Benchmark preceding context" in synthesis_prompt
+    assert "Benchmark following context" in synthesis_prompt
+    assert v10["context_pack"]["strategy"] == "top1_raw_same_document_neighbors"
+    assert v10["context_pack"]["top1_evidence_count"] == 2
+    assert v10["context_pack"]["neighbor_evidence_count"] == 4
+    neighbor_mapping = next(
+        item
+        for item in v10["source_document_mapping"]
+        if item["document"]["content"] == "Architecture preceding context"
+    )
+    assert neighbor_mapping["context_origin"] == "same_document_neighbor"
+    assert neighbor_mapping["neighbor_of_reference_ids"] == ["[Ref 1]"]
+    assert result.usage["total_tokens"] == 10
+    assert get_llm.call_args.kwargs == {"purpose": "synthesizer"}
     assert reranker.rerank_with_scores.call_count == 2
     assert [call.kwargs["top_k"] for call in reranker.rerank_with_scores.call_args_list] == [1, 1]
     assert reranker.rerank.call_count == 0
 
 
 @pytest.mark.asyncio
-async def test_v10_map_failure_preserves_raw_chunk_for_final() -> None:
+async def test_v10_neighbor_lookup_failure_keeps_top1_raw_chunk() -> None:
     decomposer = MagicMock()
     decomposer.decompose = AsyncMock(return_value=[
         SubQueryItem(id="SQ1", query="query", focus="focus", target_entity="entity")
     ])
-    evidence = Document(page_content="Only raw fallback evidence", metadata={"doc_id": "doc-1"})
+    evidence = Document(page_content="Only raw evidence", metadata={"doc_id": "doc-1", "page_number": 1, "chunk_index_in_page": 0})
     reranker = MagicMock()
     reranker.rerank_with_scores.return_value = [(evidence, 0.9)]
     service = AgenticV10PipelineService(decomposer=decomposer, reranker=reranker)
-    map_llm = MagicMock()
-    map_llm.ainvoke = AsyncMock(side_effect=RuntimeError("bad schema"))
-    summary_llm = MagicMock()
-    summary_llm.with_structured_output.return_value = map_llm
     synthesis_llm = MagicMock()
     synthesis_llm.ainvoke = AsyncMock(return_value=MagicMock(content="Answer", usage_metadata={}))
 
     with (
         patch("data_base.agentic_v10.subquery_pipeline_service.get_user_retriever_async", new=AsyncMock(return_value=MagicMock())),
         patch("data_base.agentic_v10.subquery_pipeline_service.retrieve_hybrid_documents", new=AsyncMock(return_value=MagicMock(documents=[evidence]))),
-        patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", side_effect=[summary_llm, synthesis_llm]),
+        patch("data_base.agentic_v10.subquery_pipeline_service.load_user_vector_documents_async", new=AsyncMock(side_effect=RuntimeError("offline"))),
+        patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", return_value=synthesis_llm),
     ):
         result = await service.execute(question="Question", user_id="user-1")
 
     v10 = result.agent_trace["agentic_v10"]
-    card = v10["context_pack"]["evidence_cards"][0]
-    assert card["status"] == "raw_fallback"
-    assert card["reference_ids"] == ["[Ref 1]"]
-    assert "Only raw fallback evidence" in card["raw_evidence_block"]
-    assert v10["map_stage"]["fallback_count"] == 1
-    assert v10["branches"][0]["map"]["failure_diagnostic"] == "RuntimeError: bad schema"
-    assert "Only raw fallback evidence" in v10["synthesis"]["prompt_messages"][1]["content"]
+    assert v10["context_pack"]["neighbor_lookup_error"] == "RuntimeError"
+    assert v10["context_pack"]["neighbor_evidence_count"] == 0
+    assert "Only raw evidence" in v10["synthesis"]["prompt_messages"][1]["content"]
 
 
 @pytest.mark.asyncio
-async def test_v10_adds_an_explicit_gap_when_map_returns_empty_no_evidence() -> None:
+async def test_v10_does_not_invoke_a_map_model() -> None:
     decomposer = MagicMock()
     decomposer.decompose = AsyncMock(return_value=[
         SubQueryItem(id="SQ1", query="query", focus="focus", target_entity="entity")
     ])
-    evidence = Document(page_content="Unlabeled values", metadata={"doc_id": "doc-1"})
+    evidence = Document(page_content="Raw evidence", metadata={"doc_id": "doc-1", "page_number": 1, "chunk_index_in_page": 0})
     reranker = MagicMock()
     reranker.rerank_with_scores.return_value = [(evidence, 0.9)]
     service = AgenticV10PipelineService(decomposer=decomposer, reranker=reranker)
-    map_llm = MagicMock()
-    map_llm.ainvoke = AsyncMock(return_value={
-        "parsed": {
-            "status": "no_evidence",
-            "supported_findings": [],
-            "missing_or_unsupported": [],
-        },
-        "raw": MagicMock(usage_metadata={}),
-        "parsing_error": None,
-    })
-    summary_llm = MagicMock()
-    summary_llm.with_structured_output.return_value = map_llm
     synthesis_llm = MagicMock()
     synthesis_llm.ainvoke = AsyncMock(return_value=MagicMock(content="Answer", usage_metadata={}))
 
     with (
         patch("data_base.agentic_v10.subquery_pipeline_service.get_user_retriever_async", new=AsyncMock(return_value=MagicMock())),
         patch("data_base.agentic_v10.subquery_pipeline_service.retrieve_hybrid_documents", new=AsyncMock(return_value=MagicMock(documents=[evidence]))),
-        patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", side_effect=[summary_llm, synthesis_llm]),
+        patch("data_base.agentic_v10.subquery_pipeline_service.load_user_vector_documents_async", new=AsyncMock(return_value=[evidence])),
+        patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", return_value=synthesis_llm) as get_llm,
     ):
         result = await service.execute(question="Question", user_id="user-1")
 
-    card = result.agent_trace["agentic_v10"]["context_pack"]["evidence_cards"][0]
-    assert card["status"] == "no_evidence"
-    assert card["missing_or_unsupported"] == [
-        "The selected source does not directly support this subquery."
-    ]
+    assert "Raw evidence" in result.agent_trace["agentic_v10"]["context_pack"]["rendered_context"]
+    assert get_llm.call_count == 1
+    assert get_llm.call_args.kwargs == {"purpose": "synthesizer"}
 
 
 @pytest.mark.asyncio
@@ -178,7 +143,8 @@ async def test_v10_returns_transparent_partial_when_no_evidence_exists() -> None
     ):
         result = await service.execute(question="Unknown subject", user_id="user-1")
     assert result.agent_trace["response_status"] == "qualified_partial"
-    assert all(card["status"] == "no_evidence" for card in result.agent_trace["agentic_v10"]["context_pack"]["evidence_cards"])
+    assert result.agent_trace["agentic_v10"]["context_pack"]["top1_evidence_count"] == 0
+    assert result.agent_trace["agentic_v10"]["context_pack"]["neighbor_evidence_count"] == 0
     assert "沒有可用" in result.answer
     get_llm.assert_not_called()
 
@@ -204,14 +170,17 @@ async def test_v10_keeps_failed_retrieval_branches_in_partial_trace() -> None:
 
 def test_v10_export_keeps_raw_trace_behind_existing_export_switches() -> None:
     trace = MagicMock(
-        execution_profile="agentic_v10_top1_map_reduce_backend_refs",
+        execution_profile="agentic_eval_v10_top1_raw_same_document_neighbors",
         agentic_v10={
-            "schema_version": "3",
+            "schema_version": "4",
             "response_status": "complete",
             "decomposition": {"sub_queries": [{"id": "SQ1"}]},
             "branches": [{"subquery_id": "SQ1"}],
             "deduplicated_evidence": [{"content": "evidence"}],
-            "map_stage": {"card_count": 1, "fallback_count": 1, "failure_count": 1},
+            "context_pack": {
+                "strategy": "top1_raw_same_document_neighbors",
+                "neighbor_evidence_count": 2,
+            },
             "synthesis": {"prompt_messages": [{"content": "full prompt"}]},
         },
     )
@@ -219,7 +188,8 @@ def test_v10_export_keeps_raw_trace_behind_existing_export_switches() -> None:
     summary = _project_agentic_v10(trace, ExportCampaignRequest())
     assert summary is not None
     assert summary["summary"]["subquery_count"] == 1
-    assert summary["summary"]["map_fallback_count"] == 1
+    assert summary["summary"]["context_strategy"] == "top1_raw_same_document_neighbors"
+    assert summary["summary"]["neighbor_evidence_count"] == 2
     assert "raw_payload" not in summary
 
     raw = _project_agentic_v10(
@@ -231,5 +201,5 @@ def test_v10_export_keeps_raw_trace_behind_existing_export_switches() -> None:
     )
     assert raw is not None
     assert raw["raw_payload"]["synthesis"]["prompt_messages"][0]["content"] == "full prompt"
-    assert "rendered_evidence_cards" not in raw["raw_payload"].get("context_pack", {})
+    assert raw["raw_payload"]["context_pack"]["strategy"] == "top1_raw_same_document_neighbors"
     assert json.loads(json.dumps(raw)) == raw

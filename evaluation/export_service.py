@@ -216,6 +216,7 @@ def _project_agentic_v10(trace: Any, request: ExportCampaignRequest) -> dict[str
     branches = raw.get("branches")
     evidence = raw.get("deduplicated_evidence")
     map_stage = raw.get("map_stage")
+    context_pack = raw.get("context_pack")
     result: dict[str, Any] = {
         "schema_version": str(raw.get("schema_version") or "1"),
         "execution_profile": getattr(trace, "execution_profile", None),
@@ -224,6 +225,16 @@ def _project_agentic_v10(trace: Any, request: ExportCampaignRequest) -> dict[str
             "subquery_count": len(decomposition.get("sub_queries", [])) if isinstance(decomposition, dict) else 0,
             "branch_count": len(branches) if isinstance(branches, list) else 0,
             "deduplicated_evidence_count": len(evidence) if isinstance(evidence, list) else 0,
+            "context_strategy": (
+                context_pack.get("strategy")
+                if isinstance(context_pack, dict)
+                else None
+            ),
+            "neighbor_evidence_count": (
+                int(context_pack.get("neighbor_evidence_count", 0))
+                if isinstance(context_pack, dict)
+                else 0
+            ),
             "map_card_count": (
                 int(map_stage.get("card_count", 0))
                 if isinstance(map_stage, dict)
