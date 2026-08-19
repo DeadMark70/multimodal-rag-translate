@@ -29,7 +29,7 @@ from data_base.vector_store_manager import get_user_retriever_async
 
 logger = logging.getLogger(__name__)
 
-AGENTIC_V10_EXECUTION_PROFILE = "agentic_v10_subquery_sequential_rerank_top1"
+AGENTIC_V10_EXECUTION_PROFILE = "agentic_v10_subquery_sequential_rerank_top2"
 AGENTIC_V10_CONTEXT_POLICY_VERSION = "v10_grounded_structured_pack"
 AGENTIC_V10_TRACE_SCHEMA_VERSION = "1"
 
@@ -138,7 +138,7 @@ class AgenticV10PipelineService:
             rerank_started = time.perf_counter()
             try:
                 ranked = (
-                    reranker.rerank_with_scores(item.query, candidates, top_k=1)
+                    reranker.rerank_with_scores(item.query, candidates, top_k=2)
                     if candidates
                     else []
                 )

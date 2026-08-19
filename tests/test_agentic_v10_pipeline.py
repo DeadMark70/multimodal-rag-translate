@@ -45,7 +45,7 @@ async def test_v10_pipeline_records_full_branch_trace() -> None:
     assert v10["synthesis"]["prompt_messages"]
     assert result.usage["total_tokens"] == 10
     assert reranker.rerank_with_scores.call_count == 2
-    assert [call.kwargs["top_k"] for call in reranker.rerank_with_scores.call_args_list] == [1, 1]
+    assert [call.kwargs["top_k"] for call in reranker.rerank_with_scores.call_args_list] == [2, 2]
     assert reranker.rerank.call_count == 0
 
 
