@@ -617,6 +617,9 @@ class AgenticV10PipelineService:
         normalized_references = (
             AgenticV10PipelineService._normalize_audit_reference_ids(audit)
         )
+        discarded_empty_ledger_reference_ids = (
+            AgenticV10PipelineService._discard_empty_ledger_entries(audit)
+        )
         requirement_ids = [requirement.id for requirement in audit.requirements]
         requirement_set = set(requirement_ids)
         failure_reason: str | None = None
@@ -689,6 +692,9 @@ class AgenticV10PipelineService:
             "failure_reason": failure_reason,
             "valid_reference_ids": sorted(valid_reference_ids),
             "normalized_references": normalized_references,
+            "discarded_empty_ledger_reference_ids": (
+                discarded_empty_ledger_reference_ids
+            ),
             "ledger_reference_ids": list(
                 dict.fromkeys(
                     entry.reference_id for entry in audit.extractive_evidence_ledger
@@ -726,6 +732,22 @@ class AgenticV10PipelineService:
                 f"ledger[{entry_index}].reference_id",
             )
         return normalized
+
+    @staticmethod
+    def _discard_empty_ledger_entries(audit: CoverageAuditResponse) -> list[str]:
+        """Ignore audit entries that deliberately map no evidence to a requirement."""
+
+        empty_reference_ids = [
+            entry.reference_id
+            for entry in audit.extractive_evidence_ledger
+            if not entry.requirement_ids
+        ]
+        audit.extractive_evidence_ledger = [
+            entry
+            for entry in audit.extractive_evidence_ledger
+            if entry.requirement_ids
+        ]
+        return empty_reference_ids
 
     @staticmethod
     def _chunk_position(document: Document) -> tuple[int, int] | None:

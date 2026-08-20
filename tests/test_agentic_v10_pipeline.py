@@ -90,6 +90,31 @@ def test_v10_audit_validation_normalizes_bracketless_reference_ids() -> None:
     assert len(result["normalized_references"]) == 2
 
 
+def test_v10_audit_validation_discards_empty_ledger_entries() -> None:
+    audit = CoverageAuditResponse.model_validate({
+        "needs_drill_down": 0,
+        "answer": "Grounded answer [Ref 1]",
+        "requirements": [{"id": "R1", "entity": "A", "criterion": "first"}],
+        "entity_criterion_matrix": [
+            {"requirement_id": "R1", "coverage": "supported", "reference_ids": ["[Ref 1]"]},
+        ],
+        "extractive_evidence_ledger": [
+            {"reference_id": "[Ref 1]", "requirement_ids": ["R1"]},
+            {"reference_id": "[Ref 2]", "requirement_ids": []},
+        ],
+        "priority_gap": None,
+    })
+
+    result = AgenticV10PipelineService._validate_coverage_audit(
+        audit=audit,
+        valid_reference_ids={"[Ref 1]", "[Ref 2]"},
+    )
+
+    assert result["validated"] is True
+    assert result["discarded_empty_ledger_reference_ids"] == ["[Ref 2]"]
+    assert [entry.reference_id for entry in audit.extractive_evidence_ledger] == ["[Ref 1]"]
+
+
 @pytest.mark.asyncio
 async def test_v10_audit_answer_uses_native_schema_and_raw_b_context() -> None:
     decomposer = MagicMock()
