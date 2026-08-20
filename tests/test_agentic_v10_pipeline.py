@@ -6,7 +6,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.documents import Document
 
-from data_base.agentic_v10.subquery_decomposer import SubQueryItem, _fallback_subqueries
+from data_base.agentic_v10.subquery_decomposer import (
+    SubQueryDecompositionResponse,
+    SubQueryItem,
+    _fallback_subqueries,
+)
 from data_base.agentic_v10.subquery_pipeline_service import AgenticV10PipelineService
 from evaluation.export_schemas import ExportCampaignRequest
 from evaluation.export_service import _project_agentic_v10
@@ -15,7 +19,17 @@ from evaluation.export_service import _project_agentic_v10
 def test_v10_fallback_produces_multiple_queries() -> None:
     items = _fallback_subqueries("Compare SAMed versus MedSAM on abdominal CT")
     assert len(items) >= 2
+    assert len(items) <= 3
     assert any("SAMed" in item.query for item in items)
+
+
+def test_v10_decomposition_schema_rejects_more_than_three_queries() -> None:
+    items = [
+        {"id": f"SQ{index}", "query": f"query {index}", "focus": "focus"}
+        for index in range(1, 5)
+    ]
+    with pytest.raises(ValueError, match="at most 3"):
+        SubQueryDecompositionResponse.model_validate({"sub_queries": items})
 
 
 @pytest.mark.asyncio

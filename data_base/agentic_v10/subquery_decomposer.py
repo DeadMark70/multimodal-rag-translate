@@ -28,9 +28,9 @@ class SubQueryItem(BaseModel):
 
 
 class SubQueryDecompositionResponse(BaseModel):
-    """Structured LLM response containing two to five retrieval queries."""
+    """Structured LLM response containing two to three retrieval queries."""
 
-    sub_queries: list[SubQueryItem] = Field(min_length=2, max_length=5)
+    sub_queries: list[SubQueryItem] = Field(min_length=2, max_length=3)
 
 
 class SubQueryDecompositionTrace(BaseModel):
@@ -61,17 +61,17 @@ def _fallback_subqueries(question: str) -> list[SubQueryItem]:
                 focus=f"檢索 {entity} 的架構機制與性能數據",
                 target_entity=entity,
             )
-            for index, entity in enumerate(unique[:4], start=1)
+            for index, entity in enumerate(unique[:2], start=1)
         ]
         items.append(
             SubQueryItem(
                 id=f"SQ{len(items) + 1}",
-                query=f"{' '.join(unique[:3])} comparison evaluation table",
+                query=f"{' '.join(unique[:2])} comparison evaluation table",
                 focus="檢索各實體之對比評估與表格數據",
                 target_entity="Comparison",
             )
         )
-        return items[:5]
+        return items[:3]
     keywords = _clean_english_keywords(question)
     return [
         SubQueryItem(
@@ -90,7 +90,7 @@ def _fallback_subqueries(question: str) -> list[SubQueryItem]:
 
 
 class SubQueryDecomposer:
-    """Turn a complex research question into two to five retrieval branches."""
+    """Turn a complex research question into two to three retrieval branches."""
 
     def __init__(self, llm_client: Any | None = None) -> None:
         self._llm = llm_client
@@ -118,14 +118,14 @@ class SubQueryDecomposer:
                 try:
                     response = await llm.with_structured_output(SubQueryDecompositionResponse).ainvoke(messages)
                     if response and response.sub_queries:
-                        return SubQueryDecompositionTrace(sub_queries=response.sub_queries[:5], prompt_messages=messages)
+                        return SubQueryDecompositionTrace(sub_queries=response.sub_queries[:3], prompt_messages=messages)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("v10 structured decomposition failed: %s", exc)
             response = await (llm.ainvoke(messages) if hasattr(llm, "ainvoke") else llm.invoke(messages))
             parsed = self._extract_json(str(getattr(response, "content", response)))
             if parsed and "sub_queries" in parsed:
                 validated = SubQueryDecompositionResponse.model_validate(parsed)
-                return SubQueryDecompositionTrace(sub_queries=validated.sub_queries[:5], prompt_messages=messages)
+                return SubQueryDecompositionTrace(sub_queries=validated.sub_queries[:3], prompt_messages=messages)
         except Exception as exc:  # noqa: BLE001
             logger.warning("v10 decomposition failed; using fallback: %s", exc)
             return SubQueryDecompositionTrace(sub_queries=_fallback_subqueries(question), used_fallback=True, fallback_reason=type(exc).__name__, prompt_messages=messages)
