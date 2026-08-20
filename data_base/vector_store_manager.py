@@ -706,6 +706,15 @@ def load_user_vector_documents(user_id: str) -> List[Document]:
     return list(vector_db.docstore._dict.values())
 
 
+async def load_user_vector_documents_async(user_id: str) -> List[Document]:
+    """Load one user's persisted chunks under the same FAISS lock as retrieval."""
+    return await _run_user_locked_vector_store_call(
+        user_id,
+        load_user_vector_documents,
+        user_id,
+    )
+
+
 async def add_markdown_to_knowledge_base(
     user_id: str,
     markdown_text: str,
