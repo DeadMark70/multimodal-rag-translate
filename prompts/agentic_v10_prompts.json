@@ -24,6 +24,30 @@
       "description": "Agentic v10 grounded raw-evidence synthesis user prompt",
       "required_variables": ["question", "subqueries_overview", "context_text"],
       "template": "## 使用者研究問題\n{question}\n\n## 子問題檢索脈絡\n{subqueries_overview}\n\n## 檢索來源文檔片段\n{context_text}\n\n請根據以上文檔內容回答，並在關鍵事實後附上引用來源。"
+    },
+    "coverage_audit_system": {
+      "version": 1,
+      "description": "Agentic v10 native structured coverage audit prompt",
+      "required_variables": [],
+      "template": "僅根據輸入的問題與原始來源片段，建立可驗證的 coverage audit。\n\n將問題的每一項明確要求拆為 entity/criterion requirement。每個 matrix cell 只能標示 supported、partial 或 missing，並只能引用輸入中存在的 [Ref n]。supported 表示來源直接支持完整要求；只有部分條件、實體、數值、公式、表格欄位或比較範圍相符時必須標示 partial，不得以相近資料代替。\n\nledger 只能將 requirement ID 對應到提供的 [Ref n]；不得在 ledger 生成、補全或改寫任何來源外事實。所有 reference ID 必須來自輸入。\n\n若任一明確要求為 partial 或 missing，needs_drill_down 必須為 1，answer 必須為 null，並只選一個最高優先缺口。優先順序為：指定 table/figure/equation、精確數值或公式及其條件、命名實體比較、其餘要求依問題順序。drill-down query 必須是英文學術檢索 query，保留題目中的實體與精確識別字，只尋找該缺口，不得捏造值或條件。\n\n若所有明確要求均為 supported，needs_drill_down 為 0，並以繁體中文在 answer 產生直接、附 [Ref n] 的最終回答。不要輸出推理過程。"
+    },
+    "coverage_audit_user": {
+      "version": 1,
+      "description": "Agentic v10 coverage audit user prompt",
+      "required_variables": ["question", "subqueries_overview", "context_text"],
+      "template": "## 使用者研究問題\n{question}\n\n## 子問題檢索脈絡\n{subqueries_overview}\n\n## 原始檢索來源文檔片段\n{context_text}\n\n請依指定 structured schema 產生 coverage audit。"
+    },
+    "drilldown_synthesis_system": {
+      "version": 1,
+      "description": "Agentic v10 post-drill-down grounded synthesis prompt",
+      "required_variables": [],
+      "template": "僅根據原始問題、entity/criterion matrix、extractive evidence ledger，以及其指向的原始來源片段回答。不得把不同 entity、table、figure、equation、dataset 或實驗條件互相代用。\n\n每項主張都必須由提供的 [Ref n] 直接支持。matrix 標示 partial 或 missing 時，明確說明證據不足，但仍回答其他已支持部分。先給直接結論，再給可核對的理由與引用；不得使用來源外背景知識或輸出推理過程。"
+    },
+    "drilldown_synthesis_user": {
+      "version": 1,
+      "description": "Agentic v10 post-drill-down synthesis user prompt",
+      "required_variables": ["question", "matrix_text", "ledger_text", "context_text"],
+      "template": "## 使用者研究問題\n{question}\n\n## Entity/Criterion Matrix\n{matrix_text}\n\n## Extractive Evidence Ledger\n{ledger_text}\n\n## 僅可使用的原始來源片段\n{context_text}\n\n請根據以上內容回答主問題，並在關鍵事實後附上引用來源。"
     }
   }
 }

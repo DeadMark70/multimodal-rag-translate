@@ -217,6 +217,8 @@ def _project_agentic_v10(trace: Any, request: ExportCampaignRequest) -> dict[str
     evidence = raw.get("deduplicated_evidence")
     map_stage = raw.get("map_stage")
     context_pack = raw.get("context_pack")
+    coverage_audit = raw.get("coverage_audit")
+    drill_down = raw.get("drill_down")
     result: dict[str, Any] = {
         "schema_version": str(raw.get("schema_version") or "1"),
         "execution_profile": getattr(trace, "execution_profile", None),
@@ -248,6 +250,26 @@ def _project_agentic_v10(trace: Any, request: ExportCampaignRequest) -> dict[str
             "map_failure_count": (
                 int(map_stage.get("failure_count", 0))
                 if isinstance(map_stage, dict)
+                else 0
+            ),
+            "coverage_audit_route": (
+                coverage_audit.get("route")
+                if isinstance(coverage_audit, dict)
+                else None
+            ),
+            "unresolved_requirement_count": (
+                coverage_audit.get("unresolved_requirement_count")
+                if isinstance(coverage_audit, dict)
+                else None
+            ),
+            "drill_down_count": (
+                1
+                if isinstance(drill_down, dict) and drill_down.get("attempted")
+                else 0
+            ),
+            "drill_down_new_evidence_count": (
+                int(drill_down.get("new_evidence_count", 0))
+                if isinstance(drill_down, dict)
                 else 0
             ),
         },

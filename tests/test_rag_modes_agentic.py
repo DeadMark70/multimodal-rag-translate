@@ -383,7 +383,7 @@ async def test_unversioned_agentic_campaign_uses_v10_service() -> None:
 
     service_cls.return_value.execute.assert_awaited_once()
     assert result.agentic_execution_version == "v10"
-    assert result.context_policy_version == "v10_raw_top1_same_document_neighbors"
+    assert result.context_policy_version == "v10_top1_neighbors_conditional_drilldown_ledger_matrix"
 
 
 @pytest.mark.asyncio

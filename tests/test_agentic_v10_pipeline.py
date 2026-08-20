@@ -11,7 +11,10 @@ from data_base.agentic_v10.subquery_decomposer import (
     SubQueryItem,
     _fallback_subqueries,
 )
-from data_base.agentic_v10.subquery_pipeline_service import AgenticV10PipelineService
+from data_base.agentic_v10.subquery_pipeline_service import (
+    AgenticV10PipelineService,
+    CoverageAuditResponse,
+)
 from evaluation.export_schemas import ExportCampaignRequest
 from evaluation.export_service import _project_agentic_v10
 
@@ -32,8 +35,34 @@ def test_v10_decomposition_schema_rejects_more_than_three_queries() -> None:
         SubQueryDecompositionResponse.model_validate({"sub_queries": items})
 
 
+def test_v10_audit_validation_requires_each_requirement_and_source() -> None:
+    audit = CoverageAuditResponse.model_validate({
+        "needs_drill_down": 0,
+        "answer": "Incomplete answer",
+        "requirements": [
+            {"id": "R1", "entity": "A", "criterion": "first"},
+            {"id": "R2", "entity": "B", "criterion": "second"},
+        ],
+        "entity_criterion_matrix": [
+            {"requirement_id": "R1", "coverage": "supported", "reference_ids": ["[Ref 1]"]},
+        ],
+        "extractive_evidence_ledger": [
+            {"reference_id": "[Ref 1]", "requirement_ids": ["R1"]},
+        ],
+        "priority_gap": None,
+    })
+
+    result = AgenticV10PipelineService._validate_coverage_audit(
+        audit=audit,
+        valid_reference_ids={"[Ref 1]"},
+    )
+
+    assert result["validated"] is False
+    assert result["failure_reason"] == "incomplete_matrix"
+
+
 @pytest.mark.asyncio
-async def test_v10_pipeline_packs_raw_top1_and_same_document_neighbors() -> None:
+async def test_v10_audit_answer_uses_native_schema_and_raw_b_context() -> None:
     decomposer = MagicMock()
     decomposer.decompose = AsyncMock(return_value=[
         SubQueryItem(id="SQ1", query="model architecture", focus="架構", target_entity="Model"),
@@ -48,16 +77,36 @@ async def test_v10_pipeline_packs_raw_top1_and_same_document_neighbors() -> None
     second_next = Document(page_content="Benchmark following context", metadata={"doc_id": "doc-2", "page_number": 4, "chunk_index_in_page": 2})
     reranker.rerank_with_scores.side_effect = [[(first, 0.9)], [(second, 0.8)]]
     service = AgenticV10PipelineService(decomposer=decomposer, reranker=reranker)
-    synthesis_llm = MagicMock()
-    synthesis_llm.ainvoke = AsyncMock(return_value=MagicMock(
-        content="Grounded answer",
-        usage_metadata={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
-    ))
+    audit_llm = MagicMock()
+    structured_llm = MagicMock()
+    structured_llm.ainvoke = AsyncMock(return_value={
+        "parsed": CoverageAuditResponse.model_validate({
+            "needs_drill_down": 0,
+            "answer": "Grounded answer [Ref 1]",
+            "requirements": [
+                {"id": "R1", "entity": "Model", "criterion": "architecture"},
+                {"id": "R2", "entity": "Model", "criterion": "benchmark"},
+            ],
+            "entity_criterion_matrix": [
+                {"requirement_id": "R1", "coverage": "supported", "reference_ids": ["[Ref 1]"]},
+                {"requirement_id": "R2", "coverage": "supported", "reference_ids": ["[Ref 4]"]},
+            ],
+            "extractive_evidence_ledger": [
+                {"reference_id": "[Ref 1]", "requirement_ids": ["R1"]},
+                {"reference_id": "[Ref 4]", "requirement_ids": ["R2"]},
+            ],
+            "priority_gap": None,
+        }),
+        "raw": MagicMock(
+            usage_metadata={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
+        ),
+    })
+    audit_llm.with_structured_output.return_value = structured_llm
     with (
         patch("data_base.agentic_v10.subquery_pipeline_service.get_user_retriever_async", new=AsyncMock(return_value=MagicMock())),
         patch("data_base.agentic_v10.subquery_pipeline_service.retrieve_hybrid_documents", new=AsyncMock(side_effect=[MagicMock(documents=[first]), MagicMock(documents=[second])])),
         patch("data_base.agentic_v10.subquery_pipeline_service.load_user_vector_documents_async", new=AsyncMock(return_value=[first_previous, first, first_next, second_previous, second, second_next])),
-        patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", return_value=synthesis_llm) as get_llm,
+        patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", return_value=audit_llm) as get_llm,
     ):
         result = await service.execute(question="Compare the models", user_id="user-1")
     trace = result.agent_trace or {}
@@ -65,14 +114,14 @@ async def test_v10_pipeline_packs_raw_top1_and_same_document_neighbors() -> None
     assert trace["agentic_execution_version"] == "v10"
     assert len(v10["branches"]) == 2
     assert v10["branches"][0]["raw_candidates"][0]["content"] == "Architecture evidence"
-    synthesis_prompt = v10["synthesis"]["prompt_messages"][1]["content"]
-    assert "Architecture evidence" in synthesis_prompt
-    assert "Architecture preceding context" in synthesis_prompt
-    assert "Architecture following context" in synthesis_prompt
-    assert "Benchmark evidence" in synthesis_prompt
-    assert "Benchmark preceding context" in synthesis_prompt
-    assert "Benchmark following context" in synthesis_prompt
-    assert v10["context_pack"]["strategy"] == "top1_raw_same_document_neighbors"
+    audit_prompt = v10["coverage_audit"]["prompt_messages"][1]["content"]
+    assert "Architecture evidence" in audit_prompt
+    assert "Architecture preceding context" in audit_prompt
+    assert "Architecture following context" in audit_prompt
+    assert "Benchmark evidence" in audit_prompt
+    assert "Benchmark preceding context" in audit_prompt
+    assert "Benchmark following context" in audit_prompt
+    assert v10["context_pack"]["strategy"] == "top1_raw_same_document_neighbors_conditional_drilldown"
     assert v10["context_pack"]["top1_evidence_count"] == 2
     assert v10["context_pack"]["neighbor_evidence_count"] == 4
     neighbor_mapping = next(
@@ -84,6 +133,12 @@ async def test_v10_pipeline_packs_raw_top1_and_same_document_neighbors() -> None
     assert neighbor_mapping["neighbor_of_reference_ids"] == ["[Ref 1]"]
     assert result.usage["total_tokens"] == 10
     assert get_llm.call_args.kwargs == {"purpose": "synthesizer"}
+    audit_llm.with_structured_output.assert_called_once_with(
+        CoverageAuditResponse,
+        method="json_schema",
+        include_raw=True,
+    )
+    assert v10["coverage_audit"]["route"] == "audit_answer"
     assert reranker.rerank_with_scores.call_count == 2
     assert [call.kwargs["top_k"] for call in reranker.rerank_with_scores.call_args_list] == [1, 1]
     assert reranker.rerank.call_count == 0
@@ -117,7 +172,7 @@ async def test_v10_neighbor_lookup_failure_keeps_top1_raw_chunk() -> None:
 
 
 @pytest.mark.asyncio
-async def test_v10_does_not_invoke_a_map_model() -> None:
+async def test_v10_uses_one_structured_audit_without_map_calls() -> None:
     decomposer = MagicMock()
     decomposer.decompose = AsyncMock(return_value=[
         SubQueryItem(id="SQ1", query="query", focus="focus", target_entity="entity")
@@ -126,20 +181,172 @@ async def test_v10_does_not_invoke_a_map_model() -> None:
     reranker = MagicMock()
     reranker.rerank_with_scores.return_value = [(evidence, 0.9)]
     service = AgenticV10PipelineService(decomposer=decomposer, reranker=reranker)
-    synthesis_llm = MagicMock()
-    synthesis_llm.ainvoke = AsyncMock(return_value=MagicMock(content="Answer", usage_metadata={}))
+    audit_llm = MagicMock()
+    structured_llm = MagicMock()
+    structured_llm.ainvoke = AsyncMock(return_value={
+        "parsed": CoverageAuditResponse.model_validate({
+            "needs_drill_down": 0,
+            "answer": "Answer [Ref 1]",
+            "requirements": [{"id": "R1", "entity": "entity", "criterion": "focus"}],
+            "entity_criterion_matrix": [{"requirement_id": "R1", "coverage": "supported", "reference_ids": ["[Ref 1]"]}],
+            "extractive_evidence_ledger": [{"reference_id": "[Ref 1]", "requirement_ids": ["R1"]}],
+            "priority_gap": None,
+        }),
+        "raw": MagicMock(usage_metadata={}),
+    })
+    audit_llm.with_structured_output.return_value = structured_llm
 
     with (
         patch("data_base.agentic_v10.subquery_pipeline_service.get_user_retriever_async", new=AsyncMock(return_value=MagicMock())),
         patch("data_base.agentic_v10.subquery_pipeline_service.retrieve_hybrid_documents", new=AsyncMock(return_value=MagicMock(documents=[evidence]))),
         patch("data_base.agentic_v10.subquery_pipeline_service.load_user_vector_documents_async", new=AsyncMock(return_value=[evidence])),
-        patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", return_value=synthesis_llm) as get_llm,
+        patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", return_value=audit_llm) as get_llm,
     ):
         result = await service.execute(question="Question", user_id="user-1")
 
     assert "Raw evidence" in result.agent_trace["agentic_v10"]["context_pack"]["rendered_context"]
     assert get_llm.call_count == 1
     assert get_llm.call_args.kwargs == {"purpose": "synthesizer"}
+    assert result.agent_trace["agentic_v10"]["drill_down"] is None
+
+
+@pytest.mark.asyncio
+async def test_v10_runs_one_drill_down_and_final_only_receives_ledger_sources() -> None:
+    decomposer = MagicMock()
+    decomposer.decompose = AsyncMock(return_value=[
+        SubQueryItem(id="SQ1", query="initial query", focus="initial", target_entity="Model")
+    ])
+    initial = Document(page_content="Initial supported evidence", metadata={"doc_id": "doc-1", "page_number": 1, "chunk_index_in_page": 1})
+    initial_neighbor = Document(page_content="Unused initial neighbor", metadata={"doc_id": "doc-1", "page_number": 1, "chunk_index_in_page": 0})
+    drill = Document(page_content="Missing table values", metadata={"doc_id": "doc-2", "page_number": 2, "chunk_index_in_page": 1})
+    drill_previous = Document(page_content="Drill table caption", metadata={"doc_id": "doc-2", "page_number": 2, "chunk_index_in_page": 0})
+    drill_next = Document(page_content="Drill condition detail", metadata={"doc_id": "doc-2", "page_number": 2, "chunk_index_in_page": 2})
+    reranker = MagicMock()
+    reranker.rerank_with_scores.side_effect = [[(initial, 0.9)], [(drill, 0.8)]]
+    service = AgenticV10PipelineService(decomposer=decomposer, reranker=reranker)
+    audit_llm = MagicMock()
+    structured_llm = MagicMock()
+    structured_llm.ainvoke = AsyncMock(return_value={
+        "parsed": CoverageAuditResponse.model_validate({
+            "needs_drill_down": 1,
+            "answer": None,
+            "requirements": [{"id": "R1", "entity": "Model", "criterion": "Table 3 values"}],
+            "entity_criterion_matrix": [{"requirement_id": "R1", "coverage": "partial", "reference_ids": ["[Ref 1]"]}],
+            "extractive_evidence_ledger": [{"reference_id": "[Ref 1]", "requirement_ids": ["R1"]}],
+            "priority_gap": {
+                "requirement_id": "R1",
+                "missing_information": "Table 3 values and conditions",
+                "retrieval_query": "Model Table 3 values conditions",
+            },
+        }),
+        "raw": MagicMock(usage_metadata={"input_tokens": 5, "output_tokens": 2, "total_tokens": 7}),
+    })
+    audit_llm.with_structured_output.return_value = structured_llm
+    final_llm = MagicMock()
+    final_llm.ainvoke = AsyncMock(return_value=MagicMock(
+        content="Final grounded answer [Ref 1] [Ref 3]",
+        usage_metadata={"input_tokens": 9, "output_tokens": 4, "total_tokens": 13},
+    ))
+    with (
+        patch("data_base.agentic_v10.subquery_pipeline_service.get_user_retriever_async", new=AsyncMock(return_value=MagicMock())),
+        patch("data_base.agentic_v10.subquery_pipeline_service.retrieve_hybrid_documents", new=AsyncMock(side_effect=[MagicMock(documents=[initial]), MagicMock(documents=[drill])])),
+        patch("data_base.agentic_v10.subquery_pipeline_service.load_user_vector_documents_async", new=AsyncMock(side_effect=[[initial_neighbor, initial], [drill_previous, drill, drill_next]])),
+        patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", side_effect=[audit_llm, final_llm]),
+    ):
+        result = await service.execute(question="What are the Table 3 values?", user_id="user-1")
+
+    v10 = result.agent_trace["agentic_v10"]
+    assert v10["coverage_audit"]["route"] == "conditional_drill_down"
+    assert v10["drill_down"]["query"] == "Model Table 3 values conditions"
+    assert v10["drill_down"]["new_evidence_count"] == 3
+    assert reranker.rerank_with_scores.call_count == 2
+    assert [call.kwargs["top_k"] for call in reranker.rerank_with_scores.call_args_list] == [1, 1]
+    final_prompt = v10["synthesis"]["prompt_messages"][1]["content"]
+    assert "Initial supported evidence" in final_prompt
+    assert "Unused initial neighbor" not in final_prompt
+    assert "Missing table values" in final_prompt
+    assert "Drill table caption" in final_prompt
+    assert "Drill condition detail" in final_prompt
+    assert result.usage["total_tokens"] == 20
+    assert result.agent_trace["response_status"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_v10_invalid_audit_reference_falls_back_to_raw_b_synthesis() -> None:
+    decomposer = MagicMock()
+    decomposer.decompose = AsyncMock(return_value=[
+        SubQueryItem(id="SQ1", query="query", focus="focus", target_entity="entity")
+    ])
+    evidence = Document(page_content="Raw evidence", metadata={"doc_id": "doc-1", "page_number": 1, "chunk_index_in_page": 0})
+    reranker = MagicMock()
+    reranker.rerank_with_scores.return_value = [(evidence, 0.9)]
+    service = AgenticV10PipelineService(decomposer=decomposer, reranker=reranker)
+    audit_llm = MagicMock()
+    structured_llm = MagicMock()
+    structured_llm.ainvoke = AsyncMock(return_value={
+        "parsed": CoverageAuditResponse.model_validate({
+            "needs_drill_down": 0,
+            "answer": "Bad [Ref 99]",
+            "requirements": [{"id": "R1", "entity": "entity", "criterion": "focus"}],
+            "entity_criterion_matrix": [{"requirement_id": "R1", "coverage": "supported", "reference_ids": ["[Ref 99]"]}],
+            "extractive_evidence_ledger": [{"reference_id": "[Ref 99]", "requirement_ids": ["R1"]}],
+            "priority_gap": None,
+        }),
+        "raw": MagicMock(usage_metadata={}),
+    })
+    audit_llm.with_structured_output.return_value = structured_llm
+    fallback_llm = MagicMock()
+    fallback_llm.ainvoke = AsyncMock(return_value=MagicMock(content="Fallback answer", usage_metadata={}))
+    with (
+        patch("data_base.agentic_v10.subquery_pipeline_service.get_user_retriever_async", new=AsyncMock(return_value=MagicMock())),
+        patch("data_base.agentic_v10.subquery_pipeline_service.retrieve_hybrid_documents", new=AsyncMock(return_value=MagicMock(documents=[evidence]))),
+        patch("data_base.agentic_v10.subquery_pipeline_service.load_user_vector_documents_async", new=AsyncMock(return_value=[evidence])),
+        patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", side_effect=[audit_llm, fallback_llm]),
+    ):
+        result = await service.execute(question="Question", user_id="user-1")
+
+    assert result.answer == "Fallback answer"
+    assert result.agent_trace["agentic_v10"]["coverage_audit"]["route"] == "audit_fallback_raw_synthesis"
+    assert result.agent_trace["agentic_v10"]["coverage_audit"]["reference_validation"]["failure_reason"] == "invalid_matrix_reference"
+
+
+@pytest.mark.asyncio
+async def test_v10_drill_down_without_new_evidence_returns_qualified_partial() -> None:
+    decomposer = MagicMock()
+    decomposer.decompose = AsyncMock(return_value=[
+        SubQueryItem(id="SQ1", query="query", focus="focus", target_entity="entity")
+    ])
+    evidence = Document(page_content="Existing partial evidence", metadata={"doc_id": "doc-1", "page_number": 1, "chunk_index_in_page": 0})
+    reranker = MagicMock()
+    reranker.rerank_with_scores.return_value = [(evidence, 0.9)]
+    service = AgenticV10PipelineService(decomposer=decomposer, reranker=reranker)
+    audit_llm = MagicMock()
+    structured_llm = MagicMock()
+    structured_llm.ainvoke = AsyncMock(return_value={
+        "parsed": CoverageAuditResponse.model_validate({
+            "needs_drill_down": 1,
+            "answer": None,
+            "requirements": [{"id": "R1", "entity": "entity", "criterion": "missing metric"}],
+            "entity_criterion_matrix": [{"requirement_id": "R1", "coverage": "partial", "reference_ids": ["[Ref 1]"]}],
+            "extractive_evidence_ledger": [{"reference_id": "[Ref 1]", "requirement_ids": ["R1"]}],
+            "priority_gap": {"requirement_id": "R1", "missing_information": "metric", "retrieval_query": "entity metric"},
+        }),
+        "raw": MagicMock(usage_metadata={}),
+    })
+    audit_llm.with_structured_output.return_value = structured_llm
+    final_llm = MagicMock()
+    final_llm.ainvoke = AsyncMock(return_value=MagicMock(content="Partial answer [Ref 1]", usage_metadata={}))
+    with (
+        patch("data_base.agentic_v10.subquery_pipeline_service.get_user_retriever_async", new=AsyncMock(return_value=MagicMock())),
+        patch("data_base.agentic_v10.subquery_pipeline_service.retrieve_hybrid_documents", new=AsyncMock(side_effect=[MagicMock(documents=[evidence]), MagicMock(documents=[])])),
+        patch("data_base.agentic_v10.subquery_pipeline_service.load_user_vector_documents_async", new=AsyncMock(return_value=[evidence])),
+        patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", side_effect=[audit_llm, final_llm]),
+    ):
+        result = await service.execute(question="Question", user_id="user-1")
+
+    assert result.answer == "Partial answer [Ref 1]"
+    assert result.agent_trace["response_status"] == "qualified_partial"
+    assert result.agent_trace["agentic_v10"]["drill_down"]["new_evidence_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -184,7 +391,7 @@ async def test_v10_keeps_failed_retrieval_branches_in_partial_trace() -> None:
 
 def test_v10_export_keeps_raw_trace_behind_existing_export_switches() -> None:
     trace = MagicMock(
-        execution_profile="agentic_eval_v10_top1_raw_same_document_neighbors",
+        execution_profile="agentic_eval_v10_top1_neighbors_conditional_drilldown",
         agentic_v10={
             "schema_version": "4",
             "response_status": "complete",
@@ -192,9 +399,14 @@ def test_v10_export_keeps_raw_trace_behind_existing_export_switches() -> None:
             "branches": [{"subquery_id": "SQ1"}],
             "deduplicated_evidence": [{"content": "evidence"}],
             "context_pack": {
-                "strategy": "top1_raw_same_document_neighbors",
+                "strategy": "top1_raw_same_document_neighbors_conditional_drilldown",
                 "neighbor_evidence_count": 2,
             },
+            "coverage_audit": {
+                "route": "conditional_drill_down",
+                "unresolved_requirement_count": 1,
+            },
+            "drill_down": {"attempted": True, "new_evidence_count": 3},
             "synthesis": {"prompt_messages": [{"content": "full prompt"}]},
         },
     )
@@ -202,8 +414,11 @@ def test_v10_export_keeps_raw_trace_behind_existing_export_switches() -> None:
     summary = _project_agentic_v10(trace, ExportCampaignRequest())
     assert summary is not None
     assert summary["summary"]["subquery_count"] == 1
-    assert summary["summary"]["context_strategy"] == "top1_raw_same_document_neighbors"
+    assert summary["summary"]["context_strategy"] == "top1_raw_same_document_neighbors_conditional_drilldown"
     assert summary["summary"]["neighbor_evidence_count"] == 2
+    assert summary["summary"]["coverage_audit_route"] == "conditional_drill_down"
+    assert summary["summary"]["drill_down_count"] == 1
+    assert summary["summary"]["drill_down_new_evidence_count"] == 3
     assert "raw_payload" not in summary
 
     raw = _project_agentic_v10(
@@ -215,5 +430,5 @@ def test_v10_export_keeps_raw_trace_behind_existing_export_switches() -> None:
     )
     assert raw is not None
     assert raw["raw_payload"]["synthesis"]["prompt_messages"][0]["content"] == "full prompt"
-    assert raw["raw_payload"]["context_pack"]["strategy"] == "top1_raw_same_document_neighbors"
+    assert raw["raw_payload"]["context_pack"]["strategy"] == "top1_raw_same_document_neighbors_conditional_drilldown"
     assert json.loads(json.dumps(raw)) == raw
