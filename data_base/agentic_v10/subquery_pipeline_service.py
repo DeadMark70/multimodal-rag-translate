@@ -36,12 +36,12 @@ from data_base.vector_store_manager import (
 logger = logging.getLogger(__name__)
 
 AGENTIC_V10_EXECUTION_PROFILE = (
-    "agentic_eval_v10_top1_neighbors_conditional_drilldown"
+    "agentic_eval_v10_initial_top1_neighbors_drilldown_top2_no_neighbors"
 )
 AGENTIC_V10_CONTEXT_POLICY_VERSION = (
-    "v10_top1_neighbors_conditional_drilldown_ledger_matrix"
+    "v10_initial_top1_neighbors_drilldown_top2_no_neighbors_ledger_matrix"
 )
-AGENTIC_V10_TRACE_SCHEMA_VERSION = "5"
+AGENTIC_V10_TRACE_SCHEMA_VERSION = "6"
 
 _AUDIT_REFERENCE_ID_PATTERN = re.compile(
     r"^\s*(?:\[Ref\s+([1-9]\d*)\]|Ref\s+([1-9]\d*))\s*$"
@@ -448,7 +448,7 @@ class AgenticV10PipelineService:
                 ],
                 "source_document_mapping": source_document_mapping,
                 "context_pack": {
-                    "strategy": "top1_raw_same_document_neighbors_conditional_drilldown",
+                    "strategy": "initial_top1_raw_same_document_neighbors_drilldown_top2_no_neighbors",
                     "rendered_context": context_text,
                     "final_rendered_context": final_context_text,
                     "top1_evidence_count": len(top1_records),
@@ -513,7 +513,7 @@ class AgenticV10PipelineService:
         priority_gap: PriorityGap | None,
         initial_entries: list[ContextEntry],
     ) -> tuple[dict[str, Any], list[ContextEntry]]:
-        """Retrieve exactly one additional Top-1 branch for a validated gap."""
+        """Retrieve exactly one additional direct Top-2 branch for a validated gap."""
         started = time.perf_counter()
         query = priority_gap.retrieval_query if priority_gap is not None else ""
         candidates: list[Document] = []
@@ -543,34 +543,24 @@ class AgenticV10PipelineService:
         rerank_error: str | None = None
         try:
             ranked = (
-                reranker.rerank_with_scores(query, candidates, top_k=1)
+                reranker.rerank_with_scores(query, candidates, top_k=2)
                 if candidates
                 else []
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("v10 drill-down rerank failed: %s", exc)
-            ranked = [(document, 0.5) for document in candidates[:1]]
+            ranked = [(document, 0.5) for document in candidates[:2]]
             rerank_error = type(exc).__name__
-        selected_documents = [document for document, _ in ranked]
-        neighbors, neighbor_lookup_error = await self._same_document_neighbors(
-            user_id=user_id,
-            selected_documents=selected_documents,
-            authorized_doc_ids=allowed_doc_ids,
-        )
+        ranked = ranked[:2]
         known_keys = {
             _document_key(document) for _, document, _, _ in initial_entries
         }
         entries: list[ContextEntry] = []
         next_reference_id = len(initial_entries) + 1
+        rerank_rank_by_document_key: dict[str, int] = {}
+        for rank, (document, _) in enumerate(ranked, start=1):
+            rerank_rank_by_document_key.setdefault(_document_key(document), rank)
         for document, score in ranked:
-            key = _document_key(document)
-            if key not in known_keys:
-                known_keys.add(key)
-                entries.append(
-                    (next_reference_id, document, float(score), "drilldown_top1")
-                )
-                next_reference_id += 1
-        for document, _ in neighbors:
             key = _document_key(document)
             if key not in known_keys:
                 known_keys.add(key)
@@ -578,13 +568,16 @@ class AgenticV10PipelineService:
                     (
                         next_reference_id,
                         document,
-                        None,
-                        "drilldown_same_document_neighbor",
+                        float(score),
+                        "drilldown_reranked_top2",
                     )
                 )
                 next_reference_id += 1
         return {
             "attempted": True,
+            "selection_strategy": "rerank_top2_no_neighbors",
+            "rerank_top_k": 2,
+            "neighbor_expansion_enabled": False,
             "priority_gap": (
                 priority_gap.model_dump(mode="json") if priority_gap else None
             ),
@@ -595,12 +588,14 @@ class AgenticV10PipelineService:
             ],
             "retrieval_error": retrieval_error,
             "rerank_error": rerank_error,
-            "neighbor_lookup_error": neighbor_lookup_error,
             "new_evidence_count": len(entries),
             "source_document_mapping": [
                 {
                     "reference_id": f"[Ref {reference_id}]",
                     "context_origin": origin,
+                    "rerank_rank": rerank_rank_by_document_key[
+                        _document_key(document)
+                    ],
                     "document": _trace_document(document, score),
                 }
                 for reference_id, document, score, origin in entries

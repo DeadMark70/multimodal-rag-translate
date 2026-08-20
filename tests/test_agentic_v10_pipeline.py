@@ -175,7 +175,9 @@ async def test_v10_audit_answer_uses_native_schema_and_raw_b_context() -> None:
     assert "Benchmark evidence" in audit_prompt
     assert "Benchmark preceding context" in audit_prompt
     assert "Benchmark following context" in audit_prompt
-    assert v10["context_pack"]["strategy"] == "top1_raw_same_document_neighbors_conditional_drilldown"
+    assert v10["context_pack"]["strategy"] == (
+        "initial_top1_raw_same_document_neighbors_drilldown_top2_no_neighbors"
+    )
     assert v10["context_pack"]["top1_evidence_count"] == 2
     assert v10["context_pack"]["neighbor_evidence_count"] == 4
     neighbor_mapping = next(
@@ -273,10 +275,12 @@ async def test_v10_runs_one_drill_down_and_final_only_receives_ledger_sources() 
     initial = Document(page_content="Initial supported evidence", metadata={"doc_id": "doc-1", "page_number": 1, "chunk_index_in_page": 1})
     initial_neighbor = Document(page_content="Unused initial neighbor", metadata={"doc_id": "doc-1", "page_number": 1, "chunk_index_in_page": 0})
     drill = Document(page_content="Missing table values", metadata={"doc_id": "doc-2", "page_number": 2, "chunk_index_in_page": 1})
-    drill_previous = Document(page_content="Drill table caption", metadata={"doc_id": "doc-2", "page_number": 2, "chunk_index_in_page": 0})
-    drill_next = Document(page_content="Drill condition detail", metadata={"doc_id": "doc-2", "page_number": 2, "chunk_index_in_page": 2})
+    drill_second = Document(page_content="Missing table conditions", metadata={"doc_id": "doc-3", "page_number": 3, "chunk_index_in_page": 1})
     reranker = MagicMock()
-    reranker.rerank_with_scores.side_effect = [[(initial, 0.9)], [(drill, 0.8)]]
+    reranker.rerank_with_scores.side_effect = [
+        [(initial, 0.9)],
+        [(drill, 0.8), (drill_second, 0.7)],
+    ]
     service = AgenticV10PipelineService(decomposer=decomposer, reranker=reranker)
     audit_llm = MagicMock()
     structured_llm = MagicMock()
@@ -303,8 +307,8 @@ async def test_v10_runs_one_drill_down_and_final_only_receives_ledger_sources() 
     ))
     with (
         patch("data_base.agentic_v10.subquery_pipeline_service.get_user_retriever_async", new=AsyncMock(return_value=MagicMock())),
-        patch("data_base.agentic_v10.subquery_pipeline_service.retrieve_hybrid_documents", new=AsyncMock(side_effect=[MagicMock(documents=[initial]), MagicMock(documents=[drill])])),
-        patch("data_base.agentic_v10.subquery_pipeline_service.load_user_vector_documents_async", new=AsyncMock(side_effect=[[initial_neighbor, initial], [drill_previous, drill, drill_next]])),
+        patch("data_base.agentic_v10.subquery_pipeline_service.retrieve_hybrid_documents", new=AsyncMock(side_effect=[MagicMock(documents=[initial]), MagicMock(documents=[drill, drill_second])])),
+        patch("data_base.agentic_v10.subquery_pipeline_service.load_user_vector_documents_async", new=AsyncMock(return_value=[initial_neighbor, initial])),
         patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", side_effect=[audit_llm, final_llm]),
     ):
         result = await service.execute(question="What are the Table 3 values?", user_id="user-1")
@@ -312,15 +316,23 @@ async def test_v10_runs_one_drill_down_and_final_only_receives_ledger_sources() 
     v10 = result.agent_trace["agentic_v10"]
     assert v10["coverage_audit"]["route"] == "conditional_drill_down"
     assert v10["drill_down"]["query"] == "Model Table 3 values conditions"
-    assert v10["drill_down"]["new_evidence_count"] == 3
+    assert v10["drill_down"]["selection_strategy"] == "rerank_top2_no_neighbors"
+    assert v10["drill_down"]["rerank_top_k"] == 2
+    assert v10["drill_down"]["neighbor_expansion_enabled"] is False
+    assert v10["drill_down"]["new_evidence_count"] == 2
     assert reranker.rerank_with_scores.call_count == 2
-    assert [call.kwargs["top_k"] for call in reranker.rerank_with_scores.call_args_list] == [1, 1]
+    assert [call.kwargs["top_k"] for call in reranker.rerank_with_scores.call_args_list] == [1, 2]
     final_prompt = v10["synthesis"]["prompt_messages"][1]["content"]
     assert "Initial supported evidence" in final_prompt
     assert "Unused initial neighbor" not in final_prompt
     assert "Missing table values" in final_prompt
-    assert "Drill table caption" in final_prompt
-    assert "Drill condition detail" in final_prompt
+    assert "Missing table conditions" in final_prompt
+    assert "Drill table caption" not in final_prompt
+    assert "Drill condition detail" not in final_prompt
+    assert [
+        item["rerank_rank"]
+        for item in v10["drill_down"]["source_document_mapping"]
+    ] == [1, 2]
     assert result.usage["total_tokens"] == 20
     assert result.agent_trace["response_status"] == "complete"
 
