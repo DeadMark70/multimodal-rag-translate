@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from typing import Any, Literal
 from uuid import uuid4
@@ -41,6 +42,10 @@ AGENTIC_V10_CONTEXT_POLICY_VERSION = (
     "v10_top1_neighbors_conditional_drilldown_ledger_matrix"
 )
 AGENTIC_V10_TRACE_SCHEMA_VERSION = "5"
+
+_AUDIT_REFERENCE_ID_PATTERN = re.compile(
+    r"^\s*(?:\[Ref\s+([1-9]\d*)\]|Ref\s+([1-9]\d*))\s*$"
+)
 
 
 class CoverageRequirement(BaseModel):
@@ -609,6 +614,9 @@ class AgenticV10PipelineService:
         audit: CoverageAuditResponse,
         valid_reference_ids: set[str],
     ) -> dict[str, Any]:
+        normalized_references = (
+            AgenticV10PipelineService._normalize_audit_reference_ids(audit)
+        )
         requirement_ids = [requirement.id for requirement in audit.requirements]
         requirement_set = set(requirement_ids)
         failure_reason: str | None = None
@@ -680,12 +688,44 @@ class AgenticV10PipelineService:
             "validated": failure_reason is None,
             "failure_reason": failure_reason,
             "valid_reference_ids": sorted(valid_reference_ids),
+            "normalized_references": normalized_references,
             "ledger_reference_ids": list(
                 dict.fromkeys(
                     entry.reference_id for entry in audit.extractive_evidence_ledger
                 )
             ),
         }
+
+    @staticmethod
+    def _normalize_audit_reference_ids(
+        audit: CoverageAuditResponse,
+    ) -> list[dict[str, str]]:
+        """Canonicalize only the two Gemini reference forms we explicitly allow."""
+
+        normalized: list[dict[str, str]] = []
+
+        def normalize(value: str, location: str) -> str:
+            match = _AUDIT_REFERENCE_ID_PATTERN.fullmatch(value)
+            if match is None:
+                return value
+            canonical = f"[Ref {match.group(1) or match.group(2)}]"
+            if canonical != value:
+                normalized.append(
+                    {"location": location, "original": value, "canonical": canonical}
+                )
+            return canonical
+
+        for cell_index, cell in enumerate(audit.entity_criterion_matrix):
+            cell.reference_ids = [
+                normalize(reference_id, f"matrix[{cell_index}].reference_ids[{reference_index}]")
+                for reference_index, reference_id in enumerate(cell.reference_ids)
+            ]
+        for entry_index, entry in enumerate(audit.extractive_evidence_ledger):
+            entry.reference_id = normalize(
+                entry.reference_id,
+                f"ledger[{entry_index}].reference_id",
+            )
+        return normalized
 
     @staticmethod
     def _chunk_position(document: Document) -> tuple[int, int] | None:

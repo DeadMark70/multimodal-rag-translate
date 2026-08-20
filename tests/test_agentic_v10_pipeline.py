@@ -61,6 +61,35 @@ def test_v10_audit_validation_requires_each_requirement_and_source() -> None:
     assert result["failure_reason"] == "incomplete_matrix"
 
 
+def test_v10_audit_validation_normalizes_bracketless_reference_ids() -> None:
+    audit = CoverageAuditResponse.model_validate({
+        "needs_drill_down": 1,
+        "answer": None,
+        "requirements": [{"id": "R1", "entity": "A", "criterion": "first"}],
+        "entity_criterion_matrix": [
+            {"requirement_id": "R1", "coverage": "partial", "reference_ids": ["Ref 1"]},
+        ],
+        "extractive_evidence_ledger": [
+            {"reference_id": "Ref 1", "requirement_ids": ["R1"]},
+        ],
+        "priority_gap": {
+            "requirement_id": "R1",
+            "missing_information": "missing value",
+            "retrieval_query": "A missing value",
+        },
+    })
+
+    result = AgenticV10PipelineService._validate_coverage_audit(
+        audit=audit,
+        valid_reference_ids={"[Ref 1]"},
+    )
+
+    assert result["validated"] is True
+    assert audit.entity_criterion_matrix[0].reference_ids == ["[Ref 1]"]
+    assert audit.extractive_evidence_ledger[0].reference_id == "[Ref 1]"
+    assert len(result["normalized_references"]) == 2
+
+
 @pytest.mark.asyncio
 async def test_v10_audit_answer_uses_native_schema_and_raw_b_context() -> None:
     decomposer = MagicMock()
