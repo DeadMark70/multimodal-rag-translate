@@ -28,10 +28,10 @@ AGENTIC_V9_EXPLICIT_SCOPE_PROFILE = (
 )
 AGENTIC_V9_CONTEXT_POLICY_VERSION = "v5_final_context_soft_pack_r1"
 AGENTIC_V10_PROFILE = (
-    "agentic_eval_v10_initial_top1_neighbors_drilldown_top2_no_neighbors"
+    "agentic_eval_v10_initial_top1_neighbors_drilldown_unique_top2_no_neighbors"
 )
 AGENTIC_V10_CONTEXT_POLICY_VERSION = (
-    "v10_initial_top1_neighbors_drilldown_top2_no_neighbors_ledger_matrix"
+    "v10_initial_top1_neighbors_drilldown_unique_top2_no_neighbors_ledger_matrix"
 )
 AGENTIC_LEGACY_CHAT_PROFILE = (
     f"agentic_eval_v7_semantic_router_{DEFAULT_PRODUCTION_INDEXING_PROFILE}"

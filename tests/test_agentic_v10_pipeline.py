@@ -16,6 +16,7 @@ from data_base.agentic_v10.subquery_pipeline_service import (
     CoverageAuditResponse,
     EntityCriterionMatrixCell,
     ExtractiveEvidenceLedgerEntry,
+    PriorityGap,
 )
 from evaluation.export_schemas import ExportCampaignRequest
 from evaluation.export_service import _project_agentic_v10
@@ -205,7 +206,7 @@ async def test_v10_audit_answer_uses_native_schema_and_raw_b_context() -> None:
     assert "Benchmark preceding context" in audit_prompt
     assert "Benchmark following context" in audit_prompt
     assert v10["context_pack"]["strategy"] == (
-        "initial_top1_raw_same_document_neighbors_drilldown_top2_no_neighbors"
+        "initial_top1_raw_same_document_neighbors_drilldown_unique_top2_no_neighbors"
     )
     assert v10["context_pack"]["top1_evidence_count"] == 2
     assert v10["context_pack"]["neighbor_evidence_count"] == 4
@@ -345,7 +346,7 @@ async def test_v10_runs_one_drill_down_and_final_only_receives_ledger_sources() 
     v10 = result.agent_trace["agentic_v10"]
     assert v10["coverage_audit"]["route"] == "conditional_drill_down"
     assert v10["drill_down"]["query"] == "Model Table 3 values conditions"
-    assert v10["drill_down"]["selection_strategy"] == "rerank_top2_no_neighbors"
+    assert v10["drill_down"]["selection_strategy"] == "rerank_unique_top2_no_neighbors"
     assert v10["drill_down"]["rerank_top_k"] == 2
     assert v10["drill_down"]["neighbor_expansion_enabled"] is False
     assert v10["drill_down"]["new_evidence_count"] == 2
@@ -364,6 +365,86 @@ async def test_v10_runs_one_drill_down_and_final_only_receives_ledger_sources() 
     ] == [1, 2]
     assert result.usage["total_tokens"] == 20
     assert result.agent_trace["response_status"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_v10_drill_down_filters_known_chunks_before_reranking() -> None:
+    initial = Document(
+        page_content="Initial evidence",
+        metadata={"doc_id": "doc-1", "unique_chunk_id": "doc-1-chunk-1"},
+    )
+    duplicate_initial = Document(
+        page_content="Initial evidence",
+        metadata={"doc_id": "doc-1", "unique_chunk_id": "doc-1-chunk-1"},
+    )
+    new_first = Document(
+        page_content="New evidence one",
+        metadata={"doc_id": "doc-2", "unique_chunk_id": "doc-2-chunk-1"},
+    )
+    duplicate_new_first = Document(
+        page_content="New evidence one",
+        metadata={"doc_id": "doc-2", "unique_chunk_id": "doc-2-chunk-1"},
+    )
+    duplicate_initial_again = Document(
+        page_content="Initial evidence",
+        metadata={"doc_id": "doc-1", "unique_chunk_id": "doc-1-chunk-1"},
+    )
+    new_second = Document(
+        page_content="New evidence two",
+        metadata={"doc_id": "doc-3", "unique_chunk_id": "doc-3-chunk-1"},
+    )
+    reranker = MagicMock()
+    reranker.rerank_with_scores.return_value = [
+        (new_first, 0.9),
+        (new_second, 0.8),
+    ]
+    service = AgenticV10PipelineService(
+        decomposer=MagicMock(),
+        reranker=reranker,
+    )
+
+    with patch(
+        "data_base.agentic_v10.subquery_pipeline_service.retrieve_hybrid_documents",
+        new=AsyncMock(
+            return_value=MagicMock(
+                documents=[
+                    duplicate_initial,
+                    new_first,
+                    duplicate_new_first,
+                    duplicate_initial_again,
+                    new_second,
+                ]
+            )
+        ),
+    ):
+        trace, entries = await service._run_drill_down(
+            user_id="user-1",
+            retriever=MagicMock(),
+            retriever_error=None,
+            allowed_doc_ids=set(),
+            reranker=reranker,
+            priority_gap=PriorityGap(
+                requirement_id="R1",
+                missing_information="missing evidence",
+                retrieval_query="new evidence",
+            ),
+            initial_entries=[(1, initial, 0.9, "reranked_top1")],
+        )
+
+    reranker.rerank_with_scores.assert_called_once_with(
+        "new evidence",
+        [new_first, new_second],
+        top_k=2,
+    )
+    assert trace["selection_strategy"] == "rerank_unique_top2_no_neighbors"
+    assert trace["retrieved_candidate_count"] == 5
+    assert trace["initial_duplicate_candidate_count"] == 2
+    assert trace["intra_drill_duplicate_candidate_count"] == 1
+    assert trace["candidate_limit_excluded_count"] == 0
+    assert [document.page_content for _, document, _, _ in entries] == [
+        "New evidence one",
+        "New evidence two",
+    ]
 
 
 @pytest.mark.asyncio

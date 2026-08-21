@@ -36,12 +36,12 @@ from data_base.vector_store_manager import (
 logger = logging.getLogger(__name__)
 
 AGENTIC_V10_EXECUTION_PROFILE = (
-    "agentic_eval_v10_initial_top1_neighbors_drilldown_top2_no_neighbors"
+    "agentic_eval_v10_initial_top1_neighbors_drilldown_unique_top2_no_neighbors"
 )
 AGENTIC_V10_CONTEXT_POLICY_VERSION = (
-    "v10_initial_top1_neighbors_drilldown_top2_no_neighbors_ledger_matrix"
+    "v10_initial_top1_neighbors_drilldown_unique_top2_no_neighbors_ledger_matrix"
 )
-AGENTIC_V10_TRACE_SCHEMA_VERSION = "6"
+AGENTIC_V10_TRACE_SCHEMA_VERSION = "7"
 
 _AUDIT_REFERENCE_ID_PATTERN = re.compile(
     r"^\s*(?:\[Ref\s+([1-9]\d*)\]|Ref\s+([1-9]\d*))\s*$"
@@ -448,7 +448,7 @@ class AgenticV10PipelineService:
                 ],
                 "source_document_mapping": source_document_mapping,
                 "context_pack": {
-                    "strategy": "initial_top1_raw_same_document_neighbors_drilldown_top2_no_neighbors",
+                    "strategy": "initial_top1_raw_same_document_neighbors_drilldown_unique_top2_no_neighbors",
                     "rendered_context": context_text,
                     "final_rendered_context": final_context_text,
                     "top1_evidence_count": len(top1_records),
@@ -513,10 +513,17 @@ class AgenticV10PipelineService:
         priority_gap: PriorityGap | None,
         initial_entries: list[ContextEntry],
     ) -> tuple[dict[str, Any], list[ContextEntry]]:
-        """Retrieve exactly one additional direct Top-2 branch for a validated gap."""
+        """Retrieve exactly one additional direct unique Top-2 branch for a gap."""
         started = time.perf_counter()
         query = priority_gap.retrieval_query if priority_gap is not None else ""
         candidates: list[Document] = []
+        retrieved_candidate_count = 0
+        initial_duplicate_candidate_count = 0
+        intra_drill_duplicate_candidate_count = 0
+        candidate_limit_excluded_count = 0
+        known_keys = {
+            _document_key(document) for _, document, _, _ in initial_entries
+        }
         retrieval_error: str | None = None
         if retriever is None:
             retrieval_error = retriever_error or "RetrieverUnavailable"
@@ -536,7 +543,21 @@ class AgenticV10PipelineService:
                         if str(get_document_id(document.metadata) or "")
                         in allowed_doc_ids
                     ]
-                candidates = candidates[:4]
+                retrieved_candidate_count = len(candidates)
+                unique_candidate_keys: set[str] = set()
+                unique_candidates: list[Document] = []
+                for document in candidates:
+                    key = _document_key(document)
+                    if key in known_keys:
+                        initial_duplicate_candidate_count += 1
+                        continue
+                    if key in unique_candidate_keys:
+                        intra_drill_duplicate_candidate_count += 1
+                        continue
+                    unique_candidate_keys.add(key)
+                    unique_candidates.append(document)
+                candidate_limit_excluded_count = max(0, len(unique_candidates) - 4)
+                candidates = unique_candidates[:4]
             except Exception as exc:  # noqa: BLE001
                 logger.warning("v10 drill-down retrieval failed: %s", exc)
                 retrieval_error = type(exc).__name__
@@ -552,9 +573,6 @@ class AgenticV10PipelineService:
             ranked = [(document, 0.5) for document in candidates[:2]]
             rerank_error = type(exc).__name__
         ranked = ranked[:2]
-        known_keys = {
-            _document_key(document) for _, document, _, _ in initial_entries
-        }
         entries: list[ContextEntry] = []
         next_reference_id = len(initial_entries) + 1
         rerank_rank_by_document_key: dict[str, int] = {}
@@ -575,9 +593,13 @@ class AgenticV10PipelineService:
                 next_reference_id += 1
         return {
             "attempted": True,
-            "selection_strategy": "rerank_top2_no_neighbors",
+            "selection_strategy": "rerank_unique_top2_no_neighbors",
             "rerank_top_k": 2,
             "neighbor_expansion_enabled": False,
+            "retrieved_candidate_count": retrieved_candidate_count,
+            "initial_duplicate_candidate_count": initial_duplicate_candidate_count,
+            "intra_drill_duplicate_candidate_count": intra_drill_duplicate_candidate_count,
+            "candidate_limit_excluded_count": candidate_limit_excluded_count,
             "priority_gap": (
                 priority_gap.model_dump(mode="json") if priority_gap else None
             ),
