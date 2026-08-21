@@ -14,6 +14,8 @@ from data_base.agentic_v10.subquery_decomposer import (
 from data_base.agentic_v10.subquery_pipeline_service import (
     AgenticV10PipelineService,
     CoverageAuditResponse,
+    EntityCriterionMatrixCell,
+    ExtractiveEvidenceLedgerEntry,
 )
 from evaluation.export_schemas import ExportCampaignRequest
 from evaluation.export_service import _project_agentic_v10
@@ -113,6 +115,33 @@ def test_v10_audit_validation_discards_empty_ledger_entries() -> None:
     assert result["validated"] is True
     assert result["discarded_empty_ledger_reference_ids"] == ["[Ref 2]"]
     assert [entry.reference_id for entry in audit.extractive_evidence_ledger] == ["[Ref 1]"]
+
+
+def test_v10_drilldown_synthesis_prompt_v2_requires_grounded_complete_answers() -> None:
+    messages = AgenticV10PipelineService._drilldown_synthesis_messages(
+        question="What does Table 3 report?",
+        matrix=[
+            EntityCriterionMatrixCell(
+                requirement_id="R1",
+                coverage="supported",
+                reference_ids=["[Ref 1]"],
+            )
+        ],
+        ledger=[
+            ExtractiveEvidenceLedgerEntry(
+                reference_id="[Ref 1]",
+                requirement_ids=["R1"],
+            )
+        ],
+        context_text="[Ref 1] Table 3 evidence",
+    )
+
+    system_prompt = messages[0]["content"]
+    assert "matrix 與 ledger 只用於列出回答義務和來源索引" in system_prompt
+    assert "依原問題中明確要求的順序逐項回答" in system_prompt
+    assert "不得將僅適用於某範圍的公式外推到其他範圍" in system_prompt
+    assert "較窄範圍的證據不得支持較廣範圍的結論" in system_prompt
+    assert messages[1]["content"].count("[Ref 1]") >= 2
 
 
 @pytest.mark.asyncio
