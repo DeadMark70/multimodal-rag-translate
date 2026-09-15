@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.documents import Document
+from pydantic import ValidationError
 
 from data_base.agentic_v10.subquery_decomposer import (
     SubQueryDecompositionResponse,
@@ -445,6 +446,44 @@ async def test_v10_drill_down_filters_known_chunks_before_reranking() -> None:
         "New evidence one",
         "New evidence two",
     ]
+
+
+@pytest.mark.asyncio
+async def test_v10_audit_and_synthesis_validation_failure_is_terminal() -> None:
+    """Reproduce the exported campaign's failure after successful retrieval."""
+    decomposer = MagicMock()
+    decomposer.decompose = AsyncMock(return_value=[
+        SubQueryItem(id="SQ1", query="query", focus="focus", target_entity="entity")
+    ])
+    evidence = Document(page_content="Retained evidence", metadata={"doc_id": "doc-1"})
+    reranker = MagicMock()
+    reranker.rerank_with_scores.return_value = [(evidence, 0.9)]
+    service = AgenticV10PipelineService(decomposer=decomposer, reranker=reranker)
+    error = ValidationError.from_exception_data("ChatGoogleGenerativeAI", [{
+        "type": "literal_error",
+        "loc": ("thinking_level",),
+        "input": "minimal",
+        "ctx": {"expected": "'low', 'medium' or 'high'"},
+    }])
+    with (
+        patch("data_base.agentic_v10.subquery_pipeline_service.get_user_retriever_async", new=AsyncMock(return_value=MagicMock())),
+        patch("data_base.agentic_v10.subquery_pipeline_service.retrieve_hybrid_documents", new=AsyncMock(return_value=MagicMock(documents=[evidence]))),
+        patch("data_base.agentic_v10.subquery_pipeline_service.load_user_vector_documents_async", new=AsyncMock(return_value=[evidence])),
+        patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", side_effect=error) as provider,
+    ):
+        result = await service.execute(question="Question", user_id="user-1")
+
+    assert provider.call_count == 2
+    assert result.answer == ""
+    assert result.documents == [evidence]
+    assert result.source_doc_ids == ["doc-1"]
+    assert result.agent_trace["response_status"] == "failed"
+    assert result.agent_trace["terminal_error"] == {
+        "stage": "synthesis",
+        "type": "ValidationError",
+        "validation_fields": ["thinking_level"],
+    }
+    assert result.agent_trace["agentic_v10"]["coverage_audit"]["route"] == "audit_fallback_raw_synthesis"
 
 
 @pytest.mark.asyncio

@@ -546,6 +546,76 @@ async def test_failed_durable_execution_prefers_captured_trace_profile(
 
 
 @pytest.mark.asyncio
+async def test_failed_payload_preserves_evidence_timing_usage_and_trace(
+    store: EvaluationJobStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ensure_ragas_work = AsyncMock()
+    monkeypatch.setattr(store, "ensure_ragas_work", ensure_ragas_work)
+    payload = _successful_payload(question_id="Q1", mode="agentic", answer="")
+    payload.error_message = "EVALUATION_GENERATION_FAILED"
+    payload.contexts = ["retrieved evidence"]
+    payload.source_doc_ids = ["doc-1"]
+    payload.expected_sources = ["doc-1"]
+    payload.latency_ms = 37.5
+    payload.token_usage = {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18}
+    payload.agent_trace = {
+        "trace_id": "failed-trace",
+        "execution_profile": "captured-agentic-profile",
+        "response_status": "failed",
+        "terminal_error": {
+            "stage": "synthesis",
+            "type": "ValueError",
+            "validation_fields": ["thinking_config.include_thoughts"],
+        },
+        "steps": [],
+    }
+    worker = DatasetExecutionWorker(
+        store=store,
+        runner=AsyncMock(return_value=payload),
+        ragas_evaluator=SimpleNamespace(
+            enabled_metrics=("faithfulness",), evaluator_model="judge-v1"
+        ),
+    )
+    claim = await _claim_seeded_execution(store, mode="agentic")
+
+    await worker.execute(claim)
+
+    result = (
+        await evaluation_db.CampaignResultRepository().list_for_campaign(
+            user_id="user-a", campaign_id="cmp-1"
+        )
+    )[0]
+    assert result.status.value == "failed"
+    assert result.answer == ""
+    assert result.contexts == ["retrieved evidence"]
+    assert result.source_doc_ids == ["doc-1"]
+    assert result.latency_ms == 37.5
+    assert result.total_latency_ms is not None and result.total_latency_ms >= 0
+    assert result.token_usage["total_tokens"] == 18
+    assert result.total_tokens == 18
+    assert result.derived_metrics["failure_diagnostics"] == {
+        "error_code": "RUN_FAILED",
+        "safe_error_message": "EVALUATION_GENERATION_FAILED",
+        "last_completed_stage": None,
+        "provider_status": None,
+        "retry_count": 0,
+        "timeout_state": None,
+        "budget_state": None,
+        "stage": "synthesis",
+        "exception_type": "ValueError",
+        "validation_fields": ["thinking_config.include_thoughts"],
+    }
+    trace = await evaluation_db.AgentTraceRepository().get_for_result(
+        user_id="user-a",
+        campaign_id="cmp-1",
+        campaign_result_id=result.id,
+    )
+    assert trace.trace_status == "failed"
+    ensure_ragas_work.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_execution_worker_marks_oversized_answer_failed_without_scheduling_ragas(
     store: EvaluationJobStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -443,9 +443,12 @@ async def run_campaign_case(
             result = rag_result
         latency_ms = (time.perf_counter() - start_time) * 1000
 
+    trace = result.agent_trace or {}
+    terminal_error = trace.get("terminal_error") if isinstance(trace, dict) else None
+    generation_failed = isinstance(terminal_error, dict)
     contexts = _extract_contexts(
         question=test_case.question,
-        answer=result.answer,
+        answer="" if generation_failed else result.answer,
         documents=result.documents,
     )
     source_identities = _source_identities_for_contexts(
@@ -463,7 +466,7 @@ async def run_campaign_case(
         key_points=list(test_case.key_points),
         ragas_focus=list(test_case.ragas_focus),
         mode=mode,
-        answer=result.answer,
+        answer="" if generation_failed else result.answer,
         contexts=contexts,
         # CampaignResult persists source_doc_ids as list[str].  Keep an empty
         # string for an ambiguous identity so the context index remains
@@ -491,7 +494,10 @@ async def run_campaign_case(
         agentic_execution_version=agentic_execution_version,
         execution_identity=execution_identity,
         shadow_evaluation_policy=shadow_evaluation_policy,
-        response_status=(result.agent_trace or {}).get("response_status"),
+        response_status=(
+            "failed" if generation_failed else trace.get("response_status")
+        ),
+        error_message=("EVALUATION_GENERATION_FAILED" if generation_failed else None),
     )
 
 

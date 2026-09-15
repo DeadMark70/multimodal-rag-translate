@@ -17,6 +17,7 @@ from evaluation.evidence import (
     expected_evidence_matches_doc,
     text_mentions_fact,
 )
+from evaluation.error_policy import safe_validation_fields
 from evaluation.observability import EvaluationRunRecorder
 from evaluation.observability_storage import (
     EvaluationObservabilityRepository,
@@ -38,7 +39,9 @@ logger = logging.getLogger(__name__)
 
 CampaignRunner = Callable[..., Awaitable[BenchmarkExecutionResult]]
 
-_SAFE_FAILURE_CODES = frozenset({"EVALUATION_ANSWER_TOO_LARGE"})
+_SAFE_FAILURE_CODES = frozenset(
+    {"EVALUATION_ANSWER_TOO_LARGE", "EVALUATION_GENERATION_FAILED"}
+)
 @dataclass(frozen=True)
 class CampaignUnit:
     """One question-mode-run execution cell."""
@@ -240,6 +243,17 @@ def _failure_diagnostics(
     trace = trace_payload if isinstance(trace_payload, dict) else {}
     raw_error = str(payload) if isinstance(payload, Exception) else payload.error_message
     retry_count = trace.get("retry_count")
+    terminal_error = trace.get("terminal_error")
+    terminal_error = terminal_error if isinstance(terminal_error, dict) else {}
+    validation_fields = (
+        safe_validation_fields(payload)
+        if isinstance(payload, Exception)
+        else [
+            field
+            for field in terminal_error.get("validation_fields", [])
+            if isinstance(field, str) and field
+        ][:8]
+    )
     return {
         "error_code": (
             payload.__class__.__name__
@@ -266,6 +280,19 @@ def _failure_diagnostics(
         "budget_state": trace.get("budget_state")
         if isinstance(trace.get("budget_state"), str)
         else None,
+        "stage": (
+            terminal_error.get("stage")
+            if isinstance(terminal_error.get("stage"), str)
+            else None
+        ),
+        "exception_type": (
+            terminal_error.get("type")
+            if isinstance(terminal_error.get("type"), str)
+            else payload.__class__.__name__
+            if isinstance(payload, Exception)
+            else None
+        ),
+        "validation_fields": validation_fields,
     }
 
 

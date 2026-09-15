@@ -389,6 +389,41 @@ async def test_unversioned_agentic_campaign_uses_v10_service() -> None:
 
 
 @pytest.mark.asyncio
+async def test_v10_terminal_generation_failure_is_not_a_scored_answer() -> None:
+    test_case = EvaluationCase(
+        id="Q-v10-failure",
+        question="What changed?",
+        ground_truth="A grounded answer",
+        source_docs=["doc-1"],
+        requires_multi_doc_reasoning=False,
+    )
+    v10_result = RAGResult(
+        answer="生成回答時發生錯誤，但檢索已完成；請參考已保存的檢索來源。",
+        source_doc_ids=["doc-1"],
+        documents=[Document(page_content="retrieved evidence", metadata={"doc_id": "doc-1"})],
+        agent_trace={
+            "agentic_execution_version": "v10",
+            "response_status": "failed",
+            "terminal_error": {"stage": "synthesis", "type": "ValueError"},
+        },
+    )
+    with patch("evaluation.rag_modes.AgenticV10PipelineService") as service_cls:
+        service_cls.return_value.execute = AsyncMock(return_value=v10_result)
+        result = await run_campaign_case(
+            test_case=test_case,
+            user_id="user-1",
+            mode="agentic",
+            model_config={"max_output_tokens": 256},
+            run_number=1,
+        )
+
+    assert result.answer == ""
+    assert result.error_message == "EVALUATION_GENERATION_FAILED"
+    assert result.response_status == "failed"
+    assert result.contexts == ["retrieved evidence"]
+
+
+@pytest.mark.asyncio
 async def test_v9_campaign_case_uses_the_typed_v9_runtime_not_the_v8_service() -> None:
     test_case = EvaluationCase(
         id="Q-v9",

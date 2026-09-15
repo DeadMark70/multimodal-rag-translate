@@ -53,6 +53,9 @@ class GeneratedRagAnswer:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     agent_trace: dict[str, Any] | None = None
     visual_verification_meta: dict[str, Any] | None = None
+    error_message: str | None = None
+    failure_diagnostic: str | None = None
+    validation_fields: list[str] = field(default_factory=list)
 
 
 __all__ = [

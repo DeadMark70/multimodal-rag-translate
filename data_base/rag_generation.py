@@ -22,6 +22,7 @@ from langchain_core.messages import HumanMessage
 
 from core.llm_factory import get_llm_usage_metrics
 from core.llm_usage_context import llm_accounting_phase
+from core.llm_response import final_answer_text, safe_validation_fields
 from core.prompt_loader import format_prompt
 from data_base.document_metadata import get_document_id
 from data_base.rag_pipeline_schemas import GeneratedRagAnswer
@@ -250,7 +251,9 @@ async def generate_legacy_answer_from_evidence(
         await _emit_progress(progress_callback, "answer_generation", {"image_count": len(encoded_images), "document_count": len(documents)})
         with llm_accounting_phase("answer_generation"):
             response = await llm.ainvoke([HumanMessage(content=message_content)])
-        answer = response.content
+        answer = final_answer_text(response)
+        if not answer:
+            raise ValueError("EmptyProviderResponse")
         visual_meta: dict[str, Any] = {
             "visual_verification_attempted": False,
             "visual_tool_call_count": 0,
@@ -278,7 +281,12 @@ async def generate_legacy_answer_from_evidence(
         )
     except (RuntimeError, ValueError, OSError) as error:
         logger.error("LLM error for user %s: %s", user_id, error, exc_info=True)
-        return GeneratedRagAnswer(answer="抱歉，處理您的問題時發生錯誤。")
+        return GeneratedRagAnswer(
+            answer="",
+            error_message="EVALUATION_GENERATION_FAILED",
+            failure_diagnostic=type(error).__name__,
+            validation_fields=safe_validation_fields(error),
+        )
 
 
 __all__ = [

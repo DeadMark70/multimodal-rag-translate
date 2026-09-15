@@ -90,6 +90,12 @@ class DatasetExecutionWorker:
     async def execute(self, claim: ClaimedEvaluationWork) -> None:
         """Execute one claimed unit, preserving attempts before official promotion."""
         payload: BenchmarkExecutionResult | None = None
+        started_at: datetime | None = None
+        completed_at: datetime | None = None
+        total_latency_ms = 0.0
+        run_id: str | None = None
+        request_id: str | None = None
+        provider_name = "unknown"
         try:
             unit, user_id, campaign_id, model_config = self._snapshot_inputs(claim)
             started_at = datetime.now(timezone.utc)
@@ -143,23 +149,34 @@ class DatasetExecutionWorker:
                 total_latency_ms = max((time.perf_counter() - started_perf) * 1000, 0)
                 if total_latency_ms <= 0:
                     total_latency_ms = _duration_ms(started_at, completed_at)
+                reported_token_usage = dict(payload.token_usage)
+                token_summary = await self._accounting_store.summarize_scope_tokens(
+                    scope.scope_id
+                )
+                if (
+                    reported_token_usage
+                    and token_summary.total_tokens in (None, 0)
+                    and (
+                        payload.error_message
+                        or is_evaluation_answer_too_large(payload.answer)
+                    )
+                ):
+                    payload.token_usage = reported_token_usage
+                else:
+                    payload.token_usage = token_summary.as_legacy_usage(
+                        accounting_schema_version="2"
+                    )
+                payload.token_usage["token_accounting_status"] = (
+                    "partial"
+                    if scope.context.persistence_error_count
+                    else token_summary.reconciliation_status
+                )
                 if is_evaluation_answer_too_large(payload.answer):
                     payload.answer = ""
                     payload.error_message = EVALUATION_ANSWER_TOO_LARGE
                     raise EvaluationAnswerTooLargeError()
                 if payload.error_message:
                     raise RuntimeError(payload.error_message)
-                token_summary = await self._accounting_store.summarize_scope_tokens(
-                    scope.scope_id
-                )
-                payload.token_usage = token_summary.as_legacy_usage(
-                    accounting_schema_version="2"
-                )
-                payload.token_usage["token_accounting_status"] = (
-                    "partial"
-                    if scope.context.persistence_error_count
-                    else token_summary.reconciliation_status
-                )
                 execution = ExecutedCampaignUnit(
                     unit=unit,
                     payload=payload,
@@ -212,7 +229,35 @@ class DatasetExecutionWorker:
                         exc,
                         decision=decision,
                         payload=payload,
+                        started_at=started_at,
+                        completed_at=completed_at,
+                        total_latency_ms=total_latency_ms,
+                        request_id=request_id,
                     )
+                    if (
+                        isinstance(payload, BenchmarkExecutionResult)
+                        and started_at is not None
+                        and completed_at is not None
+                        and run_id is not None
+                        and request_id is not None
+                    ):
+                        await self._record_observability(
+                            user_id=user_id,
+                            campaign_id=campaign_id,
+                            promoted_result_id=claim.attempt_id,
+                            execution=ExecutedCampaignUnit(
+                                unit=unit,
+                                payload=payload,
+                                run_id=run_id,
+                                request_id=request_id,
+                                started_at=started_at,
+                                completed_at=completed_at,
+                                total_latency_ms=total_latency_ms,
+                                model_config=model_config,
+                                provider_name=provider_name,
+                            ),
+                            failed=True,
+                        )
                 except Exception:  # noqa: BLE001
                     logger.warning(
                         "Failed to persist execution failure projection",
@@ -355,6 +400,10 @@ class DatasetExecutionWorker:
         *,
         decision: ErrorDecision,
         payload: BenchmarkExecutionResult | None = None,
+        started_at: datetime | None = None,
+        completed_at: datetime | None = None,
+        total_latency_ms: float | None = None,
+        request_id: str | None = None,
     ) -> None:
         """Keep a visible failed result while leaving the attempt non-successful.
 
@@ -365,6 +414,8 @@ class DatasetExecutionWorker:
         """
         unit, user_id, campaign_id, model_config = self._snapshot_inputs(claim)
         now = datetime.now(timezone.utc)
+        started_at = started_at or now
+        completed_at = completed_at or now
         test_case = unit.test_case
         oversized_answer = isinstance(exc, EvaluationAnswerTooLargeError)
         safe_error_message = (
@@ -376,6 +427,23 @@ class DatasetExecutionWorker:
             EVALUATION_ANSWER_TOO_LARGE
             if oversized_answer
             else decision.error_type
+        )
+        contexts = list(payload.contexts) if payload is not None else []
+        source_doc_ids = list(payload.source_doc_ids) if payload is not None else []
+        expected_sources = (
+            list(payload.expected_sources)
+            if payload is not None
+            else list(test_case.source_docs)
+        )
+        token_usage = dict(payload.token_usage) if payload is not None else {}
+        derived_metrics = _build_derived_metrics(
+            unit=unit, payload=payload if payload is not None else exc
+        )
+        derived_metrics.update(
+            {
+                "response_status": "failed",
+                "error_type": error_type,
+            }
         )
         await self._result_repository.create(
             result_id=claim.attempt_id,
@@ -392,38 +460,49 @@ class DatasetExecutionWorker:
                 unit.mode,
                 payload if payload is not None else exc,
             ),
-            context_policy_version=None,
+            context_policy_version=(
+                payload.context_policy_version if payload is not None else None
+            ),
             run_number=unit.run_number,
             condition_id=unit.condition_id,
             answer="",
-            contexts=[],
-            source_doc_ids=[],
-            expected_sources=list(test_case.source_docs),
-            latency_ms=0,
-            token_usage={},
+            contexts=contexts,
+            source_doc_ids=source_doc_ids,
+            expected_sources=expected_sources,
+            latency_ms=payload.latency_ms if payload is not None else 0,
+            token_usage=token_usage,
             category=test_case.category,
             difficulty=test_case.difficulty,
             status=CampaignResultStatus.FAILED,
             error_message=safe_error_message,
             question_version=test_case.question_version,
-            request_id=None,
-            started_at=now.isoformat(),
-            completed_at=now.isoformat(),
-            total_latency_ms=0,
-            total_tokens=None,
+            request_id=request_id,
+            started_at=started_at.isoformat(),
+            completed_at=completed_at.isoformat(),
+            total_latency_ms=(
+                total_latency_ms
+                if total_latency_ms is not None
+                else _duration_ms(started_at, completed_at)
+            ),
+            total_tokens=(
+                self._total_tokens_from_usage(token_usage) if token_usage else None
+            ),
             question_snapshot=_build_question_snapshot(test_case),
             model_config_snapshot=model_config,
-            system_version_snapshot={
-                "agentic_execution_version": unit.agentic_execution_version,
-            },
-            derived_metrics={
-                "agentic_execution_version": unit.agentic_execution_version,
-                "response_status": "failed",
-                "error_type": error_type,
-            },
+            system_version_snapshot=_build_system_version_snapshot(
+                unit=unit, payload=payload if payload is not None else exc
+            ),
+            derived_metrics=derived_metrics,
             final_answer_hash=None,
             source_attempt_id=claim.attempt_id,
         )
+
+    @staticmethod
+    def _total_tokens_from_usage(token_usage: dict[str, Any]) -> int | None:
+        raw_total = token_usage.get("total_tokens")
+        if isinstance(raw_total, int) and not isinstance(raw_total, bool):
+            return max(raw_total, 0)
+        return None
 
     def _snapshot_inputs(
         self, claim: ClaimedEvaluationWork
@@ -619,6 +698,7 @@ class DatasetExecutionWorker:
         campaign_id: str,
         promoted_result_id: str,
         execution: ExecutedCampaignUnit,
+        failed: bool = False,
     ) -> None:
         span_id = await _record_unit_root_span(
             run_id=promoted_result_id,
@@ -628,7 +708,7 @@ class DatasetExecutionWorker:
             started_at=execution.started_at,
             completed_at=execution.completed_at,
             duration_ms=execution.total_latency_ms,
-            failed=False,
+            failed=failed,
         )
         await _record_unit_llm_usage(
             run_id=promoted_result_id,

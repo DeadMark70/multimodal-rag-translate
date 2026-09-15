@@ -14,6 +14,7 @@ from uuid import uuid4
 from langchain_core.documents import Document
 from pydantic import BaseModel, Field
 
+from core.llm_response import final_answer_text, safe_validation_fields
 from core.prompt_loader import (
     format_agentic_v10_prompt,
     get_agentic_v10_prompt_registry,
@@ -155,16 +156,6 @@ def _merge_usage(*usages: dict[str, int]) -> dict[str, int]:
             if isinstance(value, int) and not isinstance(value, bool):
                 merged[key] = merged.get(key, 0) + max(value, 0)
     return merged
-
-
-def _response_text(response: Any) -> str:
-    content = getattr(response, "content", response)
-    if isinstance(content, list):
-        return "".join(
-            part.get("text", str(part)) if isinstance(part, dict) else str(part)
-            for part in content
-        ).strip()
-    return str(content).strip()
 
 
 ContextEntry = tuple[int, Document, float | None, str]
@@ -362,13 +353,14 @@ class AgenticV10PipelineService:
         synthesis_messages: list[dict[str, str]] = []
         synthesis_usage: dict[str, int] = {}
         synthesis_error: str | None = None
+        synthesis_validation_fields: list[str] = []
         if not initial_context_entries:
             answer = "目前知識庫沒有可用的相關證據，因此無法根據文件回答此問題。請補充或上傳相關文獻後再試。"
             response_status = "qualified_partial"
         elif not reference_validation["validated"]:
             route = "audit_fallback_raw_synthesis"
             synthesis_messages = self._synthesis_messages(question, overview, context_text)
-            answer, synthesis_usage, synthesis_error = await self._synthesize(
+            answer, synthesis_usage, synthesis_error, synthesis_validation_fields = await self._synthesize(
                 synthesis_messages
             )
             response_status = "qualified_partial" if synthesis_error else "complete"
@@ -404,7 +396,7 @@ class AgenticV10PipelineService:
                     ledger=audit.extractive_evidence_ledger,
                     context_text=final_context_text,
                 )
-                answer, synthesis_usage, synthesis_error = await self._synthesize(
+                answer, synthesis_usage, synthesis_error, synthesis_validation_fields = await self._synthesize(
                     synthesis_messages
                 )
             else:
@@ -481,9 +473,19 @@ class AgenticV10PipelineService:
                     "prompt_messages": synthesis_messages,
                     "token_usage": synthesis_usage,
                     "failure_diagnostic": synthesis_error,
+                    "validation_fields": synthesis_validation_fields,
                 },
             },
         }
+        if synthesis_error and final_context_entries:
+            response_status = "failed"
+            trace["response_status"] = response_status
+            trace["terminal_error"] = {
+                "stage": "synthesis",
+                "type": synthesis_error,
+                "validation_fields": synthesis_validation_fields,
+            }
+            trace["agentic_v10"]["response_status"] = response_status
         return RAGResult(
             answer=answer,
             source_doc_ids=source_doc_ids,
@@ -976,15 +978,19 @@ class AgenticV10PipelineService:
     @staticmethod
     async def _synthesize(
         messages: list[dict[str, str]],
-    ) -> tuple[str, dict[str, int], str | None]:
+    ) -> tuple[str, dict[str, int], str | None, list[str]]:
         try:
             llm = get_llm(purpose="synthesizer")
             response = await (llm.ainvoke(messages) if hasattr(llm, "ainvoke") else llm.invoke(messages))
-            return _response_text(response), _normalize_usage(response), None
+            answer = final_answer_text(response)
+            if not answer:
+                raise ValueError("EmptyProviderResponse")
+            return answer, _normalize_usage(response), None, []
         except Exception as exc:  # noqa: BLE001
             logger.error("v10 synthesis failed: %s", exc)
             return (
-                "生成回答時發生錯誤，但檢索已完成；請參考已保存的檢索來源。",
+                "",
                 {},
                 type(exc).__name__,
+                safe_validation_fields(exc),
             )

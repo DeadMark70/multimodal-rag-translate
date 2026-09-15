@@ -1,5 +1,6 @@
 import httpx
 from google.api_core import exceptions as google_exceptions
+from pydantic import BaseModel, ValidationError
 
 from evaluation.error_policy import classify_evaluation_error, retry_delay_seconds
 
@@ -25,3 +26,18 @@ def test_authentication_error_is_permanent() -> None:
 
 def test_retry_after_takes_precedence() -> None:
     assert retry_delay_seconds(3, 17.0) == 17.0
+
+
+def test_provider_validation_error_is_not_reclassified_as_dataset_input() -> None:
+    class ProviderRequest(BaseModel):
+        thinking_config: int
+
+    try:
+        ProviderRequest.model_validate({"thinking_config": "minimal"})
+    except ValidationError as exc:
+        decision = classify_evaluation_error(exc)
+    else:  # pragma: no cover - the invalid fixture must always reject.
+        raise AssertionError("expected provider request validation to fail")
+
+    assert decision.error_type == "unknown"
+    assert decision.safe_message == "An unexpected evaluation error occurred."

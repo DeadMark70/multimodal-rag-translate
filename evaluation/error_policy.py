@@ -11,6 +11,21 @@ from google.api_core import exceptions as google_exceptions
 from pydantic import ValidationError
 
 
+_DATASET_VALIDATION_FIELDS = frozenset(
+    {
+        "test_case",
+        "question",
+        "ground_truth",
+        "source_docs",
+        "mode",
+        "model_config",
+        "run_number",
+        "repeat_number",
+        "agentic_execution_version",
+    }
+)
+
+
 @dataclass(frozen=True)
 class ErrorDecision:
     error_type: str
@@ -80,6 +95,33 @@ def _decision(
     )
 
 
+def safe_validation_fields(exc: BaseException) -> list[str]:
+    """Return bounded field locations without retaining validation values or text."""
+    fields: list[str] = []
+    for current in _exception_chain(exc):
+        if not isinstance(current, ValidationError):
+            continue
+        for item in current.errors():
+            location = item.get("loc")
+            if not isinstance(location, tuple | list):
+                continue
+            field = ".".join(
+                str(part) for part in location if isinstance(part, (str, int))
+            )
+            if field and field not in fields:
+                fields.append(field)
+            if len(fields) >= 8:
+                return fields
+    return fields
+
+
+def _is_dataset_validation_error(exc: BaseException) -> bool:
+    for field in safe_validation_fields(exc):
+        if field.split(".", maxsplit=1)[0] in _DATASET_VALIDATION_FIELDS:
+            return True
+    return False
+
+
 def classify_evaluation_error(exc: BaseException) -> ErrorDecision:
     """Return retry guidance using exception types and status codes, never raw details."""
 
@@ -93,6 +135,14 @@ def classify_evaluation_error(exc: BaseException) -> ErrorDecision:
         None,
     )
     status_codes = {status for current in chain if (status := _status_code(current)) is not None}
+
+    if any(str(current).strip() == "EVALUATION_GENERATION_FAILED" for current in chain):
+        return _decision(
+            "generation_failed",
+            False,
+            "The evaluation answer generation failed.",
+            retry_after,
+        )
 
     if any(isinstance(current, ModuleNotFoundError) for current in chain):
         return _decision(
@@ -108,7 +158,11 @@ def classify_evaluation_error(exc: BaseException) -> ErrorDecision:
             "Provider authentication or authorization failed.",
             retry_after,
         )
-    if any(isinstance(current, (ValidationError, ValueError)) for current in chain):
+    if _is_dataset_validation_error(exc) or any(
+        isinstance(current, ValueError)
+        and str(current).startswith("Unsupported RAG mode:")
+        for current in chain
+    ):
         return _decision(
             "invalid_configuration",
             False,

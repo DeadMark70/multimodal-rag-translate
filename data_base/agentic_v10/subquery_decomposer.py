@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from core.llm_response import final_answer_text
 from core.prompt_loader import (
     format_agentic_v10_prompt,
     get_agentic_v10_prompt_registry,
@@ -122,7 +123,7 @@ class SubQueryDecomposer:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("v10 structured decomposition failed: %s", exc)
             response = await (llm.ainvoke(messages) if hasattr(llm, "ainvoke") else llm.invoke(messages))
-            parsed = self._extract_json(str(getattr(response, "content", response)))
+            parsed = self._extract_json(final_answer_text(response))
             if parsed and "sub_queries" in parsed:
                 validated = SubQueryDecompositionResponse.model_validate(parsed)
                 return SubQueryDecompositionTrace(sub_queries=validated.sub_queries[:3], prompt_messages=messages)

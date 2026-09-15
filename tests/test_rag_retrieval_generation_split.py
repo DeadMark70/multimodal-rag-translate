@@ -340,8 +340,52 @@ async def test_legacy_generation_returns_legacy_error_projection_for_provider_fa
         plain_mode=True,
     )
 
-    assert result.answer == "抱歉，處理您的問題時發生錯誤。"
+    assert result.answer == ""
     assert result.usage == {}
+    assert result.error_message == "EVALUATION_GENERATION_FAILED"
+    assert result.failure_diagnostic == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_generation_stage_keeps_the_public_error_answer_and_marks_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = import_module("data_base.rag_pipeline")
+    document = Document(page_content="context", metadata={"doc_id": "doc-1"})
+    monkeypatch.setattr(
+        pipeline.rag_generation,
+        "generate_legacy_answer_from_evidence",
+        AsyncMock(
+            return_value=GeneratedRagAnswer(
+                answer="",
+                error_message="EVALUATION_GENERATION_FAILED",
+                failure_diagnostic="ValueError",
+            )
+        ),
+    )
+
+    result = await pipeline._run_generation_stage(
+        question="question",
+        user_id="user-1",
+        llm=SimpleNamespace(),
+        graph_outcome=pipeline.GraphStageOutcome(documents=[document]),
+        history=None,
+        mode_hints=None,
+        plain_mode=True,
+        enable_visual_verification=False,
+        progress_callback=None,
+        return_docs=True,
+    )
+
+    assert result.answer == "抱歉，處理您的問題時發生錯誤。"
+    assert result.agent_trace == {
+        "response_status": "failed",
+        "terminal_error": {
+            "stage": "answer_generation",
+            "type": "ValueError",
+            "validation_fields": [],
+        },
+    }
 
 
 @pytest.mark.asyncio

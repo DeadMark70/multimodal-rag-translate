@@ -23,6 +23,11 @@ Describe evaluation as a persisted runtime subsystem that now serves both legacy
 - SQLite runs in WAL mode for concurrent campaign work.
 - Results, traces, metrics, manual evaluate, cancel, and SSE stream are separate API concerns.
 - Model discovery is control-plane behavior; runtime generation stays behind provider/factory seams.
+- Runtime generation normalizes `AIMessage.text` or typed text content blocks before
+  evaluation persistence. Thinking, reasoning, signatures, and tool blocks are not
+  treated as an answer. An empty terminal generation result is failed with a safe
+  diagnostic; evidence, timing, token accounting, and trace data remain available
+  on the failed result, and RAGAS work is not scheduled.
 
 ## Research Runtime Model
 
@@ -109,3 +114,14 @@ Describe evaluation as a persisted runtime subsystem that now serves both legacy
 - Sanitized errors are surfaced instead of raw provider exception dumps:
   - obvious secrets are redacted
   - traceback-like multiline payloads collapse to a generic redaction message
+- Failure diagnostics retain a safe stage, exception class, and bounded validation
+  field locations when present. Generic provider-side `ValidationError` and
+  `ValueError` are not automatically reclassified as bad dataset input.
+
+## Provider Compatibility Pins
+
+- The supported Gemini integration is `google-genai==1.56.0` with
+  `langchain-google-genai==4.1.3` and `langchain-core==1.2.7`.
+- `google-genai` 2.x remains deferred because the current `marker-pdf==1.10.1`
+  dependency requires `google-genai<2`; moving it requires the separate Marker 2,
+  Transformers 5, Surya, and OpenAI 2 upgrade.

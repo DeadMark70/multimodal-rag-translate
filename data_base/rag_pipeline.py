@@ -806,15 +806,34 @@ async def _run_generation_stage(
             if generated.thought_process is None
             else [*documents, *graph_outcome.graph_evidence_documents]
         )
+        agent_trace = generated.agent_trace
+        if generated.error_message:
+            agent_trace = {
+                **(agent_trace or {}),
+                "response_status": "failed",
+                "terminal_error": {
+                    "stage": "answer_generation",
+                    "type": generated.failure_diagnostic or "GenerationFailure",
+                    "validation_fields": list(generated.validation_fields),
+                },
+            }
+        answer = (
+            "抱歉，處理您的問題時發生錯誤。"
+            if generated.error_message
+            else generated.answer
+        )
         return RAGResult(
-            generated.answer,
+            answer,
             source_doc_ids,
             returned_documents,
             generated.usage,
             thought_process=generated.thought_process,
             tool_calls=generated.tool_calls,
+            agent_trace=agent_trace,
             visual_verification_meta=generated.visual_verification_meta,
         )
+    if generated.error_message:
+        return ("抱歉，處理您的問題時發生錯誤。", source_doc_ids)
     return (generated.answer, source_doc_ids)
 
 
