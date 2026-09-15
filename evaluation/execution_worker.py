@@ -654,10 +654,14 @@ class DatasetExecutionWorker:
                     campaign_id=str(snapshot["campaign_id"]),
                 )
                 question_ids = {str(value) for value in raw_question_ids}
+                modes = set(job.config_snapshot.get("downstream_modes") or [])
                 selected_result_ids = [
                     result.id
                     for result in results
                     if result.question_id in question_ids
+                    and (not modes or result.mode in modes or (
+                        result.mode == "agentic" and f"agentic-{result.agentic_execution_version}" in modes
+                    ))
                 ]
             raw_metrics = job.config_snapshot.get("metric_names")
             if isinstance(raw_metrics, list) and raw_metrics:
@@ -676,6 +680,7 @@ class DatasetExecutionWorker:
                 result.id
                 for result in results
                 if result.mode != "agentic-v9-shadow"
+                and (selected_result_ids is None or result.id in selected_result_ids)
             ]
         created = await self._store.ensure_ragas_work(
             user_id=str(snapshot["user_id"]),

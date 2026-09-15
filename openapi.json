@@ -10934,6 +10934,7 @@
             "type": "string",
             "enum": [
               "failed_only",
+              "missing_only",
               "selected",
               "all"
             ],
@@ -10961,6 +10962,13 @@
             },
             "type": "array",
             "title": "Metric Names"
+          },
+          "modes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Modes"
           }
         },
         "type": "object",

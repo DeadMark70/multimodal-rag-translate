@@ -124,23 +124,13 @@ def build_ragas_batch_group_key(
     ground_truth_hash: str,
     context_metrics_enabled: bool,
 ) -> str:
-    """Return a provider-batch compatibility key without result identity."""
-    answer = result.answer or ""
-    answer_hash = sha256(answer.encode("utf-8")).hexdigest()
-    context_hash = sha256(
-        json.dumps(
-            result.contexts or [], ensure_ascii=False, separators=(",", ":")
-        ).encode("utf-8")
-    ).hexdigest()
+    """Group compatible evaluators; each row retains its own evaluation signature."""
     payload = {
-        "final_answer_hash": answer_hash,
-        "context_hash": context_hash,
         "evaluator_model": evaluator_model,
         "evaluator_config": evaluator_config,
         "metric_name": metric_name,
         "metric_version": metric_version,
         "context_policy_version": result.context_policy_version,
-        "ground_truth_hash": ground_truth_hash,
         "context_metrics_enabled": context_metrics_enabled,
     }
     canonical = json.dumps(

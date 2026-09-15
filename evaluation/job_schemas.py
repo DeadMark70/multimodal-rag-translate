@@ -50,7 +50,7 @@ class EvaluationAttemptStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-EvaluationRerunScope = Literal["failed_only", "selected", "all"]
+EvaluationRerunScope = Literal["failed_only", "missing_only", "selected", "all"]
 EvaluationRerunStages = Literal["execution", "ragas", "execution_and_ragas"]
 EvaluationJobStatus = Literal[
     "pending",
@@ -97,9 +97,13 @@ class EvaluationRerunRequest(BaseModel):
     stages: EvaluationRerunStages
     question_ids: list[str] = Field(default_factory=list)
     metric_names: list[str] = Field(default_factory=list)
+    modes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def normalize_selection(self) -> EvaluationRerunRequest:
+        self.modes = list(dict.fromkeys(value.strip() for value in self.modes if value.strip()))
+        if self.scope == "missing_only" and self.stages != "ragas":
+            raise ValueError("missing_only is for RAGAS scores; use failed_only for execution")
         self.question_ids = list(
             dict.fromkeys(value.strip() for value in self.question_ids if value.strip())
         )

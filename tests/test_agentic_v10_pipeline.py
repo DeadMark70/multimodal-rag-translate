@@ -65,16 +65,17 @@ def test_v10_audit_validation_requires_each_requirement_and_source() -> None:
     assert result["failure_reason"] == "incomplete_matrix"
 
 
-def test_v10_audit_validation_normalizes_bracketless_reference_ids() -> None:
+@pytest.mark.parametrize("reference", ["Ref 1", "1", " 1 "])
+def test_v10_audit_validation_normalizes_bracketless_reference_ids(reference: str) -> None:
     audit = CoverageAuditResponse.model_validate({
         "needs_drill_down": 1,
         "answer": None,
         "requirements": [{"id": "R1", "entity": "A", "criterion": "first"}],
         "entity_criterion_matrix": [
-            {"requirement_id": "R1", "coverage": "partial", "reference_ids": ["Ref 1"]},
+            {"requirement_id": "R1", "coverage": "partial", "reference_ids": [reference]},
         ],
         "extractive_evidence_ledger": [
-            {"reference_id": "Ref 1", "requirement_ids": ["R1"]},
+            {"reference_id": reference, "requirement_ids": ["R1"]},
         ],
         "priority_gap": {
             "requirement_id": "R1",
@@ -298,7 +299,8 @@ async def test_v10_uses_one_structured_audit_without_map_calls() -> None:
 
 
 @pytest.mark.asyncio
-async def test_v10_runs_one_drill_down_and_final_only_receives_ledger_sources() -> None:
+@pytest.mark.parametrize("invalid_reference", [False, True])
+async def test_v10_runs_one_drill_down_and_final_only_receives_ledger_sources(invalid_reference: bool) -> None:
     decomposer = MagicMock()
     decomposer.decompose = AsyncMock(return_value=[
         SubQueryItem(id="SQ1", query="initial query", focus="initial", target_entity="Model")
@@ -320,8 +322,8 @@ async def test_v10_runs_one_drill_down_and_final_only_receives_ledger_sources() 
             "needs_drill_down": 1,
             "answer": None,
             "requirements": [{"id": "R1", "entity": "Model", "criterion": "Table 3 values"}],
-            "entity_criterion_matrix": [{"requirement_id": "R1", "coverage": "partial", "reference_ids": ["[Ref 1]"]}],
-            "extractive_evidence_ledger": [{"reference_id": "[Ref 1]", "requirement_ids": ["R1"]}],
+            "entity_criterion_matrix": [{"requirement_id": "R1", "coverage": "partial", "reference_ids": ["unknown-doc" if invalid_reference else "[Ref 1]"]}],
+            "extractive_evidence_ledger": [{"reference_id": "unknown-doc" if invalid_reference else "[Ref 1]", "requirement_ids": ["R1"]}],
             "priority_gap": {
                 "requirement_id": "R1",
                 "missing_information": "Table 3 values and conditions",
@@ -355,7 +357,8 @@ async def test_v10_runs_one_drill_down_and_final_only_receives_ledger_sources() 
     assert [call.kwargs["top_k"] for call in reranker.rerank_with_scores.call_args_list] == [1, 2]
     final_prompt = v10["synthesis"]["prompt_messages"][1]["content"]
     assert "Initial supported evidence" in final_prompt
-    assert "Unused initial neighbor" not in final_prompt
+    assert ("Unused initial neighbor" in final_prompt) is invalid_reference
+    assert v10["coverage_audit"]["reference_validation"]["validated"] is not invalid_reference
     assert "Missing table values" in final_prompt
     assert "Missing table conditions" in final_prompt
     assert "Drill table caption" not in final_prompt
@@ -365,7 +368,7 @@ async def test_v10_runs_one_drill_down_and_final_only_receives_ledger_sources() 
         for item in v10["drill_down"]["source_document_mapping"]
     ] == [1, 2]
     assert result.usage["total_tokens"] == 20
-    assert result.agent_trace["response_status"] == "complete"
+    assert result.agent_trace["response_status"] == ("qualified_partial" if invalid_reference else "complete")
 
 
 @pytest.mark.asyncio

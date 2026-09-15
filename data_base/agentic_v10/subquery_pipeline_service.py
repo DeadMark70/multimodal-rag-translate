@@ -45,7 +45,7 @@ AGENTIC_V10_CONTEXT_POLICY_VERSION = (
 AGENTIC_V10_TRACE_SCHEMA_VERSION = "7"
 
 _AUDIT_REFERENCE_ID_PATTERN = re.compile(
-    r"^\s*(?:\[Ref\s+([1-9]\d*)\]|Ref\s+([1-9]\d*))\s*$"
+    r"^\s*(?:\[Ref\s+([1-9]\d*)\]|Ref\s+([1-9]\d*)|([1-9]\d*))\s*$"
 )
 
 
@@ -354,16 +354,26 @@ class AgenticV10PipelineService:
         synthesis_usage: dict[str, int] = {}
         synthesis_error: str | None = None
         synthesis_validation_fields: list[str] = []
+        can_drill_down = (
+            audit is not None
+            and audit.needs_drill_down == 1
+            and audit.priority_gap is not None
+            and bool(audit.priority_gap.retrieval_query.strip())
+            and any(
+                requirement.id == audit.priority_gap.requirement_id
+                for requirement in audit.requirements
+            )
+        )
         if not initial_context_entries:
             answer = "目前知識庫沒有可用的相關證據，因此無法根據文件回答此問題。請補充或上傳相關文獻後再試。"
             response_status = "qualified_partial"
-        elif not reference_validation["validated"]:
+        elif not reference_validation["validated"] and not can_drill_down:
             route = "audit_fallback_raw_synthesis"
             synthesis_messages = self._synthesis_messages(question, overview, context_text)
             answer, synthesis_usage, synthesis_error, synthesis_validation_fields = await self._synthesize(
                 synthesis_messages
             )
-            response_status = "qualified_partial" if synthesis_error else "complete"
+            response_status = "qualified_partial"
         elif audit.needs_drill_down == 0:
             route = "audit_answer"
             answer = str(audit.answer).strip()
@@ -376,7 +386,8 @@ class AgenticV10PipelineService:
             final_context_entries = [
                 entry
                 for entry in initial_context_entries
-                if f"[Ref {entry[0]}]" in ledger_reference_ids
+                if not reference_validation["validated"]
+                or f"[Ref {entry[0]}]" in ledger_reference_ids
             ]
             drill_down, drill_entries = await self._run_drill_down(
                 user_id=user_id,
@@ -396,6 +407,12 @@ class AgenticV10PipelineService:
                     ledger=audit.extractive_evidence_ledger,
                     context_text=final_context_text,
                 )
+                if not reference_validation["validated"]:
+                    # Keep the evidence and requested search, without trusting
+                    # an audit whose source mappings could not be validated.
+                    synthesis_messages = self._synthesis_messages(
+                        question, overview, final_context_text
+                    )
                 answer, synthesis_usage, synthesis_error, synthesis_validation_fields = await self._synthesize(
                     synthesis_messages
                 )
@@ -405,6 +422,7 @@ class AgenticV10PipelineService:
             response_status = (
                 "complete"
                 if drill_down["new_evidence_count"] and not synthesis_error
+                and reference_validation["validated"]
                 else "qualified_partial"
             )
         final_documents = [document for _, document, _, _ in final_context_entries]
@@ -725,7 +743,7 @@ class AgenticV10PipelineService:
     def _normalize_audit_reference_ids(
         audit: CoverageAuditResponse,
     ) -> list[dict[str, str]]:
-        """Canonicalize only the two Gemini reference forms we explicitly allow."""
+        """Canonicalize labelled and numeric references; validation checks membership."""
 
         normalized: list[dict[str, str]] = []
 
@@ -733,7 +751,7 @@ class AgenticV10PipelineService:
             match = _AUDIT_REFERENCE_ID_PATTERN.fullmatch(value)
             if match is None:
                 return value
-            canonical = f"[Ref {match.group(1) or match.group(2)}]"
+            canonical = f"[Ref {match.group(1) or match.group(2) or match.group(3)}]"
             if canonical != value:
                 normalized.append(
                     {"location": location, "original": value, "canonical": canonical}

@@ -250,7 +250,7 @@ def _wait_for_terminal_status(
         assert response.status_code == 200
         campaigns = response.json()
         latest = next(item for item in campaigns if item["id"] == campaign_id)
-        if latest["status"] in {"completed", "failed", "cancelled"}:
+        if latest["status"] in {"completed", "completed_with_errors", "failed", "cancelled"}:
             return latest
         time.sleep(0.05)
     raise AssertionError(
@@ -1528,7 +1528,8 @@ def test_campaign_integration_uses_real_runner_and_real_ragas_persistence() -> N
             terminal = _wait_for_terminal_status(
                 client, campaign_id, timeout_seconds=8.0
             )
-            assert terminal["status"] == "completed"
+            # This fake evaluator omits relevancy, so the campaign is incomplete.
+            assert terminal["status"] == "completed_with_errors"
             assert terminal["phase"] == "evaluation"
             assert terminal["completed_units"] == 4
             assert terminal["total_units"] == 4
@@ -1685,7 +1686,7 @@ def test_campaign_integration_keeps_running_when_one_mode_fails() -> None:
             terminal = _wait_for_terminal_status(
                 client, campaign_id, timeout_seconds=8.0
             )
-            assert terminal["status"] == "completed"
+            assert terminal["status"] == "completed_with_errors"
             assert terminal["completed_units"] == 3
             assert terminal["total_units"] == 3
             assert terminal["evaluation_completed_units"] == 2

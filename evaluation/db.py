@@ -1764,6 +1764,7 @@ class CampaignRepository:
             campaign_id=campaign_id,
             status=CampaignLifecycleStatus.COMPLETED,
             phase=phase,
+            error_message=None,
             completed_at=now,
             current_question_id=None,
             current_mode=None,
@@ -1811,6 +1812,11 @@ class CampaignRepository:
                 JOIN evaluation_work_items AS work ON work.id = item.work_item_id
                 WHERE job.user_id = ? AND job.campaign_id = ?
                   AND work.work_type = 'dataset_execution'
+                  AND item.id = (
+                      SELECT latest.id FROM evaluation_job_items AS latest
+                      WHERE latest.work_item_id = work.id
+                      ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
+                  )
                 """,
                 (user_id, campaign_id),
             )
@@ -1837,10 +1843,10 @@ class CampaignRepository:
                 completed_units=compatible_succeeded,
             )
         if (failed or incompatible) and compatible_succeeded:
-            return await self._update_campaign(
+            partial = await self._update_campaign(
                 user_id=user_id,
                 campaign_id=campaign_id,
-                status=CampaignLifecycleStatus.COMPLETED_WITH_ERRORS,
+                status=CampaignLifecycleStatus.RUNNING if defer_completion else CampaignLifecycleStatus.COMPLETED_WITH_ERRORS,
                 phase="execution",
                 completed_units=processed_units,
                 error_message="Some dataset execution units failed or lacked compatible results.",
@@ -1848,6 +1854,7 @@ class CampaignRepository:
                 current_question_id=None,
                 current_mode=None,
             )
+            return partial.model_copy(update={"status": CampaignLifecycleStatus.COMPLETED_WITH_ERRORS}) if defer_completion else partial
         if failed or incompatible:
             return await self.mark_failed(
                 user_id=user_id,
@@ -1914,6 +1921,16 @@ class CampaignRepository:
                     WHERE job.user_id = ? AND job.campaign_id = ?
                       AND work.work_type = 'ragas_metric'
                       AND (? IS NULL OR job.id = ?)
+                      AND item.id = (
+                          SELECT latest.id FROM evaluation_job_items AS latest
+                          WHERE latest.work_item_id = work.id
+                          ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
+                      )
+                      AND (json_type(work.input_snapshot_json, '$.result') IS NULL OR EXISTS (
+                          SELECT 1 FROM campaign_results AS result
+                          WHERE result.id = json_extract(work.input_snapshot_json, '$.campaign_result_id')
+                            AND result.source_attempt_id IS json_extract(work.input_snapshot_json, '$.result.source_attempt_id')
+                      ))
                     """,
                     (user_id, campaign_id, job_id, job_id),
                 )
@@ -1929,7 +1946,7 @@ class CampaignRepository:
             return await self.mark_cancelled(user_id=user_id, campaign_id=campaign_id)
         failed += cancelled
         if total == 0:
-            return await self.mark_completed(
+            return await self._finish_ragas_campaign(
                 user_id=user_id, campaign_id=campaign_id, phase="evaluation"
             )
         if unresolved:
@@ -1961,12 +1978,59 @@ class CampaignRepository:
                 error_message="No RAGAS metric result was produced.",
                 phase="evaluation",
             )
-        return await self.mark_completed(
+        return await self._finish_ragas_campaign(
             user_id=user_id,
             campaign_id=campaign_id,
             phase="evaluation",
             evaluation_completed_units=result_succeeded,
             evaluation_total_units=result_total,
+        )
+
+    async def _finish_ragas_campaign(
+        self, *, user_id: str, campaign_id: str, phase: str,
+        evaluation_completed_units: int | None = None,
+        evaluation_total_units: int | None = None,
+    ) -> CampaignStatus:
+        """A successful scoring subset must not hide other missing campaign work."""
+        campaign = await self.get(user_id=user_id, campaign_id=campaign_id)
+        async with connect_db() as connection:
+            results = await (await connection.execute(
+                "SELECT COUNT(*) AS total, SUM(status = 'completed') AS completed "
+                "FROM campaign_results WHERE user_id = ? AND campaign_id = ?",
+                (user_id, campaign_id),
+            )).fetchone()
+            missing = await (await connection.execute(
+                """SELECT COUNT(*) AS count FROM campaign_results AS result
+                   CROSS JOIN (
+                       SELECT DISTINCT json_extract(input_snapshot_json, '$.metric_name') AS name
+                       FROM evaluation_work_items WHERE campaign_id = ? AND work_type = 'ragas_metric'
+                   ) AS metric
+                   WHERE result.user_id = ? AND result.campaign_id = ? AND result.status = 'completed'
+                     AND metric.name != 'legacy_campaign'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM ragas_scores AS score
+                         WHERE score.campaign_result_id = result.id AND score.metric_name = metric.name
+                     )""",
+                (campaign_id, user_id, campaign_id),
+            )).fetchone()
+        incomplete = (
+            int(results["completed"] or 0) < max(int(results["total"]), campaign.total_units)
+            or int(missing["count"]) > 0
+        )
+        if incomplete:
+            return await self._update_campaign(
+                user_id=user_id, campaign_id=campaign_id,
+                status=CampaignLifecycleStatus.COMPLETED_WITH_ERRORS,
+                phase=phase, completed_at=_utc_now_iso(),
+                error_message="Some executions or metric scores are missing; completed results were retained.",
+                current_question_id=None, current_mode=None,
+                evaluation_completed_units=evaluation_completed_units,
+                evaluation_total_units=evaluation_total_units,
+            )
+        return await self.mark_completed(
+            user_id=user_id, campaign_id=campaign_id, phase=phase,
+            evaluation_completed_units=evaluation_completed_units,
+            evaluation_total_units=evaluation_total_units,
         )
 
     async def mark_failed(

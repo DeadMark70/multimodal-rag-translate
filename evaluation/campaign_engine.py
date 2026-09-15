@@ -20,6 +20,7 @@ from evaluation.db import (
     AgentTraceRepository,
     CampaignRepository,
     CampaignResultRepository,
+    RagasScoreRepository,
 )
 from evaluation.job_schemas import (
     EvaluationAttempt,
@@ -367,6 +368,7 @@ class CampaignEngine:
                     "skip_ragas": request.stages == "execution",
                     "metric_names": list(request.metric_names),
                     "downstream_question_ids": downstream_question_ids,
+                    "downstream_modes": list(request.modes),
                 },
                 items=specs,
             )
@@ -403,13 +405,24 @@ class CampaignEngine:
             for row in results
             if row.status == CampaignResultStatus.COMPLETED
             and row.source_attempt_id is not None
+            and self._matches_rerun_mode(row.mode, row.agentic_execution_version, request.modes)
         ]
         metric_names_by_result: dict[str, list[str]] | None = None
-        if request.scope == "selected":
+        if request.question_ids:
             question_ids = set(request.question_ids)
             completed_results = [
                 row for row in completed_results if row.question_id in question_ids
             ]
+        if request.scope == "missing_only":
+            scores = await RagasScoreRepository().list_for_campaign(
+                user_id=user_id, campaign_id=campaign_id
+            )
+            present = {(score["campaign_result_id"], score["metric_name"]) for score in scores}
+            metric_names_by_result = {
+                row.id: [metric for metric in metric_names if (row.id, metric) not in present]
+                for row in completed_results
+            }
+            completed_results = [row for row in completed_results if metric_names_by_result[row.id]]
         elif request.scope == "failed_only":
             failed_rows = await self._job_store.list_campaign_work_items(
                 user_id=user_id,
@@ -443,7 +456,9 @@ class CampaignEngine:
 
         if not completed_results or not metric_names:
             message = (
-                "Requested question_ids have no completed raw results in this campaign"
+                "No missing RAGAS scores match the selected questions and modes"
+                if request.scope == "missing_only"
+                else "Requested question_ids have no completed raw results in this campaign"
                 if request.scope == "selected"
                 else "No matching completed results are available for RAGAS rerun"
             )
@@ -496,12 +511,27 @@ class CampaignEngine:
         return max(new_jobs, key=lambda job: job.created_at)
 
     @staticmethod
+    def _matches_rerun_mode(mode: str, version: str, modes: list[str]) -> bool:
+        return not modes or mode in modes or (
+            mode == "agentic" and f"agentic-{version}" in modes
+        )
+
+    @staticmethod
     def _select_rerun_work_rows(
         rows: list[dict[str, Any]],
         *,
         request: EvaluationRerunRequest,
         kind: str,
     ) -> list[dict[str, Any]]:
+        rows = [
+            row for row in rows
+            if CampaignEngine._matches_rerun_mode(
+                str(row["input_snapshot"].get("mode", "")),
+                str(row["input_snapshot"].get("agentic_execution_version", "v8")),
+                request.modes,
+            )
+            and (not request.question_ids or row["input_snapshot"].get("test_case", {}).get("id") in request.question_ids)
+        ]
         if request.scope == "all":
             return rows
         if request.scope == "failed_only":

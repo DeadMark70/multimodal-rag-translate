@@ -192,6 +192,67 @@ async def _job_count() -> int:
         return int((await cursor.fetchone())[0])
 
 
+@pytest.mark.asyncio
+async def test_scoring_completion_does_not_hide_failed_or_absent_execution(store) -> None:
+    await _configure_completion_campaign()
+    await _create_official_ragas_result(result_id="result-1")
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute("UPDATE campaigns SET total_units = 2 WHERE id = 'cmp-1'")
+        await connection.commit()
+    repository = CampaignRepository()
+    state = await repository.derive_ragas_state(user_id="user-a", campaign_id="cmp-1")
+    assert state.status is CampaignLifecycleStatus.COMPLETED_WITH_ERRORS
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute("UPDATE campaigns SET total_units = 1 WHERE id = 'cmp-1'")
+        await connection.execute("UPDATE campaign_results SET status = 'failed' WHERE id = 'result-1'")
+        await connection.commit()
+    state = await repository.derive_ragas_state(user_id="user-a", campaign_id="cmp-1")
+    assert state.status is CampaignLifecycleStatus.COMPLETED_WITH_ERRORS
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute("UPDATE campaign_results SET status = 'completed' WHERE id = 'result-1'")
+        await connection.commit()
+    state = await repository.derive_ragas_state(user_id="user-a", campaign_id="cmp-1")
+    assert state.status is CampaignLifecycleStatus.COMPLETED
+    assert state.error_message is None
+
+
+@pytest.mark.asyncio
+async def test_missing_score_prevents_successful_subset_hiding_incomplete_campaign(store, fixed_now) -> None:
+    await _configure_completion_campaign()
+    await _create_official_ragas_result(result_id="result-1")
+    await store.ensure_ragas_work(
+        user_id="user-a", campaign_id="cmp-1", evaluator_model="judge", evaluator_config={},
+        enabled_metrics=["faithfulness"],
+    )
+    claim = (await store.claim_ready_items(limit=1, now=fixed_now, work_type="ragas_metric"))[0]
+    await store.complete_ragas_attempt(claim, RagasAttemptOutput(scores=[]))
+    state = await CampaignRepository().derive_ragas_state(user_id="user-a", campaign_id="cmp-1")
+    assert state.status is CampaignLifecycleStatus.COMPLETED_WITH_ERRORS
+
+
+async def _configure_completion_campaign() -> None:
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute("UPDATE campaigns SET config_json = ? WHERE id = 'cmp-1'", (json.dumps({
+            "test_case_ids": ["Q1"], "modes": ["naive"],
+            "model_config": {"id": "cfg", "name": "test", "model_name": "test"},
+        }),))
+        await connection.commit()
+
+
+@pytest.mark.asyncio
+async def test_successful_execution_retry_clears_historical_failure(store, fixed_now) -> None:
+    await _configure_completion_campaign()
+    first = await _claim_execution(store, fixed_now)
+    await store.fail_attempt(first, ErrorDecision(
+        error_type="unknown", retryable=False, safe_message="failed", retry_after_seconds=None,
+    ), next_retry_at=None)
+    rerun = await _claim_execution_rerun(store, fixed_now)
+    await store.complete_execution_attempt(rerun, _successful_output("repaired answer"))
+    state = await CampaignRepository().derive_execution_state(user_id="user-a", campaign_id="cmp-1")
+    assert state.status is CampaignLifecycleStatus.COMPLETED
+    assert state.completed_units == 1
+
+
 async def _job_item_count() -> int:
     async with evaluation_db.connect_db() as connection:
         cursor = await connection.execute("SELECT COUNT(*) FROM evaluation_job_items")
@@ -369,7 +430,10 @@ def test_ragas_batch_group_key_is_shared_while_result_signatures_remain_distinct
         status=CampaignResultStatus.COMPLETED,
         created_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
     )
-    second = first.model_copy(update={"id": "result-2"})
+    second = first.model_copy(update={
+        "id": "result-2", "question_id": "Q2", "answer": "Different answer",
+        "contexts": ["Different evidence"], "ground_truth": "Different reference",
+    })
     kwargs = {
         "evaluator_model": "evaluator",
         "evaluator_config": {"temperature": 0},
@@ -384,7 +448,7 @@ def test_ragas_batch_group_key_is_shared_while_result_signatures_remain_distinct
     ) != build_evaluation_signature(result=second, **kwargs)
     assert build_ragas_batch_group_key(
         result=first, **kwargs
-    ) == build_ragas_batch_group_key(result=second, **kwargs)
+    ) == build_ragas_batch_group_key(result=second, **{**kwargs, "ground_truth_hash": "different"})
 
 
 @pytest.mark.asyncio
