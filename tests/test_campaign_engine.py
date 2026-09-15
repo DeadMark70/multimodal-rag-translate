@@ -138,7 +138,7 @@ def _campaign_payload(
 
 def _fake_ragas_dependencies() -> dict:
     return {
-        "LangchainLLMWrapper": lambda llm: llm,
+        "LangchainLLMWrapper": lambda llm, **kwargs: llm,
         "initialize_embeddings": AsyncMock(),
         "LangchainEmbeddingsWrapper": lambda embeddings: embeddings,
         "get_embeddings": lambda: object(),

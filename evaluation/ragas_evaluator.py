@@ -169,7 +169,9 @@ class RagasEvaluator:
             # their compatibility path does not need provider wrappers.
             return None, None
         evaluator_llm = dependencies["LangchainLLMWrapper"](
-            get_llm("evaluator", model_name=self._evaluator_model)
+            get_llm("evaluator", model_name=self._evaluator_model),
+            # Gemini 3 requires separate requests for relevancy's three samples.
+            bypass_n=True,
         )
         await dependencies["initialize_embeddings"]()
         evaluator_embeddings = dependencies["LangchainEmbeddingsWrapper"](
@@ -322,7 +324,9 @@ class RagasEvaluator:
             return self._evaluator_model
 
         evaluator_llm = ragas_dependencies["LangchainLLMWrapper"](
-            get_llm("evaluator", model_name=self._evaluator_model)
+            get_llm("evaluator", model_name=self._evaluator_model),
+            # Gemini 3 requires separate requests for relevancy's three samples.
+            bypass_n=True,
         )
         await ragas_dependencies["initialize_embeddings"]()
         evaluator_embeddings = ragas_dependencies["LangchainEmbeddingsWrapper"](

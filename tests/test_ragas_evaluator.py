@@ -504,7 +504,7 @@ async def test_evaluate_campaign_reports_progress_when_batches_fall_back():
         "_load_ragas_dependencies",
         new=AsyncMock(
             return_value={
-                "LangchainLLMWrapper": lambda llm: llm,
+                "LangchainLLMWrapper": lambda llm, **kwargs: llm,
                 "initialize_embeddings": AsyncMock(),
                 "LangchainEmbeddingsWrapper": lambda embeddings: embeddings,
                 "get_embeddings": lambda: object(),
@@ -1111,9 +1111,75 @@ async def test_get_metrics_excludes_failed_attempts_and_reports_missing_samples(
 
 def _fake_ragas_dependencies_for_eval() -> dict:
     return {
-        "LangchainLLMWrapper": lambda llm: llm,
+        "LangchainLLMWrapper": lambda llm, **kwargs: llm,
         "initialize_embeddings": AsyncMock(),
         "LangchainEmbeddingsWrapper": lambda embeddings: embeddings,
         "get_embeddings": lambda: object(),
         "aevaluate": AsyncMock(),
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry_point", ["durable", "legacy"])
+async def test_relevancy_samples_use_separate_single_candidate_requests(
+    monkeypatch, entry_point: str
+) -> None:
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+    from langchain_core.prompt_values import StringPromptValue
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from ragas.llms import LangchainLLMWrapper
+    from ragas.metrics import answer_relevancy
+
+    monkeypatch.setenv("RAGAS_DO_NOT_TRACK", "true")
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "false")
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-3.1-flash-lite", google_api_key="local-test-no-network"
+    )
+    candidate_counts = []
+
+    async def generate_prompts(self, prompts, **kwargs):
+        for prompt in prompts:
+            request = self._prepare_request(prompt.to_messages())
+            candidate_counts.append(request["config"].candidate_count)
+        return LLMResult(generations=[
+            [ChatGeneration(message=AIMessage(content=f"Question {index}"))]
+            for index, _ in enumerate(prompts)
+        ])
+
+    monkeypatch.setattr(ChatGoogleGenerativeAI, "agenerate_prompt", generate_prompts)
+    monkeypatch.setattr("evaluation.ragas_evaluator.get_llm", lambda *a, **kw: llm)
+    evaluator = RagasEvaluator(
+        result_repository=FakeResultRepository([_result("r1", "naive", 100)]),
+        score_repository=FakeScoreRepository([]),
+    )
+    dependencies = _fake_ragas_dependencies_for_eval()
+    dependencies.update({
+        "LangchainLLMWrapper": LangchainLLMWrapper,
+        "Dataset": _FakeDataset,
+        "metrics": {},
+    })
+    monkeypatch.setattr(
+        evaluator, "_load_ragas_dependencies", AsyncMock(return_value=dependencies)
+    )
+
+    async def check_samples(wrapper):
+        result = await wrapper.agenerate_text(
+            StringPromptValue(text="Generate a question"), n=answer_relevancy.strictness
+        )
+        assert candidate_counts == [1, 1, 1]
+        assert [item.text for item in result.generations[0]] == [
+            "Question 0", "Question 1", "Question 2"
+        ]
+        assert llm.n == 1
+
+    if entry_point == "durable":
+        wrapper, _ = await evaluator.evaluator_handles()
+        await check_samples(wrapper)
+    else:
+        async def evaluate_batch(**kwargs):
+            await check_samples(kwargs["evaluator_llm"])
+            return []
+
+        monkeypatch.setattr(evaluator, "_evaluate_batch", evaluate_batch)
+        await evaluator.evaluate_campaign(user_id="user-a", campaign_id="cmp-1")
