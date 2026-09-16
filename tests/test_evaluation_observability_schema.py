@@ -1,4 +1,3 @@
-import sqlite3
 from datetime import datetime, timezone
 
 import pytest
@@ -74,7 +73,7 @@ COMMON_DETAIL_TABLES = EXPECTED_TABLES - {
 async def _table_names() -> set[str]:
     async with evaluation_db.connect_db() as connection:
         cursor = await connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
+            "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema()"
         )
         rows = await cursor.fetchall()
     return {str(row["name"]) for row in rows}
@@ -82,7 +81,7 @@ async def _table_names() -> set[str]:
 
 async def _table_columns(table_name: str) -> set[str]:
     async with evaluation_db.connect_db() as connection:
-        cursor = await connection.execute(f"PRAGMA table_info({table_name})")
+        cursor = await connection.execute("SELECT column_name AS name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=?", (table_name,))
         rows = await cursor.fetchall()
     return {str(row["name"]) for row in rows}
 
@@ -90,7 +89,7 @@ async def _table_columns(table_name: str) -> set[str]:
 async def _index_names() -> set[str]:
     async with evaluation_db.connect_db() as connection:
         cursor = await connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'index'"
+            "SELECT indexname AS name FROM pg_indexes WHERE schemaname=current_schema()"
         )
         rows = await cursor.fetchall()
     return {str(row["name"]) for row in rows}
@@ -98,14 +97,19 @@ async def _index_names() -> set[str]:
 
 async def _index_columns(index_name: str) -> list[str]:
     async with evaluation_db.connect_db() as connection:
-        cursor = await connection.execute(f"PRAGMA index_info({index_name})")
+        cursor = await connection.execute(
+            "SELECT pg_get_indexdef(i.indexrelid, n, true) AS name "
+            "FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid "
+            "JOIN pg_namespace ns ON ns.oid=c.relnamespace "
+            "CROSS JOIN LATERAL generate_series(1, i.indnkeyatts) AS n "
+            "WHERE ns.nspname=current_schema() AND c.relname=? ORDER BY n", (index_name,)
+        )
         rows = await cursor.fetchall()
     return [str(row["name"]) for row in rows]
 
 
 @pytest.mark.asyncio
 async def test_observability_tables_columns_and_indexes_are_created(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
 
     await evaluation_db.init_db()
 
@@ -184,23 +188,9 @@ async def test_observability_tables_columns_and_indexes_are_created(tmp_path, mo
 
 
 @pytest.mark.asyncio
-async def test_observability_migration_repairs_partial_tables(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "evaluation.db"
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", db_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path) as connection:
-        connection.execute("CREATE TABLE evaluation_trace_events (event_id TEXT PRIMARY KEY)")
-        connection.execute("CREATE TABLE evaluation_claims (claim_id TEXT PRIMARY KEY)")
-        connection.execute(
-            "CREATE TABLE evaluation_evidence_packets (evidence_packet_row_id TEXT PRIMARY KEY)"
-        )
-        connection.execute(
-            "CREATE TABLE evaluation_slot_resolutions (slot_resolution_row_id TEXT PRIMARY KEY)"
-        )
-        connection.commit()
-
-    await evaluation_db.init_db()
-
+async def test_observability_schema_reinitialization_keeps_tables(tmp_path, monkeypatch) -> None:
+    await evaluation_db.force_init_db()
+    await evaluation_db.force_init_db()
     trace_columns = await _table_columns("evaluation_trace_events")
     assert {"run_id", "campaign_id", "span_id", "event_schema_version", "duration_ms"}.issubset(
         trace_columns
@@ -220,47 +210,23 @@ async def test_observability_migration_repairs_partial_tables(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_llm_call_migration_preserves_legacy_rows_as_unknown(
-    tmp_path, monkeypatch
-) -> None:
-    db_path = tmp_path / "evaluation.db"
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", db_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path) as connection:
-        connection.execute(
-            """
-            CREATE TABLE evaluation_llm_calls (
-                llm_call_id TEXT PRIMARY KEY,
-                run_id TEXT NOT NULL,
-                campaign_id TEXT NOT NULL,
-                purpose TEXT NOT NULL DEFAULT 'unknown',
-                prompt_tokens INTEGER NOT NULL DEFAULT 0,
-                completion_tokens INTEGER NOT NULL DEFAULT 0,
-                total_tokens INTEGER NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'success',
-                error_json TEXT NOT NULL DEFAULT '{}',
-                payload_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL
-            )
-            """
+async def test_llm_call_unspecified_provenance_remains_unknown(tmp_path, monkeypatch) -> None:
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            "INSERT INTO campaigns(id,user_id,status,config_json,created_at,updated_at) "
+            "VALUES ('legacy-campaign','owner','completed','{}','2026-07-01','2026-07-01')"
         )
-        connection.execute(
-            """
-            INSERT INTO evaluation_llm_calls (
-                llm_call_id, run_id, campaign_id, created_at
-            ) VALUES ('legacy-call', 'legacy-run', 'legacy-campaign', '2026-07-01T00:00:00+00:00')
-            """
+        await connection.execute(
+            "INSERT INTO evaluation_llm_calls (llm_call_id, run_id, campaign_id, created_at) "
+            "VALUES ('legacy-call', 'legacy-run', 'legacy-campaign', '2026-07-01T00:00:00+00:00')"
         )
-        connection.commit()
-
+        await connection.commit()
+    await evaluation_db.force_init_db()
     await evaluation_db.init_db()
-    await evaluation_db.init_db()
-
-    with sqlite3.connect(db_path) as connection:
-        connection.row_factory = sqlite3.Row
-        row = connection.execute(
-            "SELECT * FROM evaluation_llm_calls WHERE llm_call_id = 'legacy-call'"
-        ).fetchone()
+    async with evaluation_db.connect_db() as connection:
+        row = await (await connection.execute(
+            "SELECT * FROM evaluation_llm_calls WHERE llm_call_id='legacy-call'"
+        )).fetchone()
     assert row is not None
     assert row["phase"] == "unknown"
     assert row["reservation_id"] is None
@@ -334,7 +300,6 @@ def test_llm_call_schema_accepts_graph_route_phase() -> None:
 async def test_v9_evidence_tables_have_identity_schema_and_idempotency_indexes(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
 
     await evaluation_db.init_db()
 

@@ -25,13 +25,12 @@ class FakeRagasEvaluator:
 
 
 @contextmanager
-def _build_client(user_id: str, upload_root: Path, db_path: Path, engine: CampaignEngine):
+def _build_client(user_id: str, upload_root: Path, engine: CampaignEngine):
     process_worker = Mock(is_configured=False)
     with (
         patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
         patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
         patch("evaluation.storage.BASE_UPLOAD_FOLDER", str(upload_root)),
-        patch("evaluation.db.EVALUATION_DB_PATH", db_path),
         patch("evaluation.campaign_engine.get_campaign_engine", return_value=engine),
         patch("evaluation.job_worker.get_evaluation_job_worker", return_value=process_worker),
         patch("evaluation.router.get_campaign_engine", return_value=engine),
@@ -57,9 +56,9 @@ def _model_config() -> ModelConfig:
     )
 
 
-def _make_workspace_paths(prefix: str) -> tuple[Path, Path]:
+def _make_workspace_paths(prefix: str) -> Path:
     root = Path.cwd() / "output" / "test_tmp" / f"{prefix}_{uuid4().hex}"
-    return root / "uploads", root / "evaluation.db"
+    return root / "uploads"
 
 
 def _wait_for_completed(client: TestClient, campaign_id: str) -> None:
@@ -131,9 +130,9 @@ def test_ablation_campaign_expands_conditions_and_persists_condition_metadata() 
         )
 
     engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
-    upload_root, db_path = _make_workspace_paths("ablation")
+    upload_root = _make_workspace_paths("ablation")
 
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         test_case_response = client.post(
             "/api/evaluation/test-cases",
             json={

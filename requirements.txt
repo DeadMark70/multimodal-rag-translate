@@ -49,7 +49,6 @@ rank-bm25==0.2.2
 # Database
 supabase==2.25.1
 postgrest==2.25.1
-aiosqlite==0.21.0
 psycopg[binary]==3.3.5
 psycopg-pool==3.3.1
 

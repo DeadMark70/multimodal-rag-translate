@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -56,22 +55,17 @@ def _make_upload_root() -> Path:
     return root
 
 
-def _make_db_path() -> Path:
-    root = Path("output") / "test_tmp" / f"campaign_db_{uuid4().hex}"
-    root.mkdir(parents=True, exist_ok=True)
-    return root / "evaluation.db"
 
 
 @contextmanager
 def _build_client(
-    user_id: str, upload_root: Path, db_path: Path, engine: CampaignEngine
+    user_id: str, upload_root: Path, engine: CampaignEngine
 ):
     process_worker = Mock(is_configured=False)
     with (
         patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
         patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
         patch("evaluation.storage.BASE_UPLOAD_FOLDER", str(upload_root)),
-        patch("evaluation.db.EVALUATION_DB_PATH", db_path),
         patch("evaluation.campaign_engine.get_campaign_engine", return_value=engine),
         patch(
             "evaluation.job_worker.get_evaluation_job_worker",
@@ -302,9 +296,8 @@ def test_campaign_api_runs_and_streams_results() -> None:
     fake_ragas = FakeRagasEvaluator()
     engine = CampaignEngine(runner=runner, ragas_evaluator=fake_ragas)
     upload_root = _make_upload_root()
-    db_path = _make_db_path()
 
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         _create_test_case(client)
         created = client.post(
             "/api/evaluation/campaigns",
@@ -392,8 +385,8 @@ def test_production_engine_wires_ragas_accounting_scope_and_event() -> None:
         )
 
     engine = CampaignEngine(runner=runner, ragas_evaluator=BatchEvaluator())
-    upload_root, db_path = _make_upload_root(), _make_db_path()
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    upload_root = _make_upload_root()
+    with _build_client("user-a", upload_root, engine) as client:
         _create_test_case(client)
         campaign_id = client.post(
             "/api/evaluation/campaigns",
@@ -403,11 +396,11 @@ def test_production_engine_wires_ragas_accounting_scope_and_event() -> None:
         ).json()["campaign_id"]
         terminal = _wait_for_terminal_status(client, campaign_id)
         assert terminal["evaluation_completed_units"] == 1
-        scopes = asyncio.run(
-            EvaluationAccountingStore().list_campaign_scopes(campaign_id)
+        scopes = client.portal.call(
+            EvaluationAccountingStore().list_campaign_scopes, campaign_id
         )
-        events = asyncio.run(
-            EvaluationAccountingStore().list_campaign_events(campaign_id)
+        events = client.portal.call(
+            EvaluationAccountingStore().list_campaign_events, campaign_id
         )
     assert len([scope for scope in scopes if scope.scope_type == "ragas_batch"]) == 1
     assert len(events) == 1
@@ -438,9 +431,8 @@ def test_campaign_run_persists_snapshot_and_minimal_root_span() -> None:
     fake_ragas = FakeRagasEvaluator()
     engine = CampaignEngine(runner=runner, ragas_evaluator=fake_ragas)
     upload_root = _make_upload_root()
-    db_path = _make_db_path()
 
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         client.post(
             "/api/evaluation/test-cases",
             json={
@@ -525,9 +517,8 @@ def test_campaign_rejects_router_mode_without_feature_flag() -> None:
     fake_ragas = FakeRagasEvaluator()
     engine = CampaignEngine(ragas_evaluator=fake_ragas)
     upload_root = _make_upload_root()
-    db_path = _make_db_path()
 
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         _create_test_case(client, "Q-ROUTER")
         response = client.post(
             "/api/evaluation/campaigns",
@@ -631,9 +622,8 @@ def test_campaign_cancel_marks_campaign_cancelled() -> None:
 
     engine = CampaignEngine(runner=slow_runner, ragas_evaluator=FakeRagasEvaluator())
     upload_root = _make_upload_root()
-    db_path = _make_db_path()
 
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         _create_test_case(client)
         created = client.post(
             "/api/evaluation/campaigns",
@@ -670,17 +660,14 @@ def test_campaign_cancel_marks_campaign_cancelled() -> None:
 def test_cancel_campaign_without_active_task_marks_cancelled() -> None:
     engine = CampaignEngine(ragas_evaluator=FakeRagasEvaluator())
     upload_root = _make_upload_root()
-    db_path = _make_db_path()
 
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         campaign_repo = CampaignRepository()
-        created = asyncio.run(
-            campaign_repo.create(
+        created = client.portal.call(lambda: campaign_repo.create(
                 user_id="user-a",
                 name="No task cancel",
                 config=_campaign_config_for_test_case_ids(["Q1"], modes=["naive"]),
-            )
-        )
+            ))
         cancelled = client.post(f"/api/evaluation/campaigns/{created.id}/cancel")
         assert cancelled.status_code == 200
         assert cancelled.json()["status"] == "cancelled"
@@ -705,258 +692,248 @@ async def test_recover_inflight_running_campaign_resumes_remaining_units() -> No
             difficulty=test_case.difficulty,
         )
 
-    db_path = _make_db_path()
     fake_ragas = FakeRagasEvaluator(progress_total=2)
-    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
-        campaign_repo = CampaignRepository()
-        result_repo = CampaignResultRepository()
-        campaign = await campaign_repo.create(
-            user_id="user-a",
-            name="Recover execution",
-            config=_campaign_config_for_test_case_ids(["Q1", "Q2"], modes=["naive"]),
-        )
-        await result_repo.create(
-            user_id="user-a",
-            campaign_id=campaign.id,
-            question_id="Q1",
-            question="What is the answer?",
-            ground_truth="42",
-            ground_truth_short="short 42",
-            key_points=["point-1"],
-            ragas_focus=["answer_correctness"],
-            mode="naive",
-            execution_profile=None,
-            context_policy_version=None,
-            run_number=1,
-            answer="seeded-Q1",
-            contexts=["ctx-q1"],
-            source_doc_ids=["doc-q1"],
-            expected_sources=[],
-            latency_ms=5,
-            token_usage={"total_tokens": 21},
-            category="smoke",
-            difficulty="easy",
-            status=CampaignResultStatus.COMPLETED,
-            error_message=None,
-        )
-        await campaign_repo.mark_running(user_id="user-a", campaign_id=campaign.id)
-        await campaign_repo.update_progress(
-            user_id="user-a",
-            campaign_id=campaign.id,
-            completed_units=1,
-            current_question_id="Q1",
-            current_mode="naive",
-        )
+    campaign_repo = CampaignRepository()
+    result_repo = CampaignResultRepository()
+    campaign = await campaign_repo.create(
+        user_id="user-a",
+        name="Recover execution",
+        config=_campaign_config_for_test_case_ids(["Q1", "Q2"], modes=["naive"]),
+    )
+    await result_repo.create(
+        user_id="user-a",
+        campaign_id=campaign.id,
+        question_id="Q1",
+        question="What is the answer?",
+        ground_truth="42",
+        ground_truth_short="short 42",
+        key_points=["point-1"],
+        ragas_focus=["answer_correctness"],
+        mode="naive",
+        execution_profile=None,
+        context_policy_version=None,
+        run_number=1,
+        answer="seeded-Q1",
+        contexts=["ctx-q1"],
+        source_doc_ids=["doc-q1"],
+        expected_sources=[],
+        latency_ms=5,
+        token_usage={"total_tokens": 21},
+        category="smoke",
+        difficulty="easy",
+        status=CampaignResultStatus.COMPLETED,
+        error_message=None,
+    )
+    await campaign_repo.mark_running(user_id="user-a", campaign_id=campaign.id)
+    await campaign_repo.update_progress(
+        user_id="user-a",
+        campaign_id=campaign.id,
+        completed_units=1,
+        current_question_id="Q1",
+        current_mode="naive",
+    )
 
-        engine = CampaignEngine(runner=runner, ragas_evaluator=fake_ragas)
-        seeded_cases = [
-            TestCase.model_validate(
-                {
-                    "id": "Q1",
-                    "question": "What is the answer?",
-                    "ground_truth": "42",
-                    "ground_truth_short": "short 42",
-                    "key_points": ["point-1"],
-                    "ragas_focus": ["answer_correctness"],
-                    "category": "smoke",
-                    "difficulty": "easy",
-                    "source_docs": [],
-                    "requires_multi_doc_reasoning": False,
-                }
-            ),
-            TestCase.model_validate(
-                {
-                    "id": "Q2",
-                    "question": "What is the answer?",
-                    "ground_truth": "42",
-                    "ground_truth_short": "short 42",
-                    "key_points": ["point-1"],
-                    "ragas_focus": ["answer_correctness"],
-                    "category": "smoke",
-                    "difficulty": "easy",
-                    "source_docs": [],
-                    "requires_multi_doc_reasoning": False,
-                }
-            ),
-        ]
-        with patch.object(
-            engine, "_resolve_test_cases", new=AsyncMock(return_value=seeded_cases)
-        ):
-            await engine.recover_inflight_campaigns()
-            status, latest = await _wait_for_terminal_campaign(
-                campaign_repo,
-                user_id="user-a",
-                campaign_id=campaign.id,
-                timeout_seconds=5.0,
-            )
-            assert status == CampaignLifecycleStatus.COMPLETED
-            assert latest.completed_units == 2
-            assert latest.evaluation_total_units == 2
-            results = await result_repo.list_for_campaign(
-                user_id="user-a", campaign_id=campaign.id
-            )
-            keys = {(row.question_id, row.mode, row.run_number) for row in results}
-            assert len(keys) == 2
-
-
-@pytest.mark.asyncio
-async def test_recover_inflight_evaluating_campaign_reruns_full_ragas() -> None:
-    db_path = _make_db_path()
-    fake_ragas = FakeRagasEvaluator(progress_total=1)
-    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
-        campaign_repo = CampaignRepository()
-        result_repo = CampaignResultRepository()
-        campaign = await campaign_repo.create(
-            user_id="user-a",
-            name="Recover evaluating",
-            config=_campaign_config_for_test_case_ids(["Q1"], modes=["naive"]),
-        )
-        seeded_result = await result_repo.create(
-            user_id="user-a",
-            campaign_id=campaign.id,
-            question_id="Q1",
-            question="What is the answer?",
-            ground_truth="42",
-            ground_truth_short="short 42",
-            key_points=["point-1"],
-            ragas_focus=["answer_correctness"],
-            mode="naive",
-            execution_profile=None,
-            context_policy_version=None,
-            run_number=1,
-            answer="seeded-Q1",
-            contexts=["ctx-q1"],
-            source_doc_ids=["doc-q1"],
-            expected_sources=[],
-            latency_ms=5,
-            token_usage={"total_tokens": 21},
-            category="smoke",
-            difficulty="easy",
-            status=CampaignResultStatus.COMPLETED,
-            error_message=None,
-        )
-        await campaign_repo.mark_evaluating(
-            user_id="user-a",
-            campaign_id=campaign.id,
-            evaluation_total_units=1,
-        )
-
-        engine = CampaignEngine(ragas_evaluator=fake_ragas)
+    engine = CampaignEngine(runner=runner, ragas_evaluator=fake_ragas)
+    seeded_cases = [
+        TestCase.model_validate(
+            {
+                "id": "Q1",
+                "question": "What is the answer?",
+                "ground_truth": "42",
+                "ground_truth_short": "short 42",
+                "key_points": ["point-1"],
+                "ragas_focus": ["answer_correctness"],
+                "category": "smoke",
+                "difficulty": "easy",
+                "source_docs": [],
+                "requires_multi_doc_reasoning": False,
+            }
+        ),
+        TestCase.model_validate(
+            {
+                "id": "Q2",
+                "question": "What is the answer?",
+                "ground_truth": "42",
+                "ground_truth_short": "short 42",
+                "key_points": ["point-1"],
+                "ragas_focus": ["answer_correctness"],
+                "category": "smoke",
+                "difficulty": "easy",
+                "source_docs": [],
+                "requires_multi_doc_reasoning": False,
+            }
+        ),
+    ]
+    with patch.object(
+        engine, "_resolve_test_cases", new=AsyncMock(return_value=seeded_cases)
+    ):
         await engine.recover_inflight_campaigns()
-        status, _latest = await _wait_for_terminal_campaign(
+        status, latest = await _wait_for_terminal_campaign(
             campaign_repo,
             user_id="user-a",
             campaign_id=campaign.id,
             timeout_seconds=5.0,
         )
         assert status == CampaignLifecycleStatus.COMPLETED
-        assert fake_ragas.selected_result_ids_calls
-        assert fake_ragas.selected_result_ids_calls[-1] == [seeded_result.id]
+        assert latest.completed_units == 2
+        assert latest.evaluation_total_units == 2
+        results = await result_repo.list_for_campaign(
+            user_id="user-a", campaign_id=campaign.id
+        )
+        keys = {(row.question_id, row.mode, row.run_number) for row in results}
+        assert len(keys) == 2
+
+
+@pytest.mark.asyncio
+async def test_recover_inflight_evaluating_campaign_reruns_full_ragas() -> None:
+    fake_ragas = FakeRagasEvaluator(progress_total=1)
+    campaign_repo = CampaignRepository()
+    result_repo = CampaignResultRepository()
+    campaign = await campaign_repo.create(
+        user_id="user-a",
+        name="Recover evaluating",
+        config=_campaign_config_for_test_case_ids(["Q1"], modes=["naive"]),
+    )
+    seeded_result = await result_repo.create(
+        user_id="user-a",
+        campaign_id=campaign.id,
+        question_id="Q1",
+        question="What is the answer?",
+        ground_truth="42",
+        ground_truth_short="short 42",
+        key_points=["point-1"],
+        ragas_focus=["answer_correctness"],
+        mode="naive",
+        execution_profile=None,
+        context_policy_version=None,
+        run_number=1,
+        answer="seeded-Q1",
+        contexts=["ctx-q1"],
+        source_doc_ids=["doc-q1"],
+        expected_sources=[],
+        latency_ms=5,
+        token_usage={"total_tokens": 21},
+        category="smoke",
+        difficulty="easy",
+        status=CampaignResultStatus.COMPLETED,
+        error_message=None,
+    )
+    await campaign_repo.mark_evaluating(
+        user_id="user-a",
+        campaign_id=campaign.id,
+        evaluation_total_units=1,
+    )
+
+    engine = CampaignEngine(ragas_evaluator=fake_ragas)
+    await engine.recover_inflight_campaigns()
+    status, _latest = await _wait_for_terminal_campaign(
+        campaign_repo,
+        user_id="user-a",
+        campaign_id=campaign.id,
+        timeout_seconds=5.0,
+    )
+    assert status == CampaignLifecycleStatus.COMPLETED
+    assert fake_ragas.selected_result_ids_calls
+    assert fake_ragas.selected_result_ids_calls[-1] == [seeded_result.id]
 
 
 @pytest.mark.asyncio
 async def test_recover_inflight_cancel_requested_campaign_marks_cancelled() -> None:
-    db_path = _make_db_path()
-    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
-        campaign_repo = CampaignRepository()
-        campaign = await campaign_repo.create(
-            user_id="user-a",
-            name="Recover cancel",
-            config=_campaign_config_for_test_case_ids(["Q1"], modes=["naive"]),
-        )
-        await campaign_repo.request_cancel(user_id="user-a", campaign_id=campaign.id)
+    campaign_repo = CampaignRepository()
+    campaign = await campaign_repo.create(
+        user_id="user-a",
+        name="Recover cancel",
+        config=_campaign_config_for_test_case_ids(["Q1"], modes=["naive"]),
+    )
+    await campaign_repo.request_cancel(user_id="user-a", campaign_id=campaign.id)
 
-        engine = CampaignEngine(ragas_evaluator=FakeRagasEvaluator())
-        await engine.recover_inflight_campaigns()
-        latest = await campaign_repo.get(user_id="user-a", campaign_id=campaign.id)
-        assert latest.status == CampaignLifecycleStatus.CANCELLED
+    engine = CampaignEngine(ragas_evaluator=FakeRagasEvaluator())
+    await engine.recover_inflight_campaigns()
+    latest = await campaign_repo.get(user_id="user-a", campaign_id=campaign.id)
+    assert latest.status == CampaignLifecycleStatus.CANCELLED
 
 
 @pytest.mark.asyncio
 async def test_recover_inflight_missing_test_cases_marks_failed() -> None:
-    db_path = _make_db_path()
-    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
-        campaign_repo = CampaignRepository()
-        campaign = await campaign_repo.create(
-            user_id="user-a",
-            name="Recover missing",
-            config=_campaign_config_for_test_case_ids(["Q404"], modes=["naive"]),
-        )
-        await campaign_repo.mark_running(user_id="user-a", campaign_id=campaign.id)
+    campaign_repo = CampaignRepository()
+    campaign = await campaign_repo.create(
+        user_id="user-a",
+        name="Recover missing",
+        config=_campaign_config_for_test_case_ids(["Q404"], modes=["naive"]),
+    )
+    await campaign_repo.mark_running(user_id="user-a", campaign_id=campaign.id)
 
-        engine = CampaignEngine(ragas_evaluator=FakeRagasEvaluator())
-        await engine.recover_inflight_campaigns()
-        latest = await campaign_repo.get(user_id="user-a", campaign_id=campaign.id)
-        assert latest.status == CampaignLifecycleStatus.FAILED
-        assert latest.error_message is not None
-        assert "Unknown test case ids" in latest.error_message
+    engine = CampaignEngine(ragas_evaluator=FakeRagasEvaluator())
+    await engine.recover_inflight_campaigns()
+    latest = await campaign_repo.get(user_id="user-a", campaign_id=campaign.id)
+    assert latest.status == CampaignLifecycleStatus.FAILED
+    assert latest.error_message is not None
+    assert "Unknown test case ids" in latest.error_message
 
 
 @pytest.mark.asyncio
 async def test_campaign_result_create_is_idempotent_on_reinsert() -> None:
-    db_path = _make_db_path()
-    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
-        campaign_repo = CampaignRepository()
-        result_repo = CampaignResultRepository()
-        campaign = await campaign_repo.create(
-            user_id="user-a",
-            name="Idempotent result",
-            config=_campaign_config_for_test_case_ids(["Q1"], modes=["naive"]),
-        )
-        first = await result_repo.create(
-            user_id="user-a",
-            campaign_id=campaign.id,
-            question_id="Q1",
-            question="What is the answer?",
-            ground_truth="42",
-            ground_truth_short="short 42",
-            key_points=["point-1"],
-            ragas_focus=["answer_correctness"],
-            mode="naive",
-            execution_profile=None,
-            context_policy_version=None,
-            run_number=1,
-            answer="first-answer",
-            contexts=["ctx-q1"],
-            source_doc_ids=["doc-q1"],
-            expected_sources=[],
-            latency_ms=5,
-            token_usage={"total_tokens": 21},
-            category="smoke",
-            difficulty="easy",
-            status=CampaignResultStatus.COMPLETED,
-            error_message=None,
-        )
-        second = await result_repo.create(
-            user_id="user-a",
-            campaign_id=campaign.id,
-            question_id="Q1",
-            question="What is the answer?",
-            ground_truth="42",
-            ground_truth_short="short 42",
-            key_points=["point-1"],
-            ragas_focus=["answer_correctness"],
-            mode="naive",
-            execution_profile=None,
-            context_policy_version=None,
-            run_number=1,
-            answer="second-answer-ignored",
-            contexts=["ctx-q1"],
-            source_doc_ids=["doc-q1"],
-            expected_sources=[],
-            latency_ms=5,
-            token_usage={"total_tokens": 21},
-            category="smoke",
-            difficulty="easy",
-            status=CampaignResultStatus.COMPLETED,
-            error_message=None,
-        )
+    campaign_repo = CampaignRepository()
+    result_repo = CampaignResultRepository()
+    campaign = await campaign_repo.create(
+        user_id="user-a",
+        name="Idempotent result",
+        config=_campaign_config_for_test_case_ids(["Q1"], modes=["naive"]),
+    )
+    first = await result_repo.create(
+        user_id="user-a",
+        campaign_id=campaign.id,
+        question_id="Q1",
+        question="What is the answer?",
+        ground_truth="42",
+        ground_truth_short="short 42",
+        key_points=["point-1"],
+        ragas_focus=["answer_correctness"],
+        mode="naive",
+        execution_profile=None,
+        context_policy_version=None,
+        run_number=1,
+        answer="first-answer",
+        contexts=["ctx-q1"],
+        source_doc_ids=["doc-q1"],
+        expected_sources=[],
+        latency_ms=5,
+        token_usage={"total_tokens": 21},
+        category="smoke",
+        difficulty="easy",
+        status=CampaignResultStatus.COMPLETED,
+        error_message=None,
+    )
+    second = await result_repo.create(
+        user_id="user-a",
+        campaign_id=campaign.id,
+        question_id="Q1",
+        question="What is the answer?",
+        ground_truth="42",
+        ground_truth_short="short 42",
+        key_points=["point-1"],
+        ragas_focus=["answer_correctness"],
+        mode="naive",
+        execution_profile=None,
+        context_policy_version=None,
+        run_number=1,
+        answer="second-answer-ignored",
+        contexts=["ctx-q1"],
+        source_doc_ids=["doc-q1"],
+        expected_sources=[],
+        latency_ms=5,
+        token_usage={"total_tokens": 21},
+        category="smoke",
+        difficulty="easy",
+        status=CampaignResultStatus.COMPLETED,
+        error_message=None,
+    )
 
-        assert first.id == second.id
-        results = await result_repo.list_for_campaign(
-            user_id="user-a", campaign_id=campaign.id
-        )
-        assert len(results) == 1
+    assert first.id == second.id
+    results = await result_repo.list_for_campaign(
+        user_id="user-a", campaign_id=campaign.id
+    )
+    assert len(results) == 1
 
 
 @pytest.mark.asyncio
@@ -995,9 +972,8 @@ def test_campaign_manual_evaluate_reruns_ragas() -> None:
     fake_ragas = FakeRagasEvaluator()
     engine = CampaignEngine(runner=runner, ragas_evaluator=fake_ragas)
     upload_root = _make_upload_root()
-    db_path = _make_db_path()
 
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         _create_test_case(client)
         created = client.post(
             "/api/evaluation/campaigns",
@@ -1056,9 +1032,8 @@ def test_campaign_manual_evaluate_can_rerun_selected_questions_only() -> None:
     fake_ragas = FakeRagasEvaluator(progress_total=2)
     engine = CampaignEngine(runner=runner, ragas_evaluator=fake_ragas)
     upload_root = _make_upload_root()
-    db_path = _make_db_path()
 
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         _create_test_case(client, "Q1")
         _create_test_case(client, "Q2")
         created = client.post(
@@ -1134,9 +1109,8 @@ def test_campaign_manual_evaluate_selected_questions_without_completed_rows_retu
 
     engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
     upload_root = _make_upload_root()
-    db_path = _make_db_path()
 
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         _create_test_case(client, "Q1")
         created = client.post(
             "/api/evaluation/campaigns",
@@ -1176,7 +1150,7 @@ def test_campaign_manual_evaluate_selected_questions_without_completed_rows_retu
         )
 
 
-def test_campaign_sqlite_concurrent_writes_complete_without_loss() -> None:
+def test_campaign_postgres_concurrent_writes_complete_without_loss() -> None:
     async def concurrent_runner(**kwargs) -> BenchmarkExecutionResult:
         test_case = kwargs["test_case"]
         mode = kwargs["mode"]
@@ -1205,9 +1179,8 @@ def test_campaign_sqlite_concurrent_writes_complete_without_loss() -> None:
         ragas_evaluator=FakeRagasEvaluator(progress_total=expected_total),
     )
     upload_root = _make_upload_root()
-    db_path = _make_db_path()
 
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         for test_case_id in test_case_ids:
             _create_test_case(client, test_case_id)
 
@@ -1258,10 +1231,7 @@ def test_campaign_sqlite_concurrent_writes_complete_without_loss() -> None:
         }
         assert len(unique_result_keys) == expected_total
 
-    with sqlite3.connect(db_path) as connection:
-        journal_mode = connection.execute("PRAGMA journal_mode;").fetchone()
-        assert journal_mode is not None
-        assert str(journal_mode[0]).lower() == "wal"
+
 
 
 def test_agent_trace_api_persists_and_reads_trace_payload() -> None:
@@ -1341,9 +1311,8 @@ def test_agent_trace_api_persists_and_reads_trace_payload() -> None:
 
     engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
     upload_root = _make_upload_root()
-    db_path = _make_db_path()
 
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         _create_test_case(client)
         created = client.post(
             "/api/evaluation/campaigns",
@@ -1405,7 +1374,6 @@ def test_campaign_integration_uses_real_runner_and_real_ragas_persistence() -> N
     ragas = RagasEvaluator(batch_size=2)
     engine = CampaignEngine(runner=run_campaign_case, ragas_evaluator=ragas)
     upload_root = _make_upload_root()
-    db_path = _make_db_path()
     rag_calls: list[dict] = []
 
     async def fake_rag_answer_question(
@@ -1508,7 +1476,7 @@ def test_campaign_integration_uses_real_runner_and_real_ragas_persistence() -> N
         mock_service = mock_service_cls.return_value
         mock_service.run_case = AsyncMock(return_value=agentic_result)
 
-        with _build_client("user-a", upload_root, db_path, engine) as client:
+        with _build_client("user-a", upload_root, engine) as client:
             _create_test_case(client)
             created = client.post(
                 "/api/evaluation/campaigns",
@@ -1585,7 +1553,6 @@ def test_campaign_integration_keeps_running_when_one_mode_fails() -> None:
     ragas = RagasEvaluator(batch_size=2)
     engine = CampaignEngine(runner=run_campaign_case, ragas_evaluator=ragas)
     upload_root = _make_upload_root()
-    db_path = _make_db_path()
 
     async def flaky_rag_answer_question(*, return_docs: bool, **kwargs) -> RAGResult:
         assert return_docs is True
@@ -1666,7 +1633,7 @@ def test_campaign_integration_keeps_running_when_one_mode_fails() -> None:
         mock_service = mock_service_cls.return_value
         mock_service.run_case = AsyncMock(return_value=agentic_result)
 
-        with _build_client("user-a", upload_root, db_path, engine) as client:
+        with _build_client("user-a", upload_root, engine) as client:
             _create_test_case(client)
             created = client.post(
                 "/api/evaluation/campaigns",

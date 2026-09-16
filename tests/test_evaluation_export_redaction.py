@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import itertools
 import time
 from contextlib import contextmanager
@@ -632,8 +631,8 @@ def test_export_required_section_failure_returns_no_partial_v2_body() -> None:
             )
 
     engine = CampaignEngine(runner=AsyncMock(), ragas_evaluator=FakeRagasEvaluator())
-    upload_root, db_path = _make_workspace_paths("export_all_or_error")
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    upload_root = _make_workspace_paths("export_all_or_error")
+    with _build_client("user-a", upload_root, engine) as client:
         app.dependency_overrides[get_evaluation_export_service] = (
             lambda: FailingExportService()
         )
@@ -655,14 +654,13 @@ class FakeRagasEvaluator:
 
 @contextmanager
 def _build_client(
-    user_id: str, upload_root: Path, db_path: Path, engine: CampaignEngine
+    user_id: str, upload_root: Path, engine: CampaignEngine
 ):
     process_worker = Mock(is_configured=False)
     with (
         patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
         patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
         patch("evaluation.storage.BASE_UPLOAD_FOLDER", str(upload_root)),
-        patch("evaluation.db.EVALUATION_DB_PATH", db_path),
         patch("evaluation.campaign_engine.get_campaign_engine", return_value=engine),
         patch(
             "evaluation.job_worker.get_evaluation_job_worker",
@@ -937,9 +935,9 @@ async def _seed_condition_ragas_scores(
         await connection.commit()
 
 
-def _make_workspace_paths(prefix: str) -> tuple[Path, Path]:
+def _make_workspace_paths(prefix: str) -> Path:
     root = Path.cwd() / "output" / "test_tmp" / f"{prefix}_{uuid4().hex}"
-    return root / "uploads", root / "evaluation.db"
+    return root / "uploads"
 
 
 def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
@@ -986,9 +984,9 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
         )
 
     engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
-    upload_root, db_path = _make_workspace_paths("export")
+    upload_root = _make_workspace_paths("export")
 
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         created_case = client.post(
             "/api/evaluation/test-cases",
             json={
@@ -1008,14 +1006,12 @@ def test_export_defaults_redact_full_prompts_and_errors_are_sanitized() -> None:
             f"/api/evaluation/campaigns/{campaign_id}/results"
         ).json()["results"][0]
         run_id = result_row["id"]
-        asyncio.run(
-            _seed_export_rows(
+        client.portal.call(lambda: _seed_export_rows(
                 run_id=run_id,
                 campaign_id=campaign_id,
                 attempt_id=result_row["source_attempt_id"],
-            )
-        )
-        asyncio.run(_seed_stage_warning(run_id=run_id, campaign_id=campaign_id))
+            ))
+        client.portal.call(lambda: _seed_stage_warning(run_id=run_id, campaign_id=campaign_id))
 
         errors_response = client.get(f"/api/evaluation/campaigns/{campaign_id}/errors")
         assert errors_response.status_code == 200
@@ -1140,9 +1136,9 @@ def test_export_includes_condition_comparison_and_excludes_unattributed_ragas() 
         )
 
     engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
-    upload_root, db_path = _make_workspace_paths("export_condition")
+    upload_root = _make_workspace_paths("export_condition")
 
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         created_case = client.post(
             "/api/evaluation/test-cases",
             json={
@@ -1167,13 +1163,11 @@ def test_export_includes_condition_comparison_and_excludes_unattributed_ragas() 
         result_ids_by_condition = {
             row["condition_id"]: row["id"] for row in result_rows
         }
-        asyncio.run(
-            _seed_condition_ragas_scores(
+        client.portal.call(lambda: _seed_condition_ragas_scores(
                 campaign_id=campaign_id,
                 user_id="user-a",
                 result_ids_by_condition=result_ids_by_condition,
-            )
-        )
+            ))
 
         export_response = client.post(
             f"/api/evaluation/campaigns/{campaign_id}/export", json={}
@@ -1212,9 +1206,9 @@ def test_user_cannot_export_another_users_campaign() -> None:
         )
 
     engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
-    upload_root, db_path = _make_workspace_paths("export")
+    upload_root = _make_workspace_paths("export")
 
-    with _build_client("user-a", upload_root, db_path, engine) as client_a:
+    with _build_client("user-a", upload_root, engine) as client_a:
         created_case = client_a.post(
             "/api/evaluation/test-cases",
             json={
@@ -1231,7 +1225,7 @@ def test_user_cannot_export_another_users_campaign() -> None:
         campaign_id = created.json()["campaign_id"]
         _wait_for_completed(client_a, campaign_id)
 
-    with _build_client("user-b", upload_root, db_path, engine) as client_b:
+    with _build_client("user-b", upload_root, engine) as client_b:
         denied = client_b.post(
             f"/api/evaluation/campaigns/{campaign_id}/export", json={}
         )

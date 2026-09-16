@@ -5,12 +5,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import json
-import os
-from pathlib import Path
-from shutil import rmtree
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
 
 from langchain_core.documents import Document
 import pytest
@@ -41,13 +37,6 @@ from evaluation.rag_modes import BenchmarkExecutionResult
 
 @pytest_asyncio.fixture
 async def store(monkeypatch: pytest.MonkeyPatch) -> EvaluationJobStore:
-    database_path = (
-        Path(os.environ["EVALUATION_TEST_TMPDIR"])
-        / f"dataset-observability-{uuid4().hex}"
-        / "worker.db"
-    )
-    database_path.parent.mkdir(parents=True)
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", database_path)
     await evaluation_db.force_init_db()
     async with evaluation_db.connect_db() as connection:
         now = "2026-08-10T00:00:00+00:00"
@@ -78,16 +67,7 @@ async def store(monkeypatch: pytest.MonkeyPatch) -> EvaluationJobStore:
             (config, now, now),
         )
         await connection.commit()
-    try:
-        yield EvaluationJobStore()
-    finally:
-        for path in (
-            database_path,
-            database_path.with_suffix(".db-shm"),
-            database_path.with_suffix(".db-wal"),
-        ):
-            path.unlink(missing_ok=True)
-        rmtree(database_path.parent, ignore_errors=True)
+    yield EvaluationJobStore()
 
 
 async def _claim_execution(
@@ -733,6 +713,8 @@ async def test_campaign_result_records_retrieval_context_and_evidence_flow(
     assert retrieval_events[0].payload["expected_evidence_hit_rate"] == 1.0
 
     chunks = await observability_repo.list_retrieval_chunks_for_run(result.id)
+    # Both observations share a timestamp; their database row order is undefined.
+    chunks.sort(key=lambda chunk: chunk.doc_id)
     assert len(chunks) == 2
     assert chunks[0].doc_id == "paper-a.pdf"
     assert chunks[0].rank_before_rerank is None
@@ -1078,11 +1060,14 @@ async def test_campaign_result_resolves_expected_source_filenames_for_chunk_stat
 
     assert result.answer == "The answer remains unchanged."
     assert result.contexts == ["Expected source context", "Other source context"]
-    assert [chunk.expected_evidence_match for chunk in chunks] == [True, False]
-    assert [chunk.payload["expected_evidence_match_status"] for chunk in chunks] == [
-        "matched",
-        "not_matched",
-    ]
+    assert {chunk.doc_id: chunk.expected_evidence_match for chunk in chunks} == {
+        "document-uuid-a": True,
+        "document-uuid-b": False,
+    }
+    assert {chunk.doc_id: chunk.payload["expected_evidence_match_status"] for chunk in chunks} == {
+        "document-uuid-a": "matched",
+        "document-uuid-b": "not_matched",
+    }
 
 
 @pytest.mark.asyncio

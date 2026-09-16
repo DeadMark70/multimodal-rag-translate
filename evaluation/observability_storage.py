@@ -974,7 +974,7 @@ class EvaluationObservabilityRepository(
         )
         await init_db()
         async with connect_db() as connection:
-            await connection.execute("BEGIN IMMEDIATE")
+            await connection.execute("SELECT pg_advisory_xact_lock(74503102)")
             try:
                 cursor = await connection.execute(
                     """

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TypeVar
@@ -79,8 +78,6 @@ async def read_analysis(
     *, user_id: str, campaign_id: str, kind: str,
     model: type[T], loader: Callable[[], Awaitable[T]],
 ) -> T:
-    if not os.getenv("EVALUATION_DATABASE_URL"):
-        return await loader()
     row = await _read(user_id, campaign_id, kind)
     valid = row["payload"] is not None and row["format_version"] == FORMAT_VERSION
     stale = not valid or row["revision"] != row["current_revision"]

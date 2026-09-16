@@ -3,7 +3,7 @@ from decimal import Decimal
 from uuid import UUID
 
 import pytest
-import aiosqlite
+from psycopg import IntegrityError
 
 from evaluation import db as evaluation_db
 from evaluation.observability_storage import EvaluationObservabilityRepository
@@ -103,7 +103,6 @@ async def _seed_attempt(campaign_id: str, attempt_id: str) -> None:
 async def test_observability_repository_round_trips_v9_evidence_and_slot_resolution(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
     await _seed_campaign("campaign-v9")
     await _seed_attempt("campaign-v9", "attempt-v9")
     repository = EvaluationObservabilityRepository()
@@ -146,7 +145,6 @@ async def test_observability_repository_round_trips_v9_evidence_and_slot_resolut
 async def test_observability_repository_rejects_oversized_v9_payload(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
     await _seed_campaign("campaign-v9-limit")
     await _seed_attempt("campaign-v9-limit", "attempt-v9-limit")
     repository = EvaluationObservabilityRepository()
@@ -169,7 +167,6 @@ async def test_observability_repository_rejects_oversized_v9_payload(
 async def test_observability_repository_round_trips_run_details(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
     repository = EvaluationObservabilityRepository()
     created_at = _now()
     await _seed_campaign("campaign-1")
@@ -383,7 +380,6 @@ async def test_observability_repository_round_trips_run_details(
 async def test_actual_and_retrospective_routing_rows_keep_distinct_provenance(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
     await _seed_campaign("campaign-route-types")
     repository = EvaluationObservabilityRepository()
     created_at = datetime(2026, 7, 26, tzinfo=timezone.utc)
@@ -432,7 +428,6 @@ async def test_actual_and_retrospective_routing_rows_keep_distinct_provenance(
 async def test_observability_repository_serializes_common_non_json_payload_values(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
     await _seed_campaign("campaign-json-safe")
     repository = EvaluationObservabilityRepository()
 
@@ -477,7 +472,6 @@ async def test_observability_repository_serializes_common_non_json_payload_value
 async def test_observability_repository_lists_campaign_details_grouped_by_run(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
     await _seed_campaign("campaign-bulk")
     await _seed_campaign("campaign-other")
     repository = EvaluationObservabilityRepository()
@@ -700,7 +694,6 @@ async def test_observability_repository_lists_campaign_details_grouped_by_run(
 async def test_campaign_observability_snapshot_is_complete_isolated_and_ordered(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
     repository = EvaluationObservabilityRepository()
     created_at = datetime(2026, 8, 13, tzinfo=timezone.utc)
     campaigns_and_runs = (
@@ -904,7 +897,6 @@ async def test_campaign_observability_snapshot_is_complete_isolated_and_ordered(
 async def test_llm_retry_attempt_rows_are_append_only_and_uniquely_addressable(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
     await _seed_campaign("campaign-retry")
     repository = EvaluationObservabilityRepository()
     created_at = datetime(2026, 7, 27, tzinfo=timezone.utc)
@@ -932,7 +924,7 @@ async def test_llm_retry_attempt_rows_are_append_only_and_uniquely_addressable(
         ("llm-retry-2", 2),
     ]
 
-    with pytest.raises(aiosqlite.IntegrityError):
+    with pytest.raises(IntegrityError):
         await repository.record_llm_call(
             EvaluationLlmCall(
                 llm_call_id="llm-retry-duplicate",

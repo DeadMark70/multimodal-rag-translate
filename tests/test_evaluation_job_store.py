@@ -5,10 +5,7 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import json
 import os
-from pathlib import Path
-import sqlite3
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -45,44 +42,25 @@ from evaluation.ragas_worker import RagasBatchWorker
 
 @pytest_asyncio.fixture
 async def store(monkeypatch):  # noqa: ANN001
-    database_path = (
-        Path(__file__).resolve().parent.parent
-        / ".test-artifacts"
-        / f"evaluation-ledger-{uuid4().hex}.db"
-    )
-    database_path.parent.mkdir(exist_ok=True)
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", database_path)
-    try:
-        await evaluation_db.force_init_db()
-        async with evaluation_db.connect_db() as connection:
-            await connection.execute(
-                """
-                INSERT INTO campaigns (
-                    id, user_id, name, status, config_json, created_at, updated_at
-                ) VALUES (?, ?, NULL, ?, '{}', ?, ?)
-                """,
-                (
-                    "cmp-1",
-                    "user-a",
-                    "pending",
-                    "2026-07-14T00:00:00+00:00",
-                    "2026-07-14T00:00:00+00:00",
-                ),
-            )
-            await connection.commit()
+    await evaluation_db.force_init_db()
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            """
+            INSERT INTO campaigns (
+                id, user_id, name, status, config_json, created_at, updated_at
+            ) VALUES (?, ?, NULL, ?, '{}', ?, ?)
+            """,
+            (
+                "cmp-1",
+                "user-a",
+                "pending",
+                "2026-07-14T00:00:00+00:00",
+                "2026-07-14T00:00:00+00:00",
+            ),
+        )
+        await connection.commit()
 
-        yield EvaluationJobStore()
-    finally:
-        for path in (
-            database_path,
-            database_path.with_suffix(".db-shm"),
-            database_path.with_suffix(".db-wal"),
-        ):
-            path.unlink(missing_ok=True)
-        try:
-            database_path.parent.rmdir()
-        except OSError:
-            pass
+    yield EvaluationJobStore()
 
 
 @pytest.fixture
@@ -364,8 +342,8 @@ async def test_atomic_notification_exposes_evaluating_campaign_and_distinct_resu
     def observe_committed_state() -> None:
         import psycopg
         postgres_url = os.getenv("EVALUATION_DATABASE_URL")
-        database = psycopg.connect(postgres_url) if postgres_url else sqlite3.connect(evaluation_db.EVALUATION_DB_PATH)
-        marker = "%s" if postgres_url else "?"
+        database = psycopg.connect(postgres_url)
+        marker = "%s"
         with closing(database) as connection:
             campaign = connection.execute(
                 "SELECT status, evaluation_completed_units, evaluation_total_units "

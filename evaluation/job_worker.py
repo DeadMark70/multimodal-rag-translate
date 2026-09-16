@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import TypeAlias
@@ -25,16 +24,13 @@ _EXECUTION_CONCURRENCY = 4
 _RAGAS_CONCURRENCY = 2
 _RAGAS_BATCH_SIZE = 4
 _HEARTBEAT_SECONDS = 15.0
-_TRANSIENT_SQLITE_RETRY_SECONDS = 0.05
+_TRANSIENT_DATABASE_RETRY_SECONDS = 0.05
 
 logger = logging.getLogger(__name__)
 
 
-def _is_transient_sqlite_error(error: sqlite3.OperationalError | OperationalError) -> bool:
-    if isinstance(error, OperationalError):
-        return error.sqlstate in {"40001", "40P01"}
-    message = str(error).lower()
-    return "locked" in message or "busy" in message
+def _is_transient_database_error(error: OperationalError) -> bool:
+    return error.sqlstate in {"40001", "40P01"}
 
 
 class EvaluationJobWorker:
@@ -315,13 +311,13 @@ class EvaluationJobWorker:
             try:
                 await self._recover_stale_attempts()
                 claimed = await self.run_once()
-            except (sqlite3.OperationalError, OperationalError) as error:
-                if not _is_transient_sqlite_error(error):
+            except OperationalError as error:
+                if not _is_transient_database_error(error):
                     raise
                 logger.warning(
                     "Evaluation worker claim blocked by transient database contention; retrying"
                 )
-                await self._sleep(_TRANSIENT_SQLITE_RETRY_SECONDS)
+                await self._sleep(_TRANSIENT_DATABASE_RETRY_SECONDS)
                 continue
             if self._stop_event.is_set():
                 return

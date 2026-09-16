@@ -3,7 +3,6 @@ import asyncio
 
 import pytest
 
-from evaluation import db as evaluation_db
 from evaluation.observability import EvaluationRunRecorder
 from evaluation.observability_storage import EvaluationObservabilityRepository
 from evaluation.db import connect_db, init_db
@@ -68,7 +67,6 @@ async def test_nested_spans_record_parent_event_id() -> None:
 
 @pytest.mark.asyncio
 async def test_persisted_span_keeps_running_and_success_events(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
     await init_db()
     async with connect_db() as connection:
         await connection.execute(

@@ -70,7 +70,6 @@ class _BatchedRagasProvider:
 
 @pytest_asyncio.fixture
 async def durable_store(tmp_path, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN001
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
     await evaluation_db.force_init_db()
     now = datetime.now(UTC).isoformat()
     config = json.dumps(

@@ -31,7 +31,6 @@ async def seed_campaign(campaign_id: str) -> None:
 
 @pytest_asyncio.fixture
 async def accounting_store(tmp_path, monkeypatch):
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
     await seed_campaign("campaign-1")
     return EvaluationAccountingStore()
 

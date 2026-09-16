@@ -96,7 +96,7 @@ class CampaignAccountingSnapshot:
 
 
 class EvaluationAccountingStore:
-    """Transactional SQLite store for accounting scopes and callback events."""
+    """Transactional PostgreSQL store for accounting scopes and callback events."""
 
     async def start_scope(self, request: AccountingScopeStart) -> AccountingScope:
         """Create a running accounting scope and all of its targets atomically."""

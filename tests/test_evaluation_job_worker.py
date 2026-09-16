@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
+from psycopg.errors import DeadlockDetected
 from collections.abc import Callable
 from datetime import datetime, timezone
-from pathlib import Path
-from shutil import rmtree
-from tempfile import mkdtemp
 from unittest.mock import AsyncMock
 
 import pytest
@@ -26,33 +23,18 @@ from evaluation.job_worker import EvaluationJobWorker, get_evaluation_job_worker
 async def store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> EvaluationJobStore:
-    artifacts_dir = Path(__file__).resolve().parent.parent / ".test-artifacts"
-    artifacts_dir.mkdir(exist_ok=True)
-    database_path = (
-        Path(mkdtemp(prefix="evaluation-worker-", dir=artifacts_dir)) / "worker.db"
-    )
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", database_path)
-    try:
-        await evaluation_db.force_init_db()
-        async with evaluation_db.connect_db() as connection:
-            now = "2026-07-14T00:00:00+00:00"
-            await connection.execute(
-                """
-                INSERT INTO campaigns (id, user_id, name, status, config_json, created_at, updated_at)
-                VALUES ('cmp-1', 'user-a', NULL, 'pending', '{}', ?, ?)
-                """,
-                (now, now),
-            )
-            await connection.commit()
-        yield EvaluationJobStore()
-    finally:
-        for path in (
-            database_path,
-            database_path.with_suffix(".db-shm"),
-            database_path.with_suffix(".db-wal"),
-        ):
-            path.unlink(missing_ok=True)
-        rmtree(database_path.parent, ignore_errors=True)
+    await evaluation_db.force_init_db()
+    async with evaluation_db.connect_db() as connection:
+        now = "2026-07-14T00:00:00+00:00"
+        await connection.execute(
+            """
+            INSERT INTO campaigns (id, user_id, name, status, config_json, created_at, updated_at)
+            VALUES ('cmp-1', 'user-a', NULL, 'pending', '{}', ?, ?)
+            """,
+            (now, now),
+        )
+        await connection.commit()
+    yield EvaluationJobStore()
 
 
 async def _seed_work(
@@ -227,11 +209,11 @@ async def test_start_restarts_idle_loop_before_claiming_new_work(
 
 
 @pytest.mark.asyncio
-async def test_worker_retries_transient_sqlite_claim_error(
+async def test_worker_retries_transient_postgres_claim_error(
     store: EvaluationJobStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A transient SQLite writer collision must not terminate the worker loop."""
+    """A transient PostgreSQL deadlock must not terminate the worker loop."""
     await _seed_work(store, logical_key="execution:Q1:naive:1:none")
     original_claim_ready_items = store.claim_ready_items
     claim_calls = 0
@@ -240,7 +222,7 @@ async def test_worker_retries_transient_sqlite_claim_error(
         nonlocal claim_calls
         claim_calls += 1
         if claim_calls == 1:
-            raise sqlite3.OperationalError("database is locked")
+            raise DeadlockDetected("deadlock detected")
         return await original_claim_ready_items(**kwargs)
 
     monkeypatch.setattr(store, "claim_ready_items", claim_ready_items)

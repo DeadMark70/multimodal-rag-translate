@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import asyncio
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -365,92 +364,84 @@ def test_test_case_put_preserves_omitted_research_metadata() -> None:
         assert updated_body["expected_evidence"][0]["evidence_id"] == "TC-META-E1"
 
 
-def test_run_observability_endpoint_returns_only_owned_campaign_rows(tmp_path) -> None:
+def test_run_observability_endpoint_returns_only_owned_campaign_rows(tmp_path, run_db) -> None:
     upload_root = _make_upload_root()
-    db_path = tmp_path / "evaluation.db"
 
-    with patch.object(evaluation_db, "EVALUATION_DB_PATH", db_path):
-        asyncio.run(_seed_campaign("campaign-owned", "user-a"))
-        asyncio.run(_seed_campaign("campaign-other", "user-a"))
-        asyncio.run(_seed_campaign_result("campaign-owned", "run-1", "user-a"))
-        asyncio.run(_seed_trace_event("campaign-owned", "run-1"))
+    run_db(_seed_campaign("campaign-owned", "user-a"))
+    run_db(_seed_campaign("campaign-other", "user-a"))
+    run_db(_seed_campaign_result("campaign-owned", "run-1", "user-a"))
+    run_db(_seed_trace_event("campaign-owned", "run-1"))
 
-        with _build_client("user-a", upload_root) as client:
-            response = client.get("/api/evaluation/campaigns/campaign-owned/runs/run-1/observability")
-            assert response.status_code == 200
-            body = response.json()
-            assert body["campaign_id"] == "campaign-owned"
-            assert body["run_id"] == "run-1"
-            assert len(body["trace_events"]) == 1
-            assert body["trace_events"][0]["stage_name"] == "retrieve"
-            assert body["graph_events"] == []
-            assert body["graph_evidence_items"] == []
-            assert body["graph_observability_status"] == "not_instrumented"
-            assert body["accounting_diagnostics"]["accounting_status"] in {
-                "complete",
-                "partial",
-                "incomplete_legacy",
-            }
+    with _build_client("user-a", upload_root) as client:
+        response = client.get("/api/evaluation/campaigns/campaign-owned/runs/run-1/observability")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["campaign_id"] == "campaign-owned"
+        assert body["run_id"] == "run-1"
+        assert len(body["trace_events"]) == 1
+        assert body["trace_events"][0]["stage_name"] == "retrieve"
+        assert body["graph_events"] == []
+        assert body["graph_evidence_items"] == []
+        assert body["graph_observability_status"] == "not_instrumented"
+        assert body["accounting_diagnostics"]["accounting_status"] in {
+            "complete",
+            "partial",
+            "incomplete_legacy",
+        }
 
-            cross_campaign = client.get("/api/evaluation/campaigns/campaign-other/runs/run-1/observability")
-            assert cross_campaign.status_code == 404
+        cross_campaign = client.get("/api/evaluation/campaigns/campaign-other/runs/run-1/observability")
+        assert cross_campaign.status_code == 404
 
 
-def test_run_observability_endpoint_denies_a_different_user(tmp_path) -> None:
+def test_run_observability_endpoint_denies_a_different_user(tmp_path, run_db) -> None:
     upload_root = _make_upload_root()
-    db_path = tmp_path / "evaluation.db"
 
-    with patch.object(evaluation_db, "EVALUATION_DB_PATH", db_path):
-        asyncio.run(_seed_campaign("campaign-owned", "user-a"))
-        asyncio.run(_seed_campaign_result("campaign-owned", "run-1", "user-a"))
-        asyncio.run(_seed_trace_event("campaign-owned", "run-1"))
+    run_db(_seed_campaign("campaign-owned", "user-a"))
+    run_db(_seed_campaign_result("campaign-owned", "run-1", "user-a"))
+    run_db(_seed_trace_event("campaign-owned", "run-1"))
 
-        with _build_client("user-b", upload_root) as client:
-            response = client.get(
-                "/api/evaluation/campaigns/campaign-owned/runs/run-1/observability"
-            )
+    with _build_client("user-b", upload_root) as client:
+        response = client.get(
+            "/api/evaluation/campaigns/campaign-owned/runs/run-1/observability"
+        )
 
     assert response.status_code == 404
 
 
-def test_run_observability_projects_graph_events_and_evidence_items(tmp_path) -> None:
+def test_run_observability_projects_graph_events_and_evidence_items(tmp_path, run_db) -> None:
     upload_root = _make_upload_root()
-    db_path = tmp_path / "evaluation.db"
 
-    with patch.object(evaluation_db, "EVALUATION_DB_PATH", db_path):
-        asyncio.run(_seed_campaign("campaign-graph", "user-a"))
-        asyncio.run(_seed_campaign_result("campaign-graph", "run-graph", "user-a"))
-        asyncio.run(_seed_graph_observability("campaign-graph", "run-graph"))
+    run_db(_seed_campaign("campaign-graph", "user-a"))
+    run_db(_seed_campaign_result("campaign-graph", "run-graph", "user-a"))
+    run_db(_seed_graph_observability("campaign-graph", "run-graph"))
 
-        with _build_client("user-a", upload_root) as client:
-            response = client.get("/api/evaluation/campaigns/campaign-graph/runs/run-graph/observability")
-            assert response.status_code == 200
-            body = response.json()
-            assert body["graph_observability_status"] == "recorded"
-            assert body["graph_events"][0]["graph_route"] == "local_first"
-            assert body["graph_evidence_items"][0]["source_chunk_ids"] == ["chunk-1"]
+    with _build_client("user-a", upload_root) as client:
+        response = client.get("/api/evaluation/campaigns/campaign-graph/runs/run-graph/observability")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["graph_observability_status"] == "recorded"
+        assert body["graph_events"][0]["graph_route"] == "local_first"
+        assert body["graph_evidence_items"][0]["source_chunk_ids"] == ["chunk-1"]
 
 
-def test_run_observability_marks_persisted_graph_fallback(tmp_path) -> None:
+def test_run_observability_marks_persisted_graph_fallback(tmp_path, run_db) -> None:
     upload_root = _make_upload_root()
-    db_path = tmp_path / "evaluation.db"
 
-    with patch.object(evaluation_db, "EVALUATION_DB_PATH", db_path):
-        asyncio.run(_seed_campaign("campaign-fallback", "user-a"))
-        asyncio.run(_seed_campaign_result("campaign-fallback", "run-fallback", "user-a"))
-        asyncio.run(
-            _seed_graph_observability(
-                "campaign-fallback",
-                "run-fallback",
-                graph_route="skip",
-                router_reason="strategy=source_expand; fallback=no_packed_graph_chunks",
-            )
+    run_db(_seed_campaign("campaign-fallback", "user-a"))
+    run_db(_seed_campaign_result("campaign-fallback", "run-fallback", "user-a"))
+    run_db(
+        _seed_graph_observability(
+            "campaign-fallback",
+            "run-fallback",
+            graph_route="skip",
+            router_reason="strategy=source_expand; fallback=no_packed_graph_chunks",
         )
+    )
 
-        with _build_client("user-a", upload_root) as client:
-            response = client.get("/api/evaluation/campaigns/campaign-fallback/runs/run-fallback/observability")
-            assert response.status_code == 200
-            assert response.json()["graph_observability_status"] == "fallback"
+    with _build_client("user-a", upload_root) as client:
+        response = client.get("/api/evaluation/campaigns/campaign-fallback/runs/run-fallback/observability")
+        assert response.status_code == 200
+        assert response.json()["graph_observability_status"] == "fallback"
 
 
 def test_model_config_crud_and_validation() -> None:

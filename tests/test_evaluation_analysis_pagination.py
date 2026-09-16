@@ -10,7 +10,10 @@ from evaluation.router import router, get_research_analytics_service
 
 
 def test_question_pages_preserve_totals_and_bound_duplicate_summaries(monkeypatch):
-    monkeypatch.delenv("EVALUATION_DATABASE_URL", raising=False)
+    async def load_analysis(**kwargs):
+        return await kwargs["loader"]()
+
+    monkeypatch.setattr("evaluation.analysis_cache.read_analysis", load_analysis)
     rows = [QuestionComparisonRow(question_id=f"Q{i}") for i in range(103)]
     service = AsyncMock()
     service.get_question_comparison.return_value = ResearchQuestionComparisonResponse(

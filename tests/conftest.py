@@ -5,6 +5,7 @@ Provides common fixtures for Phase 1 unit and integration tests.
 """
 
 # Standard library
+import asyncio
 import os
 import shutil
 import socket
@@ -16,6 +17,10 @@ from uuid import uuid4
 
 # Third-party
 import pytest
+import pytest_asyncio
+import psycopg
+from psycopg import sql
+from psycopg.conninfo import make_conninfo
 from langchain_core.documents import Document
 
 # Add project root to path
@@ -32,6 +37,51 @@ os.environ.setdefault(
 # ============================================================================
 # Mock Fixtures
 # ============================================================================
+
+@pytest.fixture(scope="session")
+def event_loop_policy():
+    if os.name == "nt":
+        return asyncio.WindowsSelectorEventLoopPolicy()
+    return asyncio.DefaultEventLoopPolicy()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def postgres_database(monkeypatch):
+    """Give each test its own schema; never use an application database."""
+    dsn = os.getenv("EVALUATION_TEST_POSTGRES_URL")
+    monkeypatch.setenv("EVALUATION_DATABASE_URL", "")
+    if not dsn:
+        yield
+        return
+    from evaluation.postgres import close_db, force_init_db
+
+    schema = "test_" + uuid4().hex
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+    monkeypatch.setenv("EVALUATION_DATABASE_URL", make_conninfo(dsn, options=f"-csearch_path={schema}"))
+    try:
+        await force_init_db()
+        await close_db()
+        yield
+    finally:
+        await close_db()
+        with psycopg.connect(dsn, autocommit=True) as connection:
+            connection.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+@pytest.fixture
+def run_db():
+    """Seed data before TestClient starts, closing the seed loop's pool."""
+    def run(coro):
+        async def execute():
+            from evaluation.postgres import close_db
+            try:
+                return await coro
+            finally:
+                await close_db()
+        return asyncio.run(execute())
+    return run
+
 
 @pytest.fixture(autouse=True)
 def stub_supabase_startup(monkeypatch: pytest.MonkeyPatch) -> object:

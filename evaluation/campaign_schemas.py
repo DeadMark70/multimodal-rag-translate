@@ -56,7 +56,7 @@ ShadowEvaluationPolicy = Literal["operational", "research"]
 
 
 class CampaignLifecycleStatus(str, Enum):
-    """Campaign status persisted in SQLite."""
+    """Campaign status persisted in PostgreSQL."""
 
     PENDING = "pending"
     RUNNING = "running"

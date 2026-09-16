@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-import sqlite3
 from typing import Any
 from uuid import uuid4
 
@@ -21,14 +20,11 @@ from evaluation.token_cost import load_price_snapshot, price_normalized_usage
 from evaluation.token_normalizers import normalize_provider_usage
 
 
-_TRANSIENT_SQLITE_RETRY_DELAYS_SECONDS = (0.05, 0.2)
+_TRANSIENT_DATABASE_RETRY_DELAYS_SECONDS = (0.05, 0.2)
 
 
-def _is_transient_sqlite_write_error(error: sqlite3.OperationalError | OperationalError) -> bool:
-    if isinstance(error, OperationalError):
-        return error.sqlstate in {"40001", "40P01"}
-    message = str(error).lower()
-    return "locked" in message or "busy" in message
+def _is_transient_database_write_error(error: OperationalError) -> bool:
+    return error.sqlstate in {"40001", "40P01"}
 
 
 class EvaluationAccountingSink:
@@ -82,19 +78,19 @@ class EvaluationAccountingSink:
             created_at=raw.created_at,
         )
         for retry_index in range(
-            len(_TRANSIENT_SQLITE_RETRY_DELAYS_SECONDS) + 1
+            len(_TRANSIENT_DATABASE_RETRY_DELAYS_SECONDS) + 1
         ):
             try:
                 await self._store.record_event(event)
                 return
-            except (sqlite3.OperationalError, OperationalError) as error:
+            except OperationalError as error:
                 if (
-                    not _is_transient_sqlite_write_error(error)
-                    or retry_index >= len(_TRANSIENT_SQLITE_RETRY_DELAYS_SECONDS)
+                    not _is_transient_database_write_error(error)
+                    or retry_index >= len(_TRANSIENT_DATABASE_RETRY_DELAYS_SECONDS)
                 ):
                     raise
                 await asyncio.sleep(
-                    _TRANSIENT_SQLITE_RETRY_DELAYS_SECONDS[retry_index]
+                    _TRANSIENT_DATABASE_RETRY_DELAYS_SECONDS[retry_index]
                 )
 
 

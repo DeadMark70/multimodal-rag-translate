@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 
 from evaluation.accounting_schemas import AccountingScopeStart, UsageEventCreate
@@ -168,9 +167,9 @@ def test_authenticated_http_panel_and_export_v2_objects_are_identical() -> None:
         )
 
     engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
-    upload_root, db_path = _make_workspace_paths("export_http_parity")
+    upload_root = _make_workspace_paths("export_http_parity")
 
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         created_case = client.post(
             "/api/evaluation/test-cases",
             json={
@@ -196,19 +195,15 @@ def test_authenticated_http_panel_and_export_v2_objects_are_identical() -> None:
         )["results"]
         assert {result["mode"] for result in results} == {"naive", "agentic"}
         agentic = next(result for result in results if result["mode"] == "agentic")
-        asyncio.run(
-            _seed_export_rows(
+        client.portal.call(lambda: _seed_export_rows(
                 run_id=agentic["id"],
                 campaign_id=campaign_id,
                 attempt_id=agentic["source_attempt_id"],
-            )
-        )
-        asyncio.run(_seed_stage_warning(run_id=agentic["id"], campaign_id=campaign_id))
-        asyncio.run(
-            _seed_official_scores_and_evidence(
+            ))
+        client.portal.call(lambda: _seed_stage_warning(run_id=agentic["id"], campaign_id=campaign_id))
+        client.portal.call(lambda: _seed_official_scores_and_evidence(
                 campaign_id=campaign_id, results=results
-            )
-        )
+            ))
         rating = client.post(
             f"/api/evaluation/runs/{agentic['id']}/human-ratings",
             json={

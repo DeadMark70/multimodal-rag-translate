@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
-from shutil import rmtree
 
 import pytest
 import pytest_asyncio
@@ -56,8 +55,6 @@ TEST_PRICE_SNAPSHOT = {
 async def accounting_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> EvaluationAccountingStore:
-    database_path = tmp_path / "evaluation.db"
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", database_path)
     await evaluation_db.force_init_db()
     async with evaluation_db.connect_db() as connection:
         now = datetime.now(UTC).isoformat()
@@ -82,16 +79,7 @@ async def accounting_store(
                 (f"result-{index}", f"Q-{index}", index, now),
             )
         await connection.commit()
-    try:
-        yield EvaluationAccountingStore()
-    finally:
-        for path in (
-            database_path,
-            database_path.with_suffix(".db-shm"),
-            database_path.with_suffix(".db-wal"),
-        ):
-            path.unlink(missing_ok=True)
-        rmtree(database_path.parent, ignore_errors=True)
+    yield EvaluationAccountingStore()
 
 
 def _claim(index: int, *, metric: str = "faithfulness") -> ClaimedEvaluationWork:
@@ -431,7 +419,9 @@ async def test_missing_metric_value_is_failure_not_zero_score() -> None:
 
     assert store.completed == []
     assert len(store.failed) == 1
-    assert store.failed[0][1].error_type == "invalid_configuration"
+    # A missing provider output is not evidence of an invalid input dataset.
+    assert store.failed[0][1].error_type == "unknown"
+    assert store.failed[0][1].retryable is False
 
 
 @pytest.mark.asyncio

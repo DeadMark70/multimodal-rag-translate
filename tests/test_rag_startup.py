@@ -53,7 +53,8 @@ async def test_app_lifespan_recovers_legacy_campaigns_and_manages_configured_wor
     engine = type("FakeCampaignEngine", (), {"recover_inflight_campaigns": AsyncMock()})()
 
     with (
-        patch("evaluation.db.force_init_db", new=AsyncMock()) as mock_init_db,
+        patch("evaluation.db.init_db", new=AsyncMock()) as mock_init_db,
+        patch("evaluation.db.force_init_db", new=AsyncMock()) as mock_migrate_db,
         patch("evaluation.campaign_engine.get_campaign_engine", return_value=engine),
         patch("evaluation.job_worker.get_evaluation_job_worker", return_value=worker),
         patch.object(app_factory, "_ensure_base_directories"),
@@ -65,6 +66,7 @@ async def test_app_lifespan_recovers_legacy_campaigns_and_manages_configured_wor
             pass
 
     mock_init_db.assert_awaited_once()
+    mock_migrate_db.assert_not_awaited()
     engine.recover_inflight_campaigns.assert_awaited_once()
     worker.start.assert_awaited_once()
     worker.stop.assert_awaited_once()
@@ -87,7 +89,7 @@ async def test_app_lifespan_configures_worker_before_cold_start_recovery() -> No
         return engine
 
     with (
-        patch("evaluation.db.force_init_db", new=AsyncMock()),
+        patch("evaluation.db.init_db", new=AsyncMock()),
         patch("evaluation.campaign_engine.get_campaign_engine", side_effect=build_engine) as mock_engine,
         patch("evaluation.job_worker.get_evaluation_job_worker", return_value=worker),
         patch.object(app_factory, "_ensure_base_directories"),
@@ -126,7 +128,7 @@ async def test_app_lifespan_manages_injected_engine_worker_when_process_worker_i
     )()
 
     with (
-        patch("evaluation.db.force_init_db", new=AsyncMock()),
+        patch("evaluation.db.init_db", new=AsyncMock()),
         patch("evaluation.campaign_engine.get_campaign_engine", return_value=engine),
         patch("evaluation.job_worker.get_evaluation_job_worker", return_value=process_worker),
         patch.object(app_factory, "_ensure_base_directories"),

@@ -34,14 +34,13 @@ def test_execution_scope_requires_one_target() -> None:
 
 @pytest.mark.asyncio
 async def test_init_db_creates_accounting_tables(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
 
     await evaluation_db.force_init_db()
 
     async with evaluation_db.connect_db() as connection:
         cursor = await connection.execute(
-            """SELECT name FROM sqlite_master
-               WHERE type='table' AND name IN (
+            """SELECT table_name AS name FROM information_schema.tables
+               WHERE table_schema=current_schema() AND table_name IN (
                    'evaluation_accounting_scopes',
                    'evaluation_accounting_scope_targets',
                    'evaluation_usage_events'
@@ -65,28 +64,9 @@ async def test_init_db_creates_accounting_tables(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_existing_accounting_targets_gain_nullable_mode_additively(
+async def test_accounting_target_mode_is_nullable(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "legacy.db")
-    async with evaluation_db.connect_db() as connection:
-        await connection.execute(
-            """
-            CREATE TABLE evaluation_accounting_scope_targets (
-                scope_id TEXT NOT NULL,
-                campaign_result_id TEXT,
-                job_id TEXT NOT NULL,
-                work_item_id TEXT NOT NULL,
-                attempt_id TEXT NOT NULL,
-                metric_name TEXT,
-                is_official INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                PRIMARY KEY(scope_id, attempt_id)
-            )
-            """
-        )
-        await connection.commit()
-
     await evaluation_db.force_init_db()
 
     async with evaluation_db.connect_db() as connection:
@@ -94,27 +74,22 @@ async def test_existing_accounting_targets_gain_nullable_mode_additively(
             connection, "evaluation_accounting_scope_targets"
         )
         cursor = await connection.execute(
-            "PRAGMA table_info(evaluation_accounting_scope_targets)"
+            "SELECT is_nullable FROM information_schema.columns "
+            "WHERE table_schema=current_schema() "
+            "AND table_name='evaluation_accounting_scope_targets' AND column_name='mode'"
         )
-        mode_row = next(row for row in await cursor.fetchall() if row[1] == "mode")
+        mode_row = await cursor.fetchone()
 
     assert "mode" in columns
-    assert mode_row[3] == 0
+    assert mode_row["is_nullable"] == "YES"
 
 
 @pytest.mark.asyncio
-async def test_legacy_accounting_scope_retry_count_remains_unknown_after_migration(
+async def test_unknown_accounting_retry_count_survives_reinitialization(
     tmp_path, monkeypatch
 ) -> None:
-    database_path = tmp_path / "legacy.db"
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", database_path)
-
-    legacy_sql = evaluation_db._INIT_SQL.replace(
-        "    retry_count INTEGER DEFAULT 0 CHECK (retry_count >= 0),\n", ""
-    )
     now = datetime.now(UTC).isoformat()
     async with evaluation_db.connect_db() as connection:
-        await connection.executescript(legacy_sql)
         await connection.execute(
             """INSERT INTO campaigns (id, user_id, name, status, config_json, created_at, updated_at)
                VALUES ('campaign-1', 'user-1', 'Legacy', 'completed', '{}', ?, ?)""",
@@ -123,9 +98,9 @@ async def test_legacy_accounting_scope_retry_count_remains_unknown_after_migrati
         await connection.execute(
             """INSERT INTO evaluation_accounting_scopes (
                    scope_id, campaign_id, scope_type, scope_key, accounting_schema_version,
-                   status, started_at, created_at, updated_at
+                   status, started_at, created_at, updated_at, retry_count
                ) VALUES ('legacy-ragas', 'campaign-1', 'ragas_batch', 'legacy', '2',
-                         'completed', ?, ?, ?)""",
+                         'completed', ?, ?, ?, NULL)""",
             (now, now, now),
         )
         await connection.commit()

@@ -2,7 +2,9 @@
 
 ## 這次改動
 
-設定 `EVALUATION_DATABASE_URL` 後，evaluation Repository 改用 PostgreSQL；未設定時沿用 SQLite。沒有雙寫。資料格式、IDs、歷史 attempt 與評分仍保留；認證、聊天、FAISS、上傳檔案及每位使用者的 test-case/model-config JSON 仍需沿用原 volume。
+評估系統只使用 PostgreSQL，必須設定 `EVALUATION_DATABASE_URL`；未設定會明確報錯，不會回退到 SQLite。資料格式、IDs、歷史 attempt 與評分仍保留；認證、聊天、FAISS、上傳檔案及每位使用者的 test-case/model-config JSON 仍需沿用原 volume。
+
+已成功搬移的部署，這次只需重建並重啟 backend，保留 PostgreSQL service、連線設定及 volumes。這次清理沒有新增 schema migration，**不要再次執行 `--sqlite` 匯入**。SQLite 原始快照和離線搬移工具仍保留；目前版本無法用移除環境變數的方式切回 SQLite。
 
 - PostgreSQL 17.11、Psycopg 3.3.5、psycopg-pool 3.3.1；每程序預設最多 10 條連線，可用 `EVALUATION_DB_POOL_SIZE` 調整。
 - 啟動只檢查 schema 版本。部署時執行 `scripts/migrate_evaluation.py` 套用版本化 SQL。
@@ -26,12 +28,12 @@
 可重現測試：
 
 ```sh
-EVALUATION_TEST_POSTGRES_URL=postgresql://... python -m pytest tests/postgres -q
+EVALUATION_TEST_POSTGRES_URL=postgresql://... python -m pytest tests -q
 EVALUATION_DATABASE_URL=postgresql://... python scripts/benchmark_evaluation_reads.py \
-  --sqlite /backup/evaluation.db --report /backup/read-benchmark.json
+  --report /backup/read-benchmark.json
 ```
 
-PostgreSQL tests 只在指定測試 DB 建立與移除隨機 `test_*` schema。benchmark 只應對匯入的測試副本執行；SQLite 唯讀，PostgreSQL 會更新 derived caches。不要拿正式 DB 當測試 DB。
+測試在指定測試 DB 建立與移除隨機 `test_*` schema。資料庫相關測試需要 `EVALUATION_TEST_POSTGRES_URL`；CI 已提供 PostgreSQL service。benchmark 現在比較 PostgreSQL 全 Campaign、單 Run 和快取讀取，會更新 derived caches；上面的 SQLite 比較數字是搬移當時的驗證紀錄。不要拿正式 DB 當測試 DB。
 
 ## Docker 搬移順序
 

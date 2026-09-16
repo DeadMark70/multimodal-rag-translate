@@ -234,10 +234,8 @@ async def app_lifespan(app: FastAPI) -> AsyncIterator[None]:
             # campaign is created. Recovery can drain it synchronously when
             # needed without creating an idle-loop race during app startup.
             await engine.recover_inflight_campaigns()
-    analysis_task = None
-    if os.getenv("EVALUATION_DATABASE_URL"):
-        from evaluation.analysis_cache import refresh_loop
-        analysis_task = asyncio.create_task(refresh_loop(), name="evaluation-analysis-refresh")
+    from evaluation.analysis_cache import refresh_loop, stop_refreshes
+    analysis_task = asyncio.create_task(refresh_loop(), name="evaluation-analysis-refresh")
     try:
         await _initialize_rag_components()
         await _warm_up_pdf_ocr()
@@ -250,11 +248,9 @@ async def app_lifespan(app: FastAPI) -> AsyncIterator[None]:
             await lifecycle_worker.stop()
         elif lifecycle_worker is not worker and getattr(lifecycle_worker, "is_running", False):
             await lifecycle_worker.stop()
-        if analysis_task is not None:
-            analysis_task.cancel()
-            await asyncio.gather(analysis_task, return_exceptions=True)
-            from evaluation.analysis_cache import stop_refreshes
-            await stop_refreshes()
+        analysis_task.cancel()
+        await asyncio.gather(analysis_task, return_exceptions=True)
+        await stop_refreshes()
         from evaluation.postgres import close_db
         await close_db()
 

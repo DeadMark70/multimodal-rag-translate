@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import tempfile
@@ -41,17 +40,12 @@ def _make_upload_root() -> Path:
     return root
 
 
-def _make_db_path() -> Path:
-    root = Path(os.environ["EVALUATION_TEST_TMPDIR"]) / f"analytics_db_{uuid4().hex}"
-    root.mkdir(parents=True, exist_ok=True)
-    return root / "evaluation.db"
 
 
 @contextmanager
 def _build_client(
     user_id: str,
     upload_root: Path,
-    db_path: Path,
     engine: CampaignEngine,
     *,
     with_auth: bool = True,
@@ -61,7 +55,6 @@ def _build_client(
         patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
         patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
         patch("evaluation.storage.BASE_UPLOAD_FOLDER", str(upload_root)),
-        patch("evaluation.db.EVALUATION_DB_PATH", db_path),
         patch("evaluation.campaign_engine.get_campaign_engine", return_value=engine),
         patch("evaluation.job_worker.get_evaluation_job_worker", return_value=process_worker),
         patch("evaluation.router.get_campaign_engine", return_value=engine),
@@ -132,82 +125,81 @@ def _campaign_payload() -> dict:
     }
 
 
-async def _seed_legacy_campaign_result(*, db_path: Path, user_id: str) -> tuple[str, str]:
+async def _seed_legacy_campaign_result(*, user_id: str) -> tuple[str, str]:
     now = datetime.now(timezone.utc).isoformat()
     campaign_id = f"legacy-campaign-{uuid4().hex}"
     run_id = f"legacy-run-{uuid4().hex}"
-    with patch("evaluation.db.EVALUATION_DB_PATH", db_path):
-        await evaluation_db.init_db()
-        async with evaluation_db.connect_db() as connection:
-            await connection.execute(
-                """
-                INSERT INTO campaigns (
-                    id, user_id, name, status, phase, config_json, completed_units, total_units,
-                    evaluation_completed_units, evaluation_total_units, current_question_id,
-                    current_mode, error_message, cancel_requested, created_at, started_at,
-                    completed_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0, 0, NULL, NULL, NULL, 0, ?, ?, ?, ?)
-                """,
-                (
-                    campaign_id,
-                    user_id,
-                    "Legacy",
-                    "completed",
-                    "execution",
-                    json.dumps(
-                        {
-                            "test_case_ids": ["Q-LEGACY"],
-                            "modes": ["agentic"],
-                            "model_config": {
-                                "id": "cfg-legacy",
-                                "name": "Legacy",
-                                "model_name": "gemini-2.5-flash",
-                                "temperature": 0.7,
-                                "top_p": 0.95,
-                                "top_k": 40,
-                                "max_input_tokens": 8192,
-                                "max_output_tokens": 2048,
-                                "thinking_mode": False,
-                                "thinking_budget": 8192,
-                                "thinking_level": None,
-                                "thinking_include_thoughts": False,
-                            },
-                            "repeat_count": 1,
-                            "batch_size": 1,
-                            "rpm_limit": 60,
-                            "ragas_batch_size": 8,
-                            "ragas_parallel_batches": 8,
-                            "ragas_rpm_limit": 1000,
+    await evaluation_db.init_db()
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            """
+            INSERT INTO campaigns (
+                id, user_id, name, status, phase, config_json, completed_units, total_units,
+                evaluation_completed_units, evaluation_total_units, current_question_id,
+                current_mode, error_message, cancel_requested, created_at, started_at,
+                completed_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0, 0, NULL, NULL, NULL, 0, ?, ?, ?, ?)
+            """,
+            (
+                campaign_id,
+                user_id,
+                "Legacy",
+                "completed",
+                "execution",
+                json.dumps(
+                    {
+                        "test_case_ids": ["Q-LEGACY"],
+                        "modes": ["agentic"],
+                        "model_config": {
+                            "id": "cfg-legacy",
+                            "name": "Legacy",
+                            "model_name": "gemini-2.5-flash",
+                            "temperature": 0.7,
+                            "top_p": 0.95,
+                            "top_k": 40,
+                            "max_input_tokens": 8192,
+                            "max_output_tokens": 2048,
+                            "thinking_mode": False,
+                            "thinking_budget": 8192,
+                            "thinking_level": None,
+                            "thinking_include_thoughts": False,
                         },
-                        ensure_ascii=False,
-                    ),
-                    now,
-                    now,
-                    now,
-                    now,
+                        "repeat_count": 1,
+                        "batch_size": 1,
+                        "rpm_limit": 60,
+                        "ragas_batch_size": 8,
+                        "ragas_parallel_batches": 8,
+                        "ragas_rpm_limit": 1000,
+                    },
+                    ensure_ascii=False,
                 ),
-            )
-            await connection.execute(
-                """
-                INSERT INTO campaign_results (
-                    id, campaign_id, user_id, question_id, question, ground_truth,
-                    mode, run_number, answer, contexts_json, source_doc_ids_json,
-                    expected_sources_json, latency_ms, token_usage_json, status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, '[]', '[]', '[]', 0, '{"accounting_schema_version":"2"}', 'completed', ?)
-                """,
-                (
-                    run_id,
-                    campaign_id,
-                    user_id,
-                    "Q-LEGACY",
-                    "Legacy question?",
-                    "Legacy answer",
-                    "agentic",
-                    "Legacy answer",
-                    now,
-                ),
-            )
-            await connection.commit()
+                now,
+                now,
+                now,
+                now,
+            ),
+        )
+        await connection.execute(
+            """
+            INSERT INTO campaign_results (
+                id, campaign_id, user_id, question_id, question, ground_truth,
+                mode, run_number, answer, contexts_json, source_doc_ids_json,
+                expected_sources_json, latency_ms, token_usage_json, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, '[]', '[]', '[]', 0, '{"accounting_schema_version":"2"}', 'completed', ?)
+            """,
+            (
+                run_id,
+                campaign_id,
+                user_id,
+                "Q-LEGACY",
+                "Legacy question?",
+                "Legacy answer",
+                "agentic",
+                "Legacy answer",
+                now,
+            ),
+        )
+        await connection.commit()
     return campaign_id, run_id
 
 
@@ -260,8 +252,7 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
 
     engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
     upload_root = _make_upload_root()
-    db_path = _make_db_path()
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         _create_test_case(client)
         created = client.post("/api/evaluation/campaigns", json=_campaign_payload())
         assert created.status_code == 200
@@ -379,9 +370,7 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
         assert diff.json()["comparison_scope"] == "same_run"
         assert diff.json()["answer_change_status"] == "unchanged"
 
-        legacy_campaign_id, legacy_run_id = asyncio.run(
-            _seed_legacy_campaign_result(db_path=db_path, user_id="user-a")
-        )
+        legacy_campaign_id, legacy_run_id = client.portal.call(lambda: _seed_legacy_campaign_result(user_id="user-a"))
         legacy_trace = client.get(f"/api/evaluation/runs/{legacy_run_id}/trace")
         assert legacy_trace.status_code == 200
         assert legacy_trace.json()["trace_events"] == []
@@ -399,7 +388,7 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
         legacy_overview = client.get(f"/api/evaluation/campaigns/{legacy_campaign_id}/overview")
         assert legacy_overview.status_code == 200
 
-    with _build_client("user-b", upload_root, db_path, engine) as other_client:
+    with _build_client("user-b", upload_root, engine) as other_client:
         denied = other_client.get(f"/api/evaluation/runs/{run_id}/trace")
         assert denied.status_code == 404
         denied_tools = other_client.get(f"/api/evaluation/runs/{run_id}/tools")
@@ -409,7 +398,7 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
         denied_diff = other_client.get(f"/api/evaluation/runs/{run_id}/diff?baseline_run_id={run_id}")
         assert denied_diff.status_code == 404
 
-    with _build_client("user-a", upload_root, db_path, engine, with_auth=False) as unauthenticated_client:
+    with _build_client("user-a", upload_root, engine, with_auth=False) as unauthenticated_client:
         unauthenticated = unauthenticated_client.get(f"/api/evaluation/runs/{run_id}/trace")
         assert unauthenticated.status_code == 401
         unauthenticated_overview = unauthenticated_client.get(
@@ -421,15 +410,11 @@ def test_research_analytics_endpoints_return_owned_run_details() -> None:
 def test_router_analysis_api_serializes_only_typed_retrospective_rows() -> None:
     engine = CampaignEngine(runner=Mock(), ragas_evaluator=FakeRagasEvaluator())
     upload_root = _make_upload_root()
-    db_path = _make_db_path()
-    with _build_client("user-1", upload_root, db_path, engine) as client:
-        campaign_id, run_id = asyncio.run(
-            _seed_legacy_campaign_result(db_path=db_path, user_id="user-1")
-        )
+    with _build_client("user-1", upload_root, engine) as client:
+        campaign_id, run_id = client.portal.call(lambda: _seed_legacy_campaign_result(user_id="user-1"))
         created_at = datetime.now(timezone.utc)
         repository = EvaluationObservabilityRepository()
-        asyncio.run(
-            repository.record_routing_decision(
+        client.portal.call(lambda: repository.record_routing_decision(
                 EvaluationRoutingDecision(
                     routing_decision_id="retro-1",
                     run_id=run_id,
@@ -442,10 +427,8 @@ def test_router_analysis_api_serializes_only_typed_retrospective_rows() -> None:
                     payload={"internal_only": "must not be exposed"},
                     created_at=created_at,
                 )
-            )
-        )
-        asyncio.run(
-            repository.record_routing_decision(
+            ))
+        client.portal.call(lambda: repository.record_routing_decision(
                 EvaluationRoutingDecision(
                     routing_decision_id="actual-1",
                     run_id=run_id,
@@ -459,8 +442,7 @@ def test_router_analysis_api_serializes_only_typed_retrospective_rows() -> None:
                     payload={"internal_only": "actual row remains persisted"},
                     created_at=created_at,
                 )
-            )
-        )
+            ))
 
         response = client.get(f"/api/evaluation/campaigns/{campaign_id}/router-analysis")
 
@@ -502,8 +484,7 @@ def test_v9_campaign_preflight_builds_dynamic_routes_and_reports_incompatible_se
     temp_root = Path(tempfile.mkdtemp(prefix="analytics_v9_preflight_"))
     upload_root = temp_root / "uploads"
     upload_root.mkdir()
-    db_path = temp_root / "evaluation.db"
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         created_case = client.post(
             "/api/evaluation/test-cases",
             json={
@@ -563,8 +544,7 @@ def test_v9_campaign_preflight_admits_imported_case_outside_frozen_golden_ids() 
         temp_root = Path(temp_dir)
         upload_root = temp_root / "uploads"
         upload_root.mkdir()
-        db_path = temp_root / "evaluation.db"
-        with _build_client("user-a", upload_root, db_path, engine) as client:
+        with _build_client("user-a", upload_root, engine) as client:
             created_case = client.post(
                 "/api/evaluation/test-cases",
                 json={
@@ -614,8 +594,7 @@ def test_v9_campaign_preflight_admits_visual_route_with_five_call_setup_reserve(
         temp_root = Path(temp_dir)
         upload_root = temp_root / "uploads"
         upload_root.mkdir()
-        db_path = temp_root / "evaluation.db"
-        with _build_client("user-a", upload_root, db_path, engine) as client:
+        with _build_client("user-a", upload_root, engine) as client:
             created_case = client.post(
                 "/api/evaluation/test-cases",
                 json={

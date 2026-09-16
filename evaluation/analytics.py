@@ -8,6 +8,7 @@ import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from statistics import mean
 from typing import Any, Literal
 from uuid import uuid4
@@ -1747,14 +1748,12 @@ class EvaluationAnalyticsService:
             metrics[str(row["campaign_result_id"])][str(row["metric_name"])] = metric_value
         return metrics
 
-    async def _current_db_time(self):
+    async def _current_db_time(self) -> datetime:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute("SELECT CURRENT_TIMESTAMP AS now")
             row = await cursor.fetchone()
-        from datetime import datetime, timezone
-        raw = row["now"]
-        return datetime.fromisoformat(str(raw).replace(" ", "T") + "+00:00").astimezone(timezone.utc)
+        return row["now"].astimezone(timezone.utc)
 
     def _paired_repeat_number(self, result: Any, rows: list[dict[str, Any]]) -> int:
         if any(row["run_id"] == result.id for row in rows):

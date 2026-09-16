@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import os
-from pathlib import Path
-from shutil import rmtree
-import sqlite3
-from uuid import uuid4
+from psycopg import OperationalError
+from psycopg.errors import DeadlockDetected
 
 import pytest
 import pytest_asyncio
@@ -43,7 +40,7 @@ class _TransientLockStore:
     async def record_event(self, event) -> None:
         self.calls += 1
         if self.calls == 1:
-            raise sqlite3.OperationalError("database is locked")
+            raise DeadlockDetected("deadlock detected")
         self.events.append(event)
 
 
@@ -54,7 +51,7 @@ class _NonTransientOperationalErrorStore:
     async def record_event(self, event) -> None:
         del event
         self.calls += 1
-        raise sqlite3.OperationalError("no such table: llm_usage_events")
+        raise OperationalError("no such table: llm_usage_events")
 
 
 def _raw_usage_event(*, usage_event_id: str = "event-retry") -> RawLlmUsageEvent:
@@ -80,7 +77,7 @@ def _raw_usage_event(*, usage_event_id: str = "event-retry") -> RawLlmUsageEvent
 
 
 @pytest.mark.asyncio
-async def test_sink_retries_transient_sqlite_lock_with_same_event_id() -> None:
+async def test_sink_retries_transient_postgres_lock_with_same_event_id() -> None:
     store = _TransientLockStore()
     sink = EvaluationAccountingSink(store=store, price_snapshot=TEST_PRICE_SNAPSHOT)
 
@@ -91,11 +88,11 @@ async def test_sink_retries_transient_sqlite_lock_with_same_event_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sink_does_not_retry_non_transient_sqlite_operational_error() -> None:
+async def test_sink_does_not_retry_non_transient_postgres_operational_error() -> None:
     store = _NonTransientOperationalErrorStore()
     sink = EvaluationAccountingSink(store=store, price_snapshot=TEST_PRICE_SNAPSHOT)
 
-    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+    with pytest.raises(OperationalError, match="no such table"):
         await sink.record(_raw_usage_event())
 
     assert store.calls == 1
@@ -105,32 +102,16 @@ async def test_sink_does_not_retry_non_transient_sqlite_operational_error() -> N
 async def accounting_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> EvaluationAccountingStore:
-    database_path = (
-        Path(os.environ["EVALUATION_TEST_TMPDIR"])
-        / f"accounting-runtime-{uuid4().hex}"
-        / "worker.db"
-    )
-    database_path.parent.mkdir(parents=True)
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", database_path)
-    try:
-        await evaluation_db.force_init_db()
-        async with evaluation_db.connect_db() as connection:
-            now = datetime.now(UTC).isoformat()
-            await connection.execute(
-                """INSERT INTO campaigns (id, user_id, name, status, config_json, created_at, updated_at)
-                   VALUES ('cmp-1', 'user-a', NULL, 'pending', '{}', ?, ?)""",
-                (now, now),
-            )
-            await connection.commit()
-        yield EvaluationAccountingStore()
-    finally:
-        for path in (
-            database_path,
-            database_path.with_suffix(".db-shm"),
-            database_path.with_suffix(".db-wal"),
-        ):
-            path.unlink(missing_ok=True)
-        rmtree(database_path.parent, ignore_errors=True)
+    await evaluation_db.force_init_db()
+    async with evaluation_db.connect_db() as connection:
+        now = datetime.now(UTC).isoformat()
+        await connection.execute(
+            """INSERT INTO campaigns (id, user_id, name, status, config_json, created_at, updated_at)
+               VALUES ('cmp-1', 'user-a', NULL, 'pending', '{}', ?, ?)""",
+            (now, now),
+        )
+        await connection.commit()
+    yield EvaluationAccountingStore()
 
 
 @pytest.mark.asyncio

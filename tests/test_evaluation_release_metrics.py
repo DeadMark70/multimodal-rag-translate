@@ -19,7 +19,6 @@ from evaluation.release_metrics import (
 )
 from evaluation.campaign_schemas import CampaignLifecycleStatus
 from evaluation.router import get_release_metrics_service
-from evaluation import db as evaluation_db
 from main import app
 
 
@@ -780,9 +779,6 @@ def test_release_metrics_api_serializes_fail_closed_values(tmp_path) -> None:
         with (
             patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
             patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
-            patch.object(
-                evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db"
-            ),
             TestClient(app) as client,
         ):
             response = client.get(

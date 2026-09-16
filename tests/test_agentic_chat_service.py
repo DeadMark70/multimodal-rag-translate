@@ -386,11 +386,10 @@ def test_public_agentic_chat_explicitly_retains_legacy_v7_retrieval_policy(
 
 
 @contextmanager
-def _build_client(database_path: Path):
+def _build_client():
     with (
         patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
         patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
-        patch("evaluation.db.EVALUATION_DB_PATH", database_path),
     ):
         app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
         with TestClient(app) as client:
@@ -422,7 +421,7 @@ def test_agentic_stream_endpoint_returns_sse_response(tmp_path: Path) -> None:
 
     fake_service = SimpleNamespace(execute_stream=fake_stream)
     with (
-        _build_client(tmp_path / "evaluation.db") as client,
+        _build_client() as client,
         patch(
             "data_base.router.get_agentic_chat_service",
             return_value=fake_service,

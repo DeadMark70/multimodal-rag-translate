@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 
 import pytest
 
@@ -34,8 +33,6 @@ def _trace_payload() -> dict[str, object]:
 async def test_campaign_result_repository_accepts_the_exact_answer_byte_limit_and_rejects_more(
     tmp_path, monkeypatch
 ) -> None:
-    db_path = tmp_path / "evaluation.db"
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", db_path)
     await evaluation_db.force_init_db()
     async with evaluation_db.connect_db() as connection:
         await connection.execute(
@@ -57,7 +54,7 @@ async def test_campaign_result_repository_accepts_the_exact_answer_byte_limit_an
         await connection.commit()
     repository = CampaignResultRepository()
 
-    result = await repository.create(
+    result_fields = dict(
         user_id="user-1",
         campaign_id="campaign-1",
         question_id="question-1",
@@ -80,6 +77,9 @@ async def test_campaign_result_repository_accepts_the_exact_answer_byte_limit_an
         difficulty=None,
         status=CampaignResultStatus.COMPLETED,
     )
+    result = await repository.create(**result_fields)
+    duplicate = await repository.create(**result_fields)
+    assert duplicate.id == result.id
 
     assert result.status == CampaignResultStatus.COMPLETED
     assert len(result.answer.encode("utf-8")) == MAX_EVALUATION_ANSWER_BYTES
@@ -110,26 +110,9 @@ async def test_campaign_result_repository_accepts_the_exact_answer_byte_limit_an
 
 
 @pytest.mark.asyncio
-async def test_agent_trace_summary_migration_persists_and_indexes_campaign_lists(
+async def test_agent_trace_summary_persists_and_indexes_campaign_lists(
     tmp_path, monkeypatch
 ) -> None:
-    db_path = tmp_path / "evaluation.db"
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", db_path)
-    with sqlite3.connect(db_path) as connection:
-        connection.execute(
-            """
-            CREATE TABLE agent_traces (
-                id TEXT PRIMARY KEY,
-                campaign_id TEXT NOT NULL,
-                campaign_result_id TEXT,
-                user_id TEXT NOT NULL,
-                trace_json TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        connection.commit()
-
     await evaluation_db.force_init_db()
     repository = AgentTraceRepository()
     await repository.replace_for_result(
@@ -140,10 +123,10 @@ async def test_agent_trace_summary_migration_persists_and_indexes_campaign_lists
     )
 
     async with evaluation_db.connect_db() as connection:
-        cursor = await connection.execute("PRAGMA table_info(agent_traces)")
-        columns = {str(row["name"]) for row in await cursor.fetchall()}
+        columns = await evaluation_db._table_columns(connection, "agent_traces")
         assert "summary_json" in columns
 
+        await connection.execute("SET LOCAL enable_seqscan=off")
         cursor = await connection.execute(
             "SELECT summary_json FROM agent_traces WHERE id = ?", ("trace-1",)
         )
@@ -153,7 +136,7 @@ async def test_agent_trace_summary_migration_persists_and_indexes_campaign_lists
 
         cursor = await connection.execute(
             """
-            EXPLAIN QUERY PLAN
+            EXPLAIN
             SELECT id, campaign_id, campaign_result_id, user_id, summary_json, created_at
             FROM agent_traces
             WHERE campaign_id = ? AND user_id = ?
@@ -161,7 +144,7 @@ async def test_agent_trace_summary_migration_persists_and_indexes_campaign_lists
             """,
             ("campaign-1", "user-1"),
         )
-        plan = "\n".join(str(row[3]) for row in await cursor.fetchall())
+        plan = "\n".join(row["QUERY PLAN"] for row in await cursor.fetchall())
     assert "idx_agent_traces_campaign_user_created" in plan
 
 
@@ -169,8 +152,6 @@ async def test_agent_trace_summary_migration_persists_and_indexes_campaign_lists
 async def test_agent_trace_campaign_list_reads_stored_summary_without_trace_json(
     tmp_path, monkeypatch
 ) -> None:
-    db_path = tmp_path / "evaluation.db"
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", db_path)
     await evaluation_db.force_init_db()
     repository = AgentTraceRepository()
     await repository.replace_for_result(
@@ -200,8 +181,6 @@ async def test_agent_trace_campaign_list_reads_stored_summary_without_trace_json
 async def test_agent_trace_campaign_list_returns_not_instrumented_summary_for_legacy_blank(
     tmp_path, monkeypatch
 ) -> None:
-    db_path = tmp_path / "evaluation.db"
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", db_path)
     await evaluation_db.force_init_db()
     async with evaluation_db.connect_db() as connection:
         await connection.execute(
@@ -233,34 +212,14 @@ async def test_agent_trace_campaign_list_returns_not_instrumented_summary_for_le
 
 
 @pytest.mark.asyncio
-async def test_initialization_sets_wal_while_connection_keeps_runtime_pragmas(
+async def test_missing_postgres_configuration_never_falls_back_to_local_file(
     tmp_path, monkeypatch
 ) -> None:
-    connection_only_path = tmp_path / "connection-only.db"
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", connection_only_path)
+    from evaluation.postgres import close_db
 
-    async with evaluation_db.connect_db() as connection:
-        journal_mode = (
-            await (await connection.execute("PRAGMA journal_mode;")).fetchone()
-        )[0]
-    assert journal_mode == "delete"
-
-    await evaluation_db.force_init_db()
-    with sqlite3.connect(connection_only_path) as connection:
-        assert connection.execute("PRAGMA journal_mode;").fetchone()[0] == "wal"
-
-    init_path = tmp_path / "init.db"
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", init_path)
-    await evaluation_db.init_db()
-    with sqlite3.connect(init_path) as connection:
-        assert connection.execute("PRAGMA journal_mode;").fetchone()[0] == "wal"
-
-    async with evaluation_db.connect_db() as connection:
-        foreign_keys = (
-            await (await connection.execute("PRAGMA foreign_keys;")).fetchone()
-        )[0]
-        busy_timeout = (
-            await (await connection.execute("PRAGMA busy_timeout;")).fetchone()
-        )[0]
-    assert foreign_keys == 1
-    assert busy_timeout == 5000
+    await close_db()
+    monkeypatch.delenv("EVALUATION_DATABASE_URL")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(RuntimeError, match="EVALUATION_DATABASE_URL"):
+        await evaluation_db.init_db()
+    assert list(tmp_path.iterdir()) == []

@@ -1,9 +1,6 @@
 """HTTP contract tests for strict research accounting."""
 
-import asyncio
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -18,7 +15,6 @@ from evaluation.accounting_schemas import (
 )
 from evaluation.research_analytics import ResearchAnalyticsService
 from evaluation.router import get_research_analytics_service
-from evaluation import db as evaluation_db
 from evaluation.campaign_schemas import CampaignConfig
 from evaluation.db import CampaignRepository
 from evaluation.schemas import ModelConfig
@@ -57,23 +53,19 @@ class _ResearchService(ResearchAnalyticsService):
         )
 
 
-def test_research_summary_requires_auth_and_serializes_nulls() -> None:
+def test_research_summary_requires_auth_and_serializes_nulls(monkeypatch) -> None:
+    async def load_analysis(**kwargs):
+        return await kwargs["loader"]()
+
+    monkeypatch.setattr("evaluation.analysis_cache.read_analysis", load_analysis)
     app.dependency_overrides[get_current_user_id] = lambda: "user-1"
     app.dependency_overrides[get_research_analytics_service] = (
         lambda: _ResearchService()
     )
     try:
-        db_path = (
-            Path("output")
-            / "test_tmp"
-            / f"research_api_{uuid4().hex}"
-            / "evaluation.db"
-        )
-        db_path.parent.mkdir(parents=True, exist_ok=True)
         with (
             patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
             patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
-            patch.object(evaluation_db, "EVALUATION_DB_PATH", db_path),
             TestClient(app) as client,
         ):
             response = client.get(
@@ -88,8 +80,7 @@ def test_research_summary_requires_auth_and_serializes_nulls() -> None:
         app.dependency_overrides = {}
 
 
-def test_research_summary_hides_campaign_owned_by_another_user(tmp_path) -> None:
-    db_path = tmp_path / "evaluation.db"
+def test_research_summary_hides_campaign_owned_by_another_user(tmp_path, run_db) -> None:
 
     async def seed_campaign() -> str:
         campaign = await CampaignRepository().create(
@@ -105,24 +96,23 @@ def test_research_summary_hides_campaign_owned_by_another_user(tmp_path) -> None
         )
         return campaign.id
 
-    with patch.object(evaluation_db, "EVALUATION_DB_PATH", db_path):
-        campaign_id = asyncio.run(seed_campaign())
-        app.dependency_overrides[get_current_user_id] = lambda: "user-1"
-        app.dependency_overrides[get_research_analytics_service] = (
-            lambda: ResearchAnalyticsService()
-        )
-        try:
-            with (
-                patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
-                patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
-                TestClient(app) as client,
-            ):
-                response = client.get(
-                    f"/api/evaluation/campaigns/{campaign_id}/research-summary"
-                )
-            assert response.status_code == 404
-        finally:
-            app.dependency_overrides = {}
+    campaign_id = run_db(seed_campaign())
+    app.dependency_overrides[get_current_user_id] = lambda: "user-1"
+    app.dependency_overrides[get_research_analytics_service] = (
+        lambda: ResearchAnalyticsService()
+    )
+    try:
+        with (
+            patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
+            patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
+            TestClient(app) as client,
+        ):
+            response = client.get(
+                f"/api/evaluation/campaigns/{campaign_id}/research-summary"
+            )
+        assert response.status_code == 404
+    finally:
+        app.dependency_overrides = {}
 
 
 def test_campaign_run_observability_delegates_and_hides_unowned_runs() -> None:

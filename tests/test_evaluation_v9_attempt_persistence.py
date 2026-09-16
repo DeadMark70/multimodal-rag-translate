@@ -1,10 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import os
-from pathlib import Path
-import shutil
-from uuid import uuid4
 
 import pytest
 
@@ -25,18 +21,6 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-@pytest.fixture
-def isolated_db_path() -> Path:
-    """Keep this storage-only suite independent of the shared upload fixture."""
-    root = (
-        Path(os.environ.get("EVALUATION_TEST_TMPDIR", Path.cwd() / "data" / "test_tmp"))
-        / f"v9-attempt-{uuid4().hex}"
-    )
-    root.mkdir(parents=True, exist_ok=False)
-    try:
-        yield root / "evaluation.db"
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
 
 
 async def _seed_attempt(
@@ -240,9 +224,8 @@ def test_comparison_projection_preserves_invalid_subjects_fallback() -> None:
 
 @pytest.mark.asyncio
 async def test_materializing_a_v9_attempt_is_atomic_and_idempotent(
-    isolated_db_path, monkeypatch
+    monkeypatch
 ) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", isolated_db_path)
     await _seed_attempt(campaign_id="campaign-1", attempt_id="attempt-1")
     repository = EvaluationObservabilityRepository()
     claim = EvaluationClaim(
@@ -355,9 +338,8 @@ async def test_materializing_a_v9_attempt_is_atomic_and_idempotent(
 
 @pytest.mark.asyncio
 async def test_cancelled_attempt_retains_redacted_trace_without_completion(
-    isolated_db_path, monkeypatch
+    monkeypatch
 ) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", isolated_db_path)
     await _seed_attempt(
         campaign_id="campaign-cancelled",
         attempt_id="attempt-cancelled",
@@ -418,9 +400,8 @@ async def test_cancelled_attempt_retains_redacted_trace_without_completion(
 
 @pytest.mark.asyncio
 async def test_attempt_materialization_rejects_cross_campaign_injection(
-    isolated_db_path, monkeypatch
+    monkeypatch
 ) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", isolated_db_path)
     await _seed_attempt(campaign_id="campaign-owned", attempt_id="attempt-owned")
     repository = EvaluationObservabilityRepository()
 
@@ -441,9 +422,8 @@ async def test_attempt_materialization_rejects_cross_campaign_injection(
 
 @pytest.mark.asyncio
 async def test_direct_evidence_write_cannot_cross_attempt_campaign_boundary(
-    isolated_db_path, monkeypatch
+    monkeypatch
 ) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", isolated_db_path)
     await _seed_attempt(campaign_id="campaign-owned", attempt_id="attempt-owned")
     repository = EvaluationObservabilityRepository()
 
@@ -455,9 +435,8 @@ async def test_direct_evidence_write_cannot_cross_attempt_campaign_boundary(
 
 @pytest.mark.asyncio
 async def test_direct_claim_write_cannot_cross_attempt_campaign_boundary(
-    isolated_db_path, monkeypatch
+    monkeypatch
 ) -> None:
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", isolated_db_path)
     await _seed_attempt(campaign_id="campaign-owned", attempt_id="attempt-owned")
     repository = EvaluationObservabilityRepository()
 

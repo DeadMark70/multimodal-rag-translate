@@ -19,21 +19,13 @@ _checked = False
 
 
 class RepositoryConnection:
-    """Keep existing repository bind markers during the staged migration.
-
-    This only adapts positional parameters and the ledger's explicit transaction
-    entry. All data remains separately bound; schema/UPSERT SQL is explicit.
-    """
+    """Bind repository positional parameters to a PostgreSQL connection."""
 
     def __init__(self, connection: AsyncConnection) -> None:
         self.connection = connection
 
     async def execute(self, query: str, parameters: tuple | list | None = None):
-        if query == "BEGIN IMMEDIATE":
-            # A short ledger transaction serializes admission/count/claim just
-            # as before, across processes. No lock is held during model calls.
-            query = "SELECT pg_advisory_xact_lock(74503102)"
-        elif parameters is not None:
+        if parameters is not None:
             query = query.replace("%", "%%").replace("?", "%s")
         return await self.connection.execute(query, parameters)
 

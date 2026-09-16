@@ -136,77 +136,72 @@ async def test_graph_observability_repositories_round_trip_graph_rows(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "graph-events.sqlite3"
-    try:
-        monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", db_path)
-        await _seed_campaign("campaign-graph")
+    await _seed_campaign("campaign-graph")
 
-        event_repository = EvaluationGraphEventRepository()
-        item_repository = EvaluationGraphEvidenceItemRepository()
-        created_at = _now()
+    event_repository = EvaluationGraphEventRepository()
+    item_repository = EvaluationGraphEvidenceItemRepository()
+    created_at = _now()
 
-        event = EvaluationGraphEvent(
-            graph_event_id="ge-1",
-            run_id="run-1",
-            campaign_id="campaign-graph",
-            span_id="span-1",
-            graph_query="compare MedSAM and SAM-Med3D",
-            graph_search_mode="generic",
-            graph_evidence_mode="raw_current",
-            graph_route="blended",
-            router_reason="relation query with communities",
-            graph_feature_flags={"graph_raw_current_enabled": True},
-            graph_snapshot_version="index-v2",
-            graph_schema_version="graph-schema-v1",
-            graph_extraction_prompt_version="graph-extract-v2",
-            matched_entity_ids=["node_method_medsam"],
-            community_ids=[3],
-            node_count=2,
-            edge_count=1,
-            path_count=1,
-            graph_latency_ms=42,
-            graph_context_tokens=120,
-            graph_to_chunk_success_rate=None,
-            graph_noise_ratio=0.25,
-            created_at=created_at,
-        )
-        item = EvaluationGraphEvidenceItem(
-            graph_evidence_item_id="gei-1",
-            graph_event_id="ge-1",
-            node_ids=["node_method_medsam"],
-            edge_ids=["edge-1"],
-            relation_path=["node_method_medsam", "compares_to", "node_method_sammed3d"],
-            source_doc_ids=["doc-1"],
-            source_chunk_ids=[],
-            pages=[4],
-            asset_ids=[],
-            confidence=0.88,
-            provenance_status="partial",
-            used_as_locator=False,
-            packed_in_context=True,
-            used_in_answer=False,
-            supported_claim_ids=[],
-            created_at=created_at,
-        )
+    event = EvaluationGraphEvent(
+        graph_event_id="ge-1",
+        run_id="run-1",
+        campaign_id="campaign-graph",
+        span_id="span-1",
+        graph_query="compare MedSAM and SAM-Med3D",
+        graph_search_mode="generic",
+        graph_evidence_mode="raw_current",
+        graph_route="blended",
+        router_reason="relation query with communities",
+        graph_feature_flags={"graph_raw_current_enabled": True},
+        graph_snapshot_version="index-v2",
+        graph_schema_version="graph-schema-v1",
+        graph_extraction_prompt_version="graph-extract-v2",
+        matched_entity_ids=["node_method_medsam"],
+        community_ids=[3],
+        node_count=2,
+        edge_count=1,
+        path_count=1,
+        graph_latency_ms=42,
+        graph_context_tokens=120,
+        graph_to_chunk_success_rate=None,
+        graph_noise_ratio=0.25,
+        created_at=created_at,
+    )
+    item = EvaluationGraphEvidenceItem(
+        graph_evidence_item_id="gei-1",
+        graph_event_id="ge-1",
+        node_ids=["node_method_medsam"],
+        edge_ids=["edge-1"],
+        relation_path=["node_method_medsam", "compares_to", "node_method_sammed3d"],
+        source_doc_ids=["doc-1"],
+        source_chunk_ids=[],
+        pages=[4],
+        asset_ids=[],
+        confidence=0.88,
+        provenance_status="partial",
+        used_as_locator=False,
+        packed_in_context=True,
+        used_in_answer=False,
+        supported_claim_ids=[],
+        created_at=created_at,
+    )
 
-        await event_repository.record_graph_event(event)
-        await item_repository.record_graph_evidence_items([item])
+    await event_repository.record_graph_event(event)
+    await item_repository.record_graph_evidence_items([item])
 
-        run_events = await event_repository.list_graph_events_for_run("run-1")
-        campaign_events = await event_repository.list_graph_events_for_campaign("campaign-graph")
-        run_items = await item_repository.list_graph_evidence_items_for_run("run-1")
-        campaign_items = await item_repository.list_graph_evidence_items_for_campaign("campaign-graph")
+    run_events = await event_repository.list_graph_events_for_run("run-1")
+    campaign_events = await event_repository.list_graph_events_for_campaign("campaign-graph")
+    run_items = await item_repository.list_graph_evidence_items_for_run("run-1")
+    campaign_items = await item_repository.list_graph_evidence_items_for_campaign("campaign-graph")
 
-        assert run_events[0].graph_feature_flags["graph_raw_current_enabled"] is True
-        assert run_events[0].matched_entity_ids == ["node_method_medsam"]
-        assert set(campaign_events) == {"run-1"}
-        assert campaign_events["run-1"][0].graph_event_id == "ge-1"
-        assert run_items[0].pages == [4]
-        assert run_items[0].provenance_status == "partial"
-        assert set(campaign_items) == {"run-1"}
-        assert campaign_items["run-1"][0].graph_evidence_item_id == "gei-1"
-    finally:
-        db_path.unlink(missing_ok=True)
+    assert run_events[0].graph_feature_flags["graph_raw_current_enabled"] is True
+    assert run_events[0].matched_entity_ids == ["node_method_medsam"]
+    assert set(campaign_events) == {"run-1"}
+    assert campaign_events["run-1"][0].graph_event_id == "ge-1"
+    assert run_items[0].pages == [4]
+    assert run_items[0].provenance_status == "partial"
+    assert set(campaign_items) == {"run-1"}
+    assert campaign_items["run-1"][0].graph_evidence_item_id == "gei-1"
 
 
 @pytest.mark.asyncio
@@ -214,74 +209,69 @@ async def test_graph_evidence_items_keep_history_across_events_with_shared_sourc
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "graph-evidence-history.sqlite3"
-    try:
-        monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", db_path)
-        await _seed_campaign("campaign-graph-history")
+    await _seed_campaign("campaign-graph-history")
 
-        event_repository = EvaluationGraphEventRepository()
-        item_repository = EvaluationGraphEvidenceItemRepository()
-        created_at = _now()
+    event_repository = EvaluationGraphEventRepository()
+    item_repository = EvaluationGraphEvidenceItemRepository()
+    created_at = _now()
 
-        first_event = EvaluationGraphEvent(
-            graph_event_id="ge-1",
-            run_id="run-1",
-            campaign_id="campaign-graph-history",
-            graph_query="first graph query",
-            graph_search_mode="generic",
-            graph_evidence_mode="raw_current",
-            graph_route="local-first",
-            created_at=created_at,
-        )
-        second_event = EvaluationGraphEvent(
-            graph_event_id="ge-2",
-            run_id="run-1",
-            campaign_id="campaign-graph-history",
-            graph_query="second graph query",
-            graph_search_mode="generic",
-            graph_evidence_mode="raw_current",
-            graph_route="local-first",
-            created_at=created_at,
-        )
-        shared_evidence = GraphEvidence(
-            evidence_id="shared-edge-1",
-            evidence_type="local_edge",
-            text="Shared relation evidence",
-            score=0.91,
-            token_estimate=6,
-            metadata={"source_id": "node-a", "target_id": "node-b"},
-        )
+    first_event = EvaluationGraphEvent(
+        graph_event_id="ge-1",
+        run_id="run-1",
+        campaign_id="campaign-graph-history",
+        graph_query="first graph query",
+        graph_search_mode="generic",
+        graph_evidence_mode="raw_current",
+        graph_route="local-first",
+        created_at=created_at,
+    )
+    second_event = EvaluationGraphEvent(
+        graph_event_id="ge-2",
+        run_id="run-1",
+        campaign_id="campaign-graph-history",
+        graph_query="second graph query",
+        graph_search_mode="generic",
+        graph_evidence_mode="raw_current",
+        graph_route="local-first",
+        created_at=created_at,
+    )
+    shared_evidence = GraphEvidence(
+        evidence_id="shared-edge-1",
+        evidence_type="local_edge",
+        text="Shared relation evidence",
+        score=0.91,
+        token_estimate=6,
+        metadata={"source_id": "node-a", "target_id": "node-b"},
+    )
 
-        first_items = _build_graph_evidence_items(
-            graph_event_id=first_event.graph_event_id,
-            evidence_units=[shared_evidence],
-            graph_evidence_mode="raw_current",
-            created_at=created_at,
-        )
-        second_items = _build_graph_evidence_items(
-            graph_event_id=second_event.graph_event_id,
-            evidence_units=[shared_evidence],
-            graph_evidence_mode="raw_current",
-            created_at=created_at,
-        )
+    first_items = _build_graph_evidence_items(
+        graph_event_id=first_event.graph_event_id,
+        evidence_units=[shared_evidence],
+        graph_evidence_mode="raw_current",
+        created_at=created_at,
+    )
+    second_items = _build_graph_evidence_items(
+        graph_event_id=second_event.graph_event_id,
+        evidence_units=[shared_evidence],
+        graph_evidence_mode="raw_current",
+        created_at=created_at,
+    )
 
-        await event_repository.record_graph_event(first_event)
-        await event_repository.record_graph_event(second_event)
-        await item_repository.record_graph_evidence_items(first_items)
-        await item_repository.record_graph_evidence_items(second_items)
+    await event_repository.record_graph_event(first_event)
+    await event_repository.record_graph_event(second_event)
+    await item_repository.record_graph_evidence_items(first_items)
+    await item_repository.record_graph_evidence_items(second_items)
 
-        run_items = await item_repository.list_graph_evidence_items_for_run("run-1")
-        items_by_event = {
-            item.graph_event_id: item.graph_evidence_item_id for item in run_items
-        }
+    run_items = await item_repository.list_graph_evidence_items_for_run("run-1")
+    items_by_event = {
+        item.graph_event_id: item.graph_evidence_item_id for item in run_items
+    }
 
-        assert len(run_items) == 2
-        assert items_by_event == {
-            "ge-1": "ge-1:shared-edge-1",
-            "ge-2": "ge-2:shared-edge-1",
-        }
-    finally:
-        db_path.unlink(missing_ok=True)
+    assert len(run_items) == 2
+    assert items_by_event == {
+        "ge-1": "ge-1:shared-edge-1",
+        "ge-2": "ge-2:shared-edge-1",
+    }
 
 
 def test_filter_graph_query_hints_ignores_observability_metadata() -> None:

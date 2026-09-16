@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from contextlib import contextmanager
@@ -26,13 +25,12 @@ class FakeRagasEvaluator:
 
 
 @contextmanager
-def _build_client(user_id: str, upload_root: Path, db_path: Path, engine: CampaignEngine):
+def _build_client(user_id: str, upload_root: Path, engine: CampaignEngine):
     process_worker = Mock(is_configured=False)
     with (
         patch("core.app_factory._initialize_rag_components", new=AsyncMock()),
         patch("core.app_factory._warm_up_pdf_ocr", new=AsyncMock()),
         patch("evaluation.storage.BASE_UPLOAD_FOLDER", str(upload_root)),
-        patch("evaluation.db.EVALUATION_DB_PATH", db_path),
         patch("evaluation.campaign_engine.get_campaign_engine", return_value=engine),
         patch("evaluation.job_worker.get_evaluation_job_worker", return_value=process_worker),
         patch("evaluation.router.get_campaign_engine", return_value=engine),
@@ -55,46 +53,45 @@ def _wait_for_completed(client: TestClient, campaign_id: str) -> None:
     raise AssertionError(f"campaign {campaign_id} did not complete")
 
 
-async def _insert_ragas_scores(*, db_path: Path, campaign_id: str, run_id: str, user_id: str) -> None:
+async def _insert_ragas_scores(*, campaign_id: str, run_id: str, user_id: str) -> None:
     now = datetime.now(timezone.utc).isoformat()
-    with patch.object(evaluation_db, "EVALUATION_DB_PATH", db_path):
-        await evaluation_db.init_db()
-        async with evaluation_db.connect_db() as connection:
-            await connection.execute(
-                """
-                INSERT INTO ragas_scores (
-                    id, campaign_id, campaign_result_id, user_id, metric_name, metric_value, details_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    f"{run_id}-correctness",
-                    campaign_id,
-                    run_id,
-                    user_id,
-                    "answer_correctness",
-                    0.8,
-                    json.dumps({"evaluator_model": "fake-ragas"}),
-                    now,
-                ),
-            )
-            await connection.execute(
-                """
-                INSERT INTO ragas_scores (
-                    id, campaign_id, campaign_result_id, user_id, metric_name, metric_value, details_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    f"{run_id}-faithfulness",
-                    campaign_id,
-                    run_id,
-                    user_id,
-                    "faithfulness",
-                    0.6,
-                    json.dumps({"evaluator_model": "fake-ragas"}),
-                    now,
-                ),
-            )
-            await connection.commit()
+    await evaluation_db.init_db()
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            """
+            INSERT INTO ragas_scores (
+                id, campaign_id, campaign_result_id, user_id, metric_name, metric_value, details_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"{run_id}-correctness",
+                campaign_id,
+                run_id,
+                user_id,
+                "answer_correctness",
+                0.8,
+                json.dumps({"evaluator_model": "fake-ragas"}),
+                now,
+            ),
+        )
+        await connection.execute(
+            """
+            INSERT INTO ragas_scores (
+                id, campaign_id, campaign_result_id, user_id, metric_name, metric_value, details_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"{run_id}-faithfulness",
+                campaign_id,
+                run_id,
+                user_id,
+                "faithfulness",
+                0.6,
+                json.dumps({"evaluator_model": "fake-ragas"}),
+                now,
+            ),
+        )
+        await connection.commit()
 
 
 def _campaign_payload() -> dict:
@@ -120,9 +117,9 @@ def _campaign_payload() -> dict:
     }
 
 
-def _make_workspace_paths(prefix: str) -> tuple[Path, Path]:
+def _make_workspace_paths(prefix: str) -> Path:
     root = Path.cwd() / "output" / "test_tmp" / f"{prefix}_{uuid4().hex}"
-    return root / "uploads", root / "evaluation.db"
+    return root / "uploads"
 
 
 def test_human_eval_queue_and_calibration_handle_empty_and_insufficient_samples() -> None:
@@ -144,9 +141,9 @@ def test_human_eval_queue_and_calibration_handle_empty_and_insufficient_samples(
         )
 
     engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
-    upload_root, db_path = _make_workspace_paths("human")
+    upload_root = _make_workspace_paths("human")
 
-    with _build_client("user-a", upload_root, db_path, engine) as client:
+    with _build_client("user-a", upload_root, engine) as client:
         created_case = client.post(
             "/api/evaluation/test-cases",
             json={
@@ -166,7 +163,7 @@ def test_human_eval_queue_and_calibration_handle_empty_and_insufficient_samples(
 
         results = client.get(f"/api/evaluation/campaigns/{campaign_id}/results").json()["results"]
         run_id = results[0]["id"]
-        asyncio.run(_insert_ragas_scores(db_path=db_path, campaign_id=campaign_id, run_id=run_id, user_id="user-a"))
+        client.portal.call(lambda: _insert_ragas_scores(campaign_id=campaign_id, run_id=run_id, user_id="user-a"))
 
         queue_response = client.get(f"/api/evaluation/campaigns/{campaign_id}/human-eval-queue")
         assert queue_response.status_code == 200
@@ -233,9 +230,9 @@ def test_user_cannot_submit_human_rating_to_another_users_run() -> None:
         )
 
     engine = CampaignEngine(runner=runner, ragas_evaluator=FakeRagasEvaluator())
-    upload_root, db_path = _make_workspace_paths("human")
+    upload_root = _make_workspace_paths("human")
 
-    with _build_client("user-a", upload_root, db_path, engine) as client_a:
+    with _build_client("user-a", upload_root, engine) as client_a:
         created_case = client_a.post(
             "/api/evaluation/test-cases",
             json={
@@ -253,7 +250,7 @@ def test_user_cannot_submit_human_rating_to_another_users_run() -> None:
         _wait_for_completed(client_a, campaign_id)
         run_id = client_a.get(f"/api/evaluation/campaigns/{campaign_id}/results").json()["results"][0]["id"]
 
-    with _build_client("user-b", upload_root, db_path, engine) as client_b:
+    with _build_client("user-b", upload_root, engine) as client_b:
         denied = client_b.post(
             f"/api/evaluation/runs/{run_id}/human-ratings",
             json={

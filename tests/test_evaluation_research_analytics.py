@@ -214,7 +214,6 @@ def test_legacy_identity_fails_closed_on_score_metadata_mismatch() -> None:
 
 @pytest_asyncio.fixture
 async def research_service(tmp_path, monkeypatch):
-    monkeypatch.setattr(evaluation_db, "EVALUATION_DB_PATH", tmp_path / "evaluation.db")
     return ResearchAnalyticsService()
 
 
@@ -2216,10 +2215,9 @@ async def test_research_aggregates_use_bounded_result_projection_for_large_paylo
             raise AssertionError("research aggregate loaded full campaign results")
 
     campaign_result_queries: list[str] = []
-    import os
     from evaluation.postgres import RepositoryConnection
 
-    driver = RepositoryConnection if os.getenv("EVALUATION_DATABASE_URL") else evaluation_db.aiosqlite.Connection
+    driver = RepositoryConnection
     original_execute = driver.execute
 
     async def capture_execute(connection, sql, parameters=()):

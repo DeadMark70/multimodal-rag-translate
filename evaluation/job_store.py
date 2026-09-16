@@ -1,4 +1,4 @@
-"""SQLite-backed ledger for durable evaluation work."""
+"""PostgreSQL-backed ledger for durable evaluation work."""
 
 from __future__ import annotations
 
@@ -10,12 +10,11 @@ import json
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-import aiosqlite
-
 from core.errors import AppError, ErrorCode
 from evaluation.campaign_schemas import CampaignResult, CampaignResultStatus
 from evaluation.db import CampaignResultRepository, connect_db, init_db
 from evaluation.error_policy import ErrorDecision, retry_delay_seconds
+from evaluation.postgres import RepositoryConnection
 from evaluation.job_schemas import (
     ClaimedEvaluationWork,
     EvaluationAttempt,
@@ -170,7 +169,7 @@ class EvaluationJobStore:
         now = _as_iso(datetime.now(timezone.utc))
         job_id = str(uuid4())
         async with connect_db() as connection:
-            await connection.execute("BEGIN IMMEDIATE")
+            await connection.execute("SELECT pg_advisory_xact_lock(74503102)")
             try:
                 await connection.execute(
                     """
@@ -427,7 +426,7 @@ class EvaluationJobStore:
         now_iso = _as_iso(now)
         claimed: list[ClaimedEvaluationWork] = []
         async with connect_db() as connection:
-            await connection.execute("BEGIN IMMEDIATE")
+            await connection.execute("SELECT pg_advisory_xact_lock(74503102)")
             try:
                 cursor = await connection.execute(
                     """
@@ -623,7 +622,7 @@ class EvaluationJobStore:
         now_iso = _as_iso(now)
         await init_db()
         async with connect_db() as connection:
-            await connection.execute("BEGIN IMMEDIATE")
+            await connection.execute("SELECT pg_advisory_xact_lock(74503102)")
             try:
                 row = await self._active_claim_row(connection, claim)
                 retry = (
@@ -693,7 +692,7 @@ class EvaluationJobStore:
         now_iso = _as_iso(now)
         await init_db()
         async with connect_db() as connection:
-            await connection.execute("BEGIN IMMEDIATE")
+            await connection.execute("SELECT pg_advisory_xact_lock(74503102)")
             try:
                 row = await self._active_claim_row(connection, claim)
                 await connection.execute(
@@ -763,7 +762,7 @@ class EvaluationJobStore:
             raise ValueError("execution output result must be completed")
         await init_db()
         async with connect_db() as connection:
-            await connection.execute("BEGIN IMMEDIATE")
+            await connection.execute("SELECT pg_advisory_xact_lock(74503102)")
             try:
                 await self._active_claim_row(connection, claim)
                 job_cursor = await connection.execute(
@@ -960,7 +959,7 @@ class EvaluationJobStore:
         promoted_score_count = 0
         await init_db()
         async with connect_db() as connection:
-            await connection.execute("BEGIN IMMEDIATE")
+            await connection.execute("SELECT pg_advisory_xact_lock(74503102)")
             try:
                 await self._active_claim_row(connection, claim)
                 job_cursor = await connection.execute(
@@ -1065,7 +1064,7 @@ class EvaluationJobStore:
         await init_db()
         now_iso = _as_iso(datetime.now(timezone.utc))
         async with connect_db() as connection:
-            await connection.execute("BEGIN IMMEDIATE")
+            await connection.execute("SELECT pg_advisory_xact_lock(74503102)")
             try:
                 campaigns = await (
                     await connection.execute(
@@ -1161,7 +1160,7 @@ class EvaluationJobStore:
             predicate += " AND attempt.id IN (" + ",".join("?" for _ in attempt_ids) + ")"
             parameters += tuple(attempt_ids)
         async with connect_db() as connection:
-            await connection.execute("BEGIN IMMEDIATE")
+            await connection.execute("SELECT pg_advisory_xact_lock(74503102)")
             try:
                 cursor = await connection.execute(
                     f"""
@@ -1386,7 +1385,7 @@ class EvaluationJobStore:
         now_iso = _as_iso(datetime.now(timezone.utc))
         await init_db()
         async with connect_db() as connection:
-            await connection.execute("BEGIN IMMEDIATE")
+            await connection.execute("SELECT pg_advisory_xact_lock(74503102)")
             try:
                 await connection.execute(
                     """
@@ -1562,7 +1561,7 @@ class EvaluationJobStore:
         now_iso = _as_iso(datetime.now(timezone.utc))
         await init_db()
         async with connect_db() as connection:
-            await connection.execute("BEGIN IMMEDIATE")
+            await connection.execute("SELECT pg_advisory_xact_lock(74503102)")
             try:
                 await connection.execute(
                     """
@@ -1592,7 +1591,7 @@ class EvaluationJobStore:
                 raise
 
     async def _recompute_campaign_counts(
-        self, connection: aiosqlite.Connection, *, campaign_id: str
+        self, connection: RepositoryConnection, *, campaign_id: str
     ) -> None:
         """Keep campaign evaluation counters aligned with terminal job items."""
         await connection.execute(
@@ -1622,7 +1621,7 @@ class EvaluationJobStore:
 
     async def _insert_legacy_attempt(
         self,
-        connection: aiosqlite.Connection,
+        connection: RepositoryConnection,
         *,
         job_id: str,
         campaign_id: str,
@@ -1696,7 +1695,7 @@ class EvaluationJobStore:
 
     async def _upsert_work_item(
         self,
-        connection: aiosqlite.Connection,
+        connection: RepositoryConnection,
         *,
         campaign_id: str,
         spec: WorkItemSpec,
@@ -1731,8 +1730,8 @@ class EvaluationJobStore:
         return work_item_id
 
     async def _active_claim_row(
-        self, connection: aiosqlite.Connection, claim: ClaimedEvaluationWork
-    ) -> aiosqlite.Row:
+        self, connection: RepositoryConnection, claim: ClaimedEvaluationWork
+    ) -> Mapping[str, Any]:
         cursor = await connection.execute(
             """
             SELECT item.max_attempts, attempt.started_at, attempt.last_heartbeat_at,
@@ -1852,7 +1851,7 @@ def _snapshot_metric_name(snapshot: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _row_to_job(row: aiosqlite.Row) -> EvaluationJob:
+def _row_to_job(row: Mapping[str, Any]) -> EvaluationJob:
     return EvaluationJob(
         job_id=row["id"],
         job_type=row["job_type"],
@@ -1864,7 +1863,7 @@ def _row_to_job(row: aiosqlite.Row) -> EvaluationJob:
     )
 
 
-def _row_to_attempt(row: aiosqlite.Row) -> EvaluationAttempt:
+def _row_to_attempt(row: Mapping[str, Any]) -> EvaluationAttempt:
     return EvaluationAttempt(
         attempt_id=row["id"],
         job_id=row["job_id"],

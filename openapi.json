@@ -7148,7 +7148,7 @@
           "cancelled"
         ],
         "title": "CampaignLifecycleStatus",
-        "description": "Campaign status persisted in SQLite."
+        "description": "Campaign status persisted in PostgreSQL."
       },
       "CampaignMetricRow": {
         "properties": {
