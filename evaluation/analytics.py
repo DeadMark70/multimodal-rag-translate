@@ -1413,13 +1413,25 @@ class EvaluationAnalyticsService:
             ),
         )
 
-    async def list_campaign_runs(self, *, user_id: str, campaign_id: str) -> EvaluationRunListResponse:
-        context = await self._load_campaign_context(user_id=user_id, campaign_id=campaign_id)
-        return self._build_campaign_runs(context)
+    async def list_campaign_runs(
+        self, *, user_id: str, campaign_id: str, limit: int | None = None, offset: int = 0
+    ) -> EvaluationRunListResponse:
+        await self._campaign_repository.get(user_id=user_id, campaign_id=campaign_id)
+        results = await self._result_repository.list_for_campaign_analytics(
+            user_id=user_id, campaign_id=campaign_id,
+            limit=limit + 1 if limit is not None else None, offset=offset,
+        )
+        response = self._build_runs_from_results(campaign_id, results[:limit] if limit is not None else results)
+        if limit is not None and len(results) > limit:
+            response.next_offset = offset + limit
+        return response
 
     def _build_campaign_runs(self, context: _CampaignAnalyticsContext) -> EvaluationRunListResponse:
+        return self._build_runs_from_results(context.campaign_id, context.results)
+
+    def _build_runs_from_results(self, campaign_id: str, results: list[Any]) -> EvaluationRunListResponse:
         return EvaluationRunListResponse(
-            campaign_id=context.campaign_id,
+            campaign_id=campaign_id,
             runs=[
                 EvaluationRunListItem(
                     run_id=item.id,
@@ -1438,7 +1450,7 @@ class EvaluationAnalyticsService:
                     total_latency_ms=item.total_latency_ms,
                     created_at=item.created_at,
                 )
-                for item in context.results
+                for item in results
             ],
         )
 

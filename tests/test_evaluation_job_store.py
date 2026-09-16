@@ -4,6 +4,7 @@ import asyncio
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import sqlite3
 from unittest.mock import AsyncMock, patch
@@ -188,8 +189,8 @@ async def _create_official_ragas_result(*, result_id: str) -> CampaignResult:
 
 async def _job_count() -> int:
     async with evaluation_db.connect_db() as connection:
-        cursor = await connection.execute("SELECT COUNT(*) FROM evaluation_jobs")
-        return int((await cursor.fetchone())[0])
+        cursor = await connection.execute("SELECT COUNT(*) AS count FROM evaluation_jobs")
+        return int((await cursor.fetchone())["count"])
 
 
 @pytest.mark.asyncio
@@ -255,8 +256,8 @@ async def test_successful_execution_retry_clears_historical_failure(store, fixed
 
 async def _job_item_count() -> int:
     async with evaluation_db.connect_db() as connection:
-        cursor = await connection.execute("SELECT COUNT(*) FROM evaluation_job_items")
-        return int((await cursor.fetchone())[0])
+        cursor = await connection.execute("SELECT COUNT(*) AS count FROM evaluation_job_items")
+        return int((await cursor.fetchone())["count"])
 
 
 @pytest.mark.asyncio
@@ -361,10 +362,14 @@ async def test_atomic_notification_exposes_evaluating_campaign_and_distinct_resu
     observed: list[tuple[str, int, int, int]] = []
 
     def observe_committed_state() -> None:
-        with closing(sqlite3.connect(evaluation_db.EVALUATION_DB_PATH)) as connection:
+        import psycopg
+        postgres_url = os.getenv("EVALUATION_DATABASE_URL")
+        database = psycopg.connect(postgres_url) if postgres_url else sqlite3.connect(evaluation_db.EVALUATION_DB_PATH)
+        marker = "%s" if postgres_url else "?"
+        with closing(database) as connection:
             campaign = connection.execute(
                 "SELECT status, evaluation_completed_units, evaluation_total_units "
-                "FROM campaigns WHERE id = ? AND user_id = ?",
+                f"FROM campaigns WHERE id = {marker} AND user_id = {marker}",
                 ("cmp-1", "user-a"),
             ).fetchone()
             pending = connection.execute(

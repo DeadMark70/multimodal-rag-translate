@@ -2056,35 +2056,6 @@
       }
     },
     "/api/evaluation/campaigns": {
-      "get": {
-        "tags": [
-          "Evaluation"
-        ],
-        "summary": "Get Campaigns",
-        "description": "List evaluation campaigns for current user.",
-        "operationId": "get_campaigns_api_evaluation_campaigns_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/CampaignStatus"
-                  },
-                  "type": "array",
-                  "title": "Response Get Campaigns Api Evaluation Campaigns Get"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      },
       "post": {
         "tags": [
           "Evaluation"
@@ -2092,15 +2063,20 @@
         "summary": "Create Campaign",
         "description": "Create and start an evaluation campaign.",
         "operationId": "create_campaign_api_evaluation_campaigns_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/CampaignCreateRequest"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -2123,12 +2099,71 @@
               }
             }
           }
-        },
+        }
+      },
+      "get": {
+        "tags": [
+          "Evaluation"
+        ],
+        "summary": "Get Campaigns",
+        "description": "List evaluation campaigns for current user.",
+        "operationId": "get_campaigns_api_evaluation_campaigns_get",
         "security": [
           {
             "HTTPBearer": []
           }
-        ]
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CampaignStatus"
+                  },
+                  "title": "Response Get Campaigns Api Evaluation Campaigns Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/evaluation/campaigns/preflight": {
@@ -2392,6 +2427,29 @@
               "type": "string",
               "title": "Campaign Id"
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
           }
         ],
         "responses": {
@@ -2584,6 +2642,29 @@
               "type": "string",
               "title": "Campaign Id"
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
           }
         ],
         "responses": {
@@ -2631,6 +2712,29 @@
             "schema": {
               "type": "string",
               "title": "Campaign Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
             }
           }
         ],
@@ -5061,6 +5165,37 @@
             "const": "2",
             "title": "Behavior Schema Version",
             "default": "2"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          },
+          "analysis_status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "updating"
+            ],
+            "title": "Analysis Status",
+            "default": "ready"
+          },
+          "analysis_updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Updated At"
           }
         },
         "type": "object",
@@ -7526,6 +7661,26 @@
           "campaign_id": {
             "type": "string",
             "title": "Campaign Id"
+          },
+          "analysis_status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "updating"
+            ],
+            "title": "Analysis Status",
+            "default": "ready"
+          },
+          "analysis_updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Updated At"
           },
           "research_schema_version": {
             "type": "string",
@@ -11637,6 +11792,17 @@
             },
             "type": "array",
             "title": "Runs"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
           }
         },
         "type": "object",
@@ -16224,6 +16390,26 @@
           "campaign_id": {
             "type": "string",
             "title": "Campaign Id"
+          },
+          "analysis_status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "updating"
+            ],
+            "title": "Analysis Status",
+            "default": "ready"
+          },
+          "analysis_updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Updated At"
           },
           "research_schema_version": {
             "type": "string",
@@ -23656,6 +23842,37 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Summaries"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          },
+          "analysis_status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "updating"
+            ],
+            "title": "Analysis Status",
+            "default": "ready"
+          },
+          "analysis_updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Updated At"
           }
         },
         "type": "object",

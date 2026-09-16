@@ -639,7 +639,7 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
         async def list_slot_resolutions_for_attempt(self, attempt_id):
             return []
 
-        async def load_campaign_observability_snapshot(self, campaign_id):
+        async def load_run_observability_snapshot(self, campaign_id, run_id):
             assert campaign_id == "cmp-1"
             run_id = "run-1"
             return CampaignObservabilitySnapshot(
@@ -680,7 +680,7 @@ async def test_get_run_observability_projects_owned_v9_normalized_data() -> None
             )
 
     class Accounting:
-        async def load_campaign_snapshot(self, campaign_id):
+        async def load_campaign_snapshot(self, campaign_id, *, run_id=None):
             assert campaign_id == "cmp-1"
             scope = SimpleNamespace(
                 scope_id="scope-1",
@@ -2216,14 +2216,18 @@ async def test_research_aggregates_use_bounded_result_projection_for_large_paylo
             raise AssertionError("research aggregate loaded full campaign results")
 
     campaign_result_queries: list[str] = []
-    original_execute = evaluation_db.aiosqlite.Connection.execute
+    import os
+    from evaluation.postgres import RepositoryConnection
+
+    driver = RepositoryConnection if os.getenv("EVALUATION_DATABASE_URL") else evaluation_db.aiosqlite.Connection
+    original_execute = driver.execute
 
     async def capture_execute(connection, sql, parameters=()):
         if "from campaign_results" in sql.lower():
             campaign_result_queries.append(sql.lower())
         return await original_execute(connection, sql, parameters)
 
-    monkeypatch.setattr(evaluation_db.aiosqlite.Connection, "execute", capture_execute)
+    monkeypatch.setattr(driver, "execute", capture_execute)
     results = ResultRepositorySpy()
     service = ResearchAnalyticsService(results=results)
 

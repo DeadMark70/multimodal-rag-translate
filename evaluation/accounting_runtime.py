@@ -8,6 +8,8 @@ import sqlite3
 from typing import Any
 from uuid import uuid4
 
+from psycopg import OperationalError
+
 from core.llm_usage_context import LlmAccountingContext, RawLlmUsageEvent
 from evaluation.accounting_schemas import (
     AccountingScopeStart,
@@ -22,7 +24,9 @@ from evaluation.token_normalizers import normalize_provider_usage
 _TRANSIENT_SQLITE_RETRY_DELAYS_SECONDS = (0.05, 0.2)
 
 
-def _is_transient_sqlite_write_error(error: sqlite3.OperationalError) -> bool:
+def _is_transient_sqlite_write_error(error: sqlite3.OperationalError | OperationalError) -> bool:
+    if isinstance(error, OperationalError):
+        return error.sqlstate in {"40001", "40P01"}
     message = str(error).lower()
     return "locked" in message or "busy" in message
 
@@ -83,7 +87,7 @@ class EvaluationAccountingSink:
             try:
                 await self._store.record_event(event)
                 return
-            except sqlite3.OperationalError as error:
+            except (sqlite3.OperationalError, OperationalError) as error:
                 if (
                     not _is_transient_sqlite_write_error(error)
                     or retry_index >= len(_TRANSIENT_SQLITE_RETRY_DELAYS_SECONDS)

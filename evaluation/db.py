@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from dataclasses import dataclass
@@ -796,7 +797,13 @@ def _utc_now_iso() -> str:
 
 @asynccontextmanager
 async def connect_db():
-    """Open SQLite connection with WAL-friendly settings."""
+    """Use configured PostgreSQL, or the existing SQLite deployment."""
+    if os.getenv("EVALUATION_DATABASE_URL"):
+        from evaluation.postgres import RepositoryConnection, connect_db as connect_postgres
+
+        async with connect_postgres() as connection:
+            yield RepositoryConnection(connection)
+        return
     db_path = Path(EVALUATION_DB_PATH)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     connection = await aiosqlite.connect(db_path)
@@ -812,6 +819,11 @@ async def connect_db():
 
 async def init_db() -> None:
     """Initialize evaluation database and future-proof tables."""
+    if os.getenv("EVALUATION_DATABASE_URL"):
+        from evaluation.postgres import init_db as check_postgres
+
+        await check_postgres()
+        return
     db_path = str(Path(EVALUATION_DB_PATH).resolve())
     if db_path in _INITIALIZED_DB_PATHS and Path(db_path).exists():
         return
@@ -829,6 +841,11 @@ async def init_db() -> None:
 
 async def force_init_db() -> None:
     """Run schema creation and migrations even if the current DB path is cached."""
+    if os.getenv("EVALUATION_DATABASE_URL"):
+        from evaluation.postgres import force_init_db as migrate_postgres
+
+        await migrate_postgres()
+        return
     db_path = str(Path(EVALUATION_DB_PATH).resolve())
     async with connect_db() as connection:
         await connection.execute("PRAGMA journal_mode=WAL;")
@@ -1217,6 +1234,12 @@ async def _apply_migrations(connection: aiosqlite.Connection) -> None:
 
 
 async def _table_columns(connection: aiosqlite.Connection, table_name: str) -> set[str]:
+    if os.getenv("EVALUATION_DATABASE_URL"):
+        cursor = await connection.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema=current_schema() AND table_name=?", (table_name,)
+        )
+        return {row["column_name"] for row in await cursor.fetchall()}
     cursor = await connection.execute(f"PRAGMA table_info({table_name})")
     rows = await cursor.fetchall()
     return {str(row[1]) for row in rows}
@@ -1671,12 +1694,15 @@ class CampaignRepository:
             )
         return _row_to_campaign_status(row)
 
-    async def list_by_user(self, *, user_id: str) -> list[CampaignStatus]:
+    async def list_by_user(
+        self, *, user_id: str, limit: int | None = None, offset: int = 0
+    ) -> list[CampaignStatus]:
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
-                "SELECT * FROM campaigns WHERE user_id = ? ORDER BY created_at DESC",
-                (user_id,),
+                "SELECT * FROM campaigns WHERE user_id = ? ORDER BY created_at DESC, id DESC"
+                + (" LIMIT ? OFFSET ?" if limit is not None else ""),
+                (user_id, limit, offset) if limit is not None else (user_id,),
             )
             rows = await cursor.fetchall()
         return [_row_to_campaign_status(row) for row in rows]
@@ -1920,7 +1946,7 @@ class CampaignRepository:
                     JOIN evaluation_work_items AS work ON work.id = item.work_item_id
                     WHERE job.user_id = ? AND job.campaign_id = ?
                       AND work.work_type = 'ragas_metric'
-                      AND (? IS NULL OR job.id = ?)
+                      AND (CAST(? AS TEXT) IS NULL OR job.id = ?)
                       AND item.id = (
                           SELECT latest.id FROM evaluation_job_items AS latest
                           WHERE latest.work_item_id = work.id
@@ -1929,7 +1955,7 @@ class CampaignRepository:
                       AND (json_type(work.input_snapshot_json, '$.result') IS NULL OR EXISTS (
                           SELECT 1 FROM campaign_results AS result
                           WHERE result.id = json_extract(work.input_snapshot_json, '$.campaign_result_id')
-                            AND result.source_attempt_id IS json_extract(work.input_snapshot_json, '$.result.source_attempt_id')
+                            AND result.source_attempt_id IS NOT DISTINCT FROM json_extract(work.input_snapshot_json, '$.result.source_attempt_id')
                       ))
                     """,
                     (user_id, campaign_id, job_id, job_id),
@@ -1995,7 +2021,7 @@ class CampaignRepository:
         campaign = await self.get(user_id=user_id, campaign_id=campaign_id)
         async with connect_db() as connection:
             results = await (await connection.execute(
-                "SELECT COUNT(*) AS total, SUM(status = 'completed') AS completed "
+                "SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed "
                 "FROM campaign_results WHERE user_id = ? AND campaign_id = ?",
                 (user_id, campaign_id),
             )).fetchone()
@@ -2166,6 +2192,8 @@ class CampaignResultRepository:
         *,
         user_id: str,
         campaign_id: str,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list["CampaignAnalyticsResult"]:
         """Read only the bounded fields needed by campaign analytics.
 
@@ -2203,8 +2231,8 @@ class CampaignResultRepository:
                 FROM campaign_results
                 WHERE campaign_id = ? AND user_id = ?
                 ORDER BY created_at ASC, question_id ASC, mode ASC, run_number ASC, id ASC
-                """,
-                (campaign_id, user_id),
+                """ + (" LIMIT ? OFFSET ?" if limit is not None else ""),
+                (campaign_id, user_id, limit, offset) if limit is not None else (campaign_id, user_id),
             )
             rows = await cursor.fetchall()
         return [

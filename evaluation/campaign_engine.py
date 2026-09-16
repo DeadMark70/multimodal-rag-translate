@@ -187,8 +187,12 @@ class CampaignEngine:
             self._worker_notifier()
         return CampaignCreateResponse(campaign_id=created.id, status=created.status)
 
-    async def list_campaigns(self, *, user_id: str) -> list[CampaignStatus]:
-        campaigns = await self._campaign_repository.list_by_user(user_id=user_id)
+    async def list_campaigns(
+        self, *, user_id: str, limit: int | None = None, offset: int = 0
+    ) -> list[CampaignStatus]:
+        campaigns = await self._campaign_repository.list_by_user(
+            user_id=user_id, **({"limit": limit, "offset": offset} if limit is not None else {})
+        )
         return [
             await self._reconcile_read_status(user_id=user_id, campaign=campaign)
             for campaign in campaigns

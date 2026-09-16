@@ -491,6 +491,9 @@ class AgentBehaviorResponse(AnalyticsAggregateResponse):
     """Trace-backed per-run agent behavior analytics."""
 
     behavior_schema_version: Literal["2"] = "2"
+    next_offset: int | None = None
+    analysis_status: Literal["ready", "updating"] = "ready"
+    analysis_updated_at: str | None = None
     rows: list[AgentBehaviorRow] = Field(default_factory=list)
 
 
@@ -541,6 +544,9 @@ class ResearchQuestionComparisonResponse(AnalyticsAggregateResponse):
     """Strict research-accounting question comparison analytics."""
 
     rows: list[QuestionComparisonRow] = Field(default_factory=list)
+    next_offset: int | None = None
+    analysis_status: Literal["ready", "updating"] = "ready"
+    analysis_updated_at: str | None = None
 
 
 class CostLatencyResponse(AnalyticsAggregateResponse):
@@ -664,6 +670,7 @@ class EvaluationRunListResponse(BaseModel):
 
     campaign_id: str
     runs: list[EvaluationRunListItem] = Field(default_factory=list)
+    next_offset: int | None = None
 
 
 class RunTraceResponse(BaseModel):

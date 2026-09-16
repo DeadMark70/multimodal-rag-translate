@@ -476,7 +476,7 @@ class EvaluationJobStore:
                                 AND ji.next_retry_at <= ?
                             )
                         )
-                        AND (? IS NULL OR wi.work_type = ?)
+                        AND (CAST(? AS TEXT) IS NULL OR wi.work_type = ?)
                         AND NOT EXISTS (
                             SELECT 1
                             FROM evaluation_job_items AS active
@@ -1143,23 +1143,37 @@ class EvaluationJobStore:
                 await connection.rollback()
                 raise
 
-    async def recover_interrupted_attempts(self, *, at: datetime) -> int:
+    async def recover_interrupted_attempts(
+        self, *, at: datetime, stale_before: datetime | None = None,
+        attempt_ids: Sequence[str] | None = None,
+    ) -> int:
         """Mark in-flight attempts interrupted and requeue items with budget left."""
         await init_db()
         at_iso = _as_iso(at)
+        if attempt_ids is not None and not attempt_ids:
+            return 0
+        predicate = ""
+        parameters: tuple[Any, ...] = ()
+        if stale_before is not None:
+            predicate = " AND COALESCE(attempt.last_heartbeat_at, attempt.started_at) < ?"
+            parameters = (_as_iso(stale_before),)
+        if attempt_ids is not None:
+            predicate += " AND attempt.id IN (" + ",".join("?" for _ in attempt_ids) + ")"
+            parameters += tuple(attempt_ids)
         async with connect_db() as connection:
             await connection.execute("BEGIN IMMEDIATE")
             try:
                 cursor = await connection.execute(
-                    """
+                    f"""
                     SELECT attempt.id AS attempt_id, attempt.job_item_id,
                            item.max_attempts,
                            (SELECT COUNT(*) FROM evaluation_attempts AS counted
                             WHERE counted.job_item_id = item.id) AS attempt_count
                     FROM evaluation_attempts AS attempt
                     JOIN evaluation_job_items AS item ON item.id = attempt.job_item_id
-                    WHERE attempt.status = 'running'
-                    """
+                    WHERE attempt.status = 'running' {predicate}
+                    """,
+                    parameters,
                 )
                 rows = await cursor.fetchall()
                 for row in rows:
@@ -1197,17 +1211,22 @@ class EvaluationJobStore:
         async with connect_db() as connection:
             cursor = await connection.execute(
                 """
-                SELECT * FROM evaluation_jobs
-                WHERE user_id = ? AND campaign_id = ?
-                ORDER BY created_at ASC, id ASC
+                SELECT job.*,
+                       COUNT(item.id) AS total,
+                       SUM(CASE WHEN item.status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded,
+                       SUM(CASE WHEN item.status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                       SUM(CASE WHEN item.status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled,
+                       SUM(CASE WHEN item.status IN ('pending','running','retry_wait') THEN 1 ELSE 0 END) AS unresolved
+                FROM evaluation_jobs AS job
+                LEFT JOIN evaluation_job_items AS item ON item.job_id = job.id
+                WHERE job.user_id = ? AND job.campaign_id = ?
+                GROUP BY job.id
+                ORDER BY job.created_at ASC, job.id ASC
                 """,
                 (user_id, campaign_id),
             )
             rows = await cursor.fetchall()
-        jobs: list[EvaluationJob] = []
-        for row in rows:
-            jobs.append(await self._with_job_status(_row_to_job(row)))
-        return jobs
+        return [self._job_with_counts(_row_to_job(row), row) for row in rows]
 
     async def get_job(self, *, user_id: str, job_id: str) -> EvaluationJob:
         await init_db()
@@ -1327,7 +1346,7 @@ class EvaluationJobStore:
                       WHERE owner_job.campaign_id = work.campaign_id
                         AND owner_job.user_id = ?
                   )
-                  AND (? IS NULL OR work.work_type = ?)
+                  AND (CAST(? AS TEXT) IS NULL OR work.work_type = ?)
                   AND item.id = (
                       SELECT latest.id
                       FROM evaluation_job_items AS latest
@@ -1432,6 +1451,10 @@ class EvaluationJobStore:
                 (job.job_id,),
             )
             row = await cursor.fetchone()
+        return self._job_with_counts(job, row)
+
+    def _job_with_counts(self, job: EvaluationJob, row: Mapping[str, Any]) -> EvaluationJob:
+        """Apply the same lifecycle rules to individual and batch reads."""
         total = int(row["total"] or 0)
         succeeded = int(row["succeeded"] or 0)
         failed = int(row["failed"] or 0)

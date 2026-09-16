@@ -5,6 +5,7 @@ Keeps app assembly separate from route/business modules for easier maintenance.
 """
 
 # Standard library
+import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -200,13 +201,13 @@ async def app_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """FastAPI lifespan hook for startup initialization."""
     set_readiness(app, False)
     from evaluation.campaign_engine import get_campaign_engine
-    from evaluation.db import force_init_db
+    from evaluation.db import init_db
     from evaluation.job_worker import get_evaluation_job_worker
 
     logger.info("=== Application Startup ===")
     _ensure_base_directories()
     _initialize_external_clients(app)
-    await force_init_db()
+    await init_db()
     # Construct the production facade before inspecting the singleton worker.
     # CampaignEngine wires the real execution/RAGAS handlers into that worker;
     # without this call a clean process would skip startup recovery entirely.
@@ -233,6 +234,10 @@ async def app_lifespan(app: FastAPI) -> AsyncIterator[None]:
             # campaign is created. Recovery can drain it synchronously when
             # needed without creating an idle-loop race during app startup.
             await engine.recover_inflight_campaigns()
+    analysis_task = None
+    if os.getenv("EVALUATION_DATABASE_URL"):
+        from evaluation.analysis_cache import refresh_loop
+        analysis_task = asyncio.create_task(refresh_loop(), name="evaluation-analysis-refresh")
     try:
         await _initialize_rag_components()
         await _warm_up_pdf_ocr()
@@ -245,6 +250,13 @@ async def app_lifespan(app: FastAPI) -> AsyncIterator[None]:
             await lifecycle_worker.stop()
         elif lifecycle_worker is not worker and getattr(lifecycle_worker, "is_running", False):
             await lifecycle_worker.stop()
+        if analysis_task is not None:
+            analysis_task.cancel()
+            await asyncio.gather(analysis_task, return_exceptions=True)
+            from evaluation.analysis_cache import stop_refreshes
+            await stop_refreshes()
+        from evaluation.postgres import close_db
+        await close_db()
 
 
 async def read_root() -> dict[str, str]:

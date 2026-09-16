@@ -311,11 +311,18 @@ async def test_list_campaign_scopes_bulk_loads_ordered_targets_in_two_queries(
     statements: list[str] = []
     original_connect_db = accounting_store_module.connect_db
 
+    class TracedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        async def execute(self, statement, parameters=None):
+            statements.append(statement)
+            return await self.connection.execute(statement, parameters)
+
     @asynccontextmanager
     async def traced_connect_db():
         async with original_connect_db() as connection:
-            await connection.set_trace_callback(statements.append)
-            yield connection
+            yield TracedConnection(connection)
 
     monkeypatch.setattr(accounting_store_module, "connect_db", traced_connect_db)
 

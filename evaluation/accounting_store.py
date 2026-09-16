@@ -188,7 +188,7 @@ class EvaluationAccountingStore:
                     "Usage event metadata does not match its accounting scope"
                 )
             cursor = await connection.execute(
-                """INSERT OR IGNORE INTO evaluation_usage_events (
+                """INSERT INTO evaluation_usage_events (
                        usage_event_id, scope_id, campaign_id, scope_type, scope_key, run_id,
                        provider_run_id, phase, purpose, metric_name, provider, model_name,
                        input_tokens, output_text_tokens, reasoning_tokens, other_tokens,
@@ -197,7 +197,8 @@ class EvaluationAccountingStore:
                        pricing_status, price_snapshot_id, latency_ms, status, error_json,
                        created_at
                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                             ?, ?, ?, ?, ?, ?, ?, ?)""",
+                             ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(usage_event_id) DO NOTHING""",
                 _usage_event_values(event),
             )
             if cursor.rowcount == 1:
@@ -281,7 +282,12 @@ class EvaluationAccountingStore:
             cursor = await connection.execute(
                 """UPDATE evaluation_accounting_scopes
                    SET status = 'interrupted', completed_at = ?, updated_at = ?
-                   WHERE status = 'running'""",
+                   WHERE status = 'running' AND EXISTS (
+                       SELECT 1 FROM evaluation_accounting_scope_targets AS target
+                       JOIN evaluation_attempts AS attempt ON attempt.id = target.attempt_id
+                       WHERE target.scope_id = evaluation_accounting_scopes.scope_id
+                         AND attempt.status = 'interrupted'
+                   )""",
                 (now, now),
             )
             await connection.commit()
@@ -332,31 +338,35 @@ class EvaluationAccountingStore:
             rows = await cursor.fetchall()
         return [_event_from_row(row) for row in rows]
 
-    async def load_campaign_snapshot(self, campaign_id: str) -> CampaignAccountingSnapshot:
+    async def load_campaign_snapshot(
+        self, campaign_id: str, *, run_id: str | None = None
+    ) -> CampaignAccountingSnapshot:
         """Load all accounting inputs needed by every release run in one connection."""
         await init_db()
         async with connect_db() as connection:
             scope_rows = await (
                 await connection.execute(
                     """SELECT * FROM evaluation_accounting_scopes
-                       WHERE campaign_id = ? ORDER BY created_at ASC, scope_id ASC""",
-                    (campaign_id,),
+                       WHERE campaign_id = ? AND (CAST(? AS TEXT) IS NULL OR run_id = ?)
+                       ORDER BY created_at ASC, scope_id ASC""",
+                    (campaign_id, run_id, run_id),
                 )
             ).fetchall()
             target_rows = await (
                 await connection.execute(
                     """SELECT targets.* FROM evaluation_accounting_scope_targets AS targets
                        JOIN evaluation_accounting_scopes AS scopes ON scopes.scope_id = targets.scope_id
-                       WHERE scopes.campaign_id = ?
+                       WHERE scopes.campaign_id = ? AND (CAST(? AS TEXT) IS NULL OR scopes.run_id = ?)
                        ORDER BY targets.created_at ASC, targets.attempt_id ASC""",
-                    (campaign_id,),
+                    (campaign_id, run_id, run_id),
                 )
             ).fetchall()
             event_rows = await (
                 await connection.execute(
                     """SELECT * FROM evaluation_usage_events
-                       WHERE campaign_id = ? ORDER BY created_at ASC, usage_event_id ASC""",
-                    (campaign_id,),
+                       WHERE campaign_id = ? AND (CAST(? AS TEXT) IS NULL OR run_id = ?)
+                       ORDER BY created_at ASC, usage_event_id ASC""",
+                    (campaign_id, run_id, run_id),
                 )
             ).fetchall()
         targets_by_scope: dict[str, list[AccountingScopeTarget]] = {}
@@ -407,13 +417,13 @@ class EvaluationAccountingStore:
                                          THEN input_tokens + output_text_tokens + reasoning_tokens + other_tokens
                                          ELSE 0 END), 0)
                            AS total_tokens,
-                       COALESCE(SUM(usage_status = 'measured'), 0) AS measured_call_count,
-                       COALESCE(SUM(usage_status = 'measured'
-                                    AND reconciliation_status = 'balanced'), 0)
+                       COALESCE(SUM(CASE WHEN usage_status = 'measured' THEN 1 ELSE 0 END), 0) AS measured_call_count,
+                       COALESCE(SUM(CASE WHEN usage_status = 'measured'
+                                    AND reconciliation_status = 'balanced' THEN 1 ELSE 0 END), 0)
                            AS balanced_measured_call_count,
-                       COALESCE(SUM(usage_status = 'missing'), 0) AS missing_usage_call_count,
-                       COALESCE(SUM(status = 'failed'), 0) AS failed_call_count,
-                       COALESCE(SUM(reconciliation_status != 'balanced'), 0) AS unbalanced_call_count
+                       COALESCE(SUM(CASE WHEN usage_status = 'missing' THEN 1 ELSE 0 END), 0) AS missing_usage_call_count,
+                       COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed_call_count,
+                       COALESCE(SUM(CASE WHEN reconciliation_status != 'balanced' THEN 1 ELSE 0 END), 0) AS unbalanced_call_count
                    FROM evaluation_usage_events WHERE scope_id = ?""",
                 (scope_id,),
             )

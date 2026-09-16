@@ -399,10 +399,12 @@ async def preflight_campaign(
 @router.get("/campaigns", response_model=list[CampaignStatus])
 async def get_campaigns(
     user_id: str = Depends(get_current_user_id),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
 ) -> list[CampaignStatus]:
     """List evaluation campaigns for current user."""
     engine = get_campaign_engine()
-    return await engine.list_campaigns(user_id=user_id)
+    return await engine.list_campaigns(user_id=user_id, limit=limit, offset=offset)
 
 
 @router.get("/campaigns/{campaign_id}/results", response_model=CampaignResultsResponse)
@@ -425,7 +427,13 @@ async def get_campaign_research_summary(
     analytics: ResearchAnalyticsService = Depends(get_research_analytics_service),
 ) -> CampaignResearchSummaryResponse:
     """Fetch the strict version-2 research accounting summary."""
-    return await analytics.get_summary(user_id=user_id, campaign_id=campaign_id)
+    from evaluation.analysis_cache import read_analysis
+
+    return await read_analysis(
+        user_id=user_id, campaign_id=campaign_id, kind="summary",
+        model=CampaignResearchSummaryResponse,
+        loader=lambda: analytics.get_summary(user_id=user_id, campaign_id=campaign_id),
+    )
 
 
 @router.get(
@@ -458,9 +466,13 @@ async def get_campaign_research_runs(
     campaign_id: str,
     user_id: str = Depends(get_current_user_id),
     analytics: EvaluationAnalyticsService = Depends(get_evaluation_analytics_service),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
 ) -> EvaluationRunListResponse:
     """List execution samples for one campaign."""
-    return await analytics.list_campaign_runs(user_id=user_id, campaign_id=campaign_id)
+    return await analytics.list_campaign_runs(
+        user_id=user_id, campaign_id=campaign_id, limit=limit, offset=offset
+    )
 
 
 @router.get(
@@ -507,13 +519,26 @@ async def get_campaign_question_comparison(
 )
 async def get_campaign_research_question_comparison(
     campaign_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     user_id: str = Depends(get_current_user_id),
     analytics: ResearchAnalyticsService = Depends(get_research_analytics_service),
 ) -> ResearchQuestionComparisonResponse:
     """Fetch strict per-question/per-mode comparison analytics."""
-    return await analytics.get_question_comparison(
-        user_id=user_id, campaign_id=campaign_id
+    from evaluation.analysis_cache import read_analysis
+
+    result = await read_analysis(
+        user_id=user_id, campaign_id=campaign_id, kind="questions",
+        model=ResearchQuestionComparisonResponse,
+        loader=lambda: analytics.get_question_comparison(user_id=user_id, campaign_id=campaign_id),
     )
+    rows = result.rows[offset:offset + limit]
+    return result.model_copy(update={
+        "rows": rows,
+        "summaries": {row.question_id: result.summaries[row.question_id]
+                      for row in rows if row.question_id in result.summaries},
+        "next_offset": offset + limit if offset + limit < len(result.rows) else None,
+    })
 
 
 @router.get(
@@ -522,11 +547,23 @@ async def get_campaign_research_question_comparison(
 )
 async def get_campaign_agent_behavior(
     campaign_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     user_id: str = Depends(get_current_user_id),
     analytics: ResearchAnalyticsService = Depends(get_research_analytics_service),
 ) -> AgentBehaviorResponse:
     """Return trace-backed per-run behavior without placeholder fallbacks."""
-    return await analytics.get_agent_behavior(user_id=user_id, campaign_id=campaign_id)
+    from evaluation.analysis_cache import read_analysis
+
+    result = await read_analysis(
+        user_id=user_id, campaign_id=campaign_id, kind="behavior",
+        model=AgentBehaviorResponse,
+        loader=lambda: analytics.get_agent_behavior(user_id=user_id, campaign_id=campaign_id),
+    )
+    return result.model_copy(update={
+        "rows": result.rows[offset:offset + limit],
+        "next_offset": offset + limit if offset + limit < len(result.rows) else None,
+    })
 
 
 @router.get("/campaigns/{campaign_id}/cost-latency", response_model=CostLatencyResponse)

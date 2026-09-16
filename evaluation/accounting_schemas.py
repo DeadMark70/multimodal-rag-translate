@@ -92,6 +92,8 @@ class ResearchWarning(BaseModel):
 
 class CampaignResearchSummaryResponse(BaseModel):
     campaign_id: str
+    analysis_status: Literal["ready", "updating"] = "ready"
+    analysis_updated_at: str | None = None
     research_schema_version: Literal["2"] = "2"
     completed_run_count: int
     total_run_count: int

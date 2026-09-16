@@ -87,6 +87,36 @@ async def _seed_running_attempt(store: EvaluationJobStore, *, logical_key: str) 
     assert len(claimed) == 1
 
 
+@pytest.mark.asyncio
+async def test_stop_recovers_claim_finishing_after_shutdown_begins(
+    store: EvaluationJobStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_work(store, logical_key="execution:Q-stop:naive:1:none")
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = store.claim_ready_items
+
+    async def delayed_claim(**kwargs):
+        entered.set()
+        await release.wait()
+        return await original(**kwargs)
+
+    monkeypatch.setattr(store, "claim_ready_items", delayed_claim)
+    handler = AsyncMock()
+    worker = EvaluationJobWorker(store=store, execution_handler=handler)
+    await worker.start()
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    stopping = asyncio.create_task(worker.stop())
+    await worker._stop_event.wait()
+    release.set()
+    await asyncio.wait_for(stopping, timeout=5)
+    handler.assert_not_awaited()
+    async with evaluation_db.connect_db() as connection:
+        attempt = await (await connection.execute("SELECT status FROM evaluation_attempts")).fetchone()
+        item = await (await connection.execute("SELECT status FROM evaluation_job_items")).fetchone()
+    assert attempt["status"] == "interrupted"
+    assert item["status"] == "pending"
+
+
 async def _seed_successful_work(store: EvaluationJobStore, *, logical_key: str) -> None:
     await _seed_work(store, logical_key=logical_key, max_attempts=1)
     claim = (

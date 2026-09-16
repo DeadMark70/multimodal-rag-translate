@@ -6,8 +6,10 @@ import asyncio
 import logging
 import sqlite3
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TypeAlias
+
+from psycopg import OperationalError
 
 from evaluation.accounting_store import EvaluationAccountingStore
 from evaluation.job_schemas import ClaimedEvaluationWork, EvaluationWorkType
@@ -28,7 +30,9 @@ _TRANSIENT_SQLITE_RETRY_SECONDS = 0.05
 logger = logging.getLogger(__name__)
 
 
-def _is_transient_sqlite_error(error: sqlite3.OperationalError) -> bool:
+def _is_transient_sqlite_error(error: sqlite3.OperationalError | OperationalError) -> bool:
+    if isinstance(error, OperationalError):
+        return error.sqlstate in {"40001", "40P01"}
     message = str(error).lower()
     return "locked" in message or "busy" in message
 
@@ -60,6 +64,8 @@ class EvaluationJobWorker:
         self._loop_task: asyncio.Task[None] | None = None
         self._active_tasks: dict[asyncio.Task[None], EvaluationWorkType] = {}
         self._accepting = False
+        self._owned_attempt_ids: set[str] = set()
+        self._last_recovery_at: datetime | None = None
 
     def _reset_loop_primitives(self) -> None:
         """Create asyncio synchronization objects for the current event loop.
@@ -124,8 +130,7 @@ class EvaluationJobWorker:
         self._active_tasks.clear()
         self._accepting = True
         async with self._claim_lock:
-            await self._accounting_store.interrupt_running_scopes()
-            await self._store.recover_interrupted_attempts(at=self._clock())
+            await self._recover_stale_attempts()
         self._loop_task = asyncio.create_task(
             self._run_loop(), name="evaluation-job-worker"
         )
@@ -148,8 +153,7 @@ class EvaluationJobWorker:
         self._reset_loop_primitives()
         self._accepting = True
         async with self._claim_lock:
-            await self._accounting_store.interrupt_running_scopes()
-            await self._store.recover_interrupted_attempts(at=self._clock())
+            await self._recover_stale_attempts()
         try:
             for _ in range(max_rounds):
                 claimed = await self.run_once()
@@ -167,6 +171,7 @@ class EvaluationJobWorker:
         self._stop_event.set()
         self.notify()
 
+        owned_attempts = tuple(self._owned_attempt_ids)
         active = tuple(self._active_tasks)
         for task in active:
             task.cancel()
@@ -174,8 +179,14 @@ class EvaluationJobWorker:
             await asyncio.gather(*active, return_exceptions=True)
 
         async with self._claim_lock:
+            # A claim already in progress when stop began can finish after the
+            # first snapshot, without being dispatched to a handler.
+            owned_attempts = tuple(set(owned_attempts) | self._owned_attempt_ids)
+            await self._store.recover_interrupted_attempts(
+                at=self._clock(), attempt_ids=owned_attempts
+            )
+            self._owned_attempt_ids.difference_update(owned_attempts)
             await self._accounting_store.interrupt_running_scopes()
-            await self._store.recover_interrupted_attempts(at=self._clock())
 
         loop_task = self._loop_task
         if loop_task is not None:
@@ -241,6 +252,7 @@ class EvaluationJobWorker:
                             work_type=work_type,
                         )
                     )
+            self._owned_attempt_ids.update(claim.attempt_id for claim in claims)
             if not self._accepting:
                 return 0
         if self._ragas_batch_handler is not None and self._ragas_handler is None:
@@ -287,16 +299,27 @@ class EvaluationJobWorker:
             task.add_done_callback(self._task_finished)
         return len(claims)
 
+    async def _recover_stale_attempts(self) -> None:
+        now = self._clock()
+        if self._last_recovery_at is not None and (now - self._last_recovery_at).total_seconds() < 15:
+            return
+        await self._store.recover_interrupted_attempts(
+            at=now, stale_before=now - timedelta(minutes=5)
+        )
+        await self._accounting_store.interrupt_running_scopes()
+        self._last_recovery_at = now
+
     async def _run_loop(self) -> None:
         while not self._stop_event.is_set():
             self._wake_event.clear()
             try:
+                await self._recover_stale_attempts()
                 claimed = await self.run_once()
-            except sqlite3.OperationalError as error:
+            except (sqlite3.OperationalError, OperationalError) as error:
                 if not _is_transient_sqlite_error(error):
                     raise
                 logger.warning(
-                    "Evaluation worker claim blocked by transient SQLite contention; retrying"
+                    "Evaluation worker claim blocked by transient database contention; retrying"
                 )
                 await self._sleep(_TRANSIENT_SQLITE_RETRY_SECONDS)
                 continue
@@ -314,9 +337,9 @@ class EvaluationJobWorker:
     async def _wait_for_wakeup_or_retry(self) -> None:
         due_at = await self._store.next_ready_at()
         timeout = (
-            None
+            5.0
             if due_at is None
-            else max(0.0, (due_at - self._clock()).total_seconds())
+            else min(5.0, max(0.0, (due_at - self._clock()).total_seconds()))
         )
         wake_task = asyncio.create_task(self._wake_event.wait())
         waiters: set[asyncio.Task[object]] = {wake_task}
@@ -330,6 +353,7 @@ class EvaluationJobWorker:
             await asyncio.gather(*pending, return_exceptions=True)
 
     async def _run_claim(self, claim: ClaimedEvaluationWork) -> None:
+        self._owned_attempt_ids.add(claim.attempt_id)
         handler, slots = self._handler_for(claim)
         heartbeat = asyncio.create_task(
             self._heartbeat_until_cancelled(claim.attempt_id),
@@ -339,11 +363,13 @@ class EvaluationJobWorker:
             async with slots:
                 await handler(claim)
         finally:
+            self._owned_attempt_ids.discard(claim.attempt_id)
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
 
     async def _run_ragas_batch(self, claims: list[ClaimedEvaluationWork]) -> None:
         assert self._ragas_batch_handler is not None
+        self._owned_attempt_ids.update(claim.attempt_id for claim in claims)
         heartbeats = [
             asyncio.create_task(
                 self._heartbeat_until_cancelled(claim.attempt_id),
@@ -354,6 +380,7 @@ class EvaluationJobWorker:
         try:
             await self._ragas_batch_handler(claims)
         finally:
+            self._owned_attempt_ids.difference_update(claim.attempt_id for claim in claims)
             for heartbeat in heartbeats:
                 heartbeat.cancel()
             if heartbeats:

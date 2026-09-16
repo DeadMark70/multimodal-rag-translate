@@ -1084,10 +1084,14 @@ class ResearchAnalyticsService:
         result = await self._results.get(
             user_id=user_id, campaign_id=campaign_id, result_id=run_id
         )
-        canonical = await self._load_campaign_run_observability(
-            campaign_id=campaign_id, results=[result]
+        observability, accounting = await asyncio.gather(
+            self._observability.load_run_observability_snapshot(campaign_id, run_id),
+            self._accounting.load_campaign_snapshot(campaign_id, run_id=run_id),
         )
-        return _project_interactive_run_observability(canonical[run_id])
+        canonical = _build_canonical_run_observability(
+            result=result, observability=observability, accounting=accounting
+        )
+        return _project_interactive_run_observability(canonical)
 
     async def _get_run_observability_legacy(
         self,

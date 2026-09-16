@@ -1,0 +1,24 @@
+services:
+  evaluation-postgres:
+    image: postgres:17.11
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: evaluation
+      POSTGRES_USER: evaluation
+      POSTGRES_PASSWORD: ${EVALUATION_POSTGRES_PASSWORD:?Set EVALUATION_POSTGRES_PASSWORD}
+    volumes:
+      - evaluation-postgres-data:/var/lib/postgresql/data
+    networks:
+      - evaluation-db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evaluation -d evaluation"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  evaluation-postgres-data:
+
+networks:
+  evaluation-db:
+    name: evaluation-db

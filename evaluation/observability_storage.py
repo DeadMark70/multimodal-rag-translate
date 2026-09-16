@@ -455,7 +455,7 @@ class EvaluationGraphEventRepository:
         async with connect_db() as connection:
             await connection.execute(
                 """
-                INSERT OR REPLACE INTO evaluation_graph_events (
+                INSERT INTO evaluation_graph_events (
                     graph_event_id, run_id, campaign_id, span_id, graph_query, graph_search_mode,
                     graph_evidence_mode, graph_route, router_reason, graph_feature_flags_json,
                     graph_snapshot_version, graph_schema_version, graph_extraction_prompt_version,
@@ -463,6 +463,29 @@ class EvaluationGraphEventRepository:
                     graph_latency_ms, graph_context_tokens, graph_to_chunk_success_rate,
                     graph_noise_ratio, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (graph_event_id) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    campaign_id = excluded.campaign_id,
+                    span_id = excluded.span_id,
+                    graph_query = excluded.graph_query,
+                    graph_search_mode = excluded.graph_search_mode,
+                    graph_evidence_mode = excluded.graph_evidence_mode,
+                    graph_route = excluded.graph_route,
+                    router_reason = excluded.router_reason,
+                    graph_feature_flags_json = excluded.graph_feature_flags_json,
+                    graph_snapshot_version = excluded.graph_snapshot_version,
+                    graph_schema_version = excluded.graph_schema_version,
+                    graph_extraction_prompt_version = excluded.graph_extraction_prompt_version,
+                    matched_entity_ids_json = excluded.matched_entity_ids_json,
+                    community_ids_json = excluded.community_ids_json,
+                    node_count = excluded.node_count,
+                    edge_count = excluded.edge_count,
+                    path_count = excluded.path_count,
+                    graph_latency_ms = excluded.graph_latency_ms,
+                    graph_context_tokens = excluded.graph_context_tokens,
+                    graph_to_chunk_success_rate = excluded.graph_to_chunk_success_rate,
+                    graph_noise_ratio = excluded.graph_noise_ratio,
+                    created_at = excluded.created_at
                 """,
                 (
                     event.graph_event_id,
@@ -542,12 +565,28 @@ class EvaluationGraphEvidenceItemRepository:
             for item in items:
                 await connection.execute(
                     """
-                    INSERT OR REPLACE INTO evaluation_graph_evidence_items (
+                    INSERT INTO evaluation_graph_evidence_items (
                         graph_evidence_item_id, graph_event_id, node_ids_json, edge_ids_json,
                         relation_path_json, source_doc_ids_json, source_chunk_ids_json, pages_json,
                         asset_ids_json, confidence, provenance_status, used_as_locator,
                         packed_in_context, used_in_answer, supported_claim_ids_json, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (graph_evidence_item_id) DO UPDATE SET
+                        graph_event_id = excluded.graph_event_id,
+                        node_ids_json = excluded.node_ids_json,
+                        edge_ids_json = excluded.edge_ids_json,
+                        relation_path_json = excluded.relation_path_json,
+                        source_doc_ids_json = excluded.source_doc_ids_json,
+                        source_chunk_ids_json = excluded.source_chunk_ids_json,
+                        pages_json = excluded.pages_json,
+                        asset_ids_json = excluded.asset_ids_json,
+                        confidence = excluded.confidence,
+                        provenance_status = excluded.provenance_status,
+                        used_as_locator = excluded.used_as_locator,
+                        packed_in_context = excluded.packed_in_context,
+                        used_in_answer = excluded.used_in_answer,
+                        supported_claim_ids_json = excluded.supported_claim_ids_json,
+                        created_at = excluded.created_at
                     """,
                     (
                         item.graph_evidence_item_id,
@@ -666,6 +705,38 @@ class EvaluationObservabilityRepository(
 ):
     """Persistence operations for normalized evaluation observability rows."""
 
+    async def load_run_observability_snapshot(
+        self, campaign_id: str, run_id: str
+    ) -> CampaignObservabilitySnapshot:
+        """Build the canonical container using only the selected run's rows."""
+        release, traces, calls, retrievals, chunks, tools, routes, evidence, ratings = await asyncio.gather(
+            self.load_campaign_release_snapshot(campaign_id, run_id=run_id),
+            self.list_trace_events_for_run(run_id),
+            self.list_llm_calls_for_run(run_id),
+            self.list_retrieval_events_for_run(run_id),
+            self.list_retrieval_chunks_for_run(run_id),
+            self.list_tool_calls_for_run(run_id),
+            self.list_routing_decisions_for_run(run_id),
+            self.list_graph_evidence_items_for_run(run_id),
+            self.list_human_ratings_for_run(run_id),
+        )
+        return CampaignObservabilitySnapshot(
+            trace_events_by_run_id={run_id: traces},
+            llm_calls_by_run_id={run_id: calls},
+            retrieval_events_by_run_id={run_id: retrievals},
+            retrieval_chunks_by_run_id={run_id: chunks},
+            tool_calls_by_run_id={run_id: tools},
+            routing_decisions_by_run_id={run_id: routes},
+            graph_evidence_items_by_run_id={run_id: evidence},
+            human_ratings_by_run_id={run_id: ratings},
+            context_packs_by_run_id=release.context_packs_by_run_id,
+            graph_events_by_run_id=release.graph_events_by_run_id,
+            claims_by_run_id=release.claims_by_run_id,
+            materializations_by_run_id=release.materializations_by_run_id,
+            evidence_packets_by_run_id=release.evidence_packets_by_run_id,
+            slot_resolutions_by_run_id=release.slot_resolutions_by_run_id,
+        )
+
     async def load_campaign_observability_snapshot(
         self, campaign_id: str
     ) -> CampaignObservabilitySnapshot:
@@ -709,7 +780,7 @@ class EvaluationObservabilityRepository(
         )
 
     async def load_campaign_release_snapshot(
-        self, campaign_id: str
+        self, campaign_id: str, *, run_id: str | None = None
     ) -> CampaignReleaseObservabilitySnapshot:
         """Read release-gate observability once per campaign, never once per run."""
         await init_db()
@@ -717,43 +788,49 @@ class EvaluationObservabilityRepository(
             materialization_rows = await (
                 await connection.execute(
                     """SELECT * FROM evaluation_v9_attempt_materializations
-                       WHERE campaign_id = ? ORDER BY run_id ASC, created_at ASC""",
-                    (campaign_id,),
+                       WHERE campaign_id = ? AND (CAST(? AS TEXT) IS NULL OR run_id = ?)
+                       ORDER BY run_id ASC, created_at ASC""",
+                    (campaign_id, run_id, run_id),
                 )
             ).fetchall()
             evidence_rows = await (
                 await connection.execute(
                     """SELECT * FROM evaluation_evidence_packets
-                       WHERE campaign_id = ? ORDER BY run_id ASC, created_at ASC, evidence_id ASC""",
-                    (campaign_id,),
+                       WHERE campaign_id = ? AND (CAST(? AS TEXT) IS NULL OR run_id = ?)
+                       ORDER BY run_id ASC, created_at ASC, evidence_id ASC""",
+                    (campaign_id, run_id, run_id),
                 )
             ).fetchall()
             slot_rows = await (
                 await connection.execute(
                     """SELECT * FROM evaluation_slot_resolutions
-                       WHERE campaign_id = ? ORDER BY run_id ASC, created_at ASC, slot_id ASC, resolution_stage ASC""",
-                    (campaign_id,),
+                       WHERE campaign_id = ? AND (CAST(? AS TEXT) IS NULL OR run_id = ?)
+                       ORDER BY run_id ASC, created_at ASC, slot_id ASC, resolution_stage ASC""",
+                    (campaign_id, run_id, run_id),
                 )
             ).fetchall()
             claim_rows = await (
                 await connection.execute(
                     """SELECT * FROM evaluation_claims
-                       WHERE campaign_id = ? ORDER BY run_id ASC, created_at ASC""",
-                    (campaign_id,),
+                       WHERE campaign_id = ? AND (CAST(? AS TEXT) IS NULL OR run_id = ?)
+                       ORDER BY run_id ASC, created_at ASC""",
+                    (campaign_id, run_id, run_id),
                 )
             ).fetchall()
             context_rows = await (
                 await connection.execute(
                     """SELECT * FROM evaluation_context_packs
-                       WHERE campaign_id = ? ORDER BY run_id ASC, created_at ASC""",
-                    (campaign_id,),
+                       WHERE campaign_id = ? AND (CAST(? AS TEXT) IS NULL OR run_id = ?)
+                       ORDER BY run_id ASC, created_at ASC""",
+                    (campaign_id, run_id, run_id),
                 )
             ).fetchall()
             graph_rows = await (
                 await connection.execute(
                     """SELECT * FROM evaluation_graph_events
-                       WHERE campaign_id = ? ORDER BY run_id ASC, created_at ASC""",
-                    (campaign_id,),
+                       WHERE campaign_id = ? AND (CAST(? AS TEXT) IS NULL OR run_id = ?)
+                       ORDER BY run_id ASC, created_at ASC""",
+                    (campaign_id, run_id, run_id),
                 )
             ).fetchall()
         materializations_by_run_id: dict[
@@ -1321,12 +1398,31 @@ class EvaluationObservabilityRepository(
             for event in events:
                 await connection.execute(
                     """
-                    INSERT OR REPLACE INTO evaluation_trace_events (
+                    INSERT INTO evaluation_trace_events (
                         event_id, run_id, campaign_id, span_id, parent_event_id, parent_span_id,
                         event_type, event_schema_version, sequence, stage_type, stage_name,
                         started_at, ended_at, duration_ms, status, retry_count,
                         payload_json, error_json, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (event_id) DO UPDATE SET
+                        run_id = excluded.run_id,
+                        campaign_id = excluded.campaign_id,
+                        span_id = excluded.span_id,
+                        parent_event_id = excluded.parent_event_id,
+                        parent_span_id = excluded.parent_span_id,
+                        event_type = excluded.event_type,
+                        event_schema_version = excluded.event_schema_version,
+                        sequence = excluded.sequence,
+                        stage_type = excluded.stage_type,
+                        stage_name = excluded.stage_name,
+                        started_at = excluded.started_at,
+                        ended_at = excluded.ended_at,
+                        duration_ms = excluded.duration_ms,
+                        status = excluded.status,
+                        retry_count = excluded.retry_count,
+                        payload_json = excluded.payload_json,
+                        error_json = excluded.error_json,
+                        created_at = excluded.created_at
                     """,
                     (
                         event.event_id,
@@ -1573,10 +1669,22 @@ class EvaluationObservabilityRepository(
         async with connect_db() as connection:
             await connection.execute(
                 """
-                INSERT OR REPLACE INTO evaluation_retrieval_events (
+                INSERT INTO evaluation_retrieval_events (
                     retrieval_event_id, run_id, campaign_id, span_id, query, query_hash,
                     retriever_name, top_k, result_count, latency_ms, payload_json, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (retrieval_event_id) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    campaign_id = excluded.campaign_id,
+                    span_id = excluded.span_id,
+                    query = excluded.query,
+                    query_hash = excluded.query_hash,
+                    retriever_name = excluded.retriever_name,
+                    top_k = excluded.top_k,
+                    result_count = excluded.result_count,
+                    latency_ms = excluded.latency_ms,
+                    payload_json = excluded.payload_json,
+                    created_at = excluded.created_at
                 """,
                 (
                     event.retrieval_event_id,
@@ -1662,13 +1770,35 @@ class EvaluationObservabilityRepository(
         async with connect_db() as connection:
             await connection.execute(
                 """
-                INSERT OR REPLACE INTO evaluation_retrieval_chunks (
+                INSERT INTO evaluation_retrieval_chunks (
                     retrieval_chunk_id, run_id, campaign_id, span_id, retrieval_event_id,
                     chunk_id, doc_id, page_start, page_end, modality, rank_before_rerank,
                     rank_after_rerank, dense_score, bm25_score, rerank_score,
                     used_in_context, used_in_answer, expected_evidence_match,
                     excerpt, content_hash, payload_json, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (retrieval_chunk_id) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    campaign_id = excluded.campaign_id,
+                    span_id = excluded.span_id,
+                    retrieval_event_id = excluded.retrieval_event_id,
+                    chunk_id = excluded.chunk_id,
+                    doc_id = excluded.doc_id,
+                    page_start = excluded.page_start,
+                    page_end = excluded.page_end,
+                    modality = excluded.modality,
+                    rank_before_rerank = excluded.rank_before_rerank,
+                    rank_after_rerank = excluded.rank_after_rerank,
+                    dense_score = excluded.dense_score,
+                    bm25_score = excluded.bm25_score,
+                    rerank_score = excluded.rerank_score,
+                    used_in_context = excluded.used_in_context,
+                    used_in_answer = excluded.used_in_answer,
+                    expected_evidence_match = excluded.expected_evidence_match,
+                    excerpt = excluded.excerpt,
+                    content_hash = excluded.content_hash,
+                    payload_json = excluded.payload_json,
+                    created_at = excluded.created_at
                 """,
                 (
                     chunk.retrieval_chunk_id,
@@ -1703,7 +1833,7 @@ class EvaluationObservabilityRepository(
         await init_db()
         async with connect_db() as connection:
             cursor = await connection.execute(
-                "SELECT * FROM evaluation_retrieval_chunks WHERE run_id = ? ORDER BY retrieval_event_id ASC, rank_after_rerank ASC, created_at ASC",
+                "SELECT * FROM evaluation_retrieval_chunks WHERE run_id = ? ORDER BY retrieval_event_id ASC, rank_after_rerank ASC NULLS FIRST, created_at ASC, retrieval_chunk_id ASC",
                 (run_id,),
             )
             rows = await cursor.fetchall()
@@ -1744,7 +1874,7 @@ class EvaluationObservabilityRepository(
                 """
                 SELECT * FROM evaluation_retrieval_chunks
                 WHERE campaign_id = ?
-                ORDER BY run_id ASC, retrieval_event_id ASC, rank_after_rerank ASC, created_at ASC
+                ORDER BY run_id ASC, retrieval_event_id ASC, rank_after_rerank ASC NULLS FIRST, created_at ASC, retrieval_chunk_id ASC
                 """,
                 (campaign_id,),
             )
@@ -1784,12 +1914,25 @@ class EvaluationObservabilityRepository(
         async with connect_db() as connection:
             await connection.execute(
                 """
-                INSERT OR REPLACE INTO evaluation_context_packs (
+                INSERT INTO evaluation_context_packs (
                     context_pack_id, run_id, campaign_id, attempt_id, condition_id, schema_version,
                     span_id, input_chunk_count,
                     packed_chunk_count, token_count, retrieved_but_not_packed_evidence_json,
                     payload_json, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (context_pack_id) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    campaign_id = excluded.campaign_id,
+                    attempt_id = excluded.attempt_id,
+                    condition_id = excluded.condition_id,
+                    schema_version = excluded.schema_version,
+                    span_id = excluded.span_id,
+                    input_chunk_count = excluded.input_chunk_count,
+                    packed_chunk_count = excluded.packed_chunk_count,
+                    token_count = excluded.token_count,
+                    retrieved_but_not_packed_evidence_json = excluded.retrieved_but_not_packed_evidence_json,
+                    payload_json = excluded.payload_json,
+                    created_at = excluded.created_at
                 """,
                 (
                     pack.context_pack_id,
@@ -2254,7 +2397,9 @@ class EvaluationObservabilityRepository(
         column_list = ", ".join(columns)
         async with connect_db() as connection:
             await connection.execute(
-                f"INSERT OR REPLACE INTO {table_name} ({column_list}) VALUES ({placeholders})",
+                f"INSERT INTO {table_name} ({column_list}) VALUES ({placeholders}) "
+                f"ON CONFLICT ({columns[0]}) DO UPDATE SET "
+                + ", ".join(f"{column} = excluded.{column}" for column in columns[1:]),
                 values,
             )
             await connection.commit()
