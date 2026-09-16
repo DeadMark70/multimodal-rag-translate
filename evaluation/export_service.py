@@ -60,6 +60,8 @@ from evaluation.research_analytics import (
 
 
 _MAX_EXPORT_TEXT_CHARS = 64 * 1024
+# Complete exports have neither a next page nor a cached-page freshness state.
+_PAGE_ONLY_FIELDS = {"next_offset", "analysis_status", "analysis_updated_at"}
 _ANSWER_CONTENT_KEYS = {
     "answer",
     "answer_preview",
@@ -558,7 +560,7 @@ class EvaluationExportService:
                 overview=ExportSection(
                     availability=complete,
                     data=ExportOverviewDataV2(
-                        research_summary=summary.model_dump(mode="python"),
+                        research_summary=summary.model_dump(mode="python", exclude=_PAGE_ONLY_FIELDS),
                         release_metrics=ExportSection(
                             availability=release_availability,
                             data=release_projection,
@@ -566,10 +568,10 @@ class EvaluationExportService:
                     ),
                 ),
                 question_analysis=ExportSection(
-                    availability=complete, data=question.model_dump(mode="python")
+                    availability=complete, data=question.model_dump(mode="python", exclude=_PAGE_ONLY_FIELDS)
                 ),
                 agent_behavior=ExportSection(
-                    availability=complete, data=behavior.model_dump(mode="python")
+                    availability=complete, data=behavior.model_dump(mode="python", exclude=_PAGE_ONLY_FIELDS)
                 ),
                 router_analysis=ExportSection(
                     availability=complete, data=router.model_dump(mode="python")

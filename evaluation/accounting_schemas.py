@@ -90,10 +90,10 @@ class ResearchWarning(BaseModel):
     mode: str | None = None
 
 
-class CampaignResearchSummaryResponse(BaseModel):
+class CampaignResearchSummary(BaseModel):
+    """Research values shared by the dashboard and the complete export."""
+
     campaign_id: str
-    analysis_status: Literal["ready", "updating"] = "ready"
-    analysis_updated_at: str | None = None
     research_schema_version: Literal["2"] = "2"
     completed_run_count: int
     total_run_count: int
@@ -110,6 +110,13 @@ class CampaignResearchSummaryResponse(BaseModel):
     modes: list[ModeResearchSummary]
     evaluation_overhead: EvaluationOverheadSummary
     warnings: list[ResearchWarning] = Field(default_factory=list)
+
+
+class CampaignResearchSummaryResponse(CampaignResearchSummary):
+    """Dashboard response with the freshness of its stored analysis."""
+
+    analysis_status: Literal["ready", "updating"] = "ready"
+    analysis_updated_at: str | None = None
 
 
 class AccountingScopeTarget(BaseModel):

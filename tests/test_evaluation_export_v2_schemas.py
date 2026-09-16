@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from evaluation.accounting_schemas import (
-    CampaignResearchSummaryResponse,
+    CampaignResearchSummary,
     CostSummary,
     EvaluationOverheadSummary,
     LatencySummary,
@@ -539,7 +539,7 @@ def test_schema_v2_redacted_answer_and_reference_fields_accept_none() -> None:
 
 
 def _fully_populated_response() -> ExportCampaignResponse:
-    research_summary = CampaignResearchSummaryResponse(
+    research_summary = CampaignResearchSummary(
         campaign_id="campaign-1",
         completed_run_count=1,
         total_run_count=1,
@@ -576,12 +576,14 @@ def _fully_populated_response() -> ExportCampaignResponse:
         question_analysis=ExportSection(
             availability=availability,
             data=_aggregate(ResearchQuestionComparisonResponse).model_dump(
-                mode="python"
+                mode="python", exclude={"next_offset", "analysis_status", "analysis_updated_at"}
             ),
         ),
         agent_behavior=ExportSection(
             availability=availability,
-            data=_aggregate(AgentBehaviorResponse).model_dump(mode="python"),
+            data=_aggregate(AgentBehaviorResponse).model_dump(
+                mode="python", exclude={"next_offset", "analysis_status", "analysis_updated_at"}
+            ),
         ),
         router_analysis=ExportSection(
             availability=availability,

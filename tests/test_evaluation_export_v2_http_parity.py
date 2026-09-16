@@ -269,6 +269,17 @@ def test_authenticated_http_panel_and_export_v2_objects_are_identical() -> None:
         exported = summary_response.json()
         exported_full = full_response.json()
 
+        # Page navigation/freshness is not part of a complete export artifact.
+        for page in (research, question, behavior):
+            for field in ("next_offset", "analysis_status", "analysis_updated_at"):
+                page.pop(field, None)
+        for section in (
+            exported["sections"]["overview"]["data"]["research_summary"],
+            exported["sections"]["question_analysis"]["data"],
+            exported["sections"]["agent_behavior"]["data"],
+        ):
+            assert {"next_offset", "analysis_status", "analysis_updated_at"}.isdisjoint(section)
+
         research_differences = _differences(
             exported["sections"]["overview"]["data"]["research_summary"],
             research,

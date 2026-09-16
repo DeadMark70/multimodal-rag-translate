@@ -11,7 +11,7 @@ from typing import Generic, Literal, TypeVar
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 from evaluation.accounting_schemas import (
-    CampaignResearchSummaryResponse,
+    CampaignResearchSummary,
     TokenBreakdown,
 )
 from evaluation.campaign_schemas import (
@@ -711,7 +711,7 @@ class ExportReleaseMetricsV2(ExportModel):
     )
 
 
-class ExportResearchSummaryV2(CampaignResearchSummaryResponse):
+class ExportResearchSummaryV2(CampaignResearchSummary):
     model_config = ConfigDict(extra="forbid")
 
 

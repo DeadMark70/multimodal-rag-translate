@@ -7662,26 +7662,6 @@
             "type": "string",
             "title": "Campaign Id"
           },
-          "analysis_status": {
-            "type": "string",
-            "enum": [
-              "ready",
-              "updating"
-            ],
-            "title": "Analysis Status",
-            "default": "ready"
-          },
-          "analysis_updated_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Analysis Updated At"
-          },
           "research_schema_version": {
             "type": "string",
             "const": "2",
@@ -7774,6 +7754,26 @@
             },
             "type": "array",
             "title": "Warnings"
+          },
+          "analysis_status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "updating"
+            ],
+            "title": "Analysis Status",
+            "default": "ready"
+          },
+          "analysis_updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Updated At"
           }
         },
         "type": "object",
@@ -7793,7 +7793,8 @@
           "modes",
           "evaluation_overhead"
         ],
-        "title": "CampaignResearchSummaryResponse"
+        "title": "CampaignResearchSummaryResponse",
+        "description": "Dashboard response with the freshness of its stored analysis."
       },
       "CampaignResult": {
         "properties": {
@@ -16390,26 +16391,6 @@
           "campaign_id": {
             "type": "string",
             "title": "Campaign Id"
-          },
-          "analysis_status": {
-            "type": "string",
-            "enum": [
-              "ready",
-              "updating"
-            ],
-            "title": "Analysis Status",
-            "default": "ready"
-          },
-          "analysis_updated_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Analysis Updated At"
           },
           "research_schema_version": {
             "type": "string",

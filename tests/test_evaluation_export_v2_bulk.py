@@ -469,6 +469,7 @@ async def test_selected_and_bulk_token_breakdown_match_with_v9_provider_attempts
         accounting=accounting,
     )
 
+    observability.load_run_observability_snapshot.return_value = snapshot
     selected = await service.get_run_observability(
         user_id="user-1", campaign_id="campaign-1", run_id=result.id
     )
