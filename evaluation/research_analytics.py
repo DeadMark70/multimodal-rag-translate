@@ -2626,6 +2626,26 @@ def _tokens(
         accounting_status=status,
         phase_attribution_status="complete" if phase_complete else "partial",
     )
+    from evaluation.token_normalizers import cached_input_tokens
+
+    cache_values = [
+        (e, cached_input_tokens(getattr(e, "raw_usage", {}), e.input_tokens))
+        for e in measured if e.provider == "google"
+    ]
+    observed = [(event, count) for event, count in cache_values if count is not None]
+    google_calls = sum(e.provider == "google" for e in events)
+    cache_inputs = sum(e.input_tokens for e, _ in observed)
+    cached = sum(count for _, count in observed)
+    values.update(
+        cached_input_tokens=cached if observed else None,
+        cache_observed_input_tokens=cache_inputs if observed else None,
+        cache_read_ratio=cached / cache_inputs if cache_inputs else None,
+        cache_hit_call_ratio=sum(count > 0 for _, count in observed) / len(observed) if observed else None,
+        cache_usage_coverage=len(observed) / google_calls if google_calls else None,
+        service_tiers=sorted({str(raw.get("service_tier") or raw.get("requested_service_tier"))
+                             for e in events for raw in [getattr(e, "raw_usage", {})]
+                             if raw.get("service_tier") or raw.get("requested_service_tier")}),
+    )
     values["total_tokens"] = (
         sum(
             values[k]

@@ -36,6 +36,12 @@ class LatencySummary(BaseModel):
 
 
 class TokenBreakdown(BaseModel):
+    cached_input_tokens: int | None = None
+    cache_observed_input_tokens: int | None = None
+    cache_read_ratio: float | None = None
+    cache_hit_call_ratio: float | None = None
+    cache_usage_coverage: float | None = None
+    service_tiers: list[str] = Field(default_factory=list)
     input_tokens: int | None = None
     output_text_tokens: int | None = None
     reasoning_tokens: int | None = None

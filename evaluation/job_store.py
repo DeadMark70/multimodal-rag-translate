@@ -263,7 +263,7 @@ class EvaluationJobStore:
         selected_result_ids: Sequence[str] | None = None,
         metric_names_by_result: Mapping[str, Sequence[str]] | None = None,
         force: bool = False,
-        max_attempts: int = 3,
+        max_attempts: int = 1,
         ragas_batch_size: int | None = None,
         ragas_parallel_batches: int | None = None,
     ) -> int:
@@ -370,6 +370,8 @@ class EvaluationJobStore:
                             work_type=EvaluationWorkType.RAGAS_METRIC,
                             logical_key=logical_key,
                             input_snapshot={
+                                **effective_config,
+                                "evaluator_model": evaluator_model,
                                 "user_id": user_id,
                                 "campaign_id": campaign_id,
                                 "campaign_result_id": result.id,
@@ -609,6 +611,16 @@ class EvaluationJobStore:
         if row is None or row["next_retry_at"] is None:
             return None
         return _from_iso(row["next_retry_at"])
+
+    async def record_provider_retry(self, claim: ClaimedEvaluationWork, *, attempt_number: int) -> None:
+        """Expose provider backoff without releasing the active durable claim."""
+        async with connect_db() as connection:
+            await connection.execute(
+                "UPDATE evaluation_attempts SET error_type = 'provider_retry', safe_error_message = ? "
+                "WHERE id = ? AND status = 'running'",
+                (f"Provider temporarily unavailable; retrying request (attempt {attempt_number + 1}).", claim.attempt_id),
+            )
+            await connection.commit()
 
     async def fail_attempt(
         self,

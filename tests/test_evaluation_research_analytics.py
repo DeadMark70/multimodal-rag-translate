@@ -143,6 +143,23 @@ def test_token_breakdown_requires_provider_phase_rows_to_match_runtime_total() -
     assert "provider_runtime_total_mismatch" in breakdown.phase_attribution_reasons
 
 
+def test_cache_ratios_use_observed_input_and_keep_missing_coverage() -> None:
+    scope = SimpleNamespace(status="completed", observed_call_count=3,
+                            measured_call_count=3, missing_usage_call_count=0)
+    def event(inputs, raw):
+        return SimpleNamespace(usage_status="measured", reconciliation_status="balanced",
+            phase="answer_generation", purpose="evaluation", provider="google",
+            input_tokens=inputs, output_text_tokens=1, reasoning_tokens=0, other_tokens=0,
+            raw_usage=raw)
+    breakdown = _tokens([scope], [event(100, {"input_token_details": {"cache_read": 80}}),
+                                  event(900, {"input_token_details": {"cache_read": 0}}), event(1000, {})])
+    assert breakdown.cached_input_tokens == 80
+    assert breakdown.cache_read_ratio == pytest.approx(.08)
+    assert breakdown.cache_hit_call_ratio == .5
+    assert breakdown.cache_usage_coverage == pytest.approx(2 / 3)
+    assert breakdown.input_tokens == 2000
+
+
 def test_legacy_identity_preserves_evaluator_config_differences() -> None:
     result = SimpleNamespace(context_policy_version="v3")
 

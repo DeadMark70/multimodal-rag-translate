@@ -54,6 +54,30 @@ class _ResponseProvider:
         }
 
 
+@pytest.mark.asyncio
+async def test_budgeted_usage_keeps_gemini_cache_and_separates_thinking() -> None:
+    class Provider:
+        async def ainvoke(self, messages):
+            return {"content": "answer", "usage_metadata": {
+                "input_tokens": 100, "output_tokens": 40, "total_tokens": 140,
+                "output_token_details": {"reasoning": 24},
+                "input_token_details": {"cache_read": 80},
+            }}
+    sink = _MemoryAccountingSink()
+    context = LlmAccountingContext(scope_id="scope-1", campaign_id="campaign-1",
+        scope_type="execution_run", scope_key="run-1", run_id="run-1", metric_name=None, sink=sink)
+    with llm_accounting_scope(context):
+        await invoke_budgeted_llm(controller=_controller(), provider=Provider(),
+            provider_name="google", model_name="gemini-3.5-flash-lite", phase="comparison_plan",
+            purpose="agentic_v9_comparison_plan", messages=[{"role": "user", "content": "q"}],
+            estimated_input_tokens=100)
+    usage = sink.events[0].raw_usage
+    assert usage["cached_input_tokens"] == 80
+    assert usage["output_tokens"] == 16
+    assert usage["reasoning_tokens"] == 24
+    assert usage["total_tokens"] == 140
+
+
 class _ComponentUsageWithoutOfficialTotalProvider:
     async def ainvoke(self, messages: object) -> object:
         return {

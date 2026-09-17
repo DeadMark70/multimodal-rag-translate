@@ -321,7 +321,10 @@ def _get_llm_cached(
         config,
     )
 
-    return ChatGoogleGenerativeAI(
+    from core.evaluation_inference import EvaluationGoogleChat
+
+    model_class = EvaluationGoogleChat if purpose == "evaluator" else ChatGoogleGenerativeAI
+    return model_class(
         model=model,
         callbacks=[
             EvaluationUsageCallback(

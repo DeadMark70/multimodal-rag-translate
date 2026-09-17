@@ -21,8 +21,8 @@ Clock: TypeAlias = Callable[[], datetime]
 Sleep: TypeAlias = Callable[[float], Awaitable[None]]
 
 _EXECUTION_CONCURRENCY = 4
-_RAGAS_CONCURRENCY = 2
-_RAGAS_BATCH_SIZE = 4
+_RAGAS_CONCURRENCY = 2  # Compatibility handler; production batch handler owns its slots.
+_RAGAS_BATCH_SIZE = 8
 _HEARTBEAT_SECONDS = 15.0
 _TRANSIENT_DATABASE_RETRY_SECONDS = 0.05
 
@@ -229,13 +229,13 @@ class EvaluationJobWorker:
                         and self._ragas_batch_handler is not None
                         and self._ragas_handler is None
                     ):
-                        # One batch-handler task owns two provider batches at a
-                        # time; claim up to the durable worker's batch window.
+                        # One batch-handler task schedules metric checkpoints;
+                        # claim up to the durable worker's prefetch window.
                         if self._active_count(work_type) > 0:
                             continue
                         claims.extend(
                             await self._store.claim_ready_items(
-                                limit=_RAGAS_BATCH_SIZE * _RAGAS_CONCURRENCY,
+                                limit=_RAGAS_BATCH_SIZE * 8,
                                 now=self._clock(),
                                 work_type=work_type,
                             )

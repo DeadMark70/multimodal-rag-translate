@@ -13,6 +13,7 @@ from sse_starlette.sse import EventSourceResponse
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
 from evaluation.analytics import EvaluationAnalyticsService
+from evaluation.pricing import PricingStatus, pricing_status, refresh_prices
 from evaluation.export_schemas import ExportCampaignRequest, ExportCampaignResponse
 from evaluation.export_service import EvaluationExportService
 from evaluation.accounting_schemas import CampaignResearchSummaryResponse
@@ -92,6 +93,15 @@ from evaluation.trace_schemas import (
 )
 
 router = APIRouter()
+
+@router.get("/pricing", response_model=PricingStatus)
+async def get_evaluation_pricing(user_id: str = Depends(get_current_user_id)) -> PricingStatus:
+    return pricing_status()
+
+
+@router.post("/pricing/refresh", response_model=PricingStatus)
+async def refresh_evaluation_pricing(user_id: str = Depends(get_current_user_id)) -> PricingStatus:
+    return await refresh_prices()
 _TERMINAL_CAMPAIGN_STATUSES = {
     CampaignLifecycleStatus.COMPLETED,
     CampaignLifecycleStatus.COMPLETED_WITH_ERRORS,

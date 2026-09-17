@@ -63,13 +63,14 @@ class RateBudget:
     _timestamps: deque[float] = field(default_factory=deque)
 
     async def acquire(self) -> None:
-        while len(self._timestamps) >= self.rpm_limit:
-            window_age = time.monotonic() - self._timestamps[0]
-            if window_age >= 60:
+        while True:
+            now = time.monotonic()
+            while self._timestamps and now - self._timestamps[0] >= 60:
                 self._timestamps.popleft()
-                continue
-            await _sleep(60 - window_age)
-        self._timestamps.append(time.monotonic())
+            if len(self._timestamps) < self.rpm_limit:
+                self._timestamps.append(now)
+                return
+            await _sleep(max(0, 60 - (now - self._timestamps[0])))
 
 
 async def _sleep(seconds: float) -> None:

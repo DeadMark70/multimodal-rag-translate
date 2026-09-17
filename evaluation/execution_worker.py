@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from core.providers import get_llm_provider_name
+from core.evaluation_inference import scoring_config
 from core.llm_usage_context import llm_accounting_scope
 from evaluation.accounting_runtime import (
     EvaluationAccountingSink,
@@ -686,7 +687,7 @@ class DatasetExecutionWorker:
             user_id=str(snapshot["user_id"]),
             campaign_id=str(snapshot["campaign_id"]),
             evaluator_model=str(getattr(self._ragas_evaluator, "evaluator_model", "")),
-            evaluator_config={},
+            evaluator_config=scoring_config(ragas_config),
             enabled_metrics=enabled_metrics,
             selected_result_ids=selected_result_ids,
             ragas_batch_size=ragas_batch_size,

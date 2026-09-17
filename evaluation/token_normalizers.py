@@ -11,6 +11,7 @@ class NormalizedTokenUsage(BaseModel):
     """Non-overlapping token categories reconciled with provider totals."""
 
     input_tokens: int = Field(default=0, ge=0)
+    cached_input_tokens: int | None = Field(default=None, ge=0)
     output_text_tokens: int = Field(default=0, ge=0)
     reasoning_tokens: int = Field(default=0, ge=0)
     other_tokens: int = Field(default=0, ge=0)
@@ -89,7 +90,7 @@ def normalize_provider_usage(
     provider_key = (provider or "").lower()
     output_text = (
         max(completion_value - reasoning_value, 0)
-        if provider_key == "openai"
+        if provider_key == "openai" or ("output_tokens" in payload and "reasoning" in output_details)
         else completion_value
     )
 
@@ -124,6 +125,7 @@ def normalize_provider_usage(
         )
     return NormalizedTokenUsage(
         input_tokens=input_value,
+        cached_input_tokens=cached_input_tokens(payload, input_value),
         output_text_tokens=output_text,
         reasoning_tokens=reasoning_value,
         other_tokens=total - known,
@@ -131,3 +133,12 @@ def normalize_provider_usage(
         usage_status="measured",
         reconciliation_status="balanced",
     )
+
+
+def cached_input_tokens(payload: dict[str, Any], input_tokens: int) -> int | None:
+    """Cache reads are a subset of input, never an extra token category."""
+    value = first_int(payload, "cached_content_token_count", "cachedContentTokenCount", "cached_input_tokens")
+    details = payload.get("input_token_details") or {}
+    if value is None and isinstance(details, dict):
+        value = first_int(details, "cache_read")
+    return value if value is not None and value <= input_tokens else None

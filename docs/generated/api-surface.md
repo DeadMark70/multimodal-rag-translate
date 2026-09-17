@@ -53,6 +53,8 @@ Human-maintained inventory of the current backend surface.
 | DELETE | `/api/evaluation/model-configs/{config_id}` | `remove_model_config_api_evaluation_model_configs__config_id__delete` |
 | PUT | `/api/evaluation/model-configs/{config_id}` | `put_model_config_api_evaluation_model_configs__config_id__put` |
 | GET | `/api/evaluation/models` | `get_available_models_api_evaluation_models_get` |
+| GET | `/api/evaluation/pricing` | `get_evaluation_pricing_api_evaluation_pricing_get` |
+| POST | `/api/evaluation/pricing/refresh` | `refresh_evaluation_pricing_api_evaluation_pricing_refresh_post` |
 | GET | `/api/evaluation/runs/{run_id}/claims` | `get_evaluation_run_claims_api_evaluation_runs__run_id__claims_get` |
 | GET | `/api/evaluation/runs/{run_id}/context` | `get_evaluation_run_context_api_evaluation_runs__run_id__context_get` |
 | GET | `/api/evaluation/runs/{run_id}/detail` | `get_evaluation_run_detail_api_evaluation_runs__run_id__detail_get` |

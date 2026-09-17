@@ -223,6 +223,11 @@ async def invoke_budgeted_llm(
             return _final_qualified_partial()
         raise
     flat_usage = get_flat_llm_usage(response, include_provenance=True)
+    from evaluation.token_normalizers import extract_usage_dict, normalize_provider_usage
+    provider_usage = extract_usage_dict(response)
+    normalized_usage = normalize_provider_usage(provider_name, provider_usage)
+    if normalized_usage.reconciliation_status == "balanced":
+        flat_usage["output_tokens"] = normalized_usage.output_text_tokens
     provider_total_reported = bool(flat_usage.pop("provider_total_reported", False))
     known_tokens = (
         flat_usage.get("input_tokens", 0)
@@ -246,6 +251,7 @@ async def invoke_budgeted_llm(
         started_at=started_at,
         status="completed",
         error={},
+        provider_usage=provider_usage,
     )
     await _observe_terminal(
         observer=observer,
@@ -275,6 +281,7 @@ async def _record_accounting_usage(
     started_at: float,
     status: str,
     error: dict[str, str],
+    provider_usage: dict[str, Any] | None = None,
 ) -> None:
     """Persist one authoritative usage event for a budgeted v9 attempt."""
     raw_usage: dict[str, int] = {}
@@ -286,6 +293,11 @@ async def _record_accounting_usage(
             "other_tokens": usage.other_tokens,
             "total_tokens": usage.total_tokens,
         }
+        if provider_usage:
+            from evaluation.token_normalizers import cached_input_tokens
+            cached = cached_input_tokens(provider_usage, usage.input_tokens)
+            if cached is not None:
+                raw_usage["cached_input_tokens"] = cached
     await emit_direct_usage(
         phase=phase,
         purpose=purpose,

@@ -182,3 +182,10 @@ nested keys while retaining typed identity and locator fields.
   - human calibration returns `sample_count=0` when there are no paired samples
 - Legacy `agentic` runs without an explicit `execution_profile` are normalized to `legacy_shared`.
 - Actual router execution is still disabled by default. Submitting a campaign with `router` mode without the execution flag returns `400` and callers should use retrospective router analysis instead.
+# Gemini inference controls (2026-09-17)
+
+Campaign creation accepts evaluator service tier, request timeout, attempt count
+and optional Standard fallback, frozen with durable work. Pricing status/refresh
+routes require user authentication. Token summaries expose cached input, token
+cache ratio, request hit ratio, coverage and tiers; historical data may be null.
+See [runtime details](../evaluation-inference.md).

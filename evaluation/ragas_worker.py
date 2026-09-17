@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+from dataclasses import replace
 import math
 from collections.abc import Mapping
 from types import SimpleNamespace
@@ -10,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from core.llm_usage_context import llm_accounting_phase, llm_accounting_scope
+from core.evaluation_inference import evaluation_inference_scope
 from evaluation.accounting_runtime import (
     EvaluationAccountingSink,
     start_ragas_batch_scope,
@@ -22,7 +25,7 @@ from evaluation.job_store import (
     EvaluationJobStore,
     LEGACY_EVALUATOR_COMPATIBILITY_SIGNATURE_VERSION,
 )
-from evaluation.retry import run_with_retry
+from evaluation.retry import RateBudget, run_with_retry
 
 
 class RagasBatchWorker:
@@ -61,6 +64,9 @@ class RagasBatchWorker:
         )
         self._batch_size = max(1, min(8, batch_size))
         self._parallel_batches = max(1, min(8, parallel_batches))
+        self._rate_budgets: dict[str, RateBudget] = {}
+        self._provider_slots: dict[str, asyncio.Semaphore] = {}
+        self._global_provider_slots = asyncio.Semaphore(8)
 
     async def execute(self, claims: list[ClaimedEvaluationWork]) -> None:
         """Run claims grouped by metric/signature and persist every result."""
@@ -117,11 +123,18 @@ class RagasBatchWorker:
                 [],
             ).append(claim)
 
-        # A single worker-wide semaphore bounds provider calls across all
-        # compatibility groups.  Per-group semaphores multiply concurrency
-        # when multiple groups are present, so the aggregate cap stays at two
-        # calls regardless of grouping.
-        global_semaphore = asyncio.Semaphore(2)
+        # Bound aggregate metric work and provider calls across compatibility
+        # groups; each campaign also retains its own selected limit.
+        global_semaphore = asyncio.Semaphore(max(self._batch_config(c)[1] for c in claims))
+        self._global_provider_slots = asyncio.Semaphore(max(self._batch_config(c)[1] for c in claims))
+        campaign_semaphores = {
+            str(c.input_snapshot.get("campaign_id") or ""): asyncio.Semaphore(self._batch_config(c)[1])
+            for c in claims
+        }
+        self._provider_slots = {
+            str(c.input_snapshot.get("campaign_id") or ""): asyncio.Semaphore(self._batch_config(c)[1])
+            for c in claims
+        }
 
         async def run_chunk(
             campaign_id: str,
@@ -129,7 +142,7 @@ class RagasBatchWorker:
             batch_group_key: str | None,
             chunk: list[ClaimedEvaluationWork],
         ) -> None:
-            async with global_semaphore:
+            async with campaign_semaphores[campaign_id], global_semaphore:
                 await self._execute_chunk(
                     campaign_id, metric_name, batch_group_key, chunk, invocation_id
                 )
@@ -143,14 +156,17 @@ class RagasBatchWorker:
             batch_size,
             parallel_batches,
         ), group in groups.items():
-            for offset in range(0, len(group), batch_size):
+            # A single answer/metric is the checkpoint unit. Scheduling several
+            # of these concurrently preserves throughput without batch rollback.
+            checkpoint_size = 1 if getattr(self._evaluator, "provider_managed_retries", False) else batch_size
+            for offset in range(0, len(group), checkpoint_size):
                 tasks.append(
                     asyncio.create_task(
                         run_chunk(
                             campaign_id,
                             metric_name,
                             batch_group_key,
-                            group[offset : offset + batch_size],
+                            group[offset : offset + checkpoint_size],
                         )
                     )
                 )
@@ -217,6 +233,36 @@ class RagasBatchWorker:
     ) -> None:
         rows = [self._row_for_claim(claim) for claim in claims]
         scope = None
+        async def increment_retry(attempt_number: int, error: BaseException) -> None:
+            if scope is not None:
+                await self._accounting_store.increment_scope_retry(scope.scope_id)
+            record_retry = getattr(self._store, "record_provider_retry", None)
+            if callable(record_retry):
+                for claim in claims:
+                    await record_retry(claim, attempt_number=attempt_number)
+
+        async def evaluate() -> list[float]:
+            rpm = int(claims[0].input_snapshot.get("ragas_rpm_limit") or 1000)
+            budget = self._rate_budgets.setdefault(campaign_id, RateBudget(rpm))
+            with evaluation_inference_scope(claims[0].input_snapshot, limiter=budget,
+                                            slots=self._provider_slots[campaign_id],
+                                            global_slots=self._global_provider_slots, on_retry=increment_retry):
+                operation = self._evaluator.evaluate_metric_batch
+                # RAGAS mutates wrapper run_config and model temperature. Give
+                # each metric its own settings while sharing HTTP clients.
+                llm = copy.copy(self._evaluator_llm)
+                if hasattr(llm, "langchain_llm"):
+                    model_name = claims[0].input_snapshot.get("evaluator_model")
+                    if model_name and getattr(self._evaluator, "provider_managed_retries", False):
+                        from core.providers import get_llm
+                        llm.langchain_llm = get_llm("evaluator", model_name=str(model_name)).model_copy()
+                    else:
+                        llm.langchain_llm = llm.langchain_llm.model_copy()
+                args = (metric_name, rows, llm, self._evaluator_embeddings)
+                if getattr(self._evaluator, "provider_managed_retries", False):
+                    return await operation(*args)
+                return await run_with_retry(operation, *args, on_retry=increment_retry)
+
         try:
             if self._accounting_store is not None:
                 scope = await start_ragas_batch_scope(
@@ -239,33 +285,14 @@ class RagasBatchWorker:
                     ],
                 )
             if scope is None:
-                values = await run_with_retry(
-                    self._evaluator.evaluate_metric_batch,
-                    metric_name,
-                    rows,
-                    self._evaluator_llm,
-                    self._evaluator_embeddings,
-                )
+                values = await evaluate()
             else:
-
-                async def increment_retry(
-                    attempt_number: int, error: BaseException
-                ) -> None:
-                    del attempt_number, error
-                    await self._accounting_store.increment_scope_retry(scope.scope_id)
 
                 with (
                     llm_accounting_scope(scope.context),
                     llm_accounting_phase("ragas_scoring"),
                 ):
-                    values = await run_with_retry(
-                        self._evaluator.evaluate_metric_batch,
-                        metric_name,
-                        rows,
-                        self._evaluator_llm,
-                        self._evaluator_embeddings,
-                        on_retry=increment_retry,
-                    )
+                    values = await evaluate()
             if not isinstance(values, list) or len(values) != len(claims):
                 raise ValueError(
                     f"RAGAS metric {metric_name!r} returned {len(values) if isinstance(values, list) else 'non-list'} values for {len(claims)} rows"
@@ -312,9 +339,8 @@ class RagasBatchWorker:
                             "evaluation_signature"
                         ),
                         "details": {
-                            "evaluator_model": getattr(
-                                self._evaluator, "evaluator_model", None
-                            ),
+                            "evaluator_model": claim.input_snapshot.get("evaluator_model")
+                            or getattr(self._evaluator, "evaluator_model", None),
                             "question_id": self._row_for_claim(claim).question_id,
                             "invalid_metric": False,
                             "batch_group_key": batch_group_key,
@@ -384,6 +410,10 @@ class RagasBatchWorker:
         )
 
     async def _fail_claim(self, claim: ClaimedEvaluationWork, decision: Any) -> None:
+        if getattr(self._evaluator, "provider_managed_retries", False) and decision.retryable:
+            # Old queued items may still have a durable max_attempts > 1.
+            # Provider retries already ran; do not replay the whole metric.
+            decision = replace(decision, retryable=False)
         try:
             await self._store.fail_attempt(claim, decision, next_retry_at=None)
         except ValueError:
@@ -463,7 +493,7 @@ class RagasBatchWorker:
             )
         except (TypeError, ValueError):
             parallel_batches = self._parallel_batches
-        return max(1, min(4, batch_size)), max(1, min(2, parallel_batches))
+        return max(1, min(8, batch_size)), max(1, min(8, parallel_batches))
 
     @staticmethod
     def _result_id(claim: ClaimedEvaluationWork) -> str:

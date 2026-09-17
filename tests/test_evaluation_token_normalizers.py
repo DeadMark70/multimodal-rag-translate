@@ -14,6 +14,7 @@ def test_google_usage_is_non_overlapping_and_balanced() -> None:
 
     assert usage.model_dump() == {
         "input_tokens": 10,
+        "cached_input_tokens": None,
         "output_text_tokens": 4,
         "reasoning_tokens": 3,
         "other_tokens": 0,

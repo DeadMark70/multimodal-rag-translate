@@ -1,5 +1,11 @@
 # BACKEND
 
+## Evaluation inference update
+
+Evaluation uses PostgreSQL. Scoring saves each answer/metric independently,
+honors concurrency/RPM, supports Gemini Flex, reports prompt-cache usage and
+refreshes dated public price snapshots. See [evaluation inference](evaluation-inference.md).
+
 ## Stack
 
 - Python 3.10+

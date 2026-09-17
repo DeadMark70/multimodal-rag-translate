@@ -1624,6 +1624,58 @@
         ]
       }
     },
+    "/api/evaluation/pricing": {
+      "get": {
+        "tags": [
+          "Evaluation"
+        ],
+        "summary": "Get Evaluation Pricing",
+        "operationId": "get_evaluation_pricing_api_evaluation_pricing_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingStatus"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/evaluation/pricing/refresh": {
+      "post": {
+        "tags": [
+          "Evaluation"
+        ],
+        "summary": "Refresh Evaluation Pricing",
+        "operationId": "refresh_evaluation_pricing_api_evaluation_pricing_refresh_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingStatus"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/evaluation/test-cases": {
       "get": {
         "tags": [
@@ -6738,6 +6790,34 @@
       },
       "CampaignConfig": {
         "properties": {
+          "ragas_service_tier": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "flex"
+            ],
+            "title": "Ragas Service Tier",
+            "default": "standard"
+          },
+          "ragas_request_timeout_seconds": {
+            "type": "integer",
+            "maximum": 3600.0,
+            "minimum": 1.0,
+            "title": "Ragas Request Timeout Seconds",
+            "default": 900
+          },
+          "ragas_max_attempts": {
+            "type": "integer",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Ragas Max Attempts",
+            "default": 5
+          },
+          "ragas_standard_fallback": {
+            "type": "boolean",
+            "title": "Ragas Standard Fallback",
+            "default": false
+          },
           "test_case_ids": {
             "items": {
               "type": "string"
@@ -6902,6 +6982,34 @@
       },
       "CampaignCreateRequest": {
         "properties": {
+          "ragas_service_tier": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "flex"
+            ],
+            "title": "Ragas Service Tier",
+            "default": "standard"
+          },
+          "ragas_request_timeout_seconds": {
+            "type": "integer",
+            "maximum": 3600.0,
+            "minimum": 1.0,
+            "title": "Ragas Request Timeout Seconds",
+            "default": 900
+          },
+          "ragas_max_attempts": {
+            "type": "integer",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Ragas Max Attempts",
+            "default": 5
+          },
+          "ragas_standard_fallback": {
+            "type": "boolean",
+            "title": "Ragas Standard Fallback",
+            "default": false
+          },
           "name": {
             "anyOf": [
               {
@@ -22527,6 +22635,54 @@
         "title": "ObservationAvailability",
         "description": "Availability of one safely projected observability observation."
       },
+      "PricingStatus": {
+        "properties": {
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
+          "fetched_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fetched At"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": "https://ai.google.dev/gemini-api/docs/pricing"
+          },
+          "model_count": {
+            "type": "integer",
+            "title": "Model Count",
+            "default": 0
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "unavailable"
+          },
+          "evaluator_model": {
+            "type": "string",
+            "title": "Evaluator Model",
+            "default": "gemini-3.1-flash-lite"
+          }
+        },
+        "type": "object",
+        "title": "PricingStatus"
+      },
       "ProcessingStatusResponse": {
         "properties": {
           "step": {
@@ -25958,6 +26114,68 @@
       },
       "TokenBreakdown": {
         "properties": {
+          "cached_input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cached Input Tokens"
+          },
+          "cache_observed_input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Observed Input Tokens"
+          },
+          "cache_read_ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Read Ratio"
+          },
+          "cache_hit_call_ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Hit Call Ratio"
+          },
+          "cache_usage_coverage": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Usage Coverage"
+          },
+          "service_tiers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Service Tiers"
+          },
           "input_tokens": {
             "anyOf": [
               {

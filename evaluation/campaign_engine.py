@@ -6,6 +6,7 @@ import logging
 from typing import Any, Callable, Literal, Optional
 
 from core.errors import AppError, ErrorCode
+from core.evaluation_inference import scoring_config
 from evaluation.campaign_schemas import (
     AblationCondition,
     CampaignMetricsResponse,
@@ -483,7 +484,7 @@ class CampaignEngine:
             user_id=user_id,
             campaign_id=campaign_id,
             evaluator_model=str(getattr(self._ragas_evaluator, "evaluator_model", "")),
-            evaluator_config={},
+            evaluator_config=scoring_config(campaign.config),
             enabled_metrics=metric_names,
             selected_result_ids=selected_result_ids,
             **(
@@ -755,7 +756,7 @@ class CampaignEngine:
                 evaluator_model=str(
                     getattr(self._ragas_evaluator, "evaluator_model", "")
                 ),
-                evaluator_config={},
+                evaluator_config=scoring_config(campaign.config),
                 enabled_metrics=metric_names,
                 selected_result_ids=selected_ids,
                 ragas_batch_size=campaign.config.ragas_batch_size,

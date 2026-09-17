@@ -125,6 +125,18 @@ class FakeEvaluator:
         return result
 
 
+@pytest.mark.asyncio
+async def test_production_checkpoint_is_one_metric_and_one_answer():
+    evaluator = FakeEvaluator([[0.5], RuntimeError("one failed answer"), [0.7]])
+    evaluator.provider_managed_retries = True
+    store = FakeStore()
+    worker = RagasBatchWorker(store=store, evaluator=evaluator)
+    await worker.execute([_claim(i) for i in range(3)])
+    assert evaluator.calls == [("faithfulness", 1)] * 3
+    assert len(store.completed) == 2
+    assert len(store.failed) == 1
+
+
 class AccountingFakeEvaluator(FakeEvaluator):
     async def evaluate_metric_batch(
         self, metric_name, rows, evaluator_llm, evaluator_embeddings

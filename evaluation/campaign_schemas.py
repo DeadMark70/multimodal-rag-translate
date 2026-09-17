@@ -93,7 +93,14 @@ class PromptCapturePolicy(BaseModel):
     preview_max_chars: int = Field(default=512, ge=32, le=4096)
 
 
-class CampaignConfig(BaseModel):
+class RagasInferenceSettings(BaseModel):
+    ragas_service_tier: Literal["standard", "flex"] = "standard"
+    ragas_request_timeout_seconds: int = Field(default=900, ge=1, le=3600)
+    ragas_max_attempts: int = Field(default=5, ge=1, le=10)
+    ragas_standard_fallback: bool = False
+
+
+class CampaignConfig(RagasInferenceSettings):
     """User-supplied campaign configuration."""
 
     model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
@@ -178,7 +185,7 @@ class CampaignConfig(BaseModel):
             raise ValueError("v8 identity requires agentic_execution_version='v8'")
 
 
-class CampaignCreateRequest(BaseModel):
+class CampaignCreateRequest(RagasInferenceSettings):
     """Create-and-start campaign payload."""
 
     model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
@@ -215,6 +222,10 @@ class CampaignCreateRequest(BaseModel):
             rpm_limit=self.rpm_limit,
             ragas_batch_size=self.ragas_batch_size,
             ragas_parallel_batches=self.ragas_parallel_batches,
+            ragas_service_tier=self.ragas_service_tier,
+            ragas_request_timeout_seconds=self.ragas_request_timeout_seconds,
+            ragas_max_attempts=self.ragas_max_attempts,
+            ragas_standard_fallback=self.ragas_standard_fallback,
             ragas_rpm_limit=self.ragas_rpm_limit,
             actual_router_execution_enabled=self.actual_router_execution_enabled,
             agentic_execution_version=self.agentic_execution_version,

@@ -110,6 +110,8 @@ def _ecr_direction(*, delta: float | None, note: str | None) -> str:
 class RagasEvaluator:
     """Evaluate campaign results with RAGAS and aggregate chart-ready metrics."""
 
+    provider_managed_retries = True
+
     def __init__(
         self,
         result_repository: Optional[CampaignResultRepository] = None,
@@ -783,12 +785,16 @@ class RagasEvaluator:
         if hasattr(metric, "embeddings"):
             metric.embeddings = evaluator_embeddings
 
+        from core.evaluation_inference import metric_timeout_seconds
+
         result = await ragas_dependencies["aevaluate"](
             dataset=dataset,
             metrics=[metric],
             llm=evaluator_llm,
             raise_exceptions=True,
-            run_config=ragas_dependencies["RunConfig"](timeout=360),
+            run_config=ragas_dependencies["RunConfig"](
+                timeout=metric_timeout_seconds(), max_retries=1
+            ),
         )
         values = result[metric_name]
         if not isinstance(values, list):

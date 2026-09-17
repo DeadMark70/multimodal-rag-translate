@@ -236,6 +236,8 @@ async def app_lifespan(app: FastAPI) -> AsyncIterator[None]:
             await engine.recover_inflight_campaigns()
     from evaluation.analysis_cache import refresh_loop, stop_refreshes
     analysis_task = asyncio.create_task(refresh_loop(), name="evaluation-analysis-refresh")
+    from evaluation.pricing import refresh_loop as price_refresh_loop
+    price_task = None if _should_use_fake_providers() else asyncio.create_task(price_refresh_loop(), name="evaluation-price-refresh")
     try:
         await _initialize_rag_components()
         await _warm_up_pdf_ocr()
@@ -249,6 +251,9 @@ async def app_lifespan(app: FastAPI) -> AsyncIterator[None]:
         elif lifecycle_worker is not worker and getattr(lifecycle_worker, "is_running", False):
             await lifecycle_worker.stop()
         analysis_task.cancel()
+        if price_task is not None:
+            price_task.cancel()
+            await asyncio.gather(price_task, return_exceptions=True)
         await asyncio.gather(analysis_task, return_exceptions=True)
         await stop_refreshes()
         from evaluation.postgres import close_db

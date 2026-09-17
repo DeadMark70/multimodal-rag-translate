@@ -23,7 +23,7 @@ _RATE_FIELDS = (
     "output_per_1m_usd",
     "reasoning_per_1m_usd",
 )
-_OPTIONAL_RATE_FIELDS = ("other_per_1m_usd",)
+_OPTIONAL_RATE_FIELDS = ("other_per_1m_usd", "cached_input_per_1m_usd")
 
 
 def load_price_snapshot(path: str | Path | None = None) -> dict[str, Any]:
@@ -34,7 +34,8 @@ def load_price_snapshot(path: str | Path | None = None) -> dict[str, Any]:
     """
     configured_path = path or os.getenv("EVALUATION_PRICE_SNAPSHOT_PATH")
     if not configured_path:
-        return dict(DEFAULT_PRICE_SNAPSHOT)
+        from evaluation.pricing import current_snapshot
+        return current_snapshot()
     try:
         snapshot = json.loads(Path(configured_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -65,6 +66,12 @@ def _validate_price_snapshot(snapshot: object) -> dict[str, Any]:
             raise ValueError(
                 "Price snapshot models must map model names to rate objects"
             )
+        if "tiers" in rates:
+            for tier in rates["tiers"].values():
+                for entries in tier.values():
+                    if not isinstance(entries, list) or not entries or any(not _is_non_negative_finite(r.get("usd_per_1m")) for r in entries):
+                        raise ValueError("Invalid tier price entries")
+            continue
         for field in _RATE_FIELDS:
             value = rates.get(field)
             if not _is_non_negative_finite(value):
@@ -101,6 +108,7 @@ def price_normalized_usage(
     model_name: str | None,
     usage: NormalizedTokenUsage,
     snapshot: dict[str, Any],
+    *, service_tier: str = "standard", created_at: str | None = None,
 ) -> dict[str, Any]:
     """Price measured non-overlapping usage from a validated audited snapshot."""
     snapshot_id = snapshot.get("snapshot_id")
@@ -115,6 +123,19 @@ def price_normalized_usage(
     rates = (snapshot.get("models") or {}).get(model_name or "")
     if not isinstance(rates, dict):
         return _unpriced_result(snapshot_id, "unknown_model")
+    if service_tier != "standard" and "tiers" not in rates:
+        return _unpriced_result(snapshot_id, "missing_price")
+    if "tiers" in rates:
+        from datetime import datetime, timezone
+        from evaluation.pricing import select_rate
+        tier = rates["tiers"].get(service_tier, {})
+        day = (created_at or datetime.now(timezone.utc).isoformat())[:10]
+        selected = {key: select_rate(tier.get(key, []), input_tokens=usage.input_tokens, day=day)
+                    for key in ("input", "output", "cache")}
+        if selected["input"] is None or selected["output"] is None:
+            return _unpriced_result(snapshot_id, "missing_price")
+        rates = {"input_per_1m_usd": selected["input"], "output_per_1m_usd": selected["output"],
+                 "reasoning_per_1m_usd": selected["output"], "cached_input_per_1m_usd": selected["cache"]}
     if usage.other_tokens and "other_per_1m_usd" not in rates:
         return _unpriced_result(snapshot_id, "missing_price")
     try:
@@ -124,8 +145,13 @@ def price_normalized_usage(
         other_rate = float(rates.get("other_per_1m_usd", 0))
     except (KeyError, TypeError, ValueError):
         return _unpriced_result(snapshot_id, "missing_price")
+    cached = usage.cached_input_tokens or 0
+    cache_rate = rates.get("cached_input_per_1m_usd")
+    if cached and cache_rate is None:
+        return _unpriced_result(snapshot_id, "missing_price")
     estimated_cost_usd = (
-        usage.input_tokens * input_rate
+        (usage.input_tokens - cached) * input_rate
+        + cached * float(cache_rate or 0)
         + usage.output_text_tokens * output_rate
         + usage.reasoning_tokens * reasoning_rate
         + usage.other_tokens * other_rate

@@ -40,13 +40,21 @@ class EvaluationAccountingSink:
         self._price_snapshot = (
             dict(price_snapshot)
             if price_snapshot is not None
-            else load_price_snapshot()
+            else None
         )
 
     async def record(self, raw: RawLlmUsageEvent) -> None:
         """Persist one normalized callback event using its callback ID as the key."""
         usage = normalize_provider_usage(raw.provider, raw.raw_usage)
-        pricing = price_normalized_usage(raw.model_name, usage, self._price_snapshot)
+        try:
+            snapshot = self._price_snapshot if self._price_snapshot is not None else load_price_snapshot()
+        except ValueError:
+            snapshot = {"snapshot_id": "invalid-price", "currency": "USD", "models": {}}
+        pricing = price_normalized_usage(
+            raw.model_name, usage, snapshot,
+            service_tier=str(raw.raw_usage.get("service_tier") or raw.raw_usage.get("requested_service_tier") or "standard"),
+            created_at=raw.created_at.isoformat(),
+        )
         event = UsageEventCreate(
             usage_event_id=raw.usage_event_id,
             scope_id=raw.scope_id,

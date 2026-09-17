@@ -1,5 +1,11 @@
 # Agent Working Guide (`agent.md`)
 
+Evaluation inference rule (2026-09-17): verify timeout units at the final SDK
+request, not the wrapper argument. LangChain seconds become SDK milliseconds.
+Run the request-construction and Marker dependency compatibility tests when
+upgrading Google SDK/LangChain. Cache reads are a subset of input; LangChain
+output tokens already include reasoning.
+
 ## 1. Purpose
 This file defines how refactoring and code-standardization work should be executed in this repository.
 Primary goals:

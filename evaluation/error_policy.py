@@ -57,7 +57,7 @@ def _as_status_code(value: object) -> int | None:
 
 
 def _status_code(exc: BaseException) -> int | None:
-    direct_status = _as_status_code(getattr(exc, "status_code", None))
+    direct_status = _as_status_code(getattr(exc, "status_code", None)) or _as_status_code(getattr(exc, "code", None))
     if direct_status is not None:
         return direct_status
     response = getattr(exc, "response", None)

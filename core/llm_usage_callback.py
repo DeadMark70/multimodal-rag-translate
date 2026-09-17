@@ -152,6 +152,11 @@ def _extract_usage(response: LLMResult) -> dict[str, Any]:
             message = getattr(generation, "message", None)
             usage = getattr(message, "usage_metadata", None)
             if isinstance(usage, dict):
+                usage = dict(usage)
+                metadata = getattr(message, "response_metadata", {})
+                for key in ("service_tier", "requested_service_tier"):
+                    if metadata.get(key) is not None:
+                        usage[key] = metadata[key]
                 return usage
     llm_output = response.llm_output or {}
     usage = (
