@@ -1,5 +1,10 @@
 # Agent Working Guide (`agent.md`)
 
+Mode-accounting rule (2026-09-18, state): execution target identities can be
+versioned aliases while completed answers use core modes. Normalize both sides
+through the existing campaign adapter before aggregation; retain shadow identity.
+Test a canonical successful answer alongside aliased accounting and failed work.
+
 Evaluation pricing rule (2026-09-17, state): distinguish complete cost from a
 known subtotal; missing retry usage must not suppress all priced calls or become
 zero cost. Preserve the SDK's measured cache miss (0); reserve N/A for genuinely

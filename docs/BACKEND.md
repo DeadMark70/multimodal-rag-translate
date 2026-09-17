@@ -2,6 +2,11 @@
 
 ## Evaluation inference update
 
+Mode summaries normalize execution aliases through the campaign identity adapter
+before grouping answers and operational costs. Agentic version aliases share
+the `agentic` row; `agentic-v9-shadow` stays separate. Raw execution versions are
+preserved. Cache format 6 rebuilds split historical cost rows automatically.
+
 Research summaries expose mode_costs for every recorded execution mode, including
 modes with only failed attempts. Current official-answer costs and cumulative
 execution costs remain separate from RAGAS scoring costs. CostSummary includes

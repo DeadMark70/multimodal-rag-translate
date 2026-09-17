@@ -305,6 +305,7 @@ async def _execution_scope(
     scope_run_id: str | None = None,
     usage_status: str = "measured",
     reconciliation_status: str = "balanced",
+    durable_mode: str | None = None,
 ) -> None:
     store = EvaluationAccountingStore()
     await store.start_scope(
@@ -321,6 +322,7 @@ async def _execution_scope(
                     "attempt_id": attempt,
                     "campaign_result_id": result_id,
                     "is_official": official,
+                    "mode": durable_mode,
                 }
             ],
         )
@@ -2356,3 +2358,38 @@ async def test_ragas_cost_keeps_known_subtotal_when_retry_usage_is_missing(
     if include_priced:
         assert cost.tokens.cache_read_ratio == 0
         assert cost.tokens.cache_usage_coverage == 0.5
+@pytest.mark.asyncio
+@pytest.mark.parametrize("alias, mode", [
+    ("agentic-v8", "agentic"), ("v8", "agentic"),
+    ("agentic-v9", "agentic"), ("v9", "agentic"),
+    ("agentic-v10", "agentic"), ("v10", "agentic"),
+    ("naive-baseline", "naive"), ("agentic-v9-shadow", "agentic-v9-shadow"),
+])
+async def test_cost_aliases_share_answer_mode_and_include_failed_attempts(
+    research_service, alias: str, mode: str,
+) -> None:
+    campaign = "mode-alias-cost"
+    # The helper's campaign config is unrelated to persisted result identities.
+    await _campaign(campaign, ["naive"])
+    official = await _result(campaign, mode, "official")
+    failed = await _result(campaign, alias, "failed", run_number=2, status=CampaignResultStatus.FAILED)
+    await _execution_scope(campaign, official, "official", official=True,
+                           durable_mode=alias, cost=0.1)
+    await _execution_scope(campaign, failed, "failed", official=False,
+                           scope_status="failed", durable_mode=alias, cost=0.05)
+    summary = await research_service.get_summary(user_id="user-1", campaign_id=campaign)
+    assert [row.mode for row in summary.mode_costs] == [mode]
+    row = summary.mode_costs[0]
+    assert row.completed_run_count == 1
+    assert row.execution_cost.benchmark_usd == pytest.approx(0.1)
+    assert row.execution_cost.operational_usd == pytest.approx(0.15)
+    assert row.execution_cost.priced_call_count == 2
+    assert summary.modes[0].execution_cost.operational_usd == pytest.approx(0.15)
+    assert summary.execution_cost.operational_usd == pytest.approx(0.15)
+
+
+def test_mode_alias_normalization_keeps_shadow_and_other_modes_separate() -> None:
+    from evaluation.research_analytics import _summary_mode
+    assert _summary_mode("agentic-v10") == "agentic"
+    assert _summary_mode("agentic-v9-shadow") == "agentic-v9-shadow"
+    assert _summary_mode("graph_locator_to_chunk") == "graph_locator_to_chunk"

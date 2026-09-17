@@ -202,3 +202,8 @@ Analysis cache format 4 refreshes existing summaries without a DB migration.
 CostSummary adds `known_cost_usd` for the priced portion of operational calls;
 `benchmark_usd` and `operational_usd` retain complete-estimate semantics.
 Execution costs do not include RAGAS calls. Cache format 5 rebuilds existing pages.
+Mode-cost alias correction: normalize answer and accounting target modes with
+the campaign identity adapter, including failed attempts and historical scopes.
+Agentic v8/v9/v10 aliases aggregate into the answer-mode `agentic` row; the shadow
+identity remains distinct. Cache format 6 refreshes persisted summaries without
+rewriting raw execution identities or requesting new model calls.

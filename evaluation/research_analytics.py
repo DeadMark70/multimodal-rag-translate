@@ -14,6 +14,7 @@ from statistics import mean
 from typing import Any, Literal, Sequence
 
 from core.errors import AppError, ErrorCode
+from evaluation.agentic_campaign_adapter import campaign_execution_identity
 from data_base.agentic_v9.schemas import (
     ATOMIC_SLOT_MATCHING_EXPERIMENTAL,
     AtomicPlannerDiagnostics,
@@ -834,8 +835,8 @@ class ResearchAnalyticsService:
 
         modes: list[ModeResearchSummary] = []
         warnings: list[ResearchWarning] = []
-        for mode in sorted({str(result.mode) for result in completed}):
-            included = [result for result in completed if str(result.mode) == mode]
+        for mode in sorted({_summary_mode(result.mode) for result in completed}):
+            included = [result for result in completed if _summary_mode(result.mode) == mode]
             summary, mode_warnings = _mode_summary(
                 included,
                 scores,
@@ -858,7 +859,7 @@ class ResearchAnalyticsService:
         # quality-comparison row. Their API calls can still have a cost.
         mode_costs = []
         summaries_by_mode = {row.mode: row for row in modes}
-        cost_modes = {str(result.mode) for result in all_results} | {
+        cost_modes = {_summary_mode(result.mode) for result in all_results} | {
             mode for mode in execution_scope_modes.values() if mode is not None
         }
         for mode in sorted(cost_modes):
@@ -2001,7 +2002,7 @@ def _mode_summary(
     official_events = [
         event for scope in official for event in events_by_scope[scope.scope_id]
     ]
-    mode = str(results[0].mode)
+    mode = _summary_mode(results[0].mode)
     operational_scopes = [
         scope for scope in scopes if execution_scope_modes.get(scope.scope_id) == mode
     ]
@@ -2073,7 +2074,7 @@ def _mode_summary(
             ("low_sample_size", "Fewer than five official executions are included.")
         )
     return ModeResearchSummary(
-        mode=str(results[0].mode),
+        mode=mode,
         sample_count=len(results),
         comparable=not reasons,
         not_comparable_reasons=reasons,
@@ -2156,15 +2157,25 @@ def _official_execution_scopes(results, scopes):
     ]
 
 
+def _summary_mode(mode: str) -> str:
+    """Use answer-mode grouping without changing persisted execution identities."""
+    if mode == "agentic-v9-shadow":
+        return mode
+    try:
+        return campaign_execution_identity(str(mode), "v10")[1]
+    except ValueError:
+        return str(mode)
+
+
 def _execution_scope_mode(scope, results) -> str | None:
-    durable_modes = {str(target.mode) for target in scope.targets if target.mode}
+    durable_modes = {_summary_mode(target.mode) for target in scope.targets if target.mode}
     if len(durable_modes) == 1:
         return next(iter(durable_modes))
     if durable_modes:
         return None
 
     matching_modes = {
-        str(result.mode)
+        _summary_mode(result.mode)
         for result in results
         if scope.run_id == result.id
         or any(

@@ -2,6 +2,9 @@
 
 Human-maintained inventory of the current backend surface.
 
+Mode cost rows use the same normalized modes as answer summaries; execution
+aliases such as agentic-v10 no longer create a second cost-only row.
+
 Research summary/export mode_costs reports completed answer counts and execution
 costs by mode, including modes with no successful answers. CostSummary includes
 the known cumulative subtotal independently of complete operational cost.
@@ -247,5 +250,4 @@ Job and attempt responses include ownership-filtered status, retry, safe-error, 
 - Production markdown ingestion now routes through named indexing profiles; compatibility default remains `recursive_baseline` while upload/retry-index paths currently opt into `semantic_contextual`.
 - `/rag/ask` and `/rag/ask/stream` keep the existing schemas/SSE phases, but `enable_evaluation=true` now reuses the first RAG pass instead of issuing a second `rag_answer_question(...)` call for metrics.
 - RAGAS reference selection is `ground_truth_short ?? ground_truth` and evaluator context ingestion is deterministic plus answer-aware (`v3_answer_aware_pack`: top 8 chunks, 1800 chars each, whitespace-normalized, overlap-ranked, task-aware when metadata exists).
-
 
