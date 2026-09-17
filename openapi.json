@@ -7770,6 +7770,13 @@
             "type": "string",
             "title": "Campaign Id"
           },
+          "mode_costs": {
+            "items": {
+              "$ref": "#/components/schemas/ModeCostSummary"
+            },
+            "type": "array",
+            "title": "Mode Costs"
+          },
           "research_schema_version": {
             "type": "string",
             "const": "2",
@@ -9163,6 +9170,17 @@
               }
             ],
             "title": "Operational Usd"
+          },
+          "known_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Known Cost Usd"
           },
           "pricing_status": {
             "type": "string",
@@ -16528,6 +16546,13 @@
             "type": "string",
             "title": "Campaign Id"
           },
+          "mode_costs": {
+            "items": {
+              "$ref": "#/components/schemas/ModeCostSummary"
+            },
+            "type": "array",
+            "title": "Mode Costs"
+          },
           "research_schema_version": {
             "type": "string",
             "const": "2",
@@ -22079,6 +22104,28 @@
         ],
         "title": "ModeComparisonResponse",
         "description": "Mode-level comparison analytics."
+      },
+      "ModeCostSummary": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "completed_run_count": {
+            "type": "integer",
+            "title": "Completed Run Count",
+            "default": 0
+          },
+          "execution_cost": {
+            "$ref": "#/components/schemas/CostSummary"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "execution_cost"
+        ],
+        "title": "ModeCostSummary"
       },
       "ModeMetricsSummary": {
         "properties": {

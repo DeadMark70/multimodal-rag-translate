@@ -64,9 +64,16 @@ class TokenBreakdown(BaseModel):
 class CostSummary(BaseModel):
     benchmark_usd: float | None = None
     operational_usd: float | None = None
+    known_cost_usd: float | None = None
     pricing_status: ResearchPricingStatus
     priced_call_count: int = 0
     unpriced_call_count: int = 0
+
+
+class ModeCostSummary(BaseModel):
+    mode: str
+    completed_run_count: int = 0
+    execution_cost: CostSummary
 
 
 class ModeResearchSummary(BaseModel):
@@ -104,6 +111,7 @@ class CampaignResearchSummary(BaseModel):
     """Research values shared by the dashboard and the complete export."""
 
     campaign_id: str
+    mode_costs: list[ModeCostSummary] = Field(default_factory=list)
     research_schema_version: Literal["2"] = "2"
     completed_run_count: int
     total_run_count: int

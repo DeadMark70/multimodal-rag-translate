@@ -2,14 +2,19 @@
 
 ## Evaluation inference update
 
+Research summaries expose mode_costs for every recorded execution mode, including
+modes with only failed attempts. Current official-answer costs and cumulative
+execution costs remain separate from RAGAS scoring costs. CostSummary includes
+known_cost_usd for partial cumulative estimates. Cache format 5 refreshes old summaries.
+
 RAGAS overhead reports the known priced-call subtotal, priced/unpriced call
 counts and missing-price/usage reasons even when its full cost is unknown.
-Measured Gemini responses retain zero cache reads. Cache format 4 rebuilds
+Measured Gemini responses retain zero cache reads. Cache format 5 rebuilds
 historical summaries, including the earlier evaluator's stripped-zero envelope.
 
 Research summaries count current official scores before historical failed scoring
 attempts. Successful partial reruns repair quality counts without deleting retry
-history or cost accounting; analysis cache version 4 rebuilds existing summaries.
+history or cost accounting; analysis cache version 5 rebuilds existing summaries.
 
 Evaluation uses PostgreSQL. Scoring saves each answer/metric independently,
 honors concurrency/RPM, supports Gemini Flex, reports prompt-cache usage and

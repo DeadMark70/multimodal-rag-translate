@@ -197,3 +197,8 @@ RAGAS `evaluation_overhead` adds `known_cost_usd`, `priced_call_count`,
 `unpriced_call_count`, and `unpriced_reasons`. The known subtotal is available
 when at least one call is priced; `cost_usd` retains its complete-total semantics.
 Analysis cache format 4 refreshes existing summaries without a DB migration.
+`mode_costs` lists each recorded mode with `completed_run_count` and
+`execution_cost`. Unlike quality comparison rows, it includes failed-only modes.
+CostSummary adds `known_cost_usd` for the priced portion of operational calls;
+`benchmark_usd` and `operational_usd` retain complete-estimate semantics.
+Execution costs do not include RAGAS calls. Cache format 5 rebuilds existing pages.

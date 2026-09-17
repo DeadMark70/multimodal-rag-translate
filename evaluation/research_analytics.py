@@ -33,6 +33,7 @@ from evaluation.accounting_schemas import (
     EvaluationOverheadSummary,
     LatencySummary,
     MetricObservation,
+    ModeCostSummary,
     ModeResearchSummary,
     ResearchWarning,
     TokenBreakdown,
@@ -853,6 +854,27 @@ class ResearchAnalyticsService:
                 for code, message in mode_warnings
             )
 
+        # Include modes whose attempts all failed, even though they have no
+        # quality-comparison row. Their API calls can still have a cost.
+        mode_costs = []
+        summaries_by_mode = {row.mode: row for row in modes}
+        cost_modes = {str(result.mode) for result in all_results} | {
+            mode for mode in execution_scope_modes.values() if mode is not None
+        }
+        for mode in sorted(cost_modes):
+            existing = summaries_by_mode.get(mode)
+            mode_cost = existing.execution_cost if existing else _cost(
+                [], operational_events=[event for scope in scopes
+                    if execution_scope_modes.get(scope.scope_id) == mode
+                    for event in events_by_scope[scope.scope_id]],
+            )
+            if has_unattributed_execution_scopes:
+                mode_cost = mode_cost.model_copy(update={"operational_usd": None, "pricing_status": "partial"})
+            mode_costs.append(ModeCostSummary(
+                mode=mode, completed_run_count=existing.sample_count if existing else 0,
+                execution_cost=mode_cost,
+            ))
+
         official_scopes = _official_execution_scopes(completed, scopes)
         official_events = [
             event
@@ -916,11 +938,7 @@ class ResearchAnalyticsService:
         overhead = EvaluationOverheadSummary(
             tokens=overhead_tokens,
             cost_usd=overhead_cost.operational_usd,
-            known_cost_usd=(
-                sum(e.estimated_cost_usd for e in overhead_events
-                    if e.pricing_status == "priced" and e.estimated_cost_usd is not None)
-                if overhead_cost.priced_call_count else None
-            ),
+            known_cost_usd=overhead_cost.known_cost_usd,
             priced_call_count=overhead_cost.priced_call_count,
             unpriced_call_count=overhead_cost.unpriced_call_count,
             unpriced_reasons=dict(Counter(
@@ -942,6 +960,7 @@ class ResearchAnalyticsService:
             [r.total_latency_ms for r in completed if r.total_latency_ms is not None]
         )
         return CampaignResearchSummaryResponse(
+            mode_costs=mode_costs,
             campaign_id=campaign_id,
             completed_run_count=len(completed),
             total_run_count=len(all_results),
@@ -2732,6 +2751,9 @@ def _cost(events, *, operational_events):
         for e in operational_events
     )
     return CostSummary(
+        known_cost_usd=(sum(e.estimated_cost_usd for e in operational_events
+                           if e.pricing_status == "priced" and e.estimated_cost_usd is not None)
+                        if priced else None),
         benchmark_usd=sum(e.estimated_cost_usd or 0 for e in events)
         if status(events) == "complete"
         else None,

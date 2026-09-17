@@ -1915,6 +1915,28 @@ async def test_mixed_campaign_keeps_execution_and_ragas_accounting_separate(
     assert graph_mode.execution_cost.pricing_status == "complete"
     assert naive_mode.execution_cost.operational_usd is None
     assert naive_mode.execution_cost.pricing_status == "partial"
+    costs = {row.mode: row for row in summary.mode_costs}
+    assert costs["naive"].execution_cost.known_cost_usd == pytest.approx(0.1)
+    assert costs["graph"].execution_cost.known_cost_usd == pytest.approx(0.2)
+    assert costs["naive"].completed_run_count == 1
+    # RAGAS costs remain separate, never split across answer modes.
+    assert summary.execution_cost.known_cost_usd == pytest.approx(0.3)
+
+
+@pytest.mark.asyncio
+async def test_mode_costs_include_spend_when_all_answers_failed(research_service) -> None:
+    await _campaign("all-failed-cost", ["graph"])
+    result_id = await _result("all-failed-cost", "graph", "failed-graph", status=CampaignResultStatus.FAILED)
+    await _execution_scope("all-failed-cost", result_id, "failed-graph", official=False,
+                           scope_status="failed", cost=0.05)
+    summary = await research_service.get_summary(user_id="user-1", campaign_id="all-failed-cost")
+    assert summary.modes == []
+    assert len(summary.mode_costs) == 1
+    row = summary.mode_costs[0]
+    assert row.mode == "graph"
+    assert row.completed_run_count == 0
+    assert row.execution_cost.benchmark_usd is None
+    assert row.execution_cost.operational_usd == pytest.approx(0.05)
 
 
 @pytest.mark.asyncio
