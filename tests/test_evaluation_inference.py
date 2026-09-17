@@ -8,6 +8,7 @@ from langchain_core.messages import HumanMessage
 
 from core.evaluation_inference import EvaluationGoogleChat, evaluation_inference_scope
 from evaluation.retry import RateBudget
+from evaluation.token_normalizers import normalize_provider_usage
 
 
 def response():
@@ -26,6 +27,33 @@ def response():
             total_token_count=115,
         ),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cache_count, expected", [(None, 0), (0, 0), (80, 80)])
+async def test_measured_gemini_response_keeps_cache_misses(monkeypatch, cache_count, expected):
+    model = EvaluationGoogleChat(model="gemini-3.1-flash-lite", google_api_key="unit-test")
+    reply = response()
+    reply.usage_metadata.cached_content_token_count = cache_count
+    monkeypatch.setattr(model.async_client.models, "generate_content", AsyncMock(return_value=reply))
+    with evaluation_inference_scope({"ragas_service_tier": "flex"}, limiter=RateBudget(100)):
+        result = await model._agenerate([HumanMessage(content="question")])
+    usage = normalize_provider_usage("google", result.generations[0].message.usage_metadata)
+    assert usage.cached_input_tokens == expected
+    assert usage.reconciliation_status == "balanced"
+
+
+@pytest.mark.asyncio
+async def test_missing_response_usage_stays_unknown(monkeypatch):
+    model = EvaluationGoogleChat(model="gemini-3.1-flash-lite", google_api_key="unit-test")
+    reply = response()
+    reply.usage_metadata = None
+    monkeypatch.setattr(model.async_client.models, "generate_content", AsyncMock(return_value=reply))
+    with evaluation_inference_scope({}, limiter=RateBudget(100)):
+        result = await model._agenerate([HumanMessage(content="question")])
+    usage = normalize_provider_usage("google", result.generations[0].message.usage_metadata)
+    assert usage.usage_status == "missing"
+    assert usage.cached_input_tokens is None
 
 
 @pytest.mark.asyncio

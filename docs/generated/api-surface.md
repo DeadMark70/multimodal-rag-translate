@@ -2,6 +2,9 @@
 
 Human-maintained inventory of the current backend surface.
 
+Research summary/export evaluation overhead includes known_cost_usd and
+priced/unpriced call counts/reasons, alongside the complete-only cost_usd.
+
 <!-- BEGIN GENERATED OPENAPI ROUTES -->
 | Method | Path | Operation ID |
 |---|---|---|
@@ -240,7 +243,6 @@ Job and attempt responses include ownership-filtered status, retry, safe-error, 
 - Production markdown ingestion now routes through named indexing profiles; compatibility default remains `recursive_baseline` while upload/retry-index paths currently opt into `semantic_contextual`.
 - `/rag/ask` and `/rag/ask/stream` keep the existing schemas/SSE phases, but `enable_evaluation=true` now reuses the first RAG pass instead of issuing a second `rag_answer_question(...)` call for metrics.
 - RAGAS reference selection is `ground_truth_short ?? ground_truth` and evaluator context ingestion is deterministic plus answer-aware (`v3_answer_aware_pack`: top 8 chunks, 1800 chars each, whitespace-normalized, overlap-ranked, task-aware when metadata exists).
-
 
 
 

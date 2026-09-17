@@ -191,5 +191,9 @@ cache ratio, request hit ratio, coverage and tiers; historical data may be null.
 See [runtime details](../evaluation-inference.md).
 Partial-rerun quality projection: a compatible official score for the current
 answer attempt remains valid even when older scoring scopes failed. Historical
-attempts still contribute to operational accounting. Analysis cache version 3
+attempts still contribute to operational accounting. Analysis cache version 4
 recomputes persisted summaries on access after deployment.
+RAGAS `evaluation_overhead` adds `known_cost_usd`, `priced_call_count`,
+`unpriced_call_count`, and `unpriced_reasons`. The known subtotal is available
+when at least one call is priced; `cost_usd` retains its complete-total semantics.
+Analysis cache format 4 refreshes existing summaries without a DB migration.

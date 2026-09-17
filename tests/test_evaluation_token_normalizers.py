@@ -113,3 +113,12 @@ def test_usage_with_overlapping_categories_is_partial() -> None:
 
     assert usage.other_tokens == 0
     assert usage.reconciliation_status == "partial"
+def test_legacy_evaluator_cache_zero_is_recovered_without_inventing_missing_usage() -> None:
+    from evaluation.token_normalizers import cached_input_tokens
+
+    raw = {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120,
+           "input_token_details": {}, "requested_service_tier": "flex"}
+    assert cached_input_tokens(raw, 100) == 0
+    assert normalize_provider_usage("google", raw).cached_input_tokens == 0
+    assert cached_input_tokens({"requested_service_tier": "flex"}, 0) is None
+    assert cached_input_tokens({"input_token_details": {}}, 0) is None

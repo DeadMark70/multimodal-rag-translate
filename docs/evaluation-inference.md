@@ -40,6 +40,16 @@ token ratio, request hit ratio and measurement coverage for answering and
 scoring separately. Missing data is N/A; cached input is a subset of input.
 LangChain output includes thinking; normalization removes that overlap.
 
+On measured Gemini responses, LangChain normalizes an omitted cache counter to
+zero. Preserve that value. The earlier evaluator removed it, leaving an empty
+input_token_details with requested_service_tier; summary reads recover that
+specific historical envelope. Missing usage remains unknown.
+
+RAGAS overhead exposes known_cost_usd, priced_call_count, unpriced_call_count and
+unpriced_reasons. A missing-usage retry must not hide priced calls. cost_usd still
+requires complete pricing; the known subtotal is explicitly partial and does
+not imply that unpriced calls are free. Saved call prices are not rewritten.
+
 RAGAS already puts fixed instructions, schemas and examples before variable
 input. Prompts remain unchanged; compatible metric work is grouped together.
 There is no claim of a measured hit-rate increase, prompt padding, answer reuse,

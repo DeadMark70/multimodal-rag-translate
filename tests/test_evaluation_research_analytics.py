@@ -2295,3 +2295,42 @@ async def test_research_aggregates_use_bounded_result_projection_for_large_paylo
     assert all("answer" not in query for query in campaign_result_queries)
     assert all("contexts_json" not in query for query in campaign_result_queries)
     assert all("ground_truth" not in query for query in campaign_result_queries)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_priced", [True, False])
+async def test_ragas_cost_keeps_known_subtotal_when_retry_usage_is_missing(
+    research_service, include_priced: bool,
+) -> None:
+    campaign = "partial-ragas-price"
+    await _campaign(campaign, ["naive"])
+    store = EvaluationAccountingStore()
+    await store.start_scope(AccountingScopeStart(
+        scope_id="pricing-scope", campaign_id=campaign, scope_type="ragas_batch",
+        scope_key="faithfulness", metric_name="faithfulness",
+        targets=[{"job_id": "ragas", "work_item_id": "faithfulness", "attempt_id": "scoring-attempt"}],
+    ))
+    for known in ([False, True] if include_priced else [False]):
+        await store.record_event(UsageEventCreate(
+            usage_event_id=f"price-{known}", scope_id="pricing-scope", campaign_id=campaign,
+            scope_type="ragas_batch", scope_key="faithfulness", phase="ragas_scoring",
+            purpose="evaluator", provider="google", model_name="gemini-3.1-flash-lite",
+            input_tokens=100 if known else 0, output_text_tokens=20 if known else 0,
+            reported_total_tokens=120 if known else None,
+            raw_usage={"input_tokens": 100, "output_tokens": 20, "total_tokens": 120,
+                       "input_token_details": {}, "requested_service_tier": "flex"} if known else {},
+            usage_status="measured" if known else "missing",
+            reconciliation_status="balanced" if known else "unavailable",
+            estimated_cost_usd=0.002 if known else None,
+            pricing_status="priced" if known else "unavailable_usage",
+            status="success" if known else "failed", created_at=datetime.now(timezone.utc),
+        ))
+    await store.finalize_scope("pricing-scope", "completed")
+    summary = await research_service.get_summary(user_id="user-1", campaign_id=campaign)
+    cost = summary.evaluation_overhead
+    assert cost.cost_usd is None  # Never present the known subtotal as a full bill.
+    assert cost.known_cost_usd == (0.002 if include_priced else None)
+    assert cost.priced_call_count == int(include_priced)
+    assert cost.unpriced_call_count == 1
+    assert cost.unpriced_reasons == {"unavailable_usage": 1}
+    if include_priced:
+        assert cost.tokens.cache_read_ratio == 0
+        assert cost.tokens.cache_usage_coverage == 0.5

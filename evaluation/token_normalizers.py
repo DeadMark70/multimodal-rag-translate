@@ -141,4 +141,12 @@ def cached_input_tokens(payload: dict[str, Any], input_tokens: int) -> int | Non
     details = payload.get("input_token_details") or {}
     if value is None and isinstance(details, dict):
         value = first_int(details, "cache_read")
+    # Earlier evaluator adapters removed LangChain's zero, leaving this exact
+    # envelope. Recover that known cache miss, not genuinely absent usage.
+    if (value is None and payload.get("input_token_details") == {}
+            and payload.get("requested_service_tier") in {"standard", "flex"}
+            and first_int(payload, "input_tokens") is not None
+            and first_int(payload, "output_tokens") is not None
+            and first_int(payload, "total_tokens") is not None):
+        value = 0
     return value if value is not None and value <= input_tokens else None

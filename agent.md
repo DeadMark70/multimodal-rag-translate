@@ -1,5 +1,10 @@
 # Agent Working Guide (`agent.md`)
 
+Evaluation pricing rule (2026-09-17, state): distinguish complete cost from a
+known subtotal; missing retry usage must not suppress all priced calls or become
+zero cost. Preserve the SDK's measured cache miss (0); reserve N/A for genuinely
+missing usage. Test measured success together with a missing-usage retry.
+
 Evaluation rerun rule (2026-09-17, state): historical failed accounting scopes
 must not override compatible official scores for the current answer attempt.
 Test failure followed by successful score promotion, and bump the analysis cache

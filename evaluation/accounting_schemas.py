@@ -83,6 +83,10 @@ class ModeResearchSummary(BaseModel):
 class EvaluationOverheadSummary(BaseModel):
     tokens: TokenBreakdown
     cost_usd: float | None = None
+    known_cost_usd: float | None = None
+    priced_call_count: int = 0
+    unpriced_call_count: int = 0
+    unpriced_reasons: dict[str, int] = Field(default_factory=dict)
     pricing_status: ResearchPricingStatus
     evaluator_models: list[str] = Field(default_factory=list)
     metric_names: list[str] = Field(default_factory=list)

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from statistics import mean
 from typing import Any, Literal, Sequence
@@ -916,6 +916,18 @@ class ResearchAnalyticsService:
         overhead = EvaluationOverheadSummary(
             tokens=overhead_tokens,
             cost_usd=overhead_cost.operational_usd,
+            known_cost_usd=(
+                sum(e.estimated_cost_usd for e in overhead_events
+                    if e.pricing_status == "priced" and e.estimated_cost_usd is not None)
+                if overhead_cost.priced_call_count else None
+            ),
+            priced_call_count=overhead_cost.priced_call_count,
+            unpriced_call_count=overhead_cost.unpriced_call_count,
+            unpriced_reasons=dict(Counter(
+                e.pricing_status if e.pricing_status != "priced" else "missing_estimate"
+                for e in overhead_events
+                if e.pricing_status != "priced" or e.estimated_cost_usd is None
+            )),
             pricing_status=overhead_cost.pricing_status,
             evaluator_models=sorted(
                 {e.model_name for e in overhead_events if e.model_name}

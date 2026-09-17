@@ -126,6 +126,8 @@ class EvaluationGoogleChat(ChatGoogleGenerativeAI):
                     response = await self.async_client.models.generate_content(
                         **request
                     )
+                    # Keep LangChain's cache_read=0 on measured responses.
+                    # Removing it makes normal cache misses look uninstrumented.
                     result = _response_to_result(response)
                 for generation in result.generations:
                     generation.message.response_metadata["requested_service_tier"] = (
@@ -136,14 +138,6 @@ class EvaluationGoogleChat(ChatGoogleGenerativeAI):
                         generation.message.response_metadata["service_tier"] = getattr(
                             actual_tier, "value", actual_tier
                         )
-                    if (
-                        getattr(
-                            response.usage_metadata, "cached_content_token_count", None
-                        )
-                        is None
-                    ):
-                        usage = generation.message.usage_metadata or {}
-                        (usage.get("input_token_details") or {}).pop("cache_read", None)
                 return result
             except Exception as exc:
                 decision = classify_evaluation_error(exc)

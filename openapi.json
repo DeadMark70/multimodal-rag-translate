@@ -11144,6 +11144,34 @@
             ],
             "title": "Cost Usd"
           },
+          "known_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Known Cost Usd"
+          },
+          "priced_call_count": {
+            "type": "integer",
+            "title": "Priced Call Count",
+            "default": 0
+          },
+          "unpriced_call_count": {
+            "type": "integer",
+            "title": "Unpriced Call Count",
+            "default": 0
+          },
+          "unpriced_reasons": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Unpriced Reasons"
+          },
           "pricing_status": {
             "type": "string",
             "enum": [
