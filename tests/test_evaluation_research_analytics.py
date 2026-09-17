@@ -1589,6 +1589,36 @@ async def test_terminal_ragas_failure_is_counted_per_result_not_as_missing(
     assert observation.missing_samples == 0
     assert observation.status == "partial"
 
+    # Successful retry promotes a score; its old failed accounting scope stays.
+    await RagasScoreRepository().replace_for_campaign(
+        user_id="user-1",
+        campaign_id="per-result-failure",
+        score_rows=[
+            {
+                "campaign_result_id": result_id,
+                "metric_name": "faithfulness",
+                "metric_value": 0.6 if index == 5 else 0.8,
+                "source_attempt_id": f"attempt-{index}",
+                "evaluation_signature": f"attempt-{index}-faithfulness",
+                "details": {
+                    "evaluator_model": "judge-v1",
+                    "metric_version": "v1",
+                    "compatibility_signature": "policy-a",
+                },
+            }
+            for index, result_id in enumerate(results, start=1)
+        ],
+    )
+    repaired = await research_service.get_summary(
+        user_id="user-1", campaign_id="per-result-failure"
+    )
+    for quality in (repaired.quality, repaired.modes[0].quality):
+        assert quality["faithfulness"].valid_samples == 5
+        assert quality["faithfulness"].failed_samples == 0
+        assert quality["faithfulness"].missing_samples == 0
+        assert quality["faithfulness"].status == "complete"
+        assert quality["faithfulness"].value == pytest.approx(0.76)
+
 
 @pytest.mark.asyncio
 async def test_targeted_ragas_failure_does_not_leak_across_modes(
@@ -1602,9 +1632,9 @@ async def test_targeted_ragas_failure_does_not_leak_across_modes(
     await RagasScoreRepository().replace_for_campaign(
         user_id="user-1",
         campaign_id="isolated-ragas-failure",
-        score_rows=_primary_score_rows(
+        score_rows=[row for row in _primary_score_rows(
             [(naive, "naive-attempt"), (graph, "graph-attempt")]
-        ),
+        ) if not (row["campaign_result_id"] == naive and row["metric_name"] == "faithfulness")],
     )
     store = EvaluationAccountingStore()
     await store.start_scope(

@@ -2432,10 +2432,13 @@ def _set_ragas_work_state(states, result_id, scope_status) -> None:
 
 
 def _quality_sample_state(result_id, values_by_result, work_states) -> str:
-    if work_states.get(result_id) == "failed":
-        return "failed"
+    # Scores here already match the current answer attempt and evaluator policy.
+    # Failed historical calls remain in accounting, but cannot invalidate an
+    # official score saved by a successful retry (or retained after a failed one).
     if result_id in values_by_result:
         return "valid"
+    if work_states.get(result_id) == "failed":
+        return "failed"
     if work_states.get(result_id) == "evaluating":
         return "evaluating"
     return "missing"

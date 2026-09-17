@@ -2,6 +2,10 @@
 
 ## Evaluation inference update
 
+Research summaries count current official scores before historical failed scoring
+attempts. Successful partial reruns repair quality counts without deleting retry
+history or cost accounting; analysis cache version 3 rebuilds existing summaries.
+
 Evaluation uses PostgreSQL. Scoring saves each answer/metric independently,
 honors concurrency/RPM, supports Gemini Flex, reports prompt-cache usage and
 refreshes dated public price snapshots. See [evaluation inference](evaluation-inference.md).

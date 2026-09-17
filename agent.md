@@ -1,5 +1,10 @@
 # Agent Working Guide (`agent.md`)
 
+Evaluation rerun rule (2026-09-17, state): historical failed accounting scopes
+must not override compatible official scores for the current answer attempt.
+Test failure followed by successful score promotion, and bump the analysis cache
+format when correcting persisted aggregate semantics.
+
 Evaluation inference rule (2026-09-17): verify timeout units at the final SDK
 request, not the wrapper argument. LangChain seconds become SDK milliseconds.
 Run the request-construction and Marker dependency compatibility tests when

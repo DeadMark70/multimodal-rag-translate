@@ -189,3 +189,7 @@ and optional Standard fallback, frozen with durable work. Pricing status/refresh
 routes require user authentication. Token summaries expose cached input, token
 cache ratio, request hit ratio, coverage and tiers; historical data may be null.
 See [runtime details](../evaluation-inference.md).
+Partial-rerun quality projection: a compatible official score for the current
+answer attempt remains valid even when older scoring scopes failed. Historical
+attempts still contribute to operational accounting. Analysis cache version 3
+recomputes persisted summaries on access after deployment.
