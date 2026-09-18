@@ -306,6 +306,7 @@ async def _execution_scope(
     usage_status: str = "measured",
     reconciliation_status: str = "balanced",
     durable_mode: str | None = None,
+    phase: str = "answer_generation",
 ) -> None:
     store = EvaluationAccountingStore()
     await store.start_scope(
@@ -335,7 +336,7 @@ async def _execution_scope(
             scope_type="execution_run",
             scope_key=attempt,
             run_id=scope_run_id or result_id,
-            phase="answer_generation",
+            phase=phase,
             purpose="evaluation",
             input_tokens=tokens - 5 if usage_status == "measured" else 0,
             output_text_tokens=5 if usage_status == "measured" else 0,
@@ -1406,6 +1407,50 @@ async def test_campaign_cohort_keeps_modes_comparable_when_identity_is_shared(
     )
 
     assert all(mode.comparable for mode in summary.modes)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("usage_status", ["measured", "missing"])
+async def test_total_comparison_does_not_require_phase_labels(
+    research_service, usage_status,
+) -> None:
+    campaign_id = "unclassified-totals"
+    await _campaign(campaign_id, ["naive", "agentic"])
+    results = []
+    for mode, tokens in [("naive", 15), ("agentic", 30)]:
+        attempt = f"{mode}-attempt"
+        result_id = await _result(campaign_id, mode, attempt)
+        results.append((result_id, attempt))
+        await _execution_scope(
+            campaign_id, result_id, attempt, official=True, tokens=tokens,
+            phase="unclassified",
+            usage_status=usage_status if mode == "agentic" else "measured",
+        )
+    async with evaluation_db.connect_db() as connection:
+        await connection.execute(
+            "UPDATE campaign_results SET question_id = ? WHERE campaign_id = ?",
+            ("Q1", campaign_id),
+        )
+        await connection.commit()
+    await RagasScoreRepository().replace_for_campaign(
+        user_id="user-1", campaign_id=campaign_id,
+        score_rows=_primary_score_rows(results),
+    )
+    summary = await research_service.get_summary(user_id="user-1", campaign_id=campaign_id)
+    agentic = next(mode for mode in summary.modes if mode.mode == "agentic")
+    comparison = await research_service.get_question_comparison(user_id="user-1", campaign_id=campaign_id)
+    row = comparison.rows[0]
+    assert agentic.tokens.phase_attribution_status != "complete"
+    if usage_status == "measured":
+        assert agentic.tokens.accounting_status == "complete"
+        assert agentic.comparable is True
+        assert row.delta_tokens == 15
+        assert row.comparability_reason is None
+    else:
+        assert agentic.comparable is False
+        assert "incomplete_accounting" in agentic.not_comparable_reasons
+        assert row.delta_tokens is None
+        assert row.comparability_reason == "incomplete_accounting"
 
 
 @pytest.mark.asyncio

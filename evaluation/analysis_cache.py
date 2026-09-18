@@ -15,7 +15,7 @@ from evaluation.postgres import connect_db
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
-FORMAT_VERSION = 6
+FORMAT_VERSION = 7
 _tasks: dict[tuple[str, str], asyncio.Task] = {}
 
 
