@@ -28,9 +28,11 @@ runs only after Flex capacity retries are exhausted; its tier is recorded.
 
 ## Dependencies
 
-Use google-genai 1.75.0, langchain-google-genai 4.2.0 and ragas 0.4.3. SDK 1.75
-already supports Flex. SDK 2.x conflicts with marker-pdf 1.10.1. Marker 2.x also
-changes OCR/Transformers/OpenAI dependencies, so that migration is deferred.
+The default API image uses google-genai 2.24.0, langchain-google-genai 4.4.0,
+langchain-core 1.6.3 and unchanged ragas 0.4.3. The alternative local Marker image
+retains SDK 1.75.0 / integration 4.2.0 / core 1.2.7 because Marker 1.10.1 requires
+SDK <2. Install one profile per environment; see [staged upgrade](dependency-upgrade-stage1.md).
+Marker 2, Transformers 5, OpenAI and GPU upgrades remain deferred.
 Request-level tests verify Flex actually reaches GenerateContentConfig.
 
 ## Cache and usage

@@ -2,8 +2,8 @@
 PDF OCR Services (Hybrid: Local Marker / Datalab API)
 
 Provides PDF to Markdown conversion using either:
-- Local Marker (free, on-device) - set USE_LOCAL_MARKER=true
-- Datalab API (paid, cloud) - default
+- Local Marker (free, on-device) - default; requires the local Marker build profile
+- Datalab API (paid, cloud) - explicitly set USE_LOCAL_MARKER=false
 
 Automatically preserves page boundaries with [[PAGE_N]] markers.
 """
@@ -139,7 +139,11 @@ def initialize_predictor() -> None:
         try:
             from pdfserviceMD.local_marker_service import is_marker_available
             if not is_marker_available():
-                logger.warning("marker-pdf not installed! Run: pip install marker-pdf")
+                logger.warning(
+                    "Local Marker is unavailable in the default API image. "
+                    "Use USE_LOCAL_MARKER=false for Datalab API, or build a separate "
+                    "image with REQUIREMENTS_FILE=requirements-local-marker.txt."
+                )
             else:
                 logger.info("Local Marker ready")
         except ImportError:

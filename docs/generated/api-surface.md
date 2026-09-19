@@ -1,5 +1,9 @@
 # Generated API Surface
 
+Runtime packaging (2026-09-20): default image uses Google SDK 2; Datalab API OCR
+requires explicit `USE_LOCAL_MARKER=false`. Local Marker uses an alternative
+build profile with SDK 1. OCR routing defaults and API schemas are unchanged.
+
 ## Total-token comparison (2026-09-18)
 
 Mode summaries and question comparisons accept complete total-token accounting even when phase attribution is partial. Unknown/missing usage and incomplete quality still prevent complete comparisons. Phase status is retained independently. Analysis cache format 7 rebuilds prior summary/question projections without rerunning answers or scoring; no schema migration or API shape change.

@@ -66,7 +66,7 @@ def test_workflow_has_read_only_timed_python_jobs_with_scoped_dependency_caching
     assert quality_setup == {
         "python-version": "3.13",
         "cache": "pip",
-        "cache-dependency-path": "requirements.txt",
+        "cache-dependency-path": "requirements*.txt",
     }
 
 
@@ -118,6 +118,7 @@ def test_quality_workflow_runs_complete_fake_provider_gate_contract():
     workflow = _workflow()
     job = workflow["jobs"]["quality-and-tests"]
     assert job["env"] == {
+        "EVALUATION_TEST_POSTGRES_URL": "postgresql://evaluation_test:evaluation_test@127.0.0.1:5432/evaluation_test",
         "TEST_MODE": "true",
         "USE_FAKE_PROVIDERS": "true",
         "CI_BLOCK_EXTERNAL_NETWORK": "true",

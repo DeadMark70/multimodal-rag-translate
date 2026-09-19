@@ -1,5 +1,13 @@
 # BACKEND
 
+## Dependency stage 1 (2026-09-20)
+
+The default Docker build uses Google SDK 2 and supports Datalab API OCR when
+explicitly configured with `USE_LOCAL_MARKER=false`. Local Marker 1 remains
+available through the alternative `requirements-local-marker.txt` build profile.
+The OCR routing default remains local; an unset flag never enables cloud upload.
+See [deployment and smoke tests](dependency-upgrade-stage1.md).
+
 ## Total-token comparison (2026-09-18)
 
 Mode summaries and question comparisons accept complete total-token accounting even when phase attribution is partial. Unknown/missing usage and incomplete quality still prevent complete comparisons. Phase status is retained independently. Analysis cache format 7 rebuilds prior summary/question projections without rerunning answers or scoring; no schema migration or API shape change.

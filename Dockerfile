@@ -5,6 +5,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 ARG TORCH_INDEX_URL=
+ARG TORCH_VERSION=
+ARG TORCHVISION_VERSION=
+ARG REQUIREMENTS_FILE=requirements.txt
 
 WORKDIR /app
 
@@ -23,14 +26,14 @@ RUN apt-get update && \
       curl && \
     rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt /app/requirements.txt
+COPY requirements*.txt /app/
 RUN pip install --upgrade pip && \
     if [ -n "$TORCH_INDEX_URL" ]; then \
-      pip install --index-url "$TORCH_INDEX_URL" torch torchvision; \
+      pip install --index-url "$TORCH_INDEX_URL" "torch${TORCH_VERSION:+==$TORCH_VERSION}" "torchvision${TORCHVISION_VERSION:+==$TORCHVISION_VERSION}"; \
     else \
-      pip install torch torchvision; \
+      pip install "torch${TORCH_VERSION:+==$TORCH_VERSION}" "torchvision${TORCHVISION_VERSION:+==$TORCHVISION_VERSION}"; \
     fi && \
-    pip install -r /app/requirements.txt
+    pip install -r "/app/${REQUIREMENTS_FILE}"
 
 COPY . /app
 

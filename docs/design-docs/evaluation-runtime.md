@@ -120,8 +120,9 @@ Describe evaluation as a persisted runtime subsystem that now serves both legacy
 
 ## Provider Compatibility Pins
 
-- The supported Gemini integration is `google-genai==1.56.0` with
-  `langchain-google-genai==4.1.3` and `langchain-core==1.2.7`.
-- `google-genai` 2.x remains deferred because the current `marker-pdf==1.10.1`
-  dependency requires `google-genai<2`; moving it requires the separate Marker 2,
-  Transformers 5, Surya, and OpenAI 2 upgrade.
+- The default API profile uses `google-genai==2.24.0`,
+  `langchain-google-genai==4.4.0` and `langchain-core==1.6.3`.
+- The alternative local Marker profile retains SDK 1.75.0, integration 4.2.0,
+  core 1.2.7 and Marker 1.10.1 in its own image/environment. Marker 2 and GPU
+  migration remain separate from this SDK upgrade.
+- See [stage 1 deployment and tests](../dependency-upgrade-stage1.md).

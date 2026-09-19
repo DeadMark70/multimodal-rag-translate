@@ -99,6 +99,19 @@ def get_imports_from_file(filepath):
                 imports.add(node.module)
     return imports
 
+def _requirement_names(path: Path) -> set[str]:
+    requirements = set()
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("-r "):
+            requirements.update(_requirement_names(path.parent / line[3:].strip()))
+        else:
+            requirements.add(line.lower().split('==')[0].split('>=')[0].split('<')[0].split('[')[0])
+    return requirements
+
+
 def test_requirements_vs_imports():
     """
     Heuristic check: verify that imported top-level packages are in requirements.txt.
@@ -106,9 +119,7 @@ def test_requirements_vs_imports():
     We will just log warnings or check for obvious missing ones.
     """
     req_path = PROJECT_ROOT / "requirements.txt"
-    with open(req_path, "r", encoding="utf-8") as f:
-        requirements = {line.strip().lower().split('==')[0].split('>=')[0].split('<')[0].split('[')[0] 
-                        for line in f if line.strip() and not line.startswith('#')}
+    requirements = _requirement_names(req_path)
 
     # Mapping of import path/name to pypi package name for known mismatches
     known_mappings = {

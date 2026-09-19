@@ -74,10 +74,12 @@ $env:TEST_MODE='true'; $env:USE_FAKE_PROVIDERS='true'; .\.venv\Scripts\python.ex
 - Terminal release reports are process-local cache entries keyed by each selected campaign's ID, `updated_at`, and status. Any marker change invalidates the entry; nonterminal campaigns always load fresh state.
 - `agent_traces.summary_json` is the compact list projection introduced by the trace-summary migration. Preserve the legacy `trace_json` detail path, backfill/maintain summaries through the repository, and keep the `(campaign_id, user_id, created_at)` list index usable.
 - The repository enforces a 1,048,576-byte UTF-8 answer limit. Preserve the explicit `EVALUATION_ANSWER_TOO_LARGE` error code through durable and legacy execution; do not truncate a provider answer to make it persist.
-- Keep Gemini on `google-genai==1.56.0`, `langchain-google-genai==4.1.3`, and
-  `langchain-core==1.2.7`. Do not move to `google-genai` 2.x without the separate
-  Marker 2 / Transformers 5 / Surya / OpenAI 2 migration: `marker-pdf==1.10.1`
-  currently requires `google-genai<2`.
+- The default API build pins `google-genai==2.24.0`,
+  `langchain-google-genai==4.4.0`, and `langchain-core==1.6.3`.
+  Local Marker 1.10.1 is isolated in the alternative
+  `requirements-local-marker.txt` build profile, which retains SDK 1.x.
+  Never install both profiles in the same environment. See
+  [stage 1 upgrade](dependency-upgrade-stage1.md) for build and smoke tests.
 
 When changing these paths, run:
 
