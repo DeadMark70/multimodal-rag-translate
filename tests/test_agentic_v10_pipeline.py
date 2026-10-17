@@ -148,7 +148,8 @@ def test_v10_drilldown_synthesis_prompt_v2_requires_grounded_complete_answers() 
 
 
 @pytest.mark.asyncio
-async def test_v10_audit_answer_uses_native_schema_and_raw_b_context() -> None:
+@pytest.mark.parametrize("chat_context", [False, True])
+async def test_v10_audit_answer_uses_native_schema_and_raw_b_context(chat_context) -> None:
     decomposer = MagicMock()
     decomposer.decompose = AsyncMock(return_value=[
         SubQueryItem(id="SQ1", query="model architecture", focus="架構", target_entity="Model"),
@@ -194,7 +195,17 @@ async def test_v10_audit_answer_uses_native_schema_and_raw_b_context() -> None:
         patch("data_base.agentic_v10.subquery_pipeline_service.load_user_vector_documents_async", new=AsyncMock(return_value=[first_previous, first, first_next, second_previous, second, second_next])),
         patch("data_base.agentic_v10.subquery_pipeline_service.get_llm", return_value=audit_llm) as get_llm,
     ):
-        result = await service.execute(question="Compare the models", user_id="user-1")
+        progress = AsyncMock()
+        result = await service.execute(
+            question="Compare the models", user_id="user-1",
+            decomposition_question="Earlier turn: Model A. Compare the models" if chat_context else None,
+            progress_callback=progress if chat_context else None,
+        )
+    if chat_context:
+        decomposer.decompose.assert_awaited_once_with("Earlier turn: Model A. Compare the models")
+        assert [call.args[0] for call in progress.await_args_list] == [
+            "query_expansion", "retrieval", "reranking", "coverage_check", "answer_generation",
+        ]
     trace = result.agent_trace or {}
     v10 = trace["agentic_v10"]
     assert trace["agentic_execution_version"] == "v10"

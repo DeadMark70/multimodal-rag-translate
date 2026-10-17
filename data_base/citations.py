@@ -82,7 +82,7 @@ async def build_source_details(
         filenames = {}
 
     details: list[SourceDetail] = []
-    seen_evidence: set[tuple[str, int | None, str | None]] = set()
+    seen_evidence: set[tuple[str, int | None, str | None, str | None]] = set()
     represented_doc_ids: set[str] = set()
     for document in documents:
         doc_id = get_document_id(document.metadata)
@@ -91,13 +91,14 @@ async def build_source_details(
         text = document.page_content.strip()[:200]
         page = _positive_page(document.metadata)
         snippet = text or None
-        evidence_key = (doc_id, page, snippet)
+        evidence_key = (doc_id, page, snippet, document.metadata.get("reference_id"))
         if evidence_key in seen_evidence:
             continue
         seen_evidence.add(evidence_key)
         represented_doc_ids.add(doc_id)
         details.append(
             SourceDetail(
+                reference_id=document.metadata.get("reference_id"),
                 doc_id=doc_id,
                 filename=(
                     _metadata_filename(document.metadata) or filenames.get(doc_id)

@@ -43,6 +43,7 @@ from data_base.schemas_deep_research import (
 from data_base.schemas_agentic_chat import AgenticBenchmarkStreamRequest
 from data_base.deep_research_service import get_deep_research_service
 from data_base.agentic_chat_service import get_agentic_chat_service
+from data_base.agentic_v10.chat import answer_agentic_chat
 from data_base.sse_events import (
     ErrorData,
     PhaseUpdateData,
@@ -92,6 +93,8 @@ _ASK_PHASE_LABELS = {
     "reranking": "正在重排序結果",
     "graph_context": "正在分析圖譜上下文",
     "answer_generation": "正在生成回答",
+    "coverage_check": "正在檢查證據是否完整",
+    "drilldown": "正在補查缺少的證據",
 }
 
 
@@ -127,20 +130,25 @@ async def _run_contextual_ask(
     )
 
     try:
-        rag_result = await rag_answer_question(
-            question=request.question,
-            user_id=user_id,
-            doc_ids=request.doc_ids,
-            history=request.history,
-            enable_reranking=request.enable_reranking,
-            enable_hyde=request.enable_hyde,
-            enable_multi_query=request.enable_multi_query,
-            return_docs=True,
-            enable_graph_rag=request.enable_graph_rag,
-            graph_search_mode=request.graph_search_mode,
-            plain_mode=True,
-            progress_callback=progress_callback,
-        )
+        if request.rag_mode == "agentic_v10":
+            rag_result = await answer_agentic_chat(
+                request, user_id, progress_callback=progress_callback,
+            )
+        else:
+            rag_result = await rag_answer_question(
+                question=request.question,
+                user_id=user_id,
+                doc_ids=request.doc_ids,
+                history=request.history,
+                enable_reranking=request.enable_reranking,
+                enable_hyde=request.enable_hyde,
+                enable_multi_query=request.enable_multi_query,
+                return_docs=True,
+                enable_graph_rag=request.enable_graph_rag,
+                graph_search_mode=request.graph_search_mode,
+                plain_mode=True,
+                progress_callback=progress_callback,
+            )
 
         if isinstance(rag_result, RAGResult):
             answer = rag_result.answer
@@ -166,12 +174,13 @@ async def _run_contextual_ask(
         )
 
         source_details = await build_source_details(docs, sources, user_id=user_id)
-        if not request.enable_evaluation:
+        if not request.enable_evaluation or request.rag_mode == "agentic_v10":
             return EnhancedAskResponse(
                 question=request.question,
                 answer=answer,
                 sources=source_details,
                 metrics=None,
+                agentic_execution_version="v10" if request.rag_mode == "agentic_v10" else None,
             )
 
         logger.info("Running Self-RAG evaluation with reused documents...")

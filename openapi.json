@@ -6378,6 +6378,15 @@
       },
       "AskRequest": {
         "properties": {
+          "rag_mode": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "agentic_v10"
+            ],
+            "title": "Rag Mode",
+            "default": "standard"
+          },
           "question": {
             "type": "string",
             "maxLength": 2000,
@@ -9730,6 +9739,18 @@
                 "type": "null"
               }
             ]
+          },
+          "agentic_execution_version": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "v10"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agentic Execution Version"
           }
         },
         "type": "object",
@@ -25233,6 +25254,17 @@
           "doc_id": {
             "type": "string",
             "title": "Doc Id"
+          },
+          "reference_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Id"
           },
           "filename": {
             "anyOf": [

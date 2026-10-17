@@ -71,6 +71,7 @@ class SourceDetail(BaseModel):
         score: Relevance score from reranker.
     """
     doc_id: str
+    reference_id: Optional[str] = Field(default=None, exclude_if=lambda value: value is None)
     filename: Optional[str] = None
     page: Optional[int] = Field(default=None, ge=1)
     snippet: Optional[str] = Field(default=None, description="檢索到的引用段落原文")
@@ -163,6 +164,7 @@ class AskRequest(BaseModel):
         graph_search_mode: Graph search mode (`generic` recommended; `local/global/hybrid/auto` are legacy compatibility values).
         enable_graph_planning: Enable graph-based planning for Deep Research.
     """
+    rag_mode: Literal["standard", "agentic_v10"] = "standard"
     question: str = Field(
         ...,
         description="使用者問題",
@@ -241,4 +243,5 @@ class EnhancedAskResponse(BaseModel):
     answer: str
     sources: List[SourceDetail] = Field(default_factory=list)
     metrics: Optional[EvaluationMetrics] = None
+    agentic_execution_version: Literal["v10"] | None = Field(default=None, exclude_if=lambda value: value is None)
 

@@ -1,6 +1,25 @@
 # BACKEND
 
-## Chat model update (2026-10-18)
+## V10 chat (2026-10-18)
+
+`/rag/ask` and `/rag/ask/stream` accept `rag_mode="agentic_v10"`. They invoke the
+same `AgenticV10PipelineService` used by Evaluation Center, then return ordinary
+chat answers/citations. Bounded conversation history goes only to query
+decomposition; the original question and document evidence remain distinct.
+Optional progress reports query expansion, retrieval, reranking, coverage check,
+one conditional drill-down and answer generation. Cancelling the existing SSE
+stream cancels the pipeline task. Evaluation calls omit the new optional
+context/progress arguments and retain their retrieval/answer policy.
+
+V10 responses include `agentic_execution_version="v10"`; source cards carry
+their original `reference_id`, including gaps after filtering. The frontend
+retains messages and this version in conversation history. No raw V10 trace is
+returned to chat or copied into conversation records. V10 uses its own fixed
+retrieval policy and does not run the optional ordinary Self-RAG scorer.
+V10 chat uses the evaluation preset's default 8192 output tokens for its LLM
+calls, rather than inheriting the old planner/synthesizer's smaller limits.
+
+## Chat model update — first step (2026-10-18)
 
 All `/rag` HTTP requests, including ordinary ask, planning, execution and Agentic
 streams, use `gemini-3.1-flash-lite` with Medium thinking. An async router
@@ -9,9 +28,10 @@ Chat LLM calls omit `thinking_budget`, `temperature`, `top_p` and `top_k`.
 Query expansion and the existing planning/synthesis/Self-RAG parsers use the
 shared visible-text helper to accept Gemini 3 content blocks as well as strings.
 Evaluation Center continues using its existing model/setup overrides and cache
-entries. Translation/indexing defaults are unchanged. Agentic still uses its
-existing chat workflow until the separate V10 chat integration is tested.
-No API request/response fields or frontend changes are required for this step.
+entries. Translation/indexing defaults are unchanged. Agentic chat now selects
+the shared V10 pipeline through the ordinary ask interface.
+That first step required no API fields or frontend changes; the V10 step above
+adds the chat mode and reference/version fields.
 
 ## Dependency stage 1 (2026-09-20)
 

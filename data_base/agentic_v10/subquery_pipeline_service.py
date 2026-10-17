@@ -1,4 +1,4 @@
-"""Evaluation-only Agentic RAG v10 with one fail-soft evidence drill-down."""
+"""Shared Agentic RAG v10 with one fail-soft evidence drill-down."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from data_base.agentic_v10.subquery_decomposer import (
     SubQueryItem,
 )
 from data_base.document_metadata import get_document_id
-from data_base.rag_pipeline_schemas import RAGResult
+from data_base.rag_pipeline_schemas import ProgressCallback, RAGResult
 from data_base.rag_retrieval import retrieve_hybrid_documents
 from data_base.reranker import DocumentReranker
 from data_base.vector_store_manager import (
@@ -176,11 +176,19 @@ class AgenticV10PipelineService:
         authorized_doc_ids: list[str] | None = None,
         setup_snapshot: dict[str, Any] | None = None,
         trace_id: str | None = None,
+        decomposition_question: str | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> RAGResult:
         start = time.perf_counter()
         trace_id = trace_id or str(uuid4())
         question = question.strip()
-        decomposition = await self._decompose(question)
+        async def progress(stage: str) -> None:
+            if progress_callback is not None:
+                await progress_callback(stage, None)
+
+        await progress("query_expansion")
+        decomposition = await self._decompose(decomposition_question or question)
+        await progress("retrieval")
         retriever: Any | None = None
         retriever_error: str | None = None
         try:
@@ -207,6 +215,7 @@ class AgenticV10PipelineService:
         reranker = self._reranker or DocumentReranker.get_instance()
         selected: list[tuple[Document, float, SubQueryItem]] = []
         branches: list[dict[str, Any]] = []
+        await progress("reranking")
         for item, candidates, retrieval_error in retrieved:
             rerank_error: str | None = None
             rerank_started = time.perf_counter()
@@ -322,6 +331,7 @@ class AgenticV10PipelineService:
             overview=overview,
             context_text=context_text,
         )
+        await progress("coverage_check")
         audit, audit_usage, audit_error, audit_latency_ms = (
             await self._coverage_audit(audit_messages)
             if initial_context_entries
@@ -369,12 +379,14 @@ class AgenticV10PipelineService:
             response_status = "qualified_partial"
         elif not reference_validation["validated"] and not can_drill_down:
             route = "audit_fallback_raw_synthesis"
+            await progress("answer_generation")
             synthesis_messages = self._synthesis_messages(question, overview, context_text)
             answer, synthesis_usage, synthesis_error, synthesis_validation_fields = await self._synthesize(
                 synthesis_messages
             )
             response_status = "qualified_partial"
         elif audit.needs_drill_down == 0:
+            await progress("answer_generation")
             route = "audit_answer"
             answer = str(audit.answer).strip()
             synthesis_messages = audit_messages
@@ -382,6 +394,7 @@ class AgenticV10PipelineService:
             response_status = "complete"
         else:
             route = "conditional_drill_down"
+            await progress("drilldown")
             ledger_reference_ids = set(reference_validation["ledger_reference_ids"])
             final_context_entries = [
                 entry
@@ -401,6 +414,7 @@ class AgenticV10PipelineService:
             final_context_entries.extend(drill_entries)
             final_context_text = self._render_context_entries(final_context_entries)
             if final_context_entries:
+                await progress("answer_generation")
                 synthesis_messages = self._drilldown_synthesis_messages(
                     question=question,
                     matrix=audit.entity_criterion_matrix,
@@ -464,6 +478,7 @@ class AgenticV10PipelineService:
                     "top1_evidence_count": len(top1_records),
                     "neighbor_evidence_count": len(context_records) - len(top1_records),
                     "final_evidence_count": len(final_context_entries),
+                    "final_reference_ids": [f"[Ref {index}]" for index, _, _, _ in final_context_entries],
                     "neighbor_lookup_error": neighbor_lookup_error,
                     "source_doc_ids": source_doc_ids,
                 },

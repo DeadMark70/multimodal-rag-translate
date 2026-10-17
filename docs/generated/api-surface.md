@@ -1,5 +1,10 @@
 # Generated API Surface
 
+V10 chat: ask requests accept optional `rag_mode` (`standard` / `agentic_v10`).
+The shared V10 pipeline reports coverage_check/drilldown stages through the
+existing phase_update stream. Chat replies optionally identify V10 and source
+reference IDs; the existing complete/error events and cancellation are retained.
+
 Chat runtime (2026-10-18): `/rag` routes scope Gemini 3.1 Flash-Lite / Medium to
 chat requests and omit deprecated sampling/budget fields from model calls.
 SSE retains the same scope. Evaluation Center setup and HTTP schemas are unchanged.
