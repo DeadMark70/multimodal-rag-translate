@@ -4,6 +4,13 @@ This guide records the current backend maintenance boundaries after the 2026-07-
 
 ## Runtime Baseline
 
+- `/rag` HTTP routes apply `core.llm_factory.chat_llm_settings` as an async
+  yield dependency. It scopes the chat model/Medium thinking through SSE tasks.
+  Keep it async: sync dependencies run in a worker thread with a separate context.
+- Chat and evaluation LLM instances use separate cache keys. Chat alone omits
+  old sampling/budget parameters; do not change evaluation defaults as a side
+  effect of a chat migration.
+
 - Local Windows development currently uses Python 3.13.
 - Run commands from the repository root.
 - Prefer:

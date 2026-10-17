@@ -1,5 +1,9 @@
 # Generated API Surface
 
+Chat runtime (2026-10-18): `/rag` routes scope Gemini 3.1 Flash-Lite / Medium to
+chat requests and omit deprecated sampling/budget fields from model calls.
+SSE retains the same scope. Evaluation Center setup and HTTP schemas are unchanged.
+
 Runtime packaging (2026-09-20): default image uses Google SDK 2; Datalab API OCR
 requires explicit `USE_LOCAL_MARKER=false`. Local Marker uses an alternative
 build profile with SDK 1. OCR routing defaults and API schemas are unchanged.

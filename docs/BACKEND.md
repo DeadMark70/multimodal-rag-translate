@@ -1,5 +1,18 @@
 # BACKEND
 
+## Chat model update (2026-10-18)
+
+All `/rag` HTTP requests, including ordinary ask, planning, execution and Agentic
+streams, use `gemini-3.1-flash-lite` with Medium thinking. An async router
+dependency keeps these settings active through streaming and nested tasks.
+Chat LLM calls omit `thinking_budget`, `temperature`, `top_p` and `top_k`.
+Query expansion and the existing planning/synthesis/Self-RAG parsers use the
+shared visible-text helper to accept Gemini 3 content blocks as well as strings.
+Evaluation Center continues using its existing model/setup overrides and cache
+entries. Translation/indexing defaults are unchanged. Agentic still uses its
+existing chat workflow until the separate V10 chat integration is tested.
+No API request/response fields or frontend changes are required for this step.
+
 ## Dependency stage 1 (2026-09-20)
 
 The default Docker build uses Google SDK 2 and supports Datalab API OCR when

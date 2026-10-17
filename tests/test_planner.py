@@ -88,7 +88,8 @@ class TestTaskPlannerPlanning:
     """Tests for the planning functionality."""
 
     @pytest.mark.asyncio
-    async def test_plan_success(self):
+    @pytest.mark.parametrize("as_blocks", [False, True])
+    async def test_plan_success(self, as_blocks):
         """Tests successful planning with mock LLM."""
         from agents.planner import TaskPlanner
         
@@ -97,6 +98,8 @@ class TestTaskPlannerPlanning:
 2. 子問題二的完整內容"""
         
         mock_llm = AsyncMock()
+        if as_blocks:
+            mock_response.content = [{"type": "text", "text": mock_response.content}]
         mock_llm.ainvoke = AsyncMock(return_value=mock_response)
         
         with patch("agents.planner.get_llm", return_value=mock_llm):
@@ -104,7 +107,7 @@ class TestTaskPlannerPlanning:
             plan = await planner.plan("複雜的研究問題")
         
         assert plan.original_question == "複雜的研究問題"
-        assert len(plan.sub_tasks) >= 1
+        assert len(plan.sub_tasks) == 2
 
     @pytest.mark.asyncio
     async def test_plan_fallback_on_error(self):

@@ -11,6 +11,7 @@ Architecture note:
 
 # Standard library
 import logging
+from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from functools import lru_cache
@@ -55,6 +56,7 @@ _MODEL_BY_PURPOSE: dict[str, str] = {
 
 # Default model for all other purposes
 _DEFAULT_MODEL = "gemini-2.5-flash-lite"
+_CHAT_MODEL = "gemini-3.1-flash-lite"
 
 # Session-wide override for testing
 _session_model_override: Optional[str] = None
@@ -122,6 +124,19 @@ def llm_runtime_override(*, clear: tuple[str, ...] = (), **overrides: Any):
 def current_llm_runtime_overrides() -> dict[str, Any]:
     """Return a copy of the request-scoped LLM runtime metadata."""
     return dict(_runtime_llm_overrides.get())
+
+
+async def chat_llm_settings() -> AsyncIterator[None]:
+    """Apply chat-only settings for the lifetime of an HTTP request/stream."""
+    with llm_runtime_override(
+        clear=("temperature", "top_p", "top_k", "thinking_budget"),
+        model_name=_CHAT_MODEL,
+        thinking_enabled=True,
+        thinking_level="medium",
+        include_thoughts=False,
+        chat_request=True,
+    ):
+        yield
 
 
 def _resolve_model_name(purpose: LLMPurpose, model_name: Optional[str] = None) -> str:
@@ -286,6 +301,7 @@ def _get_llm_cached(
     thinking_budget: Optional[int],
     include_thoughts: Optional[bool],
     thinking_level: Optional[str],
+    chat_request: bool = False,
 ) -> ChatGoogleGenerativeAI:
     """
     Returns a cached LLM instance for a specific purpose.
@@ -311,6 +327,19 @@ def _get_llm_cached(
         config["include_thoughts"] = include_thoughts
     if thinking_level is not None:
         config["thinking_level"] = thinking_level
+
+    if chat_request:
+        # Override purpose defaults and nested phase settings only for chat.
+        # Explicit None also prevents LangChain from adding sampling defaults.
+        model_name = _CHAT_MODEL
+        config.pop("thinking_budget", None)
+        config.update(
+            temperature=None,
+            top_p=None,
+            top_k=None,
+            thinking_level="medium",
+            include_thoughts=False,
+        )
 
     model = _resolve_model_name(purpose, model_name=model_name)
 
@@ -360,6 +389,7 @@ def get_llm(purpose: LLMPurpose, model_name: str = None) -> ChatGoogleGenerative
         thinking_budget=overrides.get("thinking_budget"),
         include_thoughts=overrides.get("include_thoughts"),
         thinking_level=overrides.get("thinking_level"),
+        chat_request=bool(overrides.get("chat_request", False)),
     )
 
 

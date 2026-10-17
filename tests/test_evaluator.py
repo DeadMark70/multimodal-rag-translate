@@ -59,12 +59,15 @@ class TestRAGEvaluatorRetrievalEvaluation:
     """Tests for retrieval evaluation."""
 
     @pytest.mark.asyncio
-    async def test_evaluate_retrieval_relevant(self):
+    @pytest.mark.parametrize("as_blocks", [False, True])
+    async def test_evaluate_retrieval_relevant(self, as_blocks):
         """Tests evaluation returns RELEVANT for relevant docs."""
         from agents.evaluator import RAGEvaluator, RetrievalGrade
         
         mock_response = MagicMock()
         mock_response.content = "RELEVANT"
+        if as_blocks:
+            mock_response.content = [{"type": "text", "text": mock_response.content}]
         
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(return_value=mock_response)
@@ -233,7 +236,8 @@ class TestFineGrainedEvaluator:
             yield fake_llm
 
     @pytest.mark.asyncio
-    async def test_perfect_answer(self, mock_llm):
+    @pytest.mark.parametrize("as_blocks", [False, True])
+    async def test_perfect_answer(self, mock_llm, as_blocks):
         """
         Case 1: Perfect answer should have is_passing=True and correct weighted_score.
         
@@ -253,6 +257,8 @@ class TestFineGrainedEvaluator:
             "suggestion": ""
         }
         '''
+        if as_blocks:
+            mock_response.content = [{"type": "text", "text": mock_response.content}]
         mock_llm.ainvoke.return_value = mock_response
         
         # Execute

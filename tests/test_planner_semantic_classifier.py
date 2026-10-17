@@ -7,7 +7,8 @@ from agents.planner import classify_question_intent_semantic
 
 
 @pytest.mark.asyncio
-async def test_semantic_classifier_returns_llm_decision_on_valid_json() -> None:
+@pytest.mark.parametrize("as_blocks", [False, True])
+async def test_semantic_classifier_returns_llm_decision_on_valid_json(as_blocks) -> None:
     mock_llm = SimpleNamespace(
         ainvoke=AsyncMock(
             return_value=SimpleNamespace(
@@ -15,6 +16,9 @@ async def test_semantic_classifier_returns_llm_decision_on_valid_json() -> None:
             )
         )
     )
+    if as_blocks:
+        reply = mock_llm.ainvoke.return_value
+        reply.content = [{"type": "text", "text": reply.content}]
     with patch("agents.planner.get_llm", return_value=mock_llm):
         decision = await classify_question_intent_semantic("Compare FLOPs and Params across models")
 

@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 # Local application
 from core.providers import get_llm
+from core.llm_response import final_answer_text
 from core.llm_usage_context import llm_accounting_phase
 from core.prompt_loader import format_agentic_rag_prompt
 
@@ -271,7 +272,7 @@ async def classify_question_intent_semantic(
         fallback.rationale = "LLM classifier error, fallback to heuristic classifier"
         return fallback
 
-    parsed = _safe_parse_semantic_payload(str(getattr(response, "content", "")))
+    parsed = _safe_parse_semantic_payload(final_answer_text(response))
     if not parsed:
         fallback.source = "parse_fallback"
         fallback.rationale = "LLM payload parse failed, fallback to heuristic classifier"
@@ -505,7 +506,7 @@ class TaskPlanner:
                 
                 with llm_accounting_phase("agent_planning"):
                     response = await llm.ainvoke([message])
-                subtasks = self._parse_subtasks(response.content)
+                subtasks = self._parse_subtasks(final_answer_text(response))
                 
                 if not subtasks:
                     # Fallback: use original question as single task
@@ -645,7 +646,7 @@ class TaskPlanner:
                     response = await llm.ainvoke([message])
                 
                 # Check if no follow-up needed
-                content = response.content.strip()
+                content = final_answer_text(response)
                 if "無需追加" in content or "不需要" in content or "已經足夠" in content:
                     logger.info("No knowledge gaps identified")
                     return []
@@ -747,7 +748,7 @@ class TaskPlanner:
                 with llm_accounting_phase("retrieval_rewrite"):
                     response = await llm.ainvoke([message])
                 
-                refined_query = response.content.strip()
+                refined_query = final_answer_text(response)
                 
                 # Validate refined query
                 if not refined_query or len(refined_query) < 5:

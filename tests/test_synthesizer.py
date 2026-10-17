@@ -154,7 +154,8 @@ class TestResultSynthesizerSynthesis:
         assert "答案2" in report.detailed_answer
 
     @pytest.mark.asyncio
-    async def test_synthesize_injects_arbitration_statement_when_conflict_detected(self):
+    @pytest.mark.parametrize("as_blocks", [False, True])
+    async def test_synthesize_injects_arbitration_statement_when_conflict_detected(self, as_blocks):
         """Tests that conflict arbitration guidance is injected into synthesis prompt."""
         from agents.synthesizer import ResultSynthesizer, SubTaskResult
 
@@ -165,6 +166,9 @@ class TestResultSynthesizerSynthesis:
         )
         synthesis_response = MagicMock()
         synthesis_response.content = "## 摘要\nA 優於 B。\n\n## 詳細分析\n- 根據 Benchmark 數據..."
+        if as_blocks:
+            arbitration_response.content = [{"type": "text", "text": arbitration_response.content}]
+            synthesis_response.content = [{"type": "text", "text": synthesis_response.content}]
 
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(side_effect=[arbitration_response, synthesis_response])

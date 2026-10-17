@@ -8,7 +8,8 @@ from data_base.query_transformer import (
 
 
 @pytest.mark.asyncio
-async def test_hyde_generation():
+@pytest.mark.parametrize("as_blocks", [False, True])
+async def test_hyde_generation(as_blocks):
     """Verify HyDE document generation."""
     transformer = QueryTransformer()
     question = "SwinUNETR 的核心優勢是什麼？"
@@ -20,6 +21,8 @@ async def test_hyde_generation():
         # Mock LLM response
         mock_response = MagicMock()
         mock_response.content = "SwinUNETR 結合了 Swin Transformer 的層次化特徵提取能力與 UNet 的對稱結構，這使其在 3D 醫學影像分割中表現優異..."
+        if as_blocks:
+            mock_response.content = [{"type": "text", "text": mock_response.content}]
         mock_llm.ainvoke.return_value = mock_response
 
         hyde_doc = await transformer.generate_hyde_document(question)
@@ -31,7 +34,8 @@ async def test_hyde_generation():
 
 
 @pytest.mark.asyncio
-async def test_multi_query_generation():
+@pytest.mark.parametrize("as_blocks", [False, True])
+async def test_multi_query_generation(as_blocks):
     """Verify multi-query generation and parsing."""
     transformer = QueryTransformer()
     question = "比較 SwinUNETR 與 nnU-Net"
@@ -43,6 +47,8 @@ async def test_multi_query_generation():
         # Mock LLM response with numbered list
         mock_response = MagicMock()
         mock_response.content = "1. SwinUNETR 的架構細節\n2. nnU-Net 的自動化配置特點\n3. 兩者在各類數據集上的表現對比"
+        if as_blocks:
+            mock_response.content = [{"type": "text", "text": mock_response.content}]
         mock_llm.ainvoke.return_value = mock_response
 
         queries = await transformer.generate_multi_queries(question)

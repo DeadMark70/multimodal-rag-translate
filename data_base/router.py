@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 # Local application
 from core.auth import get_current_user_id
 from core.errors import AppError, ErrorCode
+from core.llm_factory import chat_llm_settings
 from data_base.citations import build_source_details
 from data_base.RAG_QA_service import initialize_llm_service, rag_answer_question, RAGResult
 from data_base.repository import insert_chat_log, insert_query_log
@@ -52,7 +53,7 @@ from data_base.sse_events import (
 # Configure logging
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(chat_llm_settings)])
 
 # --- Constants ---
 

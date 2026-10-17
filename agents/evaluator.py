@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 # Local application
 from core.providers import get_llm
+from core.llm_response import final_answer_text
 from core.llm_usage_context import llm_accounting_phase
 from core.prompt_loader import format_agentic_rag_prompt
 
@@ -242,7 +243,7 @@ class RAGEvaluator:
                 with llm_accounting_phase("agent_planning"):
                     response = await llm.ainvoke([message])
                 
-                result = response.content.strip().upper()
+                result = final_answer_text(response).upper()
                 
                 if "RELEVANT" in result and "NOT" not in result:
                     return RetrievalGrade.RELEVANT
@@ -307,7 +308,7 @@ class RAGEvaluator:
                 with llm_accounting_phase("agent_planning"):
                     response = await llm.ainvoke([message])
                 
-                result = response.content.strip().upper()
+                result = final_answer_text(response).upper()
                 
                 if "GROUNDED" in result and "HALLUCINATED" not in result:
                     return FaithfulnessGrade.GROUNDED
@@ -384,10 +385,11 @@ class RAGEvaluator:
                     response = await llm.ainvoke([message])
                 
                 # Parse JSON response
-                scores = self._parse_json_response(response.content)
+                response_text = final_answer_text(response)
+                scores = self._parse_json_response(response_text)
                 
                 if not scores:
-                    logger.warning(f"Failed to parse evaluation JSON: {response.content[:200]}")
+                    logger.warning(f"Failed to parse evaluation JSON: {response_text[:200]}")
                     return DetailedEvaluationResult(
                         reason="評估失敗：無法解析 LLM 回應",
                         suggestion="請重試評估",
@@ -492,10 +494,11 @@ class RAGEvaluator:
                     response = await llm.ainvoke([message])
                 
                 # Parse JSON response
-                scores = self._parse_json_response(response.content)
+                response_text = final_answer_text(response)
+                scores = self._parse_json_response(response_text)
                 
                 if not scores:
-                    logger.warning(f"Failed to parse Pure LLM evaluation JSON: {response.content[:200]}")
+                    logger.warning(f"Failed to parse Pure LLM evaluation JSON: {response_text[:200]}")
                     return DetailedEvaluationResult(
                         reason="評估失敗：無法解析 LLM 回應",
                         suggestion="請重試評估",

@@ -17,6 +17,7 @@ from langchain_core.messages import HumanMessage
 
 # Local application
 from core.providers import get_llm
+from core.llm_response import final_answer_text
 from core.prompt_loader import format_rag_pipeline_prompt
 from core.llm_usage_context import llm_accounting_phase
 
@@ -86,7 +87,7 @@ class QueryTransformer:
                     llm = get_llm("query_rewrite")
                     with llm_accounting_phase(phase):
                         response = await llm.ainvoke([HumanMessage(content=prompt)])
-                hyde_doc = response.content.strip()
+                hyde_doc = final_answer_text(response)
 
                 logger.debug(f"Generated HyDE document: {hyde_doc[:100]}...")
                 return hyde_doc
@@ -131,7 +132,7 @@ class QueryTransformer:
                 # Parse numbered queries
                 queries = [question]  # Always include original
 
-                for line in response.content.strip().split("\n"):
+                for line in final_answer_text(response).split("\n"):
                     line = line.strip()
                     if line and line[0].isdigit():
                         # Remove number prefix

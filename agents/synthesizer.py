@@ -17,6 +17,7 @@ from pydantic import BaseModel
 # Local application
 from agents.planner import QuestionIntent, classify_question_intent
 from core.providers import get_llm
+from core.llm_response import final_answer_text
 from core.llm_usage_context import llm_accounting_phase
 from core.prompt_loader import format_agentic_rag_prompt
 
@@ -162,7 +163,7 @@ class ResultSynthesizer:
         try:
             with llm_accounting_phase("agent_synthesis"):
                 response = await llm.ainvoke([HumanMessage(content=prompt)])
-            statement = (getattr(response, "content", "") or "").strip()
+            statement = final_answer_text(response)
             if _is_no_conflict_statement(statement):
                 return _NO_CONFLICT_SENTINEL
             return statement
@@ -349,7 +350,7 @@ class ResultSynthesizer:
                     response = await llm.ainvoke([message])
                 
                 report = self._parse_report(
-                    response.content,
+                    final_answer_text(response),
                     original_question,
                     sub_results,
                 )
